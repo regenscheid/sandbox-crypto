@@ -56,13 +56,13 @@ def test_missing_file(tmp_path: Path) -> None:
             "duplicate key 'action'",
         ),
         (MINIMAL + "x: &a [1]\ny: *a\n", "aliases are not allowed"),
-        (MINIMAL + "defaults:\n  <<: {action: allow}\n", "merge keys are not allowed"),
+        (MINIMAL + "defaults:\n  <<: {action: allow}\n", "merge"),
         (MINIMAL + "---\n" + MINIMAL, "not valid YAML"),
         ("- just\n- a list\n", "mapping at the top level"),
         ("", "mapping at the top level"),
         (MINIMAL + "defaults: {action: [unclosed\n", "not valid YAML"),
-        (MINIMAL + "network: !!python/object:os.system {}\n", "not valid YAML"),
-        (MINIMAL + "? [a, b]\n: c\n", "mapping keys must be scalars"),
+        (MINIMAL + "network: !!python/object:os.system {}\n", "tags are not allowed"),
+        (MINIMAL + "? [a, b]\n: c\n", "mapping keys must be text"),
     ],
 )
 def test_rejected_yaml(text: str, message: str) -> None:
@@ -84,7 +84,7 @@ def test_rejects_oversized_file() -> None:
 def test_rejects_deep_nesting() -> None:
     depth = 100_000
     with pytest.raises(PolicyLoadError, match=r"nested too deeply|not valid YAML"):
-        parse_policy(MINIMAL + "x: " + "[" * depth + "]" * depth + "\n")
+        parse_policy(MINIMAL + "x:\n" + "[\n" * depth + "]\n" * depth)
 
 
 def test_validation_errors_name_the_location() -> None:

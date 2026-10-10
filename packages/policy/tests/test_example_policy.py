@@ -92,7 +92,7 @@ def test_search_feedback_is_not_allowed_by_the_search_pattern(policy: LoadedPoli
         ceiling=CEILING,
     )
     assert decision.action is Action.ESCALATE
-    assert decision.rule == "mcp.servers.crypto-research-mcp.tools.escalate[*feedback*]"
+    assert decision.rule == "mcp.servers.crypto-research-mcp.tools.escalate[*_feedback]"
 
 
 @pytest.mark.parametrize(
@@ -147,7 +147,12 @@ def test_search_feedback_is_not_allowed_by_the_search_pattern(policy: LoadedPoli
 def test_example_network_rules(
     policy: LoadedPolicy, method: str, url: str, expected: Action, rule: str | None
 ) -> None:
-    decision = evaluate_request(HttpRequest(method, url), policy, ceiling=CEILING)
+    content_type = None
+    if method == "POST" and url.endswith(("/git-upload-pack", "/git-receive-pack")):
+        content_type = f"application/x-{url.rsplit('/', 1)[1]}-request"
+    has_body = method in ("POST", "PUT", "PATCH")
+    request = HttpRequest(method, url, content_type=content_type, has_body=has_body)
+    decision = evaluate_request(request, policy, ceiling=CEILING)
     assert decision.action is expected, decision.reason
     assert decision.rule == rule
     assert decision.policy_digest == policy.digest

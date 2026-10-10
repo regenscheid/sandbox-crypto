@@ -22,7 +22,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 - [ ] Worker API schema and worker service
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48)
-- [ ] Egress proxy, read-only fetch proxy and package mirror (D44); proxy-side DNS re-checks resolved addresses against the floor and the public/non-public rule
+- [ ] Egress proxy, read-only fetch proxy and package mirror (D44): proxy-side DNS re-checks resolved addresses against the floor and the public/non-public rule; pass Content-Type, body presence, Upgrade and the resolved addresses to the evaluator; check that git upload-pack bodies are pkt-line requests and bound their size
+- [ ] MCP proxy: forward only tool names the server advertises, exactly as advertised; bound argument sizes
 - [ ] Event store with an append-only hash chain
 - [ ] Adversarial fixture suite
 - [ ] Isolation-tier probes (D43)
@@ -48,5 +49,5 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 - [x] Development conventions, uv workspace, CI with license check
 - [x] Plan snapshot tags
-- [ ] Fix doc drift: IMPLEMENTATION-PLAN's harness default contradicts D61; ROADMAP M3 says hosted targets were established in M1
-- [ ] Delete the paused `impl/p-policy-engine` branch once the policy library merges (user's call)
+- [x] Fix doc drift: IMPLEMENTATION-PLAN's harness default contradicts D61; ROADMAP M3 says hosted targets were established in M1 (PR #4)
+- [ ] Delete the paused `impl/p-policy-engine` branch and the merged `impl/p-policy` and `docs/plan-drift` branches (user's call)
