@@ -16,6 +16,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from itertools import pairwise
 from os import PathLike
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
@@ -189,13 +190,15 @@ def _token_coverage(text: str, label: str) -> bytearray:
     Positions come from PyYAML's scanner, which is what parses the file, so
     quoted strings and comments are located exactly as YAML sees them. Also
     rejects values that span lines, which could swallow lines that look like
-    live settings.
+    live settings, and a value containing '#' followed by more of the line,
+    which a reader would take for a comment.
     """
     covered = bytearray(len(text))
     try:
         scanned = list(_scan(text, Loader=yaml.SafeLoader))
     except yaml.YAMLError as exc:
         raise PolicyLoadError(f"{label} is not valid YAML: {exc}") from exc
+    spans: list[tuple[int, int, int]] = []
     for raw in scanned:
         token = cast("_Token", raw)
         start, end = token.start_mark.index, token.end_mark.index
@@ -204,6 +207,14 @@ def _token_coverage(text: str, label: str) -> bytearray:
                 f"{label}: every value must fit on one line ({_where(token.start_mark)})"
             )
         covered[start:end] = b"\x01" * (end - start)
+        if end > start:
+            spans.append((token.start_mark.line, start, end))
+    for (line, start, end), following in pairwise(spans):
+        if "#" in text[start:end] and following[0] == line:
+            raise PolicyLoadError(
+                f"{label} line {line + 1}: a value containing '#' must end its line, or the "
+                "rest of the line reads like a comment"
+            )
     return covered
 
 
