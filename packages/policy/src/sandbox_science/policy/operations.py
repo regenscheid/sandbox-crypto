@@ -37,6 +37,9 @@ _GIT_CONTENT_TYPES: Final = {
     "receive-pack": "application/x-git-receive-pack-request",
 }
 _BODYLESS_METHODS: Final = frozenset({"GET", "HEAD", "TRACE"})
+# Characters that Windows "best-fit" code-page conversion maps to '/', '\\' or ':'
+# on servers that pass paths through legacy APIs.
+_BEST_FIT_PUNCTUATION: Final = frozenset("\u2215\u2044\u2216\u29f5\u00a5\u20a9\u2236")
 _SPECIAL: Final = "/\\.;:?#%"
 MAX_MCP_NAME_LENGTH: Final = 256
 _NAME_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
@@ -64,6 +67,10 @@ def _check_path(path: str) -> None:
         if segment and (segment[-1] == "." or segment[-1].isspace() or segment[0].isspace()):
             # Some servers (Windows, IIS) drop trailing dots and spaces: /admin. is /admin.
             raise ClassificationError(f"path {path!r} has a segment with a trailing '.' or space")
+        if "::$" in segment or any(char in _BEST_FIT_PUNCTUATION for char in segment):
+            raise ClassificationError(
+                f"path {path!r} has characters some servers read as path punctuation"
+            )
         if "\u00ad" in segment:
             raise ClassificationError(
                 f"path {path!r} contains a soft hyphen, which some servers drop"
@@ -88,8 +95,9 @@ class HttpRequest:
 
     The proxy fills in the header-derived fields from the actual request:
     ``credentialed`` when it injected a provider credential, ``content_type``
-    from Content-Type, ``has_body`` when the request carries a body, and
-    ``upgrade`` from the Upgrade header.
+    from Content-Type, ``has_body`` when the request carries at least one body
+    byte (not merely a Content-Length or chunked header), and ``upgrade`` from
+    the Upgrade header.
     """
 
     method: str
@@ -243,7 +251,7 @@ def _git_service(
         if services == ["git-receive-pack"]:
             return "receive-pack", repo
         return None
-    if method == "POST" and has_body and content_type is not None:
+    if method == "POST" and has_body and content_type is not None and content_type.isascii():
         media_type = content_type.strip().lower()
         for service in ("upload-pack", "receive-pack"):
             suffix = f"/git-{service}"

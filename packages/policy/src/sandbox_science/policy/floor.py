@@ -16,7 +16,9 @@ class HardFloor:
     Built-in rules (loopback, link-local, unspecified and cloud metadata
     addresses, Kubernetes API names) always apply. A deployment adds its own
     administration endpoints, such as the OpenShell gateway, monitor and policy
-    services, through ``admin_hosts``.
+    services, through ``admin_hosts``. List their IP addresses as well as their
+    names: a name only matches itself, while addresses also catch other names
+    that resolve to them.
     """
 
     admin_hosts: frozenset[str] = frozenset()
