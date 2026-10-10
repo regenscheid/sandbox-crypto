@@ -75,18 +75,18 @@ Proposed by the plan review (D51). These components do not depend on harness det
 - Adversarial fixture suite ([monitoring](MONITORING.md)).
 - Isolation-tier probes that report the tier actually provided (D43).
 - The policy compiler from the project policy file ([policy](POLICY.md), D62) to OpenShell network/MCP/filesystem policy, with the hard floor, pool ceiling, most-restrictive-wins precedence and escalation timeout. It reports rules it cannot enforce.
-- Multi-arch (amd64/arm64) base images and a babbage MicroVM gateway configuration (D63).
+- Multi-arch (amd64/arm64) base images: the published `minimal` image and the `crypto-base` recipe with a private build pipeline and registry (D46), plus a babbage MicroVM gateway configuration (D63).
 - Secrets through OpenShell providers with endpoint binding and least-privilege tokens (D57), and MCP endpoint policies with tool allowlists (D58). Add the connector auth service (OAuth discovery, registration, PKCE with `resource`, external refresh when needed) and the MCP proxy sandbox (the only MCP endpoint reachable from workers and the orchestrator) ([MCP connectors](MCP-CONNECTORS.md), D66, D67); connect crypto-research-mcp as the phase 1 fixture. A fixture confirms that the sandbox sees only placeholders and that a placeholder sent to an unbound host fails with `credential_endpoint_mismatch`.
 
-Implement the worker API against OpenShell and against the reference fallback stack (D52) early, so the abstraction is not shaped by one backend.
+Implement the worker API against OpenShell only (D52). Keep it backend-neutral by maintaining a **backend conformance fixture suite** (the W1/W2 fixtures, the adversarial suite and the tier probes) that any future backend must pass; the reference fallback stays a written design until a concrete limitation justifies building it.
 
-**Exit evidence:** the W1 fixture runs through the worker service on two backends, with mirror-only egress and the adversarial suite passing on each.
+**Exit evidence:** the W1 fixture runs through the worker service on OpenShell, with mirror-only egress and the adversarial suite passing; the conformance suite is runnable against a backend adapter without harness changes.
 
 ### W2 — Certify babbage execution with math/source capabilities (M1, phase 1)
 
 Map one backend adapter to the selected runtime. If using OpenShell, pin matching components and let its gateway own the chosen driver lifecycle. In phase 1 that is the MicroVM driver on babbage; supporting every local engine is unnecessary. Hosted Kubernetes certification is W2h in phase 2.
 
-Add a native Sage kernel adapter, evaluating its Jupyter kernel rather than emulating Sage in ordinary Python. Install Sage at runtime from conda-forge through the mirror (D46). Platform code speaks the Jupyter protocol to Sage's own kernel and never imports Sage. Measure first-install time, and Sage/fpylll performance under each isolation tier. Exercise preparsing, finite fields, polynomial rings, exact matrices, LaTeX results, interruption and reset. Add worker PDF extraction/rendering with source hashes and page coordinates, starting with pdf_oxide (D59); preserve originals. Test Conda provisioning and hooks under the same enforced environment/network injection as ordinary execution.
+Add a native Sage kernel adapter, evaluating its Jupyter kernel rather than emulating Sage in ordinary Python. Use the `crypto-base` profile so Sage is present at session start; verify runtime installation from conda-forge through the mirror for additional tools (D46). Platform code speaks the Jupyter protocol to Sage's own kernel and never imports Sage. Measure first-install time, and Sage/fpylll performance under each isolation tier. Exercise preparsing, finite fields, polynomial rings, exact matrices, LaTeX results, interruption and reset. Add worker PDF extraction/rendering with source hashes and page coordinates, starting with pdf_oxide (D59); preserve originals. Test Conda provisioning and hooks under the same enforced environment/network injection as ordinary execution.
 
 Connect the trusted monitor and durable decision queue. Demonstrate block, permission escalation with approve/deny, and alert-and-continue using harmless fixtures. An approval path must prevent the unauthorized effect and show a safe continuation; an arbitrary denied network request must not be automatically replayed. Separately test middleware failure policy and expose unsupported inspection paths.
 
