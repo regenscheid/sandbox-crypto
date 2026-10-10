@@ -89,12 +89,12 @@
     }
   ],
   "initial_deployment_targets": {
-    "hosted": "hosted Kubernetes",
-    "local": "policy-capable container runtime on macOS or babbage (Ubuntu 26.04)",
-    "local_candidates": [
-      "Docker or another container runtime",
-      "Docker Desktop Kubernetes on macOS",
-      "local Kubernetes on babbage (Ubuntu 26.04)"
+    "phase_1": "babbage (amd64, Ubuntu 26.04), all-local, OpenShell MicroVM driver over KVM (tier 3)",
+    "phase_2": "user's Kubernetes test cluster: Raspberry Pi 5 (arm64) and amd64 nodes; gVisor RuntimeClass (tier 2), tier 3 where nodes support it",
+    "phase_3": "Mac M3 Max (arm64); remote access/exposure decisions; remaining placements",
+    "images": [
+      "linux/amd64",
+      "linux/arm64"
     ],
     "acceptance": "demonstrated execution/network isolation, monitor actions, persistence and worker API parity",
     "local_kubernetes_required": false

@@ -18,9 +18,9 @@ Proposed by the plan review (D44; [threat model](THREAT-MODEL.md) T1/T7). Conten
 | --- | --- | --- |
 | Direct internet from research sandboxes | Denied | Sandboxes resolve no external DNS; the proxy resolves names |
 | Package installation | Only through a trusted pull-through mirror restricted to allowlisted channels (conda-forge, PyPI); read-only; cache misses logged and rate-limited | Preserves automatic Conda provisioning (D16): the solver and hooks still run in the sandbox. Permissive candidates: devpi (MIT), quetz (BSD-3), caching Envoy/nginx. Package-name lookups are a residual covert channel; log them |
-| Downloading code and papers | Read-only fetch proxy: GET on allowlisted hosts; git smart-HTTP `git-upload-pack` allowed, `git-receive-pack` denied | The git rule must be keyed on the service path, because fetch also uses POST. Deny API writes, gists and paste sites by default. Bound URL length and request rate |
+| Downloading code and papers | Read-only fetch path: GET/HEAD allowed broadly under the shipped permissive policy (D62), with a URL length limit; git smart-HTTP `git-upload-pack` allowed, `git-receive-pack` escalates | The git rule must be keyed on the service path, because fetch also uses POST. Deny API writes, gists and paste sites by default. Bound URL length and request rate |
 | Granted research endpoints, mostly MCP | Explicit per-project grants; credentials as OpenShell providers bound to the endpoint; MCP tool allowlists | Inline inspection applies here; see Credentials and MCP access |
-| Anything else | Permission escalation | Never alert-only by default |
+| Anything else (writes, unknown side effects) | As the project policy file decides; the shipped default escalates | Escalation timeout falls back to deny (configurable); see [policy](POLICY.md) |
 
 The orchestrator's own connector fetches (web fetch, crawlers, paper search) follow the same allowlist and escalation rules (D47). A URL fetched by the orchestrator can carry data just as well as one fetched by a worker.
 
@@ -111,7 +111,7 @@ Incoming responses to permitted egress differ from new inbound connections. Work
 
 ## Response policy and tests
 
-Confirmed behavior: intervention is selected by policy, with all three actions supported:
+Confirmed behavior: intervention is selected by policy, with all three actions supported. Rules, precedence and the escalation timeout are defined in the project policy file ([policy](POLICY.md), D62):
 
 | Action | Operation behavior | Recorded outcome |
 | --- | --- | --- |

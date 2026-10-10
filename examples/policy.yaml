@@ -1,0 +1,99 @@
+# Illustrative project policy (planning/v0alpha1). Not a validated schema.
+# A deliberately permissive default: reads and package installs flow freely;
+# side effects outside the project (writes, pushes, paid or state-changing
+# MCP tools) ask first. See docs/POLICY.md for semantics and precedence.
+
+apiVersion: sandbox-science/v0alpha1
+kind: ProjectPolicy
+metadata:
+  name: permissive-default
+  description: Broad read access, governed side effects
+
+# Applies to anything no rule matches.
+defaults:
+  action: escalate          # allow | alert | escalate | deny
+  log: true
+
+# Permission requests that nobody answers fall back to this outcome.
+escalation:
+  timeout: 30m              # per-request wait before on_timeout applies
+  on_timeout: deny          # deny | allow (allow only for alert-class rules)
+  notify: [gui]             # later: push
+  hold_scope: operation     # only the affected operation waits
+
+resources:                  # capped by the pool ceiling (docs/POLICY.md)
+  cpu: 16
+  memory: 64Gi
+  pids: 4096
+  workspace_disk: 200Gi
+  wall_time: 72h
+  model_budget_usd_per_day: 50     # enforced by the LiteLLM virtual key
+
+packages:
+  conda:
+    channels: [conda-forge]
+    action: allow
+  pypi:
+    action: allow
+  system_packages: deny     # read-only rootfs; change the base image instead
+
+network:
+  rules:
+    - name: package-mirrors
+      match: { destinations: [mirror.internal] }
+      action: allow
+    - name: read-only-web
+      match: { hosts: ["*"], methods: [GET, HEAD] }
+      limits: { max_url_bytes: 4096 }
+      action: allow
+    - name: git-fetch
+      match: { hosts: [github.com, gitlab.com, codeberg.org], git_service: upload-pack }
+      action: allow
+    - name: git-push
+      match: { git_service: receive-pack }
+      action: escalate
+    - name: external-writes
+      match: { hosts: ["*"], methods: [POST, PUT, PATCH, DELETE] }
+      action: escalate
+    - name: large-egress
+      match: { egress_bytes_per_hour_over: 500Mi }
+      action: alert
+
+mcp:
+  servers:
+    crypto-research-mcp:
+      url: https://mcp.example.invalid/crypto-research   # placeholder
+      credentials: { provider: crypto-research-mcp }      # OpenShell provider
+      tools:
+        allow:
+          - "*search*"
+          - "*get_*"
+          - "*fetch*"
+          - "*read*"
+          - "*list_*"
+          - "*find_*"
+          - "*_stats"
+          - "*_status"
+          - "*health*"
+        escalate:
+          - "*firecrawl_agent"
+          - "*firecrawl_crawl"
+          - "*firecrawl_monitor_create"
+          - "*firecrawl_monitor_update"
+          - "*firecrawl_monitor_run"
+          - "*refresh_*"
+        deny:
+          - "*portal_toggle*"      # server configuration is not an agent action
+
+credentials:
+  # Worker-visible credentials are OpenShell providers (placeholders only).
+  providers:
+    - name: github-readonly
+      profile: github
+      scope_note: fine-grained token, contents:read only
+
+shared_data:
+  writes: allow_with_conflict_check
+
+data:
+  default_class: project-private

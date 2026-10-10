@@ -60,8 +60,8 @@ Each execution records the tier it actually ran at. If a pool cannot provide the
 | Tier | Mechanism | Shares a kernel with Z1/Z2? | Intended use |
 | --- | --- | --- | --- |
 | 1 | Hardened container (runc, rootless where possible, seccomp default, no capabilities, read-only rootfs) | Yes | Development and trusted fixtures only, with the risk accepted explicitly |
-| 2 | Sandboxed runtime (gVisor `runsc`) or a separate VM for all workers | No | Default for local profiles (babbage, macOS) where available |
-| 3 | Per-sandbox microVM (Kata, Firecracker, OpenShell MicroVM driver) | No | Default for hosted Kubernetes; required for T4 workloads |
+| 2 | Sandboxed runtime (gVisor `runsc`) or a separate VM for all workers | No | Default on the mixed-arch Kubernetes test cluster (gVisor supports amd64 and arm64); macOS where available |
+| 3 | Per-sandbox microVM (Kata, Firecracker, OpenShell MicroVM driver) | No | **Default on babbage** (OpenShell MicroVM driver over KVM); cluster nodes that support it; required for T4 workloads |
 
 Docker Desktop and Colima on macOS run every container in one Linux VM. Unless workers run under `runsc`, or in a VM separate from Z1/Z2, a local all-in-Docker deployment is **tier 1**. On babbage, OpenShell needs Landlock ABI ≥ 3 and active kernel qualification. Ubuntu's AppArmor restriction on unprivileged user namespaces affects rootless runtimes, so check it for each candidate.
 
@@ -74,7 +74,7 @@ Performance-sensitive work (timing and side-channel measurements, `perf_event_op
 | A1 | Per-project MCP tool allowlists (`protocol: mcp`); least-privilege, read-only tokens; L7 method/path rules; revision-checked mutations on shared documents/ledger with attribution | MCP and L7 events per tool call; ledger/document history |
 | A2 | Default-deny egress via proxies; credentials only as endpoint-bound placeholders (fail-closed); read-only rootfs and declared volumes; Landlock/filesystem policy; monitor and policy outside the sandbox | `credential_endpoint_mismatch` findings; denied-connection events; Tetragon/Falco process/file events |
 | A3 | Agent text never authorizes anything; policy advisor with auto-approval off; prover flags new credentialed reach; approval prompts built from observed facts; local policy ceiling per pool | Pending-decision log; prover findings |
-| A4 | CPU/memory/PID/disk/wall-time limits; per-project quotas; model and MCP spend limits at the gateway | Quota and spend alerts |
+| A4 | CPU/memory/PID/disk/wall-time limits from the policy file; per-project quotas; LiteLLM virtual-key spend limits (D61); escalation for credit-spending MCP tools | Quota and spend alerts |
 | T1 | Mirror-only package egress; lockfiles; rebuild-from-lockfile | Mirror logs; install-phase correlation |
 | T4 | Tier 3 isolation; no Z1/Z2 credentials in the sandbox | Runtime security events |
 | T5 | Per-pool local policy ceiling; local enrollment needs local user action | Local audit log of remote commands |

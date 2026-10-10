@@ -50,18 +50,15 @@ Broaden the already working Sage/PDF/document path to representative cryptograph
 
 **Exit:** the system meets the CScience behavior specs and produces reviewable research evidence across both execution placements. Add further domains and UI changes only as actual gaps justify them.
 
-## Minimum useful release (proposed, D53)
+## Delivery phases (D53, D63, D64)
 
-A release a researcher would use daily, reachable before M3/M4:
+The user needs the whole initial feature set before the system is useful, so phases stage **placement**, not features.
 
-- local profile at tier 2;
-- persistent project container with session kernels;
-- runtime-installed Sage;
-- PDF viewer with page anchors (region anchors later);
-- mirror-only egress with block/escalate monitor actions;
-- the existing consistency review behavior.
-
-Use it on real research to refine the ledger/frontier and concurrent-editing design before building them in full.
+| Phase | Target | Milestones | Usable when |
+| --- | --- | --- | --- |
+| 1 | babbage (amd64, Ubuntu 26.04), all-local, tier 3 via OpenShell MicroVM (KVM) | M0–M2 | The complete research workspace works on babbage: chat and workbooks, Python and Sage kernels, Conda provisioning, PDF navigation, Markdown+LaTeX living documents, ledger/board/frontier, automatic review, external skill pack, and crypto-research-mcp, under the permissive policy file |
+| 2 | Kubernetes test cluster (Raspberry Pi 5 arm64 + amd64 nodes), small scale | M3, M4 (partial) | The same workflow runs with workers on the cluster; multi-arch images; heavy math pinned to capable nodes |
+| 3 | Mac (M3 Max), further MCP servers, remote access/exposure decisions, remaining placements | M4, M5 | Placement and access choices made from phase 1–2 experience |
 
 ## First end-to-end fixture
 
