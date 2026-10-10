@@ -22,7 +22,7 @@ Updated: 2026-10-10.
 
 ## Blockers and open questions
 
-- Confirm D68 (policy evaluation details), D69 (OpenShell fence design) and PSF-2.0 in tier 1.
+- Confirm D68 (policy evaluation details), the details of D69 (its direction, OpenShell plus a policy middleware, is confirmed) and PSF-2.0 in tier 1.
 - OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's planned tier 3 isolation depends on it (D43).
 - babbage enforces Ubuntu's AppArmor restriction on unprivileged user namespaces. Shells started from Claude Desktop run under its `claude-desktop` profile and are exempt, so qualification checks must run from a plain terminal or `systemd-run --user`.
 - crypto-analysis-skills: confirm the copyright holder before merging its MIT LICENSE pull request.
