@@ -1,0 +1,81 @@
+{
+  "schema_version": "planning/v0alpha1",
+  "status": "illustrative-only; no deployment validated",
+  "local_remote_meaning": "Placement of servers and execution hosts, not the user's browser",
+  "profiles": [
+    {
+      "name": "all-local",
+      "web_server": "local",
+      "orchestrator_harness": "local",
+      "worker_pool": "local",
+      "metadata": "orchestrator-supported durable state store; implementation selected after adaptation spike",
+      "artifacts": "local authenticated storage service",
+      "transport": "private container network; worker-initiated control connection",
+      "execution_backend": "local OpenShell Docker/Podman driver; to validate",
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+    },
+    {
+      "name": "remote-compute",
+      "web_server": "local",
+      "orchestrator_harness": "local",
+      "worker_pool": "remote",
+      "metadata": "orchestrator-supported durable state store; implementation selected after adaptation spike",
+      "artifacts": "reachable private storage or explicit transfer channel",
+      "transport": "worker-initiated authenticated connection over private tunnel or TLS",
+      "data_constraint": "Only explicitly permitted inputs leave the local host",
+      "execution_backend": "remote OpenShell pool, including Kubernetes driver; to validate",
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+    },
+    {
+      "name": "hosted-control-local-compute",
+      "web_server": "remote",
+      "orchestrator_harness": "remote",
+      "worker_pool": "local",
+      "metadata": "orchestrator-supported durable state store; implementation selected after adaptation spike",
+      "artifacts": "project-selected storage; local datasets may use enrolled immutable references",
+      "transport": "local controller dials remote API; no inbound local engine endpoint",
+      "data_constraint": "Prompts, logs and results may still reach remote control and model services",
+      "execution_backend": "local OpenShell Docker/Podman driver; to validate",
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+    },
+    {
+      "name": "remote-ui-local-control",
+      "web_server": "remote",
+      "orchestrator_harness": "local",
+      "worker_pool": "local",
+      "metadata": "orchestrator-supported durable state store; implementation selected after adaptation spike",
+      "artifacts": "local authenticated storage service",
+      "transport": "same-origin UI proxy through an authenticated tunnel to local API",
+      "execution_backend": "local OpenShell Docker/Podman driver; to validate",
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+    },
+    {
+      "name": "all-remote",
+      "web_server": "remote",
+      "orchestrator_harness": "remote",
+      "worker_pool": "remote",
+      "metadata": "orchestrator-supported durable state store; implementation selected after adaptation spike",
+      "artifacts": "private object storage",
+      "transport": "private service network and authenticated worker connections",
+      "execution_backend": "remote OpenShell pool, including Kubernetes driver; to validate",
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+    }
+  ],
+  "remaining_combinations": [
+    {
+      "web_server": "local",
+      "orchestrator_harness": "remote",
+      "worker_pool": "local"
+    },
+    {
+      "web_server": "local",
+      "orchestrator_harness": "remote",
+      "worker_pool": "remote"
+    },
+    {
+      "web_server": "remote",
+      "orchestrator_harness": "local",
+      "worker_pool": "remote"
+    }
+  ]
+}
