@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final, Literal, cast
@@ -36,6 +37,7 @@ _GIT_CONTENT_TYPES: Final = {
     "receive-pack": "application/x-git-receive-pack-request",
 }
 _BODYLESS_METHODS: Final = frozenset({"GET", "HEAD", "TRACE"})
+_SPECIAL: Final = "/\\.;:?#%"
 MAX_MCP_NAME_LENGTH: Final = 256
 _NAME_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _PACKAGE_RE: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
@@ -62,6 +64,17 @@ def _check_path(path: str) -> None:
         if segment and (segment[-1] == "." or segment[-1].isspace() or segment[0].isspace()):
             # Some servers (Windows, IIS) drop trailing dots and spaces: /admin. is /admin.
             raise ClassificationError(f"path {path!r} has a segment with a trailing '.' or space")
+        if "\u00ad" in segment:
+            raise ClassificationError(
+                f"path {path!r} contains a soft hyphen, which some servers drop"
+            )
+        folded = unicodedata.normalize("NFKC", segment)
+        if folded != segment and any(folded.count(char) > segment.count(char) for char in _SPECIAL):
+            # Servers that apply NFKC read a fullwidth full stop (U+FF0E) as '.' and a
+            # fullwidth solidus (U+FF0F) as '/'.
+            raise ClassificationError(
+                f"path {path!r} has characters that normalize to path punctuation"
+            )
 
 
 def path_segments(path: str) -> tuple[str, ...]:
@@ -207,20 +220,16 @@ def _decode_path(raw: str) -> str:
     return decoded
 
 
-def _media_type(content_type: str | None) -> str | None:
-    if content_type is None:
-        return None
-    return content_type.split(";", 1)[0].strip().lower()
-
-
 def _git_service(
-    method: str, path: str, query: str, content_type: str | None
+    method: str, path: str, query: str, content_type: str | None, has_body: bool
 ) -> tuple[GitService, str] | None:
     """Recognize git smart-HTTP requests; returns the service and repository path.
 
-    A POST counts as git only with git's own request content type, so that a
-    REST call whose path happens to end in /git-upload-pack (for example a
-    "create file" API) stays an ordinary write.
+    A POST counts as git only with a body and exactly git's request content
+    type, without parameters, so that a REST call whose path happens to end in
+    /git-upload-pack (for example a "create file" API) stays an ordinary write.
+    Parameters such as "; x=json", or an empty body that leaves the server to
+    read the query string, would let the server treat it as that REST call.
     """
     if method == "GET" and path.endswith("/info/refs"):
         if ";" in query:
@@ -234,8 +243,8 @@ def _git_service(
         if services == ["git-receive-pack"]:
             return "receive-pack", repo
         return None
-    if method == "POST":
-        media_type = _media_type(content_type)
+    if method == "POST" and has_body and content_type is not None:
+        media_type = content_type.strip().lower()
         for service in ("upload-pack", "receive-pack"):
             suffix = f"/git-{service}"
             if path.endswith(suffix) and media_type == _GIT_CONTENT_TYPES[service]:
@@ -282,7 +291,7 @@ def classify_http_request(request: HttpRequest) -> HttpOperation | GitOperation:
     resolved_port = port if port is not None else DEFAULT_PORTS[typed_scheme]
     path = _decode_path(parts.path or "/")
     url_bytes = len(url.encode("ascii"))
-    git = _git_service(method, path, parts.query, request.content_type)
+    git = _git_service(method, path, parts.query, request.content_type, request.has_body)
     if git is not None:
         service, repo_path = git
         return GitOperation(

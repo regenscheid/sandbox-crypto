@@ -150,7 +150,8 @@ def test_example_network_rules(
     content_type = None
     if method == "POST" and url.endswith(("/git-upload-pack", "/git-receive-pack")):
         content_type = f"application/x-{url.rsplit('/', 1)[1]}-request"
-    request = HttpRequest(method, url, content_type=content_type)
+    has_body = method in ("POST", "PUT", "PATCH")
+    request = HttpRequest(method, url, content_type=content_type, has_body=has_body)
     decision = evaluate_request(request, policy, ceiling=CEILING)
     assert decision.action is expected, decision.reason
     assert decision.rule == rule

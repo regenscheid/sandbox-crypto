@@ -83,6 +83,7 @@ def client_request(method: str, url: str, *, credentialed: bool = False) -> Http
         url=url,
         credentialed=credentialed,
         content_type=content_type if method == "POST" else None,
+        has_body=method in ("POST", "PUT", "PATCH"),
     )
 
 

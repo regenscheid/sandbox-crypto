@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from .hosts import floor_reason, normalize_host
+from .hosts import address_forms, floor_reason, normalize_host
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,10 +26,21 @@ class HardFloor:
         object.__setattr__(self, "admin_hosts", normalized)
 
     def check_host(self, host: str) -> str | None:
-        """Return why the floor denies a normalized host, or None."""
+        """Return why the floor denies a host or IP address, or None."""
         reason = floor_reason(host)
         if reason is not None:
             return reason
-        if host in self.admin_hosts:
+        if any(form in self.admin_hosts for form in address_forms(host)):
             return f"{host} is a platform administration endpoint"
+        return None
+
+    def check_destination(self, host: str, resolved: Sequence[str] = ()) -> str | None:
+        """Check a request host and the addresses the egress proxy resolved it to."""
+        reason = self.check_host(host)
+        if reason is not None:
+            return reason
+        for address in resolved:
+            reason = self.check_host(address)
+            if reason is not None:
+                return f"{host} resolves to {address}: {reason}"
         return None

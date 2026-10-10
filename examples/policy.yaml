@@ -94,47 +94,79 @@ mcp:
       # The portal prefixes every tool name; patterns match the rest, so a pattern
       # cannot match the prefix ("research" contains "search").
       tool_prefix: crypto_research_mcp-
-      # Checked against the server's 78 tools (2026-10-10); the test fixture
-      # packages/policy/tests/fixtures/crypto-research-mcp-tools.json pins the
-      # expected outcome of every tool, and an unknown tool asks first. An exact
-      # name beats patterns; otherwise the most restrictive matching list wins.
-      # Patterns are anchored at "_" so subserver names such as paper-search-mcp
-      # do not match them.
+      # Checked against the server's 78 tools (2026-10-10). Reads are allowed by
+      # exact name, so a tool a new server revision adds, or a compound name such as
+      # get_or_create_note, asks first (defaults.action). Patterns only escalate or
+      # deny. The fixture packages/policy/tests/fixtures/crypto-research-mcp-tools.json
+      # pins every tool's outcome.
       tools:
         allow:
-          - "*_search"                      # includes per-call billed searches (Scholar, patents, Firecrawl)
-          - "*_search_*"
-          - "*_get_*"
-          - "*_list_*"
-          - "*_find_*"
-          - "*_fetch"
-          - "*_fetch_*"
-          - "*_read"
-          - "*_read_*"
-          - "*_browse_*"
-          - "*_recent_*"
-          - "*_stats"
-          - "*_status"
-          - "*_health"
-          - paper-search-mcp_paper_citations
-          - paper-search-mcp_paper_details
-          - firecrawl-mcp_firecrawl_research_inspect_paper
-          - firecrawl-mcp_firecrawl_research_related_papers
+          - attack-catalog-mcp_find_applicable_attacks
+          - attack-catalog-mcp_get_attack
+          - attack-catalog-mcp_get_catalog_info
+          - attack-catalog-mcp_get_filter_contract
+          - attack-catalog-mcp_get_source
+          - attack-catalog-mcp_list_attacks_for_skill
+          - attack-catalog-mcp_list_taxonomy
+          - attack-catalog-mcp_search_attacks
+          - attack-catalog-mcp_search_by_legacy_value_exact
+          - e-print-mcp_corpus_stats
+          - e-print-mcp_get_eprint
+          - e-print-mcp_recent_eprint
+          - e-print-mcp_search_eprint
+          - firecrawl-mcp_firecrawl_agent_status
+          - firecrawl-mcp_firecrawl_check_crawl_status
+          - firecrawl-mcp_firecrawl_developer_search
           - firecrawl-mcp_firecrawl_map
-          - firecrawl-mcp_firecrawl_monitor_get
-          - firecrawl-mcp_firecrawl_monitor_list
           - firecrawl-mcp_firecrawl_monitor_check
           - firecrawl-mcp_firecrawl_monitor_checks
+          - firecrawl-mcp_firecrawl_monitor_get
+          - firecrawl-mcp_firecrawl_monitor_list
+          - firecrawl-mcp_firecrawl_research_inspect_paper
+          - firecrawl-mcp_firecrawl_research_read_paper
+          - firecrawl-mcp_firecrawl_research_related_papers
+          - firecrawl-mcp_firecrawl_research_search_github
+          - firecrawl-mcp_firecrawl_research_search_papers
+          - nist-csrc-mcp_nist_browse_catalogs
+          - nist-csrc-mcp_nist_get_catalog_item
+          - nist-csrc-mcp_nist_get_corpus_status
+          - nist-csrc-mcp_nist_get_pdf
+          - nist-csrc-mcp_nist_get_publication
+          - nist-csrc-mcp_nist_list_topics
+          - nist-csrc-mcp_nist_read
+          - nist-csrc-mcp_nist_search
           - nist-mcp_csrc_currency
-          - web-fetch-mcp_web_capture
+          - nist-mcp_csrc_stats
+          - nist-mcp_get_csrc
+          - nist-mcp_search_csrc
+          - paper-search-mcp_arxiv_search
+          - paper-search-mcp_crossref_search
+          - paper-search-mcp_dblp_search
+          - paper-search-mcp_openalex_search
+          - paper-search-mcp_paper_citations
+          - paper-search-mcp_paper_details
+          - paper-search-mcp_paper_search_health
+          - paper-search-mcp_semantic_scholar_search
+          - patent-search-mcp_patent_search_health
           - portal_list_servers
+          - web-fetch-mcp_fetch_continue
+          - web-fetch-mcp_fetch_links
+          - web-fetch-mcp_fetch_page
+          - web-fetch-mcp_web_capture
+          - web-fetch-mcp_web_fetch
+          - web-fetch-mcp_web_fetch_health
+          # Billed per call, but searching is the core research workflow:
+          - firecrawl-mcp_firecrawl_search
+          - paper-search-mcp_scholar_search
+          - paper-search-mcp_search_papers
+          - patent-search-mcp_patent_search
           # Reads that fill the server's own document cache on first use:
           - e-print-mcp_eprint_file
           - e-print-mcp_eprint_fulltext
           - nist-mcp_csrc_file
           - nist-mcp_csrc_fulltext
         escalate:
-          - "*_feedback"                    # outranks "*_search_*" for firecrawl_search_feedback
+          - "*_feedback"                    # e.g. firecrawl_search_feedback, which submits feedback
           - "*_refresh_*"
           - firecrawl-mcp_firecrawl_agent
           - firecrawl-mcp_firecrawl_crawl
@@ -158,7 +190,7 @@ mcp:
     #     headers:
     #       X-Api-Key: "${provider:example-header-server.API_KEY}"   # placeholder reference, never a literal secret
     #       X-Account: research
-    #   tools: { allow: ["*search*"], escalate: [], deny: [] }
+    #   tools: { allow: [search_documents, get_document] }   # exact names; patterns only escalate or deny
 
 credentials:
   # Worker-visible credentials are OpenShell providers (placeholders only).

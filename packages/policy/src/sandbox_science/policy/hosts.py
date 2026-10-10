@@ -57,6 +57,7 @@ _METADATA_ADDRESSES: Final[frozenset[IPAddress]] = frozenset(
         ipaddress.ip_address("100.100.100.200"),  # Alibaba Cloud
         ipaddress.ip_address("168.63.129.16"),  # Azure WireServer (a public address)
         ipaddress.ip_address("192.0.0.192"),  # Oracle Cloud
+        ipaddress.ip_address("fd00:c1::a9fe:a9fe"),  # Oracle Cloud over IPv6
     }
 )
 _THIS_NETWORK: Final = ipaddress.IPv4Network("0.0.0.0/8")
@@ -154,6 +155,19 @@ def _embedded_addresses(address: IPAddress) -> list[IPAddress]:
     if address.scope_id is not None:
         address = ipaddress.IPv6Address(int(address))
     return [address, *_embedded_ipv4(address)]
+
+
+def address_forms(host: str) -> tuple[str, ...]:
+    """The forms under which a host can appear in a host list.
+
+    For an IP address: its canonical text plus any IPv4 address it embeds, so
+    that a resolved ``::ffff:10.0.0.5`` meets an entry for ``10.0.0.5``. A name
+    returns itself.
+    """
+    address = parse_ip(host)
+    if address is None:
+        return (host,)
+    return tuple(dict.fromkeys(str(candidate) for candidate in _embedded_addresses(address)))
 
 
 def floor_reason(host: str) -> str | None:
