@@ -2,7 +2,7 @@
 
 Working folder for a cryptography/math research workbench with independently deployable orchestration and sandboxed compute.
 
-**Status: planning only, 2026-10-10.** No application, runtime, or deployment has been implemented or tested here.
+**Status, 2026-10-10:** planning, plus the first library: project-policy validation and evaluation ([packages/policy](packages/policy), track P). No application, runtime or deployment has been implemented or tested here. Development follows [the conventions](.agents/CONVENTIONS.md); [STATUS](.agents/STATUS.md) and [BACKLOG](.agents/BACKLOG.md) track progress.
 
 ## Terminology
 

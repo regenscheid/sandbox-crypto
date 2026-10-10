@@ -1,0 +1,474 @@
+{
+  "server": "crypto-research-mcp",
+  "captured": "2026-10-10",
+  "tools": [
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_find_applicable_attacks",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Read-only lexical-overlap lookup of reference leads in the catalog."
+    },
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_get_attack",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Returns one attack record by catalog ID."
+    },
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_get_catalog_info",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Describes the loaded snapshot, refresh limits and reading guides; informational only."
+    },
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_get_filter_contract",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Explains filter semantics; documentation lookup."
+    },
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_get_source",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Returns source metadata and digest; does not fetch or verify a paper."
+    },
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_list_attacks_for_skill",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Paginated listing of attack references for a skill ID."
+    },
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_list_taxonomy",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists taxonomy dimensions and terms."
+    },
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_search_attacks",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches the loaded catalog snapshot with normalized filters."
+    },
+    {
+      "name": "crypto_research_mcp-attack-catalog-mcp_search_by_legacy_value_exact",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Exact literal match on a legacy field for debugging/export parity; read-only lookup."
+    },
+    {
+      "name": "crypto_research_mcp-e-print-mcp_corpus_stats",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reports corpus size, year coverage and last harvest time."
+    },
+    {
+      "name": "crypto_research_mcp-e-print-mcp_eprint_file",
+      "class": "WRITE",
+      "ambiguous": true,
+      "evidence": "Signed URL for the original; a missing original is fetched into the server cache or queued for a fetcher."
+    },
+    {
+      "name": "crypto_research_mcp-e-print-mcp_eprint_fulltext",
+      "class": "WRITE",
+      "ambiguous": true,
+      "evidence": "Reads paper text from cache; first call downloads and caches the PDF or queues it (fetch defaults true)."
+    },
+    {
+      "name": "crypto_research_mcp-e-print-mcp_get_eprint",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Returns metadata and abstract for one ePrint paper."
+    },
+    {
+      "name": "crypto_research_mcp-e-print-mcp_recent_eprint",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists the newest ePrint submissions."
+    },
+    {
+      "name": "crypto_research_mcp-e-print-mcp_refresh_eprint",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Incrementally refreshes the whole local corpus and rebuilds its index; may be slow."
+    },
+    {
+      "name": "crypto_research_mcp-e-print-mcp_search_eprint",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Keyword/FTS search of the ePrint corpus; read-only."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_agent",
+      "class": "SPEND",
+      "ambiguous": false,
+      "evidence": "Starts an async multi-source research job (minutes) and returns a job ID."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_agent_status",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Polls progress or result of an existing agent job."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_check_crawl_status",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reads crawl job state; description says it does not start or modify the crawl."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_crawl",
+      "class": "WRITE",
+      "ambiguous": true,
+      "evidence": "Starts a multi-page crawl job; webhooks and interactive actions exist unless safe mode is on."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_developer_search",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches an index of GitHub issues, PRs, READMEs and docs; no cost or side effect stated."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_extract",
+      "class": "SPEND",
+      "ambiguous": true,
+      "evidence": "Deprecated multi-URL extraction entry point (optional web search); cost and side effects not described."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_feedback",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Submits quality feedback for a completed search, scrape, parse or map job."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_interact",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Live browser session (click, fill fields, run code); form submission can have persistent external effects."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_interact_stop",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Stops a live interact session and releases its resources."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_map",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists indexed URLs for a site without fetching page content; no cost stated."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_check",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Retrieves one existing monitor check and its page diffs; despite the name it does not run a check."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_checks",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists historical checks for a monitor."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_create",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Creates a recurring monitor that schedules future network checks and can email or call webhooks."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_get",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reads one monitor's config and state; description says it does not run or modify it."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_list",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists the account's monitors."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_run",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Queues an immediate monitor check, starting network work."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_monitor_update",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Patches a monitor's schedule, targets, status, webhook or notifications."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_parse",
+      "class": "WRITE",
+      "ambiguous": true,
+      "evidence": "Parses a server-local file via Firecrawl; hosted flow uploads it; cost and retention not stated."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_research_inspect_paper",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Retrieves metadata for one paper ID."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_research_read_paper",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Retrieves relevant passages from one indexed paper."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_research_related_papers",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Finds citation-graph candidates for seed papers."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_research_search_github",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches indexed public GitHub issues, PRs and READMEs."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_research_search_papers",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches paper metadata and abstracts in the indexed corpus."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_scrape",
+      "class": "WRITE",
+      "ambiguous": true,
+      "evidence": "Single-URL scrape; warns browser actions may change the live page when interactive actions are enabled."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_search",
+      "class": "SPEND",
+      "ambiguous": true,
+      "evidence": "Search returning usage metadata; sibling feedback tool can refund 1 credit, so calls consume credits."
+    },
+    {
+      "name": "crypto_research_mcp-firecrawl-mcp_firecrawl_search_feedback",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Records feedback on a prior search; first feedback can refund 1 credit."
+    },
+    {
+      "name": "crypto_research_mcp-nist-csrc-mcp_nist_browse_catalogs",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Browses structured NIST catalogs and their children."
+    },
+    {
+      "name": "crypto_research_mcp-nist-csrc-mcp_nist_get_catalog_item",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Returns one catalog item with relations and mappings."
+    },
+    {
+      "name": "crypto_research_mcp-nist-csrc-mcp_nist_get_corpus_status",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reports corpus coverage and nightly refresh status."
+    },
+    {
+      "name": "crypto_research_mcp-nist-csrc-mcp_nist_get_pdf",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Returns a signed URL, official NIST URL and SHA-256 for an already archived PDF."
+    },
+    {
+      "name": "crypto_research_mcp-nist-csrc-mcp_nist_get_publication",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Describes one publication edition and its links."
+    },
+    {
+      "name": "crypto_research_mcp-nist-csrc-mcp_nist_list_topics",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists CSRC topics with counts."
+    },
+    {
+      "name": "crypto_research_mcp-nist-csrc-mcp_nist_read",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reads 1-10 pages of a publication as Markdown."
+    },
+    {
+      "name": "crypto_research_mcp-nist-csrc-mcp_nist_search",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches NIST publications, catalog items and passages."
+    },
+    {
+      "name": "crypto_research_mcp-nist-mcp_csrc_currency",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Checks whether a NIST publication is current, superseded or a draft."
+    },
+    {
+      "name": "crypto_research_mcp-nist-mcp_csrc_file",
+      "class": "WRITE",
+      "ambiguous": true,
+      "evidence": "Fetches a NIST PDF (past Cloudflare if needed), caches it, returns public and signed cache URLs."
+    },
+    {
+      "name": "crypto_research_mcp-nist-mcp_csrc_fulltext",
+      "class": "WRITE",
+      "ambiguous": true,
+      "evidence": "Searches one publication's text; first call downloads and caches its PDF (fetch defaults true)."
+    },
+    {
+      "name": "crypto_research_mcp-nist-mcp_csrc_stats",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reports index size, series breakdown and cache state."
+    },
+    {
+      "name": "crypto_research_mcp-nist-mcp_get_csrc",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Returns metadata for one NIST publication."
+    },
+    {
+      "name": "crypto_research_mcp-nist-mcp_refresh_csrc",
+      "class": "WRITE",
+      "ambiguous": false,
+      "evidence": "Re-downloads NIST's publication index and rebuilds the search index."
+    },
+    {
+      "name": "crypto_research_mcp-nist-mcp_search_csrc",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches ~930 NIST publications (titles, abstracts, cached full text)."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_arxiv_search",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches arXiv preprints."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_crossref_search",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches the Crossref DOI registry."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_dblp_search",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches the DBLP bibliography."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_openalex_search",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches OpenAlex works."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_paper_citations",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists citing or referenced papers via OpenAlex."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_paper_details",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Returns full metadata for one paper from OpenAlex, Semantic Scholar, Crossref or arXiv."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_paper_search_health",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reports configured sources and request counters."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_scholar_search",
+      "class": "SPEND",
+      "ambiguous": false,
+      "evidence": "Google Scholar via Serper; each call is billed (identical calls cached for an hour)."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_search_papers",
+      "class": "SPEND",
+      "ambiguous": true,
+      "evidence": "Multi-source search; default sources include Serper-backed Scholar, billed per call; own billing not stated."
+    },
+    {
+      "name": "crypto_research_mcp-paper-search-mcp_semantic_scholar_search",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Searches Semantic Scholar."
+    },
+    {
+      "name": "crypto_research_mcp-patent-search-mcp_patent_search",
+      "class": "SPEND",
+      "ambiguous": false,
+      "evidence": "Google Patents via Serper; each call is billed (identical calls cached for an hour)."
+    },
+    {
+      "name": "crypto_research_mcp-patent-search-mcp_patent_search_health",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reports whether Serper is configured plus request/cache counters."
+    },
+    {
+      "name": "crypto_research_mcp-portal_list_servers",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Lists upstream MCP servers and their enabled status."
+    },
+    {
+      "name": "crypto_research_mcp-portal_toggle_servers",
+      "class": "CONFIG",
+      "ambiguous": true,
+      "evidence": "Opens a flow where the user enables or disables upstream MCP servers; changes portal config."
+    },
+    {
+      "name": "crypto_research_mcp-portal_toggle_single_server",
+      "class": "CONFIG",
+      "ambiguous": false,
+      "evidence": "Enables (warm-up, may need OAuth) or disables one upstream MCP server."
+    },
+    {
+      "name": "crypto_research_mcp-web-fetch-mcp_fetch_continue",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reads the next chunk of an already cached page; no new upstream request."
+    },
+    {
+      "name": "crypto_research_mcp-web-fetch-mcp_fetch_links",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Fetches a page and returns its links."
+    },
+    {
+      "name": "crypto_research_mcp-web-fetch-mcp_fetch_page",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Alias of web_fetch; fetches page content."
+    },
+    {
+      "name": "crypto_research_mcp-web-fetch-mcp_web_capture",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Screenshots a page in Firefox and returns signed PNG links; scrolls but does not interact."
+    },
+    {
+      "name": "crypto_research_mcp-web-fetch-mcp_web_fetch",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Fetches a page via fallback engines (direct HTTP, Obscura, Firefox, Bright Data); billing not stated."
+    },
+    {
+      "name": "crypto_research_mcp-web-fetch-mcp_web_fetch_health",
+      "class": "READ",
+      "ambiguous": false,
+      "evidence": "Reports available fetch engines and server config."
+    }
+  ]
+}
