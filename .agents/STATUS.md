@@ -12,7 +12,7 @@ Updated: 2026-10-10.
 
 ## Next
 
-- Policy compiler to OpenShell v0.1.3 policy, informed by the schema research in the backlog.
+- Policy compiler to OpenShell v0.1.3 policy, using the [OpenShell policy investigation](docs/agent-reports/openshell-policy-v0.1.3.md).
 - W0 behavior specifications.
 - Install OpenShell on babbage and run its kernel qualification.
 

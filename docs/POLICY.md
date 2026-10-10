@@ -60,7 +60,7 @@ Generic `http` method rules never apply to `git`, `mcp` or `package` operations.
 
 Git smart-HTTP is recognized from the request: `GET <repo>/info/refs?service=git-upload-pack` or `?service=git-receive-pack`, and `POST <repo>/git-upload-pack` or `POST <repo>/git-receive-pack`. The discovery request of a push (`service=git-receive-pack`) already counts as a push. Dumb-HTTP git reads are ordinary `http` GETs. Package and MCP operations are classified by the package mirror and the MCP proxy, which are the only routes for that traffic.
 
-A request that cannot be classified unambiguously is **denied**. That includes user information in the URL (`user@host`), host names that are not ASCII (use the IDNA form) or that look numeric without being a canonical IP address (`2130706433`, `0x7f.1`), invalid percent-encoding, an encoded `/`, `\`, `.` or NUL in the path, dot or empty path segments, and a repeated git `service` parameter.
+A request that cannot be classified unambiguously is **denied**. That includes user information in the URL (`user@host`), host names that are not ASCII (use the IDNA form) or that look numeric without being a canonical IP address (`2130706433`, `0x7f.1`), invalid percent-encoding, an encoded `/`, `\`, `.` or NUL in the path, dot or empty path segments, `;` path parameters (servers disagree on them), and a repeated git `service` parameter.
 
 ### 2. Pick the rule
 
@@ -121,9 +121,9 @@ This deliberately relaxes the earlier review proposal (D44) that unknown destina
 | Policy element | Enforced by |
 | --- | --- |
 | Hard floor | Platform code, OpenShell filesystem/process policy, network policy with no override path |
-| `network.rules` with fixed hosts | OpenShell network policy endpoints with L7 method/path rules in *enforce* mode |
-| Wildcard-host read rules (`hosts: ["*"]`) | To verify: whether OpenShell v0.1.3 endpoints accept wildcard hosts. If not, chain an MIT/Apache egress proxy (Envoy or mitmproxy) through OpenShell's `upstreamProxy` setting and enforce the wildcard rules there |
-| `mcp.servers.*.tools` | OpenShell `protocol: mcp` endpoints with tool-name allow/deny rules; `escalate` compiles to deny-plus-pending-request |
+| `network.rules` with exact or `*.suffix` hosts | OpenShell network policy endpoints with L7 method/path rules. The compiler sets `enforcement: enforce` explicitly, because OpenShell's default is audit, which only logs. `*.suffix` becomes OpenShell's `**.suffix` (one or more labels); OpenShell needs at least three labels in a wildcard host, so shorter suffixes go through the egress proxy |
+| Rules with `hosts: ["*"]` | The project egress proxy, which applies this library's decisions. OpenShell cannot express "any host" as an endpoint, so sandboxes reach generic HTTP only through the proxy, which OpenShell permits as an exact host. OpenShell's `upstreamProxy` is a gateway setting that only chains TLS tunnels, so it cannot carry these rules |
+| `mcp.servers.*.tools` | The MCP proxy, re-enforced by OpenShell `protocol: mcp` endpoints with tool-name rules; `escalate` compiles to deny-plus-pending-request. OpenShell needs the protocol methods allowed explicitly and controls tools by name only |
 | `mcp.servers.*.auth` | OAuth via the connector auth service, or bearer/custom headers via provider placeholders placed by the MCP proxy ([MCP connectors](MCP-CONNECTORS.md), D66, D67). Literal secrets in header values are rejected |
 | `credentials.providers` | OpenShell providers bound to their endpoints (D57) |
 | `escalate` | Deny in the enforcement layer, plus a durable request in the shared permission workflow; resume through a scoped decision (MONITORING.md) |
@@ -132,13 +132,15 @@ This deliberately relaxes the earlier review proposal (D44) that unknown destina
 | `resources` | Runtime limits, capped by the pool ceiling; model budget through the LiteLLM virtual key (D61) |
 | `packages` | Mirror allowlist and read-only rootfs (D44, D48) |
 
-Host checks must also apply to the address a name resolves to. The egress proxy resolves names itself (proxy-side DNS) and re-checks the resolved address against the hard floor and the wildcard rule, so a public-looking name that resolves to a private or metadata address is treated like that address.
+Host checks must also apply to the address a name resolves to. The egress proxy resolves names itself (proxy-side DNS) and re-checks the resolved address against the hard floor and the wildcard rule, so a public-looking name that resolves to a private or metadata address is treated like that address. OpenShell does the same for its endpoints: it always blocks loopback, link-local and unspecified addresses, blocks private ranges unless an exact host, IP literal or `allowed_ips` entry names them, and dials the addresses it validated, which closes the DNS-rebinding window.
+
+OpenShell combines rules differently from this file: it unions allows and lets any matching deny win, with no specificity ordering. The compiler therefore emits allow rules for the regions this policy allows, and deny rules only to carve exceptions out of broader allows. Where a narrow allow sits inside a narrower deny inside a broad allow, OpenShell enforces the stricter result; the compiler reports it.
 
 The policy compiler is part of infrastructure track P. It reports any rule it cannot enforce on the selected backend rather than silently dropping it, and records the effective policy revision (the SHA-256 digest of the policy file) with every execution.
 
 ## Open items
 
-- Whether OpenShell expresses wildcard hosts with method restrictions, or needs the upstream proxy.
+- Compiling to OpenShell v0.1.3: the facts above come from the [OpenShell policy investigation](../.agents/docs/agent-reports/openshell-policy-v0.1.3.md); the compiler itself is not written yet.
 - MCP tool-name patterns depend on the actual tool names the server exposes per revision; pin the server revision in the policy.
 - How GUI edits and file edits of the policy merge (proposed: the file is the source of truth, the GUI edits it, every change is a revision). Widening the policy is a re-authentication action (D54).
 - Data-class limits in the pool ceiling (D50) are not yet modeled.
