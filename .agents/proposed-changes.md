@@ -294,3 +294,48 @@ Checked: conda-forge has linux-aarch64 builds of sagelib, PARI, fplll and fpylll
 ## 22. Critique updated
 
 - Section 1a gains rows for these answers. M6 is noted as partly withdrawn: there is no feature cut, and staging is by placement.
+
+---
+
+# Round 5 (2026-10-10): MCP authentication and the MCP proxy
+
+The user said:
+
+- MCP services use OAuth primarily, and `Authorization`/custom-header authentication should also be supported.
+- Workers should not connect to MCP services directly; an MCP proxy should sit in between.
+
+Checked:
+
+- **MCP authorization specification (2025-11-25):**
+  - RFC 9728 protected-resource discovery;
+  - Client ID Metadata Documents preferred, then pre-registration, then DCR;
+  - PKCE;
+  - the RFC 8707 `resource` parameter on *all* token requests;
+  - a bearer header on every request and no tokens in query strings.
+- **OpenShell v0.1.3 profiles:**
+  - `oauth2_refresh_token` refresh with automatic refresh-token rotation;
+  - token URLs owned by the profile;
+  - placeholders resolved in any header value, including Basic;
+  - refresh configuration lists token URL and scopes but **no `resource` parameter**.
+- **Licenses:** sparfenyuk/mcp-proxy (MIT), docker/mcp-gateway (MIT), IBM mcp-context-forge (Apache-2.0).
+
+## 23. MCP connectors document [new]
+
+- New **docs/MCP-CONNECTORS.md** covers:
+  - goals: no raw credentials in agent-reachable processes; workers never connect directly; one registry; the same policy for every caller;
+  - components: the connector auth service (Z1), the MCP proxy in its own OpenShell sandbox, OpenShell providers;
+  - MCP proxy behavior: reachability, caller identity and attribution, policy and escalation, rate/spend/size limits, binary results as artifact references, implementation references;
+  - auth modes: `oauth`, `bearer`, `headers`, `none`;
+  - the full OAuth flow, including gateway-managed vs external refresh (because of the `resource` gap), step-up as an escalation, and audience binding;
+  - the server-entry YAML;
+  - later phases and spike checks.
+
+## 24. Decisions and cross-references
+
+- **D66**: MCP auth modes and the OAuth flow. **D67**: the MCP proxy for all MCP traffic. The discussion order now runs through D67.
+- **examples/policy.yaml**:
+  - `mcp.proxy` block: worker access, worker toolset, response limit, binary results as artifacts;
+  - `auth` block for crypto-research-mcp (OAuth, DCR, gateway refresh, provider);
+  - a commented custom-header server example.
+- POLICY.md, MONITORING.md, OPENSHELL-EVALUATION.md (new spike row), IMPLEMENTATION-PLAN.md track P (connector auth service and MCP proxy), THREAT-MODEL.md (zone and assets; A1 control), README.md (read-first row) and LICENSING.md (MCP proxy references) updated.
+- `critical-review.md` section 1a gains a row for these answers.

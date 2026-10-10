@@ -60,10 +60,21 @@ network:
       action: alert
 
 mcp:
+  proxy:                    # all MCP traffic goes through the MCP proxy (D67)
+    worker_access: true     # worker code may call allowed tools via the proxy
+    worker_tools: inherit   # or a narrower allow list for worker code
+    max_response_bytes: 2Mi
+    binary_results: artifact   # store as artifact references, not inline base64
   servers:
     crypto-research-mcp:
-      url: https://mcp.example.invalid/crypto-research   # placeholder
-      credentials: { provider: crypto-research-mcp }      # OpenShell provider
+      url: https://mcp.example.invalid/crypto-research   # placeholder; canonical URI = OAuth resource
+      revision: "2025-11-25"
+      auth:                                               # see docs/MCP-CONNECTORS.md
+        mode: oauth                                       # oauth | bearer | headers | none
+        registration: dcr                                 # cimd | preregistered | dcr
+        scopes: []                                        # server-specific; least privilege
+        refresh: gateway                                  # gateway | external
+        provider: crypto-research-mcp                     # OpenShell provider holding the tokens
       tools:
         allow:
           - "*search*"
@@ -84,6 +95,16 @@ mcp:
           - "*refresh_*"
         deny:
           - "*portal_toggle*"      # server configuration is not an agent action
+
+    # Later phase: a server using custom-header authentication.
+    # example-header-server:
+    #   url: https://mcp.example.invalid/other
+    #   auth:
+    #     mode: headers
+    #     headers:
+    #       X-Api-Key: "${provider:example-header-server.API_KEY}"   # placeholder reference, never a literal secret
+    #       X-Account: research
+    #   tools: { allow: ["*search*"], escalate: [], deny: [] }
 
 credentials:
   # Worker-visible credentials are OpenShell providers (placeholders only).
