@@ -6,7 +6,9 @@ Updated: 2026-10-10.
 
 ## Recent progress
 
-- Policy library (`packages/policy`): schema, safe YAML loading, request classification, hard floor, pool ceiling, evaluation and monitors, with tests and CI. Pull request open for review.
+- Policy library (`packages/policy`) merged in PR #3: schema, safe YAML loading, request classification, hard floor, pool ceiling, evaluation and monitors, with tests and CI.
+- Two adversarial review rounds found 20 issues in the merged library, including three in the shipped example policy. The fixes are in the follow-up PR; merge it before anything uses the library.
+- Plan drift fixed in PR #4.
 - Development conventions, uv workspace and CI (lint, types, tests, license check).
 - Plan snapshot tags pushed.
 

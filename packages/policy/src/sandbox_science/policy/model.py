@@ -20,6 +20,8 @@ from pydantic import (
     Field,
     PlainSerializer,
     PlainValidator,
+    StrictBool,
+    StrictInt,
     StringConstraints,
     WithJsonSchema,
     field_validator,
@@ -46,7 +48,8 @@ Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-
 
 HttpMethod = Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]
 
-Port = Annotated[int, Field(ge=1, le=65535)]
+# Strict types: "4_43" or "yes" in quotes must not quietly become 443 or true.
+Port = Annotated[StrictInt, Field(ge=1, le=65535)]
 
 
 def _parse_host_pattern(value: object) -> HostPattern:
@@ -120,7 +123,7 @@ class Defaults(StrictModel):
     """The action for operations no rule matches."""
 
     action: Action = Action.ESCALATE
-    log: bool = True
+    log: StrictBool = True
 
 
 class Escalation(StrictModel):
@@ -154,7 +157,7 @@ class Resources(StrictModel):
 
     cpu: Annotated[float, Field(gt=0)] | None = None
     memory: Annotated[ByteSize, Field(gt=0)] | None = None
-    pids: Annotated[int, Field(gt=0)] | None = None
+    pids: Annotated[StrictInt, Field(gt=0)] | None = None
     workspace_disk: Annotated[ByteSize, Field(gt=0)] | None = None
     wall_time: Duration | None = None
     model_budget_usd_per_day: Annotated[float, Field(ge=0)] | None = None
@@ -205,7 +208,7 @@ class GitMatch(StrictModel):
 class RuleLimits(StrictModel):
     """Limits that turn an ``allow`` or ``alert`` into ``deny`` when exceeded."""
 
-    max_url_bytes: Annotated[int, Field(gt=0)] | None = None
+    max_url_bytes: Annotated[StrictInt, Field(gt=0)] | None = None
 
 
 class _Rule(StrictModel):
@@ -412,6 +415,11 @@ class McpServer(StrictModel):
             raise ValueError("MCP server URLs need a host and no fragment")
         normalize_host(parts.hostname)
         _ = parts.port  # raises ValueError for an invalid port
+        path = parts.path or "/"
+        if any(char in path for char in "%;\\") or parts.query:
+            raise ValueError("MCP server URLs must have a plain path without '%', ';' or a query")
+        if any(segment in (".", "..") for segment in path.split("/")):
+            raise ValueError("MCP server URL paths must not contain dot segments")
         return value
 
     @property
@@ -423,7 +431,7 @@ class McpServer(StrictModel):
 class McpProxy(StrictModel):
     """MCP proxy settings (D67)."""
 
-    worker_access: bool = False
+    worker_access: StrictBool = False
     worker_tools: Literal["inherit"] | tuple[ToolPattern, ...] = "inherit"
     max_response_bytes: ByteSize = 2 * 1024 * 1024
     binary_results: Literal["artifact"] = "artifact"

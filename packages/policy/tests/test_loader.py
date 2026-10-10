@@ -84,7 +84,7 @@ def test_rejects_oversized_file() -> None:
 def test_rejects_deep_nesting() -> None:
     depth = 100_000
     with pytest.raises(PolicyLoadError, match=r"nested too deeply|not valid YAML"):
-        parse_policy(MINIMAL + "x: " + "[" * depth + "]" * depth + "\n")
+        parse_policy(MINIMAL + "x:\n" + "[\n" * depth + "]\n" * depth)
 
 
 def test_validation_errors_name_the_location() -> None:

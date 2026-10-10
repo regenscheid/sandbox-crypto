@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""Regression tests for the 2026-10-10 adversarial review of the policy library.
+"""Regression tests for the 2026-10-10 adversarial reviews of the policy library.
 
-Each test names the finding it pins. The review ran against commits 0977b35 and
-1222d7c; every case below was more permissive than docs/POLICY.md intends, or
-raised an exception other than the library's own.
+Each test names the finding it pins. The first review ran against commits
+0977b35 and 1222d7c, the second against 515b5ea; every case below was more
+permissive than docs/POLICY.md intends, or raised an exception other than the
+library's own.
 """
 
 from __future__ import annotations
@@ -128,8 +129,7 @@ def test_rest_writes_ending_in_git_upload_pack_are_not_git_fetches(
 
 def test_git_fetch_with_git_content_type_is_still_allowed() -> None:
     url = "https://github.com/regenscheid/sandbox-crypto.git/git-upload-pack"
-    assert decide("POST", url, content_type=UPLOAD_PACK) is Action.ALLOW
-    assert decide("POST", url, content_type=UPLOAD_PACK + "; charset=x") is Action.ALLOW
+    assert decide("POST", url, content_type=UPLOAD_PACK, has_body=True) is Action.ALLOW
 
 
 def test_git_rules_have_url_limits() -> None:
@@ -238,7 +238,7 @@ def test_path_prefixes_are_printable_ascii(path: str) -> None:
     ],
 )
 def test_ceiling_keys_without_values_are_rejected(body: str) -> None:
-    with pytest.raises(PolicyLoadError, match="without a value"):
+    with pytest.raises(PolicyLoadError, match="value is missing"):
         parse_ceiling("kind: PoolCeiling\n" + body)
 
 
@@ -463,7 +463,10 @@ def test_declared_mcp_endpoints_cannot_be_reached_as_plain_http() -> None:
         )
         assert decision.action is Action.DENY
         assert decision.layer == "floor"
-    assert decide("GET", "https://mcp.example.org/docs", loaded) is Action.ALLOW
+    # Second review: the whole host is reserved for the MCP proxy (other transports such
+    # as /sse sit beside the declared path).
+    assert decide("GET", "https://mcp.example.org/sse", loaded) is Action.DENY
+    assert decide("GET", "https://mcp.example.org/docs", loaded) is Action.DENY
 
 
 # Suspected issues the review raised, closed in the same change.
@@ -501,3 +504,239 @@ def test_many_wildcards_match_in_bounded_time() -> None:
     decision = evaluate(operation, loaded, ceiling=OPEN)
     assert time.perf_counter() - started < 0.5
     assert decision.layer == "default"
+
+
+# Second review (515b5ea). Finding 1: an agent chooses its own Content-Type.
+
+GITLAB_FILES = "https://gitlab.com/api/v4/projects/123/repository/files/git-upload-pack"
+CODEBERG_CONTENTS = "https://codeberg.org/api/v1/repos/a/b/contents/git-upload-pack"
+
+
+@pytest.mark.parametrize(
+    ("url", "content_type", "has_body"),
+    [
+        (CODEBERG_CONTENTS, UPLOAD_PACK + "; x=json", True),  # Gitea binds JSON on "json"
+        (CODEBERG_CONTENTS, UPLOAD_PACK + ";charset=utf-8", True),
+        (GITLAB_FILES + "?branch=main&commit_message=x&content=SECRET", UPLOAD_PACK, False),
+    ],
+)
+def test_git_classification_needs_the_exact_content_type_and_a_body(
+    url: str, content_type: str, has_body: bool
+) -> None:
+    action = decide("POST", url, content_type=content_type, has_body=has_body, credentialed=True)
+    assert action is Action.ESCALATE
+
+
+# Second review, finding 2: resolved addresses and IPv6 forms in host lists.
+
+
+@pytest.mark.parametrize("address", ["::ffff:10.0.0.5", "64:ff9b::a00:5", "10.0.0.5"])
+def test_admin_hosts_match_every_form_of_a_resolved_address(address: str) -> None:
+    floor = HardFloor(admin_hosts=frozenset({"10.0.0.5"}))
+    assert floor.check_host(address) is not None
+    decision = evaluate_request(
+        HttpRequest("POST", "https://gateway.example.org/v1/policy", has_body=True),
+        EXAMPLE,
+        ceiling=OPEN,
+        floor=floor,
+        resolved=(address,),
+    )
+    assert decision.action is Action.DENY
+    assert decision.layer == "floor"
+
+
+def test_ceiling_deny_hosts_apply_to_resolved_addresses() -> None:
+    ceiling = parse_ceiling('kind: PoolCeiling\nnetwork: {deny_hosts: ["93.184.215.14"]}\n')
+    assert ceiling.check_host("::ffff:93.184.215.14") is not None
+    for resolved in (("93.184.215.14",), ("::ffff:93.184.215.14",)):
+        decision = evaluate_request(
+            HttpRequest("GET", "http://93.184.215.14.nip.io/"),
+            EXAMPLE,
+            ceiling=ceiling,
+            resolved=resolved,
+        )
+        assert decision.action is Action.DENY
+        assert decision.layer == "ceiling"
+
+
+@pytest.mark.parametrize(
+    ("resolved", "layer"),
+    [
+        (("10.0.0.1",), "policy"),  # a public-looking name resolving to a LAN address
+        (("8.8.8.8", "10.0.0.1"), "policy"),
+        (("169.254.169.254",), "floor"),
+        (("not-an-address",), "classification"),
+    ],
+)
+def test_resolved_addresses_are_checked(resolved: tuple[str, ...], layer: str) -> None:
+    decision = evaluate_request(
+        HttpRequest("GET", "https://example.org/"), EXAMPLE, ceiling=OPEN, resolved=resolved
+    )
+    assert decision.action is Action.DENY
+    assert decision.layer == layer
+
+
+def test_public_resolved_addresses_keep_wildcard_allows() -> None:
+    decision = evaluate_request(
+        HttpRequest("GET", "https://example.org/"), EXAMPLE, ceiling=OPEN, resolved=("8.8.8.8",)
+    )
+    assert decision.action is Action.ALLOW
+
+
+# Second review, finding 3: the MCP endpoint floor covers the whole host.
+
+
+MCP_POLICY = policy(
+    """
+    network:
+      rules:
+        - name: web
+          operation: http
+          match: {hosts: ["*"], methods: [GET, POST]}
+          action: allow
+    mcp:
+      servers:
+        tools:
+          url: https://mcp-host.example.org/mcp
+          revision: "1"
+          auth: {mode: none}
+    """
+)
+
+
+@pytest.mark.parametrize("path", ["/mcp", "/sse", "/messages/", "/", "/Mcp"])
+def test_every_path_on_a_declared_mcp_host_is_reserved_for_the_proxy(path: str) -> None:
+    url = "https://mcp-host.example.org" + path
+    assert decide("GET", url, MCP_POLICY) is Action.DENY
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://mcp.example.org/x/../mcp",
+        "https://mcp.example.org/crypto%2Dresearch",
+        "https://mcp.example.org/mcp;transport=http",
+        "https://mcp.example.org/mcp?x=1",
+    ],
+)
+def test_mcp_server_urls_need_plain_paths(url: str) -> None:
+    with pytest.raises(PolicyLoadError, match="MCP server URL"):
+        policy(
+            f"""
+            mcp:
+              servers:
+                tools: {{url: "{url}", revision: "1", auth: {{mode: none}}}}
+            """
+        )
+
+
+# Second review, finding 4: escapes and off-screen entries.
+
+
+@pytest.mark.parametrize(
+    "entry", ['"\\x70ortal_toggle_servers"', '"portal\\u005ftoggle\\u005fservers"', '"a\\tb"']
+)
+def test_backslash_escapes_in_double_quoted_strings_are_rejected(entry: str) -> None:
+    text = HEADER + f"mcp: {{proxy: {{worker_tools: [{entry}]}}}}\n"
+    with pytest.raises(PolicyLoadError, match="backslash escapes"):
+        parse_policy(text)
+
+
+def test_single_quoted_and_plain_strings_still_work() -> None:
+    loaded = parse_policy(HEADER + "mcp: {proxy: {worker_tools: ['*_search', plain_name]}}\n")
+    assert loaded.policy.mcp.proxy.worker_tools == ("*_search", "plain_name")
+
+
+def test_entries_cannot_hide_beyond_the_edge_of_the_screen() -> None:
+    text = HEADER + 'mcp: {proxy: {worker_tools: ["*_search",' + " " * 400 + '"portal_x"]}}\n'
+    with pytest.raises(PolicyLoadError, match="longer than"):
+        parse_policy(text)
+
+
+@pytest.mark.parametrize("hidden", ["\u00ad", "\u061c", "\u180e", "\U000e0041"])
+def test_more_invisible_characters_are_rejected(hidden: str) -> None:
+    with pytest.raises(PolicyLoadError, match="invisible"):
+        parse_policy(HEADER + f"metadata_note: a{hidden}b\n")
+
+
+# Second review, finding 5: a key without a value in a project policy.
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "mcp:\n  servers:\n    srv:\n      url: https://mcp.example.org/x\n      revision: '1'\n"
+        "      auth: {mode: none}\n      tool_prefix:   # crypto_research_mcp-\n",
+        "network:\n  rules:\n    - name: web\n      operation: http\n"
+        "      match: {hosts: ['*'], methods: [GET]}\n      limits: { max_url_bytes: }\n"
+        "      action: allow\n",
+        "defaults:\n",
+        "network: {rules: [null]}\n",
+    ],
+)
+def test_keys_without_values_are_rejected_everywhere(body: str) -> None:
+    with pytest.raises(PolicyLoadError, match="value is missing"):
+        parse_policy(HEADER + body)
+
+
+# Second review, finding 6: compound tool names must not ride on read patterns.
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "firecrawl-mcp_firecrawl_search_and_scrape",
+        "paper-search-mcp_search_and_buy",
+        "e-print-mcp_fetch_and_store",
+        "web-fetch-mcp_fetch_post",
+        "web-fetch-mcp_web_fetch_submit_form",
+        "e-print-mcp_get_or_create_note",
+        "attack-catalog-mcp_get_attack_and_update",
+        "nist-mcp_find_and_replace",
+        "e-print-mcp_list_purge",
+    ],
+)
+def test_unknown_compound_tool_names_ask_first(name: str) -> None:
+    assert tool(PREFIX + name) is Action.ESCALATE
+
+
+def test_the_example_allows_tools_only_by_exact_name() -> None:
+    server = EXAMPLE.policy.mcp.servers["crypto-research-mcp"]
+    assert server.tools.allow
+    assert not [pattern for pattern in server.tools.allow if "*" in pattern]
+
+
+# Second review, findings 7 and 8.
+
+
+def test_a_lone_surrogate_raises_a_policy_load_error() -> None:
+    with pytest.raises(PolicyLoadError, match="UTF-8"):
+        parse_policy(HEADER + 'metadata_note: "\ud800"\n')
+    with pytest.raises(PolicyLoadError, match="UTF-8"):
+        parse_ceiling('kind: PoolCeiling\nnote: "\ud800"\n')
+
+
+def test_oracle_ipv6_metadata_is_on_the_floor() -> None:
+    assert floor_reason("fd00:c1::a9fe:a9fe") is not None
+
+
+# Second review, minor gaps closed in the same change.
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'mcp: {proxy: {worker_access: "yes"}}\n',
+        "network:\n  rules:\n    - name: r\n      operation: http\n"
+        "      match: {hosts: [example.org], ports: ['4_43']}\n      action: allow\n",
+        'resources: {pids: "100"}\n',
+    ],
+)
+def test_quoted_values_are_not_coerced(body: str) -> None:
+    with pytest.raises(PolicyLoadError):
+        parse_policy(HEADER + body)
+
+
+@pytest.mark.parametrize("path", ["/v1/admin%EF%BC%8E", "/v1%EF%BC%8Fadmin", "/v1/ad%C2%ADmin"])
+def test_paths_that_normalize_to_punctuation_or_lose_soft_hyphens_are_denied(path: str) -> None:
+    assert decide("GET", "https://api.example.org" + path) is Action.DENY

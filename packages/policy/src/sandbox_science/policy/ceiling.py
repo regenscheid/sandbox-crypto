@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Literal, cast
 
 from pydantic import Field, model_validator
 
-from .hosts import HostKind, is_public
+from .hosts import HostKind, address_forms, is_public
 from .model import API_VERSION, HostPatternField, Name, ProjectPolicy, Resources, StrictModel
 
 
@@ -65,15 +66,22 @@ class PoolCeiling(StrictModel):
         """A ceiling that adds no limits; callers must ask for it explicitly."""
         return cls()
 
-    def check_host(self, host: str) -> str | None:
-        """Return why the ceiling denies a normalized host, or None."""
-        for pattern in self.network.deny_hosts:
-            if pattern.matches(host):
-                return f"the pool ceiling denies {host} ({pattern})"
+    def check_host(self, host: str, resolved: Sequence[str] = ()) -> str | None:
+        """Return why the ceiling denies a host, or None.
+
+        ``deny_hosts`` applies to the host and to every address it resolved to,
+        in every form an address can take; ``allow_hosts`` applies to the host
+        as requested, and non-public resolved addresses need an exact entry.
+        """
+        for candidate in (host, *resolved):
+            for form in address_forms(candidate):
+                for pattern in self.network.deny_hosts:
+                    if pattern.matches(form):
+                        return f"the pool ceiling denies {candidate} ({pattern})"
         allowed = self.network.allow_hosts
         if allowed is None:
             return None
-        public = is_public(host)
+        public = is_public(host) and all(is_public(address) for address in resolved)
         for pattern in allowed:
             if pattern.matches(host) and (public or pattern.kind is HostKind.EXACT):
                 return None

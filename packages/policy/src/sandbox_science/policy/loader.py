@@ -3,8 +3,10 @@
 
 Policy files are read as a strict YAML dialect so that what a reviewer sees in
 the file is exactly what is enforced: no explicit tags, aliases, merge keys or
-duplicate keys; mapping keys are text; numbers are plain decimals; booleans are
-true or false; and no invisible characters or hidden line breaks.
+duplicate keys; mapping keys are text; every key has a value; numbers are plain
+decimals; booleans are true or false; double-quoted strings have no backslash
+escapes; lines are short enough to see; and no invisible characters or hidden
+line breaks.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ from .model import ProjectPolicy
 MAX_FILE_BYTES: Final = 1024 * 1024
 """Policy and ceiling files larger than this are rejected."""
 
+MAX_LINE_CHARS: Final = 300
+"""Longer lines could hide an entry beyond the edge of an editor or diff view."""
+
 _TAG: Final = "tag:yaml.org,2002:"
 # Scalar forms accepted for each implicitly resolved type. YAML 1.1 would also read
 # 0443 as octal 291, 1:20 as 80, 1_000 as 1000 and yes/on as true.
@@ -35,22 +40,20 @@ _SCALAR_FORMS: Final = {
     _TAG + "int": re.compile(r"-?(?:0|[1-9][0-9]{0,30})"),
     _TAG + "float": re.compile(r"-?(?:0|[1-9][0-9]{0,30})\.[0-9]{1,30}(?:[eE][-+]?[0-9]{1,3})?"),
     _TAG + "bool": re.compile(r"true|false|True|False|TRUE|FALSE"),
-    _TAG + "null": re.compile(r"|~|null|Null|NULL"),
 }
 _COLLECTION_TAGS: Final = frozenset({_TAG + "seq", _TAG + "map"})
 _SCALAR_HINTS: Final = {
     "int": "write numbers in plain decimal, ",
     "float": "write numbers in plain decimal, ",
     "bool": "write booleans as true or false, ",
-    "null": "write null, ",
 }
 # Control characters other than tab and newline, NEL, Unicode line and paragraph
 # separators (which YAML treats as line breaks), zero-width and bidirectional
 # formatting characters, a byte-order mark after the start, and a CR that is not
 # part of CRLF.
 _FORBIDDEN_TEXT_RE: Final = re.compile(
-    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\u200b-\u200f\u2028\u2029"
-    "\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]|\r(?!\n)"
+    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\xad\u061c\u180e\u200b-\u200f\u2028\u2029"
+    "\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f]|\r(?!\n)"
 )
 
 
@@ -76,6 +79,10 @@ def _where(mark: _Mark | None) -> str:
 class _StrictLoader(yaml.SafeLoader):
     """A SafeLoader for the strict policy dialect described in the module docstring."""
 
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self._text = text
+
     def compose_node(self, parent: Node | None, index: int) -> Node | None:
         # The stubs leave peek_event untyped.
         event = cast("yaml.Event", self.peek_event())  # pyright: ignore[reportUnknownMemberType]
@@ -88,6 +95,18 @@ class _StrictLoader(yaml.SafeLoader):
     def construct_object(self, node: Node, deep: bool = False) -> Any:
         tag = node.tag
         if isinstance(node, ScalarNode):
+            if tag == _TAG + "null":
+                raise PolicyLoadError(
+                    f"a value is missing; give one or remove the key ({_where(node.start_mark)})"
+                )
+            if (
+                node.style == '"'
+                and "\\" in self._text[node.start_mark.index : node.end_mark.index]
+            ):
+                raise PolicyLoadError(
+                    "backslash escapes are not allowed in double-quoted strings; write the "
+                    f"characters themselves ({_where(node.start_mark)})"
+                )
             if tag not in _SCALAR_FORMS:
                 raise PolicyLoadError(
                     f"value {node.value!r} would be read as {tag.removeprefix(_TAG)}; "
@@ -124,6 +143,11 @@ def _label(source: str | None, kind: str) -> str:
 
 
 def _check_text(text: str, label: str) -> None:
+    for number, line in enumerate(text.split("\n"), start=1):
+        if len(line.rstrip("\r")) > MAX_LINE_CHARS:
+            raise PolicyLoadError(
+                f"{label} line {number} is longer than {MAX_LINE_CHARS} characters"
+            )
     match = _FORBIDDEN_TEXT_RE.search(text)
     if match is not None:
         index = match.start()
@@ -181,9 +205,18 @@ def _read(path: str | PathLike[str]) -> bytes:
         raise PolicyLoadError(f"cannot read {path}: {exc}") from exc
 
 
+def _as_bytes(text: str | bytes, label: str) -> bytes:
+    if isinstance(text, bytes):
+        return text
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise PolicyLoadError(f"{label} cannot be encoded as UTF-8") from exc
+
+
 def parse_policy(text: str | bytes, *, source: str | None = None) -> LoadedPolicy:
     """Parse and validate a policy file's contents. Raises PolicyLoadError."""
-    data = text.encode("utf-8") if isinstance(text, str) else text
+    data = _as_bytes(text, _label(source, "policy"))
     document = _load_mapping(data, source, "policy")
     policy = _validate(ProjectPolicy, document, _label(source, "policy"))
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
@@ -197,7 +230,7 @@ def load_policy(path: str | PathLike[str]) -> LoadedPolicy:
 
 def parse_ceiling(text: str | bytes, *, source: str | None = None) -> PoolCeiling:
     """Parse and validate a pool-ceiling file's contents. Raises PolicyLoadError."""
-    data = text.encode("utf-8") if isinstance(text, str) else text
+    data = _as_bytes(text, _label(source, "pool ceiling"))
     document = _load_mapping(data, source, "pool ceiling")
     return _validate(PoolCeiling, document, _label(source, "pool ceiling"))
 

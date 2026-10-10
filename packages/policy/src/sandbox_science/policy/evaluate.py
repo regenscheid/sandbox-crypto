@@ -9,13 +9,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, NamedTuple, assert_never
-from urllib.parse import urlsplit
 
 from .ceiling import PoolCeiling
 from .decision import Action, Alert, Decision, EscalationTerms, Layer, most_restrictive
 from .errors import ClassificationError
 from .floor import HardFloor
-from .hosts import HostKind, is_public
+from .hosts import HostKind, is_public, parse_ip
 from .loader import LoadedPolicy
 from .model import GitRule, HttpRule, OnTimeout
 from .operations import (
@@ -85,17 +84,26 @@ def evaluate(
     *,
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
+    resolved: Sequence[str] = (),
 ) -> Decision:
     """Decide what happens to one operation.
 
     The hard floor and the pool ceiling apply first and cannot be overridden;
-    the project policy decides the rest.
+    the project policy decides the rest. ``resolved`` holds the IP addresses
+    the egress or MCP proxy is about to connect to for the operation's host
+    (or the MCP server's host). The floor, the ceiling's deny list and the
+    public/non-public rule apply to each of them as well as to the name.
     """
+    for address in resolved:
+        if parse_ip(address) is None:
+            return _deny(
+                "classification", f"resolved address {address!r} is not an IP address", policy
+            )
     match operation:
         case HttpOperation() | GitOperation():
-            return _evaluate_network(operation, policy, ceiling, floor)
+            return _evaluate_network(operation, policy, ceiling, floor, resolved)
         case McpOperation():
-            return _evaluate_mcp(operation, policy, ceiling, floor)
+            return _evaluate_mcp(operation, policy, ceiling, floor, resolved)
         case PackageOperation():
             return _evaluate_package(operation, policy)
         case _:
@@ -108,13 +116,14 @@ def evaluate_request(
     *,
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
+    resolved: Sequence[str] = (),
 ) -> Decision:
     """Classify and evaluate an egress request; unclassifiable requests are denied."""
     try:
         operation = classify_http_request(request)
     except ClassificationError as exc:
         return _deny("classification", str(exc), policy)
-    return evaluate(operation, policy, ceiling=ceiling, floor=floor)
+    return evaluate(operation, policy, ceiling=ceiling, floor=floor, resolved=resolved)
 
 
 def evaluate_mcp_message(
@@ -125,13 +134,14 @@ def evaluate_mcp_message(
     origin: Origin = "orchestrator",
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
+    resolved: Sequence[str] = (),
 ) -> Decision:
     """Classify and evaluate one MCP JSON-RPC message; unclassifiable messages are denied."""
     try:
         operation = classify_mcp_message(server, message, origin=origin)
     except ClassificationError as exc:
         return _deny("classification", str(exc), policy)
-    return evaluate(operation, policy, ceiling=ceiling, floor=floor)
+    return evaluate(operation, policy, ceiling=ceiling, floor=floor, resolved=resolved)
 
 
 def evaluate_monitors(policy: LoadedPolicy, usage: EgressUsage) -> tuple[Alert, ...]:
@@ -263,14 +273,14 @@ def _operation_path(operation: HttpOperation | GitOperation) -> str:
     return operation.path if isinstance(operation, HttpOperation) else operation.repo_path
 
 
-def _mcp_endpoint(operation: HttpOperation | GitOperation, policy: LoadedPolicy) -> str | None:
-    """Return the declared MCP server whose endpoint this egress request targets, if any."""
-    segments = path_segments(_operation_path(operation))
+def _mcp_host(operation: HttpOperation | GitOperation, policy: LoadedPolicy) -> str | None:
+    """Return the declared MCP server on this request's host, if any.
+
+    The whole host is reserved for the MCP proxy, not only the declared path:
+    servers often offer other transports (such as /sse) beside it.
+    """
     for name, server in policy.policy.mcp.servers.items():
-        if server.host != operation.host:
-            continue
-        prefix = path_segments(urlsplit(server.url).path or "/")
-        if segments[: len(prefix)] == prefix:
+        if server.host == operation.host:
             return name
     return None
 
@@ -280,18 +290,20 @@ def _evaluate_network(
     policy: LoadedPolicy,
     ceiling: PoolCeiling,
     floor: HardFloor,
+    resolved: Sequence[str],
 ) -> Decision:
-    reason = floor.check_host(operation.host)
+    reason = floor.check_destination(operation.host, resolved)
     if reason is not None:
         return _deny("floor", f"hard floor: {reason}", policy)
-    reason = ceiling.check_host(operation.host)
+    reason = ceiling.check_host(operation.host, resolved)
     if reason is not None:
         return _deny("ceiling", reason, policy)
-    server = _mcp_endpoint(operation, policy)
+    server = _mcp_host(operation, policy)
     if server is not None:
         return _deny(
             "floor",
-            f"MCP server {server!r} is reachable only through the MCP proxy (D67)",
+            f"{operation.host} hosts MCP server {server!r}, which is reachable only through "
+            "the MCP proxy (D67)",
             policy,
         )
 
@@ -354,7 +366,8 @@ def _evaluate_network(
             terms=terms,
         )
 
-    if action in (Action.ALLOW, Action.ALERT) and not exact_host and not is_public(operation.host):
+    public = is_public(operation.host) and all(is_public(address) for address in resolved)
+    if action in (Action.ALLOW, Action.ALERT) and not exact_host and not public:
         return _deny(
             decision.layer,
             f"{operation.host} is not a public destination; allowing it needs a rule naming it "
@@ -393,15 +406,16 @@ def _evaluate_mcp(
     policy: LoadedPolicy,
     ceiling: PoolCeiling,
     floor: HardFloor,
+    resolved: Sequence[str],
 ) -> Decision:
     mcp = policy.policy.mcp
     server = mcp.servers.get(operation.server)
     if server is None:
         return _deny("policy", f"MCP server {operation.server!r} is not declared", policy)
-    reason = floor.check_host(server.host)
+    reason = floor.check_destination(server.host, resolved)
     if reason is not None:
         return _deny("floor", f"hard floor: {reason}", policy)
-    reason = ceiling.check_mcp_server(operation.server) or ceiling.check_host(server.host)
+    reason = ceiling.check_mcp_server(operation.server) or ceiling.check_host(server.host, resolved)
     if reason is not None:
         return _deny("ceiling", reason, policy)
     if operation.origin == "worker" and not mcp.proxy.worker_access:
