@@ -383,7 +383,7 @@ def _evaluate_network(
     return decision
 
 
-def _glob_matches(pattern: str, name: str) -> bool:
+def tool_pattern_matches(pattern: str, name: str) -> bool:
     """Match a pattern whose only wildcard is '*' against a whole name.
 
     Greedy leftmost matching of the literal pieces is exact for '*'-only globs
@@ -451,7 +451,7 @@ def _evaluate_mcp(
     if (
         operation.origin == "worker"
         and worker_tools != "inherit"
-        and not any(_glob_matches(pattern, name) for pattern in worker_tools)
+        and not any(tool_pattern_matches(pattern, name) for pattern in worker_tools)
     ):
         return _deny("policy", f"tool {tool!r} is not in mcp.proxy.worker_tools", policy)
 
@@ -464,7 +464,7 @@ def _evaluate_mcp(
         (list_name, action, pattern)
         for list_name, action, patterns in lists
         for pattern in patterns
-        if _glob_matches(pattern, name)
+        if tool_pattern_matches(pattern, name)
     ]
     exact = [entry for entry in matches if "*" not in entry[2]]
     pool = exact or matches

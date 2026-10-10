@@ -137,25 +137,39 @@ This deliberately relaxes the earlier review proposal (D44) that unknown destina
 
 ## Mapping to enforcement
 
+The compiler in `sandbox_science.policy.openshell` (D69, proposed) produces OpenShell v0.1.3 network policy for two kinds of sandbox. The rendered examples are in [examples/openshell](../examples/openshell), generated from the example policy and [targets.yaml](../examples/openshell/targets.yaml).
+
+- **Research sandboxes** get a fence: raw `protocol: tcp` endpoints for the platform services only. These are the egress proxy, the package mirror and, when `mcp.proxy.worker_access` is true, the MCP proxy. Every HTTP and git request goes through the egress proxy, which applies this library with the full semantics. The compiler also returns the proxy environment variables (`HTTPS_PROXY`, `NO_PROXY`) for the sandbox's processes.
+- **The MCP proxy's sandbox** gets one inspected `protocol: mcp` endpoint per declared server, in `enforce` mode, with the server URL's path. The MCP protocol methods are allowed explicitly, as OpenShell requires. Allowed tools are listed by exact name or pattern, and deny entries are added only to carve exceptions out of allow patterns, since OpenShell denies everything else. Escalated tools are denied at this fence until an approval is compiled in as a grant. `oauth` and `bearer` servers, and `headers` servers that name a single provider, are bound to that provider with `credential_binding`.
+
+Wherever the compiled policy differs from the project policy, it is stricter, and the compiler reports it. A randomized test checks that the compiled tool rules never admit a tool the library would not allow. For example, OpenShell's `*` stops at a `.`. So whenever deny patterns exist, allow patterns admit only names whose part after the prefix has no dot, and a lone `*` is compiled as `*` rather than OpenShell's match-anything `**`.
+
+Project HTTP and git rules are not compiled into direct OpenShell endpoints, because OpenShell cannot express them exactly:
+
+- it has no URL length limits;
+- it cannot see a request's Content-Type, so it cannot tell a git fetch from a REST write ending in `/git-upload-pack`;
+- a `GET` rule also admits `HEAD`;
+- an escalation can only be denied;
+- exact hosts are trusted with private addresses that the public/non-public rule would refuse;
+- attached providers add `_provider_*` rules of their own, outside this policy.
+
+This leaves an open question about credentials. D57 has OpenShell resolve provider credentials, which only happens on OpenShell-inspected endpoints, not inside the egress proxy's tunnel. Credentialed hosts therefore need either direct endpoints (compiled under the constraints above) or credential handling in the egress proxy. Until that is decided, the compiler warns about each declared provider.
+
 | Policy element | Enforced by |
 | --- | --- |
-| Hard floor | Platform code, OpenShell filesystem/process policy, network policy with no override path |
-| `network.rules` with exact or `*.suffix` hosts | OpenShell network policy endpoints with L7 method/path rules. The compiler sets `enforcement: enforce` explicitly, because OpenShell's default is audit, which only logs. `*.suffix` becomes OpenShell's `**.suffix` (one or more labels); OpenShell needs at least three labels in a wildcard host, so shorter suffixes go through the egress proxy |
-| Rules with `hosts: ["*"]` | The project egress proxy, which applies this library's decisions. OpenShell cannot express "any host" as an endpoint, so sandboxes reach generic HTTP only through the proxy, which OpenShell permits as an exact host. OpenShell's `upstreamProxy` is a gateway setting that only chains TLS tunnels, so it cannot carry these rules |
-| `mcp.servers.*.tools` | The MCP proxy, re-enforced by OpenShell `protocol: mcp` endpoints with tool-name rules; `escalate` compiles to deny-plus-pending-request. OpenShell needs the protocol methods allowed explicitly and controls tools by name only |
-| `mcp.servers.*.auth` | OAuth via the connector auth service, or bearer/custom headers via provider placeholders placed by the MCP proxy ([MCP connectors](MCP-CONNECTORS.md), D66, D67). Literal secrets in header values are rejected |
-| `credentials.providers` | OpenShell providers bound to their endpoints (D57) |
-| `escalate` | Deny in the enforcement layer, plus a durable request in the shared permission workflow; resume through a scoped decision (MONITORING.md) |
-| `alert` | Allow, plus a monitor finding |
-| `monitors` | Monitor findings from proxy and gateway usage counters |
-| `resources` | Runtime limits, capped by the pool ceiling; model budget through the LiteLLM virtual key (D61) |
-| `packages` | Mirror allowlist and read-only rootfs (D44, D48) |
+| Hard floor | Platform code; OpenShell always blocks loopback, link-local and unspecified addresses, and admits the sandbox only to platform services |
+| `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The egress proxy, with this library |
+| `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox, and `worker_access` decides whether research sandboxes can reach the MCP proxy at all |
+| `mcp.servers.*.auth` | The connector auth service and OpenShell providers bound with `credential_binding` ([MCP connectors](MCP-CONNECTORS.md), D66, D67) |
+| `credentials.providers` | OpenShell providers (D57); see the open question above |
+| `escalate` | The proxies hold the operation and create a durable permission request (MONITORING.md); at the MCP proxy's fence, a grant compiled in after approval |
+| `alert`, `monitors` | Findings from proxy and gateway events and usage counters |
+| `packages` | The package mirror, with this library, and the read-only rootfs (D44, D48) |
+| `resources` | The compute driver, capped by the pool ceiling; model budget through the LiteLLM virtual key (D61) |
 
-Host checks must also apply to the address a name resolves to. The egress proxy resolves names itself (proxy-side DNS) and re-checks the resolved address against the hard floor and the wildcard rule, so a public-looking name that resolves to a private or metadata address is treated like that address. OpenShell does the same for its endpoints: it always blocks loopback, link-local and unspecified addresses, blocks private ranges unless an exact host, IP literal or `allowed_ips` entry names them, and dials the addresses it validated, which closes the DNS-rebinding window.
+Host checks also apply to the addresses a name resolves to. The egress proxy resolves names itself and passes the addresses to the library (`resolved`), so a public-looking name that resolves to a private or metadata address is treated like that address. OpenShell validates the addresses it dials in the same way, which closes the DNS-rebinding window.
 
-OpenShell combines rules differently from this file: it unions allows and lets any matching deny win, with no specificity ordering. The compiler therefore emits allow rules for the regions this policy allows, and deny rules only to carve exceptions out of broader allows. Where a narrow allow sits inside a narrower deny inside a broad allow, OpenShell enforces the stricter result; the compiler reports it.
-
-The policy compiler is part of infrastructure track P. It reports any rule it cannot enforce on the selected backend rather than silently dropping it, and records the effective policy revision (the SHA-256 digest of the policy file) with every execution.
+Every compilation records the project policy's revision (its SHA-256 digest).
 
 ## Residual risks
 

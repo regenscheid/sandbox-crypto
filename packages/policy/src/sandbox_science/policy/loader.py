@@ -275,7 +275,12 @@ def _check_text(text: str, label: str) -> None:
     _check_layout(text, label)
 
 
-def _load_mapping(data: bytes, source: str | None, kind: str) -> dict[str, object]:
+def read_yaml_mapping(data: bytes, source: str | None, kind: str) -> dict[str, object]:
+    """Read a file in the strict policy dialect and return its top-level mapping.
+
+    Shared by every configuration file the platform reads, so they all follow the
+    same rules (see the module docstring). Raises PolicyLoadError.
+    """
     label = _label(source, kind)
     if len(data) > MAX_FILE_BYTES:
         raise PolicyLoadError(f"{label} is larger than {MAX_FILE_BYTES} bytes")
@@ -313,7 +318,8 @@ def _validate[M: BaseModel](model: type[M], document: dict[str, object], label: 
         raise PolicyLoadError(f"{label} is invalid:\n{details}") from exc
 
 
-def _read(path: str | PathLike[str]) -> bytes:
+def read_limited(path: str | PathLike[str]) -> bytes:
+    """Read a configuration file, stopping one byte past the size limit. Raises PolicyLoadError."""
     try:
         with Path(path).open("rb") as handle:
             return handle.read(MAX_FILE_BYTES + 1)
@@ -333,7 +339,7 @@ def _as_bytes(text: str | bytes, label: str) -> bytes:
 def parse_policy(text: str | bytes, *, source: str | None = None) -> LoadedPolicy:
     """Parse and validate a policy file's contents. Raises PolicyLoadError."""
     data = _as_bytes(text, _label(source, "policy"))
-    document = _load_mapping(data, source, "policy")
+    document = read_yaml_mapping(data, source, "policy")
     policy = _validate(ProjectPolicy, document, _label(source, "policy"))
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     return LoadedPolicy(policy=policy, digest=digest, source=source)
@@ -341,16 +347,28 @@ def parse_policy(text: str | bytes, *, source: str | None = None) -> LoadedPolic
 
 def load_policy(path: str | PathLike[str]) -> LoadedPolicy:
     """Read, parse and validate a policy file. Raises PolicyLoadError."""
-    return parse_policy(_read(path), source=str(path))
+    return parse_policy(read_limited(path), source=str(path))
+
+
+def parse_model[M: BaseModel](
+    model: type[M], text: str | bytes, *, kind: str, source: str | None = None
+) -> M:
+    """Parse a configuration file in the strict dialect into a pydantic model.
+
+    ``kind`` names the file in error messages. Raises PolicyLoadError.
+    """
+    label = _label(source, kind)
+    document = read_yaml_mapping(_as_bytes(text, label), source, kind)
+    return _validate(model, document, label)
 
 
 def parse_ceiling(text: str | bytes, *, source: str | None = None) -> PoolCeiling:
     """Parse and validate a pool-ceiling file's contents. Raises PolicyLoadError."""
     data = _as_bytes(text, _label(source, "pool ceiling"))
-    document = _load_mapping(data, source, "pool ceiling")
+    document = read_yaml_mapping(data, source, "pool ceiling")
     return _validate(PoolCeiling, document, _label(source, "pool ceiling"))
 
 
 def load_ceiling(path: str | PathLike[str]) -> PoolCeiling:
     """Read, parse and validate a pool-ceiling file. Raises PolicyLoadError."""
-    return parse_ceiling(_read(path), source=str(path))
+    return parse_ceiling(read_limited(path), source=str(path))
