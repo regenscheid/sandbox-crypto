@@ -6,10 +6,10 @@ docs/POLICY.md defines the semantics; the section names in comments refer to it.
 
 from __future__ import annotations
 
-import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Final, NamedTuple, assert_never
+from urllib.parse import urlsplit
 
 from .ceiling import PoolCeiling
 from .decision import Action, Alert, Decision, EscalationTerms, Layer, most_restrictive
@@ -17,7 +17,7 @@ from .errors import ClassificationError
 from .floor import HardFloor
 from .hosts import HostKind, is_public
 from .loader import LoadedPolicy
-from .model import GitRule, HttpRule, OnTimeout, RuleEscalation
+from .model import GitRule, HttpRule, OnTimeout
 from .operations import (
     DEFAULT_PORTS,
     GitOperation,
@@ -158,38 +158,60 @@ def _deny(layer: Layer, reason: str, policy: LoadedPolicy, rule: str | None = No
     )
 
 
-def _decide(
+def _decision(
     action: Action,
     layer: Layer,
     reason: str,
     policy: LoadedPolicy,
     *,
     rule: str | None = None,
-    rule_escalation: RuleEscalation | None = None,
-    read_only: bool = False,
-    credentialed: bool = False,
+    terms: EscalationTerms | None = None,
 ) -> Decision:
-    """Build a decision, attaching escalation terms ("Escalation timeout")."""
-    terms: EscalationTerms | None = None
-    if action is Action.ESCALATE:
-        timeout = policy.policy.escalation.timeout
-        on_timeout = Action.DENY
-        if rule_escalation is not None:
-            if rule_escalation.timeout is not None:
-                timeout = rule_escalation.timeout
-            # The model only accepts on_timeout: allow on read-only rules; recheck here so a
-            # hand-built model cannot widen it. Credentialed requests never time out to allow.
-            if rule_escalation.on_timeout is OnTimeout.ALLOW and read_only and not credentialed:
-                on_timeout = Action.ALERT
-        terms = EscalationTerms(timeout=timeout, on_timeout=on_timeout)
+    """Build a decision; escalations default to the policy-wide terms."""
+    if action is Action.ESCALATE and terms is None:
+        terms = EscalationTerms(timeout=policy.policy.escalation.timeout, on_timeout=Action.DENY)
     return Decision(
         action=action,
         layer=layer,
         reason=reason,
         rule=rule,
         policy_digest=policy.digest,
-        escalation=terms,
+        escalation=terms if action is Action.ESCALATE else None,
     )
+
+
+def _rule_terms(
+    policy: LoadedPolicy,
+    rules: Sequence[HttpRule | GitRule],
+    *,
+    credentialed: bool,
+    limit_exceeded: bool,
+) -> EscalationTerms:
+    """Escalation terms for the tied escalate rules ("Escalation timeout").
+
+    The shortest timeout applies. The operation proceeds as an alert on timeout
+    only if every tied rule is read-only and permits it, the request carries no
+    credential and no tied rule's limit is exceeded. The model already restricts
+    ``on_timeout: allow`` to read-only rules; this rechecks it so a hand-built
+    model cannot widen it.
+    """
+    default = policy.policy.escalation.timeout
+    timeout = min(
+        rule.escalation.timeout
+        if rule.escalation is not None and rule.escalation.timeout is not None
+        else default
+        for rule in rules
+    )
+    permitted = all(
+        rule.read_only
+        and rule.escalation is not None
+        and rule.escalation.on_timeout is OnTimeout.ALLOW
+        for rule in rules
+    )
+    on_timeout = (
+        Action.ALERT if permitted and not credentialed and not limit_exceeded else Action.DENY
+    )
+    return EscalationTerms(timeout=timeout, on_timeout=on_timeout)
 
 
 def _match_rule(
@@ -212,8 +234,7 @@ def _match_rule(
         return None
     matched_segments = 0
     if match.paths:
-        path = operation.path if isinstance(operation, HttpOperation) else operation.repo_path
-        segments = path_segments(path)
+        segments = path_segments(_operation_path(operation))
         lengths = [
             len(prefix)
             for prefix in (path_segments(raw) for raw in match.paths)
@@ -238,6 +259,22 @@ def _match_rule(
     return _Specificity(host_key[0], host_key[1], matched_segments, qualified)
 
 
+def _operation_path(operation: HttpOperation | GitOperation) -> str:
+    return operation.path if isinstance(operation, HttpOperation) else operation.repo_path
+
+
+def _mcp_endpoint(operation: HttpOperation | GitOperation, policy: LoadedPolicy) -> str | None:
+    """Return the declared MCP server whose endpoint this egress request targets, if any."""
+    segments = path_segments(_operation_path(operation))
+    for name, server in policy.policy.mcp.servers.items():
+        if server.host != operation.host:
+            continue
+        prefix = path_segments(urlsplit(server.url).path or "/")
+        if segments[: len(prefix)] == prefix:
+            return name
+    return None
+
+
 def _evaluate_network(
     operation: HttpOperation | GitOperation,
     policy: LoadedPolicy,
@@ -250,64 +287,71 @@ def _evaluate_network(
     reason = ceiling.check_host(operation.host)
     if reason is not None:
         return _deny("ceiling", reason, policy)
+    server = _mcp_endpoint(operation, policy)
+    if server is not None:
+        return _deny(
+            "floor",
+            f"MCP server {server!r} is reachable only through the MCP proxy (D67)",
+            policy,
+        )
 
     operation_class = "http" if isinstance(operation, HttpOperation) else "git"
-    winner: _Candidate | None = None
+    candidates: list[_Candidate] = []
     for rule in policy.policy.network.rules:
         if rule.operation != operation_class:
             continue
         specificity = _match_rule(rule, operation)
-        if specificity is None:
-            continue
-        candidate = _Candidate(rule, specificity)
-        if (
-            winner is None
-            or specificity > winner.specificity
-            or (
-                specificity == winner.specificity
-                and rule.action.restrictiveness > winner.rule.action.restrictiveness
-            )
-        ):
-            winner = candidate
+        if specificity is not None:
+            candidates.append(_Candidate(rule, specificity))
 
-    if winner is None:
+    if not candidates:
         action = policy.policy.defaults.action
         exact_host = False
-        decision = _decide(
+        decision = _decision(
             action,
             "default",
             f"no {operation_class} rule matched; defaults.action is {action}",
             policy,
-            credentialed=operation.credentialed,
         )
     else:
-        rule = winner.rule
-        action = rule.action
-        exact_host = winner.specificity.host_kind is HostKind.EXACT
-        if (
-            isinstance(rule, HttpRule)
-            and isinstance(operation, HttpOperation)
-            and action in (Action.ALLOW, Action.ALERT)
-            and rule.limits is not None
-            and rule.limits.max_url_bytes is not None
-            and operation.url_bytes > rule.limits.max_url_bytes
-        ):
+        top = max(candidate.specificity for candidate in candidates)
+        tied = [candidate.rule for candidate in candidates if candidate.specificity == top]
+        action = most_restrictive(rule.action for rule in tied)
+        winner = next(rule for rule in tied if rule.action is action)
+        exact_host = top.host_kind is HostKind.EXACT
+        # Limits of every tied rule apply, so adding an equally specific rule can
+        # never remove a limit.
+        limits = [
+            rule.limits.max_url_bytes
+            for rule in tied
+            if rule.limits is not None and rule.limits.max_url_bytes is not None
+        ]
+        limit = min(limits) if limits else None
+        exceeded = limit is not None and operation.url_bytes > limit
+        if exceeded and action in (Action.ALLOW, Action.ALERT):
             return _deny(
                 "policy",
-                f"URL is {operation.url_bytes} bytes; rule {rule.name!r} allows at most "
-                f"{rule.limits.max_url_bytes}",
+                f"URL is {operation.url_bytes} bytes; rule {winner.name!r} allows at most {limit}",
                 policy,
-                rule=rule.name,
+                rule=winner.name,
             )
-        decision = _decide(
+        terms = None
+        if action is Action.ESCALATE:
+            terms = _rule_terms(
+                policy,
+                [rule for rule in tied if rule.action is Action.ESCALATE],
+                credentialed=operation.credentialed,
+                limit_exceeded=exceeded,
+            )
+        others = [rule.name for rule in tied if rule is not winner]
+        tie_note = f"; tied with {', '.join(repr(name) for name in others)}" if others else ""
+        decision = _decision(
             action,
             "policy",
-            f"rule {rule.name!r} ({action})",
+            f"rule {winner.name!r} ({action}){tie_note}",
             policy,
-            rule=rule.name,
-            rule_escalation=rule.escalation,
-            read_only=rule.read_only,
-            credentialed=operation.credentialed,
+            rule=winner.name,
+            terms=terms,
         )
 
     if action in (Action.ALLOW, Action.ALERT) and not exact_host and not is_public(operation.host):
@@ -321,15 +365,27 @@ def _evaluate_network(
     return decision
 
 
-@lru_cache(maxsize=1024)
-def _tool_regex(pattern: str) -> re.Pattern[str]:
-    return re.compile(".*".join(re.escape(part) for part in pattern.split("*")), re.DOTALL)
+def _glob_matches(pattern: str, name: str) -> bool:
+    """Match a pattern whose only wildcard is '*' against a whole name.
 
-
-def _tool_matches(pattern: str, tool: str) -> bool:
-    if "*" not in pattern:
-        return pattern == tool
-    return _tool_regex(pattern).fullmatch(tool) is not None
+    Greedy leftmost matching of the literal pieces is exact for '*'-only globs
+    and avoids the backtracking blow-up a regular expression can show.
+    """
+    pieces = pattern.split("*")
+    if len(pieces) == 1:
+        return pattern == name
+    first, last = pieces[0], pieces[-1]
+    if len(first) + len(last) > len(name) or not name.startswith(first) or not name.endswith(last):
+        return False
+    position, end = len(first), len(name) - len(last)
+    for piece in pieces[1:-1]:
+        if not piece:
+            continue
+        index = name.find(piece, position, end)
+        if index < 0:
+            return False
+        position = index + len(piece)
+    return True
 
 
 def _evaluate_mcp(
@@ -353,7 +409,7 @@ def _evaluate_mcp(
             "policy", "worker code may not call MCP servers (mcp.proxy.worker_access)", policy
         )
     if operation.method in MCP_PROTOCOL_METHODS:
-        return _decide(
+        return _decision(
             Action.ALLOW,
             "policy",
             f"MCP protocol method {operation.method}",
@@ -364,11 +420,19 @@ def _evaluate_mcp(
         return _deny("policy", f"MCP method {operation.method!r} is not supported", policy)
 
     tool = operation.tool
+    name = tool
+    prefix = server.tool_prefix
+    if prefix is not None:
+        if not tool.startswith(prefix) or tool == prefix:
+            return _deny(
+                "policy", f"tool {tool!r} is outside the server's tool prefix {prefix!r}", policy
+            )
+        name = tool.removeprefix(prefix)
     worker_tools = mcp.proxy.worker_tools
     if (
         operation.origin == "worker"
         and worker_tools != "inherit"
-        and not any(_tool_matches(pattern, tool) for pattern in worker_tools)
+        and not any(_glob_matches(pattern, name) for pattern in worker_tools)
     ):
         return _deny("policy", f"tool {tool!r} is not in mcp.proxy.worker_tools", policy)
 
@@ -381,22 +445,19 @@ def _evaluate_mcp(
         (list_name, action, pattern)
         for list_name, action, patterns in lists
         for pattern in patterns
-        if _tool_matches(pattern, tool)
+        if _glob_matches(pattern, name)
     ]
     exact = [entry for entry in matches if "*" not in entry[2]]
     pool = exact or matches
     if not pool:
         action = policy.policy.defaults.action
-        return _decide(
-            action,
-            "default",
-            f"no tool rule matched {tool!r}; defaults.action is {action}",
-            policy,
+        return _decision(
+            action, "default", f"no tool rule matched {tool!r}; defaults.action is {action}", policy
         )
     action = most_restrictive(entry[1] for entry in pool)
     list_name, _, pattern = next(entry for entry in pool if entry[1] is action)
     label = f"mcp.servers.{operation.server}.tools.{list_name}[{pattern}]"
-    return _decide(action, "policy", f"tool {tool!r} matched {label}", policy, rule=label)
+    return _decision(action, "policy", f"tool {tool!r} matched {label}", policy, rule=label)
 
 
 def _evaluate_package(operation: PackageOperation, policy: LoadedPolicy) -> Decision:
@@ -405,7 +466,7 @@ def _evaluate_package(operation: PackageOperation, policy: LoadedPolicy) -> Deci
         conda = packages.conda
         if conda is None:
             action = policy.policy.defaults.action
-            return _decide(
+            return _decision(
                 action, "default", f"conda is not configured; defaults.action is {action}", policy
             )
         if operation.channel not in conda.channels:
@@ -415,15 +476,15 @@ def _evaluate_package(operation: PackageOperation, policy: LoadedPolicy) -> Deci
                 policy,
                 rule="packages.conda",
             )
-        return _decide(
+        return _decision(
             conda.action, "policy", f"conda package {operation.name}", policy, rule="packages.conda"
         )
     pypi = packages.pypi
     if pypi is None:
         action = policy.policy.defaults.action
-        return _decide(
+        return _decision(
             action, "default", f"PyPI is not configured; defaults.action is {action}", policy
         )
-    return _decide(
+    return _decision(
         pypi.action, "policy", f"PyPI package {operation.name}", policy, rule="packages.pypi"
     )

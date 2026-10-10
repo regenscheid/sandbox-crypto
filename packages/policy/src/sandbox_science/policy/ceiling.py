@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Literal
+from typing import Literal, cast
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from .hosts import HostKind, is_public
 from .model import API_VERSION, HostPatternField, Name, ProjectPolicy, Resources, StrictModel
@@ -19,8 +19,38 @@ class CeilingNetwork(StrictModel):
     deny_hosts: tuple[HostPatternField, ...] = ()
 
 
+def _reject_explicit_nulls(data: object) -> object:
+    """Fail closed on keys that are present but empty.
+
+    In a ceiling, an omitted limit means "unrestricted at this layer". A key
+    written without a value (for example ``allow_hosts:`` with every entry
+    commented out) must not silently mean the same thing.
+    """
+    if not isinstance(data, dict):
+        return data
+    fields = cast("dict[str, object]", data)
+    problems = [
+        key
+        for key in ("mcp_servers", "resources", "network")
+        if key in fields and fields[key] is None
+    ]
+    for section in ("network", "resources"):
+        nested = fields.get(section)
+        if isinstance(nested, dict):
+            entries = cast("dict[str, object]", nested)
+            problems += [f"{section}.{key}" for key, value in entries.items() if value is None]
+    if problems:
+        raise ValueError(
+            f"{', '.join(problems)} given without a value; write [] (or a value) to restrict, "
+            "or remove the key to leave it unrestricted"
+        )
+    return fields
+
+
 class PoolCeiling(StrictModel):
     """A pool's local ceiling, changed only by local user action."""
+
+    _no_explicit_nulls = model_validator(mode="before")(_reject_explicit_nulls)
 
     api_version: Literal["sandbox-science/v0alpha1"] = Field(
         default=API_VERSION, alias="apiVersion"

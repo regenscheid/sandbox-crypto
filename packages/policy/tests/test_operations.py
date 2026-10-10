@@ -8,6 +8,7 @@ points turn classification failures into denials.
 """
 
 import textwrap
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -62,8 +63,31 @@ def load(body: str = "") -> LoadedPolicy:
     return parse_policy(HEADER + textwrap.dedent(body))
 
 
+GIT_CONTENT_TYPES = {
+    "/git-upload-pack": "application/x-git-upload-pack-request",
+    "/git-receive-pack": "application/x-git-receive-pack-request",
+}
+
+
+def client_request(method: str, url: str, *, credentialed: bool = False) -> HttpRequest:
+    """A request as a real client sends it: git POSTs carry git's content type."""
+    try:
+        path = urlsplit(url).path
+    except ValueError:
+        path = ""
+    content_type = next(
+        (ctype for suffix, ctype in GIT_CONTENT_TYPES.items() if path.endswith(suffix)), None
+    )
+    return HttpRequest(
+        method=method,
+        url=url,
+        credentialed=credentialed,
+        content_type=content_type if method == "POST" else None,
+    )
+
+
 def classify(method: str, url: str, *, credentialed: bool = False) -> HttpOperation | GitOperation:
-    return classify_http_request(HttpRequest(method=method, url=url, credentialed=credentialed))
+    return classify_http_request(client_request(method, url, credentialed=credentialed))
 
 
 def classify_http(method: str, url: str) -> HttpOperation:
@@ -150,7 +174,7 @@ def test_repeated_git_service_parameter_is_rejected(query: str) -> None:
 
 def test_git_operation_records_method_destination_and_size() -> None:
     url = f"{REPO}/git-upload-pack"
-    operation = classify_git("post", url)
+    operation = classify_git("POST", url)
     assert operation.method == "POST"
     assert operation.scheme == "https"
     assert operation.host == "git.example.org"
@@ -288,12 +312,11 @@ def test_port_defaults_from_the_scheme(url: str, scheme: str, port: int) -> None
     assert operation.port == port
 
 
-@pytest.mark.parametrize(
-    ("method", "expected"),
-    [("get", "GET"), ("gEt", "GET"), ("post", "POST"), ("Delete", "DELETE")],
-)
-def test_method_is_uppercased(method: str, expected: str) -> None:
-    assert classify_http(method, "https://example.org/").method == expected
+@pytest.mark.parametrize("method", ["get", "gEt", "post", "Delete"])
+def test_methods_must_already_be_upper_case(method: str) -> None:
+    # HTTP methods are case-sensitive (RFC 9110); a server may not treat "get" as GET.
+    with pytest.raises(ClassificationError, match="upper case"):
+        classify(method, "https://example.org/")
 
 
 def test_path_is_percent_decoded() -> None:

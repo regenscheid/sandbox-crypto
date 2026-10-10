@@ -68,13 +68,21 @@ HostPatternField = Annotated[
 def _check_path_prefix(value: str) -> str:
     if not value.startswith("/"):
         raise ValueError("path prefixes must start with '/'")
-    if any(char in "?#%\\" or ord(char) < 0x21 or ord(char) == 0x7F for char in value):
-        raise ValueError("path prefixes are written decoded, without query, fragment or '\\'")
+    # Printable ASCII only: invisible or look-alike characters would make a rule that
+    # reads like "/v1/admin" but never matches it.
+    if any(char in "?#%\\;" or not 0x21 <= ord(char) <= 0x7E for char in value):
+        raise ValueError(
+            "path prefixes are written decoded in printable ASCII, without query, "
+            "fragment, ';' or '\\'"
+        )
     stripped = value.rstrip("/")
     if not stripped:
         raise ValueError("'/' matches every path; omit paths instead")
-    if any(segment in ("", ".", "..") for segment in stripped.split("/")[1:]):
-        raise ValueError("path prefixes must not contain empty, '.' or '..' segments")
+    segments = stripped.split("/")[1:]
+    if any(segment in ("", ".", "..") or segment.endswith(".") for segment in segments):
+        raise ValueError(
+            "path prefixes must not contain empty, '.' or '..' segments, or segments ending in '.'"
+        )
     return stripped
 
 
@@ -145,9 +153,9 @@ class Resources(StrictModel):
     """Resource requests or caps. ``None`` means no limit at this layer."""
 
     cpu: Annotated[float, Field(gt=0)] | None = None
-    memory: ByteSize | None = None
+    memory: Annotated[ByteSize, Field(gt=0)] | None = None
     pids: Annotated[int, Field(gt=0)] | None = None
-    workspace_disk: ByteSize | None = None
+    workspace_disk: Annotated[ByteSize, Field(gt=0)] | None = None
     wall_time: Duration | None = None
     model_budget_usd_per_day: Annotated[float, Field(ge=0)] | None = None
 
@@ -241,6 +249,7 @@ class GitRule(_Rule):
 
     operation: Literal["git"]
     match: GitMatch
+    limits: RuleLimits | None = None
 
     @property
     def read_only(self) -> bool:
@@ -378,11 +387,17 @@ McpAuth = Annotated[OAuthAuth | BearerAuth | HeadersAuth | NoAuth, Field(discrim
 
 
 class McpServer(StrictModel):
-    """One MCP server reached through the MCP proxy (D67)."""
+    """One MCP server reached through the MCP proxy (D67).
+
+    ``tool_prefix`` names a namespace prefix the server puts on every tool name,
+    such as a portal's ``crypto_research_mcp-``. Tool patterns then match the
+    name without it, so a pattern like ``*search*`` cannot match the prefix.
+    """
 
     url: str
     revision: Annotated[str, StringConstraints(min_length=1)]
     auth: McpAuth
+    tool_prefix: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_./-]{1,64}$")] | None = None
     tools: ToolRules = ToolRules()
 
     @field_validator("url")

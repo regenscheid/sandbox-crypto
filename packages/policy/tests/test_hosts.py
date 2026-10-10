@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: MIT
 from __future__ import annotations
 
-import ipaddress
-
 import pytest
 
 from sandbox_science.policy.hosts import (
@@ -11,7 +9,13 @@ from sandbox_science.policy.hosts import (
     floor_reason,
     is_public,
     normalize_host,
+    parse_ip,
 )
+
+
+def as_destination(host: str) -> str:
+    """Names as policy and requests normalize them; addresses as a resolver returns them."""
+    return host if parse_ip(host) is not None else normalize_host(host)
 
 
 @pytest.mark.parametrize(
@@ -23,7 +27,6 @@ from sandbox_science.policy.hosts import (
         ("1.2.3.4", "1.2.3.4"),
         ("[::1]", "::1"),
         ("2001:DB8::1", "2001:db8::1"),
-        ("::FFFF:127.0.0.1", str(ipaddress.ip_address("::ffff:127.0.0.1"))),
     ],
 )
 def test_normalize_host(raw: str, expected: str) -> None:
@@ -50,6 +53,12 @@ def test_normalize_host(raw: str, expected: str) -> None:
         "[example.org]",
         "[1.2.3.4]",
         "::1]",
+        "::ffff:127.0.0.1",  # IPv4-mapped: write the IPv4 address
+        "::FFFF:1.2.3.4",
+        "64:ff9b::a00:1",  # NAT64
+        "2002:a00:1::",  # 6to4
+        "fe80::1%eth0",  # zone ID
+        "2606:4700:4700::1111%1",
         "a" * 64 + ".org",
     ],
 )
@@ -63,7 +72,7 @@ def test_normalize_host_rejects(raw: str) -> None:
     ["example.org", "a.b.example.com", "8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"],
 )
 def test_public_destinations(host: str) -> None:
-    assert is_public(normalize_host(host))
+    assert is_public(as_destination(host))
 
 
 @pytest.mark.parametrize(
@@ -96,7 +105,7 @@ def test_public_destinations(host: str) -> None:
     ],
 )
 def test_non_public_destinations(host: str) -> None:
-    assert not is_public(normalize_host(host))
+    assert not is_public(as_destination(host))
 
 
 @pytest.mark.parametrize(
@@ -127,12 +136,12 @@ def test_non_public_destinations(host: str) -> None:
     ],
 )
 def test_floor_destinations(host: str) -> None:
-    assert floor_reason(normalize_host(host)) is not None
+    assert floor_reason(as_destination(host)) is not None
 
 
 @pytest.mark.parametrize("host", ["example.org", "10.0.0.1", "8.8.8.8", "nas.local"])
 def test_not_floor_destinations(host: str) -> None:
-    assert floor_reason(normalize_host(host)) is None
+    assert floor_reason(as_destination(host)) is None
 
 
 def test_host_pattern_kinds() -> None:

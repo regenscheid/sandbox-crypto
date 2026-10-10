@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Final
@@ -27,9 +26,17 @@ _NUMERIC_LABEL_RE: Final = re.compile(r"[0-9]+|0x[0-9a-f]*")
 _FLOOR_NAMES: Final = frozenset(
     {
         "localhost",
+        "localhost.localdomain",
+        "ip6-localhost",
+        "ip6-loopback",
+        "host.docker.internal",
+        "gateway.docker.internal",
+        "host.containers.internal",
+        "host.lima.internal",
         "metadata",
         "metadata.google.internal",
         "metadata.goog",
+        "metadata.tencentyun.com",
         "instance-data",
         "instance-data.ec2.internal",
         "kubernetes",
@@ -38,18 +45,25 @@ _FLOOR_NAMES: Final = frozenset(
         "kubernetes.default.svc.cluster.local",
     }
 )
+"""Loopback aliases, container-host names, cloud metadata and Kubernetes API names."""
+
 _METADATA_ADDRESSES: Final[frozenset[IPAddress]] = frozenset(
     {
         ipaddress.ip_address("169.254.169.254"),  # AWS, Azure, GCP, OpenStack and others
         ipaddress.ip_address("169.254.170.2"),  # AWS ECS task metadata
         ipaddress.ip_address("fd00:ec2::254"),  # AWS instance metadata over IPv6
+        ipaddress.ip_address("fd00:ec2::23"),  # AWS EKS Pod Identity agent
+        ipaddress.ip_address("fd20:ce::254"),  # GCP metadata over IPv6
         ipaddress.ip_address("100.100.100.200"),  # Alibaba Cloud
         ipaddress.ip_address("168.63.129.16"),  # Azure WireServer (a public address)
+        ipaddress.ip_address("192.0.0.192"),  # Oracle Cloud
     }
 )
+_THIS_NETWORK: Final = ipaddress.IPv4Network("0.0.0.0/8")
 
 NON_PUBLIC_SUFFIXES: Final = (
     "local",
+    "localdomain",
     "internal",
     "home.arpa",
     "lan",
@@ -62,35 +76,63 @@ NON_PUBLIC_SUFFIXES: Final = (
 )
 """Special-use and private-use name suffixes that are never public destinations."""
 
+_GLOBAL_UNICAST_V6: Final = ipaddress.IPv6Network("2000::/3")
 _NAT64_WELL_KNOWN: Final = ipaddress.IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL_USE: Final = ipaddress.IPv6Network("64:ff9b:1::/48")
 _IPV4_COMPATIBLE: Final = ipaddress.IPv6Network("::/96")
+_IPV4_TRANSLATED: Final = ipaddress.IPv6Network("::ffff:0:0:0/96")
 
 
 def parse_ip(host: str) -> IPAddress | None:
-    """Return the IP address a normalized host denotes, or None for a name."""
+    """Return the IP address a host string denotes, or None for a name."""
     try:
         return ipaddress.ip_address(host)
     except ValueError:
         return None
 
 
+def _embedded_ipv4(address: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
+    """IPv4 addresses that an IPv6 address carries (mapped, translated, NAT64, 6to4, ...)."""
+    found: list[ipaddress.IPv4Address] = []
+    if address.ipv4_mapped is not None:
+        found.append(address.ipv4_mapped)
+    if address.sixtofour is not None:
+        found.append(address.sixtofour)
+    if address.teredo is not None:
+        found.extend(address.teredo)
+    if (
+        address in _NAT64_WELL_KNOWN
+        or address in _NAT64_LOCAL_USE
+        or address in _IPV4_TRANSLATED
+        or (address in _IPV4_COMPATIBLE and int(address) > 1)
+    ):
+        found.append(ipaddress.IPv4Address(int(address) & 0xFFFFFFFF))
+    return found
+
+
 def normalize_host(raw: str) -> str:
     """Return the canonical form of a host name or IP literal.
 
     Names are lowercased and lose one trailing dot; IP addresses take Python's
-    canonical text form. Raises ValueError for anything else, including
-    non-ASCII names (use the IDNA form) and numeric forms that are not canonical
-    IP addresses.
+    canonical text form. Raises ValueError for anything else: non-ASCII names
+    (use the IDNA form), numeric forms that are not canonical IP addresses, and
+    IPv6 literals with a zone ID or an embedded IPv4 address, which would let
+    one destination be written several ways.
     """
     if not raw or not raw.isascii():
         raise ValueError(f"invalid host {raw!r}; use the ASCII (IDNA) form")
     host = raw.lower()
-    if host.startswith("[") or host.endswith("]"):
-        address = parse_ip(host[1:-1]) if host.startswith("[") and host.endswith("]") else None
-        if not isinstance(address, ipaddress.IPv6Address):
-            raise ValueError(f"invalid host {raw!r}; brackets may only enclose an IPv6 address")
-        return str(address)
+    bracketed = host.startswith("[") or host.endswith("]")
+    if bracketed:
+        host = host[1:-1] if host.startswith("[") and host.endswith("]") else ""
     address = parse_ip(host)
+    if bracketed and not isinstance(address, ipaddress.IPv6Address):
+        raise ValueError(f"invalid host {raw!r}; brackets may only enclose an IPv6 address")
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.scope_id is not None:
+            raise ValueError(f"invalid host {raw!r}; IPv6 zone IDs are not allowed")
+        if _embedded_ipv4(address):
+            raise ValueError(f"invalid host {raw!r}; write the embedded IPv4 address directly")
     if address is not None:
         return str(address)
     if host.endswith("."):
@@ -105,30 +147,25 @@ def normalize_host(raw: str) -> str:
     return host
 
 
-def _embedded_addresses(address: IPAddress) -> Iterator[IPAddress]:
-    """Yield the address (without IPv6 scope) and any IPv4 address embedded in it."""
+def _embedded_addresses(address: IPAddress) -> list[IPAddress]:
+    """The address (without IPv6 scope) plus any IPv4 address embedded in it."""
     if isinstance(address, ipaddress.IPv4Address):
-        yield address
-        return
+        return [address]
     if address.scope_id is not None:
         address = ipaddress.IPv6Address(int(address))
-    yield address
-    if address.ipv4_mapped is not None:
-        yield address.ipv4_mapped
-    if address.sixtofour is not None:
-        yield address.sixtofour
-    if address.teredo is not None:
-        yield from address.teredo
-    if address in _NAT64_WELL_KNOWN or (address in _IPV4_COMPATIBLE and int(address) > 1):
-        yield ipaddress.IPv4Address(int(address) & 0xFFFFFFFF)
+    return [address, *_embedded_ipv4(address)]
 
 
 def floor_reason(host: str) -> str | None:
-    """Return why the built-in hard floor denies a normalized host, or None."""
+    """Return why the built-in hard floor denies a host, or None.
+
+    Accepts normalized hosts and any IP address text, so the egress proxy can
+    re-check the addresses that names resolve to.
+    """
     address = parse_ip(host)
     if address is None:
         if host in _FLOOR_NAMES or host.endswith(".localhost"):
-            return f"{host} is a loopback, cloud metadata or cluster administration name"
+            return f"{host} is a loopback, container-host, metadata or cluster administration name"
         return None
     for candidate in _embedded_addresses(address):
         if candidate in _METADATA_ADDRESSES:
@@ -137,12 +174,14 @@ def floor_reason(host: str) -> str | None:
             return f"{host} is a loopback address"
         if candidate.is_link_local:
             return f"{host} is a link-local address"
-        if candidate.is_unspecified:
+        if candidate.is_unspecified or candidate in _THIS_NETWORK:
             return f"{host} is an unspecified address"
     return None
 
 
 def _is_public_address(address: IPAddress) -> bool:
+    if isinstance(address, ipaddress.IPv6Address) and address not in _GLOBAL_UNICAST_V6:
+        return False  # e.g. deprecated site-local fec0::/10, which Python calls global
     return address.is_global and not (
         address.is_private
         or address.is_multicast
@@ -154,10 +193,10 @@ def _is_public_address(address: IPAddress) -> bool:
 
 
 def is_public(host: str) -> bool:
-    """Whether a normalized host is a public destination (docs/POLICY.md).
+    """Whether a host is a public destination (docs/POLICY.md).
 
     Single-label names count as non-public: resolvers complete them with local
-    search domains.
+    search domains. Accepts normalized hosts and any IP address text.
     """
     address = parse_ip(host)
     if address is None:
