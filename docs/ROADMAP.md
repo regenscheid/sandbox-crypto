@@ -34,13 +34,13 @@ Exercise idle preservation and restoration: install a tool, alter a configuratio
 
 ## M3 — Validate the complete workflow across local and hosted deployments
 
-Repeat the complete M2 workflow on the local and hosted targets already established in M1. Test image availability/architecture, resources, persistent storage, idle restore, same-project sharing across session containers, networking, transfer, permissions and cleanup. Use the same platform contract; vary target configuration deliberately.
+Repeat the complete M2 workflow on hosted Kubernetes (the phase 2 test cluster) through the same platform contract as the local target certified in M1–M2. Test image availability/architecture, resources, persistent storage, idle restore, same-project sharing across session containers, networking, transfer, permissions and cleanup. Use the same platform contract; vary target configuration deliberately.
 
 **Exit:** unchanged research tools and the complete M2 workflow run on both local and hosted deployments, including Sage, PDFs, project sharing, documents, automatic consistency review and idle recovery. Any enabled reproduction extension uses the same backends. Record startup/transfer cost, environment coverage and worker-loss behavior. This is an initial gate, not a late expansion.
 
 ## M4 — Validate independent service placement and recovery
 
-Package/route the GUI independently. Certify in stages (D53): all-hosted, then hosted orchestration with local workers under a local policy ceiling (D49); exercise the remaining local/remote combinations as configuration variations. Exercise orchestrator restart, closed browsers, interrupted transfer, worker restart, duplicate submissions, and relocation/rollback.
+Package/route the GUI independently. Certify in stages (D53): all-local (phase 1), then all-hosted, then hosted orchestration with local workers under a local policy ceiling (D49); exercise the remaining local/remote combinations as configuration variations. Exercise orchestrator restart, closed browsers, interrupted transfer, worker restart, duplicate submissions, and relocation/rollback.
 
 **Exit:** placement changes configuration and deliberate data movement; projects, review findings, and execution history remain coherent. Local workers do not require a publicly exposed container-engine API. No claim of live kernel memory migration.
 
