@@ -1,0 +1,489 @@
+# SPDX-License-Identifier: MIT
+"""Pydantic model of the project policy file (``sandbox-science/v0alpha1``).
+
+The model describes and validates the file only; :mod:`.evaluate` applies it.
+docs/POLICY.md defines the semantics.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import timedelta
+from enum import StrEnum
+from typing import Annotated, Final, Literal, Self
+from urllib.parse import urlsplit
+
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    PlainValidator,
+    StringConstraints,
+    WithJsonSchema,
+    field_validator,
+    model_validator,
+)
+
+from .decision import Action
+from .hosts import HostPattern, normalize_host
+from .units import ByteSize, Duration
+
+API_VERSION: Final = "sandbox-science/v0alpha1"
+
+READ_ONLY_METHODS: Final = frozenset({"GET", "HEAD"})
+
+
+class StrictModel(BaseModel):
+    """Base for every policy schema model: unknown keys are errors; values are immutable."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")]
+"""Rule, server, provider and policy names: lowercase DNS-label style."""
+
+HttpMethod = Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]
+
+Port = Annotated[int, Field(ge=1, le=65535)]
+
+
+def _parse_host_pattern(value: object) -> HostPattern:
+    if isinstance(value, HostPattern):
+        return value
+    if not isinstance(value, str):
+        raise ValueError("host patterns must be strings")
+    return HostPattern.parse(value)
+
+
+HostPatternField = Annotated[
+    HostPattern,
+    PlainValidator(_parse_host_pattern),
+    PlainSerializer(str, return_type=str),
+    WithJsonSchema({"type": "string"}),
+]
+
+
+def _check_path_prefix(value: str) -> str:
+    if not value.startswith("/"):
+        raise ValueError("path prefixes must start with '/'")
+    if any(char in "?#%\\" or ord(char) < 0x21 or ord(char) == 0x7F for char in value):
+        raise ValueError("path prefixes are written decoded, without query, fragment or '\\'")
+    stripped = value.rstrip("/")
+    if not stripped:
+        raise ValueError("'/' matches every path; omit paths instead")
+    if any(segment in ("", ".", "..") for segment in stripped.split("/")[1:]):
+        raise ValueError("path prefixes must not contain empty, '.' or '..' segments")
+    return stripped
+
+
+PathPrefix = Annotated[str, AfterValidator(_check_path_prefix)]
+
+_TOOL_PATTERN_RE: Final = re.compile(r"[A-Za-z0-9_./*-]{1,128}")
+
+
+def _check_tool_pattern(value: str) -> str:
+    if not _TOOL_PATTERN_RE.fullmatch(value):
+        raise ValueError(
+            f"invalid tool pattern {value!r}; use tool-name characters and '*' as the only wildcard"
+        )
+    return value
+
+
+ToolPattern = Annotated[str, AfterValidator(_check_tool_pattern)]
+
+
+class OnTimeout(StrEnum):
+    """What an unanswered escalation turns into."""
+
+    DENY = "deny"
+    ALLOW = "allow"
+
+
+class Metadata(StrictModel):
+    """Identifies the policy."""
+
+    name: Name
+    description: str = ""
+
+
+class Defaults(StrictModel):
+    """The action for operations no rule matches."""
+
+    action: Action = Action.ESCALATE
+    log: bool = True
+
+
+class Escalation(StrictModel):
+    """Policy-wide escalation settings."""
+
+    timeout: Duration = timedelta(minutes=30)
+    on_timeout: OnTimeout = OnTimeout.DENY
+    notify: tuple[Literal["gui", "push"], ...] = Field(default=("gui",), min_length=1)
+    hold_scope: Literal["operation"] = "operation"
+
+    @field_validator("on_timeout")
+    @classmethod
+    def _policy_wide_deny(cls, value: OnTimeout) -> OnTimeout:
+        if value is not OnTimeout.DENY:
+            raise ValueError(
+                "the policy-wide on_timeout must be 'deny'; "
+                "a read-only rule can set on_timeout: allow for itself"
+            )
+        return value
+
+
+class RuleEscalation(StrictModel):
+    """Per-rule escalation overrides."""
+
+    timeout: Duration | None = None
+    on_timeout: OnTimeout | None = None
+
+
+class Resources(StrictModel):
+    """Resource requests or caps. ``None`` means no limit at this layer."""
+
+    cpu: Annotated[float, Field(gt=0)] | None = None
+    memory: ByteSize | None = None
+    pids: Annotated[int, Field(gt=0)] | None = None
+    workspace_disk: ByteSize | None = None
+    wall_time: Duration | None = None
+    model_budget_usd_per_day: Annotated[float, Field(ge=0)] | None = None
+
+
+ChannelName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]*$")]
+
+
+class CondaPackages(StrictModel):
+    """Conda installs through the mirror. Channels are names, never URLs."""
+
+    channels: tuple[ChannelName, ...] = Field(min_length=1)
+    action: Action = Action.ALLOW
+
+
+class PypiPackages(StrictModel):
+    """PyPI installs through the mirror."""
+
+    action: Action = Action.ALLOW
+
+
+class Packages(StrictModel):
+    """Package installation. An ecosystem that is not configured takes ``defaults.action``."""
+
+    conda: CondaPackages | None = None
+    pypi: PypiPackages | None = None
+    system_packages: Literal["deny"] = "deny"
+
+
+class HttpMatch(StrictModel):
+    """Conditions of an ``http`` rule; all stated conditions must hold."""
+
+    hosts: tuple[HostPatternField, ...] = Field(min_length=1)
+    paths: tuple[PathPrefix, ...] = ()
+    methods: tuple[HttpMethod, ...] = ()
+    ports: tuple[Port, ...] = ()
+
+
+class GitMatch(StrictModel):
+    """Conditions of a ``git`` rule; ``paths`` match the repository path."""
+
+    hosts: tuple[HostPatternField, ...] = Field(min_length=1)
+    paths: tuple[PathPrefix, ...] = ()
+    git_service: Literal["upload-pack", "receive-pack"] | None = None
+    ports: tuple[Port, ...] = ()
+
+
+class RuleLimits(StrictModel):
+    """Limits that turn an ``allow`` or ``alert`` into ``deny`` when exceeded."""
+
+    max_url_bytes: Annotated[int, Field(gt=0)] | None = None
+
+
+class _Rule(StrictModel):
+    name: Name
+    action: Action
+    escalation: RuleEscalation | None = None
+
+    @property
+    def read_only(self) -> bool:
+        """Whether the rule can only match reads (needed for ``on_timeout: allow``)."""
+        return False
+
+    @model_validator(mode="after")
+    def _check_escalation(self) -> Self:
+        if self.escalation is None:
+            return self
+        if self.action is not Action.ESCALATE:
+            raise ValueError(f"rule {self.name!r}: escalation settings need action: escalate")
+        if self.escalation.on_timeout is OnTimeout.ALLOW and not self.read_only:
+            raise ValueError(
+                f"rule {self.name!r}: on_timeout: allow is only permitted on read-only rules "
+                "(http rules limited to GET/HEAD, git rules for upload-pack)"
+            )
+        return self
+
+
+class HttpRule(_Rule):
+    """A network rule for generic HTTP operations."""
+
+    operation: Literal["http"]
+    match: HttpMatch
+    limits: RuleLimits | None = None
+
+    @property
+    def read_only(self) -> bool:
+        return bool(self.match.methods) and set(self.match.methods) <= READ_ONLY_METHODS
+
+
+class GitRule(_Rule):
+    """A network rule for git smart-HTTP operations."""
+
+    operation: Literal["git"]
+    match: GitMatch
+
+    @property
+    def read_only(self) -> bool:
+        return self.match.git_service == "upload-pack"
+
+
+NetworkRule = Annotated[HttpRule | GitRule, Field(discriminator="operation")]
+
+
+class Network(StrictModel):
+    """Access rules for ``http`` and ``git`` operations."""
+
+    rules: tuple[NetworkRule, ...] = ()
+
+
+class MonitorConditions(StrictModel):
+    """Usage thresholds; a monitor fires when any stated threshold is exceeded."""
+
+    egress_bytes_per_hour_over: ByteSize | None = None
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> Self:
+        if self.egress_bytes_per_hour_over is None:
+            raise ValueError("a monitor needs at least one condition")
+        return self
+
+
+class MonitorRule(StrictModel):
+    """An additive threshold alert. Monitors never decide access."""
+
+    name: Name
+    when: MonitorConditions
+    action: Literal["alert"] = "alert"
+
+
+class ToolRules(StrictModel):
+    """Tool-name patterns for ``tools/call``; see docs/POLICY.md, "MCP calls"."""
+
+    allow: tuple[ToolPattern, ...] = ()
+    escalate: tuple[ToolPattern, ...] = ()
+    deny: tuple[ToolPattern, ...] = ()
+
+    @model_validator(mode="after")
+    def _no_contradictions(self) -> Self:
+        seen: dict[str, str] = {}
+        for list_name, patterns in (
+            ("allow", self.allow),
+            ("escalate", self.escalate),
+            ("deny", self.deny),
+        ):
+            for pattern in patterns:
+                if pattern in seen:
+                    raise ValueError(
+                        f"tool pattern {pattern!r} appears in both {seen[pattern]} and {list_name}"
+                    )
+                seen[pattern] = list_name
+        return self
+
+
+ScopeToken = Annotated[str, StringConstraints(pattern=r"^[\x21\x23-\x5B\x5D-\x7E]+$")]
+
+
+class OAuthAuth(StrictModel):
+    """OAuth through the connector auth service (docs/MCP-CONNECTORS.md)."""
+
+    mode: Literal["oauth"]
+    registration: Literal["dcr", "cimd", "preregistered"]
+    client_id: str | None = None
+    scopes: tuple[ScopeToken, ...] = ()
+    refresh: Literal["gateway", "external"] = "gateway"
+    provider: Name
+
+    @model_validator(mode="after")
+    def _client_id(self) -> Self:
+        if self.registration == "preregistered" and not self.client_id:
+            raise ValueError("preregistered OAuth clients need a client_id")
+        if self.registration == "dcr" and self.client_id is not None:
+            raise ValueError("dynamic client registration assigns the client_id; remove it")
+        return self
+
+
+class BearerAuth(StrictModel):
+    """A bearer token held by an OpenShell provider."""
+
+    mode: Literal["bearer"]
+    provider: Name
+
+
+_PLACEHOLDER_RE: Final = re.compile(
+    r"(?:[A-Za-z]+ )?\$\{provider:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.[A-Z][A-Z0-9_]*\}"
+)
+_SENSITIVE_HEADER_PARTS: Final = (
+    "auth",
+    "cookie",
+    "credential",
+    "key",
+    "passw",
+    "secret",
+    "session",
+    "signature",
+    "token",
+)
+
+
+class HeadersAuth(StrictModel):
+    """Custom headers. Secret-bearing headers must reference a provider placeholder."""
+
+    mode: Literal["headers"]
+    headers: dict[Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9-]+$")], str] = Field(
+        min_length=1
+    )
+
+    @model_validator(mode="after")
+    def _no_literal_secrets(self) -> Self:
+        for name, value in self.headers.items():
+            lowered = name.lower()
+            placeholder = _PLACEHOLDER_RE.fullmatch(value) is not None
+            if any(part in lowered for part in _SENSITIVE_HEADER_PARTS) and not placeholder:
+                raise ValueError(
+                    f"header {name!r} must reference a provider, such as "
+                    "'${provider:<name>.<KEY>}'; literal secrets are rejected"
+                )
+            if "${" in value and not placeholder:
+                raise ValueError(f"header {name!r} has a malformed placeholder")
+        return self
+
+
+class NoAuth(StrictModel):
+    """No authentication."""
+
+    mode: Literal["none"]
+
+
+McpAuth = Annotated[OAuthAuth | BearerAuth | HeadersAuth | NoAuth, Field(discriminator="mode")]
+
+
+class McpServer(StrictModel):
+    """One MCP server reached through the MCP proxy (D67)."""
+
+    url: str
+    revision: Annotated[str, StringConstraints(min_length=1)]
+    auth: McpAuth
+    tools: ToolRules = ToolRules()
+
+    @field_validator("url")
+    @classmethod
+    def _https_url(cls, value: str) -> str:
+        parts = urlsplit(value)
+        if parts.scheme != "https":
+            raise ValueError("MCP server URLs must use https")
+        if parts.username is not None or parts.password is not None:
+            raise ValueError("MCP server URLs must not contain credentials")
+        if parts.fragment or not parts.hostname:
+            raise ValueError("MCP server URLs need a host and no fragment")
+        normalize_host(parts.hostname)
+        _ = parts.port  # raises ValueError for an invalid port
+        return value
+
+    @property
+    def host(self) -> str:
+        """The normalized host of the server URL."""
+        return normalize_host(urlsplit(self.url).hostname or "")
+
+
+class McpProxy(StrictModel):
+    """MCP proxy settings (D67)."""
+
+    worker_access: bool = False
+    worker_tools: Literal["inherit"] | tuple[ToolPattern, ...] = "inherit"
+    max_response_bytes: ByteSize = 2 * 1024 * 1024
+    binary_results: Literal["artifact"] = "artifact"
+
+
+class Mcp(StrictModel):
+    """MCP servers and the proxy that all MCP traffic goes through."""
+
+    proxy: McpProxy = McpProxy()
+    servers: dict[Name, McpServer] = Field(default_factory=dict[str, McpServer])
+
+
+class ProviderRef(StrictModel):
+    """A worker-visible OpenShell provider (placeholders only)."""
+
+    name: Name
+    profile: Annotated[str, StringConstraints(min_length=1)]
+    scope_note: str = ""
+
+
+class Credentials(StrictModel):
+    """Worker-visible credentials."""
+
+    providers: tuple[ProviderRef, ...] = ()
+
+    @model_validator(mode="after")
+    def _unique_names(self) -> Self:
+        names = [provider.name for provider in self.providers]
+        if len(names) != len(set(names)):
+            raise ValueError("provider names must be unique")
+        return self
+
+
+class SharedData(StrictModel):
+    """Writes to the project's shared data."""
+
+    writes: Literal["allow_with_conflict_check", "escalate", "deny"] = "allow_with_conflict_check"
+
+
+class DataClass(StrEnum):
+    """Data classes from the threat model (D50)."""
+
+    PUBLIC = "public"
+    PROJECT_PRIVATE = "project-private"
+    EMBARGOED = "embargoed"
+    RESTRICTED_DATASET = "restricted-dataset"
+
+
+class Data(StrictModel):
+    """Data classification defaults."""
+
+    default_class: DataClass = DataClass.PROJECT_PRIVATE
+
+
+class ProjectPolicy(StrictModel):
+    """A project policy file."""
+
+    api_version: Literal["sandbox-science/v0alpha1"] = Field(alias="apiVersion")
+    kind: Literal["ProjectPolicy"]
+    metadata: Metadata
+    defaults: Defaults = Defaults()
+    escalation: Escalation = Escalation()
+    resources: Resources = Resources()
+    packages: Packages = Packages()
+    network: Network = Network()
+    monitors: tuple[MonitorRule, ...] = ()
+    mcp: Mcp = Mcp()
+    credentials: Credentials = Credentials()
+    shared_data: SharedData = SharedData()
+    data: Data = Data()
+
+    @model_validator(mode="after")
+    def _unique_rule_names(self) -> Self:
+        names = [rule.name for rule in self.network.rules] + [rule.name for rule in self.monitors]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"rule names must be unique: {', '.join(duplicates)}")
+        return self
