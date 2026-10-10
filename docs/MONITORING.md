@@ -10,6 +10,44 @@ Preserve the convenience of CScience selecting and installing needed tools with 
 
 A trusted monitor outside agent-controlled containers observes inbound/outbound activity and correlates it with execution context. It supplements network reachability policy with checks on what is being sent or received and whether it fits the authorized task. Monitoring is a further control, not a guarantee that all inappropriate behavior can be recognized.
 
+## Egress architecture comes before inspection
+
+Proposed by the plan review (D44; [threat model](THREAT-MODEL.md) T1/T7). Content inspection alone cannot carry exfiltration control in this domain. Research output (keys, ciphertexts, hashes, random lattices) is high-entropy and cannot be distinguished from exfiltrated secrets by pattern or entropy heuristics. Code can also pin certificates, bring its own TLS stack, or use uninspected protocols. Reachability is therefore the primary control, and inspection is a secondary signal.
+
+| Path | Policy | Notes |
+| --- | --- | --- |
+| Direct internet from research sandboxes | Denied | Sandboxes resolve no external DNS; the proxy resolves names |
+| Package installation | Only through a trusted pull-through mirror restricted to allowlisted channels (conda-forge, PyPI); read-only; cache misses logged and rate-limited | Preserves automatic Conda provisioning (D16): the solver and hooks still run in the sandbox. Permissive candidates: devpi (MIT), quetz (BSD-3), caching Envoy/nginx. Package-name lookups are a residual covert channel; log them |
+| Downloading code and papers | Read-only fetch path: GET/HEAD allowed broadly under the shipped permissive policy (D62), with a URL length limit; git smart-HTTP `git-upload-pack` allowed, `git-receive-pack` escalates | The git rule must be keyed on the service path, because fetch also uses POST. Deny API writes, gists and paste sites by default. Bound URL length and request rate |
+| Granted research endpoints, mostly MCP | Explicit per-project grants; credentials as OpenShell providers bound to the endpoint; MCP tool allowlists | Inline inspection applies here; see Credentials and MCP access |
+| Anything else (writes, unknown side effects) | As the project policy file decides; the shipped default escalates | Escalation timeout falls back to deny (configurable); see [policy](POLICY.md) |
+
+The orchestrator's own connector fetches (web fetch, crawlers, paper search) follow the same allowlist and escalation rules (D47). A URL fetched by the orchestrator can carry data just as well as one fetched by a worker.
+
+## Credentials and MCP access
+
+Proposed by the plan review (D57, D58), following the user's requirement that a secrets manager limit direct access to API keys, and that most external services be reached through MCP.
+
+**Secrets.** Use OpenShell providers ([v0.1.3 providers documentation](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx)) for every credential a worker needs:
+
+- The sandbox environment holds only opaque placeholders. The proxy substitutes the real value immediately before forwarding, and only when both the network policy (calling binary and destination) and the credential's endpoint binding (host, port, path) allow the request.
+- An unbound destination, or an unknown or expired placeholder, fails closed with `credential_endpoint_mismatch` and a secret-free security finding.
+- Gateway-managed refresh (OAuth2 refresh/client credentials, Google service accounts, AWS STS) keeps sandbox-visible tokens short-lived. Long-lived secret material stays in the gateway.
+- Storage: the gateway encrypts credentials (AES-256-GCM) in its own database by default. Hosted gateways can use the `kubernetes-secrets` driver, or the `vault` driver. HashiCorp Vault is BUSL-1.1, so under the [licensing policy](LICENSING.md) prefer Kubernetes Secrets or OpenBao (MPL-2.0); OpenBao compatibility with the vault driver needs testing. Single-user babbage can start with the default encrypted store.
+
+Limits to design around (as documented for v0.1.3):
+
+- A placeholder lets the agent do *anything the token permits* at the bound endpoint. Restriction comes from least-privilege token scopes plus L7 method/path or MCP tool rules, not from the placeholder.
+- Static placeholder resolution is endpoint-scoped, not binary-scoped. Any process in the sandbox can use it; binary-scoped injection is on OpenShell's roadmap.
+- Credentials are rewritten only in headers, query parameters, URL paths, opted-in request bodies and WebSocket text. Cookies, unsupported bodies, binary frames, `tls: skip` and non-HTTP tunnels get no injection. Those protocols need a different design rather than a raw key.
+- Responses are not rewritten, so an endpoint that echoes its credential would reveal it. Test each provider for this.
+
+**MCP.** Authentication modes, the OAuth flow, the connector auth service and the MCP proxy (all MCP traffic, including from workers) are in [MCP connectors](MCP-CONNECTORS.md) (D66, D67). Declare each MCP server as a `protocol: mcp` endpoint with explicit method and tool-name allowlists (`allow_all_known_mcp_methods` off unless deliberately needed; extension methods need exact rules) and attach its credentials as a provider. Prefer read-only tools and tokens. A project grant then reads as "these tools on these servers", which is easy to review and to show in approval prompts.
+
+The orchestrator also calls MCP servers and the model API. Evaluate running the orchestrator itself as an OpenShell sandbox with model and MCP providers attached, so that it too holds only placeholders and its egress follows policy (D47).
+
+**Policy changes.** OpenShell's policy advisor lets an agent propose a new network rule; its prover flags risky changes such as new credentialed reach. Keep automatic approval **off**, route proposals into the shared permission workflow, and note that v0.1.3 does not yet run the prover automatically at sandbox startup.
+
 ## Proposed layers
 
 ```mermaid
@@ -28,7 +66,7 @@ flowchart LR
 
 1. **Reachability enforcement:** cluster/runtime network policy restricts destinations and service access. Kubernetes NetworkPolicy operates at IP/port level, depends on the CNI, and its standard API does not provide application-content inspection or network-security-event logging. Use equivalent controls in the local profile. [Kubernetes documentation](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
 2. **Inline request/response inspection:** a trusted proxy/middleware checks supported traffic before forwarding or delivery. Deterministic rules can block credential/private-data leakage, unauthorized API writes, unexpected upload paths, and oversized transfers. This path has bounded latency and never calls an unbounded model review.
-3. **Contextual behavior monitoring:** a separate service correlates network events with project grants, executing processes, tool calls, package operations, file/output events where available, and agent/reviewer activity. It reports anomalies and can request a pause or quarantine through a narrow, authenticated runtime action API.
+3. **Contextual behavior monitoring:** a separate service correlates network events with independent runtime telemetry (eBPF process/exec/file/network events from Tetragon or Falco, both Apache-2.0, in addition to OpenShell observations). It correlates these with project grants, executing processes, tool calls, package operations, file/output events where available, and agent/reviewer activity. It reports anomalies and can request a pause or quarantine through a narrow, authenticated runtime action API.
 4. **Review and recovery:** persist the reason, evidence references, policy revision, operator/reviewer decision, and retry linkage. Approved research remains fluid within reusable grants.
 
 Keep monitoring code/configuration, event storage, and enforcement credentials outside agent-writable mounts. Agent-supplied descriptions do not authorize activity. The monitor uses approved project policy and trusted dispatch/runtime observations. Scope the monitor's data and credentials per pool/project; it should not become a second unrestricted administration service.
@@ -51,7 +89,7 @@ These are documented/source capabilities, not a verified deployment. Confirm the
 
 1. The agent requests a needed capability or package in its project environment.
 2. The environment manager checks existing capabilities and project install/network grants.
-3. Conda resolves/downloads/installs inside a worker with scoped writable prefixes and resources. Hooks and subprocesses receive the same restrictions.
+3. Conda resolves/downloads/installs inside a worker with scoped writable prefixes and resources, fetching only through the package mirror. Hooks and subprocesses receive the same restrictions. GPL research tools are either part of the privately built `crypto-base` profile image or installed this way at runtime; neither is published by the project (D46, [licensing](LICENSING.md)). Record each package's license.
 4. Record requested packages/tool purpose, channels and resolved versions/builds/digests, environment revision before/after, install logs/errors, and any fallback to another package manager.
 5. Probe the actual installed tool under the same worker policy, then let research continue.
 6. Capture an environment specification or derived image for reviewer reproduction and relocation.
@@ -73,7 +111,7 @@ Incoming responses to permitted egress differ from new inbound connections. Work
 
 ## Response policy and tests
 
-Confirmed behavior: intervention is selected by policy, with all three actions supported:
+Confirmed behavior: intervention is selected by policy, with all three actions supported. Rules, precedence and the escalation timeout are defined in the project policy file ([policy](POLICY.md), D62):
 
 | Action | Operation behavior | Recorded outcome |
 | --- | --- | --- |
@@ -87,6 +125,6 @@ Use the shared durable decision workflow and execution/event references from the
 
 Configure timeout, unavailable-monitor and uninspectable-traffic behavior explicitly per policy/traffic class. Alert-only rules cannot override an independent runtime/network denial. Calibrate rules with legitimate crypto workflows to measure false positives. A model can help triage asynchronous findings but cannot widen hard policy or independently authorize a new data destination.
 
-Test each policy action against a harmless matched fixture: blocked execution, held permission request with approve/deny, and delivered alert with continued execution. Also test permitted Conda install; transitive dependency and hook traffic; denied upload to an otherwise allowed host; private canary data in a harmless fixture request; hostile fixture response; worker attempts to disable monitoring or bypass the proxy; oversized/uninspectable content; middleware timeout/disconnect; persistent-kernel/background-process attribution; and interrupted approval/retry. Use synthetic secrets and data.
+Test each policy action against a harmless matched fixture: blocked execution, held permission request with approve/deny, and delivered alert with continued execution. Also test permitted Conda install; transitive dependency and hook traffic; denied upload to an otherwise allowed host; private canary data in a harmless fixture request; hostile fixture response; worker attempts to disable monitoring or bypass the proxy; oversized/uninspectable content; middleware timeout/disconnect; persistent-kernel/background-process attribution; and interrupted approval/retry. Use synthetic secrets and data. Keep these as a maintained **adversarial fixture suite**, not a one-off checklist: setup.py/post-link exfiltration, a typosquat package, DNS tunnelling, a prompt-injection PDF, a proxy-bypass attempt, a symlink escape, and a GUI-targeted script in an artifact. Run it against every certified backend and isolation tier on each change to policy, proxy or runtime configuration.
 
 Measure monitoring overhead and show coverage gaps in the UI. Configure required-inspection traffic to block when inspection cannot be established; define explicit alternatives for indispensable protocols the backend cannot inspect. Preserve operation state and useful diagnostics so monitoring does not turn ordinary dependency installation into an approval loop.

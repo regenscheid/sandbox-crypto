@@ -1,0 +1,431 @@
+# Proposed changes on the `review` branch
+
+Date: 2026-10-10. Each change below follows from a finding in [critical-review.md](critical-review.md); finding IDs are given in brackets. Round 1 did not modify any confirmed decision (D01–D42). Round 2 amended D03, D05, D11, D12, D41 and D42 to record the user's decision to reimplement rather than adapt CScience. New recommendations are added as **D43–D54** (round 1) and **D55–D58** (round 2), marked "Proposed (review)". The exception is D45, which records the user's licensing requirement as Confirmed. The `.agents/docs/` archive and its INVENTORY.json are untouched, because they are dated snapshots.
+
+Accept, amend or reject each item independently. Most edits are additive paragraphs, so reverting one is a small diff.
+
+---
+
+## New documents
+
+### 1. `docs/THREAT-MODEL.md` (new) [C1, C3, M4, M5, M8]
+
+The document contains:
+
+- **Assets.** Credentials, embargoed results, datasets, the user's local machine, monitor integrity, approval authority.
+- **Threat sources T1–T7.** Malicious packages, prompt injection, faulty agent code, deliberately studied exploit code, compromised control plane, GUI-targeted artifacts, covert exfiltration over allowed channels.
+- **Trust zones Z0–Z4.** The orchestrator is classified as *semi-trusted*.
+- **Isolation tiers 1–3.** Hardened container / gVisor or separate VM / microVM. Docker Desktop's shared-VM caveat and a "measurement" exception for timing and side-channel work are spelled out.
+- **A control mapping** from each threat to primary controls and detection.
+- **Residual risks** to accept explicitly.
+- **Proposed data classes** (public, project-private, embargoed, restricted dataset) with routing rules.
+
+*Why:* the plan has no adversary model, so its central open question ("VM boundary or container host?") had no basis for an answer.
+
+### 2. `docs/LICENSING.md` (new) [M1, C4]
+
+The document contains:
+
+- **The user's requirement:** permissive dependencies, MIT target, avoid AGPL, GPL only where it does not affect the project's license.
+- **Three tiers:**
+  - platform code: permissive only, no GPL import or linking;
+  - shipped base image: thin and permissive only;
+  - runtime-installed research dependencies: Sage, fpylll, G6K, PARI and similar, installed from conda-forge into the environment volume, so the project never distributes them.
+
+  An optional locally built warm image covers first-use latency without creating a distribution obligation.
+- **A component table** with licenses verified from upstream license files on 2026-10-10. Flagged items:
+  - **PyMuPDF, MinIO and Grafana are AGPL-3.0**: avoid.
+  - Squid is GPL: prefer Envoy.
+  - marker's model weights are not permissive.
+  - The CScience upstream is proprietary.
+  - `crypto-analysis-skills` has no LICENSE file.
+  - Use conda-forge only, not Anaconda `defaults`.
+- **Enforcement:** CI license scan for tier 1, SBOM gate for the shipped image, and license metadata recorded for runtime installs.
+
+*Why:* licensing was not addressed, and several components the plan would naturally adopt conflict with an MIT goal. This also reflects the user's notes that many research dependencies can be installed at runtime.
+
+---
+
+## Edits to existing documents
+
+### 3. `docs/DECISIONS.md` [all]
+
+- Added D43–D54:
+
+  | ID | Decision |
+  | --- | --- |
+  | D43 | Threat model and isolation tiers |
+  | D44 | Egress before inspection |
+  | D45 | MIT/permissive licensing (Confirmed) |
+  | D46 | Thin base image plus runtime-installed GPL tools |
+  | D47 | Semi-trusted orchestrator |
+  | D48 | Read-only rootfs plus declared volumes |
+  | D49 | Per-pool local policy ceiling |
+  | D50 | Data classes |
+  | D51 | W0 go/no-go criteria and a parallel MIT infrastructure track |
+  | D52 | Reference fallback backend |
+  | D53 | Staged placement certification and minimum useful release |
+  | D54 | GUI artifact origin separation and approval hardening |
+
+- "Decisions deliberately deferred": noted that the harness-independent infrastructure can proceed before the CScience spike.
+- "Discussion order": added item 0, confirm D43–D54.
+
+### 4. `docs/MONITORING.md` [C2, C3, M3, m8]
+
+- New section **"Egress architecture comes before inspection."** It explains why content inspection fails for high-entropy crypto data and adds a path table:
+  - no direct internet from sandboxes;
+  - package installs only via an allowlisted pull-through mirror;
+  - a read-only fetch proxy that allows git `upload-pack` and denies `receive-pack`, keyed on service path;
+  - proxy-side DNS;
+  - escalation, never alert-only, for unlisted destinations;
+  - orchestrator connector fetches under the same rules.
+- Conda workflow step 3: installs go through the mirror; GPL tools are installed at runtime with license recording.
+- The contextual monitoring layer adds independent eBPF telemetry (Tetragon/Falco).
+- The test list becomes a maintained **adversarial fixture suite**, run against every backend and tier.
+
+### 5. `docs/ARCHITECTURE.md` [C1, C3, C4, M2, M4, M5, m10]
+
+- **CScience integration:** notes that the proprietary patched bundle cannot be in an MIT release, refers to the D51 go/no-go criteria, and proposes the **stdio-forwarding stub seam** as the first low-patch experiment. It adds untrusted-workspace handling rules for the orchestrator.
+- **Placement:** record the isolation tier per execution. Explains why all-local Docker Desktop is tier 1 unless workers use `runsc` or a separate VM. Hosted workers use a sandboxed RuntimeClass on a separate node pool.
+- **Storage:** proposed read-only rootfs plus declared writable volumes, so idle preservation = digest + volumes + lockfile, with a rebuild-from-lockfile recovery path. Also the thin permissive base image and runtime Sage install.
+- **Permissions:** semi-trusted orchestrator egress limits; per-pool local policy ceiling; GUI artifact origin separation, KaTeX/PDF.js hardening, and re-authenticated approvals built from observed facts.
+
+### 6. `docs/IMPLEMENTATION-PLAN.md` [C4, M2, M3, M6]
+
+- **W0:** stdio-forwarding seam first, plus explicit **go/no-go criteria**:
+  - patch-site budget;
+  - survival of one upstream bump;
+  - terms permit the intended deployment;
+  - no proprietary code in MIT components.
+
+  On failure, use CScience as a behavior spec and OpenScience Desktop (MIT) as the first reuse source.
+- New **track P (parallel)**: worker API and service, rootfs/volume layout, egress proxy and mirror, hash-chained event store, adversarial suite, tier probes, implemented against both OpenShell and the fallback stack.
+- **W2:** Sage installed at runtime via the mirror, spoken to only over the Jupyter protocol; measure install time and per-tier performance. The exit adds adversarial fixtures and recorded tiers.
+- **W3:** capture simplified by the D48 layout.
+- **W5:** staged placement certification (D53).
+- Ownership table: orchestrator marked semi-trusted.
+
+### 7. `docs/OPENSHELL-EVALUATION.md` [M3, C1]
+
+- New section **"Maturity risk and reference fallback."** It covers the v0.1.3/pre-1.0 risk and the hosted and local reference stacks (all Apache-2.0/MIT). OpenShell itself is verified Apache-2.0.
+- Open questions: added a proposed answer to the VM-boundary question, linked to the threat model, and a new question about MicroVM driver support for persistent environments and the D48 layout.
+
+### 8. `docs/ROADMAP.md` [C4, M6]
+
+- **M0:** confirm the threat model, licensing and go/no-go criteria first; start track P in parallel; the exit includes a go/no-go verdict.
+- **M1 exit:** execution at a recorded isolation tier with mirror-only egress.
+- **M4:** staged placement certification.
+- New section **"Minimum useful release":** local tier 2, project container and kernels, runtime Sage, PDF page anchors, mirror-only egress with block/escalate, and the existing reviews. Real use then informs the ledger and concurrent-editing work.
+
+### 9. `docs/PROJECTS-AND-SESSIONS.md` [M2]
+
+One sentence: the D48 layout reduces "changed filesystem state" to the declared volumes.
+
+### 10. `README.md` [m3, M1]
+
+- New **Terminology** section: defines CScience (and its licensing consequence) and isolation tier, and flags that "Babbage Linux" needs a definition.
+- "Read first" table: added the threat model and licensing documents.
+- New **License** section stating the MIT intent.
+
+### 11. `examples/deployment-profiles.json` and `examples/run-request.json` [C1, C2, M8, m11]
+
+- Each profile gains `isolation_tier_default` and `egress` fields. The remaining combinations are labelled "design-compatible, not separately certified initially."
+- The run request gains `policy.isolation_tier_minimum` and `policy.egress_profile`. `data_class` changes from the undefined `public-fixture` to `public`, from the proposed D50 classes.
+- Both files remain valid JSON and illustrative only.
+
+---
+
+## Recommended but not applied
+
+These need the user's judgement, or would restructure the documents more than a review branch should:
+
+- **[m1] Replace `.agents/docs/current/` and `history/` snapshots with git tags.** Deleting archived material is the user's call.
+- **[m2] Deduplicate requirements so other documents reference D-numbers rather than restating them.** This is a broad rewrite best done after D43–D54 settle.
+- **[M6] Reduce the "initial gate" scope further,** e.g. move concurrent document reconciliation or the frontier after the minimum useful release. Several of these are confirmed decisions (D23–D26, D33). Only staging (D53) is proposed.
+- **[M7] A long-running job class** (multi-day sieving with application checkpointing and preemption tolerance), quotas, and a GPU isolation-tier note. Worth a short section once the minimum release is defined.
+- **[m4–m7]** Replace absolute `/home/andy/...` evidence paths with repo + commit references; add a glossary, non-goals and measurable targets; make the event log hash-chained (partly covered by track P).
+- **Add a LICENSE file** (MIT) to this repository and to `crypto-analysis-skills` once the user confirms.
+
+---
+
+# Round 2 (2026-10-10): changes after the user's responses
+
+The user clarified five things:
+
+- babbage is the host name of their Ubuntu 26.04 machine.
+- The primary threat is agentic workers doing things they shouldn't; prompt injection from consumed papers is less of a concern.
+- External services will mostly be MCP, and worker API keys should come from a secrets manager. OpenShell has features for this.
+- The project should **not** use Claude Science code; the needed parts are reimplemented.
+- Many research dependencies can be installed at runtime. This was already folded into round 1 as D46.
+
+## 12. Reimplementation instead of adaptation [C4 → resolved]
+
+- **DECISIONS.md**
+  - **D03** amended: CScience is the *behavior* reference, not a code base.
+  - **D05** marked superseded.
+  - **D11** Confirmed: an independent harness; do not retain or patch Claude Science.
+  - **D12** reopened for the new control application: SQLite first behind a repository interface, PostgreSQL only for multi-replica control.
+  - **D41** amended: use the Jupyter protocol for Python/R/Sage from the start, since there is no retained JSON-lines protocol.
+  - **D42** amended to drop "retain the supported store".
+  - **D51** rewritten: behavior specs plus a parallel infrastructure track. The patching go/no-go criteria are gone.
+  - New **D55**: an MIT harness stack (Anthropic client SDKs or LiteLLM, MCP SDK, own research-loop code; OpenCode/OpenScience Desktop as reuse candidates). The Claude Agent SDK is excluded because it drives the proprietary Claude Code CLI.
+  - New **D56**: reimplementation hygiene. Do not copy code, prompts, skill text, SQL migrations or assets from the bundle.
+  - The "deferred decisions" and "discussion order" text were updated to match.
+- **IMPLEMENTATION-PLAN.md**
+  - The first slice now runs a minimal new harness with no local execution path.
+  - **W0** is rewritten as "Behavior specification and harness foundation", with a list of behaviors to specify and acceptance fixtures.
+  - **W1** uses the Jupyter protocol.
+  - W4 review behavior is implemented to spec, with an independently written rubric.
+  - The decision table is updated.
+- **ROADMAP.md**: M0 becomes "Specify behavior and choose harness components"; M1 and M5 wording updated; the patch-count requirement removed.
+- **ARCHITECTURE.md**: "CScience integration before a new harness" is replaced by **"Reimplemented harness"**. The harness has no local execution path, and the orchestrator never mounts worker workspaces. The storage paragraphs now describe one embedded store.
+- **README.md, PRODUCT.md, EXECUTION-PLAN.md, FEATURE-PLAN.md**: the direction text now says reimplementation. OpenScience Desktop (MIT) is marked as the first code-reuse candidate.
+- **CONSISTENCY-REVIEW.md, REUSE-ASSESSMENT.md, SOURCE-STUDY.md**: a dated D11 note at the top says to read "retain/adapt" as behavior evidence. The analyses themselves are left intact.
+- **OPENSHELL-EVALUATION.md**: "What the workbench must supply" and the spike text now refer to the new harness.
+- **LICENSING.md**: the Claude Science row is now "Not used". New rows cover:
+  - the user's own `cscience-crypto` wrapper code (reusable where it embeds no upstream code; `patches.mjs` excluded);
+  - Anthropic client SDKs, the MCP SDK, OpenCode, Pydantic AI (all MIT) and LiteLLM (MIT core);
+  - the Claude Agent SDK (not MIT-clean).
+
+## 13. Threat model reprioritized around agent overreach [C1, C3]
+
+- **THREAT-MODEL.md** rewritten.
+  - Primary threats are now **A1–A4**: overreach through tools/MCP, overreach through code in workers, self-escalation, and runaway work.
+  - Malicious packages, studied exploit code and a compromised control plane are secondary.
+  - Prompt injection, GUI-targeted artifacts and covert channels are lower priority.
+  - The assets list adds shared project state and compute/API budget.
+  - The control mapping adds MCP tool allowlists, placeholder credentials, the policy advisor with auto-approval off, and spend limits.
+  - New babbage notes and new residual risks: a placeholder still permits everything its token's scope permits, and resolution is per endpoint, not per binary.
+- **D43** revised to name agent overreach as the primary concern.
+- **D47** revised: orchestrator egress goes to the model gateway and policy-governed MCP endpoints, and running the orchestrator as an OpenShell sandbox with providers is to be evaluated.
+
+## 14. Secrets manager and MCP [new]
+
+The OpenShell v0.1.3 documentation (`docs/how-it-works/providers/overview.mdx`, `profiles.mdx`, `policies/schema.mdx`, `kubernetes/setup.mdx`) was read for these changes.
+
+- **D57**: worker credentials come from OpenShell providers.
+  - Sandboxes hold only placeholders. The proxy resolves real values only for endpoints the credential is bound to, and fails closed on mismatch.
+  - The gateway refreshes short-lived tokens.
+  - Storage is the gateway's encrypted database locally; `kubernetes-secrets`, or OpenBao through the vault driver, when hosted. HashiCorp Vault is BUSL-1.1, so it is avoided.
+- **D58**: external services are `protocol: mcp` endpoints with per-project method/tool allowlists, provider credentials and least-privilege, read-only tokens.
+- **MONITORING.md**: new section **"Credentials and MCP access"**. It covers how injection works, storage drivers, the documented limits (endpoint- not binary-scoped; no cookie, binary or response rewriting; token scope is the real limit), MCP endpoint policy, and the policy advisor/prover with auto-approval off. The egress table row for granted endpoints now points to it.
+- **OPENSHELL-EVALUATION.md**: five new spike checks: provider secrets, credential scope, MCP policy, policy advisor/prover, and babbage kernel qualification.
+- **IMPLEMENTATION-PLAN.md** track P: providers and MCP policies, plus a placeholder/mismatch fixture.
+- **ARCHITECTURE.md**: the permissions section references D57/D58.
+- **LICENSING.md**: HashiCorp Vault (BUSL, avoid), OpenBao (MPL-2.0), External Secrets Operator (Apache-2.0), SOPS (MPL-2.0).
+
+## 15. babbage [m3 → resolved]
+
+- "Babbage Linux" is replaced by "babbage (Ubuntu 26.04)" across `docs/` and `examples/`.
+- The README Terminology section defines it and notes the Landlock and user-namespace checks.
+
+## 16. Critique updated
+
+- `critical-review.md` gains section **1a** recording the user's responses and their effect.
+- C4 is marked resolved by D11, m3 is marked resolved, and the next steps now reference D43–D58.
+
+---
+
+# Round 3 (2026-10-10): pdf_oxide
+
+The user has used [pdf_oxide](https://github.com/yfedoseev/pdf_oxide) instead of PyMuPDF. Verified at `main` (v0.3.78): the license is **MIT OR Apache-2.0** (`LICENSE-MIT`, `LICENSE-APACHE`, `pyproject.toml`). It provides a Rust core with Python bindings, character-level text, tables, bookmarks, annotations, an optional rendering feature and an MCP server. Optional OCR features depend on ONNX runtimes.
+
+## 17. pdf_oxide as the primary PDF library [M1]
+
+- **DECISIONS.md**: new **D59**. pdf_oxide is the primary worker-side PDF extraction candidate, with pypdfium2 as fallback and PDF.js in the browser; PyMuPDF is avoided. The rationale notes that it is young (v0.3.x) and its benchmarks are self-reported, so anchors and math transcription must be verified on real papers. The discussion order now covers D43–D59.
+- **LICENSING.md**: new pdf_oxide row (MIT OR Apache-2.0; usable in tiers 1–2; check OCR/ONNX dependencies and models separately). The PyMuPDF row now names pdf_oxide as the replacement and adds pymupdf4llm (also AGPL).
+- **RESEARCH-WORKSPACE.md**: the PDF section names pdf_oxide as the primary library. Its character positions, bookmarks and annotations support page/region anchors, and rendering supports crop checks. It runs in workers because it parses untrusted input, and so does its MCP server if used.
+- **CONSISTENCY-REVIEW.md**: new row in "Standard components worth testing" listing what to verify: page-label mapping, character coordinates, equation/matrix transcription against crops, scanned/malformed PDFs, and version pinning.
+- **IMPLEMENTATION-PLAN.md** W2: PDF extraction starts with pdf_oxide.
+- **critical-review.md** M1 table: the PyMuPDF row now points to pdf_oxide.
+
+---
+
+# Round 4 (2026-10-10): targets, stack, policy file, document format
+
+The user answered the open planning questions:
+
+- babbage is amd64 (Ryzen 395, 128 GB) and can enable whatever is needed. The Mac is an M3 Max. The Kubernetes test cluster mixes Raspberry Pi 5 and amd64 nodes. Start on babbage.
+- All initial features, including MCP connectors, are needed before the system is usable. crypto-research-mcp comes first; other servers come later.
+- The user prefers Python.
+- Model access goes through a LiteLLM proxy: OpenAI API first, direct Anthropic Messages later.
+- The first hosted target is small-scale testing on the user's cluster; exposure decisions come later.
+- Permissions are policy-based through a YAML file that is quite permissive, with a configurable timeout that falls back to deny.
+- Living documents are Markdown with LaTeX math.
+
+Checked: conda-forge has linux-aarch64 builds of sagelib, PARI, fplll and fpylll; G6K has no conda-forge feedstock. OpenShell's MicroVM driver needs only KVM on Linux. markdown-it-py, mdit-py-plugins and markdown-it are MIT; Pandoc is GPL.
+
+## 18. Project policy file [new]
+
+- New **docs/POLICY.md** covers:
+  - three layers: a non-editable hard floor, a per-pool ceiling and the project policy;
+  - `allow`/`alert`/`escalate`/`deny`, with the most restrictive matching rule winning;
+  - `escalation.timeout` with `on_timeout: deny` by default (`allow` only for alert-class rules);
+  - what the permissive default allows;
+  - how each element compiles to OpenShell (with an upstream-proxy fallback if wildcard hosts are not expressible);
+  - open items.
+- New **examples/policy.yaml**:
+  - broad GET/HEAD and git fetch allowed; conda-forge and PyPI allowed;
+  - writes and git push escalate; large egress alerts;
+  - crypto-research-mcp read tools allowed, credit-spending or state-changing Firecrawl tools escalate, portal toggles denied;
+  - a resource block and a LiteLLM budget.
+- **D62** added. **D44** revised: broad reads are allowed by the shipped default, and side effects escalate.
+- MONITORING.md (egress table, response policy) and IMPLEMENTATION-PLAN.md track P (policy compiler) updated.
+
+## 19. Targets and phases [M6]
+
+- **D53** revised: stage by placement, not features. Phase 1 is the full workspace plus crypto-research-mcp on babbage; phase 2 the mixed-arch test cluster; phase 3 the Mac, further MCP servers and exposure.
+- New **D63** (platforms, multi-arch images, capability/affinity placement, arm64 Sage availability, G6K source builds) and **D64** (crypto-research-mcp first, a generic registry for later servers).
+- **D43** revised: tier 3 on babbage via OpenShell MicroVM/KVM; tier 2 (gVisor) on the test cluster, with tier 3 where supported.
+- ROADMAP.md: the "Minimum useful release" section is replaced by **"Delivery phases"**.
+- ARCHITECTURE.md (concrete targets), THREAT-MODEL.md (tier rows), README.md (terminology, direction) and `examples/deployment-profiles.json` (phase targets, image architectures) updated.
+
+## 20. Stack [new]
+
+- **D60**: Python for all server-side components; a thin browser front end, framework open.
+- **D61**: LiteLLM proxy with a provider-neutral harness model interface. The OpenAI-compatible adapter comes first, and Anthropic Messages later, through LiteLLM's Anthropic-format endpoint if it preserves tool use, thinking and caching, otherwise the SDK directly. LiteLLM holds the provider keys; the orchestrator gets a virtual key with a spend limit.
+- ARCHITECTURE.md gains a model-gateway paragraph; IMPLEMENTATION-PLAN.md W0 is updated; LICENSING.md notes LiteLLM as the gateway (MIT features only).
+
+## 21. Living-document format [new]
+
+- **D65**: Markdown with LaTeX math (`$…$`, `$$…$$`). markdown-it-py and mdit-py-plugins on the server and markdown-it with KaTeX in the browser keep block and math boundaries consistent for anchors. Export runs in workers; Pandoc is runtime-installed (GPL, separate program).
+- RESEARCH-WORKSPACE.md and LICENSING.md updated.
+
+## 22. Critique updated
+
+- Section 1a gains rows for these answers. M6 is noted as partly withdrawn: there is no feature cut, and staging is by placement.
+
+---
+
+# Round 5 (2026-10-10): MCP authentication and the MCP proxy
+
+The user said:
+
+- MCP services use OAuth primarily, and `Authorization`/custom-header authentication should also be supported.
+- Workers should not connect to MCP services directly; an MCP proxy should sit in between.
+
+Checked:
+
+- **MCP authorization specification (2025-11-25):**
+  - RFC 9728 protected-resource discovery;
+  - Client ID Metadata Documents preferred, then pre-registration, then DCR;
+  - PKCE;
+  - the RFC 8707 `resource` parameter on *all* token requests;
+  - a bearer header on every request and no tokens in query strings.
+- **OpenShell v0.1.3 profiles:**
+  - `oauth2_refresh_token` refresh with automatic refresh-token rotation;
+  - token URLs owned by the profile;
+  - placeholders resolved in any header value, including Basic;
+  - refresh configuration lists token URL and scopes but **no `resource` parameter**.
+- **Licenses:** sparfenyuk/mcp-proxy (MIT), docker/mcp-gateway (MIT), IBM mcp-context-forge (Apache-2.0).
+
+## 23. MCP connectors document [new]
+
+- New **docs/MCP-CONNECTORS.md** covers:
+  - goals: no raw credentials in agent-reachable processes; workers never connect directly; one registry; the same policy for every caller;
+  - components: the connector auth service (Z1), the MCP proxy in its own OpenShell sandbox, OpenShell providers;
+  - MCP proxy behavior: reachability, caller identity and attribution, policy and escalation, rate/spend/size limits, binary results as artifact references, implementation references;
+  - auth modes: `oauth`, `bearer`, `headers`, `none`;
+  - the full OAuth flow, including gateway-managed vs external refresh (because of the `resource` gap), step-up as an escalation, and audience binding;
+  - the server-entry YAML;
+  - later phases and spike checks.
+
+## 24. Decisions and cross-references
+
+- **D66**: MCP auth modes and the OAuth flow. **D67**: the MCP proxy for all MCP traffic. The discussion order now runs through D67.
+- **examples/policy.yaml**:
+  - `mcp.proxy` block: worker access, worker toolset, response limit, binary results as artifacts;
+  - `auth` block for crypto-research-mcp (OAuth, DCR, gateway refresh, provider);
+  - a commented custom-header server example.
+- POLICY.md, MONITORING.md, OPENSHELL-EVALUATION.md (new spike row), IMPLEMENTATION-PLAN.md track P (connector auth service and MCP proxy), THREAT-MODEL.md (zone and assets; A1 control), README.md (read-first row) and LICENSING.md (MCP proxy references) updated.
+- `critical-review.md` section 1a gains a row for these answers.
+
+---
+
+# Round 6 (2026-10-10): crypto-research-mcp registration
+
+The user confirmed that crypto-research-mcp supports Dynamic Client Registration.
+
+## 25. DCR for phase 1
+
+- **MCP-CONNECTORS.md**: phase 1 uses DCR. It covers per-deployment, per-redirect-URI registration (`localhost` on babbage, separate HTTPS registration when hosted), storing the registration response as secret refresh material, and re-registering if the client is rejected. When the policy lists no scopes, the spec's scope selection applies and the granted scopes are recorded.
+- **D66**: notes DCR for phase 1.
+- **examples/policy.yaml**: `registration: dcr` marked confirmed; empty `scopes` documented as "use the server's advertised scopes".
+
+---
+
+# Round 7 (2026-10-10): fixes from a second reviewer's PR comments
+
+All four comments were checked against the documents and the OpenShell v0.1.3 documentation, and all were correct.
+
+## 26. [P1] Shared-container MCP calls could be misattributed
+
+**Problem.** MCP-CONNECTORS.md claimed per-session proxy credentials closed the attribution gap. They don't: OpenShell placeholders are endpoint-scoped, and other processes in the same container (usually the same user) can read or reuse them.
+
+**Fix.**
+
+- MCP-CONNECTORS.md now defines attribution levels: `orchestrator`, `sandbox`, `container`, and `process` (to evaluate). Only trusted levels may drive session-scoped decisions.
+- In a shared container, grants for worker-originated calls apply to the whole container. A workbook that needs session-scoped MCP permissions should use a dedicated container.
+- The monitor shows the attribution level on every event.
+- The spike row now tests both shared and dedicated containers, and tries to defeat process-level mapping from a second process.
+- D67's rationale and the THREAT-MODEL.md residual risks were updated to match.
+
+## 27. [P1] Permitted reads triggered write approvals
+
+**Problem.** git fetch and MCP's Streamable HTTP transport both send reads as `POST`. With "most restrictive wins", the broad POST-escalate rule overrode their allow rules.
+
+**Fix.**
+
+- POLICY.md now classifies each operation first (`package`, `git`, `mcp`, `http`). Generic HTTP method rules apply only to the `http` class.
+- Within a class, the most specific rule wins and ties go to the most restrictive action. That keeps broad allows safe while letting a narrow allow, such as a read-only POST search API, override the broad write rule.
+- `examples/policy.yaml` rules gain `operation:`, plus a commented narrow-allow example.
+- D62 was updated to match.
+
+## 28. [P2] External token refresh left the running proxy with a stale reference
+
+**Problem.** OpenShell's static updates keep existing processes on their revision-scoped placeholder.
+
+**Fix.**
+
+- MCP-CONNECTORS.md specifies an upstream worker process per MCP server, so the front end holds no placeholders.
+- On each external refresh: update the provider with `--wait`, notify the proxy, start a new upstream worker, drain the old one, refresh ahead of expiry, and retry once only for idempotent reads.
+- The spike also checks whether `external` refresh gets stable handles, which would make the swap unnecessary.
+- The refresh rows in MCP-CONNECTORS.md and OPENSHELL-EVALUATION.md were updated.
+
+## 29. [P2] Phase 1 depended on phase 2 infrastructure
+
+**Problem.** The M1 and W2 exit gates required hosted Kubernetes even though phase 1 is babbage-only.
+
+**Fix.**
+
+- ROADMAP.md: M1 now covers babbage only (MicroVM driver), and hosted certification is a phase 2 gate under M3. The phase table marks phase 1 as "local gates only", and the end-to-end fixture repeats on Kubernetes only in phase 2.
+- IMPLEMENTATION-PLAN.md: W2's exit covers babbage only, a new **W2h** certifies hosted execution in phase 2 (per node architecture and tier), and W4's exit runs on babbage first, then on the cluster.
+- RESEARCH-WORKSPACE.md and the PRODUCT.md acceptance criteria were updated to match.
+
+---
+
+# Round 8 (2026-10-10): second reviewer's follow-up comments, accepted
+
+## 30. OpenShell first; fallback stays a written design [D52 revised]
+
+- Prove OpenShell as the single backend through phases 1 and 2. The hedge is a backend-neutral worker API plus a **backend conformance fixture suite** (W1/W2 fixtures, adversarial suite, tier probes) that any later backend must pass.
+- The reference fallback stack remains documented in OPENSHELL-EVALUATION.md and is built only when a concrete limitation justifies it. An upstream egress proxy or eBPF telemetry may be added earlier if a phase 1 check needs them.
+- IMPLEMENTATION-PLAN.md track P and its exit evidence were updated.
+
+## 31. Prepared `crypto-base` profile as the normal option [D46 revised]
+
+- Two standard base profiles: the published, permissive-only `minimal` image, and `crypto-base`, a pinned cryptography environment with Sage ready at session start (plus fpylll, PARI, lattice-estimator, FLINT, TeX, pdf tools, G6K from source).
+- Licensing: the `crypto-base` **recipe** (Containerfile and lockfiles) is MIT and published; the **image** is built privately and kept in a private registry because it contains GPL tools.
+- New project and session containers start clean from the selected profile's recorded digest (D22 unchanged). Runtime conda installs continue for anything else.
+- LICENSING.md tier table, ARCHITECTURE.md, PROJECTS-AND-SESSIONS.md, MONITORING.md and IMPLEMENTATION-PLAN.md (track P, W2) were updated.
+
+## 32. Risk-based re-authentication [D54 revised]
+
+- Routine approvals work within the authenticated session with CSRF protection.
+- Re-authentication with a short validity window is required for policy widening, credential or MCP-connection changes, exports of embargoed or restricted data, disabling monitor rules, and approvals after a configurable idle period.
+- Separate-origin rendering of untrusted artifacts and fact-based approval prompts are unchanged.
+- ARCHITECTURE.md, THREAT-MODEL.md (Z4, A3) and POLICY.md were updated.
+
+## 33. Critique updated
+
+- Section 1a records the second reviewer's follow-up and the resulting revisions.
