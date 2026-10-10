@@ -66,7 +66,7 @@ Automatic Conda provisioning still supplies additional tools. Test Sage startup 
 
 ## PDF parsing and navigation as a native source workflow
 
-Keep the original PDF and its version/hash. Derive reusable page text, outline/section structure, page renders/crops, tables/figures, and optional OCR/layout results in workers. Cache by document hash and parser configuration/version. Support page/section lookup, search or ranked page discovery, and exhaustive extraction as distinct operations.
+Keep the original PDF and its version/hash. The primary extraction library candidate is pdf_oxide (MIT OR Apache-2.0, D59), with pypdfium2 as fallback; PyMuPDF is excluded as AGPL. Its character-level positions, bookmarks and annotations are the basis for page/region anchors, and its optional rendering produces crops for checking equations. It parses untrusted input, so it runs in workers like any other parser. Its MCP server, if used, also runs in a worker sandbox, not beside the orchestrator. Derive reusable page text, outline/section structure, page renders/crops, tables/figures, and optional OCR/layout results in workers. Cache by document hash and parser configuration/version. Support page/section lookup, search or ranked page discovery, and exhaustive extraction as distinct operations.
 
 The GUI needs an integrated PDF viewer with page labels, thumbnails/outline, search, selection/highlights, and direct navigation from citations, comments, ledger entries, and review findings. A source reference identifies document revision, physical page index, displayed page label, and region/text anchor when available. Preserve both page numbering forms so printed page numbers do not silently point at the wrong PDF page.
 

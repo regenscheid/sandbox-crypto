@@ -62,6 +62,7 @@ Date: 2026-10-10. Confirmed requirements come from the user. Recommendations rem
 | D56 | Proposed (review) | Reimplementation hygiene: do not copy code, prompt text, skill text, SQL migrations or assets from the Claude Science bundle or Anthropic source-available skills; implement from the behavior specs (D51) and public documentation | The agent reports cite line anchors in the proprietary bundle; they are evidence of behavior, not material to transcribe |
 | D57 | Proposed (review) | Credentials for workers come from OpenShell providers: placeholder values in the sandbox, real values resolved by the proxy only for bound endpoints, fail-closed on mismatch, gateway-managed refresh for short-lived tokens. Back the store with the gateway's encrypted database locally and `kubernetes-secrets` (or OpenBao via the vault driver, to verify) when hosted | User requirement: a secrets manager should limit direct access to API keys. HashiCorp Vault is BUSL-1.1, so prefer Kubernetes Secrets or OpenBao (MPL-2.0) |
 | D58 | Proposed (review) | Route external services through MCP endpoints declared with `protocol: mcp` and per-project method/tool allowlists; attach their credentials as providers; prefer least-privilege, read-only tokens | User expects most external services to be MCP. A placeholder still lets the agent do anything the token permits at that endpoint, so tool-level rules and token scope carry the restriction |
+| D59 | Proposed (review) | Use pdf_oxide (MIT OR Apache-2.0) as the primary worker-side PDF extraction library, with pypdfium2 (Apache-2.0) as fallback and PDF.js in the browser; avoid PyMuPDF (AGPL-3.0) | The user has used pdf_oxide. It provides character-level text, tables, bookmarks, annotations and an optional rendering feature. It is young (v0.3.x) and its benchmarks are self-reported, so verify page/region anchors and mathematical transcription on real cryptography papers before relying on it |
 
 ## Decisions deliberately deferred
 
@@ -73,7 +74,7 @@ Separate model/role settings for main agents, delegated agents, and reviewers ar
 
 The [consistency review](CONSISTENCY-REVIEW.md) and [detailed implementation plan](IMPLEMENTATION-PLAN.md) provide the next engineering steps. Start with the behavior specification and the new-harness shell/Python worker slice; the remaining topics can be refined against that evidence rather than requiring another broad planning round.
 
-0. Confirm or amend the review-proposed decisions D43–D58, the [threat model](THREAT-MODEL.md) and the [licensing policy](LICENSING.md).
+0. Confirm or amend the review-proposed decisions D43–D59, the [threat model](THREAT-MODEL.md) and the [licensing policy](LICENSING.md).
 1. Select a representative cryptography paper/task for the PDF → Sage → document → review workflow.
 2. Define result/issue/frontier categories and how assumption changes flag dependent work.
 3. Validate idle environment preservation/restoration and conflict-aware shared writes; select implementation details using those requirements.

@@ -35,7 +35,8 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | jupyter_client, ipykernel | BSD-3-Clause | Kernel protocol |
 | KaTeX | MIT | Math rendering |
 | PDF.js | Apache-2.0 | PDF viewer |
-| pypdfium2 | Apache-2.0 | PDF rendering/extraction candidate |
+| **pdf_oxide** (`yfedoseev/pdf_oxide`) | MIT OR Apache-2.0 | **Primary PDF extraction candidate** (D59; already used by the user). Permissive enough for tier 1 or 2. Optional OCR features pull ONNX runtimes (`ort`, `tract-onnx`) and models; check their licenses separately before enabling |
+| pypdfium2 | Apache-2.0 | PDF rendering/extraction fallback candidate |
 | pdfplumber | MIT | PDF extraction candidate |
 | syft, ScanCode | Apache-2.0 | SBOM / license scanning |
 | SeaweedFS | Apache-2.0 | Object storage candidate |
@@ -47,7 +48,7 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | fplll, FLINT | LGPL | Tier 3 |
 | lattice-estimator | LGPLv3+ | Tier 3 |
 | Squid | GPL | Avoid; prefer Envoy |
-| **PyMuPDF** | **AGPL-3.0** | **Avoid**, including as the default PDF tool in tier 3 |
+| **PyMuPDF**, pymupdf4llm | **AGPL-3.0** | **Avoid**, including as the default PDF tool in tier 3; use pdf_oxide |
 | **MinIO** | **AGPL-3.0** | **Avoid**; use SeaweedFS, cloud object storage or filesystem storage |
 | **Grafana** | **AGPL-3.0** | **Avoid**; build monitor views into the GUI |
 | marker | Code Apache-2.0; weights under a modified OpenRAIL-M with revenue limits | Flag before adopting; weights are not permissive |
