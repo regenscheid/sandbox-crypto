@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MIT
+[project]
+name = "sandbox-science-policy"
+version = "0.1.0"
+description = "Project policy model, validation and evaluation for Sandbox Science"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_science"]
