@@ -339,3 +339,15 @@ Checked:
   - a commented custom-header server example.
 - POLICY.md, MONITORING.md, OPENSHELL-EVALUATION.md (new spike row), IMPLEMENTATION-PLAN.md track P (connector auth service and MCP proxy), THREAT-MODEL.md (zone and assets; A1 control), README.md (read-first row) and LICENSING.md (MCP proxy references) updated.
 - `critical-review.md` section 1a gains a row for these answers.
+
+---
+
+# Round 6 (2026-10-10): crypto-research-mcp registration
+
+The user confirmed that crypto-research-mcp supports Dynamic Client Registration.
+
+## 25. DCR for phase 1
+
+- **MCP-CONNECTORS.md**: phase 1 uses DCR. It covers per-deployment, per-redirect-URI registration (`localhost` on babbage, separate HTTPS registration when hosted), storing the registration response as secret refresh material, and re-registering if the client is rejected. When the policy lists no scopes, the spec's scope selection applies and the granted scopes are recorded.
+- **D66**: notes DCR for phase 1.
+- **examples/policy.yaml**: `registration: dcr` marked confirmed; empty `scopes` documented as "use the server's advertised scopes".

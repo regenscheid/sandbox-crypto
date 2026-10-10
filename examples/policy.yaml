@@ -71,8 +71,8 @@ mcp:
       revision: "2025-11-25"
       auth:                                               # see docs/MCP-CONNECTORS.md
         mode: oauth                                       # oauth | bearer | headers | none
-        registration: dcr                                 # cimd | preregistered | dcr
-        scopes: []                                        # server-specific; least privilege
+        registration: dcr                                 # confirmed: crypto-research-mcp supports DCR
+        scopes: []                                        # empty = use WWW-Authenticate / scopes_supported
         refresh: gateway                                  # gateway | external
         provider: crypto-research-mcp                     # OpenShell provider holding the tokens
       tools:
