@@ -897,7 +897,7 @@ def worker_tools(listing: str) -> str:
     ],
 )
 def test_quoted_hashes_do_not_open_a_comment(listing: str) -> None:
-    with pytest.raises(PolicyLoadError, match=r"run of blanks|fit on one line"):
+    with pytest.raises(PolicyLoadError, match=r"run of blanks|fit on one line|must end its line"):
         parse_policy(worker_tools(listing))
 
 
@@ -963,7 +963,7 @@ def test_a_stray_quote_in_a_plain_value_does_not_hide_padding() -> None:
         "mcp:\n  servers:\n    s: {url: 'https://m.io/x', auth: {mode: none}, "
         'tool_prefix: p-, revision: "1 #' + " " * 36 + '", tools: {allow: [x]}}\n'
     )
-    with pytest.raises(PolicyLoadError, match="run of blanks"):
+    with pytest.raises(PolicyLoadError, match=r"run of blanks|must end its line"):
         parse_policy(text)
 
 
@@ -982,3 +982,24 @@ def test_settings_are_ascii(value: str) -> None:
 
 def test_comments_may_use_other_scripts() -> None:
     parse_policy(HEADER + "# caf\u00e9 \u4e00\u4e8c\n")
+
+
+# Fifth review (8212708): a '#' inside a value must not make live settings look like a comment.
+
+
+def test_a_hash_inside_a_value_must_end_its_line() -> None:
+    text = (
+        "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\nmetadata: {name: t}\n"
+        "mcp:\n  servers:\n    s: {url: 'https://mcp.example.org/x', auth: {mode: none}, "
+        'tool_prefix: p-, revision: "2025-11-25 # pinned", '
+        "tools: {allow: [portal_toggle_servers]}}\n"
+    )
+    with pytest.raises(PolicyLoadError, match="must end its line"):
+        parse_policy(text)
+
+
+def test_a_hash_in_the_last_value_on_a_line_is_accepted() -> None:
+    text = HEADER.replace(
+        "metadata: {name: test}\n", "metadata:\n  name: test\n  description: 'see issue #12'\n"
+    )
+    assert parse_policy(text).policy.metadata.description == "see issue #12"
