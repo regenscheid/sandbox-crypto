@@ -2,11 +2,13 @@
 
 Date: 2026-10-10. Planning review only. Source inspection supports the findings below; proposed components and backend mappings have not been implemented or exercised.
 
+> **Update (2026-10-10, D11):** the user decided to reimplement the needed CScience behavior rather than adapt or patch the Claude Science runtime. Where this document speaks of retaining, adapting or patching CScience mechanisms, read it as *behavior evidence for the reimplementation*. No Claude Science code, prompts, schemas or assets are copied (D56). OpenScience Desktop upstream is MIT-licensed and remains a code-reuse candidate, subject to per-file checks.
+
 ## Conclusion
 
 The requirements fit together. The main implementation risk is building separate infrastructure for each feature: a document history, a ledger history, a reviewer evidence store, a permission queue, and an execution journal that cannot reliably refer to one another. Share identity, immutable revisions, artifact transfer, event delivery, and scoped decisions. Preserve domain-specific meaning and lifecycle on top of those mechanisms.
 
-Start by adapting CScience and proving one ordinary research operation across the container boundary. The [implementation plan](IMPLEMENTATION-PLAN.md) turns this review into ordered work with evidence gates. It does not assume a new harness, database, or collection of microservices.
+Start by proving one ordinary research operation across the container boundary with the new harness (D11). The [implementation plan](IMPLEMENTATION-PLAN.md) turns this review into ordered work with evidence gates. It does not assume a new harness, database, or collection of microservices.
 
 ## Inconsistencies and ambiguities resolved
 
@@ -47,7 +49,7 @@ Do not flatten every object into one generic status field. A scientific result, 
 
 ## Concrete reuse candidates
 
-### Retained CScience mechanisms
+### CScience mechanisms (behavior evidence for the reimplementation)
 
 The current source already contains execution logs, artifact versions, scoped memory, exact-version verification records and unified annotations. They provide candidate backing structures for shared references. Extend or adapt these structures after tracing callers; do not create a competing ledger/document store merely because the new architecture diagram has more boxes. Relevant inspected migrations are `0005_execution_log.sql`, `0026_memory.sql`, `0029_verification.sql`, `0085_annotations_unified.sql` and `0115_verification_checks_resolution.sql` under `dist/review-0.1.60/runtime/assets/drizzle/sqlite/` in the existing checkout.
 
@@ -61,6 +63,7 @@ The local wrapper's capability profiles and installation-root discovery are usef
 | --- | --- | --- |
 | Jupyter messaging/kernel adapters | Share execution, interruption and rich mathematical output across Sage and other compatible kernels; retain the existing Python adapter initially | Test native Sage syntax, exact types, output events and interruption through the same worker API. Keep kernel sockets private to the worker; do not expose a Jupyter server merely to use its kernel protocol. [Messaging](https://jupyter-client.readthedocs.io/en/stable/messaging.html), [Sage kernel](https://doc.sagemath.org/html/en/reference/repl/sage/repl/ipython_kernel/kernel.html) |
 | PDF.js viewer | Reuse a browser PDF renderer and layer project navigation/anchors over it | Demonstrate stable page/region navigation and selection on exact source revisions. It does not replace scientific PDF extraction/OCR or mathematical transcription checks. [PDF.js](https://mozilla.github.io/pdf.js/) |
+| pdf_oxide (D59) | Worker-side text, character positions, tables, outline/bookmarks, annotations and optional page rendering under MIT OR Apache-2.0 | Check physical-page and page-label mapping, character coordinates for region anchors, equation/matrix transcription against rendered crops, and behavior on scanned or malformed PDFs. Pin the version; the project is young and fast-moving. [Repository](https://github.com/yfedoseev/pdf_oxide) |
 | KaTeX renderer | Share browser math rendering across every research view while preserving original TeX | Test matrix/aligned syntax, macro scope, errors, and rendering security settings. Full TeX compilation remains separate worker execution. [Security guidance](https://katex.org/docs/security.html) |
 | OpenShell runtime and middleware | Reuse sandbox lifecycle and policy hooks across certified pools | Use its selected driver per gateway rather than introduce a second scheduler. Verify writable-state retention, local/cluster controls, supported inspection and the three monitor actions. [Runtimes](https://docs.nvidia.com/openshell/latest/how-it-works/sandboxes/runtimes), [evaluation](OPENSHELL-EVALUATION.md) |
 | OpenScience fork contracts | Learn from typed execution/events, permission receipts, replay and teardown failure handling | Extract only components whose dependencies and current behavior are established. Native bridge and unfinished agent/persistence paths are not ready substitutes for a backend. [Assessment](REUSE-ASSESSMENT.md) |

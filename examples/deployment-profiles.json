@@ -12,7 +12,9 @@
       "artifacts": "local authenticated storage service",
       "transport": "private container network; worker-initiated control connection",
       "execution_backend": "selected policy-capable local OpenShell/container pool; Docker/Podman or local Kubernetes; to validate",
-      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed",
+      "isolation_tier_default": "2 (gVisor runsc or separate worker VM); 1 only with explicit acceptance",
+      "egress": "no direct internet; package mirror + read-only fetch proxy + granted endpoints (D44)"
     },
     {
       "name": "remote-compute",
@@ -24,7 +26,9 @@
       "transport": "worker-initiated authenticated connection over private tunnel or TLS",
       "data_constraint": "Only explicitly permitted inputs leave the local host",
       "execution_backend": "remote OpenShell pool, including Kubernetes driver; to validate",
-      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed",
+      "isolation_tier_default": "3 (Kata/microVM RuntimeClass)",
+      "egress": "no direct internet; package mirror + read-only fetch proxy + granted endpoints (D44)"
     },
     {
       "name": "hosted-control-local-compute",
@@ -36,7 +40,9 @@
       "transport": "local controller dials remote API; no inbound local engine endpoint",
       "data_constraint": "Prompts, logs and results may still reach remote control and model services",
       "execution_backend": "selected policy-capable local OpenShell/container pool; Docker/Podman or local Kubernetes; to validate",
-      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed",
+      "isolation_tier_default": "2 locally; local policy ceiling cannot be raised remotely (D49)",
+      "egress": "no direct internet; package mirror + read-only fetch proxy + granted endpoints (D44)"
     },
     {
       "name": "remote-ui-local-control",
@@ -47,7 +53,9 @@
       "artifacts": "local authenticated storage service",
       "transport": "same-origin UI proxy through an authenticated tunnel to local API",
       "execution_backend": "selected policy-capable local OpenShell/container pool; Docker/Podman or local Kubernetes; to validate",
-      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed",
+      "isolation_tier_default": "2 (gVisor runsc or separate worker VM)",
+      "egress": "no direct internet; package mirror + read-only fetch proxy + granted endpoints (D44)"
     },
     {
       "name": "all-remote",
@@ -58,7 +66,9 @@
       "artifacts": "private object storage",
       "transport": "private service network and authenticated worker connections",
       "execution_backend": "remote OpenShell pool, including Kubernetes driver; to validate",
-      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed"
+      "monitor": "trusted pool-side inline guard plus contextual monitor; orchestrator traffic separately routed",
+      "isolation_tier_default": "3 (Kata/microVM RuntimeClass)",
+      "egress": "no direct internet; package mirror + read-only fetch proxy + granted endpoints (D44)"
     }
   ],
   "remaining_combinations": [
@@ -79,14 +89,15 @@
     }
   ],
   "initial_deployment_targets": {
-    "hosted": "hosted Kubernetes",
-    "local": "policy-capable container runtime on macOS or Babbage Linux",
-    "local_candidates": [
-      "Docker or another container runtime",
-      "Docker Desktop Kubernetes on macOS",
-      "local Kubernetes on Babbage Linux"
+    "phase_1": "babbage (amd64, Ubuntu 26.04), all-local, OpenShell MicroVM driver over KVM (tier 3)",
+    "phase_2": "user's Kubernetes test cluster: Raspberry Pi 5 (arm64) and amd64 nodes; gVisor RuntimeClass (tier 2), tier 3 where nodes support it",
+    "phase_3": "Mac M3 Max (arm64); remote access/exposure decisions; remaining placements",
+    "images": [
+      "linux/amd64",
+      "linux/arm64"
     ],
     "acceptance": "demonstrated execution/network isolation, monitor actions, persistence and worker API parity",
     "local_kubernetes_required": false
-  }
+  },
+  "remaining_combinations_status": "design-compatible, not separately certified initially (D53)"
 }

@@ -42,7 +42,9 @@ Authoritative board/document revisions live with trusted project state outside r
 
 Support project-wide and workbook-specific living documents: research notes, derivations, plans, reports, and an evolving manuscript. The user can edit directly, select content and comment, request an agent revision, and inspect who changed what. Automatic review findings link to the document version and affected content.
 
-Use stable document/block/math IDs, attributed revisions, anchored comment threads, explicit resolution, and revision-aware edits. An agent patch names its expected revision and affected blocks; concurrent user changes must trigger reconciliation rather than whole-document overwrite. Preserve comments on changed/deleted text with an explicit stale/orphaned anchor where reattachment is uncertain. Real-time multi-person collaboration is a later scaling choice; safe user/agent editing is an initial requirement.
+**Format (D65):** documents are Markdown with LaTeX math (`$…$` inline, `$$…$$` display) embedded in the Markdown. The stored source is the Markdown text itself, so it stays readable, diffable and copyable. The server parses with markdown-it-py and mdit-py-plugins; the browser with markdown-it and KaTeX (all MIT). Using the same parser family on both sides keeps block and math-span boundaries consistent for anchors. Exports to `.tex` and PDF run in workers; Pandoc (GPL) is runtime-installed and called as a separate program.
+
+Use stable document/block/math IDs, attributed revisions, anchored comment threads, explicit resolution, and revision-aware edits. Block and math-span IDs are derived from the parsed Markdown and carried across edits, so a comment on an equation survives unrelated changes. An agent patch names its expected revision and affected blocks; concurrent user changes must trigger reconciliation rather than whole-document overwrite. Preserve comments on changed/deleted text with an explicit stale/orphaned anchor where reattachment is uncertain. Real-time multi-person collaboration is a later scaling choice; safe user/agent editing is an initial requirement.
 
 Reuse the same artifact/revision and typed-anchor contracts for documents, PDF sources, ledger evidence and review locations. Share one math renderer across views, and publish changes through common durable events. Domain-specific schemas and lifecycles remain separate. See [shared contracts and work packages](IMPLEMENTATION-PLAN.md#shared-contracts-to-establish-first).
 
@@ -52,7 +54,7 @@ A comment routed to an agent becomes a scoped work request in the orchestrator. 
 
 Keep LaTeX as editable, copyable mathematical source in conversations, workbook cells, living documents, comments, ledger claims, and review findings. Support inline/display equations, aligned derivations, matrices, finite-field notation, and references. Preserve source through Markdown/math and LaTeX exports and sandboxed PDF generation.
 
-A rich-text document should carry explicit math nodes containing original TeX. Browser rendering is a view over that source. Reuse CScience delimiter/highlighting/regression lessons; scope macros and make rendering errors or repairs visible without silently changing the stored mathematical claim. KaTeX is an existing baseline candidate, not a commitment to every TeX package being supported. [Supported syntax](https://katex.org/docs/supported.html)
+Living documents keep math as LaTeX spans inside Markdown (D65); other views (chat, ledger entries, review findings) use the same Markdown+LaTeX convention. Browser rendering is a view over that source. Reuse CScience delimiter/highlighting/regression lessons; scope macros and make rendering errors or repairs visible without silently changing the stored mathematical claim. KaTeX is an existing baseline candidate, not a commitment to every TeX package being supported. [Supported syntax](https://katex.org/docs/supported.html)
 
 Equation/block identity and revision remain stable enough for comments, citations, and reviews. Compiling a full TeX document belongs in a worker with scoped inputs and explicit policy, just like other generated code.
 
@@ -66,7 +68,7 @@ Automatic Conda provisioning still supplies additional tools. Test Sage startup 
 
 ## PDF parsing and navigation as a native source workflow
 
-Keep the original PDF and its version/hash. Derive reusable page text, outline/section structure, page renders/crops, tables/figures, and optional OCR/layout results in workers. Cache by document hash and parser configuration/version. Support page/section lookup, search or ranked page discovery, and exhaustive extraction as distinct operations.
+Keep the original PDF and its version/hash. The primary extraction library candidate is pdf_oxide (MIT OR Apache-2.0, D59), with pypdfium2 as fallback; PyMuPDF is excluded as AGPL. Its character-level positions, bookmarks and annotations are the basis for page/region anchors, and its optional rendering produces crops for checking equations. It parses untrusted input, so it runs in workers like any other parser. Its MCP server, if used, also runs in a worker sandbox, not beside the orchestrator. Derive reusable page text, outline/section structure, page renders/crops, tables/figures, and optional OCR/layout results in workers. Cache by document hash and parser configuration/version. Support page/section lookup, search or ranked page discovery, and exhaustive extraction as distinct operations.
 
 The GUI needs an integrated PDF viewer with page labels, thumbnails/outline, search, selection/highlights, and direct navigation from citations, comments, ledger entries, and review findings. A source reference identifies document revision, physical page index, displayed page label, and region/text anchor when available. Preserve both page numbering forms so printed page numbers do not silently point at the wrong PDF page.
 
@@ -80,6 +82,6 @@ Keep extraction method and uncertainty visible. Equations, matrices, small figur
 4. Draft a living document with LaTeX equations/matrices and links to source pages and exact run artifacts.
 5. The user edits an equation or assumption and adds a comment; the agent revises without overwriting concurrent edits.
 6. Automatic consistency review checks the claim against recorded evidence and attaches findings to exact claim/document revisions. Exercise fresh computational reproduction separately if that proposed extension is enabled.
-7. Update the project board with the result, limitations, and next question. Repeat against local and Kubernetes workers.
+7. Update the project board with the result, limitations, and next question. Run on babbage in phase 1; repeat on Kubernetes workers in phase 2.
 
 This is the initial product path. Living documents, the shared ledger, LaTeX, Sage, and PDF navigation must not be deferred to a generic later science expansion.
