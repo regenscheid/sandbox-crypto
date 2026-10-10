@@ -13,7 +13,10 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Monitors (egress threshold)
 - [x] Example policy validated by tests; crypto-research-mcp tool outcomes pinned by a fixture
 - [ ] Data-class limits in the pool ceiling (D50)
-- [ ] Policy compiler to OpenShell v0.1.3 network, MCP and filesystem policy; report unenforceable rules. Constraints are in the [OpenShell policy investigation](docs/agent-reports/openshell-policy-v0.1.3.md), Appendix C: set `enforcement: enforce`, emit allow regions (OpenShell has no specificity ordering), wildcards need three labels
+- [x] OpenShell v0.1.3 compiler (D69): research-sandbox fence of platform-service endpoints, and the MCP proxy's `protocol: mcp` policy, with findings for everything not expressed exactly. Filesystem policy belongs to the environment layer (D48)
+- [ ] Validate the compiled policies against a real OpenShell v0.1.3 gateway on babbage (`openshell policy set --wait`, the prover's boundary check); so far they are checked only against the documented schema
+- [ ] Decide credential handling for credentialed hosts: direct OpenShell endpoints, or credentials in the egress proxy (D57, D69)
+- [ ] Escalation grants: record approvals as scoped grants and compile them into the proxies' decisions and the MCP proxy's fence
 - [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint and `upstreamProxy` only chains TLS tunnels, so generic HTTP goes through the project egress proxy
 - [ ] Policy revisions: GUI and file edits, re-authentication for widening (D54)
 - [ ] `defaults.log`: decide whether allowed operations may go unlogged
