@@ -31,6 +31,7 @@ Planned members (created when work starts on them):
 | `worker` | `sandbox_science.worker` | Worker service (trusted, per pool) |
 | `orchestrator` | `sandbox_science.orchestrator` | Control application and harness |
 | `mcp-proxy` | `sandbox_science.mcp_proxy` | MCP proxy (runs in its own OpenShell sandbox) |
+| `policy-middleware` | `sandbox_science.policy_middleware` | OpenShell supervisor middleware that decides each request with the policy library (D69) |
 | `connector-auth` | `sandbox_science.connector_auth` | Connector auth service (OAuth for MCP) |
 | `web` | — | Browser front end (separate toolchain, D60) |
 
