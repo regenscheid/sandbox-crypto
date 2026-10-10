@@ -273,6 +273,19 @@ def _operation_path(operation: HttpOperation | GitOperation) -> str:
     return operation.path if isinstance(operation, HttpOperation) else operation.repo_path
 
 
+PACKAGE_INDEX_HOSTS: Final = frozenset(
+    {
+        "pypi.org",
+        "pypi.python.org",
+        "files.pythonhosted.org",
+        "conda.anaconda.org",
+        "repo.anaconda.com",
+        "repo.prefix.dev",
+    }
+)
+"""Package indexes, which workers reach only through the package mirror (D44)."""
+
+
 def _mcp_host(
     operation: HttpOperation | GitOperation, policy: LoadedPolicy, resolved: Sequence[str]
 ) -> str | None:
@@ -309,6 +322,14 @@ def _evaluate_network(
             "floor",
             f"{operation.host} hosts MCP server {server!r}, which is reachable only through "
             "the MCP proxy (D67)",
+            policy,
+        )
+    if operation.host in PACKAGE_INDEX_HOSTS:
+        # Otherwise a read rule would let workers fetch packages around the mirror and the
+        # packages section (channel and ecosystem rules).
+        return _deny(
+            "floor",
+            f"{operation.host} is a package index, reachable only through the package mirror",
             policy,
         )
 
@@ -383,7 +404,7 @@ def _evaluate_network(
     return decision
 
 
-def _glob_matches(pattern: str, name: str) -> bool:
+def tool_pattern_matches(pattern: str, name: str) -> bool:
     """Match a pattern whose only wildcard is '*' against a whole name.
 
     Greedy leftmost matching of the literal pieces is exact for '*'-only globs
@@ -451,7 +472,7 @@ def _evaluate_mcp(
     if (
         operation.origin == "worker"
         and worker_tools != "inherit"
-        and not any(_glob_matches(pattern, name) for pattern in worker_tools)
+        and not any(tool_pattern_matches(pattern, name) for pattern in worker_tools)
     ):
         return _deny("policy", f"tool {tool!r} is not in mcp.proxy.worker_tools", policy)
 
@@ -464,7 +485,7 @@ def _evaluate_mcp(
         (list_name, action, pattern)
         for list_name, action, patterns in lists
         for pattern in patterns
-        if _glob_matches(pattern, name)
+        if tool_pattern_matches(pattern, name)
     ]
     exact = [entry for entry in matches if "*" not in entry[2]]
     pool = exact or matches

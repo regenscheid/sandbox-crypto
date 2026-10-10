@@ -1003,3 +1003,22 @@ def test_a_hash_in_the_last_value_on_a_line_is_accepted() -> None:
         "metadata: {name: test}\n", "metadata:\n  name: test\n  description: 'see issue #12'\n"
     )
     assert parse_policy(text).policy.metadata.description == "see issue #12"
+
+
+# Compiler review (5c341b0): package indexes are reachable only through the mirror, so a
+# read rule cannot fetch packages around the packages section.
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://conda.anaconda.org/bioconda/linux-64/samtools-1.0-0.conda",
+        "https://files.pythonhosted.org/packages/aa/bb/numpy-2.0-cp313.whl",
+        "https://pypi.org/simple/numpy/",
+        "https://repo.anaconda.com/pkgs/main/linux-64/repodata.json",
+    ],
+)
+def test_package_indexes_are_reachable_only_through_the_mirror(url: str) -> None:
+    decision = evaluate_request(HttpRequest("GET", url), EXAMPLE, ceiling=OPEN)
+    assert decision.action is Action.DENY
+    assert decision.layer == "floor"
