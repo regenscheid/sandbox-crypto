@@ -39,23 +39,34 @@ packages:
 
 network:
   rules:
-    - name: package-mirrors
-      match: { destinations: [mirror.internal] }
-      action: allow
+  # Operations are classified first (package | git | mcp | http); a rule only
+  # sees operations of its own class. Within a class the most specific rule
+  # wins, ties go to the most restrictive action. Package traffic is governed
+  # by `packages`, MCP traffic by `mcp` (via the MCP proxy).
     - name: read-only-web
+      operation: http
       match: { hosts: ["*"], methods: [GET, HEAD] }
       limits: { max_url_bytes: 4096 }
       action: allow
+    - name: external-writes
+      operation: http
+      match: { hosts: ["*"], methods: [POST, PUT, PATCH, DELETE] }
+      action: escalate
+    # Example of a narrower allow overriding the broad write rule:
+    # - name: example-post-search-api
+    #   operation: http
+    #   match: { hosts: [api.example.org], paths: [/v1/search], methods: [POST] }
+    #   action: allow
     - name: git-fetch
+      operation: git
       match: { hosts: [github.com, gitlab.com, codeberg.org], git_service: upload-pack }
       action: allow
     - name: git-push
-      match: { git_service: receive-pack }
-      action: escalate
-    - name: external-writes
-      match: { hosts: ["*"], methods: [POST, PUT, PATCH, DELETE] }
+      operation: git
+      match: { hosts: ["*"], git_service: receive-pack }
       action: escalate
     - name: large-egress
+      operation: any
       match: { egress_bytes_per_hour_over: 500Mi }
       action: alert
 

@@ -69,7 +69,7 @@ Exact algebra/Sage, lattice/fpylll, parameter estimators, and optional licensed 
 ## Acceptance criteria
 
 - Orchestration and research code execution run in separate containers.
-- Ordinary research tool calls work against hosted Kubernetes and a local container pool in the initial deployments. Local Docker/other runtimes or Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04) are acceptable when execution and network policies are enforced.
+- Ordinary research tool calls work against a local pool on babbage (phase 1) and hosted Kubernetes (phase 2, D53). Local Docker/other runtimes or Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04) are acceptable when execution and network policies are enforced.
 - Interactive kernels, skills, file handoffs, and automatic reviews remain usable in both profiles.
 - Projects retain their base-image-derived environment and installed tools; sessions can share the default container or use a dedicated one.
 - Sessions in either mode can exchange same-project data without sharing live kernel variables.

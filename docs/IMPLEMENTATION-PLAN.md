@@ -82,15 +82,19 @@ Implement the worker API against OpenShell and against the reference fallback st
 
 **Exit evidence:** the W1 fixture runs through the worker service on two backends, with mirror-only egress and the adversarial suite passing on each.
 
-### W2 — Certify local and hosted execution with math/source capabilities (M1)
+### W2 — Certify babbage execution with math/source capabilities (M1, phase 1)
 
-Map one backend adapter to the selected runtime. If using OpenShell, pin matching components and let its gateway own the chosen driver lifecycle. Start with one local option, then exercise hosted Kubernetes through the same contract. Local Kubernetes can be the first local path; supporting every local engine is unnecessary.
+Map one backend adapter to the selected runtime. If using OpenShell, pin matching components and let its gateway own the chosen driver lifecycle. In phase 1 that is the MicroVM driver on babbage; supporting every local engine is unnecessary. Hosted Kubernetes certification is W2h in phase 2.
 
 Add a native Sage kernel adapter, evaluating its Jupyter kernel rather than emulating Sage in ordinary Python. Install Sage at runtime from conda-forge through the mirror (D46). Platform code speaks the Jupyter protocol to Sage's own kernel and never imports Sage. Measure first-install time, and Sage/fpylll performance under each isolation tier. Exercise preparsing, finite fields, polynomial rings, exact matrices, LaTeX results, interruption and reset. Add worker PDF extraction/rendering with source hashes and page coordinates, starting with pdf_oxide (D59); preserve originals. Test Conda provisioning and hooks under the same enforced environment/network injection as ordinary execution.
 
 Connect the trusted monitor and durable decision queue. Demonstrate block, permission escalation with approve/deny, and alert-and-continue using harmless fixtures. An approval path must prevent the unauthorized effect and show a safe continuation; an arbitrary denied network request must not be automatically replayed. Separately test middleware failure policy and expose unsupported inspection paths.
 
-**Exit evidence:** both a local container deployment and hosted Kubernetes pass the boundary, native Sage, PDF, provisioning, monitor and adversarial fixtures at their recorded isolation tiers. Record tested OS/architecture/runtime, storage and network controls; do not infer macOS parity from Linux success. Missing required policy support blocks certification rather than reducing isolation.
+**Exit evidence:** babbage passes the boundary, native Sage, PDF, provisioning, monitor and adversarial fixtures at its recorded isolation tier. Record OS, architecture, runtime, storage and network controls. Missing required policy support blocks certification rather than reducing isolation.
+
+### W2h — Certify hosted execution (phase 2, roadmap M3)
+
+Run the same W2 fixtures on the Kubernetes test cluster through the unchanged worker API: Agent Sandbox controller, a CNI that enforces NetworkPolicy, gVisor RuntimeClass on amd64 and arm64 nodes, tier 3 where nodes support it, and multi-arch images. **Exit evidence:** per node architecture and tier, the same fixtures pass. Do not infer arm64 or macOS parity from amd64 success.
 
 ### W3 — Make project/session state durable (M2)
 
@@ -112,7 +116,7 @@ Implement Science-style automatic consistency review to its behavior spec, inclu
 
 Register the external crypto skill pack through a common platform binding, recording effective revision and actual loading. Adapt its tools to the shared project resources and typed outcomes; keep the catalog external and one authoritative project history.
 
-**Exit evidence:** PDF → native Sage → shared result → LaTeX living document → user edit/comment → automatic consistency review → board update works across shared and dedicated workbooks on local and hosted workers. Confirm D23–D26, D30–D35 and D37 through the integrated workflow.
+**Exit evidence:** PDF → native Sage → shared result → LaTeX living document → user edit/comment → automatic consistency review → board update works across shared and dedicated workbooks on babbage in phase 1, then on the Kubernetes test cluster in phase 2. Confirm D23–D26, D30–D35 and D37 through the integrated workflow.
 
 ### W5 — Validate independent placement and failure recovery (M3 → M4)
 

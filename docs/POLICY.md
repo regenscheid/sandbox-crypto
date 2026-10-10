@@ -33,7 +33,29 @@ Agents can never change any layer. They can *propose* a project-policy change th
 | `escalate` | Hold only the affected operation; create a durable permission request; resume or safely retry on approval, block on denial or timeout |
 | `deny` | Block; record the rule and reason |
 
-Within the project policy, when several rules match one operation, **the most restrictive action wins** (`deny` > `escalate` > `alert` > `allow`). Broad `allow` rules therefore stay safe to write, because any narrower `escalate` or `deny` rule still applies. Operations that match no rule take `defaults.action`.
+Within the project policy, evaluation has two steps.
+
+**1. Classify the operation.** Protocol-aware matchers first decide what a request *is*, before any generic HTTP rule sees it:
+
+| Operation class | Recognized by | Governed by |
+| --- | --- | --- |
+| `package` | Requests to the package mirror | `packages` |
+| `git` | Git smart-HTTP service (`git-upload-pack` is fetch, `git-receive-pack` is push), whatever the HTTP method | `network.rules` with `operation: git` |
+| `mcp` | MCP JSON-RPC to the MCP proxy, classified by JSON-RPC method and tool name | `mcp.servers` (the MCP proxy) |
+| `http` | Everything else | `network.rules` with `operation: http` |
+
+Generic `http` method rules never apply to `git`, `mcp` or `package` operations. This matters because both git fetch and MCP's Streamable HTTP transport send reads as `POST`. Without classification, a rule escalating every `POST` would also escalate those reads.
+
+**2. Pick the rule.** Among the rules that match an operation of its class, the **most specific rule wins**, and ties go to the **most restrictive action** (`deny` > `escalate` > `alert` > `allow`). Specificity, from most to least:
+
+1. exact host plus path prefix;
+2. exact host;
+3. wildcard host (`*.example.org`);
+4. `*`.
+
+At equal host/path specificity, a rule that names methods (or git services, or tool names) is more specific than one that does not.
+
+So a narrow `escalate` or `deny` still overrides a broad `allow`, which keeps broad allows safe to write. A narrow `allow`, such as a read-only `POST` search API on one host, can override a broad "escalate all writes" rule. Operations that match no rule take `defaults.action`. The hard floor and pool ceiling are applied before either step and cannot be overridden.
 
 ## Escalation timeout
 
@@ -43,8 +65,8 @@ Within the project policy, when several rules match one operation, **the most re
 
 The shipped example is "quite allowing", as requested:
 
-- **Freely allowed:** package installs from conda-forge and PyPI through the mirror; any read-only HTTP (GET/HEAD) with a URL length limit; git clone/fetch; read-type tools on crypto-research-mcp; writes to the project's shared data, with conflict checks.
-- **Asks first:** any external write (POST/PUT/PATCH/DELETE), git push, crawling, agent and monitor tools that change state or spend credits, and anything unmatched.
+- **Freely allowed:** package installs from conda-forge and PyPI through the mirror; any read-only HTTP (GET/HEAD) with a URL length limit; git clone/fetch (classified as `git`, so its POST requests are not caught by the HTTP write rule); read-type tools on crypto-research-mcp (classified as `mcp`); writes to the project's shared data, with conflict checks.
+- **Asks first:** any external `http` write (POST/PUT/PATCH/DELETE) not covered by a more specific allow, git push, crawling, agent and monitor tools that change state or spend credits, and anything unmatched.
 - **Never:** MCP server configuration tools, plus the hard floor.
 - **Alerts:** unusually large egress volume.
 

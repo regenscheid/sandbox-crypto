@@ -14,13 +14,13 @@ Confirm the [threat model](THREAT-MODEL.md) and [licensing policy](LICENSING.md)
 
 **Exit:** behavior specs with fixtures, and a harness-component decision with licenses recorded.
 
-## M1 — Prove the worker boundary on local and hosted targets
+## M1 — Prove the worker boundary on babbage
 
 Run the minimal new harness in one container. First route an ordinary shell command and two stateful Python cells to another container, publish a file, interrupt work and reconnect. Then add native Sage cells, PDF parsing/rendering and capability probes. Include R if the behavior specs require it. Check Sage preparsing and exact finite-field/matrix output; preserve PDF page anchors and inspect mathematical transcription against a render. Observe processes/files to verify research code is outside the orchestrator.
 
-Start on one available target, then run the same boundary fixture on a hosted Kubernetes pool and a local container pool. Evaluate local Docker/Podman or another container runtime alongside local Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04). Select a working local backend by measured execution/network policy enforcement, monitoring and persistence. Both deployment classes are initial gates; local Kubernetes is optional.
+Run on babbage (phase 1) with the OpenShell MicroVM driver; compare a container driver only if the MicroVM path is blocked. Select the backend by measured execution/network policy enforcement, monitoring and persistence. Hosted Kubernetes certification is a phase 2 gate (M3) and does not block phase 1. The worker API stays backend-neutral, so no phase 1 code assumes a single host.
 
-**Exit:** container A orchestrates; container B executes at a recorded isolation tier with mirror-only egress, and preserves Python/Sage kernel state; files, PDF page evidence, LaTeX results and useful errors return through the same research tools on local and hosted targets. Record which macOS/Linux environments were actually exercised.
+**Exit:** container A orchestrates; container B executes at a recorded isolation tier with mirror-only egress, and preserves Python/Sage kernel state; files, PDF page evidence, LaTeX results and useful errors return through the same research tools on babbage. Record the exact host, kernel, driver and isolation tier exercised.
 
 ## M2 — Establish persistent projects and the complete local research workflow
 
@@ -56,8 +56,8 @@ The user needs the whole initial feature set before the system is useful, so pha
 
 | Phase | Target | Milestones | Usable when |
 | --- | --- | --- | --- |
-| 1 | babbage (amd64, Ubuntu 26.04), all-local, tier 3 via OpenShell MicroVM (KVM) | M0–M2 | The complete research workspace works on babbage: chat and workbooks, Python and Sage kernels, Conda provisioning, PDF navigation, Markdown+LaTeX living documents, ledger/board/frontier, automatic review, external skill pack, and crypto-research-mcp, under the permissive policy file |
-| 2 | Kubernetes test cluster (Raspberry Pi 5 arm64 + amd64 nodes), small scale | M3, M4 (partial) | The same workflow runs with workers on the cluster; multi-arch images; heavy math pinned to capable nodes |
+| 1 | babbage (amd64, Ubuntu 26.04), all-local, tier 3 via OpenShell MicroVM (KVM) | M0–M2, **local gates only** | The complete research workspace works on babbage: chat and workbooks, Python and Sage kernels, Conda provisioning, PDF navigation, Markdown+LaTeX living documents, ledger/board/frontier, automatic review, external skill pack, and crypto-research-mcp, under the permissive policy file |
+| 2 | Kubernetes test cluster (Raspberry Pi 5 arm64 + amd64 nodes), small scale | M3 (hosted certification of M1–M2 fixtures), M4 (partial) | The same workflow runs with workers on the cluster; multi-arch images; heavy math pinned to capable nodes |
 | 3 | Mac (M3 Max), further MCP servers, remote access/exposure decisions, remaining placements | M4, M5 | Placement and access choices made from phase 1–2 experience |
 
 ## First end-to-end fixture
@@ -67,7 +67,7 @@ The user needs the whole initial feature set before the system is useful, so pha
 3. Publish structured outputs and provenance; inspect them from a workbook with a dedicated container.
 4. Draft a LaTeX living document linking exact sources/runs. Accept user edits/comments and reconcile a concurrent agent patch.
 5. Run automatic consistency review and retain findings, author response and confirmation. If the proposed reproduction extension is enabled, separately rerun the exact computation in a fresh worker through the common execution API.
-6. Update the project board. Repeat against Kubernetes workers, then test interruption and recovery.
+6. Update the project board, then test interruption and recovery. In phase 2, repeat against Kubernetes workers.
 
 Define `finite-field-identity-v1`: over GF(17), check `a^17 = a` for all 17 elements and `a^16 = 1` for all 16 nonzero elements. Return canonical JSON with field order, counts, and assertion results. Local and cluster runs should agree on exact output while retaining distinct execution evidence. This checks integration and reproduction, not novel cryptographic reasoning.
 
