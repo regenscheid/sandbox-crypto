@@ -142,8 +142,8 @@ A small exact Sage result should reproduce without producer kernel memory and re
 
 | Choice | Evidence point | Default until then |
 | --- | --- | --- |
-| Harness building blocks | W0 behavior specs, license check and reuse assessment | Anthropic client SDK + MCP SDK + own research loop (D55) |
-| First local backend and OpenShell adoption | W2 enforcement, monitor, lifecycle and platform matrix | One available local candidate; no promised universal engine support |
+| Harness building blocks | W0 behavior specs, license check and reuse assessment | Provider-neutral model interface over the LiteLLM proxy, OpenAI-compatible first and Anthropic Messages later (D61), + MCP SDK + own research loop (D55) |
+| First local backend and OpenShell adoption | W2 enforcement, monitor, lifecycle and platform matrix | OpenShell with the MicroVM driver on babbage (D52, D63); the conformance suite keeps the worker API backend-neutral |
 | Persistence/synchronization mechanism | W3 writable-state coverage, conflict and restore checks | Preserve the original environment/state until a verified alternative exists |
 | Shared UI/kernel libraries | W2/W4 native math, output, anchor and security behavior | Jupyter-protocol kernels; candidate PDF.js/KaTeX integrations |
 | New database or additional service | Actual store/availability limitation | Logical modules in the control application on one embedded store (D12) |
