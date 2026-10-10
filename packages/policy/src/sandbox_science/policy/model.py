@@ -390,6 +390,9 @@ class NoAuth(StrictModel):
 McpAuth = Annotated[OAuthAuth | BearerAuth | HeadersAuth | NoAuth, Field(discriminator="mode")]
 
 
+_MCP_PATH_RE: Final = re.compile(r"/[A-Za-z0-9._~!$&'()+,=:@/-]*")
+
+
 class McpServer(StrictModel):
     """One MCP server reached through the MCP proxy (D67).
 
@@ -418,12 +421,22 @@ class McpServer(StrictModel):
         if parts.fragment or not parts.hostname:
             raise ValueError("MCP server URLs need a host and no fragment")
         normalize_host(parts.hostname)
-        _ = parts.port  # raises ValueError for an invalid port
+        port = parts.port  # raises ValueError for a malformed port
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError("MCP server URL ports must be 1 to 65535")
+        if parts.query:
+            raise ValueError("MCP server URLs must not have a query")
+        # Paths stay in the form OpenShell matches after normalizing requests: no
+        # encoding, glob characters, parameters, or empty and dot segments.
         path = parts.path or "/"
-        if any(char in path for char in "%;\\") or parts.query:
-            raise ValueError("MCP server URLs must have a plain path without '%', ';' or a query")
-        if any(segment in (".", "..") for segment in path.split("/")):
-            raise ValueError("MCP server URL paths must not contain dot segments")
+        if not _MCP_PATH_RE.fullmatch(path):
+            raise ValueError(
+                "MCP server URL paths may contain letters, digits and - . _ ~ ! $ & ' ( ) + , = "
+                ": @ / only"
+            )
+        segments = path.split("/")[1:]
+        if any(segment in (".", "..") for segment in segments) or "" in segments[:-1]:
+            raise ValueError("MCP server URL paths must not contain empty or dot segments")
         return value
 
     @property

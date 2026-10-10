@@ -27,8 +27,9 @@ def render() -> dict[str, str]:
     """Return the example files by name."""
     policy = load_policy(ROOT / "examples" / "policy.yaml")
     targets = load_targets(OUTPUT / "targets.yaml")
-    sandbox = compile_sandbox(policy, targets.sandbox)
-    mcp = compile_mcp_proxy(policy, targets.mcp_proxy, ceiling=PoolCeiling.unrestricted())
+    ceiling = PoolCeiling.unrestricted()
+    sandbox = compile_sandbox(policy, targets.sandbox, ceiling=ceiling)
+    mcp = compile_mcp_proxy(policy, targets.mcp_proxy, ceiling=ceiling)
     return {
         "research-sandbox.yaml": HEADER + sandbox.policy.to_yaml(),
         "mcp-proxy.yaml": HEADER + mcp.policy.to_yaml(),

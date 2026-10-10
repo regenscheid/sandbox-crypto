@@ -58,7 +58,7 @@ Protocol-aware matchers first decide what a request *is*, before any generic HTT
 
 Generic `http` method rules never apply to `git`, `mcp` or `package` operations. This matters because both git fetch and MCP's Streamable HTTP transport send reads as `POST`. Without classification, a rule escalating every `POST` would also escalate those reads.
 
-Git smart-HTTP is recognized from the request: `GET <repo>/info/refs?service=git-upload-pack` or `?service=git-receive-pack`, and `POST <repo>/git-upload-pack` or `POST <repo>/git-receive-pack` carrying a body and exactly git's own content type, without parameters (`application/x-git-upload-pack-request` or `application/x-git-receive-pack-request`). Any other POST is ordinary `http`, so a REST call whose path happens to end in `/git-upload-pack`, such as a "create file" API, stays a write. The discovery request of a push (`service=git-receive-pack`) already counts as a push. Dumb-HTTP git reads, and any other method, path or `service` value at a git endpoint, are ordinary `http` operations. Package and MCP operations are classified by the package mirror and the MCP proxy, which are the only routes for that traffic. The egress proxy reports each request's Content-Type, whether it carries at least one body byte, and any Upgrade header, and passes the IP addresses it is about to connect to (`resolved`). The hard floor (administration endpoints included), the pool ceiling's `deny_hosts` and the public/non-public rule apply to every resolved address, in every form an address can take (`::ffff:10.0.0.5` is `10.0.0.5`). Rules that name an IP address match requests to that literal address; to block an address whatever name reaches it, list it in the pool ceiling's `deny_hosts`. For the same reason, list administration endpoints in `admin_hosts` by address as well as by name.
+Git smart-HTTP is recognized from the request: `GET <repo>/info/refs?service=git-upload-pack` or `?service=git-receive-pack`, and `POST <repo>/git-upload-pack` or `POST <repo>/git-receive-pack` carrying a body and exactly git's own content type, without parameters (`application/x-git-upload-pack-request` or `application/x-git-receive-pack-request`). Any other POST is ordinary `http`, so a REST call whose path happens to end in `/git-upload-pack`, such as a "create file" API, stays a write. The discovery request of a push (`service=git-receive-pack`) already counts as a push. Dumb-HTTP git reads, and any other method, path or `service` value at a git endpoint, are ordinary `http` operations. Package and MCP operations are classified by the package mirror and the MCP proxy, which are the only routes for that traffic. The policy middleware builds each request from OpenShell's evaluation message: method, URL, headers (Content-Type among them, but never the hop-by-hop Upgrade header, which OpenShell handles itself) and body, where `has_body` means at least one body byte. The library's `resolved` parameter takes the addresses a component is about to connect to, for components that resolve names themselves, such as the MCP proxy. The floor (administration endpoints included), the pool ceiling's `deny_hosts` and the public/non-public rule then apply to every resolved address, in every form an address can take (`::ffff:10.0.0.5` is `10.0.0.5`). Rules that name an IP address match requests to that literal address; to block an address whatever name reaches it, list it in the pool ceiling's `deny_hosts`, and list administration endpoints in `admin_hosts` by address as well as by name.
 
 A request that cannot be classified unambiguously is **denied**. That includes:
 
@@ -137,48 +137,50 @@ This deliberately relaxes the earlier review proposal (D44) that unknown destina
 
 ## Mapping to enforcement
 
-The compiler in `sandbox_science.policy.openshell` (D69, proposed) produces OpenShell v0.1.3 network policy for two kinds of sandbox. The rendered examples are in [examples/openshell](../examples/openshell), generated from the example policy and [targets.yaml](../examples/openshell/targets.yaml).
+The compiler in `sandbox_science.policy.openshell` (D69, proposed) produces OpenShell v0.1.3 policy for two kinds of sandbox. The rendered examples are in [examples/openshell](../examples/openshell), generated from the example policy and [targets.yaml](../examples/openshell/targets.yaml).
 
-- **Research sandboxes** get a fence: raw `protocol: tcp` endpoints for the platform services only. These are the egress proxy, the package mirror and, when `mcp.proxy.worker_access` is true, the MCP proxy. Every HTTP and git request goes through the egress proxy, which applies this library with the full semantics. The compiler also returns the proxy environment variables (`HTTPS_PROXY`, `NO_PROXY`) for the sandbox's processes.
-- **The MCP proxy's sandbox** gets one inspected `protocol: mcp` endpoint per declared server, in `enforce` mode, with the server URL's path. The MCP protocol methods are allowed explicitly, as OpenShell requires. Allowed tools are listed by exact name or pattern, and deny entries are added only to carve exceptions out of allow patterns, since OpenShell denies everything else. Escalated tools are denied at this fence until an approval is compiled in as a grant. `oauth` and `bearer` servers, and `headers` servers that name a single provider, are bound to that provider with `credential_binding`.
+- **Research sandboxes.** OpenShell's own proxy carries their HTTP and git traffic. It terminates TLS, normalizes requests, checks addresses, injects provider credentials and logs.
+  - **Admission.** The compiled policy admits the destinations the project could reach. If any wildcard rule or a non-deny `defaults.action` needs it, a host-less endpoint admits public address ranges; otherwise exact endpoints admit the hosts the rules name.
+  - **The policy middleware** is attached to every host (`**`, `fail_closed`). OpenShell calls it for each admitted request, after its network rules and before injecting credentials. The middleware applies this library to the request, so every rule in this file is enforced exactly, including requests to hosts that providers admit.
+  - **Escalations** are denied with the reason code `approval_required` and recorded as pending requests; the agent retries after approval.
+  - **Platform services**, the package mirror and (with worker access) the MCP proxy, are raw TCP endpoints outside the middleware. They must have private addresses, so that the host-less endpoint never admits them.
+- **The MCP proxy's sandbox** gets one inspected `protocol: mcp` endpoint per declared server, in `enforce` mode, with the server URL's path as an exact selector.
+  - **Methods and tools.** The MCP protocol methods are allowed explicitly, as OpenShell requires. Allowed tools are listed by exact name or pattern, and deny entries are added only to carve exceptions out of allow patterns, since OpenShell denies everything else.
+  - **Escalated tools** stay denied at this fence; approved grants are not compiled in yet.
+  - **Revision.** `revision`, when it names an MCP protocol revision, limits the endpoint to that revision.
+  - **Credentials.** `oauth` and `bearer` servers, and `headers` servers that name a single provider, are bound to it with `credential_binding`.
 
-Wherever the compiled policy differs from the project policy, it is stricter, and the compiler reports it. A randomized test checks that the compiled tool rules never admit a tool the library would not allow. For example, OpenShell's `*` stops at a `.`. So whenever deny patterns exist, allow patterns admit only names whose part after the prefix has no dot, and a lone `*` is compiled as `*` rather than OpenShell's match-anything `**`.
+Wherever the compiled policy differs from the project policy, it is stricter, and the compiler reports it. A randomized test checks that the compiled tool rules never admit a tool the library would not allow. For example, OpenShell's `*` stops at a `.`. So whenever deny patterns exist, allow patterns admit only names whose part after the prefix has no dot, and a prefixed pattern never admits the bare prefix.
 
-Project HTTP and git rules are not compiled into direct OpenShell endpoints, because OpenShell cannot express them exactly:
+The middleware path has limits to verify on babbage:
 
-- it has no URL length limits;
-- it cannot see a request's Content-Type, so it cannot tell a git fetch from a REST write ending in `/git-upload-pack`;
-- a `GET` rule also admits `HEAD`;
-- an escalation can only be denied;
-- exact hosts are trusted with private addresses that the public/non-public rule would refuse;
-- attached providers add `_provider_*` rules of their own, outside this policy.
-
-This leaves an open question about credentials. D57 has OpenShell resolve provider credentials, which only happens on OpenShell-inspected endpoints, not inside the egress proxy's tunnel. Credentialed hosts therefore need either direct endpoints (compiled under the constraints above) or credential handling in the egress proxy. Until that is decided, the compiler warns about each declared provider.
+- **Body size.** A request body larger than the middleware's registered `max_payload_bytes` (at most 4 MiB) is blocked, so larger uploads fail.
+- **Names, not addresses.** The middleware sees host names, not resolved addresses. The host-less endpoint's `allowed_ips` keep wildcard rules on public addresses. Exact endpoints let a named host resolve to a private address, as the library's exact-host rule does.
+- **LAN names.** OpenShell requires overlapping endpoints to agree on `allowed_ips`, so a non-public host name cannot be admitted beside the host-less endpoint. Name the address in the rule instead.
+- **Still to check:** how WebSocket upgrades and DNS resolution behave for the host-less endpoint.
 
 | Policy element | Enforced by |
 | --- | --- |
-| Hard floor | Platform code; OpenShell always blocks loopback, link-local and unspecified addresses, and admits the sandbox only to platform services |
-| `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The egress proxy, with this library |
-| `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox, and `worker_access` decides whether research sandboxes can reach the MCP proxy at all |
+| Hard floor | OpenShell blocks loopback, link-local and unspecified addresses itself; the middleware applies the rest (metadata names, administration endpoints, MCP hosts, package indexes) |
+| `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The policy middleware, with this library, behind OpenShell's admission endpoints and address checks |
+| `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox; `worker_access` also decides whether research sandboxes can reach the MCP proxy |
 | `mcp.servers.*.auth` | The connector auth service and OpenShell providers bound with `credential_binding` ([MCP connectors](MCP-CONNECTORS.md), D66, D67) |
-| `credentials.providers` | OpenShell providers (D57); see the open question above |
-| `escalate` | The proxies hold the operation and create a durable permission request (MONITORING.md); at the MCP proxy's fence, a grant compiled in after approval |
-| `alert`, `monitors` | Findings from proxy and gateway events and usage counters |
-| `packages` | The package mirror, with this library, and the read-only rootfs (D44, D48) |
+| `credentials.providers` | OpenShell providers (D57), which inject credentials after the middleware has decided |
+| `escalate` | A denial with `approval_required` and a durable permission request (MONITORING.md); the agent retries after approval |
+| `alert`, `monitors` | Middleware findings and request records |
+| `packages` | The package mirror, with this library; package indexes are reachable only through it |
 | `resources` | The compute driver, capped by the pool ceiling; model budget through the LiteLLM virtual key (D61) |
 
-Host checks also apply to the addresses a name resolves to. The egress proxy resolves names itself and passes the addresses to the library (`resolved`), so a public-looking name that resolves to a private or metadata address is treated like that address. OpenShell validates the addresses it dials in the same way, which closes the DNS-rebinding window.
-
-Every compilation records the project policy's revision (its SHA-256 digest).
+Apply each compiled document so that it replaces the sandbox's network sections entirely; an entry left over from an earlier compilation could admit what the policy no longer allows. Every compilation records the project policy's revision (its SHA-256 digest), which the middleware checks against the policy it evaluates.
 
 ## Residual risks
 
 Five adversarial review rounds of the library (2026-10-10, pinned by `test_review_regressions.py`) left these for the components around it:
 
 - Paths are compared case-sensitively, so a path `deny` can be bypassed on a server that ignores case. Prefer narrow allows to path denies.
-- An allowed git fetch sends a request body to the git host. The egress proxy should check that upload-pack bodies are pkt-line requests and bound their size, especially under rules that allow fetches from many hosts.
+- An allowed git fetch sends a request body to the git host. The middleware receives the body, so it should check that upload-pack bodies are pkt-line requests, especially under rules that allow fetches from many hosts.
 - MCP tools that fetch URLs take the URL as an argument, which `max_url_bytes` does not see. The MCP proxy should bound argument sizes.
-- The library checks the resolved addresses the egress proxy passes it; a proxy that skips them loses those checks.
+- The policy middleware sees host names only, so address checks for traffic it decides rest on OpenShell's admission endpoints (see above).
 - The MCP host floor matches the declared host, so another name for a server declared by name (an alias, or the same app under another domain) is not recognized. MCP credentials stay in the MCP proxy, so such a request carries none, and writes still escalate as generic `http`. The MCP proxy must verify the upstream TLS certificate against the declared host.
 - Visible filler, such as `"1   .   .   ."`, can still push the end of a line toward the 160-column limit; review long lines in full.
 - Some servers interpret paths in ways the classifier does not model, such as case-insensitive matching or fullwidth letters on Windows; this is why path denies are weak.

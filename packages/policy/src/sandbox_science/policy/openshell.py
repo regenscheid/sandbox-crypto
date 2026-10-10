@@ -3,29 +3,27 @@
 
 Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
 
-* A research sandbox reaches the outside only through platform services: the
-  egress proxy, which applies this library to every HTTP and git request; the
-  package mirror; and, when worker access is on, the MCP proxy. Its OpenShell
-  policy is a fence of raw TCP endpoints for those services.
+* A research sandbox's HTTP and git traffic goes through OpenShell's own proxy,
+  which terminates TLS, injects provider credentials and logs. The compiled
+  policy admits the destinations the project could ever reach, and attaches the
+  platform's policy middleware to every host: OpenShell calls it for each
+  admitted request, before injecting credentials, and the middleware decides
+  with this library. Platform services (the package mirror and, with worker
+  access, the MCP proxy) are raw TCP endpoints outside the middleware.
 * The MCP proxy sandbox reaches the declared MCP servers. Its policy re-enforces
   the tool rules as OpenShell ``protocol: mcp`` endpoints.
 
-Project HTTP and git rules are not translated into direct OpenShell endpoints.
-OpenShell has no URL limits, cannot tell a git fetch from a REST write (it does
-not see the content type), lets a GET rule admit HEAD, can only deny an
-escalation, trusts private addresses for exact hosts and adds provider rules of
-its own. Everything the compiler cannot express exactly is reported, and where
-the compiled policy differs from the project policy it is stricter.
+Everything the compiler cannot express exactly is reported, and where the
+compiled policy differs from the project policy it is stricter.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from os import PathLike
-from types import MappingProxyType
 from typing import Annotated, Final, Literal
 from urllib.parse import urlsplit
 
@@ -34,14 +32,15 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstra
 
 from .ceiling import PoolCeiling
 from .decision import Action
-from .evaluate import DEFAULT_FLOOR, MCP_PROTOCOL_METHODS, tool_pattern_matches
+from .evaluate import DEFAULT_FLOOR, MCP_PROTOCOL_METHODS
 from .floor import HardFloor
-from .hosts import floor_reason, normalize_host, parse_ip
+from .hosts import HostKind, floor_reason, is_public, normalize_host, parse_ip
 from .loader import LoadedPolicy, parse_model, read_limited
 from .model import (
     API_VERSION,
     BearerAuth,
     McpServer,
+    Name,
     NoAuth,
     OAuthAuth,
     Port,
@@ -110,13 +109,19 @@ class CredentialBinding(_OpenShellModel):
 
 
 class Endpoint(_OpenShellModel):
-    """A network endpoint. ``tcp`` endpoints are raw relays; ``mcp`` ones are inspected."""
+    """A network endpoint. ``tcp`` endpoints are raw relays; ``rest`` and ``mcp`` are inspected.
 
-    host: str
+    An endpoint without ``host`` admits any host name whose addresses all lie in
+    ``allowed_ips``.
+    """
+
+    host: str | None = None
     ports: tuple[int, ...]
     path: str | None = None
-    protocol: Literal["tcp", "mcp"]
+    protocol: Literal["tcp", "rest", "mcp"]
     enforcement: Literal["enforce"] | None = None
+    access: Literal["full"] | None = None
+    allowed_ips: tuple[str, ...] | None = None
     rules: tuple[Rule, ...] | None = None
     deny_rules: tuple[DenyEntry, ...] | None = None
     mcp: McpSettings | None = None
@@ -131,21 +136,63 @@ class NetworkPolicy(_OpenShellModel):
     binaries: tuple[Binary, ...]
 
 
+class MiddlewareSelector(_OpenShellModel):
+    """Destination hosts a middleware runs for; ``exclude`` wins over ``include``."""
+
+    include: tuple[str, ...]
+    exclude: tuple[str, ...] | None = None
+
+
+class NetworkMiddleware(_OpenShellModel):
+    """One entry of ``network_middlewares``: a registered middleware service and where it runs."""
+
+    middleware: str
+    order: int
+    on_error: Literal["fail_closed"]
+    endpoints: MiddlewareSelector
+    config: dict[str, dict[str, str]]
+
+
 class OpenShellPolicy(_OpenShellModel):
     """An OpenShell policy document holding network policy only.
 
     Filesystem, Landlock and process settings are fixed when a sandbox starts
-    and belong to the environment layer (D48), so the compiled document is
-    applied with ``openshell policy update`` semantics: network sections only.
+    and belong to the environment layer (D48). Apply the compiled document so
+    that it replaces the sandbox's network sections entirely: an entry left over
+    from an earlier compilation could admit what the policy no longer allows.
     """
 
     version: Literal[1] = 1
     network_policies: dict[str, NetworkPolicy]
+    network_middlewares: dict[str, NetworkMiddleware] | None = None
 
     def to_yaml(self) -> str:
-        """Render deterministic YAML (OpenShell's policy hash depends on list order)."""
+        """Render deterministic YAML (OpenShell's policy hash depends on list order).
+
+        Strings that a YAML 1.2 parser could read as numbers, booleans or null are
+        quoted; PyYAML only quotes the YAML 1.1 forms.
+        """
         document = self.model_dump(mode="json", exclude_none=True)
-        return yaml.safe_dump(document, sort_keys=False, default_flow_style=False)
+        return yaml.dump(document, Dumper=_Dumper, sort_keys=False, default_flow_style=False)
+
+
+_YAML12_NON_STRING_RE: Final = re.compile(
+    r"[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+|[-+]?(\.[0-9]+|[0-9]+(\.[0-9]*)?)([eE][-+]?[0-9]+)?"
+    r"|[-+]?\.(inf|Inf|INF)|\.(nan|NaN|NAN)|true|True|TRUE|false|False|FALSE|null|Null|NULL|~|"
+)
+
+
+class _Dumper(yaml.SafeDumper):
+    """A SafeDumper that also quotes strings YAML 1.2 would read as another type."""
+
+
+def _represent_str(dumper: yaml.SafeDumper, value: str) -> yaml.ScalarNode:
+    style = '"' if _YAML12_NON_STRING_RE.fullmatch(value) else None
+    # The stubs leave represent_scalar's value parameter untyped.
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)  # pyright: ignore[reportUnknownMemberType]
+
+
+_Dumper.add_representer(str, _represent_str)
 
 
 # Report.
@@ -167,17 +214,19 @@ class Finding:
     message: str
 
 
+class CompileError(ValueError):
+    """The targets and the project policy cannot produce a policy OpenShell would load."""
+
+
 @dataclass(frozen=True, slots=True)
 class Compiled:
     """A compiled OpenShell policy with its findings.
 
-    ``environment`` holds proxy variables for the sandbox's processes, and
     ``policy_digest`` identifies the project policy revision it came from.
     """
 
     policy: OpenShellPolicy
     findings: tuple[Finding, ...]
-    environment: Mapping[str, str]
     policy_digest: str
 
 
@@ -218,11 +267,13 @@ McpVersion = Literal["2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"]
 class SandboxTarget(StrictModel):
     """Platform services for research sandboxes.
 
-    ``binaries`` defaults to every executable: research code runs arbitrary
-    programs, and the services themselves enforce the policy.
+    ``middleware`` is the name under which the policy middleware service is
+    registered in the gateway configuration. ``binaries`` defaults to every
+    executable: research code runs arbitrary programs, and the middleware and
+    services decide what they may do.
     """
 
-    egress_proxy: ServiceEndpoint
+    middleware: Name
     package_mirror: ServiceEndpoint
     mcp_proxy: ServiceEndpoint
     binaries: tuple[BinaryPattern, ...] = Field(default=("/**",), min_length=1)
@@ -265,20 +316,165 @@ def load_targets(path: str | PathLike[str]) -> OpenShellTargets:
 # Compilation.
 
 
-def compile_sandbox(policy: LoadedPolicy, target: SandboxTarget) -> Compiled:
-    """Compile the OpenShell fence for a research sandbox.
+_NON_PUBLIC_IPV4: Final = tuple(
+    ipaddress.IPv4Network(block)
+    for block in (
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+    )
+)
+_NON_PUBLIC_IPV6: Final = tuple(
+    ipaddress.IPv6Network(block)
+    for block in ("2001::/23", "2001:db8::/32", "2002::/16", "3fff::/20")
+)
 
-    The sandbox may connect only to the egress proxy, the package mirror and,
-    when ``mcp.proxy.worker_access`` is true, the MCP proxy. The services apply
-    the project policy themselves.
+
+def _without[N: (ipaddress.IPv4Network, ipaddress.IPv6Network)](
+    network: N, blocks: tuple[N, ...]
+) -> list[N]:
+    remaining = [network]
+    for block in blocks:
+        kept: list[N] = []
+        for candidate in remaining:
+            if not candidate.overlaps(block):
+                kept.append(candidate)
+            elif block.subnet_of(candidate):
+                kept.extend(candidate.address_exclude(block))
+        remaining = kept
+    return sorted(ipaddress.collapse_addresses(remaining))
+
+
+def public_address_ranges() -> tuple[str, ...]:
+    """Public unicast address space, for a host-less endpoint's ``allowed_ips``.
+
+    IPv4 without its special-purpose blocks, and IPv6 global unicast
+    (``2000::/3``) without documentation, 6to4 and IETF protocol assignments.
+    Every address in these ranges is public by the library's rule, so OpenShell
+    admits no address the library would refuse to a wildcard rule.
+    """
+    ipv4 = _without(ipaddress.IPv4Network("0.0.0.0/0"), _NON_PUBLIC_IPV4)
+    ipv6 = _without(ipaddress.IPv6Network("2000::/3"), _NON_PUBLIC_IPV6)
+    return tuple(str(network) for network in (*ipv4, *ipv6))
+
+
+def compile_sandbox(
+    policy: LoadedPolicy,
+    target: SandboxTarget,
+    *,
+    ceiling: PoolCeiling,
+    floor: HardFloor = DEFAULT_FLOOR,
+) -> Compiled:
+    """Compile a research sandbox's policy: admission endpoints plus the policy middleware.
+
+    OpenShell admits the destinations the project could ever reach and calls the
+    policy middleware for every admitted request; the middleware decides with
+    this library. Raises CompileError when the result would not load.
     """
     project = policy.policy
     findings: list[Finding] = []
     binaries = tuple(Binary(path=path) for path in target.binaries)
-    services = [
-        ("egress-proxy", "egress proxy", target.egress_proxy),
-        ("package-mirror", "package mirror", target.package_mirror),
-    ]
+    reachable = [rule for rule in project.network.rules if rule.action is not Action.DENY]
+
+    ports = {80, 443} | {port for rule in reachable for port in rule.match.ports}
+    blocked = sorted(ports & CONTROL_PLANE_PORTS)
+    if blocked:
+        findings.append(
+            Finding(
+                Severity.WARNING,
+                "network.rules",
+                f"ports {blocked} are control-plane ports that OpenShell blocks; requests to "
+                "them fail",
+            )
+        )
+    admitted_ports = tuple(sorted(ports - CONTROL_PLANE_PORTS))
+
+    # Unmatched requests take defaults.action, so anything but deny must reach the
+    # middleware too, as must every wildcard rule.
+    open_internet = project.defaults.action is not Action.DENY or any(
+        pattern.kind is not HostKind.EXACT for rule in reachable for pattern in rule.match.hosts
+    )
+    exact_hosts = sorted(
+        {
+            pattern.value
+            for rule in reachable
+            for pattern in rule.match.hosts
+            if pattern.kind is HostKind.EXACT
+        }
+    )
+    endpoints: list[Endpoint] = []
+    private_addresses: list[str] = []
+    for host in exact_hosts:
+        reason = floor.check_host(host) or ceiling.check_host(host)
+        if reason is not None:
+            findings.append(Finding(Severity.WARNING, f"hosts.{host}", f"not admitted: {reason}"))
+            continue
+        if open_internet and is_public(host):
+            continue  # admitted by the host-less endpoint
+        if not open_internet:
+            endpoints.append(
+                Endpoint(
+                    host=host,
+                    ports=admitted_ports,
+                    protocol="rest",
+                    enforcement="enforce",
+                    access="full",
+                )
+            )
+        elif parse_ip(host) is not None:
+            private_addresses.append(host)
+            findings.append(
+                Finding(
+                    Severity.INFO,
+                    f"hosts.{host}",
+                    "admitted through the host-less endpoint's allowed_ips, so any name that "
+                    "resolves to this address reaches the middleware, which sees only the name",
+                )
+            )
+        else:
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    f"hosts.{host}",
+                    "not admitted: a non-public host name cannot sit beside the host-less "
+                    "endpoint, because overlapping OpenShell endpoints must agree on "
+                    "allowed_ips; name its IP address in the rule instead (stricter)",
+                )
+            )
+    if open_internet:
+        endpoints.insert(
+            0,
+            Endpoint(
+                ports=admitted_ports,
+                protocol="rest",
+                enforcement="enforce",
+                access="full",
+                allowed_ips=(*public_address_ranges(), *private_addresses),
+            ),
+        )
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "network",
+                "public destinations are admitted by a host-less endpoint limited to public "
+                "address ranges, so OpenShell refuses private and special addresses, as the "
+                "library's wildcard rule does",
+            )
+        )
+
+    services = [("package-mirror", "package mirror", target.package_mirror)]
     if project.mcp.proxy.worker_access:
         services.append(("mcp-proxy", "MCP proxy", target.mcp_proxy))
     else:
@@ -286,40 +482,75 @@ def compile_sandbox(policy: LoadedPolicy, target: SandboxTarget) -> Compiled:
             Finding(
                 Severity.INFO,
                 "mcp.proxy.worker_access",
-                "worker code cannot reach the MCP proxy: the fence admits no connection to it",
+                "worker code cannot reach the MCP proxy: no endpoint admits it",
             )
         )
-    network_policies = {
-        f"sandbox-science-{key}": NetworkPolicy(
+    findings.append(
+        Finding(
+            Severity.WARNING,
+            "services",
+            "platform services must have private addresses: they are outside the middleware, "
+            "and the host-less endpoint would admit a public address on its ports",
+        )
+    )
+    for _, label, service in services:
+        if open_internet and service.port in admitted_ports:
+            raise CompileError(
+                f"the {label} uses port {service.port}, which the host-less endpoint also "
+                "admits; OpenShell rejects overlapping endpoints that differ, so move the "
+                "service to another port"
+            )
+
+    network_policies: dict[str, NetworkPolicy] = {}
+    if endpoints:
+        network_policies["sandbox-science-egress"] = NetworkPolicy(
+            name="Sandbox Science egress", endpoints=tuple(endpoints), binaries=binaries
+        )
+    for key, label, service in services:
+        network_policies[f"sandbox-science-{key}"] = NetworkPolicy(
             name=f"Sandbox Science {label}",
             endpoints=(Endpoint(host=service.host, ports=(service.port,), protocol="tcp"),),
             binaries=binaries,
         )
-        for key, label, service in services
-    }
-    findings.extend(
+    middleware = NetworkMiddleware(
+        middleware=target.middleware,
+        order=0,
+        on_error="fail_closed",
+        endpoints=MiddlewareSelector(
+            include=("**",),
+            exclude=tuple(sorted(service.host for _, _, service in services)) or None,
+        ),
+        config={"policy": {"name": project.metadata.name, "digest": policy.digest}},
+    )
+    findings.append(
         Finding(
             Severity.INFO,
-            f"network.rules.{rule.name}",
-            "enforced by the egress proxy with the full project semantics; OpenShell admits "
-            "the sandbox only to the proxy",
+            "network_middlewares",
+            "every admitted HTTP request, including those to hosts that providers admit, is "
+            "decided by the policy middleware before OpenShell injects credentials; if the "
+            "middleware fails or times out, OpenShell blocks the request",
         )
-        for rule in project.network.rules
+    )
+    findings.append(
+        Finding(
+            Severity.INFO,
+            "escalation",
+            "escalated requests are denied with reason code approval_required and a pending "
+            "request is recorded; the agent retries once the request is approved",
+        )
+    )
+    findings.append(
+        Finding(
+            Severity.WARNING,
+            "network_middlewares",
+            "requests whose body exceeds the middleware's registered max_payload_bytes (at most "
+            "4 MiB) are blocked, so larger uploads fail",
+        )
     )
     if project.monitors:
         findings.append(
-            Finding(Severity.INFO, "monitors", "evaluated from the egress proxy's usage counters")
+            Finding(Severity.INFO, "monitors", "evaluated from the middleware's request records")
         )
-    findings.extend(
-        Finding(
-            Severity.WARNING,
-            f"credentials.providers.{provider.name}",
-            "an attached OpenShell provider adds its profile's endpoints as direct rules "
-            "(_provider_*) that bypass the egress proxy and this policy; review the profile's "
-            "hosts and methods before attaching it",
-        )
-        for provider in project.credentials.providers
-    )
     if project.resources.model_dump(exclude_none=True):
         findings.append(
             Finding(
@@ -328,20 +559,12 @@ def compile_sandbox(policy: LoadedPolicy, target: SandboxTarget) -> Compiled:
                 "applied by the compute driver and the LiteLLM virtual key, not by network policy",
             )
         )
-    proxy = f"http://{target.egress_proxy.host}:{target.egress_proxy.port}"
-    direct = ",".join(service.host for key, _, service in services if key != "egress-proxy")
-    environment = {
-        "HTTP_PROXY": proxy,
-        "HTTPS_PROXY": proxy,
-        "NO_PROXY": direct,
-        "http_proxy": proxy,
-        "https_proxy": proxy,
-        "no_proxy": direct,
-    }
     return Compiled(
-        policy=OpenShellPolicy(network_policies=network_policies),
+        policy=OpenShellPolicy(
+            network_policies=network_policies,
+            network_middlewares={"sandbox-science-policy": middleware},
+        ),
         findings=tuple(findings),
-        environment=MappingProxyType(environment),
         policy_digest=policy.digest,
     )
 
@@ -356,11 +579,14 @@ def compile_mcp_proxy(
     """Compile the MCP proxy sandbox's policy: one inspected endpoint per declared server.
 
     Servers the floor or the pool ceiling rule out are left out and reported.
+    Raises CompileError when two servers would share an endpoint.
     """
     project = policy.policy
     findings: list[Finding] = []
     binaries = tuple(Binary(path=path) for path in target.binaries)
     network_policies: dict[str, NetworkPolicy] = {}
+    endpoints_seen: dict[tuple[str, int, str], str] = {}
+    bindings_by_host: dict[tuple[str, int], set[str | None]] = {}
     for name in sorted(project.mcp.servers):
         server = project.mcp.servers[name]
         subject = f"mcp.servers.{name}"
@@ -373,7 +599,15 @@ def compile_mcp_proxy(
             findings.append(Finding(Severity.WARNING, subject, f"not compiled: {reason}"))
             continue
         parts = urlsplit(server.url)
-        port = parts.port or 443
+        port = parts.port if parts.port is not None else 443
+        path = parts.path or "/"
+        key = (server.host, port, path)
+        if key in endpoints_seen:
+            raise CompileError(
+                f"MCP servers {endpoints_seen[key]!r} and {name!r} share the endpoint "
+                f"{server.host}:{port}{path}; OpenShell cannot tell their rules apart"
+            )
+        endpoints_seen[key] = name
         if port in CONTROL_PLANE_PORTS:
             findings.append(
                 Finding(
@@ -383,19 +617,45 @@ def compile_mcp_proxy(
                 )
             )
         rules, deny_rules = _tool_rules(server, project.defaults.action, subject, findings)
+        binding = _credential_binding(server, subject, findings)
+        bindings_by_host.setdefault((server.host, port), set()).add(
+            binding.provider if binding else None
+        )
         endpoint = Endpoint(
             host=server.host,
             ports=(port,),
-            path=parts.path if parts.path not in ("", "/") else None,
+            path=path,
             protocol="mcp",
             enforcement="enforce",
             rules=rules,
             deny_rules=deny_rules or None,
-            mcp=McpSettings(versions=target.versions, max_body_bytes=target.max_body_bytes),
-            credential_binding=_credential_binding(server, subject, findings),
+            mcp=McpSettings(
+                versions=_versions(server, target, subject, findings),
+                max_body_bytes=target.max_body_bytes,
+            ),
+            credential_binding=binding,
         )
         network_policies[f"mcp-{name}"] = NetworkPolicy(
             name=f"MCP server {name}", endpoints=(endpoint,), binaries=binaries
+        )
+    for (host, port), bindings in sorted(bindings_by_host.items()):
+        if len(bindings) > 1:
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    f"hosts.{host}",
+                    f"servers on {host}:{port} bind different credentials; OpenShell may reject "
+                    "endpoints on one host and port that disagree on credential binding",
+                )
+            )
+    if project.mcp.servers:
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "mcp.servers",
+                "the fence checks servers by name; address-based floor and ceiling entries are "
+                "applied by the MCP proxy, which checks the addresses it connects to",
+            )
         )
     if "2025-03-26" in target.versions:
         findings.append(
@@ -409,17 +669,47 @@ def compile_mcp_proxy(
     if project.mcp.proxy.worker_tools != "inherit":
         findings.append(
             Finding(
-                Severity.INFO,
+                Severity.WARNING,
                 "mcp.proxy.worker_tools",
-                "applied by the MCP proxy per caller; OpenShell cannot tell callers apart",
+                "looser at the fence: OpenShell cannot tell callers apart, so the narrower "
+                "worker_tools list is applied only by the MCP proxy",
             )
         )
     return Compiled(
         policy=OpenShellPolicy(network_policies=network_policies),
         findings=tuple(findings),
-        environment=MappingProxyType({}),
         policy_digest=policy.digest,
     )
+
+
+_MCP_REVISIONS: Final = frozenset({"2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"})
+_STRICT_TOOL_NAME_RE: Final = re.compile(r"[A-Za-z0-9_.*-]{1,128}")
+
+
+def _versions(
+    server: McpServer, target: McpProxyTarget, subject: str, findings: list[Finding]
+) -> tuple[str, ...]:
+    """The MCP revisions OpenShell admits for a server: its own revision when it names one."""
+    if server.revision not in _MCP_REVISIONS:
+        findings.append(
+            Finding(
+                Severity.INFO,
+                f"{subject}.revision",
+                f"{server.revision!r} is not an MCP protocol revision; the endpoint admits the "
+                f"targets' revisions {list(target.versions)}",
+            )
+        )
+        return target.versions
+    if server.revision not in target.versions:
+        findings.append(
+            Finding(
+                Severity.WARNING,
+                f"{subject}.revision",
+                f"the server speaks {server.revision}, which is not among the revisions clients "
+                f"send {list(target.versions)}; OpenShell refuses the others with 403",
+            )
+        )
+    return (server.revision,)
 
 
 def _collapse(pattern: str) -> str:
@@ -428,13 +718,22 @@ def _collapse(pattern: str) -> str:
     return re.sub(r"\*+", "*", pattern)
 
 
+def _openshell_matches(pattern: str, name: str) -> bool:
+    """OpenShell's tool glob: '.' separates, '*' stays within it, a lone '**' matches all."""
+    if pattern == "**":
+        return True
+    pieces = re.split(r"(\*)", pattern)
+    regex = "".join("[^.]*" if piece == "*" else re.escape(piece) for piece in pieces)
+    return re.fullmatch(regex, name) is not None
+
+
 def _tool_rules(
     server: McpServer, default: Action, subject: str, findings: list[Finding]
 ) -> tuple[tuple[Rule, ...], tuple[DenyEntry, ...]]:
     """Translate tool lists into OpenShell rules that are never looser than the project's.
 
     OpenShell denies tools no allow entry names, and any matching deny entry wins.
-    Escalated tools are denied at the fence until an approval is compiled in.
+    Escalated tools are denied at the fence.
     """
     prefix = server.tool_prefix or ""
     tools = server.tools
@@ -467,24 +766,40 @@ def _tool_rules(
             )
         )
         glob_allows = []
-    rules = [Rule(allow=AllowEntry(method=method)) for method in sorted(MCP_PROTOCOL_METHODS)]
-    if exact_allows:
-        names = tuple(prefix + pattern for pattern in exact_allows)
-        rules.append(Rule(allow=AllowEntry(method="tools/call", tool=AnyOf(any=names))))
-    for pattern in glob_allows:
-        # A lone '*' without a prefix may admit every name ('**') only when no deny
-        # pattern exists; otherwise it admits dot-free names ('*').
-        everything = pattern == "*" and not prefix and not blocking_globs
-        rules.append(
-            Rule(
-                allow=AllowEntry(method="tools/call", tool="**" if everything else prefix + pattern)
+    for pattern in (*exact_allows, *glob_allows):
+        if not _STRICT_TOOL_NAME_RE.fullmatch(prefix + pattern):
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    f"{subject}.tools",
+                    f"{prefix + pattern} does not fit OpenShell's tool names (letters, digits, "
+                    "_ . - and at most 128 characters), so calls to it are refused (stricter)",
+                )
             )
+    rules = [Rule(allow=AllowEntry(method=method)) for method in sorted(MCP_PROTOCOL_METHODS)]
+    # A lone '*' without a prefix may admit every name ('**') only when no deny pattern
+    # exists; '**' then subsumes every other allow entry, which OpenShell would reject
+    # beside it.
+    everything = "*" in glob_allows and not prefix and not blocking_globs
+    if everything:
+        rules.append(Rule(allow=AllowEntry(method="tools/call", tool="**")))
+    else:
+        if exact_allows:
+            names = tuple(prefix + pattern for pattern in exact_allows)
+            rules.append(Rule(allow=AllowEntry(method="tools/call", tool=AnyOf(any=names))))
+        rules.extend(
+            Rule(allow=AllowEntry(method="tools/call", tool=prefix + pattern))
+            for pattern in glob_allows
         )
     deny_rules: list[DenyEntry] = []
     if glob_allows:
         # Only an allow pattern can admit a tool the project blocks, so deny entries
         # are needed only when there is one.
         deny_rules = [DenyEntry(method="tools/call", tool=prefix + pattern) for pattern in blocking]
+        if prefix:
+            # '*' also matches nothing, so 'portal-*' would admit a tool named just
+            # 'portal-', which the project refuses.
+            deny_rules.append(DenyEntry(method="tools/call", tool=prefix))
         findings.append(
             Finding(
                 Severity.INFO,
@@ -495,7 +810,7 @@ def _tool_rules(
         )
         for name in exact_allows:
             for pattern in blocking:
-                if "*" in pattern and tool_pattern_matches(pattern, name):
+                if "*" in pattern and _openshell_matches(prefix + pattern, prefix + name):
                     findings.append(
                         Finding(
                             Severity.WARNING,
@@ -519,8 +834,8 @@ def _tool_rules(
             Finding(
                 Severity.INFO,
                 f"{subject}.tools",
-                "escalated tools are denied at the fence until an approval is compiled in as a "
-                "grant (OpenShell reloads network policy within about 10 seconds)",
+                "escalated tools are always denied at this fence, even after approval: approved "
+                "grants are not compiled in yet (stricter)",
             )
         )
     return tuple(rules), tuple(deny_rules)
@@ -540,7 +855,9 @@ def _credential_binding(
             for value in auth.headers.values()
             for match in _PLACEHOLDER_PROVIDER_RE.findall(value)
         }
-    if len(providers) != 1:
+    if not providers:
+        return None  # literal, non-secret headers only
+    if len(providers) > 1:
         findings.append(
             Finding(
                 Severity.WARNING,

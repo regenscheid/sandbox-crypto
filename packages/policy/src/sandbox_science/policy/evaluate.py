@@ -273,6 +273,19 @@ def _operation_path(operation: HttpOperation | GitOperation) -> str:
     return operation.path if isinstance(operation, HttpOperation) else operation.repo_path
 
 
+PACKAGE_INDEX_HOSTS: Final = frozenset(
+    {
+        "pypi.org",
+        "pypi.python.org",
+        "files.pythonhosted.org",
+        "conda.anaconda.org",
+        "repo.anaconda.com",
+        "repo.prefix.dev",
+    }
+)
+"""Package indexes, which workers reach only through the package mirror (D44)."""
+
+
 def _mcp_host(
     operation: HttpOperation | GitOperation, policy: LoadedPolicy, resolved: Sequence[str]
 ) -> str | None:
@@ -309,6 +322,14 @@ def _evaluate_network(
             "floor",
             f"{operation.host} hosts MCP server {server!r}, which is reachable only through "
             "the MCP proxy (D67)",
+            policy,
+        )
+    if operation.host in PACKAGE_INDEX_HOSTS:
+        # Otherwise a read rule would let workers fetch packages around the mirror and the
+        # packages section (channel and ecosystem rules).
+        return _deny(
+            "floor",
+            f"{operation.host} is a package index, reachable only through the package mirror",
             policy,
         )
 
