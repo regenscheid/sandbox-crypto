@@ -4,6 +4,12 @@ Working folder for a cryptography/math research workbench with independently dep
 
 **Status: planning only, 2026-10-10.** No application, runtime, or deployment has been implemented or tested here.
 
+## Terminology
+
+- **CScience**: the user's patched distribution of Claude Science (upstream 0.1.60, `cscience-crypto` package 0.8.0). It applies compatibility patches to an extracted upstream runtime bundle. It is the *functional baseline* (D03); because the upstream is proprietary, it cannot be part of an MIT release (see [licensing](docs/LICENSING.md)).
+- **Babbage Linux**: named as a local deployment target but not defined anywhere in the plan. *(Review note: please define it, e.g. a host name or a distribution.)*
+- **Isolation tier**: the strength of the boundary an execution actually ran with; see [threat model](docs/THREAT-MODEL.md).
+
 ## Agreed direction
 
 CScience is the functional baseline. Preserve its useful research behavior, built-in skills that organize the work, automatic reviews, and automatic Conda tool provisioning. The main change is the execution architecture: run the orchestrator/harness in its own container and execute research code and data processing in separate worker containers. Package the web GUI separately so each layer can run locally or remotely, including on Kubernetes.
@@ -40,6 +46,8 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [OpenShell evaluation](docs/OPENSHELL-EVALUATION.md) | Verified documentation and runtime feasibility checks |
 | [Roadmap](docs/ROADMAP.md) | Ordered implementation gates |
 | [Decisions](docs/DECISIONS.md) | Confirmed requirements, recommendations, and open choices |
+| [Threat model](docs/THREAT-MODEL.md) | Assets, threat sources, trust zones, isolation tiers and data classes (proposed by review) |
+| [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |
 | [Deployment examples](examples/deployment-profiles.json) | Illustrative placements; not executable manifests |
 | [Run request](examples/run-request.json) | Illustrative batch contract; not an OpenShell request |
 
@@ -50,3 +58,7 @@ The earlier project was located at [regenscheid/open-science-crypto](https://git
 Keep the orchestrator in container A. First route an ordinary shell command and two stateful Python cells to sandbox B, exchange a file, interrupt work and reconnect through the retained tools. Observe where research code actually executes. Then add native Sage, PDF processing and the same worker contract on local and hosted Kubernetes targets. The complete product fixture connects a PDF source, shared ledger claim, LaTeX living document, user edit/comment, and automatic consistency review across workbooks. A proposed reproduction extension can reuse that execution path with fresh pinned inputs.
 
 Portability initially means redeploying services, reconnecting storage, and restoring or reproducing work. Live kernel memory migration requires explicit checkpoint support.
+
+## License
+
+The intended license is MIT (D45). Platform code uses permissive dependencies only. GPL research tools such as Sage are installed at runtime into worker environments rather than shipped. AGPL components are avoided. See [licensing](docs/LICENSING.md).

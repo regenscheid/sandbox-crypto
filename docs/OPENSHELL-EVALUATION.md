@@ -20,6 +20,17 @@ Older search results describe a K3s cluster inside Docker. The current runtime d
 
 There is also apparent documentation drift: the container-deployment page describes mounting an `openshell-sandbox` supervisor binary from a host path, while the architecture/runtime pages describe separate supervisor containers and trusted runtime/supervisor image settings. Treat this as an unresolved deployment detail. Inspect the v0.1.3 deployment files and verify the actual running boundary before writing project Compose manifests. Do not combine incompatible snippets.
 
+## Maturity risk and reference fallback
+
+OpenShell is Apache-2.0 (compatible with D45). v0.1.3 was published one day before this assessment, after breaking 0.0.x→0.1.0 changes and with unresolved documentation drift. Making a pre-1.0 component the only implementation of the core security boundary is a significant risk.
+
+Proposed (D52): design the worker adapter against two backends from the start.
+
+- **Hosted reference:** Kubernetes with a Kata or gVisor RuntimeClass on a dedicated worker node pool, default-deny NetworkPolicy (Cilium where L7 rules help), an Envoy egress proxy and package mirror, and Tetragon or Falco for process, file and network telemetry.
+- **Local reference:** rootless Podman or Docker with `runsc`, an internal-only network, and the same proxies.
+
+All of these components are Apache-2.0 or MIT. The runtime telemetry also gives the monitor a signal independent of OpenShell middleware.
+
 ## What the workbench must supply
 
 Retain CScience research sessions, skills, automatic review behavior, and Conda provisioning where feasible. Their execution routing, project storage, the worker enrollment/lease transport, scientific profile locks, capability probes, scheduling, input/output transfer, authoritative provenance, artifact viewers, experiment review, and export/import remain project responsibilities. A policy-enforcing sandbox does not establish scientific correctness or reproduce an experiment by itself.
@@ -67,5 +78,6 @@ See [monitoring and provisioning](MONITORING.md) for verified middleware hooks, 
 - Which controls and resource measurements are actually supported per selected driver?
 - How much application-level reconciliation is required after gateway restarts or worker leases expire?
 - Which endpoint-bound credential behavior is safe for the intended model gateways and MCP services?
-- Does the environment need a VM isolation boundary, or is a dedicated container host sufficient for the initial trusted-user deployment?
+- Does the environment need a VM isolation boundary, or is a dedicated container host sufficient for the initial trusted-user deployment? Proposed answer in the [threat model](THREAT-MODEL.md): yes for hosted (tier 3) and for running studied exploit code. Locally, use gVisor or a separate worker VM (tier 2), with tier 1 only by explicit acceptance.
+- Does the MicroVM driver support persistent project environments, Sage's memory footprint and the read-only-rootfs volume layout (D48)?
 

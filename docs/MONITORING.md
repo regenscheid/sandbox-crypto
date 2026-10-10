@@ -10,6 +10,20 @@ Preserve the convenience of CScience selecting and installing needed tools with 
 
 A trusted monitor outside agent-controlled containers observes inbound/outbound activity and correlates it with execution context. It supplements network reachability policy with checks on what is being sent or received and whether it fits the authorized task. Monitoring is a further control, not a guarantee that all inappropriate behavior can be recognized.
 
+## Egress architecture comes before inspection
+
+Proposed by the plan review (D44; [threat model](THREAT-MODEL.md) T1/T7). Content inspection alone cannot carry exfiltration control in this domain. Research output (keys, ciphertexts, hashes, random lattices) is high-entropy and cannot be distinguished from exfiltrated secrets by pattern or entropy heuristics. Code can also pin certificates, bring its own TLS stack, or use uninspected protocols. Reachability is therefore the primary control, and inspection is a secondary signal.
+
+| Path | Policy | Notes |
+| --- | --- | --- |
+| Direct internet from research sandboxes | Denied | Sandboxes resolve no external DNS; the proxy resolves names |
+| Package installation | Only through a trusted pull-through mirror restricted to allowlisted channels (conda-forge, PyPI); read-only; cache misses logged and rate-limited | Preserves automatic Conda provisioning (D16): the solver and hooks still run in the sandbox. Permissive candidates: devpi (MIT), quetz (BSD-3), caching Envoy/nginx. Package-name lookups are a residual covert channel; log them |
+| Downloading code and papers | Read-only fetch proxy: GET on allowlisted hosts; git smart-HTTP `git-upload-pack` allowed, `git-receive-pack` denied | The git rule must be keyed on the service path, because fetch also uses POST. Deny API writes, gists and paste sites by default. Bound URL length and request rate |
+| Granted research endpoints | Explicit per-project grants with endpoint-scoped credentials | Inline inspection applies here |
+| Anything else | Permission escalation | Never alert-only by default |
+
+The orchestrator's own connector fetches (web fetch, crawlers, paper search) follow the same allowlist and escalation rules (D47). A URL fetched by the orchestrator can carry data just as well as one fetched by a worker.
+
 ## Proposed layers
 
 ```mermaid
@@ -28,7 +42,7 @@ flowchart LR
 
 1. **Reachability enforcement:** cluster/runtime network policy restricts destinations and service access. Kubernetes NetworkPolicy operates at IP/port level, depends on the CNI, and its standard API does not provide application-content inspection or network-security-event logging. Use equivalent controls in the local profile. [Kubernetes documentation](https://kubernetes.io/docs/concepts/services-networking/network-policies/)
 2. **Inline request/response inspection:** a trusted proxy/middleware checks supported traffic before forwarding or delivery. Deterministic rules can block credential/private-data leakage, unauthorized API writes, unexpected upload paths, and oversized transfers. This path has bounded latency and never calls an unbounded model review.
-3. **Contextual behavior monitoring:** a separate service correlates network events with project grants, executing processes, tool calls, package operations, file/output events where available, and agent/reviewer activity. It reports anomalies and can request a pause or quarantine through a narrow, authenticated runtime action API.
+3. **Contextual behavior monitoring:** a separate service correlates network events with independent runtime telemetry (eBPF process/exec/file/network events from Tetragon or Falco, both Apache-2.0, in addition to OpenShell observations). It correlates these with project grants, executing processes, tool calls, package operations, file/output events where available, and agent/reviewer activity. It reports anomalies and can request a pause or quarantine through a narrow, authenticated runtime action API.
 4. **Review and recovery:** persist the reason, evidence references, policy revision, operator/reviewer decision, and retry linkage. Approved research remains fluid within reusable grants.
 
 Keep monitoring code/configuration, event storage, and enforcement credentials outside agent-writable mounts. Agent-supplied descriptions do not authorize activity. The monitor uses approved project policy and trusted dispatch/runtime observations. Scope the monitor's data and credentials per pool/project; it should not become a second unrestricted administration service.
@@ -51,7 +65,7 @@ These are documented/source capabilities, not a verified deployment. Confirm the
 
 1. The agent requests a needed capability or package in its project environment.
 2. The environment manager checks existing capabilities and project install/network grants.
-3. Conda resolves/downloads/installs inside a worker with scoped writable prefixes and resources. Hooks and subprocesses receive the same restrictions.
+3. Conda resolves/downloads/installs inside a worker with scoped writable prefixes and resources, fetching only through the package mirror. Hooks and subprocesses receive the same restrictions. GPL research tools (Sage, fpylll, G6K) are installed this way at runtime rather than baked into the shipped image (D46, [licensing](LICENSING.md)); record each package's license.
 4. Record requested packages/tool purpose, channels and resolved versions/builds/digests, environment revision before/after, install logs/errors, and any fallback to another package manager.
 5. Probe the actual installed tool under the same worker policy, then let research continue.
 6. Capture an environment specification or derived image for reviewer reproduction and relocation.
@@ -87,6 +101,6 @@ Use the shared durable decision workflow and execution/event references from the
 
 Configure timeout, unavailable-monitor and uninspectable-traffic behavior explicitly per policy/traffic class. Alert-only rules cannot override an independent runtime/network denial. Calibrate rules with legitimate crypto workflows to measure false positives. A model can help triage asynchronous findings but cannot widen hard policy or independently authorize a new data destination.
 
-Test each policy action against a harmless matched fixture: blocked execution, held permission request with approve/deny, and delivered alert with continued execution. Also test permitted Conda install; transitive dependency and hook traffic; denied upload to an otherwise allowed host; private canary data in a harmless fixture request; hostile fixture response; worker attempts to disable monitoring or bypass the proxy; oversized/uninspectable content; middleware timeout/disconnect; persistent-kernel/background-process attribution; and interrupted approval/retry. Use synthetic secrets and data.
+Test each policy action against a harmless matched fixture: blocked execution, held permission request with approve/deny, and delivered alert with continued execution. Also test permitted Conda install; transitive dependency and hook traffic; denied upload to an otherwise allowed host; private canary data in a harmless fixture request; hostile fixture response; worker attempts to disable monitoring or bypass the proxy; oversized/uninspectable content; middleware timeout/disconnect; persistent-kernel/background-process attribution; and interrupted approval/retry. Use synthetic secrets and data. Keep these as a maintained **adversarial fixture suite**, not a one-off checklist: setup.py/post-link exfiltration, a typosquat package, DNS tunnelling, a prompt-injection PDF, a proxy-bypass attempt, a symlink escape, and a GUI-targeted script in an artifact. Run it against every certified backend and isolation tier on each change to policy, proxy or runtime configuration.
 
 Measure monitoring overhead and show coverage gaps in the UI. Configure required-inspection traffic to block when inspection cannot be established; define explicit alternatives for indispensable protocols the backend cannot inspect. Preserve operation state and useful diagnostics so monitoring does not turn ordinary dependency installation into an approval loop.

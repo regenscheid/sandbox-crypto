@@ -41,14 +41,16 @@
     "profile_id": "offline-compute",
     "revision": "TO_BE_LOCKED",
     "additional_network_destinations": [],
-    "credential_refs": []
+    "credential_refs": [],
+    "isolation_tier_minimum": 2,
+    "egress_profile": "mirror-and-fetch-proxy-only"
   },
   "placement": {
     "allowed_pool_ids": [
       "local-math",
       "remote-math"
     ],
-    "data_class": "public-fixture"
+    "data_class": "public"
   },
   "outputs": [
     {
