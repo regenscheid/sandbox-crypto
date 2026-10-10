@@ -351,3 +351,53 @@ The user confirmed that crypto-research-mcp supports Dynamic Client Registration
 - **MCP-CONNECTORS.md**: phase 1 uses DCR. It covers per-deployment, per-redirect-URI registration (`localhost` on babbage, separate HTTPS registration when hosted), storing the registration response as secret refresh material, and re-registering if the client is rejected. When the policy lists no scopes, the spec's scope selection applies and the granted scopes are recorded.
 - **D66**: notes DCR for phase 1.
 - **examples/policy.yaml**: `registration: dcr` marked confirmed; empty `scopes` documented as "use the server's advertised scopes".
+
+---
+
+# Round 7 (2026-10-10): fixes from a second reviewer's PR comments
+
+All four comments were checked against the documents and the OpenShell v0.1.3 documentation, and all were correct.
+
+## 26. [P1] Shared-container MCP calls could be misattributed
+
+**Problem.** MCP-CONNECTORS.md claimed per-session proxy credentials closed the attribution gap. They don't: OpenShell placeholders are endpoint-scoped, and other processes in the same container (usually the same user) can read or reuse them.
+
+**Fix.**
+
+- MCP-CONNECTORS.md now defines attribution levels: `orchestrator`, `sandbox`, `container`, and `process` (to evaluate). Only trusted levels may drive session-scoped decisions.
+- In a shared container, grants for worker-originated calls apply to the whole container. A workbook that needs session-scoped MCP permissions should use a dedicated container.
+- The monitor shows the attribution level on every event.
+- The spike row now tests both shared and dedicated containers, and tries to defeat process-level mapping from a second process.
+- D67's rationale and the THREAT-MODEL.md residual risks were updated to match.
+
+## 27. [P1] Permitted reads triggered write approvals
+
+**Problem.** git fetch and MCP's Streamable HTTP transport both send reads as `POST`. With "most restrictive wins", the broad POST-escalate rule overrode their allow rules.
+
+**Fix.**
+
+- POLICY.md now classifies each operation first (`package`, `git`, `mcp`, `http`). Generic HTTP method rules apply only to the `http` class.
+- Within a class, the most specific rule wins and ties go to the most restrictive action. That keeps broad allows safe while letting a narrow allow, such as a read-only POST search API, override the broad write rule.
+- `examples/policy.yaml` rules gain `operation:`, plus a commented narrow-allow example.
+- D62 was updated to match.
+
+## 28. [P2] External token refresh left the running proxy with a stale reference
+
+**Problem.** OpenShell's static updates keep existing processes on their revision-scoped placeholder.
+
+**Fix.**
+
+- MCP-CONNECTORS.md specifies an upstream worker process per MCP server, so the front end holds no placeholders.
+- On each external refresh: update the provider with `--wait`, notify the proxy, start a new upstream worker, drain the old one, refresh ahead of expiry, and retry once only for idempotent reads.
+- The spike also checks whether `external` refresh gets stable handles, which would make the swap unnecessary.
+- The refresh rows in MCP-CONNECTORS.md and OPENSHELL-EVALUATION.md were updated.
+
+## 29. [P2] Phase 1 depended on phase 2 infrastructure
+
+**Problem.** The M1 and W2 exit gates required hosted Kubernetes even though phase 1 is babbage-only.
+
+**Fix.**
+
+- ROADMAP.md: M1 now covers babbage only (MicroVM driver), and hosted certification is a phase 2 gate under M3. The phase table marks phase 1 as "local gates only", and the end-to-end fixture repeats on Kubernetes only in phase 2.
+- IMPLEMENTATION-PLAN.md: W2's exit covers babbage only, a new **W2h** certifies hosted execution in phase 2 (per node architecture and tier), and W4's exit runs on babbage first, then on the cluster.
+- RESEARCH-WORKSPACE.md and the PRODUCT.md acceptance criteria were updated to match.

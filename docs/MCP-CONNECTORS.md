@@ -29,7 +29,22 @@ Sources: the [MCP authorization specification, 2025-11-25](https://github.com/mo
 
 **Reachability.** Worker sandbox policy allows the MCP proxy endpoint and no MCP server hosts. Worker sandboxes carry no MCP providers. A worker that tries to reach an MCP server directly is denied by the hard floor, because MCP server hosts are listed as proxy-only.
 
-**Caller identity.** Each caller presents a short-lived proxy credential that the worker service or orchestrator issues per session or execution. In worker sandboxes it is itself an OpenShell placeholder, bound to the proxy endpoint. The proxy maps it to project, session, execution and caller kind (agent or worker code). Every MCP call is attributed in the event log with that context, which also closes the monitor attribution gap for shared project containers.
+**Caller identity and attribution.** A credential inside a sandbox identifies the *sandbox*, not the process that sent the request. OpenShell placeholders are endpoint-scoped, not process- or binary-scoped. Processes in one container usually run as the same user, so a process can read another process's environment. A per-session proxy credential placed in a shared project container could therefore be reused by any other workbook's process in that container. Attribution therefore comes in levels, and only the trusted levels may drive permission decisions:
+
+| Level | When it applies | Trust |
+| --- | --- | --- |
+| `orchestrator` | Agent tool calls made by the harness. The orchestrator knows which session's agent made the call | Trusted to the degree zone Z2 is; usable for session-scoped decisions |
+| `sandbox` | Worker code in a **dedicated** session container | Verified by the sandbox identity the OpenShell supervisor reports; usable for session-scoped decisions |
+| `container` | Worker code in a **shared** project container | Project and container are verified. The session label is a *claim* and is recorded as such |
+| `process` (to evaluate) | Shared container, if the trusted worker service can map the supervisor's reported originating process to an execution it launched (for example, one cgroup per execution that sandboxed code cannot leave) | Usable for session-scoped decisions only once the spike shows the mapping is trustworthy |
+
+**Consequences:**
+
+- Grants and escalation decisions for worker-originated MCP calls from a shared container apply to the **whole container**, meaning every workbook in it, unless `process`-level attribution is established.
+- A workbook that needs session-scoped MCP permissions should use a dedicated container.
+- The monitor shows the attribution level with every event and never treats an unverified session label as evidence.
+
+The per-caller proxy credential still matters: it stops other sandboxes and projects from using the proxy. It is not, by itself, a per-session identity.
 
 **Policy.** The proxy evaluates the project's `mcp.servers` tool rules (`allow`/`escalate`/`deny`, most restrictive wins) before forwarding. `escalate` creates a durable permission request through the shared workflow, with the policy's timeout and deny fallback. The outbound OpenShell `protocol: mcp` rules repeat the allow/deny lists, as defense in depth.
 
@@ -75,6 +90,13 @@ The connector auth service performs the client side of MCP authorization when th
 - *Gateway-managed* (`oauth2_refresh_token`). OpenShell refreshes the token and stores rotated refresh tokens automatically. Its documented refresh configuration has a token URL and scopes, but **no `resource` parameter**, which the MCP spec requires on every token request. This works only if the authorization server accepts refreshes without `resource`.
 - *External* (`external` strategy). The connector auth service refreshes with `resource` and pushes the new access token to the provider through the OpenShell API. Refresh material then lives in the connector auth service's secret storage (Kubernetes Secrets/OpenBao, or the gateway's store if the API allows).
 
+  **Reloading the running proxy.** OpenShell documents that after a static credential update, a process that is already running keeps its *revision-scoped* placeholder, and that placeholder does not resolve to the new value; a new process is needed. Gateway-managed refresh uses stable refresh handles, so later rotations need no restart. With external refresh, the MCP proxy must therefore replace its upstream client for that server on every token update. Design:
+  - The MCP proxy runs one **upstream worker process per MCP server**. The front-end process that accepts callers holds no credential placeholders.
+  - The connector auth service updates the provider with `--wait`, which reports per-sandbox application of the change, and then notifies the MCP proxy with the change ID.
+  - The proxy starts a new upstream worker, which receives the new revision's placeholder, routes new calls to it, lets in-flight calls on the old worker finish within a grace period, then stops the old worker.
+  - Refresh runs ahead of expiry (`refresh_before`) so the switch happens while the old token is still valid. A call that still fails with 401 on an old worker is retried once on the new worker, only for idempotent reads.
+  - The spike checks whether the `external` strategy also gets stable handles. If it does, the worker swap becomes unnecessary.
+
 **Scope changes.** If a server answers `403 insufficient_scope`, the proxy does not re-authorize on its own. It raises a permission escalation naming the scopes requested. The user re-consents through the connector auth service. This keeps step-up authorization a human decision.
 
 **Token audience.** Because tokens are audience-bound to one MCP server (RFC 8707) and the OpenShell provider is endpoint-bound to the same host, a token cannot be replayed at another service even inside the proxy.
@@ -117,11 +139,11 @@ mcp:
 | --- | --- |
 | OAuth connect to crypto-research-mcp | Discovery, registration, PKCE and `resource` parameter recorded; tokens stored only in the provider/credential driver |
 | Placeholder injection | The proxy and sandbox environment hold placeholders only; requests reach the server with a valid bearer token |
-| Refresh | Gateway-managed refresh succeeds, or a server rejection without `resource` is observed and external refresh succeeds; rotated refresh tokens persist |
+| Refresh | Gateway-managed refresh succeeds across several expiries without restarting the proxy, or a server rejection without `resource` is observed and external refresh succeeds. With external refresh, calls continue across token expiry through the upstream-worker swap with no failed calls beyond the documented read retry, and an old worker's placeholder is confirmed stale after the update. Rotated refresh tokens persist |
 | Custom headers | A fixture server requiring `X-Api-Key` and one requiring Basic auth both accept placeholder-injected values; the unbound host gets `credential_endpoint_mismatch` |
 | Tool policy | Allowed, escalated and denied tools behave as configured for calls from the orchestrator and from a worker, both through the proxy |
 | No direct worker access | A worker request to the MCP server host is denied; the worker environment contains no MCP placeholders |
-| Attribution | Two sessions in one project container call the same tool; events identify each session and execution |
+| Attribution | Two sessions in one shared container call the same tool: events show `container`-level attribution, with the session as a claim, and a grant made for one applies to both. The same calls from a dedicated container show `sandbox`-level attribution. Evaluate `process`-level mapping (supervisor originating-process info plus per-execution cgroups) and try to defeat it from a second process |
 | Binary results | A PDF resource returned through the proxy becomes an artifact reference, not inline base64 |
 | Step-up | A `403 insufficient_scope` becomes a permission request, not an automatic re-authorization |
 | Revocation | Disconnecting a server removes the provider; later calls fail closed |

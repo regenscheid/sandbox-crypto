@@ -82,6 +82,6 @@ Keep extraction method and uncertainty visible. Equations, matrices, small figur
 4. Draft a living document with LaTeX equations/matrices and links to source pages and exact run artifacts.
 5. The user edits an equation or assumption and adds a comment; the agent revises without overwriting concurrent edits.
 6. Automatic consistency review checks the claim against recorded evidence and attaches findings to exact claim/document revisions. Exercise fresh computational reproduction separately if that proposed extension is enabled.
-7. Update the project board with the result, limitations, and next question. Repeat against local and Kubernetes workers.
+7. Update the project board with the result, limitations, and next question. Run on babbage in phase 1; repeat on Kubernetes workers in phase 2.
 
 This is the initial product path. Living documents, the shared ledger, LaTeX, Sage, and PDF navigation must not be deferred to a generic later science expansion.
