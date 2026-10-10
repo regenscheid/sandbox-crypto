@@ -62,6 +62,7 @@ network:
     - name: git-fetch
       operation: git
       match: { hosts: [github.com, gitlab.com, codeberg.org], git_service: upload-pack }
+      limits: { max_url_bytes: 4096 }
       action: allow
     - name: git-push
       operation: git
@@ -90,54 +91,63 @@ mcp:
         scopes: []                                        # empty = use WWW-Authenticate / scopes_supported
         refresh: gateway                                  # gateway | external
         provider: crypto-research-mcp                     # OpenShell provider holding the tokens
+      # The portal prefixes every tool name; patterns match the rest, so a pattern
+      # cannot match the prefix ("research" contains "search").
+      tool_prefix: crypto_research_mcp-
       # Checked against the server's 78 tools (2026-10-10); the test fixture
       # packages/policy/tests/fixtures/crypto-research-mcp-tools.json pins the
-      # expected outcome of every tool. An exact name beats patterns; otherwise
-      # the most restrictive matching list wins.
+      # expected outcome of every tool, and an unknown tool asks first. An exact
+      # name beats patterns; otherwise the most restrictive matching list wins.
+      # Patterns are anchored at "_" so subserver names such as paper-search-mcp
+      # do not match them.
       tools:
         allow:
-          - "*search*"                      # includes per-call billed searches (Scholar, patents, Firecrawl)
-          - "*get_*"
-          - "*list_*"
-          - "*find_*"
-          - "*fetch*"
+          - "*_search"                      # includes per-call billed searches (Scholar, patents, Firecrawl)
+          - "*_search_*"
+          - "*_get_*"
+          - "*_list_*"
+          - "*_find_*"
+          - "*_fetch"
+          - "*_fetch_*"
           - "*_read"
           - "*_read_*"
           - "*_browse_*"
           - "*_recent_*"
           - "*_stats"
           - "*_status"
-          - "*health*"
-          - "*paper_citations"
-          - "*paper_details"
-          - "*research_inspect_paper"
-          - "*research_related_papers"
-          - "*csrc_currency"
-          - "*web_capture"
-          - "*firecrawl_map"
-          - "*firecrawl_monitor_get"
-          - "*firecrawl_monitor_list"
-          - "*firecrawl_monitor_check"
-          - "*firecrawl_monitor_checks"
+          - "*_health"
+          - paper-search-mcp_paper_citations
+          - paper-search-mcp_paper_details
+          - firecrawl-mcp_firecrawl_research_inspect_paper
+          - firecrawl-mcp_firecrawl_research_related_papers
+          - firecrawl-mcp_firecrawl_map
+          - firecrawl-mcp_firecrawl_monitor_get
+          - firecrawl-mcp_firecrawl_monitor_list
+          - firecrawl-mcp_firecrawl_monitor_check
+          - firecrawl-mcp_firecrawl_monitor_checks
+          - nist-mcp_csrc_currency
+          - web-fetch-mcp_web_capture
+          - portal_list_servers
           # Reads that fill the server's own document cache on first use:
-          - "*e-print-mcp_eprint_file"
-          - "*e-print-mcp_eprint_fulltext"
-          - "*nist-mcp_csrc_file"
-          - "*nist-mcp_csrc_fulltext"
+          - e-print-mcp_eprint_file
+          - e-print-mcp_eprint_fulltext
+          - nist-mcp_csrc_file
+          - nist-mcp_csrc_fulltext
         escalate:
-          - "*feedback*"                    # outranks "*search*" for firecrawl_search_feedback
-          - "*refresh_*"
-          - "*firecrawl_agent"
-          - "*firecrawl_crawl"
-          - "*firecrawl_extract"
-          - "*firecrawl_interact*"
-          - "*firecrawl_parse"
-          - "*firecrawl_scrape"
-          - "*firecrawl_monitor_create"
-          - "*firecrawl_monitor_update"
-          - "*firecrawl_monitor_run"
+          - "*_feedback"                    # outranks "*_search_*" for firecrawl_search_feedback
+          - "*_refresh_*"
+          - firecrawl-mcp_firecrawl_agent
+          - firecrawl-mcp_firecrawl_crawl
+          - firecrawl-mcp_firecrawl_extract
+          - firecrawl-mcp_firecrawl_interact
+          - firecrawl-mcp_firecrawl_interact_stop
+          - firecrawl-mcp_firecrawl_parse
+          - firecrawl-mcp_firecrawl_scrape
+          - firecrawl-mcp_firecrawl_monitor_create
+          - firecrawl-mcp_firecrawl_monitor_update
+          - firecrawl-mcp_firecrawl_monitor_run
         deny:
-          - "*portal_toggle*"      # server configuration is not an agent action
+          - "portal_*"             # server configuration is not an agent action
 
     # Later phase: a server using custom-header authentication.
     # example-header-server:

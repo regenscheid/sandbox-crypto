@@ -8,6 +8,7 @@ ClassificationError, which callers must treat as a denial.
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,10 +25,18 @@ Ecosystem = Literal["conda", "pypi"]
 
 DEFAULT_PORTS: Final[dict[Scheme, int]] = {"http": 80, "https": 443}
 
-_METHOD_RE: Final = re.compile(r"[A-Za-z]{1,16}")
+# HTTP methods are case-sensitive (RFC 9110); a server may not treat "get" as GET.
+_METHOD_RE: Final = re.compile(r"[A-Z]{1,16}")
 _BAD_PERCENT_RE: Final = re.compile(r"%(?![0-9A-Fa-f]{2})")
-# Encoded '/', '.', '\' and NUL change how servers split or resolve paths.
-_ENCODED_SPECIAL_RE: Final = re.compile(r"%(?:2[EeFf]|5[Cc]|00)")
+# Encoded '/', '.', '\', NUL and '%' change how servers split, resolve or re-decode
+# paths ('%25' enables double-encoding tricks such as %252e%252e).
+_ENCODED_SPECIAL_RE: Final = re.compile(r"%(?:2[EeFf]|5[Cc]|00|25)")
+_GIT_CONTENT_TYPES: Final = {
+    "upload-pack": "application/x-git-upload-pack-request",
+    "receive-pack": "application/x-git-receive-pack-request",
+}
+_BODYLESS_METHODS: Final = frozenset({"GET", "HEAD", "TRACE"})
+MAX_MCP_NAME_LENGTH: Final = 256
 _NAME_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _PACKAGE_RE: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 
@@ -42,12 +51,17 @@ def _check_path(path: str) -> None:
         # Servers disagree on ';' path parameters (Tomcat drops them, OpenShell strips
         # them, others keep them), so a rule could match a different path than is served.
         raise ClassificationError(f"path {path!r} contains ';' path parameters")
+    if "?" in path or "#" in path:
+        raise ClassificationError(f"path {path!r} contains an encoded '?' or '#'")
     segments = path.split("/")[1:]
     for index, segment in enumerate(segments):
         if segment in (".", ".."):
             raise ClassificationError(f"path {path!r} contains dot segments")
         if segment == "" and index != len(segments) - 1:
             raise ClassificationError(f"path {path!r} contains empty segments")
+        if segment and (segment[-1] == "." or segment[-1].isspace() or segment[0].isspace()):
+            # Some servers (Windows, IIS) drop trailing dots and spaces: /admin. is /admin.
+            raise ClassificationError(f"path {path!r} has a segment with a trailing '.' or space")
 
 
 def path_segments(path: str) -> tuple[str, ...]:
@@ -59,13 +73,18 @@ def path_segments(path: str) -> tuple[str, ...]:
 class HttpRequest:
     """A request as the egress proxy sees it.
 
-    ``credentialed`` is true when the proxy injected a provider credential into
-    the request.
+    The proxy fills in the header-derived fields from the actual request:
+    ``credentialed`` when it injected a provider credential, ``content_type``
+    from Content-Type, ``has_body`` when the request carries a body, and
+    ``upgrade`` from the Upgrade header.
     """
 
     method: str
     url: str
     credentialed: bool = False
+    content_type: str | None = None
+    has_body: bool = False
+    upgrade: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +100,7 @@ class HttpOperation:
     credentialed: bool = False
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "method", _normalize_method(self.method))
+        _check_method(self.method)
         object.__setattr__(self, "host", _normalize_request_host(self.host))
         _check_scheme_port(self.scheme, self.port)
         _check_path(self.path)
@@ -103,7 +122,7 @@ class GitOperation:
     def __post_init__(self) -> None:
         if self.service not in ("upload-pack", "receive-pack"):
             raise ClassificationError(f"unknown git service {self.service!r}")
-        object.__setattr__(self, "method", _normalize_method(self.method))
+        _check_method(self.method)
         object.__setattr__(self, "host", _normalize_request_host(self.host))
         _check_scheme_port(self.scheme, self.port)
         _check_path(self.repo_path)
@@ -121,10 +140,12 @@ class McpOperation:
     def __post_init__(self) -> None:
         if not _NAME_RE.fullmatch(self.server):
             raise ClassificationError(f"invalid MCP server name {self.server!r}")
-        if not self.method:
-            raise ClassificationError("MCP method must not be empty")
+        if not self.method or len(self.method) > MAX_MCP_NAME_LENGTH:
+            raise ClassificationError("MCP method must be 1 to 256 characters")
         if self.method == "tools/call" and not self.tool:
             raise ClassificationError("tools/call needs a tool name")
+        if self.tool is not None and not 0 < len(self.tool) <= MAX_MCP_NAME_LENGTH:
+            raise ClassificationError("MCP tool names must be 1 to 256 characters")
         if self.origin not in ("orchestrator", "worker"):
             raise ClassificationError(f"unknown origin {self.origin!r}")
 
@@ -154,10 +175,9 @@ class PackageOperation:
 Operation = HttpOperation | GitOperation | McpOperation | PackageOperation
 
 
-def _normalize_method(method: str) -> str:
+def _check_method(method: str) -> None:
     if not _METHOD_RE.fullmatch(method):
-        raise ClassificationError(f"invalid HTTP method {method!r}")
-    return method.upper()
+        raise ClassificationError(f"invalid HTTP method {method!r}; methods are upper case")
 
 
 def _normalize_request_host(host: str) -> str:
@@ -187,8 +207,21 @@ def _decode_path(raw: str) -> str:
     return decoded
 
 
-def _git_service(method: str, path: str, query: str) -> tuple[GitService, str] | None:
-    """Recognize git smart-HTTP requests; returns the service and repository path."""
+def _media_type(content_type: str | None) -> str | None:
+    if content_type is None:
+        return None
+    return content_type.split(";", 1)[0].strip().lower()
+
+
+def _git_service(
+    method: str, path: str, query: str, content_type: str | None
+) -> tuple[GitService, str] | None:
+    """Recognize git smart-HTTP requests; returns the service and repository path.
+
+    A POST counts as git only with git's own request content type, so that a
+    REST call whose path happens to end in /git-upload-pack (for example a
+    "create file" API) stays an ordinary write.
+    """
     if method == "GET" and path.endswith("/info/refs"):
         if ";" in query:
             raise ClassificationError("ambiguous query separator in a git discovery request")
@@ -202,9 +235,10 @@ def _git_service(method: str, path: str, query: str) -> tuple[GitService, str] |
             return "receive-pack", repo
         return None
     if method == "POST":
+        media_type = _media_type(content_type)
         for service in ("upload-pack", "receive-pack"):
             suffix = f"/git-{service}"
-            if path.endswith(suffix):
+            if path.endswith(suffix) and media_type == _GIT_CONTENT_TYPES[service]:
                 return service, path.removesuffix(suffix) or "/"
     return None
 
@@ -217,8 +251,18 @@ def classify_http_request(request: HttpRequest) -> HttpOperation | GitOperation:
     url = request.url
     if not url.isascii() or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in url):
         raise ClassificationError("URLs must be ASCII without spaces or control characters")
-    method = _normalize_method(request.method)
-    parts = urlsplit(url)
+    method = request.method
+    _check_method(method)
+    if request.upgrade is not None:
+        raise ClassificationError("protocol upgrades such as WebSocket are not supported")
+    if request.has_body and method in _BODYLESS_METHODS:
+        raise ClassificationError(f"a {method} request must not carry a body")
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError as exc:
+        raise ClassificationError(f"malformed URL {url!r}: {exc}") from exc
     scheme = parts.scheme.lower()
     if scheme not in ("http", "https"):
         raise ClassificationError(f"unsupported scheme {parts.scheme!r}")
@@ -226,18 +270,19 @@ def classify_http_request(request: HttpRequest) -> HttpOperation | GitOperation:
         raise ClassificationError("URLs must not contain user information")
     if parts.fragment:
         raise ClassificationError("URLs sent to servers have no fragment")
-    if not parts.hostname:
+    if not hostname:
         raise ClassificationError("URL has no host")
-    host = _normalize_request_host(parts.hostname)
-    try:
-        port = parts.port
-    except ValueError as exc:
-        raise ClassificationError(f"invalid port in {url!r}") from exc
+    if "[" in parts.netloc or "]" in parts.netloc:
+        try:
+            ipaddress.IPv6Address(hostname)
+        except ValueError as exc:
+            raise ClassificationError("brackets in a URL may only enclose an IPv6 address") from exc
+    host = _normalize_request_host(hostname)
     typed_scheme: Scheme = "https" if scheme == "https" else "http"
     resolved_port = port if port is not None else DEFAULT_PORTS[typed_scheme]
     path = _decode_path(parts.path or "/")
     url_bytes = len(url.encode("ascii"))
-    git = _git_service(method, path, parts.query)
+    git = _git_service(method, path, parts.query, request.content_type)
     if git is not None:
         service, repo_path = git
         return GitOperation(
