@@ -13,7 +13,7 @@ Its deliverables are an execution call map, an adapter or a precise blocked seam
 | Deployable unit | Initial logical modules | Authority and durable state |
 | --- | --- | --- |
 | Web GUI/API proxy | Retained research views, shared math renderer, PDF viewer, document/comment and permission interfaces | Authenticates to control APIs; caches/projections are disposable. Independent endpoint configuration supports separate hosting. |
-| Control application/orchestrator | Retained harness, project/session catalog, artifact metadata, ledger/documents, review coordination, permission decisions, execution router | Owns research history, scoped grants, revisions and execution intent. Initially retain the supported state store on private durable storage. |
+| Control application/orchestrator | Retained harness, project/session catalog, artifact metadata, ledger/documents, review coordination, permission decisions, execution router | Owns research history, scoped grants, revisions and execution intent. Initially retain the supported state store on private durable storage. Semi-trusted (D47): egress limited to the model gateway and connector broker; no engine/cluster credentials. |
 | Trusted worker/policy infrastructure per pool | Worker service, environment/kernel managers, backend adapter, OpenShell gateway/supervisor if adopted, monitor integration | Owns runtime credentials, observed execution state, leases and policy enforcement. Keep this authority outside research-writable environments. |
 | Project/session/batch research containers | Scientific tools, shell, persistent kernels, approved Conda operations, parsers and renderers | Own bounded mutable execution state and granted data access. No cluster administration, enrollment or broad provider credentials. |
 
@@ -45,7 +45,18 @@ Trace ordinary shell, Python/R kernel startup/execution, package installation, f
 
 Map existing project, artifact, annotation, claim and verification types onto the shared references above. Inspect only relevant OpenScience fork components and their per-file terms. Inventory where an absolute local path or browser/native callback currently carries meaning. Define a narrow test seam without altering upstream behavior merely to simplify the spike.
 
-**Exit evidence:** caller/adapter map, representative tool inputs/outputs and errors, review compatibility fixtures, retention/extraction proposal, and a patch-burden record. If a seam is unavailable, identify the exact limitation before evaluating replacement code.
+Test the stdio-forwarding seam first: replace the spawned JSON-lines kernel worker and shell with stubs that relay stdio to a remote worker, and synchronize the workspace. This may intercept ordinary execution with very few patches to the bundle.
+
+**Go/no-go criteria (D51), to be fixed before W0 starts:**
+
+- Ordinary shell, kernel, install and file paths can be intercepted at no more than an agreed number of patch sites.
+- The patches apply to at least one later upstream release without manual rework.
+- The upstream terms permit modification, containerization and the intended hosted deployment.
+- No proprietary code needs to enter components intended for the MIT release (D45).
+
+If any criterion fails, treat CScience as a behavior specification and fixture source, and move to an independent harness (D11). The newer OpenScience Desktop upstream (MIT) is the first code-reuse candidate.
+
+**Exit evidence:** caller/adapter map, representative tool inputs/outputs and errors, review compatibility fixtures, retention/extraction proposal, a patch-burden record and a go/no-go verdict against the criteria above. If a seam is unavailable, identify the exact limitation before evaluating replacement code.
 
 ### W1 — Define shared references and one worker adapter (M0 → M1)
 
@@ -55,15 +66,30 @@ Run the control application in one container and execution in another on an avai
 
 **Exit evidence:** ordinary shell and two stateful Python cells work through retained tools; file publication, interruption and reconnect preserve correct identity and outcomes. Capture actual boundary enforcement, errors and any untested coverage. This is the first concrete implementation checkpoint.
 
+### P — Harness-independent infrastructure track (parallel with W0–W2)
+
+Proposed by the plan review (D51). These components are needed whatever D11 decides. Build them as MIT code under the [licensing policy](LICENSING.md):
+
+- Worker API schema and worker service, with the persistent-kernel, argv, file-staging, streaming, cancellation and attempt-reconciliation operations.
+- Read-only-rootfs environment layout with declared volumes, lockfile capture and rebuild (D48).
+- Egress proxy, read-only fetch proxy and package mirror (D44).
+- Event store with an append-only hash chain, so monitor evidence is tamper-evident.
+- Adversarial fixture suite ([monitoring](MONITORING.md)).
+- Isolation-tier probes that report the tier actually provided (D43).
+
+Implement the worker API against OpenShell and against the reference fallback stack (D52) early, so the abstraction is not shaped by one backend.
+
+**Exit evidence:** the W1 fixture runs through the worker service on two backends, with mirror-only egress and the adversarial suite passing on each.
+
 ### W2 — Certify local and hosted execution with math/source capabilities (M1)
 
 Map one backend adapter to the selected runtime. If using OpenShell, pin matching components and let its gateway own the chosen driver lifecycle. Start with one local option, then exercise hosted Kubernetes through the same contract. Local Kubernetes can be the first local path; supporting every local engine is unnecessary.
 
-Add a native Sage kernel adapter, evaluating its Jupyter kernel rather than emulating Sage in ordinary Python. Exercise preparsing, finite fields, polynomial rings, exact matrices, LaTeX results, interruption and reset. Add worker PDF extraction/rendering with source hashes and page coordinates; preserve originals. Test Conda provisioning and hooks under the same enforced environment/network injection as ordinary execution.
+Add a native Sage kernel adapter, evaluating its Jupyter kernel rather than emulating Sage in ordinary Python. Install Sage at runtime from conda-forge through the mirror (D46). Platform code speaks the Jupyter protocol to Sage's own kernel and never imports Sage. Measure first-install time, and Sage/fpylll performance under each isolation tier. Exercise preparsing, finite fields, polynomial rings, exact matrices, LaTeX results, interruption and reset. Add worker PDF extraction/rendering with source hashes and page coordinates; preserve originals. Test Conda provisioning and hooks under the same enforced environment/network injection as ordinary execution.
 
 Connect the trusted monitor and durable decision queue. Demonstrate block, permission escalation with approve/deny, and alert-and-continue using harmless fixtures. An approval path must prevent the unauthorized effect and show a safe continuation; an arbitrary denied network request must not be automatically replayed. Separately test middleware failure policy and expose unsupported inspection paths.
 
-**Exit evidence:** both a local container deployment and hosted Kubernetes pass the boundary, native Sage, PDF, provisioning and monitor fixtures. Record tested OS/architecture/runtime, storage and network controls; do not infer macOS parity from Linux success. Missing required policy support blocks certification rather than reducing isolation.
+**Exit evidence:** both a local container deployment and hosted Kubernetes pass the boundary, native Sage, PDF, provisioning, monitor and adversarial fixtures at their recorded isolation tiers. Record tested OS/architecture/runtime, storage and network controls; do not infer macOS parity from Linux success. Missing required policy support blocks certification rather than reducing isolation.
 
 ### W3 — Make project/session state durable (M2)
 
@@ -71,7 +97,7 @@ Create the persistent default project environment and separate kernels/workspace
 
 Serialize package mutations in shared environments and advance their recorded revision. Publish outputs through the artifact interface. Exercise two sessions writing the same versioned resource and return an explicit conflict. For mutable shared files, choose a managed write/lease mechanism or present conflicting copies; a writable shared mount alone does not meet the requirement.
 
-Implement retain/suspend or capture/restore using one environment lifecycle component. Account for every allowed writable location, including tool/configuration state outside data volumes. Install a tool, modify files/configuration, idle the project, restore the same logical environment and verify recorded state. Simulate a failed capture/restore without discarding the only copy. Report kernel memory loss; closing the GUI must not terminate ongoing work.
+Implement retain/suspend or capture/restore using one environment lifecycle component. Account for every allowed writable location, including tool/configuration state outside data volumes. With the read-only root filesystem layout (D48), the writable locations are the declared volumes, so capture becomes volume snapshots plus image digest plus lockfile. Install a tool, modify files/configuration, idle the project, restore the same logical environment and verify recorded state. Simulate a failed capture/restore without discarding the only copy. Report kernel memory loss; closing the GUI must not terminate ongoing work.
 
 **Exit evidence:** project/workbook ownership, base-image initialization, shared data, conflict reporting, dependency revisions, idle recovery and browser-independent execution work on the selected backends. A package manifest without restored state is insufficient.
 
@@ -89,7 +115,7 @@ Register the external crypto skill pack through a common platform binding, recor
 
 ### W5 — Validate independent placement and failure recovery (M3 → M4)
 
-Package the GUI independently and configure explicit authenticated routes. Validate all eight local/remote combinations of GUI server, orchestrator and worker pool, building on the certified local and hosted backends. Use worker-initiated control transport where local workers sit behind NAT; do not require an exposed container-engine API.
+Package the GUI independently and configure explicit authenticated routes. Certify placements in stages (D53): all-local, then all-hosted, then hosted-control/local-compute with the local policy ceiling (D49). The remaining combinations stay design-compatible and are exercised as configuration variations, building on the certified local and hosted backends. Use worker-initiated control transport where local workers sit behind NAT; do not require an exposed container-engine API.
 
 Exercise orchestrator restart/fencing, worker loss, duplicate requests, interrupted artifact transfer, cancellation while disconnected and pending permission decisions across browser closure. Reconcile old attempts before dispatching replacements. Relocate durable control state and permitted environment/data state with rollback until continuity is established. Do not promise live process-memory migration.
 

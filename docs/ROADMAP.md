@@ -10,7 +10,9 @@ Use the [source study](SOURCE-STUDY.md) and [feature plan](FEATURE-PLAN.md) as t
 
 Define the [external skill integration contract](EXTERNAL-SKILLS.md): discovery/body loading, raw structured outcomes, plans/approvals, lineage, project identity, board/knowledge storage and binary transfer. The pack stays external and can update its host bindings; reproduce useful semantics rather than require exact legacy APIs.
 
-**Exit:** an execution call map, concrete behavior fixtures, and a measured proposal for adapting the existing runtime. No default decision to replace the research harness or GUI.
+Confirm the [threat model](THREAT-MODEL.md), [licensing policy](LICENSING.md) and the W0 go/no-go criteria (D51) before tracing. Start the harness-independent infrastructure track (implementation plan, track P) in parallel.
+
+**Exit:** an execution call map, concrete behavior fixtures, and a measured proposal for adapting the existing runtime, with a go/no-go verdict against D51. No default decision to replace the research harness or GUI.
 
 ## M1 — Prove the worker boundary on local and hosted targets
 
@@ -18,7 +20,7 @@ In a separate development checkout, retain the orchestrator/research loop. First
 
 Start on one available target, then run the same boundary fixture on a hosted Kubernetes pool and a local container pool. Evaluate local Docker/Podman or another container runtime alongside local Kubernetes on macOS/Docker Desktop or Babbage Linux. Select a working local backend by measured execution/network policy enforcement, monitoring and persistence. Both deployment classes are initial gates; local Kubernetes is optional.
 
-**Exit:** container A orchestrates; container B executes and preserves Python/Sage kernel state; files, PDF page evidence, LaTeX results and useful errors return through the same research tools on local and hosted targets. Record which macOS/Linux environments were actually exercised. Capture patch count and upstream coupling. If blocked, explain the exact missing seam before evaluating a compatible replacement harness.
+**Exit:** container A orchestrates; container B executes at a recorded isolation tier with mirror-only egress, and preserves Python/Sage kernel state; files, PDF page evidence, LaTeX results and useful errors return through the same research tools on local and hosted targets. Record which macOS/Linux environments were actually exercised. Capture patch count and upstream coupling. If blocked, explain the exact missing seam before evaluating a compatible replacement harness.
 
 ## M2 — Establish persistent projects and the complete local research workflow
 
@@ -38,7 +40,7 @@ Repeat the complete M2 workflow on the local and hosted targets already establis
 
 ## M4 — Validate independent service placement and recovery
 
-Package/route the GUI independently. Test hosted orchestration with local workers, all-hosted deployment, and remaining local/remote combinations. Exercise orchestrator restart, closed browsers, interrupted transfer, worker restart, duplicate submissions, and relocation/rollback.
+Package/route the GUI independently. Certify in stages (D53): all-hosted, then hosted orchestration with local workers under a local policy ceiling (D49); exercise the remaining local/remote combinations as configuration variations. Exercise orchestrator restart, closed browsers, interrupted transfer, worker restart, duplicate submissions, and relocation/rollback.
 
 **Exit:** placement changes configuration and deliberate data movement; projects, review findings, and execution history remain coherent. Local workers do not require a publicly exposed container-engine API. No claim of live kernel memory migration.
 
@@ -47,6 +49,19 @@ Package/route the GUI independently. Test hosted orchestration with local worker
 Broaden the already working Sage/PDF/document path to representative cryptography research: lattice/fpylll, parameter estimation, implementation validation, counterexample search and literature-to-report work. Evaluate curated skills against a baseline. Capture assumptions, domains, versions, seeds, precision, output and review limitations. Assess optional Magma on the actual licensed target.
 
 **Exit:** the system preserves the valued CScience experience and produces reviewable research evidence across both execution placements. Add further domains and UI changes only as actual gaps justify them.
+
+## Minimum useful release (proposed, D53)
+
+A release a researcher would use daily, reachable before M3/M4:
+
+- local profile at tier 2;
+- persistent project container with session kernels;
+- runtime-installed Sage;
+- PDF viewer with page anchors (region anchors later);
+- mirror-only egress with block/escalate monitor actions;
+- the existing consistency review behavior.
+
+Use it on real research to refine the ledger/frontier and concurrent-editing design before building them in full.
 
 ## First end-to-end fixture
 
