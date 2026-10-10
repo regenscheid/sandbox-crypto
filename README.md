@@ -34,7 +34,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | --- | --- |
 | [Detailed implementation plan](docs/IMPLEMENTATION-PLAN.md) | Shared contracts, component ownership, ordered work packages and evidence gates |
 | [Consistency review](docs/CONSISTENCY-REVIEW.md) | Resolved planning drift and opportunities to reuse infrastructure and standard components |
-| [Durable analysis archive](.agents/docs/README.md) | Individual agent investigations, current planning copies and earlier working drafts |
+| [Analysis archive](.agents/docs/README.md) | The three agent source investigations; earlier plan snapshots are the git tags `plan-03-pre-review` and `plan-04-reviewed` |
 | [Feature plan](docs/FEATURE-PLAN.md) | What to incorporate from the three research investigations and how to verify it |
 | [Source study](docs/SOURCE-STUDY.md) | Pinned evidence from Claude Science, Claude Code/Desktop, and OpenScience Desktop |
 | [Research workspace](docs/RESEARCH-WORKSPACE.md) | Living documents, shared ledger, LaTeX, native Sage, and navigable PDFs |
@@ -65,4 +65,4 @@ Portability initially means redeploying services, reconnecting storage, and rest
 
 ## License
 
-The intended license is MIT (D45). Platform code uses permissive dependencies only. GPL research tools such as Sage are installed at runtime into worker environments rather than shipped. AGPL components are avoided. See [licensing](docs/LICENSING.md).
+This project is released under the MIT License (see [LICENSE](LICENSE), D45). Platform code uses permissive dependencies only. GPL research tools such as Sage are installed at runtime into worker environments rather than shipped. AGPL components are avoided. See [licensing](docs/LICENSING.md).
