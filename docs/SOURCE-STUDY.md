@@ -2,6 +2,8 @@
 
 Inspected 2026-10-10 by three parallel investigators. Read-only source/documentation research; no runtimes, kernels, builds, or deployments were validated. This study informs the [feature plan](FEATURE-PLAN.md).
 
+> **Update (2026-10-10, D11):** the user decided to reimplement the needed CScience behavior rather than adapt or patch the Claude Science runtime. Where this document speaks of retaining, adapting or patching CScience mechanisms, read it as *behavior evidence for the reimplementation*. No Claude Science code, prompts, schemas or assets are copied (D56). OpenScience Desktop upstream is MIT-licensed and remains a code-reuse candidate, subject to per-file checks.
+
 ## Evidence baseline
 
 | Source | Inspected revision / access | Scope |

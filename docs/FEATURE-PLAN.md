@@ -4,7 +4,7 @@ Date: 2026-10-10. Synthesis of three parallel source investigations: Claude Scie
 
 ## Product direction
 
-Preserve CScience's research loop and improve its execution boundary first. Its skills, plans, versioned artifacts, PDF exploration, editable documents, and automatic consistency reviews provide a substantial baseline. Add a project-wide research board, safer document concurrency and native Sage kernels while making all execution portable between local and Kubernetes workers. Independent reproduction reviews are a separately configured proposed extension.
+Reimplement CScience's research loop on an explicit execution boundary (D11). Its skills, plans, versioned artifacts, PDF exploration, editable documents, and automatic consistency reviews define a substantial behavior baseline; no Claude Science code, prompts or schemas are copied (D56). Add a project-wide research board, safer document concurrency and native Sage kernels while making all execution portable between local and Kubernetes workers. Independent reproduction reviews are a separately configured proposed extension.
 
 Project containers, optional workbook containers, automatic Conda provisioning, trusted monitoring, and independently placeable GUI/orchestration/compute remain foundational. Research features must use these boundaries rather than introduce host-only execution paths.
 
@@ -51,9 +51,9 @@ Shared memory is useful context; accepted claims and enforced policy need explic
 
 | Source | Preferred use | Boundary |
 | --- | --- | --- |
-| CScience / Claude Science 0.1.60 | First adaptation target and functional behavior fixtures | A remote-job tool does not establish relocation of ordinary kernels, file operations, installs, or renderers |
+| CScience / Claude Science 0.1.60 | Behavior reference and acceptance fixtures only (D03, D11) | Proprietary; no code, prompt text, skill text or schema is copied (D56) |
 | Claude Code/Desktop public material | Skill loading, scoped roles, review validation, completion hooks, living-document interaction | Complete private Desktop/Code system prompts and the Docs backend were not established; MCP is an integration option, not a proven explanation of Docs |
-| Newer OpenScience Desktop | Review/result formats, provenance models, editor/math patterns, visible skill/connector inventory | Browser editing, kernel execution, and provenance still have native-desktop dependencies in the inspected paths |
+| Newer OpenScience Desktop (MIT) | First code-reuse candidate for the reimplementation: review/result formats, provenance models, editor/math patterns, visible skill/connector inventory | Browser editing, kernel execution, and provenance still have native-desktop dependencies in the inspected paths |
 | Andy's OpenScience fork | Execution contracts, permission receipts, replay/lifecycle failure scenarios, persistent-environment requirements | Its agent-serving path and phase-two persistent environment are incomplete; assess selected components rather than assume a ready worker backend |
 
 Before copying code or bundled skill assets, resolve their actual per-file terms. The OSD catalog's license labels are not sufficient evidence for all bundled external skills. Conceptual workflow learning does not require copying those assets.

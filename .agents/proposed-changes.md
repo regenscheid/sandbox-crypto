@@ -1,6 +1,6 @@
 # Proposed changes on the `review` branch
 
-Date: 2026-10-10. Each change below follows from a finding in [critical-review.md](critical-review.md); finding IDs are given in brackets. Confirmed decisions (D01–D42) were not modified or overridden. New recommendations are added as **D43–D54**, marked "Proposed (review)". The exception is D45, which records the user's licensing requirement as Confirmed. The `.agents/docs/` archive and its INVENTORY.json are untouched, because they are dated snapshots.
+Date: 2026-10-10. Each change below follows from a finding in [critical-review.md](critical-review.md); finding IDs are given in brackets. Round 1 did not modify any confirmed decision (D01–D42). Round 2 amended D03, D05, D11, D12, D41 and D42 to record the user's decision to reimplement rather than adapt CScience. New recommendations are added as **D43–D54** (round 1) and **D55–D58** (round 2), marked "Proposed (review)". The exception is D45, which records the user's licensing requirement as Confirmed. The `.agents/docs/` archive and its INVENTORY.json are untouched, because they are dated snapshots.
 
 Accept, amend or reject each item independently. Most edits are additive paragraphs, so reverting one is a small diff.
 
@@ -145,3 +145,81 @@ These need the user's judgement, or would restructure the documents more than a 
 - **[M7] A long-running job class** (multi-day sieving with application checkpointing and preemption tolerance), quotas, and a GPU isolation-tier note. Worth a short section once the minimum release is defined.
 - **[m4–m7]** Replace absolute `~/...` evidence paths with repo + commit references; add a glossary, non-goals and measurable targets; make the event log hash-chained (partly covered by track P).
 - **Add a LICENSE file** (MIT) to this repository and to `crypto-analysis-skills` once the user confirms.
+
+---
+
+# Round 2 (2026-10-10): changes after the user's responses
+
+The user clarified five things:
+
+- babbage is the host name of their Ubuntu 26.04 machine.
+- The primary threat is agentic workers doing things they shouldn't; prompt injection from consumed papers is less of a concern.
+- External services will mostly be MCP, and worker API keys should come from a secrets manager. OpenShell has features for this.
+- The project should **not** use Claude Science code; the needed parts are reimplemented.
+- Many research dependencies can be installed at runtime. This was already folded into round 1 as D46.
+
+## 12. Reimplementation instead of adaptation [C4 → resolved]
+
+- **DECISIONS.md**
+  - **D03** amended: CScience is the *behavior* reference, not a code base.
+  - **D05** marked superseded.
+  - **D11** Confirmed: an independent harness; do not retain or patch Claude Science.
+  - **D12** reopened for the new control application: SQLite first behind a repository interface, PostgreSQL only for multi-replica control.
+  - **D41** amended: use the Jupyter protocol for Python/R/Sage from the start, since there is no retained JSON-lines protocol.
+  - **D42** amended to drop "retain the supported store".
+  - **D51** rewritten: behavior specs plus a parallel infrastructure track. The patching go/no-go criteria are gone.
+  - New **D55**: an MIT harness stack (Anthropic client SDKs or LiteLLM, MCP SDK, own research-loop code; OpenCode/OpenScience Desktop as reuse candidates). The Claude Agent SDK is excluded because it drives the proprietary Claude Code CLI.
+  - New **D56**: reimplementation hygiene. Do not copy code, prompts, skill text, SQL migrations or assets from the bundle.
+  - The "deferred decisions" and "discussion order" text were updated to match.
+- **IMPLEMENTATION-PLAN.md**
+  - The first slice now runs a minimal new harness with no local execution path.
+  - **W0** is rewritten as "Behavior specification and harness foundation", with a list of behaviors to specify and acceptance fixtures.
+  - **W1** uses the Jupyter protocol.
+  - W4 review behavior is implemented to spec, with an independently written rubric.
+  - The decision table is updated.
+- **ROADMAP.md**: M0 becomes "Specify behavior and choose harness components"; M1 and M5 wording updated; the patch-count requirement removed.
+- **ARCHITECTURE.md**: "CScience integration before a new harness" is replaced by **"Reimplemented harness"**. The harness has no local execution path, and the orchestrator never mounts worker workspaces. The storage paragraphs now describe one embedded store.
+- **README.md, PRODUCT.md, EXECUTION-PLAN.md, FEATURE-PLAN.md**: the direction text now says reimplementation. OpenScience Desktop (MIT) is marked as the first code-reuse candidate.
+- **CONSISTENCY-REVIEW.md, REUSE-ASSESSMENT.md, SOURCE-STUDY.md**: a dated D11 note at the top says to read "retain/adapt" as behavior evidence. The analyses themselves are left intact.
+- **OPENSHELL-EVALUATION.md**: "What the workbench must supply" and the spike text now refer to the new harness.
+- **LICENSING.md**: the Claude Science row is now "Not used". New rows cover:
+  - the user's own `cscience-crypto` wrapper code (reusable where it embeds no upstream code; `patches.mjs` excluded);
+  - Anthropic client SDKs, the MCP SDK, OpenCode, Pydantic AI (all MIT) and LiteLLM (MIT core);
+  - the Claude Agent SDK (not MIT-clean).
+
+## 13. Threat model reprioritized around agent overreach [C1, C3]
+
+- **THREAT-MODEL.md** rewritten.
+  - Primary threats are now **A1–A4**: overreach through tools/MCP, overreach through code in workers, self-escalation, and runaway work.
+  - Malicious packages, studied exploit code and a compromised control plane are secondary.
+  - Prompt injection, GUI-targeted artifacts and covert channels are lower priority.
+  - The assets list adds shared project state and compute/API budget.
+  - The control mapping adds MCP tool allowlists, placeholder credentials, the policy advisor with auto-approval off, and spend limits.
+  - New babbage notes and new residual risks: a placeholder still permits everything its token's scope permits, and resolution is per endpoint, not per binary.
+- **D43** revised to name agent overreach as the primary concern.
+- **D47** revised: orchestrator egress goes to the model gateway and policy-governed MCP endpoints, and running the orchestrator as an OpenShell sandbox with providers is to be evaluated.
+
+## 14. Secrets manager and MCP [new]
+
+The OpenShell v0.1.3 documentation (`docs/how-it-works/providers/overview.mdx`, `profiles.mdx`, `policies/schema.mdx`, `kubernetes/setup.mdx`) was read for these changes.
+
+- **D57**: worker credentials come from OpenShell providers.
+  - Sandboxes hold only placeholders. The proxy resolves real values only for endpoints the credential is bound to, and fails closed on mismatch.
+  - The gateway refreshes short-lived tokens.
+  - Storage is the gateway's encrypted database locally; `kubernetes-secrets`, or OpenBao through the vault driver, when hosted. HashiCorp Vault is BUSL-1.1, so it is avoided.
+- **D58**: external services are `protocol: mcp` endpoints with per-project method/tool allowlists, provider credentials and least-privilege, read-only tokens.
+- **MONITORING.md**: new section **"Credentials and MCP access"**. It covers how injection works, storage drivers, the documented limits (endpoint- not binary-scoped; no cookie, binary or response rewriting; token scope is the real limit), MCP endpoint policy, and the policy advisor/prover with auto-approval off. The egress table row for granted endpoints now points to it.
+- **OPENSHELL-EVALUATION.md**: five new spike checks: provider secrets, credential scope, MCP policy, policy advisor/prover, and babbage kernel qualification.
+- **IMPLEMENTATION-PLAN.md** track P: providers and MCP policies, plus a placeholder/mismatch fixture.
+- **ARCHITECTURE.md**: the permissions section references D57/D58.
+- **LICENSING.md**: HashiCorp Vault (BUSL, avoid), OpenBao (MPL-2.0), External Secrets Operator (Apache-2.0), SOPS (MPL-2.0).
+
+## 15. babbage [m3 → resolved]
+
+- "Babbage Linux" is replaced by "babbage (Ubuntu 26.04)" across `docs/` and `examples/`.
+- The README Terminology section defines it and notes the Landlock and user-namespace checks.
+
+## 16. Critique updated
+
+- `critical-review.md` gains section **1a** recording the user's responses and their effect.
+- C4 is marked resolved by D11, m3 is marked resolved, and the next steps now reference D43–D58.

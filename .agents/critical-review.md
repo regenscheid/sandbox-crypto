@@ -23,6 +23,34 @@ Its weaknesses sit where the stated goal is most demanding:
 
 Findings below are ordered by severity: **Critical** (threatens the core goal), **Major** (likely rework or a security gap), **Minor** (clarity or maintainability).
 
+## 1a. Updates after the user's responses (2026-10-10)
+
+The user answered several points during the review. The branch now reflects them:
+
+| Topic | User response | Effect on this review |
+| --- | --- | --- |
+| Licensing | Prefer permissive; ideally MIT; GPL only if it can't affect the project; avoid AGPL. Private, personal project. | M1 and `docs/LICENSING.md` (D45). |
+| Runtime installs | Many research dependencies can be installed at runtime. | GPL tools (Sage, fpylll, G6K) are installed at runtime, not shipped (D46). |
+| CScience code | Don't use Claude Science code; reimplement the parts needed. | **C4 is resolved by decision** (D11 confirmed, D03 amended, D05 superseded). The go/no-go criteria for patching are moot. They are replaced by behavior specs and reimplementation hygiene (D51, D56) and an MIT harness stack (D55). The plan no longer needs a "retained runtime" path, which also removes the risk of a forgotten local execution path. |
+| babbage | Host name of the user's Ubuntu 26.04 machine. | m3 resolved. Added a check for OpenShell's Landlock ABI and Ubuntu's unprivileged-user-namespace restriction. |
+| Threat model | Primary concern is agentic workers doing things they shouldn't. Prompt injection from consumed papers is less of a concern. | C1's threat model is reprioritized: agent overreach (A1–A4) is primary, and T2 (injection) is lower. C3 still stands, reframed: the orchestrator executes agent-selected MCP and model calls, so overreach through it needs the same governance as workers. |
+| External services and secrets | Mostly via MCP. Workers that need API keys should get them from a secrets manager that limits direct access; OpenShell has features for this. | Confirmed against OpenShell v0.1.3 docs (details below). Added D57 (secrets via providers) and D58 (MCP endpoints with tool allowlists). |
+
+**OpenShell secrets (as documented at v0.1.3):**
+
+- *Providers* give sandboxes opaque placeholders. The proxy substitutes real values only when the network policy and the credential's endpoint binding both match, and fails closed otherwise.
+- The gateway can mint short-lived tokens through OAuth2 and STS refresh.
+- Credentials are stored encrypted in the gateway database, or via `kubernetes-secrets` or `vault` drivers.
+- `protocol: mcp` endpoints support method- and tool-level allowlists.
+- Gaps to design around:
+  - placeholders are endpoint-scoped, not binary-scoped;
+  - there is no rewriting for cookies, unsupported bodies or binary frames;
+  - responses are not rewritten;
+  - a placeholder still permits anything its token's scope permits.
+- HashiCorp Vault is BUSL-1.1, so the licensing policy points to OpenBao (MPL-2.0) or Kubernetes Secrets.
+
+Findings below are kept as originally written, so the reasoning stays visible. Read C4 and the stdio-seam suggestion as superseded.
+
 ---
 
 ## 2. Critical findings
@@ -83,7 +111,7 @@ The plan sandboxes the workers thoroughly, but the orchestrator:
 - never mount an engine or Kubernetes credential in the orchestrator;
 - log every orchestrator-initiated outbound request in the same event store as worker traffic.
 
-### C4. The CScience foundation conflicts with MIT licensing and has no exit criteria
+### C4. The CScience foundation conflicts with MIT licensing and has no exit criteria — resolved by D11 (reimplement)
 
 The reuse assessment states that the runtime is "a pinned upstream distribution with compatibility patches, not an independently owned orchestration source tree." `src/patches.mjs` patches a minified upstream bundle (`claude-science.js`). Implications the plan does not address:
 
@@ -230,7 +258,7 @@ Research may produce embargoed vulnerability findings or use sensitive datasets.
 | --- | --- | --- |
 | m1 | `.agents/docs/current/` duplicates `docs/` byte-for-byte; `history/` snapshots duplicate what git already stores. INVENTORY.json hashes must be maintained by hand. | Replace snapshots with git tags (`plan-01-initial`, `plan-02-deployment`, `plan-03-current`). Keep only agent reports in `.agents/docs/`. |
 | m2 | The same requirements (no orchestrator fallback, reproduction is an extension, base-image sessions, three monitor actions) are restated in 6–10 documents. | Make `DECISIONS.md` the single source and reference D-numbers elsewhere. Shrink restatements to links. |
-| m3 | "CScience" is never defined in the root README. "Babbage Linux" is never defined anywhere. | Define both in the README (CScience = the patched Claude Science 0.1.60 distribution at cscience-crypto; Babbage = the named Linux host, if that is what it is). |
+| m3 | "CScience" is never defined in the root README. "Babbage Linux" is never defined anywhere. | **Resolved:** both defined in the README Terminology section (babbage = the user's Ubuntu 26.04 machine). |
 | m4 | Evidence references point at absolute local paths (`~/Git_Projects/...`) that no other reader can verify. | Reference repository + commit + path, and note which sources are local-only. |
 | m5 | No glossary for project/session/workbook/environment/kernel/attempt, although the plan depends on these distinctions. | Add a short glossary (the table in PROJECTS-AND-SESSIONS is close). |
 | m6 | No success metrics or non-goals. | Add non-goals (multi-tenant SaaS, live migration, GPU, hardware labs) and a few measurable targets (cold start, warm cell latency, install time through the mirror). |
@@ -258,8 +286,8 @@ Research may produce embargoed vulnerability findings or use sensitive datasets.
 
 ## 6. Suggested next steps (ordered)
 
-1. Adopt `THREAT-MODEL.md` and `LICENSING.md` (drafted) and settle the proposed decisions D43–D54 in `DECISIONS.md`.
-2. Add go/no-go criteria to W0. Run the stdio-forwarding seam experiment alongside the call-map trace.
-3. Start the harness-independent MIT track: worker API, worker service, egress proxy + package mirror, read-only rootfs environment layout, adversarial fixture suite.
+1. Adopt `THREAT-MODEL.md` and `LICENSING.md` (drafted, revised) and settle the proposed decisions D43–D58 in `DECISIONS.md`.
+2. Write the behavior specs for the CScience features to reimplement, and choose the harness components (W0, D51/D55/D56).
+3. Start the infrastructure track: worker API, worker service, egress proxy + package mirror, OpenShell providers + MCP endpoint policies, read-only rootfs environment layout, adversarial fixture suite.
 4. Pick isolation tier defaults per profile and measure Sage/fpylll performance under gVisor and Kata.
 5. Define the minimum useful release and stage the placement matrix.

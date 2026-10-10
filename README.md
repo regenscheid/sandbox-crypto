@@ -6,23 +6,23 @@ Working folder for a cryptography/math research workbench with independently dep
 
 ## Terminology
 
-- **CScience**: the user's patched distribution of Claude Science (upstream 0.1.60, `cscience-crypto` package 0.8.0). It applies compatibility patches to an extracted upstream runtime bundle. It is the *functional baseline* (D03); because the upstream is proprietary, it cannot be part of an MIT release (see [licensing](docs/LICENSING.md)).
-- **Babbage Linux**: named as a local deployment target but not defined anywhere in the plan. *(Review note: please define it, e.g. a host name or a distribution.)*
+- **CScience**: the user's patched distribution of Claude Science (upstream 0.1.60, `cscience-crypto` package 0.8.0), which applies compatibility patches to an extracted, proprietary upstream runtime bundle. It is the *behavior reference* (D03). **No Claude Science code, prompts, skill text, schemas or assets are used**; the needed parts are reimplemented (D11, D56). The user's own wrapper code in `cscience-crypto` (for example capability profiles and math-rendering helpers) may be reused only where it embeds no upstream code.
+- **babbage**: the user's Ubuntu 26.04 machine (host name), the Linux local deployment target. OpenShell requires Landlock ABI ≥ 3 (Linux 6.2+) and active qualification on the actual kernel; check it on babbage, along with Ubuntu's AppArmor restriction on unprivileged user namespaces, which affects rootless runtimes.
 - **Isolation tier**: the strength of the boundary an execution actually ran with; see [threat model](docs/THREAT-MODEL.md).
 
 ## Agreed direction
 
-CScience is the functional baseline. Preserve its useful research behavior, built-in skills that organize the work, automatic reviews, and automatic Conda tool provisioning. The main change is the execution architecture: run the orchestrator/harness in its own container and execute research code and data processing in separate worker containers. Package the web GUI separately so each layer can run locally or remotely, including on Kubernetes.
+CScience is the behavior reference, not a code base. Reimplement its useful research behavior: work-organizing skills, plans and delegation, automatic reviews, and automatic Conda tool provisioning. The new implementation is MIT-licensed and uses no Claude Science code (D11, D45, D56). The main architectural change is: run the orchestrator/harness in its own container and execute research code and data processing in separate worker containers. Package the web GUI separately so each layer can run locally or remotely, including on Kubernetes.
 
 A project normally owns a persistent execution container created from a base image. Sessions/workbooks use that container by default, can request their own container, and can share project data in either mode. See [project/session ownership](docs/PROJECTS-AND-SESSIONS.md).
 
 New dedicated session containers start from the base image. Automatic reviews should follow current Claude Science behavior. Monitor policy supports blocking, escalation for permission, and alerting while work continues.
 
-Idle project/session environments must retain their containers or enough state to recreate them with files, tools and configuration. Workbooks have separate working directories plus shared project storage with conflict detection. Initial deployments target hosted Kubernetes and local containers. Local Docker/other runtimes or Kubernetes on macOS/Docker Desktop or Babbage Linux are acceptable if execution and network isolation policies can be enforced.
+Idle project/session environments must retain their containers or enough state to recreate them with files, tools and configuration. Workbooks have separate working directories plus shared project storage with conflict detection. Initial deployments target hosted Kubernetes and local containers. Local Docker/other runtimes or Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04) are acceptable if execution and network isolation policies can be enforced.
 
 The initial research workspace includes living documents with direct user edits and anchored comments, a project-wide board/ledger, LaTeX throughout the interface and outputs, native Sage kernels, and navigable mathematical PDFs. Preserve Science-style automatic consistency review. A separate fresh-environment verification/reproduction role is a proposed extension, rather than a requirement for every automatic review.
 
-The first engineering question is whether CScience's existing execution boundary can be adapted while retaining its research loop. A replacement harness or new UI is conditional on that investigation, rather than an initial requirement.
+The first engineering step is a written behavior specification of the CScience features worth keeping, plus a minimal new harness whose tools execute only through the worker API. The harness is built from MIT-compatible components ([licensing](docs/LICENSING.md)); OpenScience Desktop (MIT) is the first code-reuse candidate. The GUI is new as well, kept deliberately small at first.
 
 Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its documented Docker/Podman and Kubernetes drivers fit the intended placements, but adoption requires actual lifecycle, persistence, and isolation checks. The evaluation baseline is [v0.1.3](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.3). OpenShell does not supply the research workflow or automatic scientific review. A trusted monitor should correlate supported request/response inspection with task, tool, and package activity.
 
@@ -55,7 +55,7 @@ The earlier project was located at [regenscheid/open-science-crypto](https://git
 
 ## First proof
 
-Keep the orchestrator in container A. First route an ordinary shell command and two stateful Python cells to sandbox B, exchange a file, interrupt work and reconnect through the retained tools. Observe where research code actually executes. Then add native Sage, PDF processing and the same worker contract on local and hosted Kubernetes targets. The complete product fixture connects a PDF source, shared ledger claim, LaTeX living document, user edit/comment, and automatic consistency review across workbooks. A proposed reproduction extension can reuse that execution path with fresh pinned inputs.
+Run the new harness in container A. First route an ordinary shell command and two stateful Python cells to sandbox B, exchange a file, interrupt work and reconnect through the harness's tools. Observe where research code actually executes. Then add native Sage, PDF processing and the same worker contract on local and hosted Kubernetes targets. The complete product fixture connects a PDF source, shared ledger claim, LaTeX living document, user edit/comment, and automatic consistency review across workbooks. A proposed reproduction extension can reuse that execution path with fresh pinned inputs.
 
 Portability initially means redeploying services, reconnecting storage, and restoring or reproducing work. Live kernel memory migration requires explicit checkpoint support.
 
