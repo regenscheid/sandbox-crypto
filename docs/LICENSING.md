@@ -58,7 +58,9 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | MCP Python SDK | MIT | Harness and connector tools |
 | OpenCode | MIT | Harness reuse candidate |
 | Pydantic AI | MIT | Harness building-block candidate |
-| LiteLLM | MIT core (enterprise directory under separate terms) | Model-gateway candidate; use the MIT core only |
+| LiteLLM | MIT core (enterprise directory under separate terms) | **Model gateway (D61)**: run the proxy; use only MIT-licensed features |
+| markdown-it-py, mdit-py-plugins, markdown-it | MIT | Living-document parsing (D65) |
+| Pandoc | GPL | Tier 3: runtime-installed in workers for `.tex`/PDF export, invoked as a separate program |
 | Claude Agent SDK (Python) | MIT wrapper that bundles the proprietary Claude Code CLI | **Not** for the MIT core: the runtime it drives is proprietary |
 | Claude Agent SDK (TypeScript) | Proprietary (Anthropic Commercial Terms) | Avoid |
 | HashiCorp Vault | **BUSL-1.1** | Avoid; use OpenBao or Kubernetes Secrets |

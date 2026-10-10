@@ -34,6 +34,11 @@ The user answered several points during the review. The branch now reflects them
 | CScience code | Don't use Claude Science code; reimplement the parts needed. | **C4 is resolved by decision** (D11 confirmed, D03 amended, D05 superseded). The go/no-go criteria for patching are moot. They are replaced by behavior specs and reimplementation hygiene (D51, D56) and an MIT harness stack (D55). The plan no longer needs a "retained runtime" path, which also removes the risk of a forgotten local execution path. |
 | babbage | Host name of the user's Ubuntu 26.04 machine. | m3 resolved. Added a check for OpenShell's Landlock ABI and Ubuntu's unprivileged-user-namespace restriction. |
 | Threat model | Primary concern is agentic workers doing things they shouldn't. Prompt injection from consumed papers is less of a concern. | C1's threat model is reprioritized: agent overreach (A1–A4) is primary, and T2 (injection) is lower. C3 still stands, reframed: the orchestrator executes agent-selected MCP and model calls, so overreach through it needs the same governance as workers. |
+| Targets and hardware | babbage is amd64 (Ryzen 395, 128 GB), KVM can be enabled; the Mac is an M3 Max; the K8s test cluster mixes Raspberry Pi 5 and amd64 nodes. Start on babbage. | Tier 3 locally via OpenShell MicroVM; multi-arch images; phases staged by placement (D43, D53, D63). |
+| Scope | All initial features plus MCP connectors are needed before the system is usable; crypto-research-mcp first, others later. | **M6 partly withdrawn**: no feature cut; staging is by placement only (D53, D64). |
+| Stack | Python; LiteLLM proxy, OpenAI first, Anthropic Messages later. | D60, D61; spend limits via LiteLLM virtual keys. |
+| Permissions | Policy-based, permissive YAML; configurable escalation timeout falling back to deny. | D62 and `docs/POLICY.md`; D44 relaxed to allow broad reads by default. |
+| Living documents | Markdown with LaTeX math. | D65. |
 | External services and secrets | Mostly via MCP. Workers that need API keys should get them from a secrets manager that limits direct access; OpenShell has features for this. | Confirmed against OpenShell v0.1.3 docs (details below). Added D57 (secrets via providers) and D58 (MCP endpoints with tool allowlists). |
 
 **OpenShell secrets (as documented at v0.1.3):**

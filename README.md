@@ -7,7 +7,7 @@ Working folder for a cryptography/math research workbench with independently dep
 ## Terminology
 
 - **CScience**: the user's patched distribution of Claude Science (upstream 0.1.60, `cscience-crypto` package 0.8.0), which applies compatibility patches to an extracted, proprietary upstream runtime bundle. It is the *behavior reference* (D03). **No Claude Science code, prompts, skill text, schemas or assets are used**; the needed parts are reimplemented (D11, D56). The user's own wrapper code in `cscience-crypto` (for example capability profiles and math-rendering helpers) may be reused only where it embeds no upstream code.
-- **babbage**: the user's Ubuntu 26.04 machine (host name), the Linux local deployment target. OpenShell requires Landlock ABI ≥ 3 (Linux 6.2+) and active qualification on the actual kernel; check it on babbage, along with Ubuntu's AppArmor restriction on unprivileged user namespaces, which affects rootless runtimes.
+- **babbage**: the user's Ubuntu 26.04 machine (host name; amd64, Ryzen 395, 128 GB), the phase 1 target. KVM is available, so it can use OpenShell's MicroVM driver. OpenShell requires Landlock ABI ≥ 3 (Linux 6.2+) and active qualification on the actual kernel; check it on babbage, along with Ubuntu's AppArmor restriction on unprivileged user namespaces, which affects rootless runtimes.
 - **Isolation tier**: the strength of the boundary an execution actually ran with; see [threat model](docs/THREAT-MODEL.md).
 
 ## Agreed direction
@@ -19,6 +19,8 @@ A project normally owns a persistent execution container created from a base ima
 New dedicated session containers start from the base image. Automatic reviews should follow current Claude Science behavior. Monitor policy supports blocking, escalation for permission, and alerting while work continues.
 
 Idle project/session environments must retain their containers or enough state to recreate them with files, tools and configuration. Workbooks have separate working directories plus shared project storage with conflict detection. Initial deployments target hosted Kubernetes and local containers. Local Docker/other runtimes or Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04) are acceptable if execution and network isolation policies can be enforced.
+
+Delivery is staged by placement (D53): phase 1 is the complete feature set, including crypto-research-mcp, on babbage. Phase 2 is the user's mixed-arch Kubernetes test cluster. Phase 3 covers the Mac, more MCP servers and remote-access decisions. Server-side code is Python (D60). Models go through a LiteLLM proxy, OpenAI first and Anthropic Messages later (D61). Permissions come from a permissive-by-default policy YAML with an escalation timeout that falls back to deny (D62). Living documents are Markdown with LaTeX math (D65).
 
 The initial research workspace includes living documents with direct user edits and anchored comments, a project-wide board/ledger, LaTeX throughout the interface and outputs, native Sage kernels, and navigable mathematical PDFs. Preserve Science-style automatic consistency review. A separate fresh-environment verification/reproduction role is a proposed extension, rather than a requirement for every automatic review.
 
@@ -47,6 +49,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Roadmap](docs/ROADMAP.md) | Ordered implementation gates |
 | [Decisions](docs/DECISIONS.md) | Confirmed requirements, recommendations, and open choices |
 | [Threat model](docs/THREAT-MODEL.md) | Assets, threat sources, trust zones, isolation tiers and data classes (proposed by review) |
+| [Policy file](docs/POLICY.md) | Permissive-by-default YAML project policy, precedence, escalation timeout ([example](examples/policy.yaml)) |
 | [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |
 | [Deployment examples](examples/deployment-profiles.json) | Illustrative placements; not executable manifests |
 | [Run request](examples/run-request.json) | Illustrative batch contract; not an OpenShell request |

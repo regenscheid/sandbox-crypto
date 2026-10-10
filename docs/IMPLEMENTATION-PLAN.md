@@ -52,7 +52,7 @@ Write short behavior specifications, in the project's own words, for the CScienc
 
 Each spec ends with acceptance fixtures that the new implementation must pass.
 
-Choose the harness building blocks (D55): model access (Anthropic client SDK or an MIT model gateway), the MCP client SDK, and own code for the research loop. Before choosing, assess reuse from OpenScience Desktop upstream (MIT) and OpenCode (MIT), and from the user's own `cscience-crypto` wrapper code where it embeds no upstream code. Record each reused file's license and revision.
+Choose the harness building blocks (D55, D60, D61): Python throughout the server side; a provider-neutral model interface over the LiteLLM proxy, with the OpenAI-compatible adapter first and Anthropic Messages later; the MCP client SDK; and own code for the research loop. Before choosing, assess reuse from OpenScience Desktop upstream (MIT) and OpenCode (MIT), and from the user's own `cscience-crypto` wrapper code where it embeds no upstream code. Record each reused file's license and revision.
 
 **Exit evidence:** behavior specs with fixtures, a harness-component decision with licenses recorded, and a mapping from the specs to the shared contracts above.
 
@@ -74,6 +74,8 @@ Proposed by the plan review (D51). These components do not depend on harness det
 - Event store with an append-only hash chain, so monitor evidence is tamper-evident.
 - Adversarial fixture suite ([monitoring](MONITORING.md)).
 - Isolation-tier probes that report the tier actually provided (D43).
+- The policy compiler from the project policy file ([policy](POLICY.md), D62) to OpenShell network/MCP/filesystem policy, with the hard floor, pool ceiling, most-restrictive-wins precedence and escalation timeout. It reports rules it cannot enforce.
+- Multi-arch (amd64/arm64) base images and a babbage MicroVM gateway configuration (D63).
 - Secrets through OpenShell providers with endpoint binding and least-privilege tokens (D57), and MCP endpoint policies with tool allowlists (D58). A fixture confirms that the sandbox sees only placeholders and that a placeholder sent to an unbound host fails with `credential_endpoint_mismatch`.
 
 Implement the worker API against OpenShell and against the reference fallback stack (D52) early, so the abstraction is not shaped by one backend.

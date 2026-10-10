@@ -238,3 +238,59 @@ The user has used [pdf_oxide](https://github.com/yfedoseev/pdf_oxide) instead of
 - **CONSISTENCY-REVIEW.md**: new row in "Standard components worth testing" listing what to verify: page-label mapping, character coordinates, equation/matrix transcription against crops, scanned/malformed PDFs, and version pinning.
 - **IMPLEMENTATION-PLAN.md** W2: PDF extraction starts with pdf_oxide.
 - **critical-review.md** M1 table: the PyMuPDF row now points to pdf_oxide.
+
+---
+
+# Round 4 (2026-10-10): targets, stack, policy file, document format
+
+The user answered the open planning questions:
+
+- babbage is amd64 (Ryzen 395, 128 GB) and can enable whatever is needed. The Mac is an M3 Max. The Kubernetes test cluster mixes Raspberry Pi 5 and amd64 nodes. Start on babbage.
+- All initial features, including MCP connectors, are needed before the system is usable. crypto-research-mcp comes first; other servers come later.
+- The user prefers Python.
+- Model access goes through a LiteLLM proxy: OpenAI API first, direct Anthropic Messages later.
+- The first hosted target is small-scale testing on the user's cluster; exposure decisions come later.
+- Permissions are policy-based through a YAML file that is quite permissive, with a configurable timeout that falls back to deny.
+- Living documents are Markdown with LaTeX math.
+
+Checked: conda-forge has linux-aarch64 builds of sagelib, PARI, fplll and fpylll; G6K has no conda-forge feedstock. OpenShell's MicroVM driver needs only KVM on Linux. markdown-it-py, mdit-py-plugins and markdown-it are MIT; Pandoc is GPL.
+
+## 18. Project policy file [new]
+
+- New **docs/POLICY.md** covers:
+  - three layers: a non-editable hard floor, a per-pool ceiling and the project policy;
+  - `allow`/`alert`/`escalate`/`deny`, with the most restrictive matching rule winning;
+  - `escalation.timeout` with `on_timeout: deny` by default (`allow` only for alert-class rules);
+  - what the permissive default allows;
+  - how each element compiles to OpenShell (with an upstream-proxy fallback if wildcard hosts are not expressible);
+  - open items.
+- New **examples/policy.yaml**:
+  - broad GET/HEAD and git fetch allowed; conda-forge and PyPI allowed;
+  - writes and git push escalate; large egress alerts;
+  - crypto-research-mcp read tools allowed, credit-spending or state-changing Firecrawl tools escalate, portal toggles denied;
+  - a resource block and a LiteLLM budget.
+- **D62** added. **D44** revised: broad reads are allowed by the shipped default, and side effects escalate.
+- MONITORING.md (egress table, response policy) and IMPLEMENTATION-PLAN.md track P (policy compiler) updated.
+
+## 19. Targets and phases [M6]
+
+- **D53** revised: stage by placement, not features. Phase 1 is the full workspace plus crypto-research-mcp on babbage; phase 2 the mixed-arch test cluster; phase 3 the Mac, further MCP servers and exposure.
+- New **D63** (platforms, multi-arch images, capability/affinity placement, arm64 Sage availability, G6K source builds) and **D64** (crypto-research-mcp first, a generic registry for later servers).
+- **D43** revised: tier 3 on babbage via OpenShell MicroVM/KVM; tier 2 (gVisor) on the test cluster, with tier 3 where supported.
+- ROADMAP.md: the "Minimum useful release" section is replaced by **"Delivery phases"**.
+- ARCHITECTURE.md (concrete targets), THREAT-MODEL.md (tier rows), README.md (terminology, direction) and `examples/deployment-profiles.json` (phase targets, image architectures) updated.
+
+## 20. Stack [new]
+
+- **D60**: Python for all server-side components; a thin browser front end, framework open.
+- **D61**: LiteLLM proxy with a provider-neutral harness model interface. The OpenAI-compatible adapter comes first, and Anthropic Messages later, through LiteLLM's Anthropic-format endpoint if it preserves tool use, thinking and caching, otherwise the SDK directly. LiteLLM holds the provider keys; the orchestrator gets a virtual key with a spend limit.
+- ARCHITECTURE.md gains a model-gateway paragraph; IMPLEMENTATION-PLAN.md W0 is updated; LICENSING.md notes LiteLLM as the gateway (MIT features only).
+
+## 21. Living-document format [new]
+
+- **D65**: Markdown with LaTeX math (`$…$`, `$$…$$`). markdown-it-py and mdit-py-plugins on the server and markdown-it with KaTeX in the browser keep block and math boundaries consistent for anchors. Export runs in workers; Pandoc is runtime-installed (GPL, separate program).
+- RESEARCH-WORKSPACE.md and LICENSING.md updated.
+
+## 22. Critique updated
+
+- Section 1a gains rows for these answers. M6 is noted as partly withdrawn: there is no feature cut, and staging is by placement.
