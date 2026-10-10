@@ -2,11 +2,13 @@
 
 Date: 2026-10-10. Planning review only. Source inspection supports the findings below; proposed components and backend mappings have not been implemented or exercised.
 
+> **Update (2026-10-10, D11):** the user decided to reimplement the needed CScience behavior rather than adapt or patch the Claude Science runtime. Where this document speaks of retaining, adapting or patching CScience mechanisms, read it as *behavior evidence for the reimplementation*. No Claude Science code, prompts, schemas or assets are copied (D56). OpenScience Desktop upstream is MIT-licensed and remains a code-reuse candidate, subject to per-file checks.
+
 ## Conclusion
 
 The requirements fit together. The main implementation risk is building separate infrastructure for each feature: a document history, a ledger history, a reviewer evidence store, a permission queue, and an execution journal that cannot reliably refer to one another. Share identity, immutable revisions, artifact transfer, event delivery, and scoped decisions. Preserve domain-specific meaning and lifecycle on top of those mechanisms.
 
-Start by adapting CScience and proving one ordinary research operation across the container boundary. The [implementation plan](IMPLEMENTATION-PLAN.md) turns this review into ordered work with evidence gates. It does not assume a new harness, database, or collection of microservices.
+Start by proving one ordinary research operation across the container boundary with the new harness (D11). The [implementation plan](IMPLEMENTATION-PLAN.md) turns this review into ordered work with evidence gates. It does not assume a new harness, database, or collection of microservices.
 
 ## Inconsistencies and ambiguities resolved
 
@@ -47,7 +49,7 @@ Do not flatten every object into one generic status field. A scientific result, 
 
 ## Concrete reuse candidates
 
-### Retained CScience mechanisms
+### CScience mechanisms (behavior evidence for the reimplementation)
 
 The current source already contains execution logs, artifact versions, scoped memory, exact-version verification records and unified annotations. They provide candidate backing structures for shared references. Extend or adapt these structures after tracing callers; do not create a competing ledger/document store merely because the new architecture diagram has more boxes. Relevant inspected migrations are `0005_execution_log.sql`, `0026_memory.sql`, `0029_verification.sql`, `0085_annotations_unified.sql` and `0115_verification_checks_resolution.sql` under `dist/review-0.1.60/runtime/assets/drizzle/sqlite/` in the existing checkout.
 

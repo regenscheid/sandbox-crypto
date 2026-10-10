@@ -90,11 +90,11 @@
   ],
   "initial_deployment_targets": {
     "hosted": "hosted Kubernetes",
-    "local": "policy-capable container runtime on macOS or Babbage Linux",
+    "local": "policy-capable container runtime on macOS or babbage (Ubuntu 26.04)",
     "local_candidates": [
       "Docker or another container runtime",
       "Docker Desktop Kubernetes on macOS",
-      "local Kubernetes on Babbage Linux"
+      "local Kubernetes on babbage (Ubuntu 26.04)"
     ],
     "acceptance": "demonstrated execution/network isolation, monitor actions, persistence and worker API parity",
     "local_kubernetes_required": false

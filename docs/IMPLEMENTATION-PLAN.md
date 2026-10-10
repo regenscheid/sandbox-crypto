@@ -4,16 +4,16 @@ Date: 2026-10-10. Proposed engineering sequence; no work package has been implem
 
 ## First implementation slice
 
-Retain the CScience research loop in container A. Route one ordinary shell tool and two stateful Python cells into container B using a common worker contract. Return streamed output, a published file and observed execution location through the retained tools. Interrupt an operation and reconnect without launching it twice. This slice tests the central architectural assumption before adding the complete product workflow.
+Run a minimal new harness (D11, D55) in container A. Its shell and Python tools execute only through the worker API in container B: one ordinary shell command and two stateful Python cells. Return streamed output, a published file and the observed execution location through those tools. Interrupt an operation and reconnect without launching it twice. This slice tests the central architectural assumption before adding the complete product workflow.
 
-Its deliverables are an execution call map, an adapter or a precise blocked seam, a small integration fixture, and a record of processes/files/policy actually observed. A standalone batch demonstration cannot establish that CScience's everyday research tools have moved. Do not build a new GUI or choose a replacement harness to complete this slice.
+Its deliverables are the harness tool loop, the worker API and one adapter, a small integration fixture, and a record of processes/files/policy actually observed. A command-line or minimal web client is enough for this slice; the full GUI comes later. The harness never has a local execution path to fall back on, because it is built without one.
 
 ## Ownership and packaging
 
 | Deployable unit | Initial logical modules | Authority and durable state |
 | --- | --- | --- |
-| Web GUI/API proxy | Retained research views, shared math renderer, PDF viewer, document/comment and permission interfaces | Authenticates to control APIs; caches/projections are disposable. Independent endpoint configuration supports separate hosting. |
-| Control application/orchestrator | Retained harness, project/session catalog, artifact metadata, ledger/documents, review coordination, permission decisions, execution router | Owns research history, scoped grants, revisions and execution intent. Initially retain the supported state store on private durable storage. Semi-trusted (D47): egress limited to the model gateway and connector broker; no engine/cluster credentials. |
+| Web GUI/API proxy | New research views (small at first), shared math renderer, PDF viewer, document/comment and permission interfaces | Authenticates to control APIs; caches/projections are disposable. Independent endpoint configuration supports separate hosting. |
+| Control application/orchestrator | New harness (D11), project/session catalog, artifact metadata, ledger/documents, review coordination, permission decisions, execution router | Owns research history, scoped grants, revisions and execution intent. Initially one embedded store (D12) on private durable storage. Semi-trusted (D47): egress limited to the model gateway and connector broker; no engine/cluster credentials. |
 | Trusted worker/policy infrastructure per pool | Worker service, environment/kernel managers, backend adapter, OpenShell gateway/supervisor if adopted, monitor integration | Owns runtime credentials, observed execution state, leases and policy enforcement. Keep this authority outside research-writable environments. |
 | Project/session/batch research containers | Scientific tools, shell, persistent kernels, approved Conda operations, parsers and renderers | Own bounded mutable execution state and granted data access. No cluster administration, enrollment or broad provider credentials. |
 
@@ -21,7 +21,7 @@ Artifact bytes may initially live on private durable filesystem storage with aut
 
 ## Shared contracts to establish first
 
-Names below describe proposed interfaces, not already implemented public APIs. Resolve names and serialization against retained CScience types in W0/W1.
+Names below describe proposed interfaces, not already implemented public APIs. Settle names and serialization in W0/W1 from the behavior specification.
 
 | Contract | Minimum semantics | Consumers |
 | --- | --- | --- |
@@ -35,40 +35,38 @@ Names below describe proposed interfaces, not already implemented public APIs. R
 
 For example, a document patch against revision 12 must not overwrite a user edit at revision 13. A review references revision 12 explicitly; a PDF citation references the imported PDF hash and physical page. A permission granted to one upload cannot authorize another destination or payload. Retries retain an operation ID; genuinely new execution attempts receive new attempt IDs.
 
-Keep event transport separate from research semantics. Domain updates and their publication event must commit coherently, for example through a transactional outbox in the retained store. Replay/deduplication is required; a universal event-sourced database and exactly-once external effects are not assumed. Monitor observations identify their trusted producer separately from agent assertions.
+Keep event transport separate from research semantics. Domain updates and their publication event must commit coherently, for example through a transactional outbox in the control store. Replay/deduplication is required; a universal event-sourced database and exactly-once external effects are not assumed. Monitor observations identify their trusted producer separately from agent assertions.
 
 ## Ordered work packages
 
-### W0 — Establish the retained-runtime seams (roadmap M0)
+### W0 — Behavior specification and harness foundation (roadmap M0)
 
-Trace ordinary shell, Python/R kernel startup/execution, package installation, file operations, PDF/TeX helpers, remote compute, and execution-bearing MCP subprocesses. Classify trusted metadata operations separately from generated code. Record the actual automatic review configuration and its evidence/finding lifecycle; inspected defaults are not necessarily the active settings.
+Write short behavior specifications, in the project's own words, for the CScience features to reimplement (D51, D56). Draw on observed use, the user's experience and public documentation. The agent reports' line anchors into the proprietary bundle are evidence of *what* the behavior is; they are not text to copy. Cover at least:
 
-Map existing project, artifact, annotation, claim and verification types onto the shared references above. Inspect only relevant OpenScience fork components and their per-file terms. Inventory where an absolute local path or browser/native callback currently carries meaning. Define a narrow test seam without altering upstream behavior merely to simplify the spike.
+- tool semantics: shell (working directory, stdout/stderr, exit codes, cancellation), persistent kernels, file handoff, errors;
+- skills: discovery, on-demand loading, helper code, recorded load evidence;
+- plans and delegation: versioned plans, tracks, delegated agents, role-specific model settings;
+- automatic consistency review: checkpoint and terminal triggers, constrained reviewer scope, finding severity, author response, claimed-fix confirmation, bounded completion;
+- automatic Conda provisioning: request, install, record, probe;
+- research artifacts: versions, annotations, lineage.
 
-Test the stdio-forwarding seam first: replace the spawned JSON-lines kernel worker and shell with stubs that relay stdio to a remote worker, and synchronize the workspace. This may intercept ordinary execution with very few patches to the bundle.
+Each spec ends with acceptance fixtures that the new implementation must pass.
 
-**Go/no-go criteria (D51), to be fixed before W0 starts:**
+Choose the harness building blocks (D55): model access (Anthropic client SDK or an MIT model gateway), the MCP client SDK, and own code for the research loop. Before choosing, assess reuse from OpenScience Desktop upstream (MIT) and OpenCode (MIT), and from the user's own `cscience-crypto` wrapper code where it embeds no upstream code. Record each reused file's license and revision.
 
-- Ordinary shell, kernel, install and file paths can be intercepted at no more than an agreed number of patch sites.
-- The patches apply to at least one later upstream release without manual rework.
-- The upstream terms permit modification, containerization and the intended hosted deployment.
-- No proprietary code needs to enter components intended for the MIT release (D45).
-
-If any criterion fails, treat CScience as a behavior specification and fixture source, and move to an independent harness (D11). The newer OpenScience Desktop upstream (MIT) is the first code-reuse candidate.
-
-**Exit evidence:** caller/adapter map, representative tool inputs/outputs and errors, review compatibility fixtures, retention/extraction proposal, a patch-burden record and a go/no-go verdict against the criteria above. If a seam is unavailable, identify the exact limitation before evaluating replacement code.
+**Exit evidence:** behavior specs with fixtures, a harness-component decision with licenses recorded, and a mapping from the specs to the shared contracts above.
 
 ### W1 — Define shared references and one worker adapter (M0 → M1)
 
-Implement the smallest context/artifact/event/operation interfaces needed for the first slice. Keep the existing persistent Python JSON-lines protocol behind a kernel adapter. Add worker-side capability probes, scoped file staging/publication, streamed output, cancellation, idempotent submission and attempt lookup. Do not yet generalize every possible backend or kernel.
+Implement the smallest context/artifact/event/operation interfaces needed for the first slice, and the harness tool loop that calls them. Use the Jupyter messaging protocol for the Python kernel from the start (D41), so Sage and R later share the same adapter. Add worker-side capability probes, scoped file staging/publication, streamed output, cancellation, idempotent submission and attempt lookup. Do not yet generalize every possible backend or kernel.
 
 Run the control application in one container and execution in another on an available local target. Use an observed process/container identity and a harmless file available only in the worker to establish location. Verify that a host-only sentinel outside granted paths is inaccessible. Close/reconnect the client during streaming and reconcile the same attempt. Reject unsupported execution instead of falling back beside the orchestrator.
 
-**Exit evidence:** ordinary shell and two stateful Python cells work through retained tools; file publication, interruption and reconnect preserve correct identity and outcomes. Capture actual boundary enforcement, errors and any untested coverage. This is the first concrete implementation checkpoint.
+**Exit evidence:** ordinary shell and two stateful Python cells work through the new harness's tools; file publication, interruption and reconnect preserve correct identity and outcomes. Capture actual boundary enforcement, errors and any untested coverage. This is the first concrete implementation checkpoint.
 
 ### P — Harness-independent infrastructure track (parallel with W0–W2)
 
-Proposed by the plan review (D51). These components are needed whatever D11 decides. Build them as MIT code under the [licensing policy](LICENSING.md):
+Proposed by the plan review (D51). These components do not depend on harness details. Build them as MIT code under the [licensing policy](LICENSING.md):
 
 - Worker API schema and worker service, with the persistent-kernel, argv, file-staging, streaming, cancellation and attempt-reconciliation operations.
 - Read-only-rootfs environment layout with declared volumes, lockfile capture and rebuild (D48).
@@ -76,6 +74,7 @@ Proposed by the plan review (D51). These components are needed whatever D11 deci
 - Event store with an append-only hash chain, so monitor evidence is tamper-evident.
 - Adversarial fixture suite ([monitoring](MONITORING.md)).
 - Isolation-tier probes that report the tier actually provided (D43).
+- Secrets through OpenShell providers with endpoint binding and least-privilege tokens (D57), and MCP endpoint policies with tool allowlists (D58). A fixture confirms that the sandbox sees only placeholders and that a placeholder sent to an unbound host fails with `credential_endpoint_mismatch`.
 
 Implement the worker API against OpenShell and against the reference fallback stack (D52) early, so the abstraction is not shaped by one backend.
 
@@ -107,7 +106,7 @@ Use the shared artifact/revision/anchor contracts for living documents, comments
 
 Support attributed user edits and revision-checked agent patches; demonstrate stale-patch reconciliation and orphaned anchors. Use one TeX-preserving renderer across research views. Evaluate PDF.js navigation against exact page/region anchors while retaining worker extraction/rendering. Assumption changes should identify dependent claims/reviews for reconsideration, not silently rewrite conclusions.
 
-Retain Science-style automatic consistency review and actual configured checkpoint/terminal triggers. Persist exact evidence revisions, author responses, claimed fixes and confirmation/supersession outcomes. Drive triggers from durable events, including published shell-created files. Published frontier results enter from their citations without reproduction gates.
+Implement Science-style automatic consistency review to its behavior spec, including checkpoint/terminal triggers. Write the reviewer rubric and prompts independently (D56). Persist exact evidence revisions, author responses, claimed fixes and confirmation/supersession outcomes. Drive triggers from durable events, including published shell-created files. Published frontier results enter from their citations without reproduction gates.
 
 Register the external crypto skill pack through a common platform binding, recording effective revision and actual loading. Adapt its tools to the shared project resources and typed outcomes; keep the catalog external and one authoritative project history.
 
@@ -125,7 +124,7 @@ Exercise orchestrator restart/fencing, worker loss, duplicate requests, interrup
 
 Use the established boundaries for lattice/fpylll work, parameter estimates, counterexample searches and implementation checks. Capture mathematical domains, assumptions, seeds/precision, effective skills and tool versions. Evaluate optional licensed Magma on an authorized target. Select deeper fixtures from real user research after the deterministic integration path works.
 
-**Exit evidence:** useful research tasks preserve CScience behavior and produce navigable source, execution, document and review evidence on both deployment classes. Additional tools must use the same environment, permission and artifact mechanisms.
+**Exit evidence:** useful research tasks meet the CScience behavior specs and produce navigable source, execution, document and review evidence on both deployment classes. Additional tools must use the same environment, permission and artifact mechanisms.
 
 ## Separate proposed extension: fresh computational reproduction
 
@@ -137,10 +136,10 @@ A small exact Sage result should reproduce without producer kernel memory and re
 
 | Choice | Evidence point | Default until then |
 | --- | --- | --- |
-| Adapted CScience or compatible replacement | W0/W1 patchability, semantics and retained behavior | Retain the harness, GUI and supported store |
+| Harness building blocks | W0 behavior specs, license check and reuse assessment | Anthropic client SDK + MCP SDK + own research loop (D55) |
 | First local backend and OpenShell adoption | W2 enforcement, monitor, lifecycle and platform matrix | One available local candidate; no promised universal engine support |
 | Persistence/synchronization mechanism | W3 writable-state coverage, conflict and restore checks | Preserve the original environment/state until a verified alternative exists |
-| Shared UI/kernel libraries | W2/W4 native math, output, anchor and security behavior | Retained Python adapter; candidate Sage Jupyter/PDF.js/KaTeX integrations |
-| New database or additional service | Actual retained-store/availability limitation | Logical modules in the control application; no migration prerequisite |
+| Shared UI/kernel libraries | W2/W4 native math, output, anchor and security behavior | Jupyter-protocol kernels; candidate PDF.js/KaTeX integrations |
+| New database or additional service | Actual store/availability limitation | Logical modules in the control application on one embedded store (D12) |
 
-Immediate next work is W0/W1. Detailed policy rules and research categories can be refined against the working slice; another broad planning round is unnecessary before tracing and adapting the execution seam.
+Immediate next work is W0/W1 plus track P. Detailed policy rules and research categories can be refined against the working slice; another broad planning round is unnecessary before writing the behavior specs and the first slice.

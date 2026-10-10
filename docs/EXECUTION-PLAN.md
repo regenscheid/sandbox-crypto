@@ -4,7 +4,7 @@ Date: 2026-10-10. Requirements reflect the user's clarifications; implementation
 
 ## Problem to solve
 
-CScience already provides useful research functionality. Its local execution and sandbox assumptions make it difficult to put the orchestrator in one container and code/data execution in other containers. Preserve the research experience, work-organizing skills, and automatic reviews while introducing an explicit worker boundary.
+CScience already provides useful research functionality, but its local execution and sandbox assumptions make it difficult to put the orchestrator in one container and code/data execution in other containers. It is also a patched proprietary runtime. The user has decided to reimplement the needed behavior (D11): a new harness built on an explicit worker boundary, keeping the research experience, work-organizing skills and automatic reviews.
 
 Three independently placeable layers are required:
 
@@ -45,7 +45,7 @@ The inspected source checkout is CScience `0.8.0`, HEAD `063919ffab886e6eb70f12d
 
 Previously extracted upstream `0.1.60` assets contain SSH/BYOC compute machinery, job submission/result transfer, and provenance records. The extracted review runtime at `dist/review-0.1.60/runtime/` also establishes editable artifacts/annotations, PDF exploration, knowledge/claim schemas, and automatic consistency review. An older cached distribution reports CScience `0.7.0`; source evidence does not prove that the current checkout or new worker backend works.
 
-Therefore, investigate two paths: extending the existing compute/executor interfaces, and replacing local shell/kernel/provisioning adapters. An optional remote-job tool is insufficient if ordinary Python, shell, package installation, or document processing still launches beside the orchestrator. No runtime extraction or execution was performed during this pass.
+This evidence now serves as behavior reference for the reimplementation (D51, D56), not as code to adapt. A reimplemented harness that only calls the worker API avoids the risk that ordinary Python, shell, package installation or document processing still launches beside the orchestrator. No runtime extraction or execution was performed during this pass.
 
 ## First decisions to discuss
 
@@ -95,7 +95,7 @@ Select separate reviewer models when desired. Distinct model identity alone does
 
 ### 5. First deployment pair
 
-**Confirmed targets:** hosted Kubernetes and local containers in the initial deployments. Local Kubernetes on macOS/Docker Desktop or Babbage Linux may simplify deployment; Docker or another container runtime is equally acceptable if execution and network policies can be enforced. Evaluate local candidates against the same policy/persistence/tool contract, without requiring Kubernetes. Validate hosted orchestration with local workers through an outbound authenticated connection as part of independent placement.
+**Confirmed targets:** hosted Kubernetes and local containers in the initial deployments. Local Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04) may simplify deployment; Docker or another container runtime is equally acceptable if execution and network policies can be enforced. Evaluate local candidates against the same policy/persistence/tool contract, without requiring Kubernetes. Validate hosted orchestration with local workers through an outbound authenticated connection as part of independent placement.
 
 This directly tests the desired separation. Independently hosted web assets remain required, but UI redesign and broader science features need not precede execution compatibility.
 
@@ -103,11 +103,11 @@ This directly tests the desired separation. Independently hosted web assets rema
 
 The [detailed implementation plan](IMPLEMENTATION-PLAN.md) splits this gate into a small shell/Python worker slice followed by native Sage/PDF, policy and local/hosted integration. It also defines shared contracts so documents, ledger, reviews and monitoring reuse infrastructure.
 
-1. Trace each execution entry point: shell, Python/R kernels, compute providers, package/environment management, code-bearing MCP tools, parsers, and document/figure renderers.
-2. Identify shared executor/transport hooks and which operations still require daemon-local filesystem or process access.
+1. Write behavior specifications for each execution-bearing tool: shell, Python/R/Sage kernels, package/environment management, code-bearing MCP tools, parsers, and document/figure renderers.
+2. Implement them in the new harness as worker API calls only.
 3. Prove shell execution and stateful Python cells first, then native Sage, PDF parsing, file handoff and capability probing in another container. Fresh verification execution is a separate proposed extension.
 4. Repeat against a Kubernetes pool with unchanged research tool calls; measure cold/warm startup and data-transfer costs.
-5. Record the patch surface and upstream-version sensitivity. Choose runtime adaptation or a compatible independent implementation using this evidence.
-6. Exercise project ledger sharing, a PDF citation, a LaTeX living document, and concurrent user/agent editing through the retained/new application services before declaring product parity.
+5. Run the behavior-spec fixtures against the new harness.
+6. Exercise project ledger sharing, a PDF citation, a LaTeX living document, and concurrent user/agent editing through the new application services before declaring product parity.
 
-Preserving useful behavior is confirmed. Reusing the current pinned runtime unchanged, selecting a new harness, and choosing a new database are not yet settled.
+Preserving useful behavior is confirmed, and so is reimplementing it (D11). The harness components and the store are chosen in W0 (D12, D55).

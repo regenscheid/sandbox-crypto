@@ -2,6 +2,8 @@
 
 Date: 2026-10-10. This is source inspection, not a successful build, container test, or completed port. The user's clarified priority is to preserve CScience behavior while improving execution isolation and deployment.
 
+> **Update (2026-10-10, D11):** the user decided to reimplement the needed CScience behavior rather than adapt or patch the Claude Science runtime. Where this document speaks of retaining, adapting or patching CScience mechanisms, read it as *behavior evidence for the reimplementation*. No Claude Science code, prompts, schemas or assets are copied (D56). OpenScience Desktop upstream is MIT-licensed and remains a code-reuse candidate, subject to per-file checks.
+
 ## Sources inspected
 
 1. Local CScience: `/home/andy/Git_Projects/cscience-crypto`, branch `dev`, HEAD `063919ffab886e6eb70f12dfda8168fec44d9d1a`, package `0.8.0`, pinned upstream `0.1.60`. Checkout clean when inspected.

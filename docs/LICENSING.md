@@ -8,7 +8,7 @@ License facts below were read from each project's published license file on 2026
 
 | Tier | Contents | Allowed licenses | Rule |
 | --- | --- | --- | --- |
-| 1. Platform code | Web GUI, orchestrator/harness code owned by this project, worker service, adapters, proxies/mirror configuration, monitor, environment manager | MIT, BSD, ISC, Apache-2.0, PostgreSQL, public domain, MPL-2.0 (file-level, unmodified) | No GPL/LGPL linking or importing. No AGPL anywhere. Proprietary code cannot be included. |
+| 1. Platform code | Web GUI, the reimplemented orchestrator/harness (D11), worker service, adapters, proxies/mirror configuration, monitor, environment manager | MIT, BSD, ISC, Apache-2.0, PostgreSQL, public domain, MPL-2.0 (file-level, unmodified) | No GPL/LGPL linking or importing. No AGPL anywhere. Proprietary code cannot be included. |
 | 2. Shipped base worker image | Minimal runtime: micromamba, Python, jupyter_client/ipykernel, probe and stub scripts | Same as tier 1, plus the system libraries the base distribution requires | Keep thin. No GPL research tools baked in. Generate an SBOM and license report on every build. |
 | 3. Runtime-installed research dependencies | Sage, fpylll, G6K, PARI/GP, lattice-estimator, FLINT, Poppler, TeX, anything Conda installs on request | Any license the user accepts by installing, **except AGPL by default** | Installed by the user's environment from conda-forge through the mirror into the environment volume. The project does not distribute these binaries. Record each package's license in the environment record. |
 | Optional local warm image | Tier 2 plus prefetched tier-3 packages | As tier 3 | Built locally for the user's own use and never published. Removes first-use latency without creating a distribution obligation. |
@@ -51,7 +51,19 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | **MinIO** | **AGPL-3.0** | **Avoid**; use SeaweedFS, cloud object storage or filesystem storage |
 | **Grafana** | **AGPL-3.0** | **Avoid**; build monitor views into the GUI |
 | marker | Code Apache-2.0; weights under a modified OpenRAIL-M with revenue limits | Flag before adopting; weights are not permissive |
-| Claude Science runtime (CScience base) | Proprietary upstream distribution | Cannot be part of an MIT release. See D11/D45. |
+| Claude Science runtime (CScience base) | Proprietary upstream distribution | **Not used** (D11). Behavior is reimplemented; no code, prompts, skill text, schemas or assets are copied (D56). |
+| User's own `cscience-crypto` wrapper code | The user's own | Reusable where it embeds no upstream code; `src/patches.mjs` embeds upstream fragments and is excluded |
+| Anthropic client SDKs (Python, TypeScript) | MIT | Harness model access |
+| MCP Python SDK | MIT | Harness and connector tools |
+| OpenCode | MIT | Harness reuse candidate |
+| Pydantic AI | MIT | Harness building-block candidate |
+| LiteLLM | MIT core (enterprise directory under separate terms) | Model-gateway candidate; use the MIT core only |
+| Claude Agent SDK (Python) | MIT wrapper that bundles the proprietary Claude Code CLI | **Not** for the MIT core: the runtime it drives is proprietary |
+| Claude Agent SDK (TypeScript) | Proprietary (Anthropic Commercial Terms) | Avoid |
+| HashiCorp Vault | **BUSL-1.1** | Avoid; use OpenBao or Kubernetes Secrets |
+| OpenBao | MPL-2.0 | Secrets-store candidate via OpenShell's vault driver (compatibility to test) |
+| External Secrets Operator | Apache-2.0 | Optional Kubernetes secret sync |
+| SOPS | MPL-2.0 | Optional encrypted secrets in configuration repositories |
 | Anthropic `skills` PDF/office skills | Source-available with service restrictions | Learn from them; do not copy |
 | `regenscheid/crypto-analysis-skills` | No LICENSE file at `main` | Add a license (MIT if desired) |
 | Docker Desktop | Proprietary, subscription terms for larger organizations | Acceptable for personal use; Colima/Lima/Podman avoid the question |

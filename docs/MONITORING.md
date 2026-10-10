@@ -19,10 +19,34 @@ Proposed by the plan review (D44; [threat model](THREAT-MODEL.md) T1/T7). Conten
 | Direct internet from research sandboxes | Denied | Sandboxes resolve no external DNS; the proxy resolves names |
 | Package installation | Only through a trusted pull-through mirror restricted to allowlisted channels (conda-forge, PyPI); read-only; cache misses logged and rate-limited | Preserves automatic Conda provisioning (D16): the solver and hooks still run in the sandbox. Permissive candidates: devpi (MIT), quetz (BSD-3), caching Envoy/nginx. Package-name lookups are a residual covert channel; log them |
 | Downloading code and papers | Read-only fetch proxy: GET on allowlisted hosts; git smart-HTTP `git-upload-pack` allowed, `git-receive-pack` denied | The git rule must be keyed on the service path, because fetch also uses POST. Deny API writes, gists and paste sites by default. Bound URL length and request rate |
-| Granted research endpoints | Explicit per-project grants with endpoint-scoped credentials | Inline inspection applies here |
+| Granted research endpoints, mostly MCP | Explicit per-project grants; credentials as OpenShell providers bound to the endpoint; MCP tool allowlists | Inline inspection applies here; see Credentials and MCP access |
 | Anything else | Permission escalation | Never alert-only by default |
 
 The orchestrator's own connector fetches (web fetch, crawlers, paper search) follow the same allowlist and escalation rules (D47). A URL fetched by the orchestrator can carry data just as well as one fetched by a worker.
+
+## Credentials and MCP access
+
+Proposed by the plan review (D57, D58), following the user's requirement that a secrets manager limit direct access to API keys, and that most external services be reached through MCP.
+
+**Secrets.** Use OpenShell providers ([v0.1.3 providers documentation](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx)) for every credential a worker needs:
+
+- The sandbox environment holds only opaque placeholders. The proxy substitutes the real value immediately before forwarding, and only when both the network policy (calling binary and destination) and the credential's endpoint binding (host, port, path) allow the request.
+- An unbound destination, or an unknown or expired placeholder, fails closed with `credential_endpoint_mismatch` and a secret-free security finding.
+- Gateway-managed refresh (OAuth2 refresh/client credentials, Google service accounts, AWS STS) keeps sandbox-visible tokens short-lived. Long-lived secret material stays in the gateway.
+- Storage: the gateway encrypts credentials (AES-256-GCM) in its own database by default. Hosted gateways can use the `kubernetes-secrets` driver, or the `vault` driver. HashiCorp Vault is BUSL-1.1, so under the [licensing policy](LICENSING.md) prefer Kubernetes Secrets or OpenBao (MPL-2.0); OpenBao compatibility with the vault driver needs testing. Single-user babbage can start with the default encrypted store.
+
+Limits to design around (as documented for v0.1.3):
+
+- A placeholder lets the agent do *anything the token permits* at the bound endpoint. Restriction comes from least-privilege token scopes plus L7 method/path or MCP tool rules, not from the placeholder.
+- Static placeholder resolution is endpoint-scoped, not binary-scoped. Any process in the sandbox can use it; binary-scoped injection is on OpenShell's roadmap.
+- Credentials are rewritten only in headers, query parameters, URL paths, opted-in request bodies and WebSocket text. Cookies, unsupported bodies, binary frames, `tls: skip` and non-HTTP tunnels get no injection. Those protocols need a different design rather than a raw key.
+- Responses are not rewritten, so an endpoint that echoes its credential would reveal it. Test each provider for this.
+
+**MCP.** Declare each MCP server as a `protocol: mcp` endpoint with explicit method and tool-name allowlists (`allow_all_known_mcp_methods` off unless deliberately needed; extension methods need exact rules) and attach its credentials as a provider. Prefer read-only tools and tokens. A project grant then reads as "these tools on these servers", which is easy to review and to show in approval prompts.
+
+The orchestrator also calls MCP servers and the model API. Evaluate running the orchestrator itself as an OpenShell sandbox with model and MCP providers attached, so that it too holds only placeholders and its egress follows policy (D47).
+
+**Policy changes.** OpenShell's policy advisor lets an agent propose a new network rule; its prover flags risky changes such as new credentialed reach. Keep automatic approval **off**, route proposals into the shared permission workflow, and note that v0.1.3 does not yet run the prover automatically at sandbox startup.
 
 ## Proposed layers
 

@@ -33,11 +33,11 @@ All of these components are Apache-2.0 or MIT. The runtime telemetry also gives 
 
 ## What the workbench must supply
 
-Retain CScience research sessions, skills, automatic review behavior, and Conda provisioning where feasible. Their execution routing, project storage, the worker enrollment/lease transport, scientific profile locks, capability probes, scheduling, input/output transfer, authoritative provenance, artifact viewers, experiment review, and export/import remain project responsibilities. A policy-enforcing sandbox does not establish scientific correctness or reproduce an experiment by itself.
+Reimplement CScience-style research sessions, skills, automatic review behavior, and Conda provisioning (D11). Their execution routing, project storage, the worker enrollment/lease transport, scientific profile locks, capability probes, scheduling, input/output transfer, authoritative provenance, artifact viewers, experiment review, and export/import remain project responsibilities. A policy-enforcing sandbox does not establish scientific correctness or reproduce an experiment by itself.
 
 ## Feasibility spike
 
-The backend spike starts with a deterministic CLI-driven execution service, then exercises retained CScience tools/skills/reviews; standalone batch execution is insufficient for adoption. Use a disposable namespace and small CPU jobs. Include native Sage and PDF tools in the first research profile; add wider lattice/parameter-estimation fixtures after lifecycle and isolation work.
+The backend spike starts with a deterministic CLI-driven execution service, then exercises the new harness's tools/skills/reviews; standalone batch execution is insufficient for adoption. Use a disposable namespace and small CPU jobs. Include native Sage and PDF tools in the first research profile; add wider lattice/parameter-estimation fixtures after lifecycle and isolation work.
 
 | Check | Experiment | Required evidence |
 | --- | --- | --- |
@@ -48,6 +48,11 @@ The backend spike starts with a deterministic CLI-driven execution service, then
 | Filesystem policy | Try reading a host-only sentinel and writing outside allowed workspace; test symlink traversal | Denied access and useful diagnostics; successful permitted operations |
 | Network policy | Contact an allowed fixture endpoint, then a denied destination and metadata/private-network fixtures | Allowed/denied results and policy events; DNS/redirect behavior; no automatic grant |
 | Credentials | Use a mock credentialed endpoint and inspect job-visible state | Endpoint scoping, no real secret printed or written into artifacts; evaluate whether permitted endpoints could reflect credentials |
+| Provider secrets (D57) | Attach a provider with a mock API key; print the sandbox environment; call the bound endpoint, then an allowed but unbound host with the placeholder | Sandbox sees only placeholders; bound call succeeds; unbound call fails with `credential_endpoint_mismatch` and a secret-free security finding; credential store backend (encrypted DB, `kubernetes-secrets`, or OpenBao through the vault driver) recorded |
+| Credential scope | Use a provider whose token could also write; restrict the endpoint to read methods/paths | L7 method/path rules deny the write even though the placeholder resolves; documented token scopes are least-privilege |
+| MCP policy (D58) | Call a fixture MCP server through a `protocol: mcp` endpoint with a tool allowlist; call a disallowed tool and an extension method | Allowed tool succeeds with injected credentials; disallowed tool and unlisted extension method are denied; events identify sandbox, process and tool name |
+| Policy advisor / prover | Let an agent propose a new credentialed destination with auto-approval off | Proposal waits for human review; prover flags new credentialed reach; no restart needed after approval |
+| babbage kernel | Run OpenShell's kernel qualification on babbage (Ubuntu 26.04) | Landlock ABI ≥ 3 active; behavior under Ubuntu's unprivileged-user-namespace restriction recorded for each local runtime candidate |
 | Resource controls | Exceed CPU/memory/PID/output/wall-time bounds in controlled jobs | Driver-specific limit behavior; termination and cleanup records; no silent unsupported limit |
 | Cancellation | Spawn a child process and cancel during execution | Termination observed for process tree; retained partial logs; bounded cleanup time |
 | Disconnection | Interrupt controller↔API and controller↔gateway paths separately | Actual runtime behavior, local watchdog, reconciled status, no indefinite orphan job |
@@ -72,7 +77,7 @@ See [monitoring and provisioning](MONITORING.md) for verified middleware hooks, 
 
 ## Open questions
 
-- Which local candidate on Babbage Linux and macOS satisfies execution/network enforcement, monitor integration, storage and lifecycle requirements? Compare direct container runtimes and local Kubernetes as useful; preserve healthy existing services.
+- Which local candidate on babbage (Ubuntu 26.04) and macOS satisfies execution/network enforcement, monitor integration, storage and lifecycle requirements? Compare direct container runtimes and local Kubernetes as useful; preserve healthy existing services.
 - What exact v0.1.3 deployment recipe resolves the supervisor binary/image discrepancy?
 - Which SDK operations provide reliable streams, file transfer, cancellation, policy diagnostics, and cleanup acknowledgement?
 - Which controls and resource measurements are actually supported per selected driver?

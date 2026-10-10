@@ -4,7 +4,7 @@ Date: 2026-10-10. This is a planning document. No new functionality has been imp
 
 ## Functional baseline
 
-The user finds CScience functionally strong and wants better sandboxing and deployment flexibility. Preserve its research behavior, particularly the built-in skills that organize work and the idea of automatic reviews. Container placement should change where execution happens while keeping the research workflow familiar.
+The user finds CScience functionally strong and wants better sandboxing and deployment flexibility. Reimplement its research behavior, particularly the skills that organize work and the automatic reviews, as new MIT-licensed code; no Claude Science code is used (D03, D11, D45). The research workflow should stay familiar while execution moves into isolated workers.
 
 The initial domain is cryptography and mathematics. Typical work connects literature, assumptions, exact algebra, parameter analysis, computational experiments, and written conclusions. Other sciences should be supported through additional skills and environment profiles later.
 
@@ -69,7 +69,7 @@ Exact algebra/Sage, lattice/fpylll, parameter estimators, and optional licensed 
 ## Acceptance criteria
 
 - Orchestration and research code execution run in separate containers.
-- Ordinary research tool calls work against hosted Kubernetes and a local container pool in the initial deployments. Local Docker/other runtimes or Kubernetes on macOS/Docker Desktop or Babbage Linux are acceptable when execution and network policies are enforced.
+- Ordinary research tool calls work against hosted Kubernetes and a local container pool in the initial deployments. Local Docker/other runtimes or Kubernetes on macOS/Docker Desktop or babbage (Ubuntu 26.04) are acceptable when execution and network policies are enforced.
 - Interactive kernels, skills, file handoffs, and automatic reviews remain usable in both profiles.
 - Projects retain their base-image-derived environment and installed tools; sessions can share the default container or use a dedicated one.
 - Sessions in either mode can exchange same-project data without sharing live kernel variables.
