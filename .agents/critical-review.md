@@ -141,7 +141,7 @@ The plan has no license policy, and several candidates it names, or would natura
 | G6K (lattice sieving; likely later) | GPLv2 | Runtime-installed worker tool only. |
 | lattice-estimator (parameter analysis) | LGPLv3+ | Runtime-installed worker tool. Fine. |
 | FLINT | LGPL | Fine. |
-| **PyMuPDF** (common choice for PDF extraction/rendering, which the plan makes central) | **AGPL-3.0** | **Avoid.** Prefer pypdfium2 (Apache-2.0), pdfplumber (MIT) or PDF.js (Apache-2.0). Check whether current CScience PDF provisioning (`src/patches.mjs:1567–1595`) installs PyMuPDF. |
+| **PyMuPDF** (common choice for PDF extraction/rendering, which the plan makes central) | **AGPL-3.0** | **Avoid.** The user already uses **pdf_oxide** (MIT OR Apache-2.0), now the primary candidate (D59). pypdfium2 (Apache-2.0), pdfplumber (MIT) and PDF.js (Apache-2.0) remain alternatives. Check whether current CScience PDF provisioning installs PyMuPDF; any reimplemented provisioning must not. |
 | Poppler utilities (common for PDF rendering) | GPL (not re-verified in this pass) | Acceptable as a runtime-installed separate program inside workers only. |
 | **MinIO** (natural pick for "private object storage" in the all-remote profile) | **AGPL-3.0** | **Avoid.** Use cloud object storage, SeaweedFS (Apache-2.0), or plain filesystem storage. |
 | **Grafana** (natural pick for a monitoring UI) | **AGPL-3.0** | **Avoid.** Build monitor views into the GUI, or use Prometheus/OpenSearch (Apache-2.0). |

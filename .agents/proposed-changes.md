@@ -223,3 +223,18 @@ The OpenShell v0.1.3 documentation (`docs/how-it-works/providers/overview.mdx`, 
 
 - `critical-review.md` gains section **1a** recording the user's responses and their effect.
 - C4 is marked resolved by D11, m3 is marked resolved, and the next steps now reference D43–D58.
+
+---
+
+# Round 3 (2026-10-10): pdf_oxide
+
+The user has used [pdf_oxide](https://github.com/yfedoseev/pdf_oxide) instead of PyMuPDF. Verified at `main` (v0.3.78): the license is **MIT OR Apache-2.0** (`LICENSE-MIT`, `LICENSE-APACHE`, `pyproject.toml`). It provides a Rust core with Python bindings, character-level text, tables, bookmarks, annotations, an optional rendering feature and an MCP server. Optional OCR features depend on ONNX runtimes.
+
+## 17. pdf_oxide as the primary PDF library [M1]
+
+- **DECISIONS.md**: new **D59**. pdf_oxide is the primary worker-side PDF extraction candidate, with pypdfium2 as fallback and PDF.js in the browser; PyMuPDF is avoided. The rationale notes that it is young (v0.3.x) and its benchmarks are self-reported, so anchors and math transcription must be verified on real papers. The discussion order now covers D43–D59.
+- **LICENSING.md**: new pdf_oxide row (MIT OR Apache-2.0; usable in tiers 1–2; check OCR/ONNX dependencies and models separately). The PyMuPDF row now names pdf_oxide as the replacement and adds pymupdf4llm (also AGPL).
+- **RESEARCH-WORKSPACE.md**: the PDF section names pdf_oxide as the primary library. Its character positions, bookmarks and annotations support page/region anchors, and rendering supports crop checks. It runs in workers because it parses untrusted input, and so does its MCP server if used.
+- **CONSISTENCY-REVIEW.md**: new row in "Standard components worth testing" listing what to verify: page-label mapping, character coordinates, equation/matrix transcription against crops, scanned/malformed PDFs, and version pinning.
+- **IMPLEMENTATION-PLAN.md** W2: PDF extraction starts with pdf_oxide.
+- **critical-review.md** M1 table: the PyMuPDF row now points to pdf_oxide.
