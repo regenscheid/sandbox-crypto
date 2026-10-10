@@ -20,6 +20,9 @@ from pydantic import (
     Field,
     PlainSerializer,
     PlainValidator,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
     StringConstraints,
     WithJsonSchema,
     field_validator,
@@ -46,7 +49,8 @@ Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-
 
 HttpMethod = Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "TRACE"]
 
-Port = Annotated[int, Field(ge=1, le=65535)]
+# Strict types: "4_43" or "yes" in quotes must not quietly become 443 or true.
+Port = Annotated[StrictInt, Field(ge=1, le=65535)]
 
 
 def _parse_host_pattern(value: object) -> HostPattern:
@@ -68,13 +72,21 @@ HostPatternField = Annotated[
 def _check_path_prefix(value: str) -> str:
     if not value.startswith("/"):
         raise ValueError("path prefixes must start with '/'")
-    if any(char in "?#%\\" or ord(char) < 0x21 or ord(char) == 0x7F for char in value):
-        raise ValueError("path prefixes are written decoded, without query, fragment or '\\'")
+    # Printable ASCII only: invisible or look-alike characters would make a rule that
+    # reads like "/v1/admin" but never matches it.
+    if any(char in "?#%\\;" or not 0x21 <= ord(char) <= 0x7E for char in value):
+        raise ValueError(
+            "path prefixes are written decoded in printable ASCII, without query, "
+            "fragment, ';' or '\\'"
+        )
     stripped = value.rstrip("/")
     if not stripped:
         raise ValueError("'/' matches every path; omit paths instead")
-    if any(segment in ("", ".", "..") for segment in stripped.split("/")[1:]):
-        raise ValueError("path prefixes must not contain empty, '.' or '..' segments")
+    segments = stripped.split("/")[1:]
+    if any(segment in ("", ".", "..") or segment.endswith(".") for segment in segments):
+        raise ValueError(
+            "path prefixes must not contain empty, '.' or '..' segments, or segments ending in '.'"
+        )
     return stripped
 
 
@@ -112,7 +124,7 @@ class Defaults(StrictModel):
     """The action for operations no rule matches."""
 
     action: Action = Action.ESCALATE
-    log: bool = True
+    log: StrictBool = True
 
 
 class Escalation(StrictModel):
@@ -144,12 +156,12 @@ class RuleEscalation(StrictModel):
 class Resources(StrictModel):
     """Resource requests or caps. ``None`` means no limit at this layer."""
 
-    cpu: Annotated[float, Field(gt=0)] | None = None
-    memory: ByteSize | None = None
-    pids: Annotated[int, Field(gt=0)] | None = None
-    workspace_disk: ByteSize | None = None
+    cpu: Annotated[StrictFloat, Field(gt=0, allow_inf_nan=False)] | None = None
+    memory: Annotated[ByteSize, Field(gt=0)] | None = None
+    pids: Annotated[StrictInt, Field(gt=0)] | None = None
+    workspace_disk: Annotated[ByteSize, Field(gt=0)] | None = None
     wall_time: Duration | None = None
-    model_budget_usd_per_day: Annotated[float, Field(ge=0)] | None = None
+    model_budget_usd_per_day: Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)] | None = None
 
 
 ChannelName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]*$")]
@@ -197,7 +209,7 @@ class GitMatch(StrictModel):
 class RuleLimits(StrictModel):
     """Limits that turn an ``allow`` or ``alert`` into ``deny`` when exceeded."""
 
-    max_url_bytes: Annotated[int, Field(gt=0)] | None = None
+    max_url_bytes: Annotated[StrictInt, Field(gt=0)] | None = None
 
 
 class _Rule(StrictModel):
@@ -241,6 +253,7 @@ class GitRule(_Rule):
 
     operation: Literal["git"]
     match: GitMatch
+    limits: RuleLimits | None = None
 
     @property
     def read_only(self) -> bool:
@@ -378,16 +391,25 @@ McpAuth = Annotated[OAuthAuth | BearerAuth | HeadersAuth | NoAuth, Field(discrim
 
 
 class McpServer(StrictModel):
-    """One MCP server reached through the MCP proxy (D67)."""
+    """One MCP server reached through the MCP proxy (D67).
+
+    ``tool_prefix`` names a namespace prefix the server puts on every tool name,
+    such as a portal's ``crypto_research_mcp-``. Tool patterns then match the
+    name without it, so a pattern like ``*search*`` cannot match the prefix.
+    """
 
     url: str
     revision: Annotated[str, StringConstraints(min_length=1)]
     auth: McpAuth
+    tool_prefix: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_./-]{1,64}$")] | None = None
     tools: ToolRules = ToolRules()
 
     @field_validator("url")
     @classmethod
     def _https_url(cls, value: str) -> str:
+        # urlsplit silently drops tabs and newlines, so check the raw text first.
+        if not value.isascii() or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in value):
+            raise ValueError("MCP server URLs must be ASCII without spaces or control characters")
         parts = urlsplit(value)
         if parts.scheme != "https":
             raise ValueError("MCP server URLs must use https")
@@ -397,6 +419,11 @@ class McpServer(StrictModel):
             raise ValueError("MCP server URLs need a host and no fragment")
         normalize_host(parts.hostname)
         _ = parts.port  # raises ValueError for an invalid port
+        path = parts.path or "/"
+        if any(char in path for char in "%;\\") or parts.query:
+            raise ValueError("MCP server URLs must have a plain path without '%', ';' or a query")
+        if any(segment in (".", "..") for segment in path.split("/")):
+            raise ValueError("MCP server URL paths must not contain dot segments")
         return value
 
     @property
@@ -408,7 +435,7 @@ class McpServer(StrictModel):
 class McpProxy(StrictModel):
     """MCP proxy settings (D67)."""
 
-    worker_access: bool = False
+    worker_access: StrictBool = False
     worker_tools: Literal["inherit"] | tuple[ToolPattern, ...] = "inherit"
     max_response_bytes: ByteSize = 2 * 1024 * 1024
     binary_results: Literal["artifact"] = "artifact"
