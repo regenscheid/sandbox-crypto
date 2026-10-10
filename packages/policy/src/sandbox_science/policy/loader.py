@@ -33,6 +33,9 @@ MAX_FILE_BYTES: Final = 1024 * 1024
 MAX_LINE_COLUMNS: Final = 160
 """Wider lines could hide an entry beyond the edge of an editor or diff view."""
 
+MAX_INDENT_COLUMNS: Final = 48
+"""Deeper indentation could push an entry off-screen on an otherwise blank-looking line."""
+
 # A run of four or more blanks inside a line could push the rest of the line out
 # of view; it is allowed only before a comment (for aligning comments).
 _BLANK_RUN_RE: Final = re.compile(r"[ \t]{4,}")
@@ -102,6 +105,11 @@ class _StrictLoader(yaml.SafeLoader):
     def construct_object(self, node: Node, deep: bool = False) -> Any:
         tag = node.tag
         if isinstance(node, ScalarNode):
+            if node.style in ("|", ">"):
+                raise PolicyLoadError(
+                    "block scalars are not allowed; use a quoted string "
+                    f"({_where(node.start_mark)})"
+                )
             if tag == _TAG + "null":
                 raise PolicyLoadError(
                     f"a value is missing; give one or remove the key ({_where(node.start_mark)})"
@@ -161,20 +169,67 @@ def _display_width(line: str) -> int:
     return width
 
 
+def _classify(text: str) -> str:
+    """Classify each character as code ("c"), quoted text ("q") or comment ("m").
+
+    Tracks quoted scalars across lines, which a line-by-line check cannot.
+    Backslash escapes and block scalars are rejected when the file is parsed,
+    so a quote always ends a quoted scalar here.
+    """
+    kinds: list[str] = []
+    quote: str | None = None
+    in_comment = False
+    previous = "\n"
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\n":
+            in_comment = False  # comments end at the line; quoted scalars may continue
+            kinds.append("q" if quote else "c")
+        elif in_comment:
+            kinds.append("m")
+        elif quote is not None:
+            kinds.append("q")
+            if char == quote:
+                if quote == "'" and text[index + 1 : index + 2] == "'":
+                    kinds.append("q")  # '' is an escaped quote inside single quotes
+                    index += 2
+                    previous = "'"
+                    continue
+                quote = None
+        elif char == "#" and previous in " \t\n":
+            in_comment = True
+            kinds.append("m")
+        elif char in "'\"" and previous in " \t\n[{,:":
+            quote = char
+            kinds.append("q")
+        else:
+            kinds.append("c")
+        previous = char
+        index += 1
+    return "".join(kinds)
+
+
 def _check_lines(text: str, label: str) -> None:
+    kinds = _classify(text)
+    offset = 0
     for number, raw in enumerate(text.split("\n"), start=1):
         line = raw.rstrip("\r")
+        line_kinds = kinds[offset : offset + len(line)]
+        offset += len(raw) + 1
         if _display_width(line) > MAX_LINE_COLUMNS:
             raise PolicyLoadError(f"{label} line {number} is wider than {MAX_LINE_COLUMNS} columns")
-        content = line.lstrip(" ")
-        if content.startswith("#"):
-            continue
-        for run in _BLANK_RUN_RE.finditer(content):
-            rest = content[run.end() :]
-            if rest == "" or rest.startswith("#"):
-                continue  # trailing blanks, or alignment before a comment
-            if " #" in content[: run.start()]:
-                break  # inside a comment
+        indent = len(line) - len(line.lstrip(" "))
+        if indent > MAX_INDENT_COLUMNS and line.strip():
+            raise PolicyLoadError(
+                f"{label} line {number} is indented by more than {MAX_INDENT_COLUMNS} columns"
+            )
+        for run in _BLANK_RUN_RE.finditer(line, indent):
+            run_kinds = set(line_kinds[run.start() : run.end()])
+            if run_kinds == {"m"} or run.end() == len(line):
+                continue  # inside a comment, or trailing blanks
+            if run_kinds == {"c"} and line_kinds[run.end()] == "m":
+                continue  # aligning a comment
             raise PolicyLoadError(
                 f"{label} line {number} has a run of blanks that could push content out of "
                 "view; use single spaces"

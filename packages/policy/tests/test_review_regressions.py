@@ -876,3 +876,64 @@ def test_git_content_type_must_be_ascii() -> None:
     kelvin = "application/x-git-upload-pac\u212a-request"  # lowercases to the git type
     action = decide("POST", url, content_type=kelvin, has_body=True)
     assert action is Action.ESCALATE
+
+
+# Follow-up to the third review: the blank-run check must know where comments and
+# quoted strings really are, including across lines.
+
+
+def worker_tools(listing: str) -> str:
+    return HEADER + f"mcp:\n  proxy:\n    worker_tools: {listing}\n"
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        '["a #",' + " " * 40 + '"portal_toggle_servers"]',  # " #" inside quotes is no comment
+        "['a #'," + " " * 40 + "'portal_toggle_servers']",
+        '["a\n      #",' + " " * 40 + '"portal_toggle_servers"]',  # quote continues on a new line
+    ],
+)
+def test_quoted_hashes_do_not_open_a_comment(listing: str) -> None:
+    with pytest.raises(PolicyLoadError, match="run of blanks"):
+        parse_policy(worker_tools(listing))
+
+
+def test_blank_runs_inside_quoted_strings_are_rejected() -> None:
+    with pytest.raises(PolicyLoadError, match="run of blanks"):
+        parse_policy(HEADER + 'metadata_note: "a' + " " * 10 + 'b"\n')
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "defaults: {action: escalate}          # aligned comment\n",
+        "defaults: {action: escalate}  # a comment    with    gaps\n",
+        "# a whole-line comment          with gaps\n",
+        "defaults: {action: escalate}      \n",  # trailing blanks
+    ],
+)
+def test_comment_alignment_and_trailing_blanks_are_accepted(tail: str) -> None:
+    parse_policy(HEADER + tail)
+
+
+def test_single_quotes_with_an_escaped_quote_are_accepted() -> None:
+    text = HEADER.replace(
+        "metadata: {name: test}", "metadata: {name: test, description: 'it''s'}      # note"
+    )
+    assert parse_policy(text).policy.metadata.description == "it's"
+
+
+def test_deep_indentation_is_rejected() -> None:
+    text = HEADER + "mcp:\n  proxy:\n    worker_tools: [\n" + " " * 60 + "portal_toggle_servers ]\n"
+    with pytest.raises(PolicyLoadError, match="indented by more than"):
+        parse_policy(text)
+
+
+@pytest.mark.parametrize("style", ["|", ">", "|-", ">+"])
+def test_block_scalars_are_rejected(style: str) -> None:
+    text = HEADER.replace(
+        "metadata: {name: test}\n", f"metadata:\n  name: test\n  description: {style}\n    text\n"
+    )
+    with pytest.raises(PolicyLoadError, match="block scalars"):
+        parse_policy(text)
