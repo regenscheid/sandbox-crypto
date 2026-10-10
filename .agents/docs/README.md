@@ -7,6 +7,7 @@ This folder keeps the three agent source investigations behind the Sandbox Scien
 - [Claude Science](agent-reports/claude-science.md): research behavior, skills, review triggers, documents, kernels and execution seams, as evidence for the reimplementation (D03, D11).
 - [Claude Code and Desktop](agent-reports/claude-code-desktop.md): official skills, roles, hooks, MCP, shared knowledge and living-document behavior, including limits of public prompt evidence.
 - [OpenScience Desktop and the earlier fork](agent-reports/openscience-desktop.md): source-level reuse candidates, native-desktop dependencies and incomplete execution/persistence paths.
+- [OpenShell v0.1.3 policy schema](agent-reports/openshell-policy-v0.1.3.md): endpoint, L7, MCP and provider semantics, address handling and compiler constraints, as input to the policy compiler (D62, D68).
 
 These are dated investigation reports. Recommendations inside them are not confirmed requirements; the [decision register](../../docs/DECISIONS.md) resolves later choices, and the [critical review](../critical-review.md) and [proposed changes](../proposed-changes.md) record the 2026-10-10 review.
 

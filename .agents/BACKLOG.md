@@ -13,8 +13,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Monitors (egress threshold)
 - [x] Example policy validated by tests; crypto-research-mcp tool outcomes pinned by a fixture
 - [ ] Data-class limits in the pool ceiling (D50)
-- [ ] Policy compiler to OpenShell v0.1.3 network, MCP and filesystem policy; report unenforceable rules
-- [ ] Decide whether wildcard-host read rules compile to OpenShell or need the upstream egress proxy
+- [ ] Policy compiler to OpenShell v0.1.3 network, MCP and filesystem policy; report unenforceable rules. Constraints are in the [OpenShell policy investigation](docs/agent-reports/openshell-policy-v0.1.3.md), Appendix C: set `enforcement: enforce`, emit allow regions (OpenShell has no specificity ordering), wildcards need three labels
+- [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint and `upstreamProxy` only chains TLS tunnels, so generic HTTP goes through the project egress proxy
 - [ ] Policy revisions: GUI and file edits, re-authentication for widening (D54)
 - [ ] `defaults.log`: decide whether allowed operations may go unlogged
 
