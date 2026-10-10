@@ -26,7 +26,7 @@ The library checks the network items for every operation, including the URLs of 
 
 Agents can never change any layer. They can *propose* a project-policy change through the OpenShell policy advisor path (auto-approval off), and that proposal is an ordinary escalation.
 
-The **pool ceiling** can list allowed and denied hosts, the MCP servers the pool may reach, and resource caps. A destination matching `deny_hosts` (wildcards included) is denied. When `allow_hosts` is present, a destination it does not match is denied; omitting `allow_hosts` leaves destinations unrestricted at this layer. A project's resource requests above a cap are reduced to the cap and reported.
+The **pool ceiling** can list allowed and denied hosts, the MCP servers the pool may reach, and resource caps. A destination matching `deny_hosts` (wildcards included) is denied. When `allow_hosts` is present, a destination it does not match is denied, so `allow_hosts: []` permits none; omitting `allow_hosts` leaves destinations unrestricted at this layer. `mcp_servers` lists the MCP server names the pool may reach; an empty list permits none. A ceiling denial applies whatever the project policy's action would be. A project's resource requests above a cap are reduced to the cap and reported.
 
 The hard floor also denies the Kubernetes API service names (`kubernetes`, `kubernetes.default`, `kubernetes.default.svc` and `kubernetes.default.svc.cluster.local`), and each deployment adds its own administration endpoints.
 
@@ -58,13 +58,13 @@ Protocol-aware matchers first decide what a request *is*, before any generic HTT
 
 Generic `http` method rules never apply to `git`, `mcp` or `package` operations. This matters because both git fetch and MCP's Streamable HTTP transport send reads as `POST`. Without classification, a rule escalating every `POST` would also escalate those reads.
 
-Git smart-HTTP is recognized from the request: `GET <repo>/info/refs?service=git-upload-pack` or `?service=git-receive-pack`, and `POST <repo>/git-upload-pack` or `POST <repo>/git-receive-pack`. The discovery request of a push (`service=git-receive-pack`) already counts as a push. Dumb-HTTP git reads are ordinary `http` GETs. Package and MCP operations are classified by the package mirror and the MCP proxy, which are the only routes for that traffic.
+Git smart-HTTP is recognized from the request: `GET <repo>/info/refs?service=git-upload-pack` or `?service=git-receive-pack`, and `POST <repo>/git-upload-pack` or `POST <repo>/git-receive-pack`. The discovery request of a push (`service=git-receive-pack`) already counts as a push. Dumb-HTTP git reads, and any other method, path or `service` value at a git endpoint, are ordinary `http` operations. Package and MCP operations are classified by the package mirror and the MCP proxy, which are the only routes for that traffic.
 
-A request that cannot be classified unambiguously is **denied**. That includes user information in the URL (`user@host`), host names that are not ASCII (use the IDNA form) or that look numeric without being a canonical IP address (`2130706433`, `0x7f.1`), invalid percent-encoding, an encoded `/`, `\`, `.` or NUL in the path, dot or empty path segments, `;` path parameters (servers disagree on them), and a repeated git `service` parameter.
+A request that cannot be classified unambiguously is **denied**. That includes user information in the URL (`user@host`, even empty), host names that are not ASCII (use the IDNA form), host names whose last label is all digits or `0x` hex without being a canonical IP address (`2130706433`, `0x7f.1`, `127.1`), invalid percent-encoding, an encoded `/`, `\`, `.` or NUL in the path, dot or empty path segments, `;` path parameters (servers disagree on them), and a repeated git `service` parameter. The path checks allow a trailing slash. The query string is neither checked nor matched, except for the git `service` parameter.
 
 ### 2. Pick the rule
 
-A network rule matches an operation of its class when every condition it states holds:
+Every network rule names at least one host. A rule matches an operation of its class when every condition it states holds:
 
 - **hosts**: an exact name or IP address matches only itself (case-insensitive; one trailing dot is ignored). `*.example.org` matches names with at least one more label (`a.example.org`, `a.b.example.org`), not `example.org`. `*` matches any host.
 - **ports**: a rule without `ports` matches only the scheme's default port (443 for `https`, 80 for `http`).
@@ -76,11 +76,13 @@ Among the matching rules the **most specific rule wins**, and ties go to the **m
 1. host: exact host > wildcard host (`*.example.org`) > `*`;
 2. between wildcard hosts, more labels after `*.` is more specific;
 3. a longer matching path prefix (counted in segments) is more specific than a shorter one or none;
-4. a rule that names methods (or a git service) is more specific than one that does not.
+4. a rule that names methods (or a git service) is more specific than one that does not, however many it names.
+
+Ports are a condition only; they do not make a rule more specific. When a rule lists several hosts or paths, the most specific one that matched counts.
 
 So a narrow `escalate` or `deny` still overrides a broad `allow`, which keeps broad allows safe to write. A narrow `allow`, such as a read-only `POST` search API on one host, can override a broad "escalate all writes" rule. Operations that match no rule take `defaults.action`.
 
-**Wildcards and defaults never grant non-public destinations.** Non-public means an IP address outside the public unicast space (private, shared/CGNAT, multicast, reserved and documentation ranges, including IPv4 addresses embedded in IPv6), or a name under a special-use or private-use suffix: `.local`, `.internal`, `.home.arpa`, `.lan`, `.home`, `.corp`, `.svc`, `.test`, `.example` or `.invalid`. When the winning rule names such a destination only through a wildcard (`*` or `*.suffix`), or no rule matches, an `allow` or `alert` outcome becomes `deny`; `escalate` and `deny` outcomes are unchanged. Allowing a non-public destination takes a rule that names it exactly. When the pool ceiling lists allowed hosts, it must name the destination exactly as well.
+**Wildcards and defaults never grant non-public destinations.** Non-public means an IP address outside the public unicast space (private, shared/CGNAT, multicast, reserved and documentation ranges, including IPv4 addresses embedded in IPv6), a single-label name (resolvers complete it with local search domains), or a name under a special-use or private-use suffix: `.local`, `.internal`, `.home.arpa`, `.lan`, `.home`, `.corp`, `.svc`, `.test`, `.example` or `.invalid`. When the winning rule names such a destination only through a wildcard (`*` or `*.suffix`), or no rule matches, an `allow` or `alert` outcome becomes `deny`; `escalate` and `deny` outcomes are unchanged. Allowing a non-public destination takes a rule that names it exactly. When the pool ceiling lists allowed hosts, it must name the destination exactly as well.
 
 ### Rule limits
 
@@ -91,9 +93,13 @@ So a narrow `escalate` or `deny` still overrides a broad `allow`, which keeps br
 - The server must be declared under `mcp.servers`; calls to an undeclared server are denied. Server URLs must use `https` and are subject to the hard floor.
 - Calls from worker code are denied unless `mcp.proxy.worker_access` is `true`. When `worker_tools` is a list, a worker's `tools/call` must also match one of its patterns.
 - JSON-RPC methods: the protocol and discovery methods `initialize`, `ping`, `notifications/initialized`, `notifications/cancelled`, `notifications/progress`, `notifications/roots/list_changed`, `tools/list`, `resources/list`, `resources/templates/list`, `resources/read`, `resources/subscribe`, `resources/unsubscribe`, `prompts/list`, `prompts/get`, `completion/complete` and `logging/setLevel` are allowed. `tools/call` is decided by the tool rules. Every other method, including extension and task methods, is denied, and so are JSON-RPC batches.
-- Tool patterns use `*` as the only wildcard and must match the whole tool name. An exact name (without `*`) takes precedence over patterns. Otherwise the most restrictive list among the matching entries wins (`deny` > `escalate` > `allow`). A tool that matches nothing takes `defaults.action`. The same pattern may not appear in two lists.
+- Tool patterns may contain letters, digits, `_`, `.`, `/`, `-` and `*`, which is the only wildcard; a pattern must match the whole tool name. Method and tool names are case-sensitive. An exact name (without `*`) takes precedence over patterns. Otherwise the most restrictive list among the matching entries wins (`deny` > `escalate` > `allow`). A tool that matches nothing takes `defaults.action`. The same pattern may not appear in two lists.
 
 Tool names are matched as text, so a broad pattern can admit a tool that writes although its name looks like a read. For example, `*search*` also matches crypto-research-mcp's `firecrawl_search_feedback`, which submits feedback. Pin the server revision and check patterns against its actual tool list; the library's tests do this for crypto-research-mcp.
+
+### Packages
+
+A conda package from a channel that `packages.conda.channels` does not list is denied. An ecosystem without a `packages` entry takes `defaults.action`. PyPI names are compared in normalized form (PEP 503).
 
 ### Escalation timeout
 
