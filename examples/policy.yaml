@@ -1,7 +1,8 @@
-# Illustrative project policy (planning/v0alpha1). Not a validated schema.
+# Example project policy (sandbox-science/v0alpha1). The policy library's tests
+# load this file, so it stays valid; docs/POLICY.md defines the semantics.
 # A deliberately permissive default: reads and package installs flow freely;
 # side effects outside the project (writes, pushes, paid or state-changing
-# MCP tools) ask first. See docs/POLICY.md for semantics and precedence.
+# MCP tools) ask first.
 
 apiVersion: sandbox-science/v0alpha1
 kind: ProjectPolicy
@@ -14,10 +15,11 @@ defaults:
   action: escalate          # allow | alert | escalate | deny
   log: true
 
-# Permission requests that nobody answers fall back to this outcome.
+# Permission requests that nobody answers are denied. A read-only rule can set
+# its own `escalation: {on_timeout: allow}`, which then proceeds as an alert.
 escalation:
-  timeout: 30m              # per-request wait before on_timeout applies
-  on_timeout: deny          # deny | allow (allow only for alert-class rules)
+  timeout: 30m              # per-request wait
+  on_timeout: deny          # must be deny policy-wide
   notify: [gui]             # later: push
   hold_scope: operation     # only the affected operation waits
 
@@ -41,8 +43,8 @@ network:
   rules:
   # Operations are classified first (package | git | mcp | http); a rule only
   # sees operations of its own class. Within a class the most specific rule
-  # wins, ties go to the most restrictive action. Package traffic is governed
-  # by `packages`, MCP traffic by `mcp` (via the MCP proxy).
+  # wins, ties go to the most restrictive action. Wildcards never grant
+  # non-public destinations (LAN, .local, ...); name those exactly.
     - name: read-only-web
       operation: http
       match: { hosts: ["*"], methods: [GET, HEAD] }
@@ -65,10 +67,12 @@ network:
       operation: git
       match: { hosts: ["*"], git_service: receive-pack }
       action: escalate
-    - name: large-egress
-      operation: any
-      match: { egress_bytes_per_hour_over: 500Mi }
-      action: alert
+
+# Threshold alerts. They add findings and never decide access.
+monitors:
+  - name: large-egress
+    when: { egress_bytes_per_hour_over: 500Mi }
+    action: alert
 
 mcp:
   proxy:                    # all MCP traffic goes through the MCP proxy (D67)
@@ -86,30 +90,59 @@ mcp:
         scopes: []                                        # empty = use WWW-Authenticate / scopes_supported
         refresh: gateway                                  # gateway | external
         provider: crypto-research-mcp                     # OpenShell provider holding the tokens
+      # Checked against the server's 78 tools (2026-10-10); the test fixture
+      # packages/policy/tests/fixtures/crypto-research-mcp-tools.json pins the
+      # expected outcome of every tool. An exact name beats patterns; otherwise
+      # the most restrictive matching list wins.
       tools:
         allow:
-          - "*search*"
+          - "*search*"                      # includes per-call billed searches (Scholar, patents, Firecrawl)
           - "*get_*"
-          - "*fetch*"
-          - "*read*"
           - "*list_*"
           - "*find_*"
+          - "*fetch*"
+          - "*_read"
+          - "*_read_*"
+          - "*_browse_*"
+          - "*_recent_*"
           - "*_stats"
           - "*_status"
           - "*health*"
+          - "*paper_citations"
+          - "*paper_details"
+          - "*research_inspect_paper"
+          - "*research_related_papers"
+          - "*csrc_currency"
+          - "*web_capture"
+          - "*firecrawl_map"
+          - "*firecrawl_monitor_get"
+          - "*firecrawl_monitor_list"
+          - "*firecrawl_monitor_check"
+          - "*firecrawl_monitor_checks"
+          # Reads that fill the server's own document cache on first use:
+          - "*e-print-mcp_eprint_file"
+          - "*e-print-mcp_eprint_fulltext"
+          - "*nist-mcp_csrc_file"
+          - "*nist-mcp_csrc_fulltext"
         escalate:
+          - "*feedback*"                    # outranks "*search*" for firecrawl_search_feedback
+          - "*refresh_*"
           - "*firecrawl_agent"
           - "*firecrawl_crawl"
+          - "*firecrawl_extract"
+          - "*firecrawl_interact*"
+          - "*firecrawl_parse"
+          - "*firecrawl_scrape"
           - "*firecrawl_monitor_create"
           - "*firecrawl_monitor_update"
           - "*firecrawl_monitor_run"
-          - "*refresh_*"
         deny:
           - "*portal_toggle*"      # server configuration is not an agent action
 
     # Later phase: a server using custom-header authentication.
     # example-header-server:
     #   url: https://mcp.example.invalid/other
+    #   revision: "1"
     #   auth:
     #     mode: headers
     #     headers:
