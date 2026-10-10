@@ -70,7 +70,7 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | External Secrets Operator | Apache-2.0 | Optional Kubernetes secret sync |
 | SOPS | MPL-2.0 | Optional encrypted secrets in configuration repositories |
 | Anthropic `skills` PDF/office skills | Source-available with service restrictions | Learn from them; do not copy |
-| `regenscheid/crypto-analysis-skills` | No LICENSE file at `main` | Add a license (MIT if desired) |
+| `regenscheid/crypto-analysis-skills` | MIT LICENSE proposed in a pull request (2026-10-10); previously none | Confirm the copyright holder before merging: its commits use a NIST address, and works of US federal employees made as part of their duties are not subject to US copyright, which would call for a different notice |
 | Docker Desktop | Proprietary, subscription terms for larger organizations | Acceptable for personal use; Colima/Lima/Podman avoid the question |
 | Magma | Proprietary | Optional, licensed pools only |
 

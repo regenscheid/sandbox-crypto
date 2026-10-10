@@ -263,7 +263,7 @@ Research may produce embargoed vulnerability findings or use sensitive datasets.
 
 | # | Finding | Recommendation |
 | --- | --- | --- |
-| m1 | `.agents/docs/current/` duplicates `docs/` byte-for-byte; `history/` snapshots duplicate what git already stores. INVENTORY.json hashes must be maintained by hand. | Replace snapshots with git tags (`plan-01-initial`, `plan-02-deployment`, `plan-03-current`). Keep only agent reports in `.agents/docs/`. |
+| m1 | `.agents/docs/current/` duplicates `docs/` byte-for-byte; `history/` snapshots duplicate what git already stores. INVENTORY.json hashes must be maintained by hand. | **Resolved:** snapshots removed; tags `plan-03-pre-review` (whose tree also holds the 01/02 drafts) and `plan-04-reviewed` replace them. Only agent reports remain in `.agents/docs/`. |
 | m2 | The same requirements (no orchestrator fallback, reproduction is an extension, base-image sessions, three monitor actions) are restated in 6–10 documents. | Make `DECISIONS.md` the single source and reference D-numbers elsewhere. Shrink restatements to links. |
 | m3 | "CScience" is never defined in the root README. "Babbage Linux" is never defined anywhere. | **Resolved:** both defined in the README Terminology section (babbage = the user's Ubuntu 26.04 machine). |
 | m4 | Evidence references point at absolute local paths (`/home/andy/Git_Projects/...`) that no other reader can verify. | Reference repository + commit + path, and note which sources are local-only. |
