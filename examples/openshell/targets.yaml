@@ -1,0 +1,20 @@
+# Example deployment targets for compiling examples/policy.yaml to OpenShell.
+# scripts/render_openshell_examples.py renders the policies beside this file.
+# Hosts are placeholders for platform services (trust zone Z1); they must have
+# private addresses, so that the public-internet endpoint never admits them.
+
+apiVersion: sandbox-science/v0alpha1
+kind: OpenShellTargets
+
+sandbox:
+  # The policy middleware's registration name in the gateway configuration.
+  middleware: sandbox-science-policy
+  package_mirror: {host: mirror.sandbox-science.internal, port: 8443}
+  mcp_proxy: {host: mcp-proxy.sandbox-science.internal, port: 8080}
+  # Research code runs arbitrary programs; the middleware decides each request.
+  binaries: [/**]
+
+mcp_proxy:
+  # The MCP proxy's executable; for a Python entry point, the interpreter that runs it.
+  binaries: [/opt/sandbox-science/bin/mcp-proxy]
+  versions: ["2025-11-25"]
