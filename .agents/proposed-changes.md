@@ -429,3 +429,18 @@ All four comments were checked against the documents and the OpenShell v0.1.3 do
 ## 33. Critique updated
 
 - Section 1a records the second reviewer's follow-up and the resulting revisions.
+
+---
+
+# Round 9 (2026-10-10): housekeeping
+
+## 34. Snapshots replaced by git tags [m1]
+
+- `.agents/docs/current/` and `.agents/docs/history/` are removed.
+- Tag `plan-03-pre-review` marks the pre-review commit; its tree still contains the 01 and 02 drafts. Tag `plan-04-reviewed` marks the merged review.
+- `.agents/docs/README.md` now describes the agent reports and the tags; `INVENTORY.json` is regenerated for the remaining files.
+
+## 35. LICENSE files
+
+- `LICENSE` (MIT, Andrew Regenscheid, 2026) added here; the README license section points to it.
+- An MIT LICENSE is proposed for `crypto-analysis-skills` in a separate pull request. Its commits use a NIST address, so the copyright holder should be confirmed before merging (LICENSING.md notes this).
