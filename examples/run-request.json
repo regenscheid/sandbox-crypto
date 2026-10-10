@@ -1,0 +1,73 @@
+{
+  "schema_version": "planning/v0alpha1",
+  "status": "illustrative-only; placeholder references must be resolved before submission",
+  "idempotency_key": "example-finite-field-attempt-1",
+  "project_id": "example-crypto-project",
+  "session_id": "example-session",
+  "run_id": "example-finite-field-run",
+  "environment": {
+    "profile_id": "sage-exact-algebra",
+    "profile_revision": "TO_BE_LOCKED",
+    "image_digest": "TO_BE_RESOLVED",
+    "platform": "linux/amd64",
+    "required_capabilities": [
+      "exact_algebra",
+      "finite_fields"
+    ],
+    "required_probe": "finite-field-identity-v1",
+    "dependency_snapshot": "TO_BE_CAPTURED_AFTER_APPROVED_PROVISIONING"
+  },
+  "code": {
+    "artifact_id": "example-finite-field-script",
+    "sha256": "TO_BE_COMPUTED",
+    "path_in_snapshot": "scripts/finite_field.sage"
+  },
+  "inputs": [],
+  "command": {
+    "argv": [
+      "sage",
+      "scripts/finite_field.sage"
+    ],
+    "working_directory": "."
+  },
+  "limits": {
+    "cpu_cores": 2,
+    "memory_mib": 4096,
+    "pids": 128,
+    "wall_time_seconds": 120,
+    "output_bytes": 10485760
+  },
+  "policy": {
+    "profile_id": "offline-compute",
+    "revision": "TO_BE_LOCKED",
+    "additional_network_destinations": [],
+    "credential_refs": []
+  },
+  "placement": {
+    "allowed_pool_ids": [
+      "local-math",
+      "remote-math"
+    ],
+    "data_class": "public-fixture"
+  },
+  "outputs": [
+    {
+      "path": "results/finite_field.json",
+      "media_type": "application/json"
+    }
+  ],
+  "acceptance": {
+    "fixture_id": "finite-field-identity-v1",
+    "expected_result": "Exact assertion specified by the versioned scientific fixture"
+  },
+  "execution_mode": "fresh_batch",
+  "origin": {
+    "agent_role": "main",
+    "tool_call_id": "example-tool-call",
+    "skill_revision": "TO_BE_RECORDED"
+  },
+  "monitoring": {
+    "policy_revision": "TO_BE_LOCKED",
+    "required_coverage": "TO_BE_SELECTED_AND_VERIFIED"
+  }
+}
