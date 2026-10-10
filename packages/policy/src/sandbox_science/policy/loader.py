@@ -5,14 +5,15 @@ Policy files are read as a strict YAML dialect so that what a reviewer sees in
 the file is exactly what is enforced: no explicit tags, aliases, merge keys or
 duplicate keys; mapping keys are text; every key has a value; numbers are plain
 decimals; booleans are true or false; double-quoted strings have no backslash
-escapes; lines are short enough to see; and no invisible characters or hidden
-line breaks.
+escapes; lines are narrow enough to see and have no runs of blanks inside them;
+and no invisible characters, unusual whitespace or hidden line breaks.
 """
 
 from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -29,8 +30,12 @@ from .model import ProjectPolicy
 MAX_FILE_BYTES: Final = 1024 * 1024
 """Policy and ceiling files larger than this are rejected."""
 
-MAX_LINE_CHARS: Final = 300
-"""Longer lines could hide an entry beyond the edge of an editor or diff view."""
+MAX_LINE_COLUMNS: Final = 160
+"""Wider lines could hide an entry beyond the edge of an editor or diff view."""
+
+# A run of four or more blanks inside a line could push the rest of the line out
+# of view; it is allowed only before a comment (for aligning comments).
+_BLANK_RUN_RE: Final = re.compile(r"[ \t]{4,}")
 
 _TAG: Final = "tag:yaml.org,2002:"
 # Scalar forms accepted for each implicitly resolved type. YAML 1.1 would also read
@@ -53,7 +58,9 @@ _SCALAR_HINTS: Final = {
 # part of CRLF.
 _FORBIDDEN_TEXT_RE: Final = re.compile(
     "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\xad\u061c\u180e\u200b-\u200f\u2028\u2029"
-    "\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f]|\r(?!\n)"
+    "\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f"
+    # Whitespace other than ASCII space and tab, which can pad a line invisibly.
+    "\xa0\u1680\u2000-\u200a\u202f\u205f\u3000]|\r(?!\n)"
 )
 
 
@@ -142,12 +149,39 @@ def _label(source: str | None, kind: str) -> str:
     return f"{kind} {source}" if source else kind
 
 
-def _check_text(text: str, label: str) -> None:
-    for number, line in enumerate(text.split("\n"), start=1):
-        if len(line.rstrip("\r")) > MAX_LINE_CHARS:
+def _display_width(line: str) -> int:
+    width = 0
+    for char in line:
+        if char == "\t":
+            width += 8 - width % 8
+        elif unicodedata.east_asian_width(char) in ("W", "F"):
+            width += 2
+        else:
+            width += 1
+    return width
+
+
+def _check_lines(text: str, label: str) -> None:
+    for number, raw in enumerate(text.split("\n"), start=1):
+        line = raw.rstrip("\r")
+        if _display_width(line) > MAX_LINE_COLUMNS:
+            raise PolicyLoadError(f"{label} line {number} is wider than {MAX_LINE_COLUMNS} columns")
+        content = line.lstrip(" ")
+        if content.startswith("#"):
+            continue
+        for run in _BLANK_RUN_RE.finditer(content):
+            rest = content[run.end() :]
+            if rest == "" or rest.startswith("#"):
+                continue  # trailing blanks, or alignment before a comment
+            if " #" in content[: run.start()]:
+                break  # inside a comment
             raise PolicyLoadError(
-                f"{label} line {number} is longer than {MAX_LINE_CHARS} characters"
+                f"{label} line {number} has a run of blanks that could push content out of "
+                "view; use single spaces"
             )
+
+
+def _check_text(text: str, label: str) -> None:
     match = _FORBIDDEN_TEXT_RE.search(text)
     if match is not None:
         index = match.start()
@@ -157,6 +191,7 @@ def _check_text(text: str, label: str) -> None:
             f"{label} contains an invisible or line-breaking character "
             f"U+{ord(match.group()[0]):04X} at line {line}, column {column}"
         )
+    _check_lines(text, label)
 
 
 def _load_mapping(data: bytes, source: str | None, kind: str) -> dict[str, object]:

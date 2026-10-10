@@ -649,7 +649,7 @@ def test_single_quoted_and_plain_strings_still_work() -> None:
 
 def test_entries_cannot_hide_beyond_the_edge_of_the_screen() -> None:
     text = HEADER + 'mcp: {proxy: {worker_tools: ["*_search",' + " " * 400 + '"portal_x"]}}\n'
-    with pytest.raises(PolicyLoadError, match="longer than"):
+    with pytest.raises(PolicyLoadError, match=r"wider than|run of blanks"):
         parse_policy(text)
 
 
@@ -740,3 +740,139 @@ def test_quoted_values_are_not_coerced(body: str) -> None:
 @pytest.mark.parametrize("path", ["/v1/admin%EF%BC%8E", "/v1%EF%BC%8Fadmin", "/v1/ad%C2%ADmin"])
 def test_paths_that_normalize_to_punctuation_or_lose_soft_hyphens_are_denied(path: str) -> None:
     assert decide("GET", "https://api.example.org" + path) is Action.DENY
+
+
+# Third review (67c8fe6). Finding 1: padding inside the line-length limit.
+
+
+GITHUB_READS = (
+    "network:\n  rules:\n    - name: github-api-reads\n      operation: http\n"
+    "      match: {{ hosts: [api.github.com], methods: [GET, HEAD,{pad}POST, PATCH, DELETE] }}\n"
+    "      action: allow\n"
+)
+
+
+@pytest.mark.parametrize("pad", [" " * 200, " " * 40, "    ", "\t\t\t\t"])
+def test_blank_runs_inside_a_line_are_rejected(pad: str) -> None:
+    with pytest.raises(PolicyLoadError, match=r"run of blanks|wider than"):
+        parse_policy(HEADER + GITHUB_READS.format(pad=pad))
+
+
+def test_single_spaces_and_comment_alignment_are_accepted() -> None:
+    loaded = parse_policy(
+        HEADER
+        + GITHUB_READS.format(pad=" ").replace("action: allow\n", "action: allow      # ok\n")
+    )
+    assert loaded.policy.network.rules[0].name == "github-api-reads"
+
+
+@pytest.mark.parametrize("blank", ["\u3000", "\u00a0", "\u2003", "\u202f", "\u205f", "\u1680"])
+def test_non_ascii_whitespace_is_rejected(blank: str) -> None:
+    with pytest.raises(PolicyLoadError, match="invisible"):
+        parse_policy(HEADER + f"defaults: {{action: escalate}}  # note{blank}x\n")
+
+
+def test_wide_characters_count_double_toward_the_line_width() -> None:
+    wide = "\u4e00" * 90  # 180 columns in 90 characters
+    with pytest.raises(PolicyLoadError, match="wider than"):
+        parse_policy(HEADER + f"# {wide}\n")
+
+
+# Third review, finding 2: an MCP server declared by address, reached under a name.
+
+
+def test_mcp_servers_declared_by_address_are_reserved_under_any_name() -> None:
+    loaded = policy(
+        """
+        network:
+          rules:
+            - {name: web, operation: http, match: {hosts: ["*"], methods: [GET]}, action: allow}
+        mcp:
+          servers:
+            tools: {url: "https://93.184.215.14/mcp", revision: "1", auth: {mode: none}}
+        """
+    )
+    for resolved in (("93.184.215.14",), ("::ffff:93.184.215.14",)):
+        decision = evaluate_request(
+            HttpRequest("GET", "https://name.example.net/mcp"),
+            loaded,
+            ceiling=OPEN,
+            resolved=resolved,
+        )
+        assert decision.action is Action.DENY
+        assert decision.layer == "floor"
+
+
+# Third review, finding 3: Windows best-fit characters and alternate data streams.
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/search/..%E2%88%95admin",  # U+2215 division slash
+        "/v1/search%E2%81%84x",  # U+2044 fraction slash
+        "/v1/search/%C2%A5x",  # U+00A5 yen sign, best-fit backslash
+        "/v1/search/%E2%82%A9x",  # U+20A9 won sign
+        "/v1/search/%E2%88%B6x",  # U+2236 ratio
+        "/v1/admin::$DATA",
+    ],
+)
+def test_windows_best_fit_punctuation_is_denied(path: str) -> None:
+    loaded = policy(
+        """
+        network:
+          rules:
+            - name: search
+              operation: http
+              match: {hosts: [api.example.org], paths: [/v1/search], methods: [GET, POST]}
+              action: allow
+        """
+    )
+    assert decide("POST", "https://api.example.org" + path, loaded, has_body=True) is Action.DENY
+
+
+# Third review, finding 4: quoted or infinite floats.
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        'resources: {model_budget_usd_per_day: "inf"}\n',
+        'resources: {model_budget_usd_per_day: "1e999"}\n',
+        'resources: {cpu: "16"}\n',
+        "resources: {cpu: 1e999}\n",
+    ],
+)
+def test_resource_numbers_are_finite_and_unquoted(body: str) -> None:
+    with pytest.raises(PolicyLoadError):
+        parse_policy(HEADER + body)
+
+
+def test_plain_resource_numbers_still_load() -> None:
+    resources = parse_policy(HEADER + "resources: {cpu: 16, model_budget_usd_per_day: 12.5}\n")
+    assert resources.policy.resources.cpu == 16
+    assert resources.policy.resources.model_budget_usd_per_day == 12.5
+
+
+# Third review, finding 5: control characters in MCP server URLs.
+
+
+@pytest.mark.parametrize(
+    "url", ["https://169.254.169.254\t.example.org/x", "https://mcp.example.org/a b"]
+)
+def test_mcp_server_urls_reject_whitespace_and_control_characters(url: str) -> None:
+    with pytest.raises(PolicyLoadError, match="MCP server URLs"):
+        policy(
+            f"""
+            mcp:
+              servers:
+                tools: {{url: "{url}", revision: "1", auth: {{mode: none}}}}
+            """
+        )
+
+
+def test_git_content_type_must_be_ascii() -> None:
+    url = "https://github.com/regenscheid/sandbox-crypto.git/git-upload-pack"
+    kelvin = "application/x-git-upload-pac\u212a-request"  # lowercases to the git type
+    action = decide("POST", url, content_type=kelvin, has_body=True)
+    assert action is Action.ESCALATE

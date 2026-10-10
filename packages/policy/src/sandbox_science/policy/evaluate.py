@@ -14,7 +14,7 @@ from .ceiling import PoolCeiling
 from .decision import Action, Alert, Decision, EscalationTerms, Layer, most_restrictive
 from .errors import ClassificationError
 from .floor import HardFloor
-from .hosts import HostKind, is_public, parse_ip
+from .hosts import HostKind, address_forms, is_public, parse_ip
 from .loader import LoadedPolicy
 from .model import GitRule, HttpRule, OnTimeout
 from .operations import (
@@ -273,14 +273,19 @@ def _operation_path(operation: HttpOperation | GitOperation) -> str:
     return operation.path if isinstance(operation, HttpOperation) else operation.repo_path
 
 
-def _mcp_host(operation: HttpOperation | GitOperation, policy: LoadedPolicy) -> str | None:
-    """Return the declared MCP server on this request's host, if any.
+def _mcp_host(
+    operation: HttpOperation | GitOperation, policy: LoadedPolicy, resolved: Sequence[str]
+) -> str | None:
+    """Return the declared MCP server this request would reach, if any.
 
     The whole host is reserved for the MCP proxy, not only the declared path:
-    servers often offer other transports (such as /sse) beside it.
+    servers often offer other transports (such as /sse) beside it. A server
+    declared by IP address also matches requests whose name resolves to it.
     """
+    destinations = {form for address in resolved for form in address_forms(address)}
+    destinations.add(operation.host)
     for name, server in policy.policy.mcp.servers.items():
-        if server.host == operation.host:
+        if server.host in destinations:
             return name
     return None
 
@@ -298,7 +303,7 @@ def _evaluate_network(
     reason = ceiling.check_host(operation.host, resolved)
     if reason is not None:
         return _deny("ceiling", reason, policy)
-    server = _mcp_host(operation, policy)
+    server = _mcp_host(operation, policy, resolved)
     if server is not None:
         return _deny(
             "floor",

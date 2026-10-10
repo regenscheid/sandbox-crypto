@@ -21,6 +21,7 @@ from pydantic import (
     PlainSerializer,
     PlainValidator,
     StrictBool,
+    StrictFloat,
     StrictInt,
     StringConstraints,
     WithJsonSchema,
@@ -155,12 +156,12 @@ class RuleEscalation(StrictModel):
 class Resources(StrictModel):
     """Resource requests or caps. ``None`` means no limit at this layer."""
 
-    cpu: Annotated[float, Field(gt=0)] | None = None
+    cpu: Annotated[StrictFloat, Field(gt=0, allow_inf_nan=False)] | None = None
     memory: Annotated[ByteSize, Field(gt=0)] | None = None
     pids: Annotated[StrictInt, Field(gt=0)] | None = None
     workspace_disk: Annotated[ByteSize, Field(gt=0)] | None = None
     wall_time: Duration | None = None
-    model_budget_usd_per_day: Annotated[float, Field(ge=0)] | None = None
+    model_budget_usd_per_day: Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)] | None = None
 
 
 ChannelName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]*$")]
@@ -406,6 +407,9 @@ class McpServer(StrictModel):
     @field_validator("url")
     @classmethod
     def _https_url(cls, value: str) -> str:
+        # urlsplit silently drops tabs and newlines, so check the raw text first.
+        if not value.isascii() or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in value):
+            raise ValueError("MCP server URLs must be ASCII without spaces or control characters")
         parts = urlsplit(value)
         if parts.scheme != "https":
             raise ValueError("MCP server URLs must use https")
