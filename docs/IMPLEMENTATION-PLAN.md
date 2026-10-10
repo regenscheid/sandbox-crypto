@@ -1,6 +1,6 @@
 # Detailed implementation plan
 
-Date: 2026-10-10. Proposed engineering sequence; no work package has been implemented or validated. Confirmed product requirements remain in [decisions](DECISIONS.md). This plan incorporates the [consistency review](CONSISTENCY-REVIEW.md) and provides detail beneath the milestone [roadmap](ROADMAP.md).
+Date: 2026-10-10. Proposed engineering sequence. Only the policy library from track P exists so far ([packages/policy](../packages/policy)); no work package has been validated end to end. Confirmed product requirements remain in [decisions](DECISIONS.md). This plan incorporates the [consistency review](CONSISTENCY-REVIEW.md) and provides detail beneath the milestone [roadmap](ROADMAP.md).
 
 ## First implementation slice
 
@@ -74,7 +74,7 @@ Proposed by the plan review (D51). These components do not depend on harness det
 - Event store with an append-only hash chain, so monitor evidence is tamper-evident.
 - Adversarial fixture suite ([monitoring](MONITORING.md)).
 - Isolation-tier probes that report the tier actually provided (D43).
-- The policy compiler from the project policy file ([policy](POLICY.md), D62) to OpenShell network/MCP/filesystem policy, with the hard floor, pool ceiling, most-restrictive-wins precedence and escalation timeout. It reports rules it cannot enforce.
+- The policy compiler from the project policy file ([policy](POLICY.md), D62) to OpenShell network/MCP/filesystem policy, with the hard floor, pool ceiling, most-restrictive-wins precedence and escalation timeout. It reports rules it cannot enforce. The policy model, validation and evaluation are implemented in `packages/policy` (D68); compiling to OpenShell policy remains.
 - Multi-arch (amd64/arm64) base images: the published `minimal` image and the `crypto-base` recipe with a private build pipeline and registry (D46), plus a babbage MicroVM gateway configuration (D63).
 - Secrets through OpenShell providers with endpoint binding and least-privilege tokens (D57), and MCP endpoint policies with tool allowlists (D58). Add the connector auth service (OAuth discovery, registration, PKCE with `resource`, external refresh when needed) and the MCP proxy sandbox (the only MCP endpoint reachable from workers and the orchestrator) ([MCP connectors](MCP-CONNECTORS.md), D66, D67); connect crypto-research-mcp as the phase 1 fixture. A fixture confirms that the sandbox sees only placeholders and that a placeholder sent to an unbound host fails with `credential_endpoint_mismatch`.
 

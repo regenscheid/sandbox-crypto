@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+"""The hard floor: destinations denied whatever the ceiling and project policy say."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from .hosts import floor_reason, normalize_host
+
+
+@dataclass(frozen=True, slots=True)
+class HardFloor:
+    """The non-overridable layer.
+
+    Built-in rules (loopback, link-local, unspecified and cloud metadata
+    addresses, Kubernetes API names) always apply. A deployment adds its own
+    administration endpoints, such as the OpenShell gateway, monitor and policy
+    services, through ``admin_hosts``.
+    """
+
+    admin_hosts: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        normalized = frozenset(normalize_host(host) for host in self.admin_hosts)
+        object.__setattr__(self, "admin_hosts", normalized)
+
+    def check_host(self, host: str) -> str | None:
+        """Return why the floor denies a normalized host, or None."""
+        reason = floor_reason(host)
+        if reason is not None:
+            return reason
+        if host in self.admin_hosts:
+            return f"{host} is a platform administration endpoint"
+        return None
