@@ -401,3 +401,31 @@ All four comments were checked against the documents and the OpenShell v0.1.3 do
 - ROADMAP.md: M1 now covers babbage only (MicroVM driver), and hosted certification is a phase 2 gate under M3. The phase table marks phase 1 as "local gates only", and the end-to-end fixture repeats on Kubernetes only in phase 2.
 - IMPLEMENTATION-PLAN.md: W2's exit covers babbage only, a new **W2h** certifies hosted execution in phase 2 (per node architecture and tier), and W4's exit runs on babbage first, then on the cluster.
 - RESEARCH-WORKSPACE.md and the PRODUCT.md acceptance criteria were updated to match.
+
+---
+
+# Round 8 (2026-10-10): second reviewer's follow-up comments, accepted
+
+## 30. OpenShell first; fallback stays a written design [D52 revised]
+
+- Prove OpenShell as the single backend through phases 1 and 2. The hedge is a backend-neutral worker API plus a **backend conformance fixture suite** (W1/W2 fixtures, adversarial suite, tier probes) that any later backend must pass.
+- The reference fallback stack remains documented in OPENSHELL-EVALUATION.md and is built only when a concrete limitation justifies it. An upstream egress proxy or eBPF telemetry may be added earlier if a phase 1 check needs them.
+- IMPLEMENTATION-PLAN.md track P and its exit evidence were updated.
+
+## 31. Prepared `crypto-base` profile as the normal option [D46 revised]
+
+- Two standard base profiles: the published, permissive-only `minimal` image, and `crypto-base`, a pinned cryptography environment with Sage ready at session start (plus fpylll, PARI, lattice-estimator, FLINT, TeX, pdf tools, G6K from source).
+- Licensing: the `crypto-base` **recipe** (Containerfile and lockfiles) is MIT and published; the **image** is built privately and kept in a private registry because it contains GPL tools.
+- New project and session containers start clean from the selected profile's recorded digest (D22 unchanged). Runtime conda installs continue for anything else.
+- LICENSING.md tier table, ARCHITECTURE.md, PROJECTS-AND-SESSIONS.md, MONITORING.md and IMPLEMENTATION-PLAN.md (track P, W2) were updated.
+
+## 32. Risk-based re-authentication [D54 revised]
+
+- Routine approvals work within the authenticated session with CSRF protection.
+- Re-authentication with a short validity window is required for policy widening, credential or MCP-connection changes, exports of embargoed or restricted data, disabling monitor rules, and approvals after a configurable idle period.
+- Separate-origin rendering of untrusted artifacts and fact-based approval prompts are unchanged.
+- ARCHITECTURE.md, THREAT-MODEL.md (Z4, A3) and POLICY.md were updated.
+
+## 33. Critique updated
+
+- Section 1a records the second reviewer's follow-up and the resulting revisions.

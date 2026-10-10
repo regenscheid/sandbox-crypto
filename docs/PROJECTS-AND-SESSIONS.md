@@ -55,7 +55,7 @@ Verification reproductions can receive read-only snapshots of selected project/s
 
 ## Provisioning and persistence
 
-Record the base-image digest at project creation. Automatic Conda installation evolves the project's tool environment within its grants. Keep project data and managed dependency prefixes in durable storage; capture environment specifications and any necessary derived image or reprovisioning steps for other filesystem changes. Docker volumes have a lifecycle independent of the container, whereas removing a container removes its writable layer. [Docker volumes](https://docs.docker.com/engine/storage/volumes/)
+Record the base profile (`minimal` or `crypto-base`, D46) and its image digest at project creation. Automatic Conda installation evolves the project's tool environment within its grants. Keep project data and managed dependency prefixes in durable storage; capture environment specifications and any necessary derived image or reprovisioning steps for other filesystem changes. Docker volumes have a lifecycle independent of the container, whereas removing a container removes its writable layer. [Docker volumes](https://docs.docker.com/engine/storage/volumes/)
 
 A newly created dedicated session container starts from the project's recorded base image, as confirmed by the user. Record its base-image digest; do not seed it from the default project container's evolved environment. It can access shared project data while installing its own needed tools. Do not share a mutable Conda prefix between containers while claiming they have independent dependencies.
 

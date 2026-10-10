@@ -89,7 +89,7 @@ These are documented/source capabilities, not a verified deployment. Confirm the
 
 1. The agent requests a needed capability or package in its project environment.
 2. The environment manager checks existing capabilities and project install/network grants.
-3. Conda resolves/downloads/installs inside a worker with scoped writable prefixes and resources, fetching only through the package mirror. Hooks and subprocesses receive the same restrictions. GPL research tools (Sage, fpylll, G6K) are installed this way at runtime rather than baked into the shipped image (D46, [licensing](LICENSING.md)); record each package's license.
+3. Conda resolves/downloads/installs inside a worker with scoped writable prefixes and resources, fetching only through the package mirror. Hooks and subprocesses receive the same restrictions. GPL research tools are either part of the privately built `crypto-base` profile image or installed this way at runtime; neither is published by the project (D46, [licensing](LICENSING.md)). Record each package's license.
 4. Record requested packages/tool purpose, channels and resolved versions/builds/digests, environment revision before/after, install logs/errors, and any fallback to another package manager.
 5. Probe the actual installed tool under the same worker policy, then let research continue.
 6. Capture an environment specification or derived image for reviewer reproduction and relocation.

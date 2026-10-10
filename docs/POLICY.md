@@ -93,4 +93,4 @@ The policy compiler is part of infrastructure track P. It reports any rule it ca
 
 - Whether OpenShell expresses wildcard hosts with method restrictions, or needs the upstream proxy.
 - MCP tool-name patterns depend on the actual tool names the server exposes per revision; pin the server revision in the policy.
-- How GUI edits and file edits of the policy merge (proposed: the file is the source of truth, the GUI edits it, every change is a revision).
+- How GUI edits and file edits of the policy merge (proposed: the file is the source of truth, the GUI edits it, every change is a revision). Widening the policy is a re-authentication action (D54).

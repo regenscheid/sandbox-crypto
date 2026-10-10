@@ -51,7 +51,7 @@ Prompt injection from consumed papers is a lesser concern. It remains one way an
 | Z1 Policy infrastructure | Worker service, OpenShell gateway/supervisor, secrets store, connector auth service, egress proxies, package mirror, monitor, event store | Trusted | Holds enforcement and credential material; not agent-writable; reachable from Z3 only via its proxy/API ports |
 | Z2 Control application | Orchestrator/harness, project store, model gateway | **Semi-trusted**: trusted state, agent-selected actions | Egress only to the model gateway and MCP endpoints under policy; holds placeholders or gateway-mediated credentials rather than raw keys where possible; no engine/cluster credentials |
 | Z3 Research sandboxes | Project/session/batch/review containers, kernels, Conda | Untrusted | No direct internet; egress via Z1 proxies; credentials only as placeholders |
-| Z4 Browser | GUI and artifact previews | User-trusted UI, untrusted content | Untrusted artifacts on a separate origin; approvals need fresh authentication |
+| Z4 Browser | GUI and artifact previews | User-trusted UI, untrusted content | Untrusted artifacts on a separate origin; routine approvals within the session, re-authentication for high-risk actions (D54) |
 
 ## Isolation tiers
 
@@ -73,7 +73,7 @@ Performance-sensitive work (timing and side-channel measurements, `perf_event_op
 | --- | --- | --- |
 | A1 | All MCP traffic through the MCP proxy (D67) with per-project tool allowlists, re-enforced by `protocol: mcp`; least-privilege, read-only tokens; L7 method/path rules; revision-checked mutations on shared documents/ledger with attribution | MCP and L7 events per tool call; ledger/document history |
 | A2 | Default-deny egress via proxies; credentials only as endpoint-bound placeholders (fail-closed); read-only rootfs and declared volumes; Landlock/filesystem policy; monitor and policy outside the sandbox | `credential_endpoint_mismatch` findings; denied-connection events; Tetragon/Falco process/file events |
-| A3 | Agent text never authorizes anything; policy advisor with auto-approval off; prover flags new credentialed reach; approval prompts built from observed facts; local policy ceiling per pool | Pending-decision log; prover findings |
+| A3 | Agent text never authorizes anything; policy advisor with auto-approval off; prover flags new credentialed reach; approval prompts built from observed facts; re-authentication for policy widening and credential changes (D54); local policy ceiling per pool | Pending-decision log; prover findings |
 | A4 | CPU/memory/PID/disk/wall-time limits from the policy file; per-project quotas; LiteLLM virtual-key spend limits (D61); escalation for credit-spending MCP tools | Quota and spend alerts |
 | T1 | Mirror-only package egress; lockfiles; rebuild-from-lockfile | Mirror logs; install-phase correlation |
 | T4 | Tier 3 isolation; no Z1/Z2 credentials in the sandbox | Runtime security events |

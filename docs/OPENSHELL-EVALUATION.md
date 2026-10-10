@@ -24,12 +24,12 @@ There is also apparent documentation drift: the container-deployment page descri
 
 OpenShell is Apache-2.0 (compatible with D45). v0.1.3 was published one day before this assessment, after breaking 0.0.x→0.1.0 changes and with unresolved documentation drift. Making a pre-1.0 component the only implementation of the core security boundary is a significant risk.
 
-Proposed (D52): design the worker adapter against two backends from the start.
+Decision (D52, revised after review): prove OpenShell first and keep it the single backend through phases 1 and 2. The hedge is a backend-neutral worker API plus a conformance fixture suite, not a second implementation. The reference fallback below is a written design to build when a concrete OpenShell limitation justifies it:
 
 - **Hosted reference:** Kubernetes with a Kata or gVisor RuntimeClass on a dedicated worker node pool, default-deny NetworkPolicy (Cilium where L7 rules help), an Envoy egress proxy and package mirror, and Tetragon or Falco for process, file and network telemetry.
 - **Local reference:** rootless Podman or Docker with `runsc`, an internal-only network, and the same proxies.
 
-All of these components are Apache-2.0 or MIT. The runtime telemetry also gives the monitor a signal independent of OpenShell middleware.
+All of these components are Apache-2.0 or MIT. Two pieces may arrive earlier than the rest if a phase 1 check needs them: an upstream egress proxy (if OpenShell cannot express wildcard-host read rules) and eBPF telemetry (for a monitor signal independent of OpenShell middleware).
 
 ## What the workbench must supply
 
