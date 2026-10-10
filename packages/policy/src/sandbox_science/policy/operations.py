@@ -38,6 +38,10 @@ def _check_path(path: str) -> None:
         raise ClassificationError(f"path {path!r} must start with '/'")
     if any(char == "\\" or ord(char) < 0x20 or ord(char) == 0x7F for char in path):
         raise ClassificationError(f"path {path!r} contains '\\' or control characters")
+    if ";" in path:
+        # Servers disagree on ';' path parameters (Tomcat drops them, OpenShell strips
+        # them, others keep them), so a rule could match a different path than is served.
+        raise ClassificationError(f"path {path!r} contains ';' path parameters")
     segments = path.split("/")[1:]
     for index, segment in enumerate(segments):
         if segment in (".", ".."):

@@ -140,6 +140,8 @@ def test_search_feedback_is_not_allowed_by_the_search_pattern(policy: LoadedPoli
         ("GET", "https://example.org/" + "a" * 5000, Action.DENY, "read-only-web"),
         # Ambiguous request.
         ("GET", "https://example.org/a/../admin", Action.DENY, None),
+        ("GET", "https://example.org/admin;jsessionid=1", Action.DENY, None),
+        ("GET", "https://example.org/admin%3Bx", Action.DENY, None),
     ],
 )
 def test_example_network_rules(
