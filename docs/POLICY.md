@@ -58,6 +58,7 @@ This deliberately relaxes the earlier review proposal (D44) that unknown destina
 | `network.rules` with fixed hosts | OpenShell network policy endpoints with L7 method/path rules in *enforce* mode |
 | Wildcard-host read rules (`hosts: ["*"]`) | To verify: whether OpenShell v0.1.3 endpoints accept wildcard hosts. If not, chain an MIT/Apache egress proxy (Envoy or mitmproxy) through OpenShell's `upstreamProxy` setting and enforce the wildcard rules there |
 | `mcp.servers.*.tools` | OpenShell `protocol: mcp` endpoints with tool-name allow/deny rules; `escalate` compiles to deny-plus-pending-request |
+| `mcp.servers.*.auth` | OAuth via the connector auth service, or bearer/custom headers via provider placeholders placed by the MCP proxy ([MCP connectors](MCP-CONNECTORS.md), D66, D67). Literal secrets in header values are rejected |
 | `credentials.providers` | OpenShell providers bound to their endpoints (D57) |
 | `escalate` | Deny in the enforcement layer, plus a durable request in the shared permission workflow; resume through a scoped decision (MONITORING.md) |
 | `alert` | Allow, plus a monitor finding |

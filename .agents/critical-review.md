@@ -39,6 +39,7 @@ The user answered several points during the review. The branch now reflects them
 | Stack | Python; LiteLLM proxy, OpenAI first, Anthropic Messages later. | D60, D61; spend limits via LiteLLM virtual keys. |
 | Permissions | Policy-based, permissive YAML; configurable escalation timeout falling back to deny. | D62 and `docs/POLICY.md`; D44 relaxed to allow broad reads by default. |
 | Living documents | Markdown with LaTeX math. | D65. |
+| MCP authentication | OAuth primarily; Authorization/custom headers also needed. Workers should not connect to MCP services directly; use an MCP proxy. | D66 (OAuth/bearer/headers, connector auth service) and D67 (MCP proxy for all callers), in `docs/MCP-CONNECTORS.md`. Gap found: OpenShell's documented OAuth refresh has no RFC 8707 `resource` parameter, which MCP requires, so an external refresh path is designed in. |
 | External services and secrets | Mostly via MCP. Workers that need API keys should get them from a secrets manager that limits direct access; OpenShell has features for this. | Confirmed against OpenShell v0.1.3 docs (details below). Added D57 (secrets via providers) and D58 (MCP endpoints with tool allowlists). |
 
 **OpenShell secrets (as documented at v0.1.3):**

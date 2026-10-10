@@ -50,6 +50,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Decisions](docs/DECISIONS.md) | Confirmed requirements, recommendations, and open choices |
 | [Threat model](docs/THREAT-MODEL.md) | Assets, threat sources, trust zones, isolation tiers and data classes (proposed by review) |
 | [Policy file](docs/POLICY.md) | Permissive-by-default YAML project policy, precedence, escalation timeout ([example](examples/policy.yaml)) |
+| [MCP connectors](docs/MCP-CONNECTORS.md) | OAuth (primary), bearer and custom-header auth for MCP servers; connector auth service and the MCP proxy that all MCP traffic goes through |
 | [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |
 | [Deployment examples](examples/deployment-profiles.json) | Illustrative placements; not executable manifests |
 | [Run request](examples/run-request.json) | Illustrative batch contract; not an OpenShell request |
