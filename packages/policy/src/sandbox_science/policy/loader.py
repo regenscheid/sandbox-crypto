@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -36,9 +37,12 @@ MAX_LINE_COLUMNS: Final = 160
 MAX_INDENT_COLUMNS: Final = 48
 """Deeper indentation could push an entry off-screen on an otherwise blank-looking line."""
 
-# A run of four or more blanks inside a line could push the rest of the line out
-# of view; it is allowed only before a comment (for aligning comments).
-_BLANK_RUN_RE: Final = re.compile(r"[ \t]{4,}")
+# A run of four or more spaces inside a line could push the rest of the line out
+# of view; it is allowed only to align a comment.
+_BLANK_RUN_RE: Final = re.compile(r" {4,}")
+
+# The stubs leave yaml.scan and token marks untyped.
+_scan = cast("Callable[..., Iterable[object]]", yaml.scan)  # pyright: ignore[reportUnknownMemberType]
 
 _TAG: Final = "tag:yaml.org,2002:"
 # Scalar forms accepted for each implicitly resolved type. YAML 1.1 would also read
@@ -55,14 +59,15 @@ _SCALAR_HINTS: Final = {
     "float": "write numbers in plain decimal, ",
     "bool": "write booleans as true or false, ",
 }
-# Control characters other than tab and newline, NEL, Unicode line and paragraph
+# Control characters (tab included: use spaces), NEL, Unicode line and paragraph
 # separators (which YAML treats as line breaks), zero-width and bidirectional
 # formatting characters, a byte-order mark after the start, and a CR that is not
 # part of CRLF.
 _FORBIDDEN_TEXT_RE: Final = re.compile(
-    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\x85\xad\u061c\u180e\u200b-\u200f\u2028\u2029"
-    "\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\U000e0000-\U000e007f"
-    # Whitespace other than ASCII space and tab, which can pad a line invisibly.
+    "[\x00-\x08\x09\x0b\x0c\x0e-\x1f\x7f\x85\xad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e"
+    "\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2064\u2066-\u2069\u2800\u3164"
+    "\ufe00-\ufe0f\ufeff\uffa0\U000e0000-\U000e007f\U000e0100-\U000e01ef"
+    # Whitespace other than ASCII space, which can pad a line invisibly.
     "\xa0\u1680\u2000-\u200a\u202f\u205f\u3000]|\r(?!\n)"
 )
 
@@ -80,6 +85,15 @@ class LoadedPolicy:
 class _Mark(Protocol):
     line: int
     column: int
+
+
+class _IndexedMark(_Mark, Protocol):
+    index: int
+
+
+class _Token(Protocol):
+    start_mark: _IndexedMark
+    end_mark: _IndexedMark
 
 
 def _where(mark: _Mark | None) -> str:
@@ -169,53 +183,41 @@ def _display_width(line: str) -> int:
     return width
 
 
-def _classify(text: str) -> str:
-    """Classify each character as code ("c"), quoted text ("q") or comment ("m").
+def _token_coverage(text: str, label: str) -> bytearray:
+    """Mark the characters that belong to YAML tokens (everything but blanks and comments).
 
-    Tracks quoted scalars across lines, which a line-by-line check cannot.
-    Backslash escapes and block scalars are rejected when the file is parsed,
-    so a quote always ends a quoted scalar here.
+    Positions come from PyYAML's scanner, which is what parses the file, so
+    quoted strings and comments are located exactly as YAML sees them. Also
+    rejects values that span lines, which could swallow lines that look like
+    live settings.
     """
-    kinds: list[str] = []
-    quote: str | None = None
-    in_comment = False
-    previous = "\n"
-    index = 0
-    while index < len(text):
-        char = text[index]
-        if char == "\n":
-            in_comment = False  # comments end at the line; quoted scalars may continue
-            kinds.append("q" if quote else "c")
-        elif in_comment:
-            kinds.append("m")
-        elif quote is not None:
-            kinds.append("q")
-            if char == quote:
-                if quote == "'" and text[index + 1 : index + 2] == "'":
-                    kinds.append("q")  # '' is an escaped quote inside single quotes
-                    index += 2
-                    previous = "'"
-                    continue
-                quote = None
-        elif char == "#" and previous in " \t\n":
-            in_comment = True
-            kinds.append("m")
-        elif char in "'\"" and previous in " \t\n[{,:":
-            quote = char
-            kinds.append("q")
-        else:
-            kinds.append("c")
-        previous = char
-        index += 1
-    return "".join(kinds)
+    covered = bytearray(len(text))
+    try:
+        scanned = list(_scan(text, Loader=yaml.SafeLoader))
+    except yaml.YAMLError as exc:
+        raise PolicyLoadError(f"{label} is not valid YAML: {exc}") from exc
+    for raw in scanned:
+        token = cast("_Token", raw)
+        start, end = token.start_mark.index, token.end_mark.index
+        if isinstance(raw, yaml.ScalarToken) and token.start_mark.line != token.end_mark.line:
+            raise PolicyLoadError(
+                f"{label}: every value must fit on one line ({_where(token.start_mark)})"
+            )
+        covered[start:end] = b"\x01" * (end - start)
+    return covered
 
 
-def _check_lines(text: str, label: str) -> None:
-    kinds = _classify(text)
+def _check_layout(text: str, label: str) -> None:
+    """Reject layouts that could hide content from someone reading the file.
+
+    Limits width and indentation, keeps enforced values in ASCII, and allows a
+    run of spaces inside a line only to align a comment.
+    """
+    covered = _token_coverage(text, label)
     offset = 0
     for number, raw in enumerate(text.split("\n"), start=1):
         line = raw.rstrip("\r")
-        line_kinds = kinds[offset : offset + len(line)]
+        base = offset
         offset += len(raw) + 1
         if _display_width(line) > MAX_LINE_COLUMNS:
             raise PolicyLoadError(f"{label} line {number} is wider than {MAX_LINE_COLUMNS} columns")
@@ -224,12 +226,25 @@ def _check_lines(text: str, label: str) -> None:
             raise PolicyLoadError(
                 f"{label} line {number} is indented by more than {MAX_INDENT_COLUMNS} columns"
             )
-        for run in _BLANK_RUN_RE.finditer(line, indent):
-            run_kinds = set(line_kinds[run.start() : run.end()])
-            if run_kinds == {"m"} or run.end() == len(line):
-                continue  # inside a comment, or trailing blanks
-            if run_kinds == {"c"} and line_kinds[run.end()] == "m":
-                continue  # aligning a comment
+        comment = next(
+            (
+                index
+                for index, char in enumerate(line)
+                if char == "#"
+                and not covered[base + index]
+                and (index == 0 or line[index - 1] == " ")
+            ),
+            len(line),
+        )
+        if any(not line[index].isascii() for index in range(comment)):
+            raise PolicyLoadError(
+                f"{label} line {number}: write settings in ASCII; other characters are allowed "
+                "only in comments"
+            )
+        for run in _BLANK_RUN_RE.finditer(line, indent, comment):
+            inside_value = any(covered[base + run.start() : base + run.end()])
+            if run.end() in (len(line), comment) and not inside_value:
+                continue  # trailing blanks, or aligning a comment
             raise PolicyLoadError(
                 f"{label} line {number} has a run of blanks that could push content out of "
                 "view; use single spaces"
@@ -246,7 +261,7 @@ def _check_text(text: str, label: str) -> None:
             f"{label} contains an invisible or line-breaking character "
             f"U+{ord(match.group()[0]):04X} at line {line}, column {column}"
         )
-    _check_lines(text, label)
+    _check_layout(text, label)
 
 
 def _load_mapping(data: bytes, source: str | None, kind: str) -> dict[str, object]:

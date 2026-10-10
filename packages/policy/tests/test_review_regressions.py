@@ -754,7 +754,7 @@ GITHUB_READS = (
 
 @pytest.mark.parametrize("pad", [" " * 200, " " * 40, "    ", "\t\t\t\t"])
 def test_blank_runs_inside_a_line_are_rejected(pad: str) -> None:
-    with pytest.raises(PolicyLoadError, match=r"run of blanks|wider than"):
+    with pytest.raises(PolicyLoadError, match=r"run of blanks|wider than|invisible"):
         parse_policy(HEADER + GITHUB_READS.format(pad=pad))
 
 
@@ -861,7 +861,9 @@ def test_plain_resource_numbers_still_load() -> None:
     "url", ["https://169.254.169.254\t.example.org/x", "https://mcp.example.org/a b"]
 )
 def test_mcp_server_urls_reject_whitespace_and_control_characters(url: str) -> None:
-    with pytest.raises(PolicyLoadError, match="MCP server URLs"):
+    # A literal tab is now rejected anywhere in a policy file; the URL check still
+    # guards models built without the loader.
+    with pytest.raises(PolicyLoadError, match=r"MCP server URLs|invisible"):
         policy(
             f"""
             mcp:
@@ -895,7 +897,7 @@ def worker_tools(listing: str) -> str:
     ],
 )
 def test_quoted_hashes_do_not_open_a_comment(listing: str) -> None:
-    with pytest.raises(PolicyLoadError, match="run of blanks"):
+    with pytest.raises(PolicyLoadError, match=r"run of blanks|fit on one line"):
         parse_policy(worker_tools(listing))
 
 
@@ -935,5 +937,48 @@ def test_block_scalars_are_rejected(style: str) -> None:
     text = HEADER.replace(
         "metadata: {name: test}\n", f"metadata:\n  name: test\n  description: {style}\n    text\n"
     )
-    with pytest.raises(PolicyLoadError, match="block scalars"):
+    with pytest.raises(PolicyLoadError, match=r"block scalars|fit on one line"):
         parse_policy(text)
+
+
+# Fourth review (b1bcbf2): layout checks now take positions from PyYAML's scanner.
+
+
+def test_quoted_values_cannot_swallow_lines_that_look_like_settings() -> None:
+    text = (
+        "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\n"
+        'metadata:\n  name: t\n  description: "Broad read access, governed side effects\n\n'
+        "# Applies to anything no rule matches.\n"
+        "defaults:\n  action: deny # allow | alert | escalate | deny\n"
+        '  log: true # keep a record"\n'
+    )
+    with pytest.raises(PolicyLoadError, match="fit on one line"):
+        parse_policy(text)
+
+
+def test_a_stray_quote_in_a_plain_value_does_not_hide_padding() -> None:
+    text = (
+        "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\n"
+        'metadata: {name: t, description: read "only}\n'
+        "mcp:\n  servers:\n    s: {url: 'https://m.io/x', auth: {mode: none}, "
+        'tool_prefix: p-, revision: "1 #' + " " * 36 + '", tools: {allow: [x]}}\n'
+    )
+    with pytest.raises(PolicyLoadError, match="run of blanks"):
+        parse_policy(text)
+
+
+@pytest.mark.parametrize("blank", ["\u2800", "\u3164", "\uffa0", "\u115f", "\u1160", "\t"])
+def test_blank_looking_characters_are_rejected(blank: str) -> None:
+    text = HEADER + f'metadata_note: "1{blank * 3}.{blank * 3}"\n'
+    with pytest.raises(PolicyLoadError, match="invisible"):
+        parse_policy(text)
+
+
+@pytest.mark.parametrize("value", ["caf\u00e9", "\u0430dmin", "\u4e00"])
+def test_settings_are_ascii(value: str) -> None:
+    with pytest.raises(PolicyLoadError, match="ASCII"):
+        parse_policy(HEADER.replace("name: test}", f"name: test, description: '{value}'}}"))
+
+
+def test_comments_may_use_other_scripts() -> None:
+    parse_policy(HEADER + "# caf\u00e9 \u4e00\u4e8c\n")
