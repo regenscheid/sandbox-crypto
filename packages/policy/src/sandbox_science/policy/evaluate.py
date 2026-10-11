@@ -16,7 +16,7 @@ from .errors import ClassificationError
 from .floor import HardFloor
 from .hosts import HostKind, address_forms, is_public, parse_ip
 from .loader import LoadedPolicy
-from .model import GitRule, HttpRule, OnTimeout
+from .model import CondaPackages, GitRule, HttpRule, OnTimeout, Packages, RegistryPackages
 from .operations import (
     DEFAULT_PORTS,
     GitOperation,
@@ -275,15 +275,27 @@ def _operation_path(operation: HttpOperation | GitOperation) -> str:
 
 PACKAGE_INDEX_HOSTS: Final = frozenset(
     {
+        # PyPI
         "pypi.org",
         "pypi.python.org",
         "files.pythonhosted.org",
+        # conda
         "conda.anaconda.org",
         "repo.anaconda.com",
         "repo.prefix.dev",
+        # Cargo
+        "crates.io",
+        "index.crates.io",
+        "static.crates.io",
+        # Go
+        "proxy.golang.org",
+        "sum.golang.org",
+        # npm
+        "registry.npmjs.org",
+        "registry.yarnpkg.com",
     }
 )
-"""Package indexes, which workers reach only through the package mirror (D44)."""
+"""Package registries, which workers reach only through the package cache (D44, D71)."""
 
 
 def _mcp_host(
@@ -501,30 +513,60 @@ def _evaluate_mcp(
 
 
 def _evaluate_package(operation: PackageOperation, policy: LoadedPolicy) -> Decision:
+    """Decide a request to the package cache ("Packages").
+
+    The ecosystem's action applies to package files. Index lookups install
+    nothing, so they are allowed unless that action is ``deny``: an escalation
+    then asks about the install, not about reading the index the solver needs.
+    """
     packages = policy.policy.packages
-    if operation.ecosystem == "conda":
-        conda = packages.conda
-        if conda is None:
-            action = policy.policy.defaults.action
-            return _decision(
-                action, "default", f"conda is not configured; defaults.action is {action}", policy
-            )
-        if operation.channel not in conda.channels:
-            return _deny(
-                "policy",
-                f"conda channel {operation.channel!r} is not allowed",
-                policy,
-                rule="packages.conda",
-            )
-        return _decision(
-            conda.action, "policy", f"conda package {operation.name}", policy, rule="packages.conda"
-        )
-    pypi = packages.pypi
-    if pypi is None:
+    label = _ECOSYSTEM_LABELS[operation.ecosystem]
+    config = _ecosystem_config(packages, operation.ecosystem)
+    if config is None:
         action = policy.policy.defaults.action
-        return _decision(
-            action, "default", f"PyPI is not configured; defaults.action is {action}", policy
-        )
-    return _decision(
-        pypi.action, "policy", f"PyPI package {operation.name}", policy, rule="packages.pypi"
-    )
+        layer: Layer = "default"
+        rule = None
+        reason = f"{label} is not configured; defaults.action is {action}"
+    else:
+        action = config.action
+        layer = "policy"
+        rule = f"packages.{operation.ecosystem}"
+        reason = f"{label} package {operation.name}" if operation.name else f"{label} index"
+    if (
+        isinstance(config, CondaPackages)
+        and operation.channel is not None
+        and operation.channel not in config.channels
+    ):
+        return _deny("policy", f"conda channel {operation.channel!r} is not allowed", policy, rule)
+    if operation.kind == "index":
+        if action is Action.DENY:
+            return _deny(layer, f"{reason}: {label} is denied", policy, rule)
+        return _decision(Action.ALLOW, layer, f"{reason} (index lookup)", policy, rule=rule)
+    return _decision(action, layer, reason, policy, rule=rule)
+
+
+_ECOSYSTEM_LABELS: Final[dict[str, str]] = {
+    "pypi": "PyPI",
+    "conda": "conda",
+    "cargo": "Cargo",
+    "go": "Go",
+    "npm": "npm",
+}
+
+
+def _ecosystem_config(
+    packages: Packages, ecosystem: str
+) -> CondaPackages | RegistryPackages | None:
+    match ecosystem:
+        case "conda":
+            return packages.conda
+        case "pypi":
+            return packages.pypi
+        case "cargo":
+            return packages.cargo
+        case "go":
+            return packages.go
+        case "npm":
+            return packages.npm
+        case _:
+            return None

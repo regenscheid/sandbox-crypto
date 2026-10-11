@@ -15,6 +15,7 @@ Updated: 2026-10-10.
 
 ## Next
 
+- The package cache service (D71): five ecosystems, in progress; then a babbage lab with real clients through OpenShell.
 - `allow_credentialed`: let a read-only rule time out to an alert even for credentialed requests (agreed with the user).
 - Orchestrator: the middleware's policy store and bindings, escalation grants, and on-demand admission of hosts.
 - Validate the MCP proxy's compiled policy on a real gateway.

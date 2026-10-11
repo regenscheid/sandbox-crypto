@@ -71,9 +71,12 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |
 | cryptography | Apache-2.0 OR BSD-3-Clause | Ed25519 verification for PyJWT |
 | cffi, pycparser | MIT-0; BSD-3-Clause | Required by cryptography. MIT-0 is MIT without the attribution condition |
+| aiohttp | Apache-2.0 AND MIT | Package cache HTTP server and upstream client |
+| aiohappyeyeballs, aiosignal, attrs, frozenlist, multidict, propcache, yarl, idna | PSF-2.0; Apache-2.0; MIT; Apache-2.0; Apache-2.0; Apache-2.0; Apache-2.0; BSD-3-Clause | Required by aiohttp |
 | pytest, pluggy, iniconfig, ruff, pyright | MIT | Development and CI only |
 | types-PyYAML, types-grpcio, types-protobuf | Apache-2.0 | Development and CI only (type stubs) |
 | grpcio-tools, setuptools | Apache-2.0; MIT | Development only: generates the middleware's protobuf code |
+| pytest-aiohttp, pytest-asyncio | Apache-2.0 | Development and CI only (package cache tests) |
 | packaging, pygments, nodeenv | Apache-2.0 OR BSD-2-Clause; BSD-2-Clause; BSD-3-Clause | Development and CI only (pytest and pyright dependencies) |
 | Pandoc | GPL | Tier 3: runtime-installed in workers for `.tex`/PDF export, invoked as a separate program |
 | Claude Agent SDK (Python) | MIT wrapper that bundles the proprietary Claude Code CLI | **Not** for the MIT core: the runtime it drives is proprietary |

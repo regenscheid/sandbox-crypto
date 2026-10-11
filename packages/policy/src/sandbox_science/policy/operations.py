@@ -22,7 +22,8 @@ from .hosts import normalize_host
 Scheme = Literal["http", "https"]
 GitService = Literal["upload-pack", "receive-pack"]
 Origin = Literal["orchestrator", "worker"]
-Ecosystem = Literal["conda", "pypi"]
+Ecosystem = Literal["conda", "pypi", "cargo", "go", "npm"]
+PackageKind = Literal["index", "artifact"]
 
 DEFAULT_PORTS: Final[dict[Scheme, int]] = {"http": 80, "https": 443}
 
@@ -43,7 +44,16 @@ _BEST_FIT_PUNCTUATION: Final = frozenset("\u2215\u2044\u2216\u29f5\u00a5\u20a9\u
 _SPECIAL: Final = "/\\.;:?#%"
 MAX_MCP_NAME_LENGTH: Final = 256
 _NAME_RE: Final = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-_PACKAGE_RE: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+# Package names, per ecosystem, as the registries allow them.
+_PACKAGE_NAMES: Final[dict[str, re.Pattern[str]]] = {
+    "pypi": re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"),
+    "conda": re.compile(r"[a-z0-9_][a-z0-9_.+-]*"),
+    "cargo": re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}"),
+    "npm": re.compile(r"(?:@[A-Za-z0-9~-][A-Za-z0-9._~-]*/)?[A-Za-z0-9~-][A-Za-z0-9._~-]*"),
+    # A decoded Go module path; module_path_problem checks the rest.
+    "go": re.compile(r"[a-z0-9.-]+(?:/[A-Za-z0-9._~-]+)*"),
+}
+_MAX_PACKAGE_NAME: Final = 214
 
 
 def _check_path(path: str) -> None:
@@ -173,24 +183,55 @@ class McpOperation:
 
 @dataclass(frozen=True, slots=True)
 class PackageOperation:
-    """A package download through the mirror. PyPI names are normalized (PEP 503)."""
+    """A request to the package cache (docs/PACKAGE-CACHE.md).
+
+    ``kind`` is ``artifact`` for a package file and ``index`` for index data.
+    ``name`` is the package the request concerns, or None for index data that
+    covers a whole registry or channel (conda repodata, Cargo's ``config.json``,
+    Go's checksum database). Names are normalized where the registry treats
+    spellings as one package: PEP 503 for PyPI, case and ``-``/``_`` for crates.
+    """
 
     ecosystem: Ecosystem
-    name: str
+    name: str | None
     channel: str | None = None
+    kind: PackageKind = "artifact"
 
     def __post_init__(self) -> None:
-        if not _PACKAGE_RE.fullmatch(self.name):
-            raise ClassificationError(f"invalid package name {self.name!r}")
-        if self.ecosystem == "conda":
-            if self.channel is None:
-                raise ClassificationError("conda packages need a channel")
-        elif self.ecosystem == "pypi":
-            if self.channel is not None:
-                raise ClassificationError("PyPI packages have no channel")
-            object.__setattr__(self, "name", re.sub(r"[-_.]+", "-", self.name).lower())
-        else:
+        if self.ecosystem not in _PACKAGE_NAMES:
             raise ClassificationError(f"unknown package ecosystem {self.ecosystem!r}")
+        if self.kind not in ("index", "artifact"):
+            raise ClassificationError(f"unknown package request kind {self.kind!r}")
+        if (self.ecosystem == "conda") != (self.channel is not None):
+            raise ClassificationError("conda requests, and only they, name a channel")
+        if self.name is None:
+            if self.kind != "index":
+                raise ClassificationError("a package file belongs to a named package")
+            return
+        if len(self.name) > _MAX_PACKAGE_NAME or not _PACKAGE_NAMES[self.ecosystem].fullmatch(
+            self.name
+        ):
+            raise ClassificationError(f"invalid {self.ecosystem} package name {self.name!r}")
+        if self.ecosystem == "go":
+            problem = module_path_problem(self.name)
+            if problem is not None:
+                raise ClassificationError(f"invalid Go module path {self.name!r}: {problem}")
+        if self.ecosystem == "pypi":
+            object.__setattr__(self, "name", re.sub(r"[-_.]+", "-", self.name).lower())
+        elif self.ecosystem == "cargo":
+            object.__setattr__(self, "name", self.name.lower().replace("_", "-"))
+
+
+def module_path_problem(path: str) -> str | None:
+    """Why a decoded Go module path is invalid, or None (golang.org/x/mod/module rules)."""
+    elements = path.split("/")
+    first = elements[0]
+    if "." not in first or first.startswith(("-", ".")) or first.endswith("."):
+        return "the first element must be a domain name"
+    for element in elements:
+        if element in (".", "..") or element.startswith(".") or element.endswith("."):
+            return f"invalid element {element!r}"
+    return None
 
 
 Operation = HttpOperation | GitOperation | McpOperation | PackageOperation

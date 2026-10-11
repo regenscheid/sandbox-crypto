@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from sandbox_science.policy import (
     Action,
@@ -73,6 +74,7 @@ ALLOWED_KEYS = {
     "provider",
     "access",
     "allowed_ips",
+    "allow_encoded_slash",
     "network_middlewares",
     "middleware",
     "order",
@@ -179,7 +181,7 @@ def test_example_sandbox_policy() -> None:
     entries = compiled.policy.network_policies
     assert list(entries) == [
         "sandbox-science-egress",
-        "sandbox-science-package-mirror",
+        "sandbox-science-package-cache",
         "sandbox-science-mcp-proxy",
     ]
     public, *named = entries["sandbox-science-egress"].endpoints
@@ -187,25 +189,38 @@ def test_example_sandbox_policy() -> None:
     assert (public.protocol, public.enforcement, public.access) == ("rest", "enforce", "full")
     assert public.ports == (80, 443)
     assert public.allowed_ips == public_address_ranges()
-    # The git-fetch rule names its hosts, so the sandbox can resolve them.
-    assert [endpoint.host for endpoint in named] == ["codeberg.org", "github.com", "gitlab.com"]
+    # The source-download and git-fetch rules name their hosts, so the sandbox can resolve them.
+    assert [endpoint.host for endpoint in named] == [
+        "codeberg.org",
+        "codeload.github.com",
+        "github.com",
+        "gitlab.com",
+        "objects.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+    ]
     for endpoint in named:
         assert endpoint.model_dump(exclude={"host"}) == public.model_dump(exclude={"host"})
-    for key in ("sandbox-science-package-mirror", "sandbox-science-mcp-proxy"):
-        (service,) = entries[key].endpoints
-        assert service.protocol == "tcp"
-        assert service.allowed_ips is None
+    (cache,) = entries["sandbox-science-package-cache"].endpoints
+    assert (cache.host, cache.ports) == ("package-cache.sandbox-science.internal", (8090,))
+    assert (cache.protocol, cache.enforcement, cache.access) == ("rest", "enforce", "read-only")
+    assert cache.allow_encoded_slash is True
+    assert cache.allowed_ips is None
+    (proxy,) = entries["sandbox-science-mcp-proxy"].endpoints
+    assert proxy.protocol == "tcp"
+    assert proxy.allowed_ips is None
     middlewares = compiled.policy.network_middlewares
     assert middlewares is not None
     middleware = middlewares["sandbox-science-policy"]
     assert middleware.middleware == "sandbox-science-policy"
     assert middleware.on_error == "fail_closed"
     assert middleware.endpoints.include == ("**",)
-    assert middleware.endpoints.exclude == (
-        "mcp-proxy.sandbox-science.internal",
-        "mirror.sandbox-science.internal",
-    )
-    assert middleware.config == {"policy": {"name": "permissive-default", "digest": EXAMPLE.digest}}
+    # The package cache is inspected; only the raw MCP proxy is left out.
+    assert middleware.endpoints.exclude == ("mcp-proxy.sandbox-science.internal",)
+    assert middleware.config == {
+        "policy": {"name": "permissive-default", "digest": EXAMPLE.digest},
+        "package_cache": {"host": "package-cache.sandbox-science.internal", "port": 8090},
+    }
     assert compiled.policy_digest == EXAMPLE.digest
 
 
@@ -356,13 +371,29 @@ def test_control_plane_ports_are_reported_and_left_out() -> None:
 def test_a_service_on_an_admitted_port_is_a_compile_error() -> None:
     target = TARGETS.sandbox.model_copy(
         update={
-            "package_mirror": ServiceEndpoint.model_validate(
-                {"host": "mirror.internal", "port": 443}
-            )
+            "package_cache": ServiceEndpoint.model_validate({"host": "cache.internal", "port": 443})
         }
     )
     with pytest.raises(CompileError, match="port 443"):
         compile_sandbox(EXAMPLE, target, ceiling=OPEN)
+
+
+def test_the_gateway_host_alias_is_accepted_only_as_a_service_host() -> None:
+    # A single-host deployment (the VM driver) runs its services on the gateway host.
+    service = ServiceEndpoint.model_validate({"host": "host.openshell.internal", "port": 8090})
+    assert service.host == "host.openshell.internal"
+    with pytest.raises(ValidationError):
+        ServiceEndpoint.model_validate({"host": "host.docker.internal", "port": 8090})
+    # Project rules cannot reach the gateway host through it.
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: host, operation: http, match: {hosts: [host.openshell.internal]}, "
+        "action: allow}\n",
+        default="deny",
+    )
+    compiled = compile_research(policy)
+    assert "sandbox-science-egress" not in compiled.policy.network_policies
+    assert any(f.subject == "hosts.host.openshell.internal" for f in compiled.findings)
 
 
 def test_without_worker_access_no_endpoint_admits_the_mcp_proxy() -> None:
@@ -372,9 +403,7 @@ def test_without_worker_access_no_endpoint_admits_the_mcp_proxy() -> None:
     assert "sandbox-science-mcp-proxy" not in compiled.policy.network_policies
     middlewares = compiled.policy.network_middlewares
     assert middlewares is not None
-    assert middlewares["sandbox-science-policy"].endpoints.exclude == (
-        "mirror.sandbox-science.internal",
-    )
+    assert middlewares["sandbox-science-policy"].endpoints.exclude is None
     assert any(finding.subject == "mcp.proxy.worker_access" for finding in compiled.findings)
 
 
@@ -605,16 +634,16 @@ def test_rendered_examples_are_current() -> None:
 
 def test_example_targets_parse() -> None:
     assert TARGETS.sandbox.middleware == "sandbox-science-policy"
-    assert TARGETS.sandbox.package_mirror.port == 8443
+    assert TARGETS.sandbox.package_cache.port == 8090
     assert TARGETS.mcp_proxy.versions == ("2025-11-25",)
 
 
 @pytest.mark.parametrize(
     ("change", "message"),
     [
-        ("mirror.sandbox-science.internal", "10.0.0.5"),
-        ("mirror.sandbox-science.internal", "localhost"),
-        ("port: 8443", "port: 6443"),
+        ("package-cache.sandbox-science.internal", "10.0.0.5"),
+        ("package-cache.sandbox-science.internal", "localhost"),
+        ("port: 8090", "port: 6443"),
         ("middleware: sandbox-science-policy", "middleware: Not A Name"),
         ("binaries: [/**]", "binaries: [bin/sh]"),
         ('versions: ["2025-11-25"]', 'versions: ["2024-11-05"]'),
@@ -632,7 +661,7 @@ def test_sandbox_target_defaults_to_all_binaries() -> None:
     target = SandboxTarget.model_validate(
         {
             "middleware": "sandbox-science-policy",
-            "package_mirror": {"host": "mirror.example.org", "port": 443},
+            "package_cache": {"host": "cache.example.org", "port": 443},
             "mcp_proxy": {"host": "mcp.example.org", "port": 8080},
         }
     )
@@ -644,7 +673,7 @@ def test_tcp_service_hosts_must_be_names() -> None:
         SandboxTarget.model_validate(
             {
                 "middleware": "sandbox-science-policy",
-                "package_mirror": {"host": "10.0.0.5", "port": 443},
+                "package_cache": {"host": "10.0.0.5", "port": 443},
                 "mcp_proxy": {"host": "mcp.example.org", "port": 8080},
             }
         )

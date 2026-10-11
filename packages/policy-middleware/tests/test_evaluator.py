@@ -5,7 +5,7 @@ import textwrap
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import pytest
 
@@ -645,3 +645,148 @@ def test_verdicts_pair_denials_with_reason_codes() -> None:
 class _NullSink:
     def record(self, event: object) -> None:
         del event
+
+
+# --- Package cache ---------------------------------------------------------------------------
+
+CACHE_HOST = "package-cache.sandbox-science.internal"
+CACHE_PORT = 8090
+
+
+def with_cache(config: dict[str, object]) -> dict[str, object]:
+    # protobuf Structs deliver every number as a float.
+    return {**config, "package_cache": {"host": CACHE_HOST, "port": float(CACHE_PORT)}}
+
+
+def cache_facts(
+    make_facts: FactsFactory, example: LoadedPolicy, path: str, **overrides: object
+) -> HttpRequestFacts:
+    fields: dict[str, object] = {
+        "scheme": "http",
+        "host": CACHE_HOST,
+        "port": CACHE_PORT,
+        "path": path,
+        "config": with_cache(
+            {"policy": {"name": example.policy.metadata.name, "digest": example.digest}}
+        ),
+    }
+    fields.update(overrides)
+    return make_facts(**fields)
+
+
+@pytest.mark.parametrize(
+    ("path", "rule"),
+    [
+        ("/pypi/simple/numpy/", "packages.pypi"),
+        ("/conda/conda-forge/linux-64/repodata.json.zst", "packages.conda"),
+        ("/npm/@types%2Fnode", "packages.npm"),
+        ("/npm/files/-/lodash/-/lodash-4.17.21.tgz", "packages.npm"),
+        ("/cargo/index/se/rd/serde", "packages.cargo"),
+        ("/go/golang.org/x/mod/@v/v0.20.0.zip", "packages.go"),
+    ],
+)
+def test_requests_to_the_package_cache_are_package_operations(
+    middleware: PolicyMiddleware,
+    make_facts: FactsFactory,
+    example: LoadedPolicy,
+    path: str,
+    rule: str,
+) -> None:
+    verdict = middleware.evaluate_http(cache_facts(make_facts, example, path))
+    assert verdict.allowed, verdict.reason
+    assert verdict.decision is not None
+    assert verdict.decision.rule == rule
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"path": "/npm/-/v1/search"}, id="search"),
+        pytest.param({"path": "/npm/-/npm/v1/security/advisories/bulk"}, id="audit"),
+        pytest.param({"path": "/cargo/api/v1/crates/new", "method": "PUT"}, id="publish"),
+        pytest.param({"path": "/npm/lodash", "method": "POST", "body": b"{}"}, id="post"),
+        pytest.param({"path": "/npm/lodash", "query": "write=true"}, id="query"),
+        pytest.param({"path": "/pypi/simple/"}, id="pypi-root"),
+        pytest.param({"path": "/maven/org/x"}, id="unknown-ecosystem"),
+    ],
+)
+def test_other_requests_to_the_package_cache_are_refused(
+    middleware: PolicyMiddleware,
+    make_facts: FactsFactory,
+    example: LoadedPolicy,
+    overrides: dict[str, object],
+) -> None:
+    path = cast("str", overrides.pop("path"))
+    verdict = middleware.evaluate_http(cache_facts(make_facts, example, path, **overrides))
+    assert verdict.reason_code == evaluator.REQUEST_UNCLASSIFIABLE
+
+
+def test_only_the_cache_port_is_the_package_cache(
+    middleware: PolicyMiddleware, make_facts: FactsFactory, example: LoadedPolicy
+) -> None:
+    # Another port on the same host is ordinary egress, decided by the network rules
+    # (here the default), never by the packages section.
+    verdict = middleware.evaluate_http(
+        cache_facts(make_facts, example, "/pypi/simple/numpy/", port=8091)
+    )
+    assert not verdict.allowed
+    assert verdict.decision is not None
+    assert verdict.decision.layer == "default"
+    assert verdict.decision.rule is None
+
+
+def test_package_escalations_ask_for_the_install_not_the_lookup(
+    store: PolicyStore,
+    sandbox_id: str,
+    sink: Sink,
+    make_facts: FactsFactory,
+    policy_config: Callable[[LoadedPolicy], dict[str, object]],
+) -> None:
+    loaded = bind_policy(
+        store, sandbox_id, "defaults: {action: deny}\npackages:\n  cargo: {action: escalate}\n"
+    )
+    middleware = PolicyMiddleware(
+        store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=sink
+    )
+    config = with_cache(policy_config(loaded))
+    lookup = middleware.evaluate_http(
+        cache_facts(make_facts, loaded, "/cargo/index/se/rd/serde", config=config)
+    )
+    assert lookup.allowed
+    download = middleware.evaluate_http(
+        cache_facts(make_facts, loaded, f"/cargo/dl/serde/1.0.200/{'a' * 64}", config=config)
+    )
+    assert download.reason_code == evaluator.APPROVAL_REQUIRED
+    assert sink.events[-1]["rule"] == "packages.cargo"
+    denied = middleware.evaluate_http(cache_facts(make_facts, loaded, "/npm/lodash", config=config))
+    assert denied.reason_code == evaluator.POLICY_DENIED
+
+
+@pytest.mark.parametrize(
+    "cache",
+    [
+        pytest.param({"host": CACHE_HOST}, id="no-port"),
+        pytest.param({"host": CACHE_HOST, "port": 0}, id="port-zero"),
+        pytest.param({"host": CACHE_HOST, "port": 70000}, id="port-too-large"),
+        pytest.param({"host": CACHE_HOST, "port": 8090.5}, id="fractional-port"),
+        pytest.param({"host": CACHE_HOST, "port": True}, id="bool-port"),
+        pytest.param({"host": "cache/evil", "port": 8090}, id="bad-host"),
+        pytest.param({"host": CACHE_HOST, "port": 8090, "tls": True}, id="extra-key"),
+        pytest.param("cache:8090", id="not-a-mapping"),
+    ],
+)
+def test_malformed_package_cache_config_is_rejected(example: LoadedPolicy, cache: object) -> None:
+    config = {
+        "policy": {"name": "permissive-default", "digest": example.digest},
+        "package_cache": cache,
+    }
+    with pytest.raises(evaluator.PolicyConfigError):
+        parse_config(config)
+
+
+def test_package_cache_config_is_accepted(
+    middleware: PolicyMiddleware, example: LoadedPolicy
+) -> None:
+    config = with_cache({"policy": {"name": "permissive-default", "digest": example.digest}})
+    assert parse_config(config).package_cache == (CACHE_HOST, CACHE_PORT)
+    assert middleware.validate_config(config) is None

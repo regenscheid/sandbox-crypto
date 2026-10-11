@@ -29,8 +29,10 @@ from sandbox_science.policy import (
     HttpRequest,
     Layer,
     LoadedPolicy,
+    PackageOperation,
     PoolCeiling,
     classify_http_request,
+    classify_package_request,
     evaluate,
     evaluate_monitors,
 )
@@ -96,10 +98,15 @@ class PolicyConfigError(MiddlewareError):
 
 @dataclass(frozen=True, slots=True)
 class PolicyRef:
-    """The project policy revision a compiled sandbox policy was built from."""
+    """The project policy revision a compiled sandbox policy was built from.
+
+    ``package_cache`` is where the sandbox's package cache listens (host, port),
+    when the compiled policy admits one: requests to it are package operations.
+    """
 
     name: str
     digest: str
+    package_cache: tuple[str, int] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,10 +163,18 @@ class Verdict:
 
 
 def parse_config(config: Mapping[str, object] | None) -> PolicyRef:
-    """Read ``{"policy": {"name": ..., "digest": ...}}``, the compiler's middleware config."""
-    expected = 'config must be {"policy": {"name": <policy name>, "digest": <revision>}}'
-    if config is None or set(config) != {"policy"}:
+    """Read the compiler's middleware config.
+
+    ``{"policy": {"name": ..., "digest": ...}}``, optionally with
+    ``"package_cache": {"host": ..., "port": ...}``.
+    """
+    expected = (
+        'config must be {"policy": {"name": <policy name>, "digest": <revision>}} and '
+        'optionally "package_cache": {"host": <name>, "port": <port>}'
+    )
+    if config is None or not {"policy"} <= set(config) <= {"policy", "package_cache"}:
         raise PolicyConfigError(expected)
+    package_cache = _package_cache(config.get("package_cache"), expected)
     entry = config["policy"]
     if not isinstance(entry, Mapping):
         raise PolicyConfigError(expected)
@@ -176,7 +191,30 @@ def parse_config(config: Mapping[str, object] | None) -> PolicyRef:
         check_digest(digest)
     except StoreError as exc:
         raise PolicyConfigError(str(exc)) from exc
-    return PolicyRef(name=name, digest=digest)
+    return PolicyRef(name=name, digest=digest, package_cache=package_cache)
+
+
+def _package_cache(entry: object, expected: str) -> tuple[str, int] | None:
+    if entry is None:
+        return None
+    if not isinstance(entry, Mapping):
+        raise PolicyConfigError(expected)
+    fields = cast("Mapping[str, object]", entry)
+    host = fields.get("host")
+    port = fields.get("port")
+    # protobuf Structs carry every number as a float.
+    if isinstance(port, float) and port.is_integer():
+        port = int(port)
+    if (
+        set(fields) != {"host", "port"}
+        or not isinstance(host, str)
+        or not _HOST_RE.fullmatch(host)
+        or isinstance(port, bool)
+        or not isinstance(port, int)
+        or not 1 <= port <= 65535
+    ):
+        raise PolicyConfigError(expected)
+    return host.lower(), port
 
 
 class PolicyMiddleware:
@@ -248,7 +286,10 @@ class PolicyMiddleware:
         # time out into an alert ("Escalation timeout").
         credentialed = bool(loaded.policy.credentials.providers)
         try:
-            operation = classify_http_request(_http_request(facts, credentialed=credentialed))
+            if ref.package_cache == (facts.host.lower(), facts.port):
+                operation = _package_operation(facts)
+            else:
+                operation = classify_http_request(_http_request(facts, credentialed=credentialed))
         except ClassificationError as exc:
             decision = Decision(
                 action=Action.DENY,
@@ -408,7 +449,14 @@ def _http_request(facts: HttpRequestFacts, *, credentialed: bool) -> HttpRequest
     )
 
 
-def _is_fetch_post(operation: HttpOperation | GitOperation) -> bool:
+def _package_operation(facts: HttpRequestFacts) -> PackageOperation:
+    """Classify a request to the package cache (docs/PACKAGE-CACHE.md)."""
+    if facts.query or facts.body:
+        raise ClassificationError("package cache requests carry no query string or body")
+    return classify_package_request(facts.method, facts.path)
+
+
+def _is_fetch_post(operation: HttpOperation | GitOperation | PackageOperation) -> bool:
     return (
         isinstance(operation, GitOperation)
         and operation.service == "upload-pack"

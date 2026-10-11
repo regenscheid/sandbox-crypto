@@ -135,12 +135,13 @@ def call_tool(
 
 def decide_package(
     policy: LoadedPolicy,
-    ecosystem: Literal["conda", "pypi"],
-    name: str,
+    ecosystem: Literal["conda", "pypi", "cargo", "go", "npm"],
+    name: str | None,
     channel: str | None = None,
+    kind: Literal["index", "artifact"] = "artifact",
 ) -> Decision:
     return evaluate(
-        PackageOperation(ecosystem=ecosystem, name=name, channel=channel),
+        PackageOperation(ecosystem=ecosystem, name=name, channel=channel, kind=kind),
         policy,
         ceiling=PoolCeiling.unrestricted(),
     )
@@ -2225,6 +2226,83 @@ def test_pypi_settings_do_not_apply_to_conda() -> None:
     )
     assert decide_package(policy, "conda", "numpy", "conda-forge").action == Action.DENY
     assert decide_package(policy, "pypi", "numpy").action == Action.ALLOW
+
+
+MIXED_PACKAGES = """
+defaults: {action: escalate}
+packages:
+  conda: {channels: [conda-forge], action: allow}
+  pypi: {action: allow}
+  cargo: {action: escalate}
+  npm: {action: deny}
+"""
+
+
+@pytest.mark.parametrize(
+    ("ecosystem", "name", "channel", "artifact", "index"),
+    [
+        pytest.param("pypi", "numpy", None, Action.ALLOW, Action.ALLOW, id="pypi-allow"),
+        pytest.param("cargo", "serde", None, Action.ESCALATE, Action.ALLOW, id="cargo-escalate"),
+        pytest.param("npm", "lodash", None, Action.DENY, Action.DENY, id="npm-deny"),
+        # Not configured: defaults.action (escalate) for files; lookups still allowed.
+        pytest.param(
+            "go", "golang.org/x/mod", None, Action.ESCALATE, Action.ALLOW, id="go-default"
+        ),
+        pytest.param("conda", "numpy", "conda-forge", Action.ALLOW, Action.ALLOW, id="conda-forge"),
+        pytest.param("conda", "numpy", "bioconda", Action.DENY, Action.DENY, id="conda-unlisted"),
+    ],
+)
+def test_package_files_take_the_ecosystem_action_and_lookups_need_only_no_deny(
+    ecosystem: Literal["conda", "pypi", "cargo", "go", "npm"],
+    name: str,
+    channel: str | None,
+    artifact: Action,
+    index: Action,
+) -> None:
+    policy = load(MIXED_PACKAGES)
+    assert decide_package(policy, ecosystem, name, channel).action == artifact
+    assert decide_package(policy, ecosystem, name, channel, kind="index").action == index
+
+
+def test_registry_wide_index_data_follows_the_ecosystem() -> None:
+    policy = load(MIXED_PACKAGES)
+    assert decide_package(policy, "conda", None, "conda-forge", kind="index").action == Action.ALLOW
+    assert decide_package(policy, "conda", None, "bioconda", kind="index").action == Action.DENY
+    assert decide_package(policy, "go", None, kind="index").action == Action.ALLOW
+    assert decide_package(policy, "npm", None, kind="index").action == Action.DENY
+
+
+def test_unconfigured_ecosystems_are_closed_under_a_deny_default() -> None:
+    policy = load("defaults: {action: deny}\n")
+    for ecosystem in ("pypi", "cargo", "go", "npm"):
+        assert decide_package(policy, ecosystem, None, kind="index").action == Action.DENY
+    assert decide_package(policy, "cargo", "serde").action == Action.DENY
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://registry.npmjs.org/lodash",
+        "https://registry.yarnpkg.com/lodash",
+        "https://index.crates.io/se/rd/serde",
+        "https://static.crates.io/crates/serde/serde-1.0.0.crate",
+        "https://crates.io/api/v1/crates",
+        "https://proxy.golang.org/golang.org/x/mod/@v/list",
+        "https://sum.golang.org/latest",
+        "https://files.pythonhosted.org/packages/x/y.whl",
+    ],
+)
+def test_package_registries_are_reachable_only_through_the_cache(url: str) -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - {name: reads, operation: http, match: {hosts: ["*"], methods: [GET]}, action: allow}
+        """
+    )
+    decision = decide_http(policy, "GET", url)
+    assert decision.action == Action.DENY
+    assert decision.layer == "floor"
 
 
 # --- Escalation timeout --------------------------------------------------------------------------
