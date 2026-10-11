@@ -55,7 +55,7 @@ Prompt injection from consumed papers is a lesser concern. It remains one way an
 
 ## Isolation tiers
 
-Each execution records the tier it actually ran at. If a pool cannot provide the tier its policy requires, the work is refused. It never falls back to a weaker tier.
+Each execution records the tier it actually ran at. If a pool cannot provide the tier its policy requires, the work is refused. It never falls back to a weaker tier. The worker checks the tier a backend declares with a probe each time it starts an executor, and evidence can only lower it; no probe from inside a sandbox can prove tier 3 ([worker](WORKER.md#isolation-tiers)).
 
 | Tier | Mechanism | Shares a kernel with Z1/Z2? | Intended use |
 | --- | --- | --- | --- |
