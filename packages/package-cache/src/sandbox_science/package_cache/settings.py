@@ -16,6 +16,8 @@ max_artifact_downloads = 16  # package files downloading at once
 max_requests = 1024          # client requests served at once; more get 503
 upstream_rate = 20           # upstream fetches per second
 upstream_burst = 200
+sandbox_rate = 10            # of those, per sandbox (the policy middleware names it)
+sandbox_burst = 100
 
 [pypi]
 index = "https://pypi.org/simple"
@@ -257,6 +259,10 @@ class Settings(_Model):
     upstream_rate: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 20.0
     """Upstream requests per second, shared by all clients."""
     upstream_burst: Annotated[int, Field(ge=1)] = 200
+    sandbox_rate: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 10.0
+    """Upstream requests per second for each sandbox, which the policy middleware names in
+    its requests; 0 turns the per-sandbox budgets off."""
+    sandbox_burst: Annotated[int, Field(ge=1)] = 100
     pypi: PypiSettings | None = None
     conda: CondaSettings | None = None
     cargo: CargoSettings | None = None
