@@ -41,6 +41,8 @@ class ModelTurn:
     text: str | None
     tool_calls: tuple[ToolCall, ...] = ()
     finish_reason: str | None = None
+    model: str | None = None
+    """The model that answered, as the gateway names it: the resolved model."""
 
 
 class ChatModel(Protocol):
@@ -131,10 +133,12 @@ def _parse_completion(text: str) -> ModelTurn:
     except (ValueError, KeyError, IndexError, TypeError, RecursionError) as exc:
         raise ModelError(f"unexpected completion: {text[:300]}") from exc
     content, finish = message.get("content"), choice.get("finish_reason")
+    resolved = cast(dict[str, Any], data).get("model")
     return ModelTurn(
         text=content if isinstance(content, str) else None,
         tool_calls=tuple(calls),
         finish_reason=finish if isinstance(finish, str) else None,
+        model=resolved if isinstance(resolved, str) else None,
     )
 
 
@@ -172,11 +176,13 @@ class ScriptedModel:
                         json.dumps(raw_call.get("arguments", {})),
                     )
                 )
-            turns.append(ModelTurn(text=turn.get("text"), tool_calls=tuple(calls)))
+            turns.append(
+                ModelTurn(text=turn.get("text"), tool_calls=tuple(calls), model="scripted")
+            )
         return cls(turns)
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         self.requests.append(list(messages))
         if not self._turns:
-            return ModelTurn(text="(the script has ended)")
+            return ModelTurn(text="(the script has ended)", model="scripted")
         return self._turns.pop(0)

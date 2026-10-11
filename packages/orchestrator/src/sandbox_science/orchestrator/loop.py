@@ -68,7 +68,9 @@ async def run_task(
             transcript.final_text = reply.text
             return transcript
         for call in reply.tool_calls:
-            outcome = await toolbox.call(call, operation_id(f"{run_id}-t{turn}", call))
+            outcome = await toolbox.call(
+                call, operation_id(f"{run_id}-t{turn}", call), model=reply.model
+            )
             transcript.messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": outcome.text}
             )

@@ -40,6 +40,8 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import Language
 
+from .documents.tool import NAMES as DOCUMENT_TOOLS
+from .documents.tool import DocumentTool, with_notices
 from .model import ToolCall, ToolSpec
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -260,6 +262,9 @@ def operation_id(prefix: str, call: ToolCall) -> str:
 
 
 class Toolbox:
+    """The tools of one run. ``documents``, when given, adds the document tools, whose
+    calls go to the control store rather than the worker."""
+
     def __init__(
         self,
         client: WorkerClient,
@@ -268,11 +273,13 @@ class Toolbox:
         languages: Sequence[Language] = ("python",),
         features: Sequence[str] = (),
         output_chars: int = 20000,
+        documents: DocumentTool | None = None,
     ) -> None:
         self.client = client
         self.context = context
         self.output_chars = output_chars
         self.languages = tuple(languages)
+        self.documents = documents
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
         if "sage" in self.languages:
             specs.append(SAGE)
@@ -294,20 +301,39 @@ class Toolbox:
             specs.extend(PDF_SPECS)
         if "admission" in features:
             specs.append(ADMIT_HOSTS)
+        if documents is not None:
+            specs.extend(documents.specs)
         self.specs = tuple(specs)
 
-    async def call(self, call: ToolCall, operation: str) -> ToolOutcome:
-        """Run one tool call; whatever goes wrong comes back as an error for the model."""
+    async def call(
+        self, call: ToolCall, operation: str, *, model: str | None = None
+    ) -> ToolOutcome:
+        """Run one tool call; whatever goes wrong comes back as an error for the model.
+
+        ``model`` is the model that asked for the call, as the gateway named it, which
+        document revisions record. After the call, the run's next safe point, the result
+        carries notices of changes others made to the documents the run has seen (LD-15).
+        """
         try:
-            return await self._call(call, operation)
+            outcome = await self._call(call, operation, model)
         except Exception as exc:  # one bad call must not end the task
             _log.exception("the %s tool failed", call.name)
-            return _failure(
+            outcome = _failure(
                 ErrorKind.INTERNAL,
                 f"the {call.name} tool failed unexpectedly ({type(exc).__name__})",
             )
+        if self.documents is not None:
+            try:
+                notices = await self.documents.notices()
+            except Exception:  # a notice that cannot be made must not cost the result
+                _log.exception("the document notices failed")
+                notices = []
+            if notices:
+                outcome.text = with_notices(outcome.text, notices)
+                outcome.record["document_notices"] = notices
+        return outcome
 
-    async def _call(self, call: ToolCall, operation: str) -> ToolOutcome:
+    async def _call(self, call: ToolCall, operation: str, model: str | None) -> ToolOutcome:
         try:
             arguments: object = json.loads(call.arguments or "{}")
         except (ValueError, RecursionError) as exc:
@@ -315,6 +341,11 @@ class Toolbox:
         if not isinstance(arguments, dict):
             return _failure(ErrorKind.INVALID_REQUEST, "arguments must be a JSON object")
         args = cast(dict[str, Any], arguments)
+        if call.name in DOCUMENT_TOOLS and self.documents is not None:
+            text, record = await self.documents.call(
+                call.name, args, operation=operation, call_id=call.id, model=model
+            )
+            return ToolOutcome(text, record)
         handlers = {
             "shell": self._shell,
             "python": self._python,
