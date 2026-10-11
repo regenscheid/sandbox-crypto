@@ -1,16 +1,20 @@
 # SPDX-License-Identifier: MIT
-"""Executor helpers that the sandbox's restrictions shape."""
+"""Executor helpers that the sandbox's restrictions shape, and the isolation probe."""
 
 from __future__ import annotations
 
 import os
+import platform
 import signal
+import socket
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from sandbox_science.contracts import ProbeFacts
 from sandbox_science.worker import executor
 
 
@@ -84,3 +88,57 @@ def test_a_plain_interpreter_gets_no_conda_prefix(tmp_path: Path) -> None:
     env = executor.tool_environment({}, str(tmp_path / "bin" / "python3"), str(tmp_path))
     assert env["PATH"] == str(tmp_path / "bin")
     assert "CONDA_PREFIX" not in env
+
+
+def test_probe_facts_describe_this_process() -> None:
+    facts = ProbeFacts.model_validate(executor.probe_facts())
+    assert facts.uid == os.getuid()
+    assert facts.hostname == socket.gethostname()
+    assert facts.kernel_release == platform.release()
+    assert facts.boot_id == Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    assert facts.seccomp is not None
+    assert facts.no_new_privs is not None
+    assert facts.capabilities is not None
+
+
+def test_sentinel_states(tmp_path: Path) -> None:
+    present = tmp_path / "present"
+    present.write_text("x")
+    assert executor.sentinel_state(str(present)) == "present"
+    assert executor.sentinel_state(str(tmp_path / "absent")) == "absent"
+    assert executor.sentinel_state(str(present / "below-a-file")) == "absent"
+    assert executor.sentinel_state("relative/path") == "unknown"
+
+
+def test_a_sentinel_behind_a_closed_directory_is_unknown(tmp_path: Path) -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root searches any directory")
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    (closed / "file").write_text("x")
+    closed.chmod(0)
+    try:
+        assert executor.sentinel_state(str(closed / "file")) == "unknown"
+    finally:
+        closed.chmod(0o700)
+
+
+@pytest.mark.asyncio
+async def test_the_probe_operation(tmp_path: Path) -> None:
+    replies: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        replies.append(message)
+
+    probing = executor.Executor(tmp_path, send)
+    present = tmp_path / "sentinel"
+    present.write_text("x")
+    paths = [str(present), str(tmp_path / "absent")]
+    await probing.handle({"id": 1, "op": "probe", "sentinels": paths})
+    for bad in ("/one/path", [1], [str(present)] * (executor.MAX_SENTINELS + 1)):
+        await probing.handle({"id": 2, "op": "probe", "sentinels": bad})
+    reply, *refusals = replies
+    assert reply["ok"] is True
+    assert reply["sentinels"] == {paths[0]: "present", paths[1]: "absent"}
+    assert ProbeFacts.model_validate(reply["facts"]).uid == os.getuid()
+    assert [refusal["error"]["kind"] for refusal in refusals] == ["invalid_request"] * 3
