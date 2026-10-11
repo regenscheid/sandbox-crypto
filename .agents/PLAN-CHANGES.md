@@ -4,6 +4,7 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **Isolation-tier probes (D43 amended) and the backend conformance suite (D52).** The worker probes each executor it starts and reports the tier in effect beside the declared one. Evidence only lowers the declared tier: the worker host's kernel allows tier 1 at most, and a visible worker file or a failed probe means 0. No probe can prove tier 3. The harness compares only the tier in effect with its minimum. The OpenShell backend's `isolation_tier` no longer defaults to 3 (W1 review, finding M6). The execution-tools fixtures moved into `test_conformance.py`, which runs through the worker API against the local backend, or against a running worker named by `SS_CONFORMANCE_*` ([worker](../docs/WORKER.md#isolation-tiers)).
 - **Lab 5 on babbage** ([lab report](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)). A real SageMath 10.9 from conda-forge ran in OpenShell VM sandboxes through the worker and the harness.
   - The OpenShell compiler now gives each research sandbox a filesystem section. OpenShell's Landlock baseline had blocked pseudo-terminals (Sage's pexpect interfaces) and `/dev/shm` (Python's `multiprocessing`). The targets file can add the image's own paths (D48). Revisions to a running sandbox carry only network sections, since OpenShell fixes the filesystem section at creation.
   - The executor puts the environment's tools first on `PATH`, as the tools spec already required.

@@ -8,8 +8,8 @@ sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.t
     [--min-isolation-tier 3 | --allow-unisolated] [--transcript out.json] "the task"
 ```
 
-The harness refuses a worker whose isolation tier is below the minimum, so a
-misconfigured deployment cannot quietly run research code without a sandbox.
+The harness refuses a worker whose isolation tier in effect is below the minimum,
+so a misconfigured deployment cannot quietly run research code without a sandbox.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import json
 import sys
 from pathlib import Path
 
-from sandbox_science.contracts import ExecutionContext, new_id
+from sandbox_science.contracts import ExecutionContext, Location, new_id
 
 from .loop import run_task
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
@@ -30,6 +30,28 @@ from .worker_client import WorkerAPIError, WorkerClient
 
 def _read_secret(path: Path) -> str:
     return path.read_text().strip()
+
+
+def tier_in_effect(location: Location) -> int | None:
+    """The isolation tier the worker's probe left standing (D43); ``None`` without a probe.
+
+    The worker lowers the declared tier when its probe finds less isolation, so the
+    declared tier alone never counts.
+    """
+    return location.isolation_tier if location.isolation_evidence is not None else None
+
+
+def describe_isolation(location: Location) -> str:
+    """The tier in effect, the declared one if it differs, and what limits it."""
+    evidence = location.isolation_evidence
+    if evidence is None:
+        return "no isolation evidence"
+    text = f"isolation tier {location.isolation_tier}"
+    if location.declared_isolation_tier != location.isolation_tier:
+        text += f" (declared {location.declared_isolation_tier})"
+    if evidence.findings:
+        text += ": " + "; ".join(evidence.findings)
+    return text
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -43,18 +65,18 @@ async def _run(args: argparse.Namespace) -> int:
         model = OpenAICompatibleModel(args.model_url, args.model, _read_secret(args.api_key_file))
     async with WorkerClient(args.worker, _read_secret(args.token_file)) as client:
         capabilities = await client.capabilities(args.environment)
-        tier = capabilities.location.isolation_tier
+        location = capabilities.location
+        tier = tier_in_effect(location)
         if not args.allow_unisolated and (tier is None or tier < args.min_isolation_tier):
             print(
-                f"error: the worker offers isolation tier {tier}; at least "
+                f"error: the worker offers {describe_isolation(location)}. At least tier "
                 f"{args.min_isolation_tier} is required (--allow-unisolated for development)",
                 file=sys.stderr,
             )
             return 2
         print(
-            f"worker: pool {capabilities.location.pool_id}, {capabilities.location.backend} "
-            f"backend, sandbox {capabilities.location.sandbox_id}, host "
-            f"{capabilities.location.hostname}, isolation tier {tier}"
+            f"worker: pool {location.pool_id}, {location.backend} backend, sandbox "
+            f"{location.sandbox_id}, host {location.hostname}, {describe_isolation(location)}"
         )
 
         async def show(name: str, arguments: str, outcome: ToolOutcome) -> None:

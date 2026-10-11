@@ -13,7 +13,7 @@ cli = "/home/andy/.local/opt/openshell-0.1.3/bin/openshell"
 python = "/sandbox/mamba/envs/tools/bin/python"
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"
-isolation_tier = 3
+isolation_tier = 3               # required: the tier the driver gives (3 for the VM driver)
 env = {XDG_CONFIG_HOME = "/home/andy/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}   # logical environment -> sandbox name
 
@@ -57,7 +57,9 @@ class OpenShellBackendSettings(_Model):
     python: str = "python3"
     project_root: str = "/sandbox/project"
     executor_dir: str = "/sandbox/.sandbox-science"
-    isolation_tier: Annotated[int, Field(ge=1, le=3)] = 3
+    isolation_tier: Annotated[int, Field(ge=1, le=3)]
+    """The tier the gateway's driver gives (D43), with no default: a deployment must say.
+    The worker's probe can lower it, never raise it."""
     sched_shim: bool = True
     """Preload a shim that lets libzmq (Jupyter) start under OpenShell's seccomp filter."""
     cc: str = "cc"

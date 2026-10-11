@@ -17,8 +17,8 @@ flowchart LR
 - **Worker service** (`app.py`, `manager.py`): the HTTP API, idempotent submission, event numbering and persistence, cancellation, watchdogs, file operations and publication.
 - **Executor** (`executor.py`): one file that depends only on the standard library and, for kernels, `jupyter_client` and `ipykernel`, so the worker can copy it into any sandbox that has Python. It runs shell commands in their own process groups and kernels through the Jupyter protocol (D41), and handles the file operations. It offers each language whose kernelspec its interpreter's Jupyter installation finds: `python3` for Python and `sagemath`, SageMath's own kernel, for Sage. Platform code never imports Sage; Sage's kernel preparses Sage syntax itself.
 - **Backends** (`backends.py`) start executors:
-  - **`openshell`** copies the executor into a configured sandbox with `openshell sandbox upload`, and runs it with `openshell sandbox exec --no-tty --no-login-shell`. The VM driver on babbage gives isolation tier 3 (D43).
-  - **`local`** runs the executor as a plain subprocess of the worker. It has **no isolation** and reports tier 0. It exists for development and tests, and the harness refuses it unless told otherwise (`--allow-unisolated`).
+  - **`openshell`** copies the executor into a configured sandbox with `openshell sandbox upload`, and runs it with `openshell sandbox exec --no-tty --no-login-shell`. Its required `isolation_tier` setting declares the tier the gateway's driver gives: 3 for the VM driver on babbage (D43).
+  - **`local`** runs the executor as a plain subprocess of the worker. It has **no isolation**: it declares tier 0, and its probe shows why. It exists for development and tests, and the harness refuses it unless told otherwise (`--allow-unisolated`).
 
 ## Worker API
 
@@ -26,7 +26,7 @@ Every route needs `Authorization: Bearer <token>`. Bodies are the JSON forms of 
 
 | Route | Request → response |
 | --- | --- |
-| `GET /v1/capabilities?environment_id=…` | → `Capabilities`: kernel languages and the location (pool, backend, sandbox, host, isolation tier) |
+| `GET /v1/capabilities?environment_id=…` | → `Capabilities`: kernel languages and the location (pool, backend, sandbox, host, and the [isolation tier](#isolation-tiers) in effect, declared and probed) |
 | `POST /v1/executions` | `ShellRequest` or `CellRequest` → `Execution`. Status is 201 when created, 200 when the operation ID already exists with the same request, and 409 when it exists with a different one |
 | `GET /v1/executions/{id}` | → `Execution`, with its result once terminal |
 | `GET /v1/executions/{id}/events?after=N` | → NDJSON stream of `Event`s after sequence number `N`, ending with a `result` event |
@@ -47,6 +47,24 @@ Every route needs `Authorization: Bearer <token>`. Bodies are the JSON forms of 
   - Session workspaces are `<project root>/sessions/<session>`; the shared area is `<project root>/shared`.
   - The file tools refuse absolute paths, `..` and paths through symlinks.
   - Writes to the shared area need `expected_sha256` or `create_only`.
+
+## Isolation tiers
+
+Each backend declares an isolation tier ([threat model](THREAT-MODEL.md#isolation-tiers), D43): `local` declares 0, and `openshell` declares its `isolation_tier` setting, which has no default. Whenever the worker starts an executor, it checks the declared tier against evidence (`isolation.py`):
+- The executor reports what it sees in the sandbox, reading files only: the kernel release, the boot ID, the host name, `/etc/machine-id`, `Seccomp`, `NoNewPrivs` and `CapEff` from `/proc/self/status`, its uid, the CPU's `hypervisor` flag, and the DMI vendor and product name. A value it cannot read is unknown.
+- The worker reads the same facts on its own host. It also writes a file with a random name in its state directory, and the executor looks for it at the same path.
+
+Evidence only lowers the declared tier, never raises it:
+- **Kernel.** The worker host's boot ID means the same running kernel: tier 1 at most, and 1 only if the executor runs under a seccomp filter with no-new-privs, else 0. A boot ID that either side cannot read counts the same way, so tiers 2 and 3 need a kernel of their own.
+- **Files.** A sentinel file the sandbox can see, or one it cannot check for, means tier 0.
+- **Failure.** If the probe fails, the tier is 0, never the declared one.
+
+Results and capabilities report the tier in effect (`isolation_tier`), the declared tier and the evidence, so a lowered tier says why; the worker also logs a warning. The harness compares only the tier in effect with `--min-isolation-tier`, and refuses a worker that reports no evidence.
+
+What the probe cannot do:
+- **Prove tier 3.** Nothing seen from inside one sandbox shows that it has a VM to itself rather than sharing one with other sandboxes. A declared tier 3 stands when nothing contradicts it.
+- **Withstand a hostile sandbox.** A compromised sandbox can give the answers a well-isolated one would. Since answers only lower the tier, the probe catches a misconfigured backend, such as a container driver declared as a VM, not a hostile sandbox.
+- **See beyond the worker's host.** It compares the sandbox with the worker's host only.
 
 ## Running under OpenShell
 
@@ -69,7 +87,7 @@ Both restrictions are described for upstream in `.agents/upstream/`.
 
 ## Executor protocol
 
-The worker sends one JSON object per line; each carries an `id` and an `op`. The operations are `hello`, `shell`, `cell`, `cancel`, `restart`, `read`, `write` and `list`.
+The worker sends one JSON object per line; each carries an `id` and an `op`. The operations are `hello`, `probe` (the [isolation probe](#isolation-tiers)), `shell`, `cell`, `cancel`, `restart`, `read`, `write` and `list`.
 - **Replies.** Each request gets exactly one reply: `{"type": "reply", "id": …, "ok": true, …}`, or `ok: false` with `{"error": {"kind", "message"}}`.
 - **Events.** `shell` and `cell` reply when they are accepted, then send events: `{"type": "event", "execution": …, "event": "state" | "stream" | "output" | "end", …}`. The `end` event carries the terminal state and the result fields of `Result`.
 - **Hygiene.** The executor keeps the protocol on its own file descriptor and sends anything else that writes to stdout to stderr.
@@ -87,7 +105,7 @@ pool_id = "babbage"
 cli = "/home/andy/.local/opt/openshell-0.1.3/bin/openshell"
 python = "/sandbox/mamba/envs/tools/bin/python"   # an interpreter with ipykernel and jupyter_client
 project_root = "/sandbox/project"
-isolation_tier = 3
+isolation_tier = 3                   # required: the tier the driver gives (D43); the probe can lower it
 sched_shim = true                    # build and preload the scheduler shim (needs cc on this host)
 env = {XDG_CONFIG_HOME = "/home/andy/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}
@@ -101,6 +119,23 @@ The harness's command line runs a task through the worker. A JSON script of mode
 sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.token --project p1 --session s1 --environment env-1 --script turns.json "the task"
 ```
 
+## Conformance suite
+
+`packages/worker/tests/test_conformance.py` runs the [execution-tools fixtures](specs/tools.md#acceptance-fixtures) through the worker API alone, so it checks any backend without the harness (D52). It covers shell calls, the location and the isolation probe, kernels (state, interrupt, restart, death, streaming, reconnection), output bounds, cancellation, the file tools' confinement and publication. A backend passes only if the probe leaves its declared tier standing. CI runs it against a worker with the local backend that the suite starts. To check a worker that is already running, such as one with the OpenShell backend in a lab, set:
+
+| Variable | Value |
+| --- | --- |
+| `SS_CONFORMANCE_WORKER_URL` | The worker's base URL, such as `http://127.0.0.1:8100` |
+| `SS_CONFORMANCE_TOKEN_FILE` | The file holding its bearer token |
+| `SS_CONFORMANCE_ENVIRONMENT` | The logical environment to run in, which the worker maps to a sandbox |
+
+```bash
+SS_CONFORMANCE_WORKER_URL=http://127.0.0.1:8100 SS_CONFORMANCE_TOKEN_FILE=worker.token \
+  SS_CONFORMANCE_ENVIRONMENT=env-1 uv run pytest packages/worker/tests/test_conformance.py
+```
+
+The local runs are then skipped; setting only some of the variables is an error. Each test works in a new session (`conformance-…`) of the project `conformance`. Its files stay in the sandbox, and its kernels run until the executor ends. Tests that need the local backend's internals, such as a killed executor or a crashed store, are in `test_service.py`.
+
 ## Not yet done
 
 - **Survival across worker restarts.** The executor serves one stdio connection, so it ends when the worker restarts, and kernels end with it. The planned fix is a daemon in the sandbox listening on a socket, with the worker reconnecting through `openshell sandbox exec`.
@@ -109,3 +144,4 @@ sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.t
 - **Large outputs.** A rich output over the limit is replaced by a note; the spec's spill to a referenced file is not implemented.
 - **Authentication.** A single bearer token; the outbound, worker-initiated channel for hosted control (architecture) comes later.
 - **Monitoring.** No connection yet to the monitor or the event store with a hash chain.
+- **Probes across sandboxes.** Two sandboxes with the same boot ID share a kernel, so neither is tier 3; the worker does not compare sandboxes with each other yet.
