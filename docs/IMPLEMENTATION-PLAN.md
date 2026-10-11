@@ -1,6 +1,6 @@
 # Detailed implementation plan
 
-Date: 2026-10-10. Proposed engineering sequence. Track P has the policy library, its OpenShell compiler, the policy middleware, the package cache and the event store. W1 has a first slice: the shared contracts, the [worker service](WORKER.md) and the harness's tool loop. No work package has been validated end to end yet. Confirmed product requirements remain in [decisions](DECISIONS.md). This plan incorporates the [consistency review](CONSISTENCY-REVIEW.md) and provides detail beneath the milestone [roadmap](ROADMAP.md).
+Date: 2026-10-10. Proposed engineering sequence. Track P has the policy library, its OpenShell compiler, the policy middleware, the package cache and the event store. W1 has a first slice: the shared contracts, the [worker service](WORKER.md) and the harness's tool loop. W4 has a first slice of the [workspace](WORKSPACE.md) GUI (D80): a read-only view of projects, sessions and runs. No work package has been validated end to end yet. Confirmed product requirements remain in [decisions](DECISIONS.md). This plan incorporates the [consistency review](CONSISTENCY-REVIEW.md) and provides detail beneath the milestone [roadmap](ROADMAP.md).
 
 ## First implementation slice
 

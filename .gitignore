@@ -10,6 +10,8 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
+# The web apps' npm packages; their builds are dist/, above.
+node_modules/
 
 # Git worktrees that Claude Code creates for background agents
 .claude/worktrees/

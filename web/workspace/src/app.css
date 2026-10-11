@@ -1,0 +1,331 @@
+/* SPDX-License-Identifier: MIT */
+/* Plain styles for reading: no framework, light and dark from the system's setting. */
+
+:root {
+  color-scheme: light dark;
+  --text: #1b1f24;
+  --muted: #5b6470;
+  --background: #ffffff;
+  --panel: #f5f6f8;
+  --border: #d5d9df;
+  --link: #0b5cad;
+  --ok: #1d6b35;
+  --failed: #a31b1b;
+  --code: #eef0f3;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --text: #e3e6ea;
+    --muted: #9aa3ae;
+    --background: #15181c;
+    --panel: #1d2126;
+    --border: #353b43;
+    --link: #79b8ff;
+    --ok: #6fcf8a;
+    --failed: #ff8a8a;
+    --code: #252a31;
+  }
+}
+
+body {
+  margin: 0;
+  color: var(--text);
+  background: var(--background);
+}
+
+a {
+  color: var(--link);
+}
+
+main {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 1rem 1rem 4rem;
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.top .home {
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--text);
+}
+
+button {
+  font: inherit;
+  padding: 0.2rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--background);
+  color: var(--text);
+  cursor: pointer;
+}
+
+h1 {
+  font-size: 1.6rem;
+  margin: 0.2rem 0 1rem;
+  overflow-wrap: anywhere;
+}
+
+h2 {
+  font-size: 1.25rem;
+  margin-top: 2rem;
+}
+
+h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 0.4rem;
+}
+
+code,
+pre {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+code {
+  background: var(--code);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  background: var(--code);
+  padding: 0.6rem 0.8rem;
+  border-radius: 4px;
+  overflow: auto;
+  max-height: 28rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.95rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.35rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.problem {
+  color: var(--failed);
+}
+
+.trail {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 1rem;
+  margin: 0 0 1rem;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+details.run {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 0.8rem 0;
+  padding: 0.4rem 0.9rem;
+}
+
+details.run > summary {
+  cursor: pointer;
+  padding: 0.3rem 0;
+}
+
+.message {
+  margin: 1rem 0;
+  padding: 0.6rem 0.9rem;
+  border-left: 3px solid var(--border);
+}
+
+.message.user {
+  border-left-color: var(--link);
+}
+
+.message.final {
+  border-left-color: var(--ok);
+}
+
+details.message > summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.tool {
+  margin: 0.6rem 0;
+  padding: 0.5rem 0.8rem;
+  background: var(--panel);
+  border-radius: 6px;
+}
+
+.tool p {
+  margin: 0.3rem 0;
+}
+
+.tool pre {
+  margin: 0.1rem 0 0.5rem;
+}
+
+.tool-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: baseline;
+}
+
+.tool-name {
+  font-weight: 600;
+}
+
+.status.ok {
+  color: var(--ok);
+}
+
+.status.failed {
+  color: var(--failed);
+}
+
+.field-name {
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.notices {
+  margin: 0.3rem 0;
+  padding-left: 1.2rem;
+}
+
+details.record > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+/* Rendered Markdown and math (lib/markdown.ts). */
+
+/* Nothing a text draws reaches outside its own box: KaTeX caps only positive sizes, so
+   \smash or a negative \raisebox could otherwise cover what follows, such as the tool
+   call an agent's message introduces. */
+.markdown {
+  contain: paint;
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown table {
+  width: auto;
+}
+
+.markdown blockquote {
+  margin: 0.5rem 0;
+  padding-left: 0.8rem;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+
+.math-display {
+  display: block;
+  position: relative;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* An equation's label, on the equation's line at the right, as LaTeX sets it. */
+.math-label {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+}
+
+.math-error,
+.math-skipped {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: baseline;
+  border: 1px dashed var(--failed);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+}
+
+.math-skipped {
+  border-color: var(--border);
+}
+
+div.math-error,
+div.math-skipped {
+  display: flex;
+  margin: 0.5rem 0;
+}
+
+.math-source {
+  white-space: pre-wrap;
+}
+
+.math-message {
+  color: var(--failed);
+  font-size: 0.85em;
+}
+
+.math-skipped .math-message {
+  color: var(--muted);
+}
+
+.note {
+  color: var(--muted);
+}

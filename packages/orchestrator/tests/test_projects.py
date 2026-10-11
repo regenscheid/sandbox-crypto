@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -16,11 +16,13 @@ from sandbox_science.contracts import (
     EnvironmentRequest,
     EnvironmentState,
     ErrorKind,
+    ExecutionContext,
 )
 from sandbox_science.orchestrator.projects import (
     ProjectError,
     ProjectRecord,
     ProjectStore,
+    RunRecord,
     ensure_environment,
     environment_id,
 )
@@ -28,6 +30,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerCli
 
 POLICY = "sha256:" + "a" * 64
 OTHER_POLICY = "sha256:" + "b" * 64
+STARTED = datetime(2026, 10, 11, 13, 1, 2, 345678, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -241,3 +244,146 @@ def test_environment_ids_are_unpredictable(tmp_path: Path) -> None:
         ids.append((record.default_environment_id, session.environment_id))
     assert ids[0][0] != ids[1][0]
     assert ids[0][1] != ids[1][1]
+
+
+# Runs a session keeps (W4).
+
+
+def run_record(
+    *, session: str = "a", run_id: str = "run-1", started: datetime = STARTED, text: str = "done"
+) -> RunRecord:
+    return RunRecord(
+        run_id=run_id,
+        context=ExecutionContext(project_id="p1", session_id=session, environment_id="env1"),
+        task="Compute $x^2$",
+        started_at=started,
+        ended_at=started + timedelta(seconds=5),
+        stopped="answered",
+        final_text=text,
+        messages=[
+            {"role": "system", "content": "You are a research assistant."},
+            {"role": "user", "content": "Compute $x^2$"},
+            {"role": "assistant", "content": text},
+        ],
+        tools=[{"tool": "python", "arguments": '{"code": "x**2"}', "replayed": False}],
+    )
+
+
+@pytest.fixture
+def session_store(store: ProjectStore) -> ProjectStore:
+    store.create("p1", "minimal", POLICY)
+    store.open_session("p1", "a", dedicated=False)
+    return store
+
+
+def test_a_sessions_runs_are_kept_in_order(session_store: ProjectStore) -> None:
+    first = session_store.save_run(run_record())
+    # The same run ID again adds a record; nothing is replaced.
+    again = session_store.save_run(run_record(started=STARTED + timedelta(minutes=1)))
+    assert first.name == "20261011T130102345678Z-run-1"
+    assert (first.run_id, first.started_at) == ("run-1", STARTED)
+    assert session_store.runs("p1", "a") == [first, again]
+    assert session_store.run("p1", "a", first.name) == run_record()
+    assert session_store.runs("p1", "b") == []
+    directory = session_store.runs_root / "p1" / "a"
+    assert sorted(path.name for path in directory.iterdir()) == [
+        f"{first.name}.json",
+        f"{again.name}.json",
+    ]
+
+
+def test_a_record_is_never_replaced(session_store: ProjectStore) -> None:
+    first = session_store.save_run(run_record(text="first"))
+    with pytest.raises(ProjectError) as refused:
+        session_store.save_run(run_record(text="second"))
+    assert refused.value.kind is ErrorKind.CONFLICT
+    assert session_store.run("p1", "a", first.name).final_text == "first"
+    assert [path.name for path in (session_store.runs_root / "p1" / "a").iterdir()] == [
+        f"{first.name}.json"
+    ]
+
+
+def test_runs_stay_clear_of_other_projects_files(session_store: ProjectStore) -> None:
+    # Project IDs may contain dots, so a project's runs must not live where another
+    # project's record (a.json) or lock (a.lock) is.
+    for project in ("a", "a.json", "a.lock"):
+        session_store.create(project, "minimal", POLICY)
+        session_store.open_session(project, "s", dedicated=False)
+        session_store.save_run(
+            run_record(session="s").model_copy(
+                update={
+                    "context": ExecutionContext(
+                        project_id=project, session_id="s", environment_id="e"
+                    )
+                }
+            )
+        )
+    for project in ("a", "a.json", "a.lock"):
+        assert session_store.get(project).project_id == project
+        assert len(session_store.runs(project, "s")) == 1
+    assert session_store.project_ids() == ["a", "a.json", "a.lock", "p1"]
+
+
+def test_a_reply_that_is_not_valid_unicode_is_kept(session_store: ProjectStore) -> None:
+    # A model can send a lone surrogate (half an emoji); the run must still be kept.
+    record = run_record(text="half an emoji: \ud83d")
+    entry = session_store.save_run(record)
+    assert session_store.run("p1", "a", entry.name) == record
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "",
+        "run-1",
+        "../p1",
+        "20261011T130102345678Z-../../p1",
+        "20261011T130102345678Z-run-1/../../p1",
+        "20261311T130102345678Z-run-1",
+        chr(0xFF12) + "0261011T130102345678Z-run-1",  # a full-width digit
+    ],
+)
+def test_names_that_are_not_run_records_are_refused(session_store: ProjectStore, name: str) -> None:
+    session_store.save_run(run_record())
+    with pytest.raises(ProjectError) as refused:
+        session_store.run("p1", "a", name)
+    assert refused.value.kind is ErrorKind.INVALID_REQUEST
+
+
+def test_missing_damaged_and_oversized_runs_are_refused(session_store: ProjectStore) -> None:
+    with pytest.raises(ProjectError) as missing:
+        session_store.run("p1", "a", "20261011T130102345678Z-run-9")
+    assert missing.value.kind is ErrorKind.NOT_FOUND
+    entry = session_store.save_run(run_record())
+    with pytest.raises(ProjectError) as large:
+        session_store.run("p1", "a", entry.name, max_bytes=100)
+    assert large.value.kind is ErrorKind.UNSUPPORTED
+    path = session_store.runs_root / "p1" / "a" / f"{entry.name}.json"
+    path.write_text('{"run_id": "run-1"}')
+    with pytest.raises(ProjectError) as damaged:
+        session_store.run("p1", "a", entry.name)
+    assert damaged.value.kind is ErrorKind.INTERNAL
+
+
+def test_a_run_needs_its_session_and_a_run_id_that_can_name_it(
+    session_store: ProjectStore,
+) -> None:
+    with pytest.raises(ProjectError) as no_session:
+        session_store.save_run(run_record(session="nope"))
+    assert no_session.value.kind is ErrorKind.NOT_FOUND
+    with pytest.raises(ProjectError) as bad_id:
+        session_store.save_run(run_record(run_id="has space"))
+    assert bad_id.value.kind is ErrorKind.INVALID_REQUEST
+    with pytest.raises(ProjectError) as bad_session:
+        session_store.runs("p1", "../a")
+    assert bad_session.value.kind is ErrorKind.INVALID_REQUEST
+    assert not session_store.runs_root.exists()
+
+
+def test_project_ids_name_only_project_records(session_store: ProjectStore) -> None:
+    session_store.create("p2", "minimal", POLICY)
+    session_store.save_run(run_record())
+    (session_store.root / "notes.txt").write_text("not a project")
+    (session_store.root / "bad name.json").write_text("{}")
+    (session_store.root / "x.json").mkdir()
+    assert session_store.project_ids() == ["p1", "p2"]
