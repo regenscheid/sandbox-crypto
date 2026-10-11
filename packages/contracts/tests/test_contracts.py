@@ -218,6 +218,14 @@ def test_provisioning_requests_name_a_capability_or_specs(fields: dict[str, Any]
         ({"capability": "Not A Name"}, "pattern"),
         ({"capability": "gp", "purpose": "a\x00b"}, "pattern"),
         ({"conda": [f"p{index}" for index in range(33)]}, "at most 32"),
+        # A package file in the working directory, which micromamba or pip would install.
+        ({"conda": ["foo-1.0-0.conda"]}, "never a package file"),
+        ({"conda": ["foo-1.0-0.tar.bz2"]}, "never a package file"),
+        ({"pip": ["foo-1.0-py3-none-any.whl"], "pip_reason": "r"}, "never a package file"),
+        ({"pip": ["foo-1.0.tar.gz"], "pip_reason": "r"}, "never a package file"),
+        ({"pip": ["foo>=1.ZIP"], "pip_reason": "r"}, "never a package file"),
+        # pip must resolve against the Conda packages once they are installed.
+        ({"conda": ["numpy"], "pip": ["x"], "pip_reason": "r"}, "separate requests"),
     ],
 )
 def test_provisioning_requests_refuse_what_is_no_package(

@@ -19,7 +19,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Final, Literal, Self
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import AfterValidator, Field, StringConstraints, model_validator
 
 from .artifacts import Sha256
 from .context import ExecutionContext
@@ -44,6 +44,29 @@ MAX_FILES: Final = 2000
 """Resolved package files one operation may install."""
 MAX_TEXT: Final = 2000
 """Characters of a purpose, reason or next step."""
+ARCHIVE_SUFFIXES: Final = (
+    ".conda",
+    ".tar.bz2",
+    ".whl",
+    ".zip",
+    ".tar.gz",
+    ".tgz",
+    ".tar",
+    ".tbz",
+    ".tar.xz",
+    ".txz",
+    ".tlz",
+    ".tar.lz",
+    ".tar.lzma",
+)
+"""Endings that make micromamba or pip read a spec as a package file to install."""
+
+
+def _not_a_file(spec: str) -> str:
+    if spec.lower().endswith(ARCHIVE_SUFFIXES):
+        raise ValueError("a spec names a package, never a package file")
+    return spec
+
 
 CondaSpec = Annotated[
     str,
@@ -52,6 +75,7 @@ CondaSpec = Annotated[
         pattern=r"^(?:[a-z0-9][a-z0-9._-]{0,63}(?:/[a-z0-9_-]{1,32})?::)?"
         r"[a-z0-9_][a-z0-9._+-]{0,127}(?:[ =<>!~][A-Za-z0-9 .*+_!,|<>=~-]{0,120})?$",
     ),
+    AfterValidator(_not_a_file),
 ]
 """A Conda spec: an optional ``channel::`` (or ``channel/subdir::``), a lower-case name and
 a version constraint, such as ``pari>=2.15`` or ``conda-forge::fpylll``. No brackets,
@@ -66,6 +90,7 @@ PipSpec = Annotated[
         rf"(?:\[[A-Za-z0-9._,-]{{1,128}}\])?"
         rf"(?: ?{_PIP_OPERATOR} ?{_PIP_VERSION}(?: ?, ?{_PIP_OPERATOR} ?{_PIP_VERSION}){{0,7}})?$",
     ),
+    AfterValidator(_not_a_file),
 ]
 """A PEP 508 requirement without a URL or markers, such as ``pdf_oxide>=0.3``."""
 SystemPackage = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9.+-]{0,127}$")]
@@ -85,9 +110,11 @@ class ProvisionRequest(Contract):
 
     ``context.environment_id`` is the target: the session's own environment unless the
     agent names another of the project's. Either ``capability``, or package specs:
-    Conda specs, and pip specs where conda-forge lacks a package (CP-15), with the reason.
-    System packages can never be installed at runtime (CP-5): naming them records the
-    need, and the operation is denied.
+    Conda specs, or pip specs where conda-forge lacks a package (CP-15), with the reason.
+    Conda and pip specs go in separate requests, the Conda ones first, so that pip
+    resolves against the Conda packages once they are installed and never replaces
+    them. System packages can never be installed at runtime (CP-5): naming them records
+    the need, and the operation is denied.
     """
 
     operation_id: Identifier
@@ -108,6 +135,11 @@ class ProvisionRequest(Contract):
             raise ValueError("name a capability, or package specs (conda, pip or system)")
         if bool(self.pip) != (self.pip_reason is not None):
             raise ValueError("pip specs need pip_reason (what conda-forge lacks), and only they")
+        if self.conda and self.pip:
+            raise ValueError(
+                "ask for Conda and pip packages in separate requests, the Conda ones first: "
+                "pip must resolve against the Conda packages once they are installed"
+            )
         return self
 
 

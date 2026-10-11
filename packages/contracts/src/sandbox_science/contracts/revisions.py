@@ -99,7 +99,9 @@ class ProbeResult(Contract):
     status: Literal["passed", "failed", "error"]
     """``failed``: it ran and the result was wrong; ``error``: it could not run to an end,
     such as a timeout."""
-    revision: Annotated[int, Field(ge=0)]
+    revision: Annotated[int, Field(ge=0)] | None = None
+    """The revision it ran at; None when the worker could not tell, and then it belongs to
+    no revision's record."""
     execution_id: Identifier | None = None
     """The execution that ran it; None for a check of the lockfile."""
     output: Annotated[str, StringConstraints(max_length=MAX_PROBE_OUTPUT)] = ""

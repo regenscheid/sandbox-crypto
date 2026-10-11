@@ -27,13 +27,14 @@ from typing import Any, Final, Literal, cast
 from pydantic import ValidationError
 
 from sandbox_science.contracts import Lockfile, PackageChange, ResolvedFile
-from sandbox_science.contracts.provisioning import Stage
+from sandbox_science.contracts.provisioning import MAX_FILES, Stage
 from sandbox_science.policy import (
     Action,
     ClassificationError,
     Decision,
     HardFloor,
     LoadedPolicy,
+    PackageOperation,
     PoolCeiling,
     classify_package_request,
     evaluate,
@@ -44,11 +45,22 @@ from . import provisioning
 CONDA_DRY_RUN: Final = (
     'exec micromamba install --dry-run --json -y -p "${CONDA_PREFIX:?is not set}" "$@"'
 )
-CONDA_INSTALL: Final = 'exec micromamba install --json -y -p "${CONDA_PREFIX:?is not set}" "$@"'
-PIP_DRY_RUN: Final = 'exec pip install --dry-run --quiet --report - "$@"'
+CONDA_INSTALL: Final = (
+    "MAMBA_PINNED_PACKAGES=$1; export MAMBA_PINNED_PACKAGES; shift; "
+    'exec micromamba install --json -y -p "${CONDA_PREFIX:?is not set}" "$@"'
+)
+"""micromamba installs the request's specs, pinned to exactly the decided files: each by
+channel, subdir, name, version and build, in ``pinned_packages`` (its first argument),
+so the solve links those builds and nothing else they need, and the environment's history
+records the request, not the pins. micromamba 2.9, the images' (MICROMAMBA_VERSION in
+images/Containerfile), reads the pins from MAMBA_PINNED_PACKAGES, separated by commas."""
+PIP_DRY_RUN: Final = 'exec pip install --dry-run --quiet --only-binary :all: --report - "$@"'
+"""Wheels only: pip resolves from the index's metadata and never builds a source
+distribution, which runs its code (CP-7)."""
 PIP_INSTALL: Final = (
     'f=$(mktemp) || exit 1; printf "%s\\n" "$@" > "$f"; '
-    'pip install --quiet --no-deps --require-hashes -r "$f"; s=$?; rm -f "$f"; exit $s'
+    'pip install --quiet --no-deps --only-binary :all: --require-hashes -r "$f"; s=$?; '
+    'rm -f "$f"; exit $s'
 )
 """pip installs exactly the resolved files: each pinned, with its SHA-256 (hash-checking
 mode), which pip takes only from a requirements file."""
@@ -61,6 +73,9 @@ _SPEC_NAME: Final = re.compile(
     r"(?:(?P<channel>[a-z0-9][a-z0-9._-]*)(?:/[a-z0-9_-]+)?::)?(?P<name>[a-z0-9_][a-z0-9._+-]*)"
 )
 _PIP_NAME: Final = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
+_CHANNEL: Final = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+"""A channel's name as the package cache's paths hold it (docs/PACKAGE-CACHE.md)."""
+_PIN_PART: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.+!-]{0,255}")
 _LICENSE_TEXT: Final = re.compile(r"[ -~]{1,256}")
 _SOLVE_WORDS: Final = (
     "could not solve",
@@ -104,11 +119,27 @@ def conda_dry_run(specs: Sequence[str]) -> tuple[str, ...]:
     return ("sh", "-c", CONDA_DRY_RUN, "sh", *specs)
 
 
-def conda_install(specs: Sequence[str]) -> tuple[str, ...]:
-    """The install solves again with the request's specs. Files it resolves beyond the
-    decided set are refused at download if the policy escalates them, and are reported
-    when it allows them (``unplanned``)."""
-    return ("sh", "-c", CONDA_INSTALL, "sh", *specs)
+def conda_install(specs: Sequence[str], files: Iterable[ResolvedFile]) -> tuple[str, ...]:
+    """The install of the request's specs, pinned to the decided files (``CONDA_INSTALL``).
+    A file the pins leave out would be refused at its download if the policy escalates
+    it, and is reported if the policy allows it (``unplanned``)."""
+    return ("sh", "-c", CONDA_INSTALL, "sh", conda_pins(files), *specs)
+
+
+def conda_pins(files: Iterable[ResolvedFile]) -> str:
+    """Each decided Conda file as an exact spec, ``channel/subdir::name==version=build``,
+    separated by commas, which none of the parts can hold."""
+    pins: list[str] = []
+    for file in files:
+        parts = (file.channel or "", file.subdir or "", file.name, file.version, file.build or "")
+        if not (
+            _CHANNEL.fullmatch(parts[0])
+            and _PIN_PART.fullmatch(parts[1])
+            and all(_PIN_PART.fullmatch(part) for part in parts[2:])
+        ):
+            raise ValueError(f"cannot pin {file.file}: it names no channel at the cache")
+        pins.append(f"{parts[0]}/{parts[1]}::{parts[2]}=={parts[3]}={parts[4]}")
+    return ",".join(pins)
 
 
 def pip_dry_run(specs: Sequence[str]) -> tuple[str, ...]:
@@ -202,8 +233,12 @@ def _file(fields: Mapping[str, object], what: str) -> ResolvedFile:
 def parse_conda_dry_run(stdout: str, cache: str | None) -> list[Resolved]:
     """The files micromamba's JSON dry run would link (``actions.LINK``), by channel name.
 
-    A file whose channel is not reached through the package cache keeps its URL as its
-    channel; the decision refuses it, since the policy middleware would never see it.
+    The sandbox reports them, and the permission request grants their paths while people
+    read their names, so the two must agree: a file at the package cache is
+    ``/conda/<channel>/<subdir>/<file>``, with the entry's own subdir and file, and every
+    file is named ``<name>-<version>-<build>``. A file whose channel is not reached
+    through the package cache keeps its URL as its channel; the decision refuses it,
+    since the policy middleware would never see it.
     """
     document = _document(stdout, "the Conda dry run")
     if document.get("success") is False:
@@ -211,40 +246,61 @@ def parse_conda_dry_run(stdout: str, cache: str | None) -> list[Resolved]:
     actions = document.get("actions")
     links = cast(dict[str, Any], actions).get("LINK") if isinstance(actions, dict) else None
     entries = cast(list[object], links) if isinstance(links, list) else []
+    _bounded(len(entries), "the Conda dry run")
     resolved: list[Resolved] = []
     for entry in entries:
         if not isinstance(entry, dict):
             raise ResolveError("the Conda dry run's LINK holds something other than packages")
         fields = cast(dict[str, Any], entry)
-        name = _text(fields.get("name"))
-        url = _text(fields.get("url"))
-        file = _text(fields.get("fn"))
-        subdir = _text(fields.get("subdir"))
+        name, version = _text(fields.get("name")), _text(fields.get("version"))
+        build = _text(fields.get("build")) or _text(fields.get("build_string"))
+        url, file, subdir = (
+            _text(fields.get("url")),
+            _text(fields.get("fn")),
+            _text(fields.get("subdir")),
+        )
         channel: str | None = None
-        path: str | None = None
-        if url is not None and url.count("/") >= 3:
+        path = ""
+        at_cache = _cache_path(url, cache) if url is not None else None
+        if at_cache is not None:
+            parts = at_cache.split("/")
+            if len(parts) != 5 or parts[1] != "conda" or not _CHANNEL.fullmatch(parts[2]):
+                raise ResolveError(
+                    f"the Conda dry run would fetch {name!r} from {at_cache!r} at the package "
+                    "cache, which is no Conda package's path"
+                )
+            if (subdir or parts[3], file or parts[4]) != (parts[3], parts[4]):
+                raise ResolveError(
+                    f"the Conda dry run names another file for {name!r} than its URL"
+                )
+            channel, subdir, file, path = parts[2], parts[3], parts[4], at_cache
+        elif url is not None and url.count("/") >= 3:
+            # Downloaded from anywhere but the cache, the file would meet no decision.
             base, _, last = url.rpartition("/")
             prefix, _, url_subdir = base.rpartition("/")
             file, subdir = file or last, subdir or url_subdir
             channel = provisioning.canonical_channel(prefix, cache)
-            # Downloaded from anywhere but the cache, the file would meet no decision.
-            path = _cache_path(url, cache) or ""
-        if channel is None and isinstance(fields.get("channel"), str):
+        elif isinstance(fields.get("channel"), str):
             raw = str(fields["channel"]).strip().rstrip("/")
             if subdir and raw.endswith("/" + subdir):
                 raw = raw[: -len(subdir) - 1]
             channel = provisioning.canonical_channel(raw, cache)
+            if channel is not None and _CHANNEL.fullmatch(channel):
+                # No URL: the sandbox fetches it from its channel, through the cache.
+                path = f"/conda/{channel}/{subdir}/{file}"
         if channel is None:
             raise ResolveError(f"the Conda dry run names no usable channel for {name!r}")
-        if path is None:
-            # No URL: the sandbox fetches it from its channel through the cache, if named.
-            path = f"/conda/{channel}/{subdir}/{file}" if "://" not in channel else ""
+        if file not in {f"{name}-{version}-{build}{suffix}" for suffix in (".conda", ".tar.bz2")}:
+            raise ResolveError(
+                f"the Conda dry run names the file {file!r} for {name!r} {version!r} {build!r}, "
+                "which is another package's"
+            )
         record = _file(
             {
                 "ecosystem": "conda",
                 "name": name,
-                "version": _text(fields.get("version")),
-                "build": _text(fields.get("build")) or _text(fields.get("build_string")),
+                "version": version,
+                "build": build,
                 "channel": channel,
                 "subdir": subdir,
                 "file": file,
@@ -254,7 +310,7 @@ def parse_conda_dry_run(stdout: str, cache: str | None) -> list[Resolved]:
             },
             "the Conda dry run",
         )
-        resolved.append(Resolved(record, path or ""))
+        resolved.append(Resolved(record, path))
     return resolved
 
 
@@ -262,11 +318,14 @@ def parse_pip_report(stdout: str, cache: str | None) -> list[Resolved]:
     """The distributions pip's installation report (``--report``) would install.
 
     Each must come from the package cache's PyPI files, with its SHA-256: the record names
-    it by its files.pythonhosted.org URL (CP-18), and the install pins it by its hash.
+    it by its files.pythonhosted.org URL (CP-18), and the install pins it by its hash. Its
+    path at the cache must name its project and that SHA-256, since the permission
+    request grants the path while people read the name.
     """
     document = _document(stdout, "pip's dry run")
     items = document.get("install")
     entries = cast(list[object], items) if isinstance(items, list) else []
+    _bounded(len(entries), "pip's dry run")
     resolved: list[Resolved] = []
     for entry in entries:
         if not isinstance(entry, dict):
@@ -314,8 +373,29 @@ def parse_pip_report(stdout: str, cache: str | None) -> list[Resolved]:
         )
         if record.sha256 is None:
             raise ResolveError(f"pip's report gives no SHA-256 for {record.name}")
+        if path is not None:
+            parts = path.split("/")
+            if (
+                len(parts) < 7
+                or parts[1:3] != ["pypi", "files"]
+                or parts[3] != normalize_pypi(record.name)
+                or parts[4] != record.sha256
+                or urllib.parse.unquote(parts[-1]) != record.file
+            ):
+                raise ResolveError(
+                    f"pip would fetch {record.name} {record.version} from {path!r} at the "
+                    "package cache, which is not that distribution's path"
+                )
         resolved.append(Resolved(record, path or ""))
     return resolved
+
+
+def _bounded(count: int, what: str) -> None:
+    if count > MAX_FILES:
+        raise ResolveError(
+            f"{what} would install {count} package files, more than the {MAX_FILES} one "
+            "operation may"
+        )
 
 
 # Decisions.
@@ -328,7 +408,8 @@ def decide(
 
     The file's path at the package cache is classified and evaluated with the policy
     library, as the middleware does it. A file not fetched through the cache, which the
-    middleware would never see, is denied.
+    middleware would never see, is denied, and so is a path that is not the package file
+    the record names (the parsers make sure of it; this keeps it so).
     """
     files: list[ResolvedFile] = []
     decisions: list[Decision] = []
@@ -344,6 +425,11 @@ def decide(
         else:
             try:
                 operation = classify_package_request("GET", item.path)
+                if not _names(operation, item.file):
+                    raise ClassificationError(
+                        f"{item.path!r} is not the package file of {item.file.name} "
+                        f"{item.file.version}"
+                    )
                 decision = evaluate(operation, policy, ceiling=ceiling, floor=floor)
             except ClassificationError as exc:
                 decision = Decision(
@@ -357,6 +443,16 @@ def decide(
             item.file.model_copy(update={"action": decision.action.value, "rule": decision.rule})
         )
     return Decided(tuple(files), tuple(item.path for item in resolved), tuple(decisions))
+
+
+def _names(operation: PackageOperation, file: ResolvedFile) -> bool:
+    """Whether a classified path is the download of ``file``: a package file of its
+    ecosystem, with its name and, for Conda, its channel."""
+    if operation.kind != "artifact" or operation.ecosystem != file.ecosystem:
+        return False
+    if file.ecosystem == "conda":
+        return (operation.channel, operation.name) == (file.channel, file.name)
+    return operation.name == normalize_pypi(file.name)
 
 
 def index_refusal(

@@ -7,9 +7,10 @@ exact set (Conda provisioning, CP-8; open question 3): an ``escalation`` record 
 ``files`` list each file by its path at the package cache. An operator answers it like
 any permission request (D76): ``sandbox-science-policy-middleware approve --request N``.
 The middleware then lets exactly those files download to the environment's sandbox under
-the same policy revision, and the operation installs. A denial, a timeout or a
-cancellation ends the operation, and the worker records a denial for a request nobody
-answered, so that it leaves the operator's list and a late approval cannot open it.
+the same policy revision, and the operation installs. However the operation ends
+(installed, denied, timed out, cancelled, failed or cut short by a restart), the worker
+then withdraws its request: a denial marked ``withdrawn``, after which nothing grants its
+files again, a late approval included, and the command line refuses to answer it.
 
 The store is the middleware's (``events.db`` in its state directory, which the worker's
 ``policy_store`` names). Writes and reads are blocking: callers run them in a thread.
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Final
@@ -27,6 +28,7 @@ from typing import Final
 from sandbox_science.event_store import EventStore, EventStoreError, StoreReader
 from sandbox_science.policy.approvals import (
     ESCALATION,
+    WITHDRAWN,
     Answer,
     Approvals,
     PendingRequest,
@@ -68,7 +70,11 @@ class Permissions:
             raise PermissionStoreError(
                 f"the permission request could not be recorded: {exc}"
             ) from exc
-        self.refresh()
+        try:
+            self.refresh()
+        except PermissionStoreError as exc:
+            # It is recorded: the operation waits for it, and reads again as it waits.
+            _log.warning("permission request %d: %s", record.seq, exc)
         return record.seq
 
     def refresh(self) -> None:
@@ -90,18 +96,27 @@ class Permissions:
         return self._approvals.answer_to(seq)
 
     def withdraw(self, seq: int, reason: str, now: datetime) -> None:
-        """Record a denial of request ``seq``, unless it is answered already. Blocking."""
+        """Close request ``seq`` for good, answered or not, as its operation ends: a denial
+        marked ``withdrawn``. Blocking."""
         self.refresh()
-        if self._approvals.answer_to(seq) is not None:
+        if self._approvals.withdrawn(seq):
             return
         try:
             kind, payload = prepare_answer(
                 self._approvals, seq, approve=False, scope=None, hours=None, now=now
             )
-            self._store().append(kind, SOURCE, {**payload, "reason": reason[:500]})
+            record = {**payload, "reason": reason[:500], WITHDRAWN: True}
+            self._store().append(kind, SOURCE, record)
         except (ValueError, EventStoreError) as exc:
             raise PermissionStoreError(f"request {seq} could not be withdrawn: {exc}") from exc
         self.refresh()
+
+    def withdraw_operations(self, operations: Iterable[str], reason: str, now: datetime) -> None:
+        """Close every request these operations made that is still open: those a crash may
+        have left between recording a request and the operation's noting it. Blocking."""
+        self.refresh()
+        for seq in self._approvals.packages_requests(operations):
+            self.withdraw(seq, reason, now)
 
     def close(self) -> None:
         with self._lock:

@@ -15,8 +15,9 @@ executor wrote; and a lockfile that still names the cache is refused. That work 
 a thread (``prepare``), never on the event loop, an entry at a time, after the lockfile's
 shape and keys are checked, so that a hostile one costs little memory and holds the
 interpreter (CPython's GIL) only briefly at a time. An environment keeps its newest 500
-revisions, and lockfiles for its newest 50, in 64 MiB at most; a lockfile no revision
-names any more is deleted, and so are an environment's when it is deleted.
+revisions, and lockfiles for its newest 50, in 64 MiB at most, besides that of its last
+revision known good while it needs recovery; a lockfile no revision names any more is
+deleted, and so are an environment's when it is deleted.
 """
 
 from __future__ import annotations
@@ -301,7 +302,11 @@ class Revisions:
         """Hold the environment to its newest revisions and lockfiles, and delete the
         lockfiles no revision names any more."""
         dropped = self.store.trim_revisions(environment_id, MAX_HISTORY)
-        held = self.store.lockfiles(environment_id)
+        # The last revision known good of an environment that needs recovery keeps its
+        # lockfile: it lists the packages to restore (CP-13).
+        marked = self.store.package_status(environment_id)
+        good = marked[2] if marked is not None else None
+        held = [item for item in self.store.lockfiles(environment_id) if item[0] != good]
         total = sum(size for _, _, size in held)
         while held and (len(held) > MAX_LOCKFILES or total > MAX_LOCKFILE_STORE):
             revision, sha256, size = held.pop(0)
@@ -330,6 +335,8 @@ class Revisions:
         each probe, the newest MAX_PROBES of a revision. A revision no longer kept keeps
         none."""
         for revision in dict.fromkeys(probe.revision for probe in probes):
+            if revision is None:
+                continue  # it ran at no revision the worker could tell
             entry = self.store.revision_entry(environment_id, revision)
             if entry is None:
                 continue

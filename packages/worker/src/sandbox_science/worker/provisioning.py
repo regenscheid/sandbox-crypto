@@ -283,8 +283,9 @@ def changes_environment(tool: str, args: Sequence[str]) -> bool:
     Any argument that names a changing subcommand counts, wherever it stands: an
     option's value that happens to be ``install`` costs a turn, never a missed change.
     uv changes the environment only through its pip interface (``uv pip install``). A dry
-    run (``--dry-run``, which pip, uv, conda, mamba and micromamba all take) only reads,
-    as the provisioning tool's resolve step does (CP-7), and runs at once.
+    run only reads, as the provisioning tool's resolve step does (CP-7), and runs at once:
+    ``install --dry-run`` as the command's first words, where ``--dry-run`` can be no other
+    option's value (``pip install --no-binary --dry-run x`` installs).
     """
     kind = family(tool)
     if kind is None:
@@ -292,7 +293,8 @@ def changes_environment(tool: str, args: Sequence[str]) -> bool:
     words = set(args)
     if kind == "uv" and "pip" not in words:
         return False
-    if DRY_RUN in words:
+    lead = list(args[1:3] if kind == "uv" else args[:2])
+    if lead == ["install", DRY_RUN]:
         return False
     return not words.isdisjoint(CHANGING[kind])
 
