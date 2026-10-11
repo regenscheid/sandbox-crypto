@@ -88,6 +88,8 @@ PERMISSION_POLL: Final = 2.0
 """Seconds between looks at the event store while an operation waits for permission."""
 LOCKFILE_WAIT: Final = 10.0
 """Seconds an operation waits for a revision's lockfile to arrive."""
+LOOK_TIMEOUT: Final = 120.0
+"""Seconds a look at the packages may take, after an install step that reported no revision."""
 MAX_WAIT: Final = 60.0
 """The longest a client may ask ``wait`` to wait for a change."""
 MAX_QUEUED: Final = 32
@@ -976,14 +978,46 @@ class Provisioner:
                 op, argv, label=label, stage="download", timeout=timeout, limit=STEP_OUTPUT
             )
             started, ended = _started_revision(execution), _ended_revision(execution)
+            uncertain = ended is None and (
+                execution.started_at is not None or execution.state is ExecutionState.LOST
+            )
+            if uncertain:
+                # It may have run, but its end reported no revision, as when the executor is
+                # lost: a look at the packages tells whether they changed (CP-13).
+                ended = await self._look(op, label)
+                uncertain = ended is None
             before = started if before is None else before
             after = ended if ended is not None else after
             self._update(op, revision_before=before, revision_after=after)
             if execution.state is not ExecutionState.SUCCEEDED:
                 cancelled = execution.state is ExecutionState.CANCELLED or op.cancelled.is_set()
                 error = _step_error(execution, "the install")
-                await self._failed_install(op, error, cancelled, before, after)
+                await self._failed_install(op, error, cancelled, before, after, uncertain)
         return before, after
+
+    async def _look(self, op: _Op, label: str) -> int | None:
+        """The environment's revision now, from a step that does nothing: an execution's
+        start reports the packages' fingerprint. None if it could not start."""
+        request = ShellRequest(
+            operation_id=f"{op.record.provision_id}.{label}-look",
+            context=op.record.request.context,
+            argv=("true",),
+            timeout_seconds=LOOK_TIMEOUT,
+            output_limit_bytes=1024,
+        )
+        try:
+            execution, _ = await self.manager.submit(request, origin=op.record.provision_id)
+            self._update(op, executions=(*op.record.executions, execution.execution_id))
+            execution = await self.manager.wait(execution.execution_id)
+        except WorkerError as exc:
+            _log.warning(
+                "provisioning %s could not look at the packages: %s", op.record.provision_id, exc
+            )
+            return None
+        # Only a start shows the fingerprint; the revision noted at dispatch is the old one.
+        if execution.state is not ExecutionState.SUCCEEDED or execution.started_at is None:
+            return None
+        return _started_revision(execution)
 
     async def _failed_install(
         self,
@@ -992,16 +1026,33 @@ class Provisioner:
         cancelled: bool,
         before: int | None,
         after: int | None,
+        uncertain: bool = False,
     ) -> None:
         """End an install that failed or was cancelled: ``failed`` if the packages are as
-        before, else ``rolled_back`` once restored, or ``needs_recovery`` (CP-13)."""
+        before, else ``rolled_back`` once restored, or ``needs_recovery`` (CP-13).
+        ``uncertain`` says the last step's effect on the packages could not be seen."""
         environment_id = op.record.request.context.environment_id
         if cancelled:
             error = error.model_copy(update={"kind": ErrorKind.CANCELLED})
         text = error.message
         changed = before is not None and after is not None and before != after
-        stage = resolution.failure_stage(text, changed)
+        # Unseen, linking may have begun: the stage is the later one.
+        stage = resolution.failure_stage(text, changed or uncertain)
         reason: Reason = "cancelled" if cancelled else "install_failed"
+        if uncertain and not changed:
+            raise _Stop(
+                ProvisionOutcome.FAILED,
+                reason,
+                stage,
+                error,
+                notes=(
+                    "the install's last step reported no revision at its end, and the worker "
+                    "could not look at the packages after it: whether they changed is unknown",
+                ),
+                next_step="The install may have changed some packages before it stopped. Tell "
+                "the user: the environment's next revision and its lockfile will show what it "
+                "holds. Request the install again once the environment answers.",
+            )
         if changed and before is not None and after is not None:
             if await self._same_packages(environment_id, before, after):
                 raise _Stop(
@@ -1064,12 +1115,17 @@ class Provisioner:
         old = await self._lockfile(environment_id, before) if before is not None else None
         new = await self._lockfile(environment_id, after) if after is not None else None
         changes = resolution.package_changes(old, new) if new is not None else []
-        if new is None:
+        if after is None:
+            notes.append(
+                "the install reported no revision at its end, so its changes are not listed"
+            )
+        elif new is None:
             notes.append(
                 f"revision {after}'s lockfile is not available, so its changes are not listed"
             )
         elif old is None:
-            notes.append(f"revision {before}'s lockfile is not available: every package is listed")
+            which = "the revision before the install" if before is None else f"revision {before}"
+            notes.append(f"{which} has no lockfile available: every package is listed")
         if before is not None and after is not None and after - before > 1:
             notes.append(f"other changes came between revision {before} and {after}")
         extra = resolution.unplanned(changes, decided.files)

@@ -27,7 +27,8 @@ package cache (its URL layout), and fails before linking anything if a download 
 A Conda package can bring files (``provides``: a path in the prefix and its text,
 executable under ``bin/``), and one whose ``postlink`` is ``fail`` is linked, then fails
 as a failed post-link script does; one whose ``postlink`` is ``slow`` is linked, then
-takes half a minute. It reaches no network but the cache it is given.
+takes half a minute; one whose ``postlink`` is ``lost`` is linked, then kills the
+executor it runs under. It reaches no network but the cache it is given.
 """
 
 from __future__ import annotations
@@ -436,7 +437,25 @@ def conda(tool: str, args: list[str]) -> int:
         if entry.get("postlink") == "slow":  # linked, and its post-link script takes a while
             log("postlink", name, os.getpid())
             time.sleep(30)
+        if entry.get("postlink") == "lost":  # linked, and the executor dies meanwhile
+            kill_executor()
+            return 1
     return 0
+
+
+def kill_executor() -> None:
+    """Kill the executor this command runs under, as when a sandbox goes away."""
+    pid = os.getppid()
+    while pid > 1:
+        try:
+            arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            stat = Path(f"/proc/{pid}/stat").read_text()
+        except OSError:
+            return
+        if b"--stdio" in arguments:
+            os.kill(pid, signal.SIGKILL)
+            return
+        pid = int(stat.rsplit(")", 1)[1].split()[1])  # the parent's
 
 
 def main(argv: list[str]) -> int:
