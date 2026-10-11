@@ -55,7 +55,8 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 2. **Read** returns a file's bytes, up to a size limit (ranges for larger files), with its SHA-256. Directories, devices and FIFOs are refused.
 3. **Write** creates or atomically replaces a file in the session workspace. A write to the shared area must name the content hash it expects to replace (or none for a new file), and fails with `conflict` if the file has changed.
 4. **List** returns up to a bounded number of entries. Each gives its name, type, size and modification time; symlinks are reported as links and not followed.
-5. **Publish** copies a workspace file into the project's artifact store as an immutable revision. It returns an `ArtifactRef` carrying the content hash, the media type and the producing attempt.
+5. **Publish** copies a workspace file into the project's artifact store as an immutable revision. It returns an `ArtifactRef` carrying the content hash, the media type and the producing attempt: the last finished attempt that wrote the file.
+6. **Written files.** Each attempt's result lists the files in the session workspace and the shared area that it created or changed, as the worker observed them. An attempt running at the same time in the session may contribute some of them.
 
 ## Errors
 

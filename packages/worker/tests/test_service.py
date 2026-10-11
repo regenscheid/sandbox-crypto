@@ -186,6 +186,44 @@ async def test_publication(worker: Worker) -> None:
     assert response.headers["X-Content-SHA256"] == artifact["sha256"]
 
 
+async def test_publication_names_the_last_attempt_that_wrote_the_file(worker: Worker) -> None:
+    cell = await worker.run("op-w1", kind="cell", code="open('a.txt', 'w').write('from the cell')")
+    shell = await worker.run("op-w2", kind="shell", script="echo from the shell > b.txt")
+    rewrite = await worker.run("op-w3", kind="shell", script="echo again > a.txt")
+    assert cell["result"]["written_files"] == ["a.txt"]
+    assert shell["result"]["written_files"] == ["b.txt"]
+    _, a = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "a.txt"})
+    _, b = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "b.txt"})
+    assert a["produced_by"] == rewrite["attempt_id"]
+    assert b["produced_by"] == shell["attempt_id"]
+    # The file API is not an execution: a file written through it has no known producer.
+    content = base64.b64encode(b"x").decode()
+    await worker.post(
+        "/v1/files/write", {"context": CONTEXT, "path": "c.txt", "content_b64": content}
+    )
+    _, c = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "c.txt"})
+    assert c["produced_by"] is None
+
+
+async def test_shared_files_count_writers_from_any_session(worker: Worker) -> None:
+    other = {**CONTEXT, "session_id": "s2"}
+    status, submitted = await worker.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-s2",
+            "context": other,
+            "kind": "shell",
+            "script": "echo hi > $PROJECT_SHARED/x.txt",
+        },
+    )
+    assert status == 201, submitted
+    writer = await worker.finish(submitted["execution_id"])
+    assert writer["state"] == "succeeded", writer["result"]
+    assert writer["result"]["written_files"] == ["shared/x.txt"]
+    _, artifact = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "shared/x.txt"})
+    assert artifact["produced_by"] == writer["attempt_id"]
+
+
 async def test_interrupting_a_cell_keeps_its_state(worker: Worker) -> None:
     await worker.run("op-x", kind="cell", code="x = 41")
     sleeping = await worker.submit("op-sleep", kind="cell", code="import time\ntime.sleep(60)")

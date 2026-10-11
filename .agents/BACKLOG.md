@@ -40,6 +40,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Package cache: opam and Hackage adapters (EasyCrypt, Jasmin, ProVerif, Cryptol, Tamarin)
 - [ ] Package cache: a cooling-off period for new releases, keeping lockfile files from eviction, TLS between OpenShell and the cache
 - [ ] Package cache: per-sandbox rate limits. The policy middleware writes a sandbox header on cache requests (overwriting anything the sandbox sent), which the cache uses to give each sandbox its own budget; the cooling-off period needs the same mechanism
+- [x] Describe OpenShell v0.1.3's seccomp restrictions on thread scheduling and process-group signals, and libzmq's abort on EPERM, in `.agents/upstream/` (lab 4; filing is the user's call)
 - [x] Describe the OpenShell v0.1.3 bugs we found, in `.agents/upstream/`: credentials substituted into plain HTTP and sent unencrypted; a host with two trailing dots selects no middleware. The user chose to keep the descriptions here; filing them upstream remains the user's call
 - [ ] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox
 - [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic checked in lab 2: the middleware decides it, and the floor holds
@@ -58,7 +59,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## W1: shared references and one worker adapter
 
 - [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
-- [ ] First slice: one shell command and two stateful Python cells through the worker API. Works locally through the harness's tool loop and a separate worker process (scripted model); still to do on babbage with the OpenShell backend
+- [x] First slice: one shell command and two stateful Python cells through the worker API, driven by the harness's tool loop with a scripted model. Done locally and on babbage in an OpenShell VM sandbox ([lab 4](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)), after working around two OpenShell seccomp restrictions (scheduler shim, process-group signals)
+- [ ] The first slice with a real model through LiteLLM (needs the user's model gateway and a virtual key)
 
 ## babbage
 
