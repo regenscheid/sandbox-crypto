@@ -16,7 +16,7 @@ from typing import Literal, Protocol
 
 from sandbox_science.contracts import ErrorKind
 
-from . import executor, pdfhelper
+from . import executor, pdfhelper, provisioning
 from .channel import EventHandler, ExecutorChannel
 from .errors import WorkerError
 from .package_clients import ClientConfiguration, render
@@ -26,6 +26,8 @@ _log = logging.getLogger(__name__)
 
 EXECUTOR_SOURCE = Path(executor.__file__)
 PDF_HELPER_SOURCE = Path(pdfhelper.__file__)
+PROVISIONING_SOURCE = Path(provisioning.__file__)
+"""The package-command wrappers and hook (provisioning.py), which the executor loads."""
 SCHED_SHIM_SOURCE = Path(__file__).with_name("shim") / "sched_self.c"
 SCHED_SHIM_NAME = "libsandbox-science-sched.so"
 COMMAND_TIMEOUT = 120.0
@@ -208,7 +210,7 @@ class OpenShellBackend:
             "sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell", "--",
             "mkdir", "-p", settings.executor_dir, settings.project_root,
         )  # fmt: skip
-        files = [EXECUTOR_SOURCE, PDF_HELPER_SOURCE]
+        files = [EXECUTOR_SOURCE, PROVISIONING_SOURCE, PDF_HELPER_SOURCE]
         if settings.sched_shim:
             files.append(await self._shim())
         for path in files:

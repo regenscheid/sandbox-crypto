@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""A stand-in for an executor that research code has taken over (test_robustness.py).
+"""A stand-in for an executor that research code has taken over (test_robustness.py,
+test_provisioning.py).
 
-It speaks the executor's stdio protocol, then misbehaves as its argument says.
-The modes copy the probes of the 2026-10-11 review of the worker.
+It speaks the executor's stdio protocol, then misbehaves as its argument says. The
+modes copy the probes of the 2026-10-11 reviews of the worker and of package commands;
+``HOSTILE_COUNT`` and ``HOSTILE_ENTRIES`` size the revision modes.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ from typing import Any
 
 MODE = sys.argv[1]
 MiB = 1024 * 1024
+COUNT = int(os.environ.get("HOSTILE_COUNT", "1"))
+ENTRIES = int(os.environ.get("HOSTILE_ENTRIES", "100"))
 out = sys.stdout.buffer
 
 
@@ -57,7 +61,33 @@ BAD_LINES = [
 ]
 
 
+seen: list[str] = []
+
+
+def unknown_keys() -> dict[str, int]:
+    """A lockfile of HOSTILE_ENTRIES keys no lockfile has (second review, M3 and L1)."""
+    return {f"k{index:x}": 0 for index in range(ENTRIES)}
+
+
 def run(execution: str) -> None:
+    if MODE == "lockfile_requests":
+        # Every fingerprint new, so that the worker keeps asking for the current lockfile;
+        # revision events credited to this attempt and earlier ones of the environment
+        # (second review, L1).
+        seen.append(execution)
+        event(execution, "state", state="running", environment=os.urandom(16).hex())
+        for cause in seen[-6:]:
+            event(
+                execution,
+                "revision",
+                fingerprint=os.urandom(16).hex(),
+                managed=False,
+                cause=cause,
+                lockfile=unknown_keys(),
+            )
+        time.sleep(0.3)
+        end(execution, environment=os.urandom(16).hex())
+        return
     event(execution, "state", state="running")
     if MODE == "inf":
         end(execution, elapsed_seconds=float("inf"))  # json.dumps writes Infinity
@@ -92,6 +122,73 @@ def run(execution: str) -> None:
         target = os.environ["TARGET"]
         event(target, "stream", name="stdout", text="forged\n")
         end(target, stdout={"name": "stdout", "text": "forged result\n", "total_bytes": 14})
+        end(execution)
+    elif MODE == "revisions":
+        # Revisions by the score: the first with a lockfile naming the package cache, the
+        # others credited to an attempt of no one's, with lockfiles that are none.
+        cached = {"name": "x", "version": "1", "build": "0"}
+        cached["channel"] = "http://host.openshell.internal:8090/conda/conda-forge"
+        command = {"command": ["pip", "install", "x" * 5000], "via": "wrapper"}
+        for index in range(80):
+            lockfile: object = {"conda": [cached]} if index == 0 else {"conda": "none"}
+            event(
+                execution,
+                "revision",
+                fingerprint=f"{index:032x}",
+                managed=True,
+                cause=execution if index == 0 else "exe-" + "0" * 24,
+                commands=[command],
+                lockfile=lockfile,
+            )
+        event(execution, "revision", fingerprint="not a fingerprint", managed=True)
+        end(execution)
+    elif MODE == "slow_lockfile":
+        # Channels of 2,047 characters in ~1,000 path segments (review C1).
+        channel = ("http://h/" + "a/" * 1019)[:2047]
+        conda = [
+            {"name": f"p{index}", "version": "1", "build": "0", "channel": channel}
+            for index in range(ENTRIES)
+        ]
+        event(
+            execution,
+            "revision",
+            fingerprint=os.urandom(16).hex(),
+            managed=True,
+            cause=execution,
+            lockfile={"conda": conda},
+        )
+        end(execution)
+    elif MODE == "lockfiles":
+        # A distinct lockfile with each of HOSTILE_COUNT revisions (review H1).
+        for index in range(COUNT):
+            salt = os.urandom(8).hex()
+            conda = [
+                {"name": f"n{salt}-{entry}", "version": "1.0", "build": "0", "sha256": "a" * 64}
+                for entry in range(ENTRIES)
+            ]
+            event(
+                execution,
+                "revision",
+                fingerprint=os.urandom(16).hex(),
+                managed=True,
+                cause=execution,
+                commands=[{"command": ["pip", "install", f"n{index}"], "via": "wrapper"}],
+                lockfile={"conda": conda},
+            )
+        end(execution)
+    elif MODE == "big_commands":
+        # HOSTILE_COUNT revisions with 8 commands of 40 arguments of 600 characters, of
+        # four bytes each in UTF-8 (review H1).
+        for index in range(COUNT):
+            argv = [f"{index:04d}" + "\U0001f600" * 596 for _ in range(40)]
+            event(
+                execution,
+                "revision",
+                fingerprint=os.urandom(16).hex(),
+                managed=True,
+                cause=execution,
+                commands=[{"command": argv, "via": "wrapper", "exit_code": 0}] * 8,
+            )
         end(execution)
     else:
         end(execution)
@@ -140,7 +237,12 @@ for line in sys.stdin.buffer:
         location: object = {"hostname": "hostile"}
         if MODE == "hello_bad":
             location = "not-an-object"
-        reply(request["id"], protocol=1, languages=["python"], location=location)
+        fields: dict[str, Any] = {}
+        if MODE == "lockfile_requests":
+            fields["environment"] = os.urandom(16).hex()
+        reply(request["id"], protocol=1, languages=["python"], location=location, **fields)
+    elif op == "lockfile" and MODE == "lockfile_requests":
+        reply(request["id"], fingerprint=os.urandom(16).hex(), lockfile=unknown_keys())
     elif op == "usage":
         cpu = 10**400 if MODE == "huge_cpu" else 1.5
         reply(request["id"], cpu_seconds=cpu, kernels=0, running=0)
