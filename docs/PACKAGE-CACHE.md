@@ -12,6 +12,12 @@ The first version covers five ecosystems: PyPI, conda (conda-forge), Rust crates
 
 The cache itself makes no policy decisions and does not know which sandbox is asking. It only ever reaches the configured upstream registries.
 
+What the policy adds for packages ([policy](POLICY.md), "Packages"):
+
+- **Pool ceiling.** The ceiling applies to the registries each ecosystem uses, so a pool that forbids those hosts gets no packages.
+- **Go module origins.** When the Go module proxy lacks a module, it fetches it from the module's origin, so a lookup for a made-up module would send data to whatever host the module path names. A Go module request, including a checksum-database lookup, is therefore also decided as a read of its origin host under the network rules. Under the permissive default, every public origin is readable anyway.
+- **Registries only through the cache.** The registries and their aliases and mirrors are on the floor for ordinary HTTP. Installs straight from version control (`pip install git+https://…`, Cargo and npm git dependencies, Go without a proxy) are ordinary git and HTTP requests: the network rules decide them, not `packages`.
+
 ## URL layout
 
 The policy library (`classify_package_request`) and the cache's adapters share this layout. Anything else is refused. Paths are matched as received, still percent-encoded where noted.
@@ -23,7 +29,7 @@ The policy library (`classify_package_request`) and the cache's adapters share t
 | `/pypi/files/<project>/<sha256>/<path>.metadata` | index, per package (PEP 658, immutable) | `https://files.pythonhosted.org/<path>.metadata` |
 | `/conda/<channel>/channeldata.json` | index, whole channel | `https://conda.anaconda.org/<channel>/channeldata.json` |
 | `/conda/<channel>/<subdir>/<index file>` | index, whole channel | `repodata.json`, `current_repodata.json`, `repodata_shards.msgpack.zst`, each also as `.zst`/`.bz2` where conda publishes it |
-| `/conda/<channel>/<subdir>/shards/<sha256>.msgpack.zst` | index, whole channel (content-addressed, immutable) | same path upstream |
+| `/conda/<channel>/<subdir>/<sha256>.msgpack.zst` | index, whole channel (a shard: content-addressed, immutable) | same path upstream (the shard index's base URL is empty, so shards sit beside repodata; a `shards/` directory is also accepted) |
 | `/conda/<channel>/<subdir>/<name>-<version>-<build>.conda` or `.tar.bz2` | artifact | same path upstream |
 | `/cargo/index/config.json` | index, whole registry (built by the cache) | none |
 | `/cargo/index/<prefix>/<crate>` | index, per package | `https://index.crates.io/<prefix>/<crate>` |
@@ -32,12 +38,15 @@ The policy library (`classify_package_request`) and the cache's adapters share t
 | `/go/<module>/@v/<version>.info`, `.mod` | index, per package (immutable) | same path upstream |
 | `/go/<module>/@v/<version>.zip` | artifact | same path upstream |
 | `/go/sumdb/sum.golang.org/supported` | index, whole registry (built by the cache) | none |
-| `/go/sumdb/sum.golang.org/<lookup or tile path>` | index, whole registry | `https://sum.golang.org/<path>` |
+| `/go/sumdb/sum.golang.org/latest`, `/go/sumdb/sum.golang.org/tile/...` | index, whole registry | `https://sum.golang.org/<path>` |
+| `/go/sumdb/sum.golang.org/lookup/<module>@<version>` | index, per package | `https://sum.golang.org/lookup/...` |
 | `/npm/<name>`, `/npm/@<scope>%2F<name>`, `/npm/@<scope>/<name>` | index, per package | `https://registry.npmjs.org/<name>` |
 | `/npm/files/<sha512>/<name>/-/<file>.tgz` | artifact | `https://registry.npmjs.org/<name>/-/<file>.tgz` |
+| `/npm/<name>/-/<file>.tgz` | artifact, no digest | the same; the path npm, pnpm and yarn build from a lockfile, which they check against its integrity |
 
 Notes:
-- **Digests in paths.** `<sha256>` and `<sha512>` are lowercase hex digests that the cache copied from the index when it rewrote the download links. They name the bytes the cache must verify, or `-` when the index published none. Cargo puts the checksum in the path itself, through the `{sha256-checksum}` marker of its `dl` template.
+- **Digests in paths.** `<sha256>` and `<sha512>` are lowercase hex digests that the cache copied from the index when it rewrote the download links. They name the bytes the cache must verify, or `-` when the index published none. Cargo puts the checksum in the path itself, through the `{sha256-checksum}` marker of its `dl` template. A PyPI `.metadata` path carries the distribution's digest, not the metadata file's; the client checks the metadata against the hash on the index page.
+- **Files belong to the package in the path.** A PyPI file must be a distribution of `<project>` and an npm tarball one of `<name>`; both the cache and the policy check it, so a decision about one package cannot fetch another.
 - **Module paths.** `<module>` is a Go module path in the proxy's case encoding: an uppercase letter is written `!` followed by the lowercase letter.
 - **npm names.** `<name>` is an npm package name. A scoped name keeps its `@scope/` part.
 - **No rewriting for conda.** conda-forge's index files use paths relative to the channel, so the cache passes them through unchanged.
@@ -63,7 +72,11 @@ Notes:
 
 - **Logs.** Every request is logged with ecosystem, path, cache result (hit, miss, revalidated, stale), status, size and upstream time. Package names can carry data out (a lookup for a made-up name still reaches the registry), and the policy middleware's and OpenShell's logs tie each request to its sandbox.
 - **Rate limit.** Upstream fetches are rate-limited (a token bucket shared by all clients), so a flood of lookups for made-up names cannot hammer a registry through the cache.
-- **Status.** `GET /-/health` and `GET /-/stats` (entries, bytes, hits, misses) are served on the same listener.
+- **Rate limit details.** Every upstream request, each redirect hop included, takes a token. A request waits up to 10 seconds for one, then gets 503 with `Retry-After: 1`, unless a stale copy can be served.
+- **Status.** `GET /-/health` and `GET /-/stats` (entries, bytes, hits, misses, revalidations, stale answers, errors) are served on the same listener. The middleware refuses both for sandboxes, since they are not in the URL layout.
+- **Sharing.** The store is shared by every project on the host, so timing (a hit or a miss) shows whether some sandbox fetched a file before. Treat package names as visible across projects.
+
+The store lives in `cache_dir`: `blobs/`, the SQLite index `index.sqlite3`, `tmp/` for downloads in progress, and a `lock` that keeps a second server from using the same directory. `sandbox-science-package-cache stats` and `prune` (evict to the cap now) can run beside the server.
 
 ## Settings
 
@@ -112,7 +125,8 @@ The environment layer writes these into each sandbox, where `<cache>` is the cac
 | conda, mamba, pixi | `channel_alias: <cache>/conda`, `channels: [conda-forge]` |
 | cargo | `[source.crates-io] replace-with = "cache"`, `[source.cache] registry = "sparse+<cache>/cargo/index/"` |
 | go | `GOPROXY=<cache>/go`, `GOSUMDB=sum.golang.org` (checksum lookups go through the proxy), `GOTOOLCHAIN=local` |
-| npm, pnpm, yarn | `registry=<cache>/npm/`, `audit=false`, `fund=false` |
+| npm, pnpm, yarn 1 | `registry=<cache>/npm/`, `audit=false`, `fund=false` in `.npmrc` |
+| yarn 2+ | `npmRegistryServer: <cache>/npm` and `unsafeHttpWhitelist` for the cache's host in `.yarnrc.yml` (yarn ignores `.npmrc`) |
 
 ## Adapters
 
@@ -126,6 +140,7 @@ Adapters are pure functions of the path, the request headers and their settings,
 ## Planned
 
 - opam and Hackage adapters.
-- A cooling-off period: refuse versions published in the last N days unless approved. Every one of the five ecosystems publishes release times. The middleware can pass the project's setting to the cache in a request header.
+- A cooling-off period: refuse versions published in the last N days unless approved. Every one of the five ecosystems publishes release times. The middleware can pass the project's setting to the cache in a request header that it sets itself, overwriting anything the sandbox sent; the cache must accept the setting only from the middleware.
+- conda index files are passed through unchanged because conda-forge's base URLs are relative (empty). The cache should refuse index files whose `base_url` is absolute, in case a channel changes that.
 - Keeping files that active lockfiles use from eviction.
 - TLS between OpenShell and the cache, for deployments where the cache is not on the gateway's host.

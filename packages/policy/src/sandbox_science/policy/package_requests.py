@@ -39,11 +39,17 @@ _CONDA_INDEX_FILES: Final = frozenset(
 
 _PYPI_SIMPLE_RE: Final = re.compile(r"simple/([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)/")
 _PYPI_FILE_RE: Final = re.compile(
-    r"files/([a-z0-9]+(?:-[a-z0-9]+)*)/(?:[0-9a-f]{64}|-)/packages/[A-Za-z0-9._/+~-]+"
+    r"files/([a-z0-9]+(?:-[a-z0-9]+)*)/(?:[0-9a-f]{64}|-)/packages/(?:[A-Za-z0-9._+~!-]+/)*"
+    r"([A-Za-z0-9._+~!-]+)"
 )
+_PYPI_SDIST_SUFFIXES: Final = (".tar.gz", ".zip", ".tar.bz2", ".tgz")
 _CONDA_CHANNEL_INDEX_RE: Final = re.compile(rf"({_CHANNEL})/channeldata\.json")
 _CONDA_INDEX_RE: Final = re.compile(rf"({_CHANNEL})/{_SUBDIR}/([a-z0-9_.]+)")
-_CONDA_SHARD_RE: Final = re.compile(rf"({_CHANNEL})/{_SUBDIR}/shards/[0-9a-f]{{64}}\.msgpack\.zst")
+# conda-forge serves shards beside repodata (the shard index's base URL is
+# empty); a "shards/" directory is accepted as well.
+_CONDA_SHARD_RE: Final = re.compile(
+    rf"({_CHANNEL})/{_SUBDIR}/(?:shards/)?[0-9a-f]{{64}}\.msgpack\.zst"
+)
 _CONDA_PACKAGE_RE: Final = re.compile(
     rf"({_CHANNEL})/{_SUBDIR}/([a-z0-9_][a-z0-9_.+-]*)-[^-/]+-[^-/]+\.(?:conda|tar\.bz2)"
 )
@@ -53,16 +59,27 @@ _CARGO_INDEX_RE: Final = re.compile(
 _CARGO_DOWNLOAD_RE: Final = re.compile(
     r"dl/([A-Za-z][A-Za-z0-9_-]{0,63})/[0-9A-Za-z.+-]+/[0-9a-f]{64}"
 )
-_GO_SUMDB_RE: Final = re.compile(r"sumdb/sum\.golang\.org/(?:supported|latest|lookup/.+|tile/.+)")
+_GO_SUMDB_RE: Final = re.compile(r"sumdb/sum\.golang\.org/(?:supported|latest|tile/.+)")
+_GO_LOOKUP_RE: Final = re.compile(
+    r"sumdb/sum\.golang\.org/lookup/([a-z0-9.!~_-]+(?:/[a-z0-9.!~_-]+)*)@v[0-9a-z.!+-]+"
+)
 _GO_MODULE_RE: Final = re.compile(
     # Versions are case-encoded like module paths ("!r!c1" for "RC1").
     r"([a-z0-9.!~_-]+(?:/[a-z0-9.!~_-]+)*)/(?:@latest|@v/list|@v/v[0-9a-z.!+-]+\.(info|mod|zip))"
 )
-_NPM_FILE_RE: Final = re.compile(
-    r"files/(?:[0-9a-f]{128}|-)/((?:@[^/]+/)?[^/@][^/]*)/-/[A-Za-z0-9._~-]+\.tgz"
+# npm names use the characters encodeURIComponent leaves alone.
+_NPM_CHAR: Final = r"[A-Za-z0-9._~!*'()-]"
+_NPM_NAME: Final = (
+    rf"(?:@{_NPM_CHAR}+(?:/|%2[Ff])[A-Za-z0-9_~!*'()-]{_NPM_CHAR}*"
+    rf"|[A-Za-z0-9~!*'()]{_NPM_CHAR}*)"
 )
-_NPM_SCOPED_RE: Final = re.compile(r"(@[^/%]+)(?:%2[Ff]|/)([^/%]+)")
-_NPM_UNSCOPED_RE: Final = re.compile(r"[^/@%._-][^/%]*")
+_NPM_TARBALL: Final = rf"{_NPM_CHAR}+[-@][0-9][A-Za-z0-9._~+-]*\.tgz"
+_NPM_FILE_RE: Final = re.compile(rf"files/(?:[0-9a-f]{{128}}|-)/({_NPM_NAME})/-/({_NPM_TARBALL})")
+# Lockfiles name the registry's own tarball path, which npm, pnpm and yarn
+# rebase onto the configured registry; the client checks the lockfile's
+# integrity, so these carry no digest.
+_NPM_LOCKFILE_RE: Final = re.compile(rf"({_NPM_NAME})/-/({_NPM_TARBALL})")
+_NPM_INDEX_RE: Final = re.compile(_NPM_NAME)
 
 
 def classify_package_request(method: str, path: str) -> PackageOperation:
@@ -90,11 +107,32 @@ def classify_package_request(method: str, path: str) -> PackageOperation:
 def _pypi(rest: str) -> PackageOperation | None:
     if match := _PYPI_SIMPLE_RE.fullmatch(rest):
         return PackageOperation("pypi", match[1], kind="index")
-    if match := _PYPI_FILE_RE.fullmatch(rest):
+    if (match := _PYPI_FILE_RE.fullmatch(rest)) and _pypi_file_belongs(match[1], match[2]):
         # A PEP 658 metadata file describes the package; it installs nothing.
         kind = "index" if rest.endswith(".metadata") else "artifact"
         return PackageOperation("pypi", match[1], kind=kind)
     return None
+
+
+def _pypi_normalize(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _pypi_file_belongs(project: str, filename: str) -> bool:
+    """Whether a distribution (or its metadata file) is one of ``project``'s files.
+
+    A wheel names its distribution before the first hyphen; an sdist is
+    ``<name>-<version>``, so the project must be followed by a version.
+    """
+    name = filename.removesuffix(".metadata")
+    if name.endswith(".whl"):
+        return _pypi_normalize(name.split("-", 1)[0]) == project
+    for suffix in _PYPI_SDIST_SUFFIXES:
+        if name.endswith(suffix):
+            stem = _pypi_normalize(name.removesuffix(suffix))
+            version = stem.removeprefix(f"{project}-")
+            return version != stem and version[:1].isdigit()
+    return False
 
 
 def _conda(rest: str) -> PackageOperation | None:
@@ -122,6 +160,10 @@ def _cargo(rest: str) -> PackageOperation | None:
 def _go(rest: str) -> PackageOperation | None:
     if _GO_SUMDB_RE.fullmatch(rest):
         return PackageOperation("go", None, kind="index")
+    if match := _GO_LOOKUP_RE.fullmatch(rest):
+        # A checksum lookup names a module; the database fetches it from its origin.
+        module = _unescape_module(match[1])
+        return None if module is None else PackageOperation("go", module, kind="index")
     if match := _GO_MODULE_RE.fullmatch(rest):
         module = _unescape_module(match[1])
         if module is None:
@@ -138,13 +180,27 @@ def _unescape_module(escaped: str) -> str | None:
 
 
 def _npm(rest: str) -> PackageOperation | None:
-    if match := _NPM_FILE_RE.fullmatch(rest):
-        return PackageOperation("npm", match[1])
-    if match := _NPM_SCOPED_RE.fullmatch(rest):
-        return PackageOperation("npm", f"{match[1]}/{match[2]}", kind="index")
-    if _NPM_UNSCOPED_RE.fullmatch(rest):
-        return PackageOperation("npm", rest, kind="index")
+    for pattern in (_NPM_FILE_RE, _NPM_LOCKFILE_RE):
+        if match := pattern.fullmatch(rest):
+            name = _ENCODED_SLASH_RE.sub("/", match[1])
+            return PackageOperation("npm", name) if _npm_file_belongs(name, match[2]) else None
+    if _NPM_INDEX_RE.fullmatch(rest):
+        return PackageOperation("npm", _ENCODED_SLASH_RE.sub("/", rest), kind="index")
     return None
+
+
+def _npm_file_belongs(name: str, filename: str) -> bool:
+    """Whether a tarball is one of ``name``'s: ``<unscoped name>-<version>.tgz``.
+
+    Old packages also use ``@`` as the separator.
+    """
+    unscoped = name.rsplit("/", 1)[-1]
+    version = filename.removesuffix(".tgz")[len(unscoped) + 1 :]
+    return (
+        filename[: len(unscoped)] == unscoped
+        and filename[len(unscoped)] in "-@"
+        and (version[:1].isdigit())
+    )
 
 
 _CLASSIFIERS: Final[dict[str, Callable[[str], PackageOperation | None]]] = {

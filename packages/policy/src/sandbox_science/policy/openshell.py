@@ -8,9 +8,10 @@ Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
   policy admits the destinations the project could ever reach, and attaches the
   platform's policy middleware to every host: OpenShell calls it for each
   admitted request, before injecting credentials, and the middleware decides
-  with this library. The package cache is an inspected endpoint too, and the
-  middleware applies the policy's packages section to it. The MCP proxy (with
-  worker access) is a raw TCP endpoint outside the middleware.
+  with this library. The platform services (the package cache and, with worker
+  access, the MCP proxy) are inspected endpoints too; the middleware recognizes
+  them by host and port. Nothing is excluded from the middleware, because
+  OpenShell selects middleware by host alone.
 * The MCP proxy sandbox reaches the declared MCP servers. Its policy re-enforces
   the tool rules as OpenShell ``protocol: mcp`` endpoints.
 
@@ -34,7 +35,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstra
 
 from .ceiling import PoolCeiling
 from .decision import Action
-from .evaluate import DEFAULT_FLOOR, MCP_PROTOCOL_METHODS
+from .evaluate import DEFAULT_FLOOR, MCP_PROTOCOL_METHODS, registry_reason, reserved_host_reason
 from .floor import HardFloor
 from .hosts import HostKind, floor_reason, is_public, normalize_host, parse_ip
 from .loader import LoadedPolicy, parse_model, read_limited
@@ -397,6 +398,12 @@ def _wildcard_hosts(rules: Sequence[HttpRule | GitRule], findings: list[Finding]
             # whether the names under it are public.
             if pattern.kind is not HostKind.WILDCARD or not is_public(f"x.{pattern.value}"):
                 continue
+            reason = registry_reason(f"x.{pattern.value}") or registry_reason(pattern.value)
+            if reason is not None:
+                findings.append(
+                    Finding(Severity.WARNING, f"hosts.{pattern}", f"not admitted: {reason}")
+                )
+                continue
             if pattern.labels < 2:
                 findings.append(
                     Finding(
@@ -462,8 +469,16 @@ def compile_sandbox(
     # only requests to addresses. Public names the rules mention get endpoints of
     # their own, beside it.
     named_hosts: list[str] = []
+    service_hosts = {target.package_cache.host, target.mcp_proxy.host}
     for host in exact_hosts:
-        reason = floor.check_host(host) or ceiling.check_host(host)
+        # Hosts the library always denies are not admitted either, so that the
+        # middleware is never the only thing standing between them and a sandbox.
+        reason = (
+            floor.check_host(host)
+            or ceiling.check_host(host)
+            or reserved_host_reason(host, policy)
+            or (f"{host} is a platform service host" if host in service_hosts else None)
+        )
         if reason is not None:
             findings.append(Finding(Severity.WARNING, f"hosts.{host}", f"not admitted: {reason}"))
             continue
@@ -550,9 +565,12 @@ def compile_sandbox(
             )
 
     cache = target.package_cache
+    proxy = target.mcp_proxy
     services = [("package-cache", "package cache", cache)]
     if project.mcp.proxy.worker_access:
-        services.append(("mcp-proxy", "MCP proxy", target.mcp_proxy))
+        services.append(("mcp-proxy", "MCP proxy", proxy))
+        if (proxy.host, proxy.port) == (cache.host, cache.port):
+            raise CompileError("the package cache and the MCP proxy need different ports")
     else:
         findings.append(
             Finding(
@@ -566,7 +584,7 @@ def compile_sandbox(
             Severity.WARNING,
             "services",
             "platform services must have private addresses, so that the host-less endpoint "
-            "never admits them; the MCP proxy is outside the middleware",
+            "never admits them",
         )
     )
     for _, label, service in services:
@@ -598,25 +616,35 @@ def compile_sandbox(
         ),
         binaries=binaries,
     )
-    raw_services = [(key, label, service) for key, label, service in services if service != cache]
-    for key, label, service in raw_services:
-        network_policies[f"sandbox-science-{key}"] = NetworkPolicy(
-            name=f"Sandbox Science {label}",
-            endpoints=(Endpoint(host=service.host, ports=(service.port,), protocol="tcp"),),
+    config: dict[str, dict[str, str | int]] = {
+        "policy": {"name": project.metadata.name, "digest": policy.digest},
+        "package_cache": {"host": cache.host, "port": cache.port},
+    }
+    if project.mcp.proxy.worker_access:
+        # Inspected as well: the middleware lets worker code reach the MCP proxy,
+        # which decides each tool call.
+        network_policies["sandbox-science-mcp-proxy"] = NetworkPolicy(
+            name="Sandbox Science MCP proxy",
+            endpoints=(
+                Endpoint(
+                    host=proxy.host,
+                    ports=(proxy.port,),
+                    protocol="rest",
+                    enforcement="enforce",
+                    access="full",
+                ),
+            ),
             binaries=binaries,
         )
+        config["mcp_proxy"] = {"host": proxy.host, "port": proxy.port}
+    # OpenShell selects middleware by host alone, never by port: excluding a
+    # service host would take every port on that host out of the middleware.
     middleware = NetworkMiddleware(
         middleware=target.middleware,
         order=0,
         on_error="fail_closed",
-        endpoints=MiddlewareSelector(
-            include=("**",),
-            exclude=tuple(sorted(service.host for _, _, service in raw_services)) or None,
-        ),
-        config={
-            "policy": {"name": project.metadata.name, "digest": policy.digest},
-            "package_cache": {"host": cache.host, "port": cache.port},
-        },
+        endpoints=MiddlewareSelector(include=("**",)),
+        config=config,
     )
     findings.append(
         Finding(

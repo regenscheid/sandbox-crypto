@@ -1376,7 +1376,9 @@ network_policies:
     - host: mcp-proxy.sandbox-science.internal
       ports:
       - 8080
-      protocol: tcp
+      protocol: rest
+      enforcement: enforce
+      access: full
     binaries:
     - path: /**
 network_middlewares:
@@ -1387,8 +1389,6 @@ network_middlewares:
     endpoints:
       include:
       - '**'
-      exclude:
-      - mcp-proxy.sandbox-science.internal
     config:
       policy:
         name: permissive-default
@@ -1396,3 +1396,6 @@ network_middlewares:
       package_cache:
         host: package-cache.sandbox-science.internal
         port: 8090
+      mcp_proxy:
+        host: mcp-proxy.sandbox-science.internal
+        port: 8080

@@ -735,15 +735,11 @@ def test_other_requests_to_the_package_cache_are_refused(
 def test_only_the_cache_port_is_the_package_cache(
     middleware: PolicyMiddleware, make_facts: FactsFactory, example: LoadedPolicy
 ) -> None:
-    # Another port on the same host is ordinary egress, decided by the network rules
-    # (here the default), never by the packages section.
+    # Platform services listen on this host; nothing else there is for workers.
     verdict = middleware.evaluate_http(
         cache_facts(make_facts, example, "/pypi/simple/numpy/", port=8091)
     )
-    assert not verdict.allowed
-    assert verdict.decision is not None
-    assert verdict.decision.layer == "default"
-    assert verdict.decision.rule is None
+    assert verdict.reason_code == evaluator.DESTINATION_FORBIDDEN
 
 
 def test_package_escalations_ask_for_the_install_not_the_lookup(
@@ -801,3 +797,96 @@ def test_package_cache_config_is_accepted(
     config = with_cache({"policy": {"name": "permissive-default", "digest": example.digest}})
     assert parse_config(config).package_cache == (CACHE_HOST, CACHE_PORT)
     assert middleware.validate_config(config) is None
+
+
+MCP_HOST = "mcp-proxy.sandbox-science.internal"
+
+
+def with_services(config: dict[str, object]) -> dict[str, object]:
+    return {
+        **with_cache(config),
+        "mcp_proxy": {"host": MCP_HOST, "port": 8080.0},
+    }
+
+
+def test_worker_code_reaches_the_mcp_proxy_when_the_policy_allows_it(
+    middleware: PolicyMiddleware,
+    make_facts: FactsFactory,
+    example: LoadedPolicy,
+    policy_config: Callable[[LoadedPolicy], dict[str, object]],
+) -> None:
+    facts = make_facts(
+        scheme="http",
+        host=MCP_HOST,
+        port=8080,
+        method="POST",
+        path="/mcp",
+        headers=(("content-type", "application/json"),),
+        body=b'{"jsonrpc": "2.0", "method": "tools/list", "id": 1}',
+        config=with_services(policy_config(example)),
+    )
+    verdict = middleware.evaluate_http(facts)
+    assert verdict.allowed
+    assert verdict.decision is not None
+    assert verdict.decision.rule == "mcp.proxy.worker_access"
+
+
+def test_worker_access_false_keeps_worker_code_from_the_mcp_proxy(
+    store: PolicyStore,
+    sandbox_id: str,
+    make_facts: FactsFactory,
+    policy_config: Callable[[LoadedPolicy], dict[str, object]],
+) -> None:
+    loaded = bind_policy(store, sandbox_id, "mcp:\n  proxy: {worker_access: false}\n")
+    middleware = PolicyMiddleware(
+        store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=_NullSink()
+    )
+    facts = make_facts(
+        scheme="http",
+        host=MCP_HOST,
+        port=8080,
+        method="POST",
+        path="/mcp",
+        body=b"{}",
+        config=with_services(policy_config(loaded)),
+    )
+    assert middleware.evaluate_http(facts).reason_code == evaluator.POLICY_DENIED
+
+
+@pytest.mark.parametrize(
+    "host", [CACHE_HOST.upper(), f"{CACHE_HOST}.", "Package-Cache.Sandbox-Science.Internal"]
+)
+def test_service_hosts_are_compared_normalized(
+    middleware: PolicyMiddleware, make_facts: FactsFactory, example: LoadedPolicy, host: str
+) -> None:
+    verdict = middleware.evaluate_http(cache_facts(make_facts, example, "/npm/lodash", host=host))
+    assert verdict.allowed
+    assert verdict.decision is not None
+    assert verdict.decision.rule == "packages.npm"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        pytest.param({"scheme": "ws"}, id="ws-scheme"),
+        pytest.param({"headers": (("sec-websocket-key", "x"),)}, id="ws-key"),
+        pytest.param({"headers": (("upgrade", "websocket"),)}, id="upgrade"),
+    ],
+)
+def test_websocket_requests_to_the_cache_are_refused(
+    middleware: PolicyMiddleware,
+    make_facts: FactsFactory,
+    example: LoadedPolicy,
+    overrides: dict[str, object],
+) -> None:
+    verdict = middleware.evaluate_http(cache_facts(make_facts, example, "/npm/lodash", **overrides))
+    assert verdict.reason_code == evaluator.REQUEST_UNCLASSIFIABLE
+
+
+def test_malformed_service_hosts_are_rejected(example: LoadedPolicy) -> None:
+    base = {"policy": {"name": "permissive-default", "digest": example.digest}}
+    for host in ("-bad-", "a..b", "fe80::1%eth0"):
+        with pytest.raises(evaluator.PolicyConfigError):
+            parse_config({**base, "mcp_proxy": {"host": host, "port": 8080}})
+    with pytest.raises(evaluator.PolicyConfigError):
+        parse_config({**base, "other_service": {"host": "x.internal", "port": 1}})

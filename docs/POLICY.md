@@ -110,10 +110,12 @@ Tool names are matched as text, so a broad pattern can admit a tool that writes 
 
 Packages come from five ecosystems through the package cache: `pypi`, `conda`, `cargo`, `go` and `npm` ([package cache](PACKAGE-CACHE.md)). Each has an entry in `packages` with an `action`.
 - **Package files and index lookups.** The `action` applies to package files. An index lookup (a version list, conda's repodata, Go's checksum database) installs nothing, so it is allowed unless the action is `deny`. An escalation therefore asks about the install, not about the index reads that the solver needs first.
-- **Unlisted ecosystems.** An ecosystem without an entry takes `defaults.action`, by the same rule.
+- **Unlisted ecosystems.** An ecosystem without an entry takes `defaults.action`, by the same rule. Unconfigured conda allows only the `conda-forge` channel.
 - **conda channels.** A request for a channel that `packages.conda.channels` does not list is denied, whether it is for an index or a package file.
 - **Names.** Names are compared in normalized form: PEP 503 for PyPI, and lowercase with `_` read as `-` for crates.
-- **Other routes.** Registries are reachable only through the cache: the floor denies their hosts for generic HTTP.
+- **Pool ceiling.** The ceiling applies to the registries each ecosystem fetches from, so a pool that forbids those hosts gets no packages.
+- **Go module origins.** The Go module proxy fetches a module it lacks from the module's origin, so a Go module request, including a checksum-database lookup, is also decided as a read (`GET`) of the origin host under the network rules. The more restrictive of the two decisions applies. Otherwise a lookup for a made-up module would send data to a host the rules forbid.
+- **Other routes.** Registries are reachable only through the cache. The floor denies their hosts for generic HTTP, including known aliases and mirrors (`registry.npmjs.com`, `unpkg.com`, `test.pypi.org`, `prefix.dev`, and every host under `pythonhosted.org`, `anaconda.org`, `prefix.dev` and `crates.io`). The list is a denylist, so a mirror nobody listed is a rule's to deny. Installs straight from version control (`pip install git+https://…`, Cargo and npm git dependencies, Go without a proxy) are ordinary git and HTTP requests: the network rules decide them, not `packages`.
 - **Other requests.** Any request to the cache that is not a GET or HEAD of a path in its layout is unclassifiable and denied. That covers search, audit, publishing and logins.
 
 ### Escalation timeout
@@ -153,8 +155,13 @@ The compiler in `sandbox_science.policy.openshell` (D69) produces OpenShell v0.1
     - Hosts that only `*` rules or the default reach are not resolvable yet. On-demand admission will add them: when OpenShell drafts a proposal for a blocked host, the orchestrator approves it if the policy could allow some request to that host (planned, D69).
   - **The policy middleware** is attached to every host (`**`, `fail_closed`). OpenShell calls it for each admitted request, after its network rules and before injecting credentials. The middleware applies this library to the request, so every rule in this file is enforced exactly, including requests to hosts that providers admit. [Policy middleware](POLICY-MIDDLEWARE.md) describes the service.
   - **Escalations** are denied with the reason code `approval_required` and recorded as pending requests; the agent retries after approval.
-  - **The package cache** is an inspected endpoint behind the middleware. OpenShell admits only reads to it, and accepts the `%2F` in npm's scoped names. The middleware recognizes requests to the cache's host and port, which the compiler writes into its config, and decides them as package operations.
-  - **Platform services** must have private addresses, so that the host-less endpoint never admits them. The MCP proxy, with worker access, is a raw TCP endpoint outside the middleware. A single-host deployment runs its services at `host.openshell.internal`. The floor keeps project rules away from that name, which would otherwise reach every service on the gateway host.
+  - **Platform services** are inspected endpoints behind the middleware too. The compiler writes each service's host and port into the middleware's config.
+    - The package cache: OpenShell admits only reads to it, and accepts the `%2F` in npm's scoped names. The middleware decides its requests as package operations.
+    - The MCP proxy, with worker access: the middleware lets worker code reach it, and the MCP proxy decides each tool call.
+    - Other ports on a service host are denied.
+    - Nothing is excluded from the middleware, because OpenShell selects middleware by host alone: excluding a service host would take every port on it out of the middleware.
+  - **Service hosts.** Platform services must have private addresses, so that the host-less endpoint never admits them. A single-host deployment (the VM driver) runs them at `host.openshell.internal` on different ports. The floor keeps project rules away from that name, which would otherwise reach every service on the gateway host.
+  - **Reserved hosts.** The compiler does not admit hosts the library always denies (registries, declared MCP servers' hosts, platform service hosts), even when a rule names them, so that the middleware is never the only barrier.
 - **The MCP proxy's sandbox** gets one inspected `protocol: mcp` endpoint per declared server, in `enforce` mode, with the server URL's path as an exact selector.
   - **Methods and tools.** The MCP protocol methods are allowed explicitly, as OpenShell requires. Allowed tools are listed by exact name or pattern, and deny entries are added only to carve exceptions out of allow patterns, since OpenShell denies everything else.
   - **Escalated tools** stay denied at this fence; approved grants are not compiled in yet.
@@ -195,6 +202,9 @@ Five adversarial review rounds of the library (2026-10-10, pinned by `test_revie
 - The policy middleware sees host names only, so address checks for traffic it decides rest on OpenShell's admission endpoints (see above).
 - The MCP host floor matches the declared host, so another name for a server declared by name (an alias, or the same app under another domain) is not recognized. MCP credentials stay in the MCP proxy, so such a request carries none, and writes still escalate as generic `http`. The MCP proxy must verify the upstream TLS certificate against the declared host.
 - Visible filler, such as `"1   .   .   ."`, can still push the end of a line toward the 160-column limit; review long lines in full.
+- Index lookups under an `escalate` package action still bring index data into the sandbox (npm package documents, PyPI metadata, Go `.mod` files). They install nothing, but the bytes come from whoever published the package.
+- The package cache is shared by every project on the host, so cache timing reveals whether some sandbox fetched a file before.
+- OpenShell v0.1.3 (outside this code): a host written with two trailing dots (`example.com..`) through OpenShell's explicit proxy matches no middleware selector, so no middleware runs. VM sandboxes cannot reach the explicit proxy; report it upstream before relying on container drivers in open-internet mode.
 - Some servers interpret paths in ways the classifier does not model, such as case-insensitive matching or fullwidth letters on Windows; this is why path denies are weak.
 
 ## Open items
