@@ -4,7 +4,7 @@ import { visible } from './text';
 
 describe('visible', () => {
   it('shows each bidirectional control as its code point', () => {
-    expect(visible('access‮ ⁦// admin⁩ ‎‏؜')).toBe(
+    expect(visible('access\u202E \u2066// admin\u2069 \u200E\u200F\u061C')).toBe(
       'access⟦U+202E⟧ ⟦U+2066⟧// admin⟦U+2069⟧ ⟦U+200E⟧⟦U+200F⟧⟦U+061C⟧',
     );
   });
