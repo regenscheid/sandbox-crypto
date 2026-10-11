@@ -200,8 +200,9 @@ def _rule_terms(
     """Escalation terms for the tied escalate rules ("Escalation timeout").
 
     The shortest timeout applies. The operation proceeds as an alert on timeout
-    only if every tied rule is read-only and permits it, the request carries no
-    credential and no tied rule's limit is exceeded. The model already restricts
+    only if every tied rule is read-only and permits it, and no tied rule's limit
+    is exceeded. A request that may carry a credential proceeds only if every
+    tied rule also sets ``allow_credentialed``. The model already restricts
     ``on_timeout: allow`` to read-only rules; this rechecks it so a hand-built
     model cannot widen it.
     """
@@ -218,8 +219,11 @@ def _rule_terms(
         and rule.escalation.on_timeout is OnTimeout.ALLOW
         for rule in rules
     )
+    credentials_permitted = not credentialed or all(
+        rule.escalation is not None and rule.escalation.allow_credentialed for rule in rules
+    )
     on_timeout = (
-        Action.ALERT if permitted and not credentialed and not limit_exceeded else Action.DENY
+        Action.ALERT if permitted and credentials_permitted and not limit_exceeded else Action.DENY
     )
     return EscalationTerms(timeout=timeout, on_timeout=on_timeout)
 
