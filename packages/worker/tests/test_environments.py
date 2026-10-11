@@ -541,15 +541,25 @@ async def test_policy_add_stores_revisions_for_environments(
     assert main(["policy", "add", "--settings", str(settings), str(broken)]) == 1
 
 
-async def test_sandbox_names_are_stable_short_and_distinct() -> None:
+@pytest.mark.parametrize(
+    "environment_id",
+    ["env-1", "ENV-1", "env_1", "env.1", "p-img-default", "x" * 128, "a--b---c", "-", "abcdef-hij"],
+)
+async def test_sandbox_names_fit_openshells_limit(environment_id: str) -> None:
+    # OpenShell v0.1.3 refuses names over 19 characters (lab 12), and uses "--" itself.
+    name = sandbox_name(environment_id)
+    assert len(name) <= 19
+    assert re.fullmatch(r"ss-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-[0-9a-f]{8}", name)
+    assert "--" not in name
+    assert sandbox_name(environment_id) == name
+
+
+async def test_sandbox_names_are_distinct() -> None:
     names = {
-        sandbox_name(environment_id) for environment_id in ("env-1", "ENV-1", "env_1", "env.1")
+        sandbox_name(environment_id)
+        for environment_id in ("env-1", "ENV-1", "env_1", "env.1", "p-img-default", "p-img-defaulx")
     }
-    assert len(names) == 4
-    for name in names:
-        assert re.fullmatch(r"ss-[a-z0-9-]+-[0-9a-f]{8}", name)
-    assert sandbox_name("env-1") == sandbox_name("env-1")
-    assert len(sandbox_name("x" * 128)) <= 52
+    assert len(names) == 6
 
 
 # On-demand admission (D69).
