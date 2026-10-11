@@ -491,12 +491,14 @@ def test_an_alert_that_cannot_be_recorded_is_denied(
     assert verdict.reason_code == evaluator.AUDIT_UNAVAILABLE
 
 
-def test_an_escalation_that_cannot_be_recorded_is_still_denied(
+def test_an_escalation_that_cannot_be_recorded_is_denied_without_awaiting_approval(
     middleware: PolicyMiddleware, make_facts: FactsFactory, sink: Sink
 ) -> None:
+    # No permission request was stored, so "approval_required" would send the agent waiting.
     sink.fail = True
     verdict = middleware.evaluate_http(make_facts(method="DELETE"))
-    assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
+    assert not verdict.allowed
+    assert verdict.reason_code == evaluator.AUDIT_UNAVAILABLE
 
 
 READ_ESCALATION = """\
