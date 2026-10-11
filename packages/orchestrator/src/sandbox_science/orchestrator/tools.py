@@ -41,9 +41,10 @@ _TIMEOUT = {"type": "number", "exclusiveMinimum": 0, "description": "Wall-time l
 SAGE: Final = ToolSpec(
     "sage",
     "Run SageMath code in the session's persistent Sage kernel inside the project sandbox. "
-    "Sage syntax applies: ^ is exponentiation and integer division gives exact rationals. "
-    "Variables persist between calls until that kernel restarts. Results include their LaTeX "
-    "form when Sage gives one.",
+    "Sage syntax applies: ^ is exponentiation, 1/3 is an exact rational, and integer literals "
+    "are Sage Integers (convert them with int() before json.dumps). Variables persist between "
+    "calls until that kernel restarts. Results come back as plain text; run %display latex "
+    "first, or call latex(x), to get LaTeX.",
     {
         "type": "object",
         "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
