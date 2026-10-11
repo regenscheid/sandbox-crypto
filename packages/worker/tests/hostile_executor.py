@@ -141,6 +141,9 @@ for line in sys.stdin.buffer:
         if MODE == "hello_bad":
             location = "not-an-object"
         reply(request["id"], protocol=1, languages=["python"], location=location)
+    elif op == "usage":
+        cpu = 10**400 if MODE == "huge_cpu" else 1.5
+        reply(request["id"], cpu_seconds=cpu, kernels=0, running=0)
     elif op in ("shell", "cell"):
         reply(request["id"])
         run(request["execution"])
@@ -151,3 +154,5 @@ for line in sys.stdin.buffer:
     else:
         error = {"kind": "invalid_request", "message": f"unknown operation {op!r}"}
         send({"type": "reply", "id": request.get("id"), "ok": False, "error": error})
+        if MODE == "deaf" and op == "probe":
+            time.sleep(3600)  # stops reading its requests, as a stopped process would

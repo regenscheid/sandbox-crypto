@@ -195,16 +195,24 @@ Things to know:
 Environments persist, but need not keep running ([projects and sessions](PROJECTS-AND-SESSIONS.md), "Provisioning and persistence"). With `suspend_after` set, the worker stops the sandbox of an environment nobody is using, and starts it again on the next use (W3):
 
 - **Idle** means three things for `suspend_after` seconds:
-  - no execution ran there;
-  - the worker was asked nothing about it (calls, files, capabilities);
-  - its kernels used almost no CPU: under 2% of one core, sampled from the executor (`usage`). So a computation left running in a kernel thread keeps the environment up.
+  - no execution ran there, and no other request was in flight (file operations, publication, kernel restarts, closing a session);
+  - the environment did not change: it was not created, resumed, revised or given admitted hosts;
+  - its kernels used almost no CPU: under 2% of one core, sampled from the executor (`usage`), so a computation left running in a kernel thread keeps the environment up. Two samples from the same executor are needed, and a counter that went down tells nothing.
+- **Not seen as use:** work that waits rather than computes (a download, a remote job being polled), and the CPU of children a process reaps automatically by ignoring `SIGCHLD`. Such work ends with the suspension; the next cell reports the lost kernel state.
 - **Suspending:**
-  1. The worker checks again, under the execution manager's lock, that nothing started meanwhile.
-  2. It stops the executor and runs `openshell sandbox stop`, and records the environment as `stopped`.
+  1. The worker checks again, under the execution manager's lock, that nothing started meanwhile. It forgets the executor before closing it, so a request arriving during the close starts afresh instead of using an executor nobody tracks.
+  2. It records the environment as `stopped`, then runs `openshell sandbox stop`.
   3. OpenShell keeps a stopped sandbox's writable disk: the session workspaces, the shared area and installed tools survive. Its identity and policy survive too, including hosts admitted on demand and the middleware's binding.
   4. Kernels do not survive. The next cell in a session that had a kernel reports `state_lost`, as after any executor restart.
-- **Resuming:** any use of a stopped environment first runs `openshell sandbox start` and waits until the sandbox is ready. That covers executions, file operations, capabilities, `create` with the same request, and a policy revision. A request that arrives while a suspension is stopping the sandbox waits for it, then starts it again. If the sandbox comes back with another ID, the worker refuses it.
-- **Trust.** The executor reports the CPU time, and research code may take the executor over. It can only keep its own environment running, or let it be suspended.
+- **Resuming.** Any use of a stopped environment first resumes it: an execution, a file operation, capabilities, `create` with the same request, or a policy revision.
+  - The worker reads the sandbox's phase. If a stop failed or was cut short, the sandbox is still ready, and it carries on. Otherwise it runs `openshell sandbox start` and waits up to three minutes for the sandbox to be ready.
+  - Phases that cannot lead there (`Error`, `Deleting`, `Completed`) fail at once, and after a failed start the next minute's uses fail at once too.
+  - A request that arrives while a suspension is stopping the sandbox waits for it, then starts it again.
+  - If the sandbox is gone, or comes back with another ID, the worker stops it, records the environment as `deleted` and asks for it to be created again.
+- **Cancelling.** A cancel goes only to the executor its execution was sent to, so it never starts a sandbox or an executor.
+- **Trust.** The executor reports the CPU time, and research code may take the executor over. It can keep its own environment running, or let it be suspended, and nothing else:
+  - each sample has a 15 s limit, and environments are sampled eight at a time;
+  - a request waits at most 30 s to be written, so an executor that stopped reading its requests holds up no other environment.
 
 ## PDFs
 

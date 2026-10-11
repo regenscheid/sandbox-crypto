@@ -34,17 +34,19 @@ records every decision, and decides the recorded hosts again under each new revi
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
 import re
 import sqlite3
 import threading
+import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, NoReturn, cast
 
 from pydantic import ValidationError
 
@@ -83,6 +85,10 @@ _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLL_SECONDS: Final = 1.0
 _POLICY_TIMEOUT: Final = 120
+_RESUME_TIMEOUT: Final = 180.0
+_START_BACKOFF: Final = 60.0
+_DEAD_PHASES: Final = frozenset({"Error", "Deleting", "Completed"})
+"""OpenShell sandbox phases from which no sandbox becomes ready."""
 MAX_POLICY_YAML: Final = 320 * 1024
 """The largest compiled policy, as YAML, that admission grows to. OpenShell limits a
 sandbox's policy to 256 KiB as protobuf, which is smaller than its YAML."""
@@ -320,6 +326,7 @@ class Environments:
         self.release_idle: ReleaseIdle | None = None
         """Stops the executor unless the environment was used since a time; the manager sets it."""
         self._locks: dict[str, asyncio.Lock] = {}
+        self._start_failures: dict[str, tuple[float, str]] = {}
 
     def close(self) -> None:
         self.records.close()
@@ -509,6 +516,7 @@ class Environments:
             if info.sandbox_id is not None:
                 self.store.unbind(info.sandbox_id)
             self.records.forget(environment_id)
+            self._start_failures.pop(environment_id, None)
             deleted = info.model_copy(
                 update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
             )
@@ -547,12 +555,22 @@ class Environments:
                 environment_id, idle_since
             ):
                 return False
-            await self.cli.run("sandbox", "stop", info.sandbox)
+            # Recorded first: if the stop fails, or the worker stops during it, the next
+            # use reads the sandbox's actual phase, and starts it or carries on.
             self.records.save(
                 info.model_copy(
                     update={"state": EnvironmentState.STOPPED, "updated_at": datetime.now(UTC)}
                 )
             )
+            try:
+                await self.cli.run("sandbox", "stop", info.sandbox)
+            except WorkerError as error:
+                _log.warning(
+                    "could not stop sandbox %s (%s); its next use checks it",
+                    info.sandbox,
+                    error.message,
+                )
+                return False
             _log.info("suspended environment %s (sandbox %s)", environment_id, info.sandbox)
             return True
 
@@ -572,17 +590,37 @@ class Environments:
     # Steps.
 
     async def _start(self, info: EnvironmentInfo) -> EnvironmentInfo:
-        """Start a stopped environment's sandbox; return any other environment unchanged."""
+        """Start a stopped environment's sandbox; return any other environment unchanged.
+
+        The sandbox's actual phase decides: a stop that failed left it ready. A start
+        that fails is not tried again for a while, so that queued requests fail fast.
+        """
         if info.state is not EnvironmentState.STOPPED:
             return info
-        started = datetime.now(UTC)
-        await self.cli.run("sandbox", "start", info.sandbox, timeout=self.settings.create_timeout)
-        sandbox_id = await self._wait_ready(info.sandbox)
-        if sandbox_id != info.sandbox_id:
-            # OpenShell keeps a stopped sandbox's identity; another one is not this environment's.
+        failed = self._start_failures.get(info.environment_id)
+        if failed is not None and time.monotonic() - failed[0] < _START_BACKOFF:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,
-                f"sandbox {info.sandbox} came back as {sandbox_id}, not {info.sandbox_id}",
+                f"sandbox {info.sandbox} failed to start a moment ago ({failed[1]}); "
+                "try again later",
+            )
+        started = datetime.now(UTC)
+        timeout = min(self.settings.create_timeout, _RESUME_TIMEOUT)
+        try:
+            document = await self.cli.sandbox(info.sandbox)
+            if document is None:
+                await self._abandon(info, f"sandbox {info.sandbox} is gone")
+            elif document.get("phase") != "Ready":
+                await self.cli.run("sandbox", "start", info.sandbox, timeout=timeout)
+            sandbox_id = await self._wait_ready(info.sandbox, timeout)
+        except WorkerError as error:
+            self._start_failures[info.environment_id] = (time.monotonic(), error.message)
+            raise
+        self._start_failures.pop(info.environment_id, None)
+        if sandbox_id != info.sandbox_id:
+            # OpenShell keeps a stopped sandbox's identity; another one is not this environment's.
+            await self._abandon(
+                info, f"sandbox {info.sandbox} came back as {sandbox_id}, not {info.sandbox_id}"
             )
         ready = info.model_copy(
             update={"state": EnvironmentState.READY, "updated_at": datetime.now(UTC)}
@@ -591,6 +629,21 @@ class Environments:
         seconds = (ready.updated_at - started).total_seconds()
         _log.info("resumed environment %s in %.1f s", info.environment_id, seconds)
         return ready
+
+    async def _abandon(self, info: EnvironmentInfo, reason: str) -> NoReturn:
+        """Give up an environment whose sandbox is gone or not its own, so it is created again."""
+        with contextlib.suppress(WorkerError):
+            await self.cli.run("sandbox", "stop", info.sandbox)
+        if info.sandbox_id is not None:
+            with contextlib.suppress(StoreError):
+                self.store.unbind(info.sandbox_id)
+        self.records.forget(info.environment_id)
+        self.records.save(
+            info.model_copy(
+                update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
+            )
+        )
+        raise WorkerError(ErrorKind.UNAVAILABLE, f"{reason}; create the environment again")
 
     def _policy(self, revision: str) -> LoadedPolicy:
         try:
@@ -737,14 +790,18 @@ class Environments:
         await self.cli.run(*args, timeout=self.settings.create_timeout)
         return await self._wait_ready(name)
 
-    async def _wait_ready(self, name: str) -> str:
-        """Wait until the sandbox is ready; return its ID."""
+    async def _wait_ready(self, name: str, timeout: float | None = None) -> str:
+        """Wait until the sandbox is ready; return its ID. Phases that cannot lead there fail."""
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.settings.create_timeout
+        limit = self.settings.create_timeout if timeout is None else timeout
+        deadline = loop.time() + limit
         while True:
             document = await self.cli.sandbox(name)
             if document is None:
-                raise WorkerError(ErrorKind.UNAVAILABLE, f"sandbox {name} vanished after creation")
+                raise WorkerError(ErrorKind.UNAVAILABLE, f"sandbox {name} vanished")
+            phase = document.get("phase")
+            if phase in _DEAD_PHASES:
+                raise WorkerError(ErrorKind.UNAVAILABLE, f"sandbox {name} is {phase}")
             admission = document.get("configuration_admission")
             if isinstance(admission, dict):
                 state = cast(dict[str, object], admission).get("state")
@@ -759,8 +816,7 @@ class Environments:
                 return sandbox_id
             if loop.time() > deadline:
                 raise WorkerError(
-                    ErrorKind.UNAVAILABLE,
-                    f"sandbox {name} was not ready after {self.settings.create_timeout:.0f} s",
+                    ErrorKind.UNAVAILABLE, f"sandbox {name} was not ready after {limit:.0f} s"
                 )
             await asyncio.sleep(_POLL_SECONDS)
 
