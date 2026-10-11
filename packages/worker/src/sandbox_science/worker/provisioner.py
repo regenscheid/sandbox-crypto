@@ -37,7 +37,7 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol
 
 from pydantic import ValidationError
@@ -62,7 +62,7 @@ from sandbox_science.contracts.provisioning import MAX_FILES, MAX_TEXT, Reason, 
 from sandbox_science.contracts.revisions import MAX_PROBE_OUTPUT
 from sandbox_science.contracts.worker import MAX_TIMEOUT_SECONDS
 from sandbox_science.policy import Action, HardFloor, LoadedPolicy, PoolCeiling
-from sandbox_science.policy.approvals import RequestKey
+from sandbox_science.policy.approvals import VALID_UNTIL, RequestKey
 from sandbox_science.policy.ceiling import effective_resources
 
 from . import resolution
@@ -90,6 +90,9 @@ LOCKFILE_WAIT: Final = 10.0
 """Seconds an operation waits for a revision's lockfile to arrive."""
 LOOK_TIMEOUT: Final = 120.0
 """Seconds a look at the packages may take, after an install step that reported no revision."""
+GRANT_MARGIN: Final = timedelta(minutes=30)
+"""How long a permission request grants beyond its wait and its install's time limit: its
+own deadline (``valid_until``), which holds even if the worker fails to withdraw it."""
 MAX_WAIT: Final = 60.0
 """The longest a client may ask ``wait`` to wait for a change."""
 MAX_QUEUED: Final = 32
@@ -204,6 +207,9 @@ class Provisioner:
         self._ops: dict[str, _Op] = {}
         self._queues: dict[str, list[str]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
+        self._owed: set[str] = set()
+        """Operations that ended while their permission requests could not be withdrawn:
+        tried again as each operation ends, and when the worker starts."""
 
     # The API.
 
@@ -216,11 +222,13 @@ class Provisioner:
         permission requests are withdrawn, those a crash left unnoted included, and an
         install cut short leaves its environment needing recovery (CP-13)."""
         unfinished = self.store.unfinished_provisions()
-        if unfinished and self.permissions is not None:
+        if self.permissions is not None:
+            # Nothing runs yet: no request of an operation this worker knows may stay open,
+            # whether a crash, a stop or a failed withdrawal left it.
             try:
                 await asyncio.to_thread(
                     self.permissions.withdraw_operations,
-                    [record.provision_id for record in unfinished],
+                    self.store.provision_ids(),
                     "the worker restarted",
                     self.clock(),
                 )
@@ -450,8 +458,9 @@ class Provisioner:
                 await self._end(op, failed)
             except Exception:
                 _log.exception("could not record the end of %s", op.record.provision_id)
-                if op.record.permission_request is not None:
-                    await self._withdraw(op.record.permission_request, "its operation failed")
+                await self._close(
+                    op.record.provision_id, op.record.permission_request, "its operation failed"
+                )
         finally:
             self._release(op)
 
@@ -882,6 +891,13 @@ class Provisioner:
             # The agent's words, as text the store can hold whatever the client sent.
             "purpose": request.purpose[:500].encode("utf-8", "replace").decode("utf-8"),
             "escalation": {"timeout_seconds": int(timeout.total_seconds()), "on_timeout": "deny"},
+            "asked": _asked(request),
+            VALID_UNTIL: (
+                self.clock()
+                + timeout
+                + timedelta(seconds=_install_timeout(governing))
+                + GRANT_MARGIN
+            ).isoformat(timespec="seconds"),
             "files": [
                 {"path": path, **_described(file)}
                 for path, file in zip(decided.paths, decided.files, strict=True)
@@ -910,9 +926,18 @@ class Provisioner:
             f"{minutes} minutes.",
         )
         _log.info("provisioning %s waits for permission request %d", op.record.provision_id, seq)
-        await self._await_answer(op, seq, self.permissions)
+        await self._await_answer(op, seq, self.permissions, self.clock() + timeout, timeout)
 
-    async def _await_answer(self, op: _Op, seq: int, permissions: Permissions) -> None:
+    async def _await_answer(
+        self,
+        op: _Op,
+        seq: int,
+        permissions: Permissions,
+        deadline: datetime,
+        timeout: timedelta,
+    ) -> None:
+        """Wait for the answer, until ``deadline``: its own, so that a store the worker can
+        no longer read cannot hold the environment's turn for ever."""
         while True:
             if op.cancelled.is_set():
                 await self._withdraw(seq, "the operation was cancelled")
@@ -955,10 +980,9 @@ class Provisioner:
                     next_step="The user refused these packages. Do not ask again for them "
                     "unless the user says so.",
                 )
-            pending = permissions.pending(seq)
-            if pending is not None and pending.expired(now):
+            if now >= deadline:
                 await self._withdraw(seq, "nobody answered it in time")
-                minutes = max(1, round(pending.timeout.total_seconds() / 60))
+                minutes = max(1, round(timeout.total_seconds() / 60))
                 raise _Stop(
                     ProvisionOutcome.DENIED,
                     "permission_timed_out",
@@ -974,13 +998,41 @@ class Provisioner:
                 await asyncio.wait_for(op.cancelled.wait(), self.poll)
 
     async def _withdraw(self, seq: int, reason: str) -> None:
-        """Deny a permission request nobody answered, so it leaves the operator's list."""
+        """Close a permission request for good, as its wait ends; its operation's end closes
+        it again if this fails."""
         if self.permissions is None:
             return
         try:
             await asyncio.to_thread(self.permissions.withdraw, seq, reason, self.clock())
         except PermissionStoreError as exc:
             _log.warning("could not withdraw permission request %d: %s", seq, exc)
+
+    async def _close(self, provision_id: str, seq: int | None, reason: str) -> None:
+        """Close every permission request of an operation that ends, and those still owed
+        by operations before it; one that cannot be closed now stays owed."""
+        if self.permissions is None:
+            return
+        for owed in sorted(self._owed - {provision_id}):
+            try:
+                await asyncio.to_thread(
+                    self.permissions.withdraw_operations,
+                    [owed],
+                    "its operation ended",
+                    self.clock(),
+                )
+                self._owed.discard(owed)
+            except PermissionStoreError:
+                break  # the store is still out of reach
+        if seq is None and provision_id not in self._owed:
+            return  # it asked nothing: a request a stop cut short is closed at the next start
+        try:
+            await asyncio.to_thread(
+                self.permissions.close_operation, provision_id, seq, reason, self.clock()
+            )
+            self._owed.discard(provision_id)
+        except PermissionStoreError as exc:
+            self._owed.add(provision_id)
+            _log.warning("could not close the permission requests of %s: %s", provision_id, exc)
 
     async def _install(
         self, op: _Op, governing: Governing, conda: Sequence[str], decided: Decided
@@ -1058,10 +1110,12 @@ class Provisioner:
                 "provisioning %s could not look at the packages: %s", op.record.provision_id, exc
             )
             return None
-        # Only a start shows the fingerprint; the revision noted at dispatch is the old one.
+        # Its end reports the fingerprint whatever its start could; the revision noted at
+        # dispatch is the old one, so a look that never started tells nothing.
         if execution.state is not ExecutionState.SUCCEEDED or execution.started_at is None:
             return None
-        return _started_revision(execution)
+        ended = _ended_revision(execution)
+        return ended if ended is not None else _started_revision(execution)
 
     async def _failed_install(
         self,
@@ -1175,11 +1229,28 @@ class Provisioner:
             kind=ErrorKind.INTERNAL,
             message=f"the worker {how} during this operation; request it again",
         )
-        if record.state is ProvisionState.INSTALLING:
+        if record.state is ProvisionState.INSTALLING and not self._unchanged_install(record):
             return self._unseen_install(
                 record, f"the worker {how} during its install", "worker_restarted", error
             )
         return _Stop(ProvisionOutcome.FAILED, "worker_restarted", _STAGES[record.state], error)
+
+    def _unchanged_install(self, record: ProvisionOperation) -> bool:
+        """Whether an install the worker cut short is known to have changed nothing: its end
+        was seen without a change, or its step never started."""
+        if record.revision_after is not None:
+            return record.revision_after == record.revision_before
+        steps: list[Execution] = []
+        for execution_id in record.executions:
+            try:
+                step = self.store.execution(execution_id)
+            except ValidationError:
+                return False  # unreadable: nothing is known
+            if step is not None and step.operation_id.rsplit(".", 1)[-1].startswith("install-"):
+                steps.append(step)
+        if not steps:
+            return True  # the install step was never submitted
+        return steps[-1].started_at is None and steps[-1].state is not ExecutionState.LOST
 
     def _mark(self, environment_id: str, provision_id: str, good: int | None) -> int | None:
         """Mark the environment as needing recovery (CP-13), unless an earlier operation
@@ -1236,7 +1307,7 @@ class Provisioner:
             changes = changes[:MAX_CHANGES]
         if before is not None and after is not None and after - before > 1:
             notes.append(f"other changes came between revision {before} and {after}")
-        extra = resolution.unplanned(changes, decided.files)
+        extra = resolution.unplanned(changes, decided.files, new)
         if extra:
             notes.append(f"installed beyond the decided set: {', '.join(extra[:20])}")
             names = {item.split(" ", 1)[0].removeprefix("conda:") for item in extra}
@@ -1251,7 +1322,9 @@ class Provisioner:
             if agpl:
                 # Refused before download is the rule (CP-9): one came all the same.
                 good = self._mark(environment_id, op.record.provision_id, before)
-                listed = ", ".join(agpl[:20])
+                listed = ", ".join(_clip(name, 80) for name in agpl[:5])
+                if len(agpl) > 5:
+                    listed += f" and {len(agpl) - 5} more"
                 raise _Stop(
                     ProvisionOutcome.NEEDS_RECOVERY,
                     "agpl_license",
@@ -1283,12 +1356,12 @@ class Provisioner:
         failing = [probe for probe in probes if probe.status != "passed"]
         next_step = None
         if failing:
-            at = f"revision {after}" if after is not None else "the new revision"
+            at = f"revision {after}" if after is not None else "the revision after it"
             names = ", ".join(f"{probe.probe} ({probe.status})" for probe in failing)
             notes.append(f"probes that did not pass at {at}: {names}")
             next_step = (
-                f"The install completed, and {at} stands, but {names} did not pass "
-                "(CP-23). Read the probes' output; nothing was uninstalled."
+                f"The install completed, and what it installed stays, but {names} did not "
+                "pass (CP-23). Read the probes' output; nothing was uninstalled."
             )
         raise _Stop(
             ProvisionOutcome.COMPLETED,
@@ -1365,7 +1438,7 @@ class Provisioner:
             "reason": stop.reason,
             "stage": None if completed else stop.stage,
             "error": stop.error,
-            "next_step": stop.next_step,
+            "next_step": _clip(stop.next_step) if stop.next_step is not None else None,
             "ended_at": self.clock(),
             "queue_position": None,
             **stop.updates,
@@ -1378,11 +1451,10 @@ class Provisioner:
         return fields
 
     async def _end(self, op: _Op, stop: _Stop) -> None:
-        """Close the operation's permission request for good, whatever the outcome, so its
+        """Close the operation's permission requests for good, whatever the outcome, so its
         grant ends with it; then record the end, which clients see."""
-        if op.record.permission_request is not None:
-            reason = f"its operation ended {stop.outcome.value}"
-            await self._withdraw(op.record.permission_request, reason)
+        reason = f"its operation ended {stop.outcome.value}"
+        await self._close(op.record.provision_id, op.record.permission_request, reason)
         self._update(op, **self._fields(op.record, stop))
         _log.info(
             "provisioning %s ended %s%s",
@@ -1396,10 +1468,15 @@ class Provisioner:
         request. The worker is stopping, so both happen here, without waiting."""
         if op.record.state is ProvisionState.FINISHED:
             return
-        seq = op.record.permission_request
-        if seq is not None and self.permissions is not None:
+        if self.permissions is not None:
+            # A request still being written is closed when the worker starts again.
             with contextlib.suppress(PermissionStoreError):
-                self.permissions.withdraw(seq, "the worker stopped", self.clock())
+                self.permissions.close_operation(
+                    op.record.provision_id,
+                    op.record.permission_request,
+                    "the worker stopped",
+                    self.clock(),
+                )
         with contextlib.suppress(Exception):
             self._update(op, **self._fields(op.record, self._cut_short(op.record, "stopped")))
 
@@ -1413,6 +1490,15 @@ def _validated(record: ProvisionOperation, **changes: Any) -> ProvisionOperation
             "an update to provisioning operation %s does not validate", record.provision_id
         )
         raise
+
+
+def _asked(request: ProvisionRequest) -> str:
+    """What an operation asks for, as its permission request shows the operator."""
+    if request.capability is not None:
+        return f"the capability {request.capability}"
+    if request.conda:
+        return "Conda: " + ", ".join(request.conda)
+    return "pip: " + ", ".join(request.pip)
 
 
 def _clip(text: str, limit: int = MAX_TEXT) -> str:

@@ -305,23 +305,26 @@ class Store:
         ).fetchall()
         return [found for row in rows if (found := _revision(environment_id, row[0])) is not None]
 
-    def trim_revisions(self, environment_id: str, keep: int) -> list[str]:
-        """Forget all but the environment's ``keep`` newest revisions; return the lockfiles
-        they referenced."""
+    def trim_revisions(self, environment_id: str, keep: int, spare: int | None = None) -> list[str]:
+        """Forget all but the environment's ``keep`` newest revisions, and revision
+        ``spare`` (the last known good of an environment that needs recovery); return the
+        lockfiles they referenced."""
         bound = "SELECT revision FROM revision_entries WHERE environment_id = ?"
         bound += " ORDER BY revision DESC LIMIT 1 OFFSET ?"
         row = self._db.execute(bound, (environment_id, keep - 1)).fetchone()
         if row is None:
             return []
+        spared = -1 if spare is None else spare
         with self._transaction():
             gone = self._db.execute(
                 "SELECT lockfile FROM revision_entries WHERE environment_id = ? AND revision < ?"
-                " AND lockfile IS NOT NULL",
-                (environment_id, int(row[0])),
+                " AND revision != ? AND lockfile IS NOT NULL",
+                (environment_id, int(row[0]), spared),
             ).fetchall()
             self._db.execute(
-                "DELETE FROM revision_entries WHERE environment_id = ? AND revision < ?",
-                (environment_id, int(row[0])),
+                "DELETE FROM revision_entries WHERE environment_id = ? AND revision < ?"
+                " AND revision != ?",
+                (environment_id, int(row[0]), spared),
             )
         return [str(found[0]) for found in gone]
 
@@ -434,6 +437,11 @@ class Store:
             "SELECT record FROM provisions WHERE provision_id = ?", (provision_id,)
         ).fetchone()
         return _provision(str(row[0])) if row else None
+
+    def provision_ids(self) -> list[str]:
+        """Every provisioning operation's ID, oldest first."""
+        rows = self._db.execute("SELECT provision_id FROM provisions ORDER BY submitted")
+        return [str(row[0]) for row in rows.fetchall()]
 
     def unfinished_provisions(self) -> list[ProvisionOperation]:
         """Operations not yet finished, oldest first; unreadable ones are skipped."""

@@ -39,12 +39,14 @@ from aiohttp.test_utils import TestClient, TestServer
 from sandbox_science.contracts import (
     EnvironmentInfo,
     EnvironmentState,
+    ExecutionContext,
     Lockfile,
     ProvisioningQueue,
     ProvisionOperation,
     ProvisionState,
     ResolvedFile,
     RevisionHistory,
+    ShellRequest,
 )
 from sandbox_science.event_store import EventStore, Record, StoreReader
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
@@ -61,7 +63,7 @@ from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.catalog import Catalog
 from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.permissions import Permissions
+from sandbox_science.worker.permissions import Permissions, PermissionStoreError
 from sandbox_science.worker.provisioner import Governing, Provisioner
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
@@ -143,6 +145,7 @@ INDEX: dict[str, dict[str, dict[str, Any]]] = {
         "fakeflint": {"version": "0.7.1", "license": "MIT", "depends": ["fakedep"]},
         "fakedep": {"version": "2.0", "license": "BSD-3-Clause"},
         "agplpy": {"version": "1.0", "license": "AGPL-3.0-or-later"},
+        "gmp": {"version": "6.3.0", "license": "LGPL-3.0-only"},  # as the Conda gmp installs it
     },
 }
 CATALOG = f"""\
@@ -830,6 +833,21 @@ async def test_packages_installed_already_are_already_satisfied(make_world: Fact
 
 
 @pytest.mark.asyncio
+async def test_a_pip_name_a_conda_package_satisfies_is_already_satisfied(
+    make_world: Factory,
+) -> None:
+    world = await make_world()
+    await world.finished((await world.provision("op-1", conda=["gmp"]))["provision_id"])
+    again = await world.finished(
+        (await world.provision("op-2", pip=["gmp"], pip_reason="r"))["provision_id"]
+    )
+    assert again.outcome == "already_satisfied", again
+    assert [(p.probe, p.status, p.output) for p in again.probes] == [
+        ("installed:pypi:gmp", "passed", "gmp 6.3.0 (the Conda package gmp)")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_failing_probe_leaves_the_revision_standing(make_world: Factory) -> None:
     world = await make_world()
     done = await world.finished((await world.provision("op-1", capability="wrong"))["provision_id"])
@@ -1233,21 +1251,81 @@ async def test_a_restarted_worker_ends_what_it_left(make_world: Factory) -> None
     payload: dict[str, object] = {
         "target": key.payload(),
         "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+        "valid_until": (datetime.now(UTC) + timedelta(hours=2)).isoformat(),
         "files": [{"path": path}],
     }
     unnoted = world.sink.append("escalation", "worker", payload).seq
+    # Another was installing: its install step had started, and nobody saw it end.
+    started = "prv-" + "1" * 24
+    step, _ = await world.manager.submit(
+        ShellRequest(
+            operation_id=f"{started}.install-conda",
+            context=ExecutionContext.model_validate(CONTEXT),
+            argv=("true",),
+        )
+    )
+    await world.manager.wait(step.execution_id)
+    cut = left.model_copy(update={"provision_id": started, "executions": (step.execution_id,)})
+    world.store._db.execute(  # pyright: ignore[reportPrivateUsage]
+        "INSERT INTO provisions VALUES (?, ?, ?, ?, 0, 0, ?)",
+        (cut.provision_id, "p1/cut", "x", "env1", cut.model_dump_json()),
+    )
     await world.provisioner.start()
+    # Its install step was never submitted: nothing changed.
     ended = world.store.provision(left.provision_id)
     assert ended is not None
     assert (ended.state, ended.outcome, ended.reason, ended.stage) == (
         "finished",
+        "failed",
+        "worker_restarted",
+        "link",
+    )
+    assert world.withdrawn(unnoted)
+    ended = world.store.provision(started)
+    assert ended is not None
+    assert (ended.outcome, ended.reason, ended.stage) == (
         "needs_recovery",
         "worker_restarted",
         "link",
     )
     assert any("may have changed" in note for note in ended.notes)
-    assert world.withdrawn(unnoted)
     assert (await world.queue()).status == "needs_recovery"
+
+
+class StoreOutOfReach(Permissions):
+    """A permission store whose withdrawals fail until ``reachable`` is set."""
+
+    reachable = False
+
+    def close_operation(self, operation: str, seq: int | None, reason: str, now: Any) -> None:
+        if not self.reachable:
+            raise PermissionStoreError("the event store is locked")
+        super().close_operation(operation, seq, reason, now)
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawal_that_fails_is_owed_and_the_grant_still_ends(
+    make_world: Factory,
+) -> None:
+    world = await make_world(ESCALATE)
+    permissions = StoreOutOfReach(world.events)
+    world.provisioner.permissions = permissions
+    first = await world.waiting((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
+    assert first.permission_request is not None
+    world.answer("approve", first.permission_request)
+    done = await world.finished(first.provision_id)
+    assert done.outcome == "completed"
+    # The withdrawal failed: the request's own deadline still ends the grant.
+    assert not world.withdrawn(first.permission_request)
+    [request] = [r for r in world.records() if r.seq == first.permission_request]
+    until = datetime.fromisoformat(str(request.data()["valid_until"]))
+    assert until - datetime.now(UTC) < timedelta(minutes=30 + 60 + 31)
+    # The next operation to end pays what is owed, once the store answers again.
+    permissions.reachable = True
+    second = await world.finished((await world.provision("op-2", system=["x"]))["provision_id"])
+    assert second.outcome == "denied"
+    assert world.withdrawn(first.permission_request)
+    permissions.close()
 
 
 # The API: idempotency, reserved IDs, bounds, access checks.
