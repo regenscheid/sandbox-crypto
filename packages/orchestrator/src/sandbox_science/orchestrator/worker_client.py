@@ -249,10 +249,16 @@ class WorkerClient:
             params=_project(project_id),
         )
 
-    async def provisioning_queue(self, environment_id: str) -> ProvisioningQueue:
-        """The environment's operations that have not finished, in request order."""
+    async def provisioning_queue(
+        self, environment_id: str, *, project_id: str | None = None
+    ) -> ProvisioningQueue:
+        """The environment's operations that have not finished, in request order; with
+        ``project_id``, only if the environment is that project's."""
         return await self._call(
-            "GET", f"/v1/environments/{environment_id}/provisioning", ProvisioningQueue
+            "GET",
+            f"/v1/environments/{environment_id}/provisioning",
+            ProvisioningQueue,
+            params=_project(project_id),
         )
 
     # Executions.

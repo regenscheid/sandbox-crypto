@@ -179,7 +179,8 @@ class ProvisionTools:
             environment = args.get("environment", self.context.environment_id)
             if not isinstance(environment, str) or not _IDENTIFIER.fullmatch(environment):
                 return _failure(ErrorKind.INVALID_REQUEST, "environment must be an environment ID")
-            return self._queue(await self.client.provisioning_queue(environment))
+            queue = await self.client.provisioning_queue(environment, project_id=project_id)
+            return self._queue(queue)
         if not isinstance(provision_id, str) or not _IDENTIFIER.fullmatch(provision_id):
             return _failure(ErrorKind.INVALID_REQUEST, "operation must be an operation's ID")
         if args.get("cancel") is True:

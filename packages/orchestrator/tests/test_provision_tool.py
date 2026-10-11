@@ -88,7 +88,10 @@ class ScriptedClient(WorkerClient):
         self.cancelled.append(provision_id)
         return self._next(9)
 
-    async def provisioning_queue(self, environment_id: str) -> ProvisioningQueue:
+    async def provisioning_queue(
+        self, environment_id: str, *, project_id: str | None = None
+    ) -> ProvisioningQueue:
+        assert project_id == "p1"
         assert self.request is not None
         waiting = operation(self.request, state="queued", queue_position=1)
         return ProvisioningQueue(
@@ -333,11 +336,11 @@ async def test_the_worker_client_names_the_routes_and_their_parameters(
         _, created = await client.provision(request)
         await client.provision_status("prv-1", after=3, wait=90, project_id="p1")
         await client.cancel_provision("prv-1", project_id="p1")
-        await client.provisioning_queue("env1")
+        await client.provisioning_queue("env1", project_id="p1")
     assert created is True
     assert seen == [
         ("POST", "/v1/provisioning", {}),
         ("GET", "/v1/provisioning/prv-1", {"after": "3", "wait": "60", "project_id": "p1"}),
         ("POST", "/v1/provisioning/prv-1/cancel", {"project_id": "p1"}),
-        ("GET", "/v1/environments/env1/provisioning", {}),
+        ("GET", "/v1/environments/env1/provisioning", {"project_id": "p1"}),
     ]

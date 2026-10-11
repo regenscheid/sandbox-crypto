@@ -553,8 +553,15 @@ async def cancel_provision(request: web.Request) -> web.Response:
 
 
 async def provisioning_queue(request: web.Request) -> web.Response:
-    """The environment's operations that have not finished, in request order (CP-11)."""
+    """The environment's operations that have not finished, in request order (CP-11). With
+    ``project_id``, an environment that is not that project's is ``not_found``."""
     environment_id, _ = _revisions_of(request)
+    project_id = _project(request)
+    if project_id is not None:
+        environments = request.app.get(ENVIRONMENTS)
+        info = environments.records.get(environment_id) if environments is not None else None
+        if info is None or info.project_id != project_id:
+            raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     return _json(_provisioner(request).queue(environment_id))
 
 
