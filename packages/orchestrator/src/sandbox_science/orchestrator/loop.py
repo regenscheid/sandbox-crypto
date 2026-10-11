@@ -15,7 +15,11 @@ SYSTEM_PROMPT: Final = (
     "runs inside the project's sandbox, never on the machine that hosts this conversation. "
     "Use python for computations whose state should persist between calls, shell for "
     "commands, and the file tools to inspect and share files. Publish files that are results. "
-    "Report only what the tools actually returned."
+    "Report only what the tools actually returned. Network access follows the project's "
+    "policy: the first connection to a site the project has not used before can fail with "
+    "'Permission denied' while the platform admits the site, which takes up to half a minute, "
+    "so wait and retry before concluding that a site is blocked. A request that needs "
+    "approval fails with approval_required until someone approves it."
 )
 
 

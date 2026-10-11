@@ -167,11 +167,20 @@ This deliberately relaxes the earlier review proposal (D44) that unknown destina
 The compiler in `sandbox_science.policy.openshell` (D69) produces OpenShell v0.1.3 policy for two kinds of sandbox. The rendered examples are in [examples/openshell](../examples/openshell), generated from the example policy and [targets.yaml](../examples/openshell/targets.yaml).
 
 - **Research sandboxes.** OpenShell's own proxy carries their HTTP and git traffic. It terminates TLS, normalizes requests, checks addresses, injects provider credentials and logs.
-  - **Admission.** The compiled policy admits the destinations the project could reach.
-    - When any wildcard rule or a non-deny `defaults.action` needs it, a host-less endpoint admits public address ranges. Otherwise exact endpoints admit the hosts the rules name.
-    - A sandbox can resolve only the host names an endpoint names: OpenShell's policy DNS answers for nothing else, and VM sandboxes have no other route. Every public host name the rules mention therefore gets an endpoint beside the host-less one, with the same address ranges, and the host-less endpoint itself admits only requests to addresses.
-    - A `*.suffix` rule becomes OpenShell's `**.suffix`. OpenShell needs three labels in a wildcard host, so `*.org` cannot be named and the compiler reports it.
-    - Hosts that only `*` rules or the default reach are not resolvable yet. On-demand admission will add them: when OpenShell drafts a proposal for a blocked host, the orchestrator approves it if the policy could allow some request to that host (planned, D69).
+  - **Admission.** A sandbox can resolve only the host names an endpoint names: OpenShell's policy DNS answers for nothing else, and VM sandboxes have no other route. So the compiled policy names hosts.
+    - Every host that a rule which could allow a request names exactly gets an endpoint. In a policy that reaches hosts it does not name, endpoints for public hosts are limited to public address ranges (`allowed_ips`), as the library's wildcard rule allows only public destinations. Hosts that are not public, such as a LAN name or address a rule names, get endpoints without them, as the library's exact-host rule allows.
+    - A `*.suffix` rule becomes OpenShell's `**.suffix`, with the same ranges. OpenShell needs three labels in a wildcard host, so `*.org` cannot be named and the compiler reports it.
+    - **Admission on demand** (D69). `*` rules and a non-deny `defaults.action` reach hosts nobody can name in advance.
+      - OpenShell refuses the first connection to such a host and drafts a proposal for it.
+      - The worker reads the drafts of the sandboxes it manages. It admits a host when all of these hold:
+        - the host is public and not a platform service host;
+        - the port is one the policy admits;
+        - some request to the host there could be allowed or escalated. URL limits are left out of this check, so under a very small `max_url_bytes` a host can be admitted whose every request is then denied.
+      - An admitted host is named in a new compilation of the same revision, with the public ranges.
+      - An `http` deny rule alone does not keep a host out under a non-deny default: git requests to it still take the default. To keep a host out, deny it for `git` as well, or deny by default.
+      - It never approves the draft. It rejects it, giving its decision as the reason ([worker](WORKER.md#admission-on-demand)).
+      - Addresses are admitted the same way.
+      - In [lab 10](../.agents/docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md), a host was reachable 9 to 20 s after the first refused connection.
   - **The policy middleware** is attached to every host (`**`, `fail_closed`). OpenShell calls it for each admitted request, after its network rules and before injecting credentials. The middleware applies this library to the request, so every rule in this file is enforced exactly, including requests to hosts that providers admit. [Policy middleware](POLICY-MIDDLEWARE.md) describes the service.
   - **Escalations** are denied with the reason code `approval_required` and recorded as pending requests; the agent retries after approval.
   - **Platform services** are inspected endpoints behind the middleware too. The compiler writes each service's host and port into the middleware's config.
@@ -179,11 +188,11 @@ The compiler in `sandbox_science.policy.openshell` (D69) produces OpenShell v0.1
     - The MCP proxy, with worker access: the middleware lets worker code reach it, and the MCP proxy decides each tool call.
     - Other ports on a service host are denied.
     - Nothing is excluded from the middleware, because OpenShell selects middleware by host alone: excluding a service host would take every port on it out of the middleware.
-  - **Service hosts.** Platform services must have private addresses, so that the host-less endpoint never admits them. A single-host deployment (the VM driver) runs them at `host.openshell.internal` on different ports. The floor keeps project rules away from that name, which would otherwise reach every service on the gateway host.
+  - **Service hosts.** Platform services must have private addresses, so that no endpoint for a public host reaches them. A single-host deployment (the VM driver) runs them at `host.openshell.internal` on different ports. The floor keeps project rules away from that name, which would otherwise reach every service on the gateway host.
   - **Reserved hosts.** The compiler does not admit hosts the library always denies (registries, declared MCP servers' hosts, platform service hosts), even when a rule names them, so that the middleware is never the only barrier.
   - **Provider credentials.** Each host in `credentials.providers[].hosts` gets an endpoint on port 443 with `credential_binding` to its provider. Other egress endpoints for the same host leave port 443 out.
-    - The endpoint has the path selector `/**`. That makes it more specific than the host-less and wildcard endpoints that also admit the host on port 443. OpenShell therefore selects it for the host's requests there, and does not require the endpoints to agree on the binding. It repeats their address ranges, on which overlapping endpoints must agree.
-    - Profiles therefore carry no endpoints. A profile that names a host, as OpenShell's example profiles do, would be refused beside the host-less endpoint unless it repeated the compiler's address ranges exactly ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md), where the user chose this arrangement).
+    - The endpoint has the path selector `/**`. That makes it more specific than the wildcard endpoints that also admit the host on port 443. OpenShell therefore selects it for the host's requests there, and does not require the endpoints to agree on the binding. It repeats their address ranges, on which overlapping endpoints must agree.
+    - Profiles therefore carry no endpoints. A profile that names a host, as OpenShell's example profiles do, would be refused beside the compiled endpoints for its host unless it repeated the compiler's address ranges exactly ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md), where the user chose this arrangement).
     - The middleware decides each request to these hosts like any other. OpenShell substitutes the credential afterwards, only there.
     - Some hosts are not bound, and are reported:
       - hosts the floor, the pool ceiling or a platform route rules out;
@@ -202,14 +211,20 @@ Wherever the compiled policy differs from the project policy, it is stricter, an
 The middleware path has these limits, checked against a real gateway on babbage ([lab report](../.agents/docs/agent-reports/babbage-openshell-lab-2026-10-10.md)):
 
 - **Body size.** A request body larger than the middleware's registered `max_payload_bytes` (at most 4 MiB) is blocked, so larger uploads fail.
-- **Names, not addresses.** The middleware sees host names, not resolved addresses. The host-less endpoint's `allowed_ips` keep wildcard rules on public addresses, and the named endpoints beside it share those ranges. That is stricter than the library's exact-host rule, which allows a name to resolve to a private address. A policy without the host-less endpoint keeps that rule.
-- **LAN names.** OpenShell requires overlapping endpoints to agree on `allowed_ips`, so a non-public host name cannot be admitted beside the host-less endpoint. Name the address in the rule instead.
+- **Names, not addresses.** The middleware sees host names, not resolved addresses. So in a policy that reaches hosts it does not name, the `allowed_ips` of endpoints for public hosts carry the address checks. They hold the public address ranges, less every address the library denies whatever the name:
+  - the floor's metadata addresses, such as Azure's 168.63.129.16;
+  - the deployment's `admin_hosts`, which the worker's settings list too;
+  - the pool ceiling's denied addresses;
+  - MCP servers declared by address.
+
+  A name a sandbox chooses, such as one under a wildcard DNS service, cannot reach these. Overlapping endpoints must agree on the ranges, so a wildcard's endpoint and those of the hosts under it carry the same ones. That is stricter than the library's exact-host rule, which allows a public name a rule names exactly to resolve to a private address. A policy without wildcard rules and with a `deny` default keeps that rule; there, and for LAN hosts a rule names exactly, the name is trusted as the library trusts it, and the middleware cannot check where it resolves.
 - **WebSockets.** The library does not support upgrades, so the middleware denies the upgrade request and, as a second check, every WebSocket preflight.
-- **DNS.** Wildcards over a top-level domain cannot be named, and names reached only through `*` rules wait for on-demand admission (see Admission above).
+- **DNS.** Wildcards over a top-level domain cannot be named. Hosts reached only through `*` rules or the default become reachable once the worker admits them, so the first connection to each fails (see Admission above).
+- **Policy reloads.** Each admission is a new compilation, and when a sandbox loads one, OpenShell closes every connection opened under the previous one. An admission therefore interrupts transfers in progress. In lab 10, Python's line-by-line reading of a cut chunked response even ended without an error. Clients that retry recover; check downloads by length or checksum.
 
 | Policy element | Enforced by |
 | --- | --- |
-| Hard floor | OpenShell blocks loopback, link-local and unspecified addresses itself; the middleware applies the rest (metadata and gateway-host names, administration endpoints, MCP hosts, package registries) |
+| Hard floor | OpenShell blocks loopback, link-local and unspecified addresses itself; the middleware applies the rest by name (metadata and gateway-host names, administration endpoints, MCP hosts, package registries), and the compiled address ranges leave out the floor's, the ceiling's and the administration endpoints' public addresses |
 | `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The policy middleware, with this library, behind OpenShell's admission endpoints and address checks |
 | `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox; `worker_access` also decides whether research sandboxes can reach the MCP proxy |
 | `mcp.servers.*.auth` | The connector auth service and OpenShell providers bound with `credential_binding` ([MCP connectors](MCP-CONNECTORS.md), D66, D67) |
@@ -234,7 +249,8 @@ Five adversarial review rounds of the library (2026-10-10, pinned by `test_revie
 - Index lookups under an `escalate` package action still bring index data into the sandbox (npm package documents, PyPI metadata, Go `.mod` files). They install nothing, but the bytes come from whoever published the package.
 - `packages.opam` decides only archives fetched through the package cache, since opam falls back to each archive's own URL (see "Packages"). Rules that stop those downloads stop every other read from those hosts too; the compiler warns when they do not.
 - The package cache is shared by every project on the host, so cache timing reveals whether some sandbox fetched a file before.
-- OpenShell v0.1.3 (outside this code): a host written with two trailing dots (`example.com..`) through OpenShell's explicit proxy matches no middleware selector, so no middleware runs. VM sandboxes cannot reach the explicit proxy; until OpenShell fixes it, container drivers should use closed-internet policies ([bug description](../.agents/upstream/openshell-trailing-dot-host-skips-middleware.md)).
+- OpenShell v0.1.3 (outside this code): a host written with two trailing dots (`example.com..`) through OpenShell's explicit proxy matches no middleware selector, so no middleware runs. VM sandboxes cannot reach the explicit proxy, and since lab 10 compiled policies name every host they admit, so no endpoint matches such a host ([bug description](../.agents/upstream/openshell-trailing-dot-host-skips-middleware.md)).
+- Admission on demand (D69) lets research code choose which public host names the gateway's resolver looks up, after a first refused connection. Those lookups can carry data out in the names, as the URLs of allowed reads can. Each environment admits at most `max_admitted_hosts` hosts.
 - Some servers interpret paths in ways the classifier does not model, such as case-insensitive matching or fullwidth letters on Windows; this is why path denies are weak.
 - Research code can open pseudo-terminals, and OpenShell's VM guest kernel allows `TIOCSTI` (`dev.tty.legacy_tiocsti = 1`). So it can type into any terminal of the sandbox user, such as an interactive `openshell sandbox connect` session. That user could run the same commands directly, so nothing is gained inside the sandbox, but do not type secrets into interactive sessions in research sandboxes.
 - OpenShell v0.1.3 (outside this code) substitutes a bound credential on its port whatever the transport, and has no setting that requires TLS. A sandbox can send plain HTTP to port 443 of a bound host, for example `curl http://api.github.com:443/` from a VM sandbox. That request reaches OpenShell transparently or through a tunnel, which OpenShell labels `https`, so the middleware cannot tell. The credential then travels unencrypted from the gateway to that host's address. The destination cannot be changed, so the exposure is to observers on the network path. Lab 3 saw OpenShell forward such a request to `github.com:443` with no credential error. The middleware refuses the same request through OpenShell's forward proxy, which reports it as plain HTTP ([bug description](../.agents/upstream/openshell-credential-substitution-over-plain-http.md)).

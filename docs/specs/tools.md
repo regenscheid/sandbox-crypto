@@ -79,6 +79,12 @@ Every failure has one of these kinds and a message for the agent, which never co
 | `exception` | The cell raised an exception; its name, value and traceback describe it |
 | `internal` | A worker fault; the attempt's outcome may be unknown and must be reconciled |
 
+Network failures inside research code are the program's own errors, not these kinds. Two come from the platform:
+- **A host the policy allows but does not name.** The first connection to it fails with `Permission denied`, until the worker admits the host on demand, usually within half a minute (D69).
+- **An escalated request.** The policy middleware answers 403 with the reason code `approval_required`. The request works once someone approves it.
+
+The harness's instructions tell the agent to wait and retry.
+
 ## Lifecycle, idempotency and reconnection
 
 1. **Idempotency.** Every submission carries a client operation ID. Submitting the same ID again with the same request returns the same execution. The same ID with a different request is a `conflict`.

@@ -4,6 +4,28 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **Admission on demand, and no host-less endpoint (D69 amended, details proposed;** [lab 10](docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md)**).**
+  - The worker admits hosts that the policy reaches but does not name. It reads the proposals OpenShell drafts for refused connections, and decides each host with the library (`host_reach`, `admission_refusal`). It names admitted hosts in a new compilation of the same revision, with the public address ranges, then rejects the draft with its decision. It never approves a draft, records every decision, and decides recorded hosts again under each new revision.
+  - D69 had the orchestrator approving drafts. The worker does it, because it holds the gateway's credentials (D73).
+  - The lab showed that OpenShell drafts proposals only for connections its own rules refuse. The host-less endpoint made them allowed, so no drafts came.
+  - The compiler therefore no longer emits it:
+    - every host a rule names gets an endpoint;
+    - every other host and address waits for admission;
+    - LAN hosts that a rule names exactly are now admitted, as the library allows.
+  - In the lab, a new host was reachable 9 to 20 s after the first refused connection.
+  - Each admission reloads the sandbox's policy, and OpenShell then closes the sandbox's open connections, cutting transfers in progress. The docs say so.
+  - The harness's instructions tell the agent to retry after `Permission denied`.
+  - Two OpenShell behaviours are described for upstream: refused connections to unapproved names are not proposed when an endpoint allows the host, and a reload closes even connections whose decision did not change.
+  - An adversarial review of the change found one high-severity issue, now fixed.
+    - The issue: endpoints carried the whole public address space. A name the sandbox chose, under a wildcard DNS service, could therefore reach public addresses the library always denies: Azure's metadata address, administration endpoints and the ceiling's denied addresses. The middleware sees only names.
+    - The fix: the ranges now leave those out, and the worker applies the deployment's `admin_hosts`.
+    - Also fixed:
+      - a rule path the classifier refuses stopped admission for every environment;
+      - one sandbox could flood the shared watcher, and its records were never pruned;
+      - in-use hosts could be displaced at the limit;
+      - a failing batch was retried forever;
+      - a host could be recorded as admitted that no endpoint named;
+      - a service under a wildcard was no longer caught.
 - **Project records in the orchestrator (W3).** The harness keeps a record per project: its base profile, policy revision, default environment and sessions. It has the worker create or revise a session's environment before running there.
   - Two sessions in the default environment have separate kernels and workspaces but see each other's files there; a `--dedicated` session gets an environment of its own from the same base profile. A test checks this against the local worker.
   - `session close` stops a session's kernels.

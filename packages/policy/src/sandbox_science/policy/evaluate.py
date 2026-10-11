@@ -6,6 +6,7 @@ docs/POLICY.md defines the semantics; the section names in comments refer to it.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, NamedTuple, assert_never
@@ -20,12 +21,14 @@ from .model import CondaPackages, GitRule, HttpRule, OnTimeout, Packages, Regist
 from .operations import (
     DEFAULT_PORTS,
     GitOperation,
+    GitService,
     HttpOperation,
     HttpRequest,
     McpOperation,
     Operation,
     Origin,
     PackageOperation,
+    Scheme,
     classify_http_request,
     classify_mcp_message,
     path_segments,
@@ -124,6 +127,85 @@ def evaluate_request(
     except ClassificationError as exc:
         return _deny("classification", str(exc), policy)
     return evaluate(operation, policy, ceiling=ceiling, floor=floor, resolved=resolved)
+
+
+UNNAMED_METHOD: Final = "QUERY"
+"""A method no rule can name, standing for every method the rules do not name."""
+
+
+def host_reach(
+    host: str,
+    port: int,
+    policy: LoadedPolicy,
+    *,
+    ceiling: PoolCeiling,
+    floor: HardFloor = DEFAULT_FLOOR,
+) -> Decision:
+    """The least restrictive decision any HTTP or git request to ``host:port`` can get.
+
+    Rules tell requests to one host and port apart only by scheme, method, path
+    and git service. One request for each scheme, each method a rule names plus
+    one it does not, and each path a rule names plus one it does not, therefore
+    meets every combination of matching rules. URL limits are ignored, as if
+    a short enough URL always existed: under a tiny ``max_url_bytes`` this may
+    report a request that no real URL could make. On-demand admission (D69) asks
+    this before it lets a sandbox resolve a host that the policy does not name.
+
+    Raises ClassificationError for an invalid host or port.
+    """
+    rules = policy.policy.network.rules
+    http_rules = [rule for rule in rules if isinstance(rule, HttpRule)]
+    git_rules = [rule for rule in rules if isinstance(rule, GitRule)]
+    methods = sorted({method for rule in http_rules for method in rule.match.methods})
+    # An invalid host or port fails here, before any path is tried.
+    HttpOperation(method="GET", scheme="https", host=host, port=port, path="/", url_bytes=0)
+    operations: list[HttpOperation | GitOperation] = []
+    schemes: tuple[Scheme, ...] = ("https", "http")
+    services: tuple[GitService, ...] = ("upload-pack", "receive-pack")
+    for scheme in schemes:
+        for path in _representative_paths(http_rules):
+            for method in (*methods, UNNAMED_METHOD):
+                # A rule path the classifier refuses, such as one with "::$", matches no
+                # request, so no request stands for it.
+                with contextlib.suppress(ClassificationError):
+                    operations.append(
+                        HttpOperation(
+                            method=method,
+                            scheme=scheme,
+                            host=host,
+                            port=port,
+                            path=path,
+                            url_bytes=0,
+                        )
+                    )
+        for path in _representative_paths(git_rules):
+            for service in services:
+                with contextlib.suppress(ClassificationError):
+                    operations.append(
+                        GitOperation(
+                            service=service,
+                            method="POST",
+                            scheme=scheme,
+                            host=host,
+                            port=port,
+                            repo_path=path,
+                            url_bytes=0,
+                        )
+                    )
+    decisions = (
+        _evaluate_network(operation, policy, ceiling, floor, ()) for operation in operations
+    )
+    return min(decisions, key=lambda decision: decision.action.restrictiveness)
+
+
+def _representative_paths(rules: Sequence[HttpRule | GitRule]) -> list[str]:
+    """Every path the rules name, plus one whose first segment none of them names."""
+    named = sorted({path for rule in rules for path in rule.match.paths})
+    first = {path_segments(path)[0] for path in named}
+    fresh = "x"
+    while fresh in first:
+        fresh += "x"
+    return [*named, f"/{fresh}"]
 
 
 def evaluate_mcp_message(
