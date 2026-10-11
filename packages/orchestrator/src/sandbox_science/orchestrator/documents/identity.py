@@ -218,11 +218,16 @@ def _similar(
     return pairs
 
 
-def _pair_blocks(old: Mapped, new: Parsed, hints: Iterable[BlockHint]) -> dict[int, int]:
+def _pair_blocks(
+    old: Mapped, new: Parsed, hints: Iterable[BlockHint], removed: Iterable[str] = ()
+) -> dict[int, int]:
     """New block index to the parent block index whose ID it takes."""
     old_blocks, new_blocks = old.parsed.blocks, new.blocks
     pairs: dict[int, int] = {}
     used: set[int] = set()
+    # Blocks an operation replaced or deleted keep their IDs by rule 1 alone, so that an
+    # equal block elsewhere does not take the ID of the one that went.
+    gone = {index for index in (old.index(block_id) for block_id in removed) if index is not None}
 
     def take(old_item: int, new_item: int) -> None:
         pairs[new_item] = old_item
@@ -241,6 +246,7 @@ def _pair_blocks(old: Mapped, new: Parsed, hints: Iterable[BlockHint]) -> dict[i
             ):
                 take(old_item, new_item)
                 break
+    used |= gone
     # 2. Equal blocks.
     for old_item, new_item in _pair_equal(
         [item for item in range(len(old_blocks)) if item not in used],
@@ -328,9 +334,11 @@ def carry(
     *,
     block_hints: Iterable[BlockHint] = (),
     span_hints: Iterable[SpanHint] = (),
+    removed: Iterable[str] = (),
 ) -> Mapped:
-    """IDs for ``new`` from ``old`` (LD-7)."""
-    block_pairs = _pair_blocks(old, new, block_hints)
+    """IDs for ``new`` from ``old`` (LD-7); the blocks in ``removed`` were replaced or
+    deleted by the operation that made ``new``, and keep their IDs only by its hints."""
+    block_pairs = _pair_blocks(old, new, block_hints, removed)
     block_ids = [
         old.block_ids[block_pairs[item]] if item in block_pairs else allocate.block()
         for item in range(len(new.blocks))

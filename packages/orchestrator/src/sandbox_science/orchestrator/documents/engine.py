@@ -71,11 +71,21 @@ def apply_operations(head: Mapped, operations: Sequence[Operation], allocate: Al
             applied.kept.extend(normalized.kept)
             hints = _widened(hints, len(normalized.text) - len(step.text))
             parsed = normalized.parsed
-        current = carry(current, parsed, allocate, block_hints=hints, span_hints=step.span_hints)
+        current = carry(
+            current,
+            parsed,
+            allocate,
+            block_hints=hints,
+            span_hints=step.span_hints,
+            removed=step.removed,
+        )
         if step.expect is not None:
+            # TeX reads whitespace alike, and the parser keeps a block's indentation in
+            # some lines of a formula and not in others.
             span_id, tex = step.expect
             index = current.span_index(span_id)
-            if index is None or current.parsed.spans[index].tex != tex:
+            found = "" if index is None else current.parsed.spans[index].tex
+            if index is None or found.split() != tex.split():
                 raise DocumentError(
                     INVALID_REQUEST,
                     f"the new TeX of math {span_id} does not read as that one formula in its "
