@@ -286,15 +286,19 @@ GMP = "/conda/conda-forge/linux-64/gmp-6.3.0-h0_1.conda"
 FLINT = "/conda/conda-forge/linux-64/flint-3.1.0-h0_0.conda"
 
 
-def test_an_approved_file_set_downloads_and_nothing_else(
+Fetch = Callable[..., evaluator.Verdict]
+
+
+@pytest.fixture
+def packages(
     store: PolicyStore,
     sandbox_id: str,
     events: EventStore,
     clock: Clock,
     make_facts: FactsFactory,
-    settings: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+) -> tuple[LoadedPolicy, Fetch]:
+    """A policy that escalates Conda packages, bound to two sandboxes, and a download of a
+    file at the package cache by one of them (the first by default)."""
     policy = store.add_policy(PACKAGES_POLICY.encode())
     store.bind(sandbox_id, policy.digest)
     store.bind("sbx-0002", policy.digest)
@@ -317,6 +321,31 @@ def test_an_approved_file_set_downloads_and_nothing_else(
         )
         return middleware.evaluate_http(dataclasses.replace(facts, config=config))
 
+    return policy, fetch
+
+
+def packages_request(
+    events: EventStore, sandbox_id: str, policy: LoadedPolicy, operation: str, paths: list[str]
+) -> int:
+    """Record a provisioning operation's request for ``paths``, as the worker does."""
+    key = RequestKey.packages(sandbox_id, policy.digest, operation, paths)
+    payload: dict[str, object] = {
+        "target": key.payload(),
+        "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+        "files": [{"path": path} for path in paths],
+    }
+    return events.append("escalation", "worker", payload).seq
+
+
+def test_an_approved_file_set_downloads_and_nothing_else(
+    packages: tuple[LoadedPolicy, Fetch],
+    sandbox_id: str,
+    events: EventStore,
+    clock: Clock,
+    settings: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    policy, fetch = packages
     # The worker asks once for the files a resolved install would download.
     key = RequestKey.packages(sandbox_id, policy.digest, "prv-1", [PARI, GMP])
     payload: dict[str, object] = {
@@ -355,3 +384,22 @@ def test_an_approved_file_set_downloads_and_nothing_else(
     assert fetch(FLINT).allowed
     clock.offset = timedelta(hours=2)
     assert not fetch(FLINT).allowed
+
+
+def test_a_later_answer_to_the_download_itself_decides_it(
+    packages: tuple[LoadedPolicy, Fetch], sandbox_id: str, events: EventStore, settings: Path
+) -> None:
+    policy, fetch = packages
+    # The sandbox asks for PARI before anyone approves: a permission request of its own.
+    direct = request_number(fetch(PARI).reason)
+    seq = packages_request(events, sandbox_id, policy, "prv-1", [PARI, GMP])
+    assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 0
+    assert fetch(PARI).allowed
+    # Denied afterwards, that download is refused: the newest answer decides.
+    assert main(["deny", "--settings", str(settings), "--request", str(direct)]) == 0
+    assert fetch(PARI).reason_code == evaluator.APPROVAL_DENIED
+    assert fetch(GMP).allowed
+    # A set approved later still decides it again.
+    seq = packages_request(events, sandbox_id, policy, "prv-2", [PARI])
+    assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 0
+    assert fetch(PARI).allowed
