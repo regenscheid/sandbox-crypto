@@ -84,7 +84,12 @@ async def _run(args: argparse.Namespace) -> int:
 
         transcript = await run_task(
             model,
-            Toolbox(client, context, languages=capabilities.languages),
+            Toolbox(
+                client,
+                context,
+                languages=capabilities.languages,
+                features=capabilities.features,
+            ),
             args.task,
             run_id=args.run_id or new_id("run"),
             max_turns=args.max_turns,
