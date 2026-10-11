@@ -73,12 +73,12 @@ Updated: 2026-10-11.
 
 ## Blockers and open questions
 
-Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning spec approved as drafted.
+Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning, research-artifacts and consistency-review specs approved as drafted, with the artifacts spec's shared-file rule amended for D79; the workspace GUI as a Svelte web app (D80).
 
 Decisions to confirm: PSF-2.0 and MIT-0 in tier 1.
 
 Questions with a recommendation, waiting for the user:
-- **Event store checkpoints.** Recommended: a user timer on babbage that writes each checkpoint to the journal, which the user's processes cannot rewrite.
+- **Event store checkpoints.** The user timer that logs each checkpoint to the journal is in `examples/systemd` ([event store](../docs/EVENT-STORE.md#checkpoints-in-the-journal)); installing it on babbage is the user's call.
 - **Images.**
   - No registry on babbage, since OpenShell reads the local Docker store; a self-hosted Zot or Distribution on the cluster.
   - Keep G6K at x86-64-v3 (AVX2).
@@ -90,7 +90,7 @@ Questions with a recommendation, waiting for the user:
   - Keep binary results withheld until artifact references exist.
   - Keep `max_argument_bytes` in the policy.
   - Decide whether worker code may use `resources/read`, `prompts/get` and `completion/complete`, which `worker_tools` does not restrict.
-- **The W0 specs** (tools, skills, plans and delegation, consistency review, research artifacts, PDF sources), each with its open questions. The Conda provisioning spec is approved.
+- **The W0 specs** still in draft (tools, skills, plans and delegation, PDF sources), each with its open questions; the Conda provisioning, research-artifacts and consistency-review specs are approved. The consistency review's trigger defaults wait for the user's own CScience settings. Living documents and the ledger, board and frontier have no spec yet.
 - **A real model.** The first slice with a real model needs the user's LiteLLM gateway and a virtual key.
 - **Upstream.** Whether to file the OpenShell and libzmq descriptions in `.agents/upstream/`.
 
