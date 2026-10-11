@@ -47,9 +47,10 @@ The orchestrator writes, and the middleware reads, a state directory:
 | `sandboxes/<sandbox id>.json` | `{"policy": "sha256:<hex>"}`: the revision an OpenShell sandbox is decided under |
 | `events.jsonl` | The middleware's records |
 
-`ValidateConfig` accepts a compiled sandbox policy only when its project policy is already in the store, so the gateway refuses a sandbox policy the middleware could not decide. Until the orchestrator manages the store, the command line does:
+`ValidateConfig` accepts a compiled sandbox policy only when its project policy is already in the store, so the gateway refuses a sandbox policy the middleware could not decide. The gateway asks before it creates the sandbox, so the policy must be stored first, and the sandbox bound once OpenShell has assigned its id. Until the orchestrator manages the store, the command line does both:
 
 ```bash
+uv run sandbox-science-policy-middleware store --state-dir STATE --policy policy.yaml
 uv run sandbox-science-policy-middleware bind --state-dir STATE --sandbox SANDBOX_ID --policy policy.yaml
 ```
 
@@ -105,12 +106,15 @@ The compiler attaches it to every host in each research sandbox's policy (`examp
 
 OpenShell's client pings the service every 10 seconds, even between calls; the server allows this, since gRPC's defaults would answer with `too_many_pings` and the reconnects would fail requests closed.
 
-## To verify on babbage
+## Checked on babbage
 
-The facts above come from OpenShell v0.1.3's source. To confirm against a running gateway:
+On 2026-10-10 the service ran against a real OpenShell v0.1.3 gateway with the VM driver ([lab report](../.agents/docs/agent-reports/babbage-openshell-lab-2026-10-10.md)):
+- The gateway negotiated the service and verified its certificate for `127.0.0.1`, and the service verified the gateway's and the supervisors' tokens.
+- Reads were allowed. Writes were denied with `approval_required` and recorded.
+- Plain HTTP on port 80, which OpenShell labels `https`, was decided as `http`.
+- WebSocket upgrades were denied before reaching the server.
+- A real `git clone` passed the upload-pack check.
+- A 5 MiB body and a stopped middleware both failed closed.
+- The service adds a median of 0.7 ms per request; a 4 MiB body takes about 8 ms.
 
-- traffic admitted by the host-less endpoint reaches the middleware with the requested name;
-- WebSocket upgrades are denied (both the upgrade request and the preflight);
-- bodies over `max_payload_bytes` are blocked (`middleware_failed`), so larger uploads fail;
-- the latency of the extra call, and requests failing closed while the middleware is down;
-- real git clients through the whole path, including gzip-compressed fetch bodies.
+The lab also showed that a sandbox resolves only the host names its policy names. [Policy](POLICY.md), "Mapping to enforcement", describes what the compiler does about it.

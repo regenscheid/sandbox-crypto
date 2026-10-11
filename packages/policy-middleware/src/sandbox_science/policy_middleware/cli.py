@@ -3,9 +3,14 @@
 
 ```
 sandbox-science-policy-middleware serve --settings middleware.toml
+sandbox-science-policy-middleware store --state-dir DIR --policy policy.yaml
 sandbox-science-policy-middleware bind --state-dir DIR --sandbox ID --policy policy.yaml
 sandbox-science-policy-middleware unbind --state-dir DIR --sandbox ID
 ```
+
+The gateway asks the middleware to validate a compiled sandbox policy before it
+creates the sandbox, so store the project policy first; bind the sandbox once
+OpenShell has assigned its id.
 """
 
 from __future__ import annotations
@@ -49,6 +54,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve = commands.add_parser("serve", help="run the middleware service")
     serve.add_argument("--settings", type=Path, required=True)
     serve.add_argument("--log-level", default="INFO")
+    store = commands.add_parser(
+        "store", help="store a policy, before creating sandboxes compiled from it"
+    )
+    store.add_argument("--state-dir", type=Path, required=True)
+    store.add_argument("--policy", type=Path, required=True)
     bind = commands.add_parser("bind", help="store a policy and bind a sandbox to it")
     bind.add_argument("--state-dir", type=Path, required=True)
     bind.add_argument("--sandbox", required=True)
@@ -65,6 +75,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                 )
                 return _serve(load_settings(args.settings))
+            case "store":
+                loaded = PolicyStore(args.state_dir).add_policy(read_limited(args.policy))
+                print(f"stored {loaded.policy.metadata.name} {loaded.digest}")
+                return 0
             case "bind":
                 store = PolicyStore(args.state_dir)
                 loaded = store.add_policy(read_limited(args.policy))

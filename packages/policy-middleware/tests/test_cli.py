@@ -29,6 +29,16 @@ def test_bind_stores_the_policy_and_binds_the_sandbox(
     assert "was not bound" in capsys.readouterr().out
 
 
+def test_store_keeps_a_policy_without_binding_a_sandbox(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state = tmp_path / "state"
+    assert main(["store", "--state-dir", str(state), "--policy", str(POLICY)]) == 0
+    digest = capsys.readouterr().out.split()[-1]
+    assert PolicyStore(state).policy(digest).policy.metadata.name == "permissive-default"
+    assert not (state / "sandboxes").exists()
+
+
 @pytest.mark.parametrize(
     "arguments",
     [

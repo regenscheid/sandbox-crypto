@@ -1,6 +1,6 @@
 # Planning analyses and research record
 
-This folder keeps the three agent source investigations behind the Sandbox Science plan. Source inspection and planning are distinct from runtime validation; no application or deployment has been implemented or tested by these reports.
+This folder keeps the agent source investigations behind the Sandbox Science plan, and records of runtime validation. Source inspection and planning are distinct from runtime validation: only the lab records below report observed behaviour.
 
 ## Individual agent investigations
 
@@ -8,6 +8,10 @@ This folder keeps the three agent source investigations behind the Sandbox Scien
 - [Claude Code and Desktop](agent-reports/claude-code-desktop.md): official skills, roles, hooks, MCP, shared knowledge and living-document behavior, including limits of public prompt evidence.
 - [OpenScience Desktop and the earlier fork](agent-reports/openscience-desktop.md): source-level reuse candidates, native-desktop dependencies and incomplete execution/persistence paths.
 - [OpenShell v0.1.3 policy schema](agent-reports/openshell-policy-v0.1.3.md): endpoint, L7, MCP and provider semantics, address handling and compiler constraints, as input to the policy compiler (D62, D68).
+
+## Runtime validation
+
+- [OpenShell v0.1.3 lab on babbage, 2026-10-10](agent-reports/babbage-openshell-lab-2026-10-10.md): the policy middleware against a real gateway with the VM driver, and what the lab changed (D69, D70).
 
 These are dated investigation reports. Recommendations inside them are not confirmed requirements; the [decision register](../../docs/DECISIONS.md) resolves later choices, and the [critical review](../critical-review.md) and [proposed changes](../proposed-changes.md) record the 2026-10-10 review.
 
