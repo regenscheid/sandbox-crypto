@@ -66,18 +66,18 @@ Updated: 2026-10-11.
 
 ## Next
 
-- M2 (W3): serialize package changes in a shared environment (the Conda provisioning spec), and the read-only-rootfs layout with capture and rebuild (D48). Shared data across a project's environments waits on the user's decision.
+- M2 (W3): shared data across a project's environments by worker-synced copies (D79), and the Conda provisioning spec: installs queued, recorded with lockfiles and probed. The read-only root filesystem is deferred (D48).
+- M2 (W4): the research workspace (living documents, ledger and board, comments, automatic consistency review), which the M2 exit run needs.
 - MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
 - Worker: environment IDs per project, and limits per client.
 
 ## Blockers and open questions
 
-Decisions to confirm, each proposed with a recommendation in its row:
-- D68 (policy evaluation details), the details of D69 (including how admission on demand works, after lab 10) and D70, and PSF-2.0 and MIT-0 in tier 1.
-- D72 (harness components), D73 (the worker creates sandboxes), D74 (event store), D75 (MCP proxy on its own JSON-RPC layer), D76 (permission requests), D77 (image contract) and D78 (per-project worker credentials, with tokens named by their hashes, policy revisions granted per project, and environment IDs that stay with their project).
+Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning spec approved as drafted.
+
+Decisions to confirm: PSF-2.0 and MIT-0 in tier 1.
 
 Questions with a recommendation, waiting for the user:
-- **Shared data across environments.** OpenShell VMs share no filesystem, so a workbook in its own environment cannot see the project's `shared/` area (W3). Recommended: the worker keeps the project's shared area and copies changes between environments before and after each call, with a conflict copy when two environments change the same file. The alternative is explicit transfer only.
 - **Event store checkpoints.** Recommended: a user timer on babbage that writes each checkpoint to the journal, which the user's processes cannot rewrite.
 - **Images.**
   - No registry on babbage, since OpenShell reads the local Docker store; a self-hosted Zot or Distribution on the cluster.
@@ -90,7 +90,7 @@ Questions with a recommendation, waiting for the user:
   - Keep binary results withheld until artifact references exist.
   - Keep `max_argument_bytes` in the policy.
   - Decide whether worker code may use `resources/read`, `prompts/get` and `completion/complete`, which `worker_tools` does not restrict.
-- **The W0 specs** (tools, skills, plans and delegation, consistency review, Conda provisioning, research artifacts, PDF sources), each with its open questions.
+- **The W0 specs** (tools, skills, plans and delegation, consistency review, research artifacts, PDF sources), each with its open questions. The Conda provisioning spec is approved.
 - **A real model.** The first slice with a real model needs the user's LiteLLM gateway and a virtual key.
 - **Upstream.** Whether to file the OpenShell and libzmq descriptions in `.agents/upstream/`.
 

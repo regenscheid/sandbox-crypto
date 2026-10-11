@@ -1,6 +1,6 @@
 # Behavior specifications
 
-Date: 2026-10-11. **Status: Draft, to review with the user.** Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.md#w0--behavior-specification-and-harness-foundation-roadmap-m0), roadmap M0, D51). Nothing here is implemented.
+Date: 2026-10-11. **Status: Drafts to review with the user, except [Conda provisioning](conda-provisioning.md), approved for implementation as drafted (2026-10-11).** Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.md#w0--behavior-specification-and-harness-foundation-roadmap-m0), roadmap M0, D51). Nothing here is implemented.
 
 These specifications state what the new harness must do for the CScience features it reimplements (D03, D11), and how to test it. They are written in the project's own words from observed use, the agent reports and public documentation (D56). The agent reports serve as evidence of *what* CScience does; their line anchors are not reproduced. No Claude Science code, prompt, skill text, schema or SQL is used. The reviewer rubric, role prompts and tool descriptions are written independently when each feature is built.
 
