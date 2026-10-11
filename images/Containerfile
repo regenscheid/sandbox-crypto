@@ -1,11 +1,14 @@
 # SPDX-License-Identifier: MIT
 #
-# Recipes for the two standard base profiles (D46); docs/IMAGES.md is the contract they follow.
-#   minimal      the thin, permissive image the project could publish
-#   crypto-base  the pinned cryptography environment; it contains GPL tools and is never published
+# Recipes for the two standard base profiles (D46) and the harness's own image; docs/IMAGES.md is
+# the contract they follow.
+#   minimal       the thin, permissive image the project could publish
+#   crypto-base   the pinned cryptography environment; it contains GPL tools and is never published
+#   orchestrator  the harness, for the orchestrator's own sandbox; permissive like minimal
 # Build with images/build.sh (context: images/, target: the profile). Every download is pinned:
 # the Ubuntu image by digest, apt packages by archive snapshot, micromamba by SHA-256, Conda
-# packages by the lockfiles' SHA-256, Python wheels by hash and source trees by commit.
+# packages by the lockfiles' SHA-256, Python wheels by hash and source trees by commit. The
+# harness's wheels are built from the checkout itself (the `wheels` build context).
 
 ARG UBUNTU_IMAGE=docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 ARG UBUNTU_SNAPSHOT=20261010T000000Z
@@ -47,7 +50,7 @@ ADD https://github.com/malb/lattice-estimator.git#${LATTICE_ESTIMATOR_COMMIT} /
 FROM ${UBUNTU_IMAGE} AS bootstrap-ca
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
-# What both profiles share: the sandbox account, micromamba and an empty Conda prefix.
+# What every profile shares: the sandbox account, micromamba and an empty Conda prefix.
 FROM ${UBUNTU_IMAGE} AS base
 ARG UBUNTU_SNAPSHOT
 ARG DEBIAN_FRONTEND=noninteractive
@@ -175,3 +178,51 @@ LABEL org.opencontainers.image.title="Sandbox Science crypto-base" \
       org.opencontainers.image.licenses="${LICENSES}" \
       org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
       io.github.regenscheid.sandbox-science.profile="crypto-base"
+
+# ---------------------------------------------------------------------------------------------
+# The harness's wheels: build.sh builds them from the checkout and passes the directory as the
+# build context `wheels`, which replaces this stage. Without it the build stops here, rather than
+# looking for an image named `wheels`.
+FROM base AS wheels
+RUN echo "the orchestrator image needs the harness's wheels: build it with images/build.sh" >&2 && \
+    exit 1
+
+FROM base AS orchestrator
+USER 1000:1000
+RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.yml \
+    micromamba install -y -n base -f /tmp/conda-lock.yml && \
+    micromamba clean -a -y && \
+    find /opt/sandbox-science/pkgs -mindepth 1 -delete
+# The harness and its contracts. The lockfile holds everything they need, so pip installs only
+# these two and uses no index; then the dependencies must check out and the command must run.
+RUN --mount=type=bind,from=wheels,target=/tmp/wheels \
+    python -m pip install --no-deps --no-index --no-cache-dir --find-links /tmp/wheels \
+        sandbox-science-contracts sandbox-science-orchestrator && \
+    python -m pip check && \
+    sandbox-science-harness --help >/dev/null
+
+ARG UBUNTU_IMAGE
+ARG UBUNTU_SNAPSHOT
+ARG MICROMAMBA_VERSION
+ARG REVISION=unknown
+ARG VERSION=unknown
+ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
+ARG LICENSES=NOASSERTION
+USER root
+RUN --mount=type=bind,source=orchestrator/conda-lock.yml,target=/tmp/conda-lock.yml \
+    --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
+    find /sandbox -mindepth 1 -delete && \
+    python -B /tmp/image_report.py record \
+        --profile orchestrator --policy permissive --revision "${REVISION}" --source-url "${SOURCE_URL}" \
+        --base-image "${UBUNTU_IMAGE}" --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" \
+        --micromamba "${MICROMAMBA_VERSION}" --lockfile /tmp/conda-lock.yml \
+        --expect-licenses "${LICENSES}"
+USER 1000:1000
+LABEL org.opencontainers.image.title="Sandbox Science orchestrator" \
+      org.opencontainers.image.description="The research harness (sandbox-science-harness) with Python, aiohttp and pydantic, for the orchestrator's own sandbox" \
+      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="${LICENSES}" \
+      org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
+      io.github.regenscheid.sandbox-science.profile="orchestrator"

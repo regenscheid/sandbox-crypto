@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Build a base profile image: images/build.sh minimal|crypto-base [docker buildx build options]
+# Build a profile image: images/build.sh PROFILE [docker buildx build options]
+# PROFILE is minimal, crypto-base or orchestrator.
 #
 # Tags sandbox-science/<profile>:<short SHA of the last commit that changed the build's inputs>
-# (with -dirty when they have uncommitted changes) and prints the tag, the image digest, its size
-# and the build time. It loads the image into the local image store and never pushes: crypto-base
-# contains GPL tools and is never published (D46). PLATFORM selects the platform (default
+# (with -dirty when they have uncommitted changes; revision.sh) and prints the tag, the image
+# digest, its size and the build time. It loads the image into the local image store and never
+# pushes: crypto-base contains GPL tools and is never published (D46). For orchestrator it first
+# builds the harness's wheels from this checkout with uv. PLATFORM selects the platform (default
 # linux/amd64); BUILDER a buildx builder.
 set -euo pipefail
 
 profile=${1:-}
 case $profile in
-  minimal | crypto-base) shift ;;
-  *) echo "usage: images/build.sh minimal|crypto-base [docker buildx build options]" >&2; exit 2 ;;
+  minimal | crypto-base | orchestrator) shift ;;
+  *)
+    echo "usage: images/build.sh minimal|crypto-base|orchestrator [docker buildx build options]" >&2
+    exit 2
+    ;;
 esac
 for option in "$@"; do
   case $option in
@@ -24,39 +29,43 @@ for option in "$@"; do
 done
 
 here=$(cd "$(dirname "$0")" && pwd)
-# The recipe's revision: the last commit that changed what the build reads, so that changes to
-# the scripts, tests or anything outside images/ leave the tag alone.
-inputs=(Containerfile .dockerignore common minimal crypto-base)
-revision=$(git -C "$here" log -1 --format=%H -- "${inputs[@]}")
-short=$(git -C "$here" rev-parse --short "$revision")
-if [ -n "$(git -C "$here" status --porcelain -- "${inputs[@]}")" ]; then
-  revision="$revision-dirty"
-  short="$short-dirty"
-fi
+# shellcheck source=revision.sh
+. "$here/revision.sh"
+recipe_revision "$profile"
 tag="sandbox-science/$profile:$short"
 licenses=$(python3 "$here/common/image_report.py" label "$here/$profile/licenses.txt")
 
-metadata=$(mktemp)
-trap 'rm -f "$metadata"' EXIT
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
 builder=()
 [ -z "${BUILDER:-}" ] || builder=(--builder "$BUILDER")
 
 started=$(date +%s)
+contexts=()
+if [ "$profile" = orchestrator ]; then
+  # The harness and its contracts as wheels, from the same files the revision covers.
+  for package in sandbox-science-contracts sandbox-science-orchestrator; do
+    uv --directory "$here/.." build --package "$package" --wheel --no-create-gitignore \
+      --out-dir "$work/wheels"
+  done
+  contexts=(--build-context "wheels=$work/wheels")
+fi
 docker buildx build "${builder[@]}" \
   --platform "${PLATFORM:-linux/amd64}" \
   --file "$here/Containerfile" \
   --target "$profile" \
+  "${contexts[@]}" \
   --build-arg REVISION="$revision" \
   --build-arg VERSION="$short" \
   --build-arg LICENSES="$licenses" \
   --tag "$tag" \
   --load \
-  --metadata-file "$metadata" \
+  --metadata-file "$work/metadata.json" \
   "$@" \
   "$here"
 elapsed=$(($(date +%s) - started))
 
-digest=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("containerimage.digest", "unknown"))' "$metadata")
+digest=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1])).get("containerimage.digest", "unknown"))' "$work/metadata.json")
 size=$(docker image inspect --format '{{.Size}}' "$tag")
 echo "image:  $tag"
 echo "digest: $digest"
