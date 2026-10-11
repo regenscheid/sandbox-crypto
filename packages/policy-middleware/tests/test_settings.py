@@ -54,6 +54,15 @@ def test_local_development_without_tokens(tmp_path: Path) -> None:
     )
     assert settings.tokens is None
     assert settings.tls is None
+    assert settings.package_cache_url is None
+
+
+@pytest.mark.parametrize(
+    "url", ["http://127.0.0.1:8090", "https://package-cache.internal", "http://[::1]:8090"]
+)
+def test_the_package_cache_can_be_named_for_archive_lookups(tmp_path: Path, url: str) -> None:
+    settings = load_settings(write(tmp_path, DEV + f'package_cache_url = "{url}"\n'))
+    assert settings.package_cache_url == url
 
 
 @pytest.mark.parametrize(
@@ -86,6 +95,18 @@ def test_local_development_without_tokens(tmp_path: Path) -> None:
             id="unknown-key",
         ),
         pytest.param('ceiling = "c"\nallow_unauthenticated = true\n', "state_dir", id="no-state"),
+        *[
+            pytest.param(
+                DEV + f'package_cache_url = "{url}"\n', "package_cache_url", id=f"cache-{name}"
+            )
+            for name, url in (
+                ("path", "http://127.0.0.1:8090/opam"),
+                ("slash", "http://127.0.0.1:8090/"),
+                ("scheme", "ftp://127.0.0.1"),
+                ("user", "http://user@127.0.0.1:8090"),
+                ("query", "http://127.0.0.1:8090?x"),
+            )
+        ],
         pytest.param("state_dir = [", "cannot read", id="not-toml"),
     ],
 )
