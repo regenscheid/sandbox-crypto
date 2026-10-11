@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import hashlib
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -15,7 +17,10 @@ from sandbox_science.contracts import ErrorKind
 from . import executor
 from .channel import EventHandler, ExecutorChannel
 from .errors import WorkerError
+from .package_clients import ClientConfiguration, render
 from .settings import LocalBackendSettings, OpenShellBackendSettings
+
+_log = logging.getLogger(__name__)
 
 EXECUTOR_SOURCE = Path(executor.__file__)
 SCHED_SHIM_SOURCE = Path(__file__).with_name("shim") / "sched_self.c"
@@ -84,6 +89,7 @@ class OpenShellBackend:
         self.resolve = resolve
         """Finds the sandboxes the worker created (environments.py) before the static map."""
         self._shim_lock = asyncio.Lock()
+        self._clients = None if settings.package_cache is None else render(settings.package_cache)
 
     def _sandbox(self, environment_id: str) -> str:
         sandbox = self.sandbox_id(environment_id)
@@ -169,6 +175,12 @@ class OpenShellBackend:
         ]  # fmt: skip
         channel = ExecutorChannel(argv, on_event, on_closed, env=self._env())
         await channel.start()
+        if self._clients is not None:
+            try:
+                await configure_package_clients(channel, self._clients, environment_id)
+            except BaseException:
+                await channel.close()
+                raise
         return channel
 
     def sandbox_id(self, environment_id: str) -> str | None:
@@ -182,6 +194,30 @@ class OpenShellBackend:
     @property
     def isolation_tier(self) -> int:
         return self.settings.isolation_tier
+
+
+async def configure_package_clients(
+    channel: ExecutorChannel, clients: ClientConfiguration, environment_id: str
+) -> None:
+    """Have the executor write the package clients' configuration (docs/PACKAGE-CACHE.md).
+
+    The executor keeps a file that someone changed since it wrote it, or that
+    it did not write; each one is logged, since its client may then miss the cache.
+    """
+    reply = await channel.request(
+        "configure",
+        files=[dataclasses.asdict(file) for file in clients.files],
+        env=dict(clients.env),
+    )
+    for path in reply.get("written", ()):
+        _log.info("environment %s: wrote %s", environment_id, path)
+    for kept in reply.get("skipped", ()):
+        _log.warning(
+            "environment %s: left %s as it is (%s); check that its client uses the package cache",
+            environment_id,
+            kept.get("path"),
+            kept.get("reason"),
+        )
 
 
 def _child_env() -> dict[str, str]:

@@ -6,6 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- Package clients in sandboxes: with its `package_cache` setting, the worker has the executor write pip, uv, conda (mamba, micromamba), Cargo, Go and npm configuration that reaches the cache only, keeping files someone changed ([client configuration](../docs/PACKAGE-CACHE.md#client-configuration)). Real clients installed through a loopback cache with it; an OpenShell lab is still to come.
 - Event store (`packages/event-store`, D74 proposed, [docs](../docs/EVENT-STORE.md)): hash-chained SQLite records, checkpoints and the `sandbox-science-events` command. The policy middleware records its escalations, alerts and monitor findings there instead of `events.jsonl`.
 - Worker-managed environments (D73, proposed; [lab 6](docs/agent-reports/babbage-openshell-lab-6-2026-10-11.md)). The worker creates, revises and deletes research sandboxes: it compiles a stored policy revision, attaches exactly the listed providers and binds the middleware. An operator adds revisions with `sandbox-science-worker policy add`. Against a real gateway, a sandbox was ready in 11 s and a revision took 9 s. Isolation-tier probes and the backend conformance suite also landed (PR #22).
 - Isolation-tier probes (D43): results report the tier in effect, the declared tier and the evidence, and evidence only lowers the declared tier. The backend conformance suite (D52) runs the execution-tools fixtures through the worker API against any backend; it still has to run against OpenShell in a lab.
