@@ -19,7 +19,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
   - Each call is an *execution* with a stable ID, run as one or more immutable *attempts*.
   - Its context names the project, session, logical environment, concrete sandbox, environment revision, kernel (for cells), policy revision and actor (`ExecutionContext`).
 - **Results are untrusted data.** They are bounded in size, decoded defensively and never interpreted by the orchestrator. File operations do not follow symlinks.
-- **Evidence of location.** Every result says where it ran, so a test can show that code ran in the sandbox and not beside the orchestrator.
+- **Evidence of location.** Every result says where it ran, so a test can show that code ran in the sandbox and not beside the orchestrator. It also gives the isolation tier in effect, with the evidence the worker found for it (D43).
 
 ## Shell
 
@@ -93,6 +93,8 @@ Every failure has one of these kinds and a message for the agent, which never co
 - Kernel identity and generation, and location evidence: extensions this spec adds to the shared contracts.
 
 ## Acceptance fixtures
+
+The worker's conformance suite runs these through the worker API against any backend ([worker](../WORKER.md#conformance-suite)); fixture 11 is the harness's.
 
 1. **Shell basics.** `echo hello; echo err >&2; exit 3` gives stdout `hello\n`, stderr `err\n` and exit code 3. The location names the sandbox, not the orchestrator's host.
 2. **Stateful cells.** Cell 1 `x = 41`, then cell 2 `x + 1`, gives an `execute_result` with `text/plain` `42`, in generation 1 of the same kernel.

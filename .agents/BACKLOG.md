@@ -20,7 +20,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Credential handling: OpenShell providers inject credentials after the policy middleware decides (D57, D69); confirmed in lab 2
 - [x] Provider credentials in research sandboxes (D57 amended; the user chose the arrangement after [lab 2](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)): `credentials.providers[].hosts` names where each credential may go. The compiler binds it there with `credential_binding` on port 443, providers use profiles without endpoints, and the middleware treats only those hosts as credentialed. Tests check the compiled policies with a port of OpenShell's ambiguity check
 - [x] On babbage: run the compiled credential bindings, including a bound host that rules also name (its other egress endpoint then keeps only port 80). Done 2026-10-11 ([lab 3](docs/agent-reports/babbage-openshell-lab-3-2026-10-11.md)); the plain-HTTP substitution bug was seen at runtime
-- [ ] Orchestrator: attach to each research sandbox exactly the providers `credentials.providers` lists, each with a profile without endpoints. The middleware counts only those hosts as credentialed, and OpenShell would bind any other provider to its profile's endpoints
+- [x] Attach to each research sandbox exactly the providers `credentials.providers` lists, each with a profile without endpoints: the worker does it when it creates the sandbox (D73; the threat model keeps gateway credentials out of the orchestrator). To verify on babbage
 - [ ] Escalation grants: record approvals as scoped grants that the policy middleware and MCP proxy honour, and compile them into the MCP proxy's fence
 - [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint, so the compiler admits public address ranges with a host-less endpoint and the policy middleware decides each request (D69)
 - [ ] Policy revisions: GUI and file edits, re-authentication for widening (D54)
@@ -32,7 +32,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Worker service: an executor daemon in the sandbox that survives worker restarts; spilling large rich outputs to files; data grants and session containers
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48)
 - [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
-- [ ] Orchestrator: write the middleware's policy store and sandbox bindings when it creates sandboxes and revises policies (the `bind` command stands in until then)
+- [x] Write the middleware's policy store and sandbox bindings when sandboxes are created and revised: the worker's environments (D73), with `sandbox-science-worker policy add` as the operator's way in. To verify on babbage
+- [ ] Policy revisions from the GUI: an approval path into the pool's policy store, with re-authentication for widening (D54)
 - [x] Package policy (D71): `packages` covers PyPI, conda, Cargo, Go and npm; the library classifies requests to the package cache; the compiler puts the cache behind the policy middleware; registries are on the floor for generic HTTP
 - [x] Package cache service (`packages/package-cache`, D71): pull-through, size-capped, verifying, for the five ecosystems ([package cache](../docs/PACKAGE-CACHE.md)). Real pip, uv, mamba, cargo, go and npm install through it on loopback (`test_clients_integration.py`)
 - [x] On babbage: the package cache through OpenShell, with the compiled policy and real clients in a sandbox. Done 2026-10-10: micromamba, pip, uv, npm, go and cargo installed through the middleware and the cache, toolchains from conda-forge ([lab report](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)). Cargo needs `http.multiplexing = false` while the cache is plain HTTP
@@ -47,7 +48,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] MCP proxy: forward only tool names the server advertises, exactly as advertised; bound argument sizes; send `MCP-Protocol-Version` on every request after `initialize`, with credential placeholders only in headers (lab 2)
 - [ ] Event store with an append-only hash chain
 - [ ] Adversarial fixture suite
-- [ ] Isolation-tier probes (D43)
+- [x] Isolation-tier probes (D43): the worker probes each executor it starts and reports the tier in effect beside the declared one; evidence only lowers it, and the OpenShell backend must declare its tier ([worker](../docs/WORKER.md#isolation-tiers))
+  - [x] Backend conformance suite (D52): the execution-tools fixtures through the worker API (`packages/worker/tests/test_conformance.py`), against the local backend in CI or a running worker named by `SS_CONFORMANCE_*` ([worker](../docs/WORKER.md#conformance-suite))
+  - [ ] Run the suite, and with it the probe, against an OpenShell sandbox on babbage (lab)
 - [ ] Multi-arch base images: `minimal` and the `crypto-base` recipe (D46); babbage MicroVM gateway configuration (D63)
 - [ ] Secrets through OpenShell providers (D57); MCP endpoint policies (D58); connector auth service and MCP proxy (D66, D67)
 
@@ -65,7 +68,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## W2: certify babbage execution with math and source capabilities
 
 - [x] Sage through SageMath's own Jupyter kernel (`sagemath` kernelspec): the worker offers it when the environment has it, and the harness gives the agent a `sage` tool. Tested with a stand-in kernelspec
-- [ ] Real SageMath from conda-forge in an OpenShell sandbox: preparsing, finite fields, polynomial rings, exact matrices, LaTeX results, interrupt and restart; first-install time (lab)
+- [x] Real SageMath from conda-forge in an OpenShell sandbox ([lab 5](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)): preparsing, finite fields, polynomial rings, Gröbner bases, exact matrices, LaTeX, GAP, Maxima, PARI and fpylll, interrupt, timeout, restart and kernel death. SageMath 10.9 installs in about 30 s through the cache; the VM costs 0–7% on single-threaded mathematics. Needed two fixes: the compiled policy now allows pseudo-terminals and `/dev/shm`, and the executor puts the environment's tools on `PATH`
 - [ ] `crypto-base` profile with Sage present at session start (D46)
 - [ ] PDF extraction and rendering in the worker (pdf_oxide, D59)
 

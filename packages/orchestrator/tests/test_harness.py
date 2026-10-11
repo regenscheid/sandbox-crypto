@@ -26,7 +26,14 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from sandbox_science.contracts import ErrorKind, ExecutionContext, ResultEvent, ShellRequest
+from sandbox_science.contracts import (
+    ErrorKind,
+    ExecutionContext,
+    IsolationEvidence,
+    Location,
+    ResultEvent,
+    ShellRequest,
+)
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import OpenAICompatibleModel, ScriptedModel, ToolSpec
@@ -167,7 +174,9 @@ async def test_an_unreachable_worker_runs_nothing(tmp_path: Path) -> None:
     assert not sentinel.exists()
 
 
-async def test_the_cli_refuses_an_unisolated_worker(worker_url: str, tmp_path: Path) -> None:
+async def test_the_cli_refuses_an_unisolated_worker(
+    worker_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     (tmp_path / "token").write_text(TOKEN)
     (tmp_path / "script.json").write_text(json.dumps([{"text": "hi"}]))
     common = [
@@ -177,12 +186,41 @@ async def test_the_cli_refuses_an_unisolated_worker(worker_url: str, tmp_path: P
     ]  # fmt: skip
     refused = await asyncio.to_thread(cli.main, [*common, "task"])
     assert refused == 2
+    # The refusal gives the probe's evidence.
+    error = capsys.readouterr().err
+    assert "the worker offers isolation tier 0: " in error
+    assert "the sandbox runs on the worker host's kernel (same boot ID)" in error
     allowed = await asyncio.to_thread(
         cli.main,
         [*common, "--allow-unisolated", "--transcript", str(tmp_path / "t.json"), "task"],
     )
     assert allowed == 0
     assert json.loads((tmp_path / "t.json").read_text())["stopped"] == "answered"
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_only_a_probed_tier_counts() -> None:
+    declared = Location(
+        pool_id="p", backend="openshell", hostname="h", isolation_tier=3, declared_isolation_tier=3
+    )
+    # A worker that did not probe offers no tier at all, whatever it declares.
+    assert cli.tier_in_effect(declared) is None
+    assert cli.describe_isolation(declared) == "no isolation evidence"
+    probed = declared.model_copy(
+        update={"isolation_evidence": IsolationEvidence(kernel="separate", sentinel="hidden")}
+    )
+    assert cli.tier_in_effect(probed) == 3
+    assert cli.describe_isolation(probed) == "isolation tier 3"
+    lowered = declared.model_copy(
+        update={
+            "isolation_tier": 0,
+            "isolation_evidence": IsolationEvidence(
+                kernel="shared", sentinel="visible", findings=("one thing", "another")
+            ),
+        }
+    )
+    assert cli.tier_in_effect(lowered) == 0
+    assert cli.describe_isolation(lowered) == "isolation tier 0 (declared 3): one thing; another"
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")

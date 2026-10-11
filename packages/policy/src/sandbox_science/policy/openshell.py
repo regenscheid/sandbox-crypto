@@ -17,6 +17,11 @@ Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
 * The MCP proxy sandbox reaches the declared MCP servers. Its policy re-enforces
   the tool rules as OpenShell ``protocol: mcp`` endpoints.
 
+A research sandbox's document also carries its filesystem section, which
+OpenShell fixes when the sandbox is created: the devices that research code
+needs beyond OpenShell's baseline paths (pseudo-terminals, shared memory) and
+any paths the deployment's image adds.
+
 Everything the compiler cannot express exactly is reported, and where the
 compiled policy differs from the project policy it is stricter. The compiler
 also reports a ``packages.opam`` action that the network rules undo: opam
@@ -70,6 +75,23 @@ CONTROL_PLANE_PORTS: Final = frozenset({2379, 2380, 6443, 10250, 10255})
 CREDENTIAL_PORT: Final = 443
 """The only port credentials are bound to. OpenShell substitutes them there whatever the
 transport, so the policy middleware refuses requests OpenShell reports as plain HTTP."""
+
+SANDBOX_DEVICES_READ_ONLY: Final = ("/dev/random",)
+SANDBOX_DEVICES_READ_WRITE: Final = (
+    "/dev/full",
+    "/dev/ptmx",
+    "/dev/pts",
+    "/dev/shm",  # noqa: S108 - a path Landlock lets the sandbox open, not a temporary file
+    "/dev/tty",
+    "/dev/zero",
+)
+"""Devices beyond OpenShell's baseline paths (``/dev/null``, ``/dev/urandom``) that research
+code needs: pseudo-terminals for pexpect-driven tools such as Sage's GAP, gp and Singular
+interfaces, and ``/dev/shm`` for Python's multiprocessing (lab 5). Without them, Landlock
+refuses every open."""
+
+MAX_FILESYSTEM_PATHS: Final = 256
+"""OpenShell's limit on ``read_only`` plus ``read_write`` paths, its baseline included."""
 
 OPAM_SOURCES: Final = (
     "https://github.com/ocaml/ocamlfind/archive/refs/tags/findlib-1.9.8.tar.gz",
@@ -189,16 +211,32 @@ class NetworkMiddleware(_OpenShellModel):
     config: dict[str, dict[str, str | int]]
 
 
-class OpenShellPolicy(_OpenShellModel):
-    """An OpenShell policy document holding network policy only.
+class FilesystemPolicy(_OpenShellModel):
+    """Paths Landlock lets sandbox processes open, beyond the workdir when it is included.
 
-    Filesystem, Landlock and process settings are fixed when a sandbox starts
-    and belong to the environment layer (D48). Apply the compiled document so
-    that it replaces the sandbox's network sections entirely: an entry left over
-    from an earlier compilation could admit what the policy no longer allows.
+    OpenShell adds its baseline paths (``/usr``, ``/lib``, ``/etc``, ``/proc``, ``/tmp``,
+    ``/dev/null``, ``/dev/urandom`` and a few more) when a sandbox starts.
+    """
+
+    include_workdir: bool = True
+    read_only: tuple[str, ...] = ()
+    read_write: tuple[str, ...] = ()
+
+
+class OpenShellPolicy(_OpenShellModel):
+    """An OpenShell policy document.
+
+    Create a sandbox with the whole document. OpenShell fixes the filesystem section
+    then, adding its baseline paths, and refuses a later revision that removes any of
+    them. Apply a revision with ``with_filesystem()`` and the section the sandbox
+    reports (``openshell policy get --base``), with ``policy set``, so that it replaces
+    the sandbox's network sections entirely: an entry left over from an earlier
+    compilation could admit what the policy no longer allows. Landlock and process
+    settings belong to the environment layer (D48).
     """
 
     version: Literal[1] = 1
+    filesystem_policy: FilesystemPolicy | None = None
     network_policies: dict[str, NetworkPolicy]
     network_middlewares: dict[str, NetworkMiddleware] | None = None
 
@@ -210,6 +248,10 @@ class OpenShellPolicy(_OpenShellModel):
         """
         document = self.model_dump(mode="json", exclude_none=True)
         return yaml.dump(document, Dumper=_Dumper, sort_keys=False, default_flow_style=False)
+
+    def with_filesystem(self, filesystem: FilesystemPolicy) -> OpenShellPolicy:
+        """The document with a running sandbox's filesystem section, for revising it."""
+        return self.model_copy(update={"filesystem_policy": filesystem})
 
 
 _YAML12_NON_STRING_RE: Final = re.compile(
@@ -303,6 +345,37 @@ class ServiceEndpoint(StrictModel):
 BinaryPattern = Annotated[str, StringConstraints(pattern=r"^/[!-~]*$")]
 """An absolute executable path or a '/'-delimited glob, in printable ASCII."""
 
+
+def _sandbox_path(value: str) -> str:
+    if not value.startswith("/") or len(value.encode()) > 4096:
+        raise ValueError("a sandbox path is absolute and at most 4096 bytes")
+    if any(part in {".", ".."} for part in value.split("/")) or "//" in value:
+        raise ValueError("a sandbox path has no '.', '..' or empty segments")
+    if value != "/" and value.endswith("/"):
+        raise ValueError("a sandbox path has no trailing '/'")
+    return value
+
+
+SandboxPath = Annotated[str, StringConstraints(pattern=r"^/[!-~]*$"), AfterValidator(_sandbox_path)]
+"""An absolute path inside the sandbox, in printable ASCII."""
+
+
+def _writable_path(value: str) -> str:
+    if value == "/":
+        raise ValueError("the root cannot be writable")
+    return value
+
+
+class SandboxFilesystem(StrictModel):
+    """Paths the deployment's image adds, such as a Conda prefix outside the workdir (D48).
+
+    The compiler adds the devices research code needs, and OpenShell its baseline.
+    """
+
+    read_only: tuple[SandboxPath, ...] = ()
+    read_write: tuple[Annotated[SandboxPath, AfterValidator(_writable_path)], ...] = ()
+
+
 McpVersion = Literal["2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"]
 
 
@@ -312,13 +385,15 @@ class SandboxTarget(StrictModel):
     ``middleware`` is the name under which the policy middleware service is
     registered in the gateway configuration. ``binaries`` defaults to every
     executable: research code runs arbitrary programs, and the middleware and
-    services decide what they may do.
+    services decide what they may do. ``filesystem`` names paths outside the
+    sandbox's workdir that its image provides.
     """
 
     middleware: Name
     package_cache: ServiceEndpoint
     mcp_proxy: ServiceEndpoint
     binaries: tuple[BinaryPattern, ...] = Field(default=("/**",), min_length=1)
+    filesystem: SandboxFilesystem = SandboxFilesystem()
 
 
 class McpProxyTarget(StrictModel):
@@ -769,12 +844,32 @@ def compile_sandbox(
         )
     return Compiled(
         policy=OpenShellPolicy(
+            filesystem_policy=_sandbox_filesystem(target.filesystem),
             network_policies=network_policies,
             network_middlewares={"sandbox-science-policy": middleware},
         ),
         findings=tuple(findings),
         policy_digest=policy.digest,
     )
+
+
+def _sandbox_filesystem(extra: SandboxFilesystem) -> FilesystemPolicy:
+    """The research sandbox's filesystem section: the devices it needs plus the image's paths.
+
+    A path listed both ways stays writable. Raises CompileError past OpenShell's limit.
+    """
+    read_write = tuple(dict.fromkeys((*SANDBOX_DEVICES_READ_WRITE, *extra.read_write)))
+    read_only = tuple(
+        path
+        for path in dict.fromkeys((*SANDBOX_DEVICES_READ_ONLY, *extra.read_only))
+        if path not in read_write
+    )
+    # OpenShell's baseline adds up to nine more paths when the sandbox starts.
+    if len(read_only) + len(read_write) + 9 > MAX_FILESYSTEM_PATHS:
+        raise CompileError(
+            f"the sandbox would have more than {MAX_FILESYSTEM_PATHS} filesystem paths"
+        )
+    return FilesystemPolicy(include_workdir=True, read_only=read_only, read_write=read_write)
 
 
 def _bound_hosts(
