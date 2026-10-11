@@ -38,6 +38,8 @@ from sandbox_science.contracts import (
     PublishRequest,
     ReadFileRequest,
     ResultEvent,
+    SessionClosed,
+    SessionCloseRequest,
     WorkerErrorResponse,
     WriteFileRequest,
     WriteFileResult,
@@ -277,6 +279,11 @@ class WorkerClient:
     ) -> KernelInfo:
         request = KernelRestartRequest(context=context, language=language)
         return await self._call("POST", "/v1/kernels/restart", KernelInfo, request)
+
+    async def close_session(self, context: ExecutionContext) -> SessionClosed:
+        """Stop the session's kernels; the next cell starts a new generation."""
+        request = SessionCloseRequest(context=context)
+        return await self._call("POST", "/v1/sessions/close", SessionClosed, request)
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:
         return await self._call("POST", "/v1/files/read", FileContent, request)
