@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
+import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -434,3 +435,45 @@ async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker
     after = await worker.run("op-r3", kind="cell", code="x")
     assert after["result"]["state_lost"] is True
     assert after["result"]["error"]["name"] == "NameError"
+
+
+async def test_package_changes_count_as_environment_revisions(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    # A throwaway interpreter, so that the "install" touches nothing but the test's files.
+    venv = tmp_path / "venv"
+    await asyncio.to_thread(
+        subprocess.run, [sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True
+    )
+    python = str(venv / "bin" / "python")
+    root = tmp_path / "worker"
+    started, store = await start_worker(aiohttp_client, root, python=python)
+    try:
+        first = await started.run("op-v1", kind="shell", script="true")
+        assert first["location"]["environment_revision"] == "0"
+        assert first["result"]["environment_revision"] == "0"
+        install = (
+            'mkdir "$(python -c \'import sysconfig; print(sysconfig.get_paths()["purelib"])\')'
+            '/fake_package-1.0.dist-info"'
+        )
+        installed = await started.run("op-v2", kind="shell", script=install)
+        assert installed["state"] == "succeeded", installed["result"]
+        assert installed["location"]["environment_revision"] == "0"
+        assert installed["result"]["environment_revision"] == "1"
+        after = await started.run("op-v3", kind="shell", script="true")
+        assert after["location"]["environment_revision"] == "1"
+        assert after["result"]["environment_revision"] == "1"
+        record = store.revision("env1")
+        assert record is not None
+        assert record.changed_by == installed["attempt_id"]
+    finally:
+        await started.manager.close()
+        store.close()
+    # A new worker, and a new executor, see the same packages: the revision stays.
+    again, store = await start_worker(aiohttp_client, root, python=python)
+    try:
+        later = await again.run("op-v4", kind="shell", script="true")
+        assert later["result"]["environment_revision"] == "1"
+    finally:
+        await again.manager.close()
+        store.close()

@@ -712,3 +712,32 @@ async def test_projects_give_sessions_their_environments(
     environments = {name: s["environment_id"] for name, s in record["sessions"].items()}
     assert environments == {"a": "p1-default", "b": "p1-default", "c": "p1-c"}
     assert record["sessions"]["a"]["closed_at"] is not None
+
+
+async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None:
+    from datetime import UTC, datetime
+
+    from sandbox_science.contracts import ExecutionState
+    from sandbox_science.orchestrator.tools import _describe  # pyright: ignore[reportPrivateUsage]
+
+    def execution(before: str, after: str) -> Execution:
+        return Execution(
+            execution_id="exe-1",
+            attempt_id="att-1",
+            operation_id="op-1",
+            kind="shell",
+            context=CONTEXT,
+            state=ExecutionState.SUCCEEDED,
+            submitted_at=datetime.now(UTC),
+            location=Location(
+                pool_id="p",
+                backend="local",
+                hostname="h",
+                environment_revision=before,
+            ),
+            result=Result(exit_code=0, environment_revision=after),
+        )
+
+    changed = _describe(execution("3", "4"), 1000, replayed=False)
+    assert "revision 3 to 4" in changed["environment_changed"]
+    assert "environment_changed" not in _describe(execution("4", "4"), 1000, replayed=False)

@@ -18,6 +18,7 @@ import hashlib
 import logging
 import math
 import mimetypes
+import re
 import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
@@ -78,7 +79,7 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import WorkerError
 from .isolation import probe
-from .store import KernelRecord, Store
+from .store import KernelRecord, RevisionRecord, Store
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -103,6 +104,7 @@ MAX_TRACEBACK_LINE = 8 * 1024
 MAX_WRITTEN = 1000
 MAX_LIST = 5000
 MAX_HOSTNAME = 255
+_FINGERPRINT = re.compile(r"[0-9a-f]{32}")
 
 
 def _now() -> datetime:
@@ -452,6 +454,7 @@ class ExecutionManager:
                 self._channels.add(channel)
                 try:
                     hostname, languages, features = self._describe(environment_id, channel.hello)
+                    self._observe(environment_id, channel.hello.get("environment"), "")
                     declared = self.backend.isolation_tier
                     isolation = await probe(channel, declared, self.state_dir)
                 except Exception:
@@ -605,7 +608,7 @@ class ExecutionManager:
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, f"no {request.language} kernel in this environment"
             )
-        self._save(live, location=environment.location)
+        self._save(live, location=self._located(request.context.environment_id, environment))
         fields: dict[str, Any] = {
             "execution": execution_id,
             "session": request.context.session_id,
@@ -806,7 +809,46 @@ class ExecutionManager:
             written_files=tuple(paths[:MAX_WRITTEN]),
             written_files_truncated=raw.get("written_files_truncated") is True
             or len(paths) > MAX_WRITTEN,
+            environment_revision=self._revision_after(environment_id, live, raw),
         )
+
+    def _located(self, environment_id: str, environment: _Environment) -> Location | None:
+        """The environment's location, with its current revision."""
+        location, record = environment.location, self.store.revision(environment_id)
+        if location is None or record is None:
+            return location
+        return location.model_copy(update={"environment_revision": str(record.revision)})
+
+    def _revision_after(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> str | None:
+        """The environment's revision once the attempt's fingerprint is counted."""
+        revision = self._observe(environment_id, raw.get("environment"), live.execution.attempt_id)
+        return None if revision is None else str(revision)
+
+    def _observe(self, environment_id: str, fingerprint: object, changed_by: str) -> int | None:
+        """The environment's revision after the executor reported ``fingerprint`` (W3).
+
+        The first fingerprint is revision 0, and each different one counts one up,
+        recorded against the attempt that reported it (empty between executors). The
+        executor is untrusted: research code can only make its own environment's
+        revisions count up.
+        """
+        record = self.store.revision(environment_id)
+        if not isinstance(fingerprint, str) or not _FINGERPRINT.fullmatch(fingerprint):
+            return None if record is None else record.revision
+        if record is None:
+            self.store.save_revision(environment_id, RevisionRecord(0, fingerprint, changed_by))
+            return 0
+        if record.fingerprint == fingerprint:
+            return record.revision
+        changed = RevisionRecord(record.revision + 1, fingerprint, changed_by)
+        self.store.save_revision(environment_id, changed)
+        _log.info(
+            "environment %s is at revision %d: its installed packages changed (%s)",
+            environment_id,
+            changed.revision,
+            changed_by or "between executors",
+        )
+        return changed.revision
 
     def _kernel(
         self, environment_id: str, session_id: str, raw: object, state_lost: bool
@@ -962,7 +1004,7 @@ class ExecutionManager:
         return Capabilities(
             protocol=PROTOCOL_VERSION,
             languages=tuple(name for name in environment.languages if name in LANGUAGES),
-            location=environment.location,
+            location=self._located(environment_id, environment) or environment.location,
             features=tuple(name for name in environment.features if name in FEATURES),
         )
 

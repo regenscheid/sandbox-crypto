@@ -32,9 +32,11 @@ import platform
 import re
 import secrets
 import signal
+import site
 import socket
 import stat
 import sys
+import sysconfig
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -429,6 +431,37 @@ def process_table() -> dict[int, Process]:
             if entry.isdigit() and (info := process_info(int(entry))) is not None:
                 table[info.pid] = info
     return table
+
+
+def environment_fingerprint() -> str:
+    """A digest of the packages installed for this interpreter (W3).
+
+    Conda records each package of the prefix in ``conda-meta``, and pip each
+    distribution in a ``.dist-info`` or ``.egg-info`` directory of the prefix's or the
+    user's site-packages. Installing, removing or upgrading one changes the digest.
+    The files the packages own do not count, which keeps the scan cheap.
+    """
+    paths = sysconfig.get_paths()
+    places = [os.path.join(sys.prefix, "conda-meta"), paths["purelib"], paths["platlib"]]
+    with contextlib.suppress(Exception):
+        places.append(site.getusersitepackages())
+    digest = hashlib.sha256()
+    for place in dict.fromkeys(places):
+        try:
+            with os.scandir(place) as scan:
+                entries = sorted((entry.name, entry) for entry in scan)
+        except OSError:
+            continue
+        for name, entry in entries:
+            if not (name.endswith((".json", ".dist-info", ".egg-info")) or name == "history"):
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            line = f"{place}\0{name}\0{info.st_size}\0{info.st_mtime_ns}\n"
+            digest.update(line.encode("utf-8", "surrogateescape"))
+    return digest.hexdigest()[:32]
 
 
 def cpu_seconds_below(root: int) -> float:
@@ -928,6 +961,8 @@ class Executor:
         return {
             "written_files": [name for name in names if len(name.encode()) <= MAX_PATH_BYTES],
             "written_files_truncated": before[1] or after[1] or len(changed) > MAX_WRITTEN,
+            # Installed packages, after the attempt: the worker counts their changes.
+            "environment": await asyncio.to_thread(environment_fingerprint),
         }
 
     def environment(self, session: str) -> dict[str, str]:
@@ -956,6 +991,7 @@ class Executor:
             subreaper=self.subreaper,
             not_dumpable=self.protected,
             features=available_features(),
+            environment=await asyncio.to_thread(environment_fingerprint),
         )
 
     async def op_probe(self, request: Message) -> None:
