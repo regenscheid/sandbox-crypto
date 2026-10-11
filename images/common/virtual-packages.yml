@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Virtual packages for solving the lockfiles: the images run on Ubuntu 24.04 (glibc 2.39).
+# __archspec names the generic architecture, so that no build needs a newer CPU.
+subdirs:
+  linux-64:
+    packages:
+      __glibc: "2.39"
+      __linux: "6.8"
+      __unix: "0"
+      __archspec: "1 x86_64"
+  linux-aarch64:
+    packages:
+      __glibc: "2.39"
+      __linux: "6.8"
+      __unix: "0"
+      __archspec: "1 aarch64"

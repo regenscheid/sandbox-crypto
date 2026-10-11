@@ -1,0 +1,63 @@
+# The licenses in the crypto-base image, one SPDX expression per line: its Conda packages, the
+# Python packages pip installed, G6K and lattice-estimator, and the Ubuntu packages
+# (LicenseRef-Ubuntu-archive). build.sh joins them into the image's
+# org.opencontainers.image.licenses label; the build fails when they differ from the image's.
+# The image contains GPL software and is never published (D46).
+0BSD
+0BSD OR CC0-1.0
+Apache-2.0
+Apache-2.0 AND BSD-2-Clause AND BSD-3-Clause AND ISC AND MIT
+Apache-2.0 AND MIT
+BSD-2-Clause
+BSD-2-Clause OR GPL-2.0-or-later
+BSD-3-Clause
+BSD-3-Clause AND MIT AND EPL-2.0
+CC-PDDC AND BSD-3-Clause AND BSD-2-Clause AND ZPL-2.1
+DSDP
+GD
+GPL-1.0-or-later OR Artistic-1.0-Perl
+GPL-2.0-only
+GPL-2.0-only OR FTL
+GPL-2.0-or-later
+GPL-2.0-or-later OR LGPL-3.0-or-later
+GPL-2.0-or-later WITH Classpath-exception-2.0
+GPL-3.0-only
+GPL-3.0-only WITH GCC-exception-3.1
+GPL-3.0-or-later
+HPND
+IJG AND BSD-3-Clause AND Zlib
+ISC
+LBNL-BSD
+LGPL-2.0-or-later
+LGPL-2.0-or-later AND LGPL-2.0-or-later WITH exceptions AND GPL-2.0-or-later
+LGPL-2.1-only
+LGPL-2.1-only OR MPL-1.1
+LGPL-2.1-or-later
+LGPL-2.1-or-later AND BSD-3-Clause AND GPL-2.0-or-later AND Apache-2.0
+LGPL-2.1-or-later AND GPL-2.0-or-later AND Apache-2.0
+LGPL-3.0-only
+LGPL-3.0-or-later
+LicenseRef-BSD
+LicenseRef-BSD-like
+LicenseRef-Bdwgc-Mit-Like
+LicenseRef-LGPL
+LicenseRef-LGPL-3
+LicenseRef-Public-Domain
+LicenseRef-Qhull
+LicenseRef-Ubuntu-Font-Licence-Version-1.0
+LicenseRef-Ubuntu-archive
+MIT
+MIT AND PSF-2.0
+MIT OR Apache-2.0
+MPL-2.0
+OFL-1.1
+PSF-2.0
+Python-2.0
+TCL
+Unlicense
+X11 AND BSD-3-Clause
+Zlib
+blessing
+bzip2-1.0.6
+curl
+zlib-acknowledgement

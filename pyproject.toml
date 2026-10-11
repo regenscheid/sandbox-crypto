@@ -57,9 +57,10 @@ known-first-party = ["sandbox_science"]
 
 [tool.ruff.lint.per-file-ignores]
 "packages/*/tests/**" = ["S101"]
+"images/tests/**" = ["S101"]
 
 [tool.pyright]
-include = ["packages", "scripts"]
+include = ["packages", "scripts", "images"]
 exclude = ["**/_proto", "**/__pycache__"]
 typeCheckingMode = "standard"
 strict = ["packages/*/src"]
@@ -67,8 +68,9 @@ pythonVersion = "3.12"
 reportMissingTypeStubs = false
 
 [tool.pytest.ini_options]
-testpaths = ["packages"]
+testpaths = ["packages", "images"]
 addopts = "--import-mode=importlib -ra"
 markers = [
     "integration: needs OpenShell, KVM or a cluster; runs only when SS_INTEGRATION=1",
+    "images: needs Docker and built base images; runs only when SS_IMAGE_TESTS names them",
 ]

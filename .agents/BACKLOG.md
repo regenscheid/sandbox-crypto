@@ -58,6 +58,10 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] Backend conformance suite (D52): the execution-tools fixtures through the worker API (`packages/worker/tests/test_conformance.py`), against the local backend in CI or a running worker named by `SS_CONFORMANCE_*` ([worker](../docs/WORKER.md#conformance-suite))
   - [ ] Run the suite, and with it the probe, against an OpenShell sandbox on babbage (lab)
 - [ ] Multi-arch base images: `minimal` and the `crypto-base` recipe (D46); babbage MicroVM gateway configuration (D63)
+  - [x] Recipes for both profiles in `images/` (D75, [images](../docs/IMAGES.md)): pinned sources, Conda lockfiles for linux-64 and linux-aarch64, build and test scripts. Built for linux/amd64 on babbage and checked as plain containers: read-only root, uid 1000, and under a Landlock ruleset like OpenShell's
+  - [ ] arm64 images: build and test on an arm64 host; check that the Ubuntu snapshot service covers the ports archive; a registry for multi-platform images (D63)
+  - [ ] Run the images in an OpenShell lab: the worker's profiles, the targets file's `sandbox.filesystem` ([images](../docs/IMAGES.md#openshell-filesystem-paths)) and the conformance suite
+  - [ ] A private registry for crypto-base (open question), and a standard-format SBOM before `minimal` is published
 - [ ] Secrets through OpenShell providers (D57); MCP endpoint policies (D58); connector auth service and MCP proxy (D66, D67)
 
 ## W0: behavior specification and harness foundation
@@ -77,7 +81,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 - [x] Sage through SageMath's own Jupyter kernel (`sagemath` kernelspec): the worker offers it when the environment has it, and the harness gives the agent a `sage` tool. Tested with a stand-in kernelspec
 - [x] Real SageMath from conda-forge in an OpenShell sandbox ([lab 5](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)): preparsing, finite fields, polynomial rings, Gröbner bases, exact matrices, LaTeX, GAP, Maxima, PARI and fpylll, interrupt, timeout, restart and kernel death. SageMath 10.9 installs in about 30 s through the cache; the VM costs 0–7% on single-threaded mathematics. Needed two fixes: the compiled policy now allows pseudo-terminals and `/dev/shm`, and the executor puts the environment's tools on `PATH`
-- [ ] `crypto-base` profile with Sage present at session start (D46)
+- [ ] `crypto-base` profile with Sage present at session start (D46). The image exists ([images](../docs/IMAGES.md)); to verify in an OpenShell lab
 - [ ] PDF extraction and rendering in the worker (pdf_oxide, D59): the in-sandbox helper and the [spec](../docs/specs/pdf-sources.md) are done; the worker request kind, the agent's tools and a lab remain
 
 ## babbage

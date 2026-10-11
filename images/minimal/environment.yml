@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# The minimal profile's Conda environment, installed at /opt/sandbox-science (docs/IMAGES.md).
+# Permissive packages only: the build fails on any other license outside the allowlist in
+# images/common/licenses.py. Lock with images/lock.sh; the build installs conda-lock.yml.
+name: minimal
+channels:
+  - conda-forge
+  - nodefaults
+platforms:
+  - linux-64
+  - linux-aarch64
+dependencies:
+  - python 3.14.*
+  - ipykernel >=6.29
+  - jupyter_client >=8.6
+  - pip
