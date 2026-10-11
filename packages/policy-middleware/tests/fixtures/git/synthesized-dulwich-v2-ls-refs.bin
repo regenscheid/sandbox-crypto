@@ -1,0 +1,2 @@
+0014command=ls-refs
+0017agent=dulwich/1.0.00016object-format=sha100010008peel000bsymrefs000aunborn0013ref-prefix HEAD0014ref-prefix refs/0000

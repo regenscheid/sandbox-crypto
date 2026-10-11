@@ -25,6 +25,7 @@ jobs:
           python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv sync --locked
+      - run: uv run python scripts/generate_protos.py --check
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run pyright

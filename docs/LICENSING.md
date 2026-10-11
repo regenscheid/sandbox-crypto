@@ -8,7 +8,7 @@ License facts below were read from each project's published license file on 2026
 
 | Tier | Contents | Allowed licenses | Rule |
 | --- | --- | --- | --- |
-| 1. Platform code | Web GUI, the reimplemented orchestrator/harness (D11), worker service, adapters, proxies/mirror configuration, monitor, environment manager | MIT, BSD, ISC, Apache-2.0, PSF-2.0, PostgreSQL, public domain, MPL-2.0 (file-level, unmodified) | No GPL/LGPL linking or importing. No AGPL anywhere. Proprietary code cannot be included. |
+| 1. Platform code | Web GUI, the reimplemented orchestrator/harness (D11), worker service, adapters, proxies/mirror configuration, monitor, environment manager | MIT, MIT-0, BSD, ISC, Apache-2.0, PSF-2.0, PostgreSQL, public domain, MPL-2.0 (file-level, unmodified) | No GPL/LGPL linking or importing. No AGPL anywhere. Proprietary code cannot be included. |
 | 2. Published base worker image (`minimal`) | Minimal runtime: micromamba, Python, jupyter_client/ipykernel, probe and stub scripts | Same as tier 1, plus the system libraries the base distribution requires | Keep thin. No GPL research tools baked in. Generate an SBOM and license report on every build. |
 | 3. Runtime-installed research dependencies | Sage, fpylll, G6K, PARI/GP, lattice-estimator, FLINT, Poppler, TeX, anything Conda installs on request | Any license the user accepts by installing, **except AGPL by default** | Installed by the user's environment from conda-forge through the mirror into the environment volume. The project does not distribute these binaries. Record each package's license in the environment record. |
 | `crypto-base` profile image | Tier 2 plus a pinned set of tier-3 packages (Sage, fpylll, PARI, lattice-estimator, FLINT, TeX, pdf tools, G6K from source) | As tier 3 | The **recipe** (Containerfile and lockfiles) is published under MIT. The **image** is built privately (user's machines or CI), stored in a private registry and never published, because it contains GPL tools. It is the normal base for crypto projects (D46). |
@@ -65,8 +65,15 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | pydantic, pydantic-core, annotated-types, typing-inspection | MIT | Policy and API schemas (`packages/policy`) |
 | typing-extensions | PSF-2.0 | Required by pydantic; PSF-2.0 is permissive and GPL-compatible |
 | PyYAML | MIT | Policy file parsing |
+| OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.3) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license |
+| grpcio | Apache-2.0 | Policy middleware gRPC server |
+| protobuf | BSD-3-Clause | Policy middleware messages |
+| PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |
+| cryptography | Apache-2.0 OR BSD-3-Clause | Ed25519 verification for PyJWT |
+| cffi, pycparser | MIT-0; BSD-3-Clause | Required by cryptography. MIT-0 is MIT without the attribution condition |
 | pytest, pluggy, iniconfig, ruff, pyright | MIT | Development and CI only |
-| types-PyYAML | Apache-2.0 | Development and CI only (type stubs) |
+| types-PyYAML, types-grpcio, types-protobuf | Apache-2.0 | Development and CI only (type stubs) |
+| grpcio-tools, setuptools | Apache-2.0; MIT | Development only: generates the middleware's protobuf code |
 | packaging, pygments, nodeenv | Apache-2.0 OR BSD-2-Clause; BSD-2-Clause; BSD-3-Clause | Development and CI only (pytest and pyright dependencies) |
 | Pandoc | GPL | Tier 3: runtime-installed in workers for `.tex`/PDF export, invoked as a separate program |
 | Claude Agent SDK (Python) | MIT wrapper that bundles the proprietary Claude Code CLI | **Not** for the MIT core: the runtime it drives is proprietary |
