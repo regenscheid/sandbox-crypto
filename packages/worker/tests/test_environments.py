@@ -12,8 +12,10 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import json
+import logging
 import os
 import re
+import sqlite3
 import sys
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -41,13 +43,14 @@ from sandbox_science.worker.admission import (
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend, OpenShellBackend
+from sandbox_science.worker.cli import _backend as cli_backend  # pyright: ignore[reportPrivateUsage]
 from sandbox_science.worker.cli import main
 from sandbox_science.worker.environments import (
     MAX_RECORDED,
     Admission,
     EnvironmentRecords,
     Environments,
-    sandbox_name,
+    new_sandbox_name,
 )
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import Activity, ExecutionManager
@@ -56,6 +59,7 @@ from sandbox_science.worker.settings import (
     EnvironmentSettings,
     LocalBackendSettings,
     OpenShellBackendSettings,
+    Settings,
     SettingsError,
     load_settings,
     token_digest,
@@ -330,7 +334,7 @@ async def test_create_compiles_attaches_exactly_the_listed_providers_and_binds(
     info, created = await setup.environments.create(setup.request())
     assert created
     assert info.state is EnvironmentState.READY
-    assert info.sandbox == sandbox_name("env-1")
+    assert re.fullmatch(r"ss-[0-9a-f]{16}", info.sandbox)
     assert info.providers == ("github-readonly",)
     assert info.sandbox_id is not None
     box = setup.fake.read()["sandboxes"][info.sandbox]
@@ -465,7 +469,12 @@ async def test_a_failed_creation_leaves_no_sandbox_or_binding(setup: Setup) -> N
 async def test_the_backend_finds_sandboxes_the_worker_created(setup: Setup) -> None:
     info, _ = await setup.environments.create(setup.request())
     static = setup.settings.model_copy(update={"sandboxes": {"env-2": "made-by-hand"}})
-    backend = OpenShellBackend(static, setup.state_dir, setup.environments.sandbox)
+    backend = OpenShellBackend(
+        static,
+        setup.state_dir,
+        setup.environments.sandbox,
+        manages=setup.environments.manages,
+    )
     assert backend.sandbox_id("env-1") == info.sandbox
     assert backend.sandbox_id("env-2") == "made-by-hand"
     assert backend.sandbox_id("env-3") is None
@@ -559,25 +568,46 @@ async def test_policy_add_stores_revisions_for_environments(
     assert main(["policy", "add", "--settings", str(settings), str(broken)]) == 1
 
 
-@pytest.mark.parametrize(
-    "environment_id",
-    ["env-1", "ENV-1", "env_1", "env.1", "p-img-default", "x" * 128, "a--b---c", "-", "abcdef-hij"],
-)
-async def test_sandbox_names_fit_openshells_limit(environment_id: str) -> None:
+async def test_sandbox_names_fit_openshells_limit_and_are_random() -> None:
     # OpenShell v0.1.3 refuses names over 19 characters (lab 12), and uses "--" itself.
-    name = sandbox_name(environment_id)
-    assert len(name) <= 19
-    assert re.fullmatch(r"ss-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-[0-9a-f]{8}", name)
-    assert "--" not in name
-    assert sandbox_name(environment_id) == name
+    # A name derived from the ID had room for 32 bits of a hash, so another ID could be
+    # found to share it (review of D78); 64 random bits cannot be matched.
+    names = {new_sandbox_name() for _ in range(1000)}
+    assert len(names) == 1000
+    for name in names:
+        assert re.fullmatch(r"ss-[0-9a-f]{16}", name)
+        assert len(name) == 19
 
 
-async def test_sandbox_names_are_distinct() -> None:
-    names = {
-        sandbox_name(environment_id)
-        for environment_id in ("env-1", "ENV-1", "env_1", "env.1", "p-img-default", "p-img-defaulx")
-    }
-    assert len(names) == 6
+async def test_no_two_environments_share_a_sandbox(setup: Setup) -> None:
+    first, _ = await setup.environments.create(setup.request("env-1"))
+    second, _ = await setup.environments.create(setup.request("env-2"))
+    assert first.sandbox != second.sandbox
+    clash = second.model_copy(update={"environment_id": "env-3", "sandbox": first.sandbox})
+    with pytest.raises(sqlite3.IntegrityError):
+        setup.environments.records.save(clash)
+
+
+async def test_creating_again_deletes_only_the_records_own_leftover(setup: Setup) -> None:
+    # A crash left env-1 creating, with a sandbox of its own; env-2's sandbox is untouched.
+    other, _ = await setup.environments.create(setup.request("env-2"))
+    first, _ = await setup.environments.create(setup.request("env-1"))
+    setup.environments.records.save(first.model_copy(update={"state": EnvironmentState.CREATING}))
+    again, created = await setup.environments.create(setup.request("env-1"))
+    assert created
+    assert again.sandbox != first.sandbox
+    assert [call[2] for call in setup.fake.calls("sandbox", "delete")] == [first.sandbox]
+    assert other.sandbox in setup.fake.read()["sandboxes"]
+
+
+async def test_a_ready_environment_whose_sandbox_changed_is_given_up(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    state = setup.fake.read()
+    state["sandboxes"][info.sandbox]["id"] = "another-sandbox"
+    setup.fake.write(state)
+    with pytest.raises(WorkerError, match="not " + re.escape(str(info.sandbox_id))):
+        await setup.environments.resume("env-1")
+    assert setup.environments.get("env-1").state is EnvironmentState.DELETED
 
 
 # On-demand admission (D69).
@@ -824,10 +854,12 @@ async def test_an_unexpected_error_pauses_one_environment_not_the_watcher(
     setup.fake.draft(second.sandbox, "b.example.net:443")
     real = setup.environments.admit
 
-    async def broken(environment_id: str, requests: Sequence[tuple[str, int]]) -> list[Admission]:
+    async def broken(
+        environment_id: str, requests: Sequence[tuple[str, int]], *, wait: bool = True
+    ) -> list[Admission] | None:
         if environment_id == "env-a":
             raise RuntimeError("database is locked")
-        return await real(environment_id, requests)
+        return await real(environment_id, requests, wait=wait)
 
     monkeypatch.setattr(setup.environments, "admit", broken)
     await DraftWatcher(setup.environments, 1.0).check_all()
@@ -1074,7 +1106,7 @@ async def test_a_failed_suspension_leaves_the_others_to_go_on(setup: Setup) -> N
     real = setup.environments.cli.run
 
     async def flaky(*args: str, timeout: float = 120.0) -> str:
-        if args[:2] == ("sandbox", "stop") and args[2] == sandbox_name("env-a"):
+        if args[:2] == ("sandbox", "stop") and args[2] == setup.environments.get("env-a").sandbox:
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox stop failed")
         return await real(*args, timeout=timeout)
 
@@ -1329,7 +1361,6 @@ async def test_a_client_acts_for_its_own_projects_only(api: Api) -> None:
         ("/v1/files/read", {"context": borrowed, "path": "note.txt"}),
         ("/v1/files/write", {"context": borrowed, "path": "x.txt", "content_b64": "eA=="}),
         ("/v1/files/list", {"context": borrowed, "path": "."}),
-        ("/v1/sessions/close", {"context": borrowed}),
         ("/v1/kernels/restart", {"context": borrowed, "language": "python"}),
         ("/v1/artifacts", {"context": borrowed, "path": "note.txt"}),
     ):
@@ -1337,6 +1368,9 @@ async def test_a_client_acts_for_its_own_projects_only(api: Api) -> None:
     assert await api.refused(
         "POST", "/v1/files/read", B_TOKEN, {"context": context_a, "path": "x"}
     ) == (403, "policy_denied")
+    # Closing a session elsewhere stops nothing and says so, as where nothing runs.
+    status, closed = await api.call("POST", "/v1/sessions/close", B_TOKEN, {"context": borrowed})
+    assert (status, closed) == (200, {"kernels": []})
     # The pool's own token may not mix projects in an environment either.
     assert await api.refused("POST", "/v1/executions", TOKEN, {**shell, "context": borrowed}) == (
         409,
@@ -1567,3 +1601,86 @@ async def test_clients_are_named_by_their_tokens_digests(
             create_app(idle_manager(tmp_path / "twin"), TOKEN, environments, (pool_twin,))
     finally:
         environments.close()
+
+
+async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> None:
+    # One client's revisions must not hold up admission for every project (review of D78).
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    real = setup.environments.cli.run
+    release = asyncio.Event()
+
+    async def slow(*args: str, timeout: float = 120.0) -> str:
+        if args[:2] == ("policy", "set"):
+            await release.wait()
+        return await real(*args, timeout=timeout)
+
+    setup.environments.cli.run = slow  # type: ignore[method-assign]
+    revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
+    revising = asyncio.create_task(setup.environments.revise("env-1", revision))
+    queued = asyncio.create_task(setup.environments.revise("env-1", setup.policy))
+    await asyncio.sleep(0.3)
+    watcher = DraftWatcher(setup.environments, 1.0)
+    started = time.monotonic()
+    assert await watcher.check("env-1", info.sandbox) == ()
+    assert await setup.environments.admit("env-1", [("eprint.iacr.org", 443)], wait=False) is None
+    assert time.monotonic() - started < 5
+    release.set()
+    await revising
+    await queued
+    setup.environments.cli.run = real  # type: ignore[method-assign]
+    assert not setup.environments.busy("env-1")
+    decisions = await watcher.check("env-1", info.sandbox)
+    assert [(d.host, d.admitted) for d in decisions] == [("eprint.iacr.org", True)]
+
+
+async def test_changes_are_logged_by_route_and_cannot_be_forged(
+    api: Api, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sandbox_science.worker.app")
+    forged = (
+        "/v1/x%0a2026-10-11 INFO sandbox_science.worker.app: "
+        "DELETE /v1/environments/p2-default by client-b"
+    )
+    response = await api.client.post(forged, json={}, headers=bearer(A_TOKEN))
+    assert response.status == 404
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+    context = {"project_id": "p1", "session_id": "s1", "environment_id": "env-a"}
+    assert (await api.call("POST", "/v1/files/list", A_TOKEN, {"context": context}))[0] == 200
+    messages = [r.getMessage() for r in caplog.records if r.name == "sandbox_science.worker.app"]
+    assert "POST an unknown route by client-a: 404" in messages
+    assert "POST /v1/environments by client-a: 201" in messages
+    assert not any("\n" in message or "client-b" in message for message in messages)
+    assert not any("/v1/files/list" in message for message in messages)
+
+
+async def test_closing_a_session_where_no_environment_is_left_is_no_error(api: Api) -> None:
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+    assert (await api.call("DELETE", "/v1/environments/env-a", A_TOKEN))[0] == 200
+    context = {"project_id": "p1", "session_id": "s1", "environment_id": "env-a"}
+    for token, where in ((A_TOKEN, context), (TOKEN, {**context, "environment_id": "env-x"})):
+        status, closed = await api.call("POST", "/v1/sessions/close", token, {"context": where})
+        assert (status, closed) == (200, {"kernels": []}), token
+    # A project the client may not act for is still refused.
+    borrowed = {**context, "project_id": "p2"}
+    assert await api.refused("POST", "/v1/sessions/close", A_TOKEN, {"context": borrowed}) == (
+        403,
+        "policy_denied",
+    )
+
+
+async def test_the_backend_never_resolves_without_knowing_the_workers_environments(
+    setup: Setup,
+) -> None:
+    with pytest.raises(ValueError, match="go together"):
+        OpenShellBackend(setup.settings, setup.tmp / "state", setup.environments.sandbox)
+    settings = Settings.model_validate(
+        {
+            "token_file": setup.tmp / "worker.token",
+            "state_dir": setup.tmp / "state",
+            "openshell": setup.settings.model_dump(),
+        }
+    )
+    backend = cli_backend(settings, setup.environments)
+    assert isinstance(backend, OpenShellBackend)
+    assert backend.manages is not None

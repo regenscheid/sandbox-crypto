@@ -189,7 +189,10 @@ class DraftWatcher:
         requests = list(dict.fromkeys(e for draft in drafts for e in draft.endpoints))
         requests = requests[:MAX_ENDPOINTS]
         try:
-            decisions = await self.environments.admit(environment_id, requests)
+            decided = await self.environments.admit(environment_id, requests, wait=False)
+            if decided is None:
+                return ()  # a change to the environment came first: next round
+            decisions = decided
         except WorkerError as error:
             failures = self._failures.get(environment_id, 0) + 1
             if failures < MAX_FAILURES:

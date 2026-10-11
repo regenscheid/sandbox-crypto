@@ -73,7 +73,7 @@ Closing the GUI does not terminate active computations or discard state. Live ke
 
 The harness keeps a record of each project in its state directory (`packages/orchestrator`, `projects.py`). A record holds:
 - the project's base profile and policy revision;
-- its default environment, `<project>-default-<tag>`, where the tag is random, so that no other project's client of a shared worker can predict the ID and take it first (D78);
+- its default environment, `<project>-default-<tag>`, where the tag is random, so that no other project's client of a shared worker can predict the ID and take it first (D78); records made before keep their untagged IDs;
 - its sessions, each with the environment it runs in and when it was last closed.
 
 ```bash
