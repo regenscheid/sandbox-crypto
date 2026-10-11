@@ -27,12 +27,24 @@
  * KaTeX caps only positive sizes, so a formula can still draw outside its own box (with
  * `\smash` or a negative `\raisebox`); the stylesheet clips each rendered text to its
  * own box, so that it cannot cover what the page shows beside it.
+ *
+ * Living documents render with a parser of their own (`renderDocument`): the same rules,
+ * with YAML front matter and theorem-like containers added (documentrules.ts), as the
+ * server parses them (LD-4, LD-5). The server's block and math-span IDs are attached to
+ * what the browser parses, where both read the document alike (attach.ts, LD-9), and
+ * the document's macros (macros.ts, LD-28) render its math, within a bound on what they
+ * expand to. A document has limits of its own (`DOCUMENT_LIMITS`): it holds up to 1 MiB,
+ * and its math renders a go at a time, as a text's does.
  */
 import markdownit from 'markdown-it';
 import type { Env, MarkdownIt, Token } from 'markdown-it';
 import katex from 'katex';
 import type { KatexOptions } from 'katex';
+import { attachIds, type Mismatch, type ServerBlock } from './attach';
+import { bareTex, blockMap, recordPlaces } from './blockmap';
+import { CONTAINER, containerRule, frontMatterRule } from './documentrules';
 import { dollarMath, type DollarMathOptions } from './dollarmath';
+import { NO_MACROS, TooMuchExpansion, type MacroSet } from './macros';
 import { backslashMath, type MathMeta } from './mathdelimiters';
 import {
   definesMacros,
@@ -73,6 +85,35 @@ export const MAX_MATH = 20_000;
 export const MAX_FORMULA = 5_000;
 /** The characters of repaired math one text may send to KaTeX besides. */
 export const MAX_REPAIR_MATH = 20_000;
+
+/** What one text may hold and send to KaTeX. */
+export interface Limits {
+  /** Longer text is shown as written. */
+  rendered: number;
+  formulas: number;
+  math: number;
+  repairs: number;
+}
+
+/** A text's: a message, a tool's result. */
+export const TEXT_LIMITS: Limits = {
+  rendered: MAX_RENDERED,
+  formulas: MAX_FORMULAS,
+  math: MAX_MATH,
+  repairs: MAX_REPAIR_MATH,
+};
+
+/**
+ * A living document's: as much as the server keeps (1 MiB of text, 20,000 formulas). Its
+ * math renders in goes as a text's does, so a long document holds the page's thread no
+ * longer, only for more goes.
+ */
+export const DOCUMENT_LIMITS: Limits = {
+  rendered: 1_048_576,
+  formulas: 20_000,
+  math: 1_048_576,
+  repairs: 200_000,
+};
 /**
  * The milliseconds one go may take: a task of the page's thread in which texts render, one
  * after another, Markdown, KaTeX and the page's update all counted. Once they are spent,
@@ -112,11 +153,10 @@ export function textState(): TextState {
 }
 
 /**
- * KaTeX's results, for the page, by formula and display mode: KaTeX's settings are the
- * renderer's own, so a formula always renders alike. Within a count and a size. Once a
- * project's macros reach the renderer (living documents, LD-28), this key must also hold
- * the macros in force, and so must the keys of the repairs (`repairKey`), since KaTeX's
- * error and so the repairs depend on them.
+ * KaTeX's results, for the page, by formula, display mode and the macros in force
+ * (`repairKey`): KaTeX's settings are the renderer's own, so a formula under the same
+ * macros always renders alike. Within a count and a size. The keys of the model repairs
+ * hold the macros too, since KaTeX's error, and so the repairs, depend on them.
  */
 const results = new Kept<Result>(4_000, 8_000_000, (key, result) =>
   key.length + ('html' in result ? result.html.length : 200),
@@ -195,16 +235,20 @@ const OUT_OF_TIME = Symbol('out of time');
 function resultFor(
   tex: string,
   display: boolean,
+  macros: MacroSet,
   rendering: Rendering | null,
   limited: boolean,
 ): Result | typeof OUT_OF_TIME {
-  const key = repairKey(tex, display);
+  const key = repairKey(tex, display, macros.key);
   let result = rendering?.state?.results.get(key) ?? results.get(key);
   if (result === undefined) {
     const current = currentGo();
     if (limited && current.formulas > 0 && !timeLeft(current)) return OUT_OF_TIME;
+    const options: KatexOptions = { ...KATEX_OPTIONS, displayMode: display };
+    // KaTeX may add to the macros it is given, so each formula gets a set of its own.
+    if (macros.key) options.macros = macros.forFormula();
     try {
-      result = { html: katex.renderToString(tex, { ...KATEX_OPTIONS, displayMode: display }) };
+      result = { html: katex.renderToString(tex, options) };
     } catch (error) {
       result = { error };
     }
@@ -218,6 +262,9 @@ function resultFor(
 /** One text's rendering, kept in its environment: its budget, and the repairs it uses. */
 interface Rendering {
   budget: MathBudget;
+  limits: Limits;
+  /** The macros the text's math renders with. */
+  macros: MacroSet;
   repairs: ModelRepairs | null;
   /** The keys of the model repairs the text shows as pending. */
   waiting: Set<string>;
@@ -231,9 +278,16 @@ interface Rendering {
 
 const RENDERING = Symbol('rendering');
 
-function newRendering(repairs: ModelRepairs | null, state: TextState | null): Rendering {
+function newRendering(
+  repairs: ModelRepairs | null,
+  state: TextState | null,
+  macros: MacroSet = NO_MACROS,
+  limits: Limits = TEXT_LIMITS,
+): Rendering {
   return {
     budget: { formulas: 0, characters: 0, repairs: 0 },
+    limits,
+    macros,
     repairs,
     waiting: new Set(),
     state,
@@ -252,43 +306,82 @@ function renderingOf(env: Env | undefined): Rendering {
   return rendering;
 }
 
-const md = markdownit('default', { html: false, linkify: false, typographer: false });
+const escapeHtml = markdownit().utils.escapeHtml;
+
+/**
+ * A parser with the renderer's rules: links, images, math and code as above. A document's
+ * adds front matter and theorem-like containers, in the server's order, and records where
+ * each block lies (blockmap.ts).
+ */
+function configured(documents: boolean): MarkdownIt {
+  const md = markdownit('default', { html: false, linkify: false, typographer: false });
+  md.validateLink = (url: string): boolean => LINK.test(url.trim());
+  if (documents) frontMatterRule(md);
+  dollarMath(md, MATH_RULES);
+  backslashMath(md);
+  if (documents) {
+    containerRule(md);
+    recordPlaces(md);
+  }
+  // Code shows bidirectional controls as code points, as tool calls do (text.ts).
+  md.core.ruler.push('visible_controls', (state) => {
+    for (const token of state.tokens) {
+      if (token.type === 'fence' || token.type === 'code_block') {
+        token.content = visible(token.content);
+      }
+      for (const child of token.children ?? []) {
+        if (child.type === 'code_inline') child.content = visible(child.content);
+      }
+    }
+  });
+
+  md.renderer.rules.link_open = (tokens, index, options, _env, self) => {
+    const token = tokens[index]!;
+    token.attrSet('target', '_blank');
+    token.attrSet('rel', 'noopener noreferrer nofollow');
+    return self.renderToken(tokens, index, options);
+  };
+  md.renderer.rules.image = (tokens, index, options, env, self) => {
+    const token = tokens[index]!;
+    const source = String(token.attrGet('src') ?? '');
+    const alt = self.renderInlineAsText(token.children ?? [], options, env);
+    return `<a class="image-link" href="${escapeHtml(source)}" ${OPENS_APART}>image: ${escapeHtml(alt || source)}</a>`;
+  };
+  md.renderer.rules.math_inline = (tokens, index, _options, env) =>
+    renderMath(tokens[index]!, 'span', false, renderingOf(env));
+  md.renderer.rules.math_inline_double = (tokens, index, _options, env) =>
+    renderMath(tokens[index]!, 'span', true, renderingOf(env));
+  md.renderer.rules.math_block = (tokens, index, _options, env) =>
+    renderMath(tokens[index]!, 'div', true, renderingOf(env));
+  md.renderer.rules.math_block_label = (tokens, index, _options, env) =>
+    renderMath(tokens[index]!, 'div', true, renderingOf(env));
+  if (documents) {
+    md.renderer.rules.front_matter = (tokens, index, _options, _env, self) => {
+      const token = tokens[index]!;
+      return (
+        `<details class="front-matter"${self.renderAttrs(token)}><summary>Front matter</summary>` +
+        `<pre>${escapeHtml(visible(token.content))}</pre></details>\n`
+      );
+    };
+    md.renderer.rules[`container_${CONTAINER}_open`] = (tokens, index, _options, _env, self) => {
+      const token = tokens[index]!;
+      const [kind = '', ...rest] = token.info.trim().split(' ');
+      const label = rest.join(' ').trim();
+      const head = `${kind.charAt(0).toUpperCase()}${kind.slice(1)}${label ? ` ${label}` : ''}.`;
+      token.attrJoin('class', `theorem theorem-${kind}`);
+      return `<section${self.renderAttrs(token)}><p class="theorem-head">${escapeHtml(visible(head))}</p>\n`;
+    };
+    md.renderer.rules[`container_${CONTAINER}_close`] = () => '</section>\n';
+  }
+  return md;
+}
+
+const md = configured(false);
 /** The configured parser, for tests of where math begins and ends. */
 export const parser: MarkdownIt = md;
-const escapeHtml = md.utils.escapeHtml;
-md.validateLink = (url: string): boolean => LINK.test(url.trim());
-dollarMath(md, MATH_RULES);
-backslashMath(md);
-// Code shows bidirectional controls as code points, as tool calls do (text.ts).
-md.core.ruler.push('visible_controls', (state) => {
-  for (const token of state.tokens) {
-    if (token.type === 'fence' || token.type === 'code_block') token.content = visible(token.content);
-    for (const child of token.children ?? []) {
-      if (child.type === 'code_inline') child.content = visible(child.content);
-    }
-  }
-});
-
-md.renderer.rules.link_open = (tokens, index, options, _env, self) => {
-  const token = tokens[index]!;
-  token.attrSet('target', '_blank');
-  token.attrSet('rel', 'noopener noreferrer nofollow');
-  return self.renderToken(tokens, index, options);
-};
-md.renderer.rules.image = (tokens, index, options, env, self) => {
-  const token = tokens[index]!;
-  const source = String(token.attrGet('src') ?? '');
-  const alt = self.renderInlineAsText(token.children ?? [], options, env);
-  return `<a class="image-link" href="${escapeHtml(source)}" ${OPENS_APART}>image: ${escapeHtml(alt || source)}</a>`;
-};
-md.renderer.rules.math_inline = (tokens, index, _options, env) =>
-  renderMath(tokens[index]!, 'span', false, renderingOf(env));
-md.renderer.rules.math_inline_double = (tokens, index, _options, env) =>
-  renderMath(tokens[index]!, 'span', true, renderingOf(env));
-md.renderer.rules.math_block = (tokens, index, _options, env) =>
-  renderMath(tokens[index]!, 'div', true, renderingOf(env));
-md.renderer.rules.math_block_label = (tokens, index, _options, env) =>
-  renderMath(tokens[index]!, 'div', true, renderingOf(env));
+const documentMd = configured(true);
+/** The parser for living documents: front matter and containers besides. */
+export const documentParser: MarkdownIt = documentMd;
 
 /**
  * KaTeX for the repairs, with the renderer's settings, within the text's budget for
@@ -298,10 +391,16 @@ function budgeted(rendering: Rendering): MathRenderer {
   const budget = rendering.budget;
   return {
     renderToString(tex, options) {
-      if (tex.length > MAX_FORMULA || budget.repairs + tex.length > MAX_REPAIR_MATH) {
+      if (tex.length > MAX_FORMULA || budget.repairs + tex.length > rendering.limits.repairs) {
         throw new Error('beyond the budget for repairs');
       }
-      const result = resultFor(tex, options.displayMode === true, rendering, true);
+      const result = resultFor(
+        tex,
+        options.displayMode === true,
+        rendering.macros,
+        rendering,
+        true,
+      );
       if (result === OUT_OF_TIME) throw new OutOfTime();
       budget.repairs += tex.length;
       if ('html' in result) return result.html;
@@ -315,20 +414,52 @@ function budgeted(rendering: Rendering): MathRenderer {
  * formula, checked whatever the go's time, since an answer it turned down for want of
  * time would be turned down for the page.
  */
-const checker: MathRenderer = {
-  renderToString(tex, options) {
-    if (tex.length > MAX_FORMULA) throw new Error('the repair is too long to render');
-    const result = resultFor(tex, options.displayMode === true, null, false);
-    if (result === OUT_OF_TIME) throw new OutOfTime(); // not for an unlimited call
-    if ('html' in result) return result.html;
-    throw result.error;
-  },
-};
+function checkerFor(macros: MacroSet): MathRenderer {
+  return {
+    renderToString(tex, options) {
+      if (tex.length > MAX_FORMULA) throw new Error('the repair is too long to render');
+      const result = resultFor(tex, options.displayMode === true, macros, null, false);
+      if (result === OUT_OF_TIME) throw new OutOfTime(); // not for an unlimited call
+      if ('html' in result) return result.html;
+      throw result.error;
+    },
+  };
+}
+
+const checker = checkerFor(NO_MACROS);
 
 /** What a formula left for a later go shows meanwhile. */
 const WAITING_FOR_TIME = 'not rendered yet: KaTeX renders a page’s math a part at a time';
 
+/** ` name="value"` for a token's attribute, or nothing when it has none. */
+function attribute(token: Token, name: string): string {
+  const value = token.attrGet(name);
+  return value === null ? '' : ` ${name}="${escapeHtml(String(value))}"`;
+}
+
+/** What a document's IDs add to a formula's element: its span's ID, and its block's for
+ * a displayed equation, which is a block of its own. */
+function withIds(html: string, token: Token): string {
+  const meta = token.meta as { span?: string } | null;
+  const ids = [
+    meta?.span ? ` data-math="${escapeHtml(meta.span)}"` : '',
+    attribute(token, 'data-block'),
+    attribute(token, 'data-status'),
+    attribute(token, 'data-unmatched'),
+  ].join('');
+  return ids ? html.replace(/^<(span|div) /, `<$1${ids} `) : html;
+}
+
 function renderMath(
+  token: Token,
+  tag: 'span' | 'div',
+  display: boolean,
+  rendering: Rendering,
+): string {
+  return withIds(renderFormula(token, tag, display, rendering), token);
+}
+
+function renderFormula(
   token: Token,
   tag: 'span' | 'div',
   display: boolean,
@@ -337,21 +468,24 @@ function renderMath(
   const close = (token.meta as MathMeta | null)?.close ?? token.markup;
   const written = `${token.markup}${token.content}${close}`;
   const budget = rendering.budget;
+  const limits = rendering.limits;
   budget.formulas += 1;
   budget.characters += token.content.length;
   if (token.content.length > MAX_FORMULA) {
     return asWritten(tag, written, 'math-skipped', 'not rendered: too long a formula');
   }
-  if (budget.formulas > MAX_FORMULAS || budget.characters > MAX_MATH) {
+  if (budget.formulas > limits.formulas || budget.characters > limits.math) {
     return asWritten(tag, written, 'math-skipped', 'not rendered: this text has too much math');
   }
-  const tex = token.content.trim();
+  // A document's displayed equation renders without the markers of the quote it is in.
+  const tex = ((token.meta as { tex?: string } | null)?.tex ?? token.content).trim();
   const definition = definesMacros(tex);
   if (definition !== null) {
     const message = `not rendered: a formula may not define macros (\\${definition})`;
     return asWritten(tag, written, 'math-skipped', escapeHtml(message));
   }
-  const result = resultFor(tex, display, rendering, true);
+  const macros = rendering.macros;
+  const result = resultFor(tex, display, macros, rendering, true);
   if (result === OUT_OF_TIME) {
     rendering.unfinished = true;
     return asWritten(tag, written, 'math-skipped', WAITING_FOR_TIME);
@@ -362,6 +496,9 @@ function renderMath(
     return `<${tag} class="math ${kind}">${result.html}${label}</${tag}>`;
   }
   const error = result.error;
+  if (error instanceof TooMuchExpansion) {
+    return asWritten(tag, written, 'math-skipped', escapeHtml(`not rendered: ${error.message}`));
+  }
   if (!(error instanceof katex.ParseError)) {
     return asWritten(tag, written, 'math-error', escapeHtml(visible(String(error))));
   }
@@ -370,14 +507,15 @@ function renderMath(
     error,
     settings: KATEX_OPTIONS,
     repairs: rendering.repairs,
-    check: checker,
+    check: macros.key ? checkerFor(macros) : checker,
+    macros: macros.key,
   });
   if (recovery.status === 'unfinished') {
     rendering.unfinished = true;
     return asWritten(tag, written, 'math-skipped', WAITING_FOR_TIME);
   }
   if (recovery.status === 'fallback' && recovery.state === 'pending') {
-    rendering.waiting.add(repairKey(tex, display));
+    rendering.waiting.add(repairKey(tex, display, macros.key));
   }
   return recoveredHtml(recovery, tag, display, written, label);
 }
@@ -404,6 +542,60 @@ function waitingHtml(source: string): string {
   return `<pre class="markdown-waiting">${escapeHtml(source)}</pre>`;
 }
 
+/** A text's HTML, and where the browser's parse and the server's block map disagree. */
+interface Produced {
+  html: string;
+  mismatches: Mismatch[];
+}
+
+/** A text rendered by `produce` within the go's time, as `renderMarkdown` describes. */
+function renderText(
+  source: string,
+  repairs: ModelRepairs | null,
+  state: TextState | null,
+  macros: MacroSet,
+  limits: Limits,
+  produce: (env: Env) => Produced,
+): Rendered & { mismatches: Mismatch[] } {
+  let rendered: Rendered & { mismatches: Mismatch[] };
+  if (source.length > limits.rendered) {
+    const html =
+      `<p class="note">This text has ${source.length} characters, more than are rendered, ` +
+      `so it is shown as written.</p><pre>${escapeHtml(source)}</pre>`;
+    rendered = { html, waiting: new Set(), unfinished: false, mismatches: [] };
+  } else {
+    const current = currentGo();
+    if (state !== null && current.texts > 0 && !timeLeft(current)) {
+      const last = state.last?.source === source ? state.last.rendered : null;
+      return {
+        html: last?.html ?? waitingHtml(source),
+        waiting: last?.waiting ?? new Set(),
+        unfinished: true,
+        mismatches: (last as { mismatches?: Mismatch[] } | null)?.mismatches ?? [],
+      };
+    }
+    current.texts += 1;
+    const rendering = newRendering(repairs, state, macros, limits);
+    const produced = produce({ [RENDERING]: rendering });
+    rendered = {
+      html: produced.html,
+      waiting: rendering.waiting,
+      unfinished: rendering.unfinished,
+      mismatches: produced.mismatches,
+    };
+    if (state !== null && rendering.unfinished) {
+      state.results = rendering.used;
+      state.last = { source, rendered };
+      return rendered;
+    }
+  }
+  if (state !== null) {
+    state.results = new Map();
+    state.last = { source, rendered };
+  }
+  return rendered;
+}
+
 /**
  * Markdown with math as HTML, asking `repairs` for the formulas nothing else repairs.
  * With the text's `state`, a text that comes after this go's time is spent is not
@@ -416,35 +608,65 @@ export function renderMarkdown(
   repairs: ModelRepairs | null = null,
   state: TextState | null = null,
 ): Rendered {
-  let rendered: Rendered;
-  if (source.length > MAX_RENDERED) {
-    const html =
-      `<p class="note">This text has ${source.length} characters, more than are rendered, ` +
-      `so it is shown as written.</p><pre>${escapeHtml(source)}</pre>`;
-    rendered = { html, waiting: new Set(), unfinished: false };
-  } else {
-    const current = currentGo();
-    if (state !== null && current.texts > 0 && !timeLeft(current)) {
-      const last = state.last?.source === source ? state.last.rendered : null;
-      return {
-        html: last?.html ?? waitingHtml(source),
-        waiting: last?.waiting ?? new Set(),
-        unfinished: true,
-      };
+  const { html, waiting, unfinished } = renderText(
+    source,
+    repairs,
+    state,
+    NO_MACROS,
+    TEXT_LIMITS,
+    (env) => ({ html: md.render(source, env), mismatches: [] }),
+  );
+  return { html, waiting, unfinished };
+}
+
+/** What a document's view knows of the revision it renders, besides its text. */
+export interface DocumentInput {
+  /** The server's block map (living documents, LD-8). */
+  blocks: readonly ServerBlock[];
+  /** The macros of its front matter. */
+  macros: MacroSet;
+}
+
+/** A document rendered, with where the two parsers disagree. */
+export interface RenderedDocument extends Rendered {
+  mismatches: Mismatch[];
+}
+
+/**
+ * A living document as HTML, as `renderMarkdown` renders a text, with the server's IDs
+ * on what it renders (LD-9): each block's element carries `data-block`, its ID, and
+ * `data-status`, how the revision changed it when it did; each formula's, `data-math`.
+ * A block the server's map has no block for is marked `data-unmatched`, and the disagreements
+ * come back as `mismatches`.
+ */
+export function renderDocument(
+  source: string,
+  document: DocumentInput,
+  repairs: ModelRepairs | null = null,
+  state: TextState | null = null,
+): RenderedDocument {
+  return renderText(source, repairs, state, document.macros, DOCUMENT_LIMITS, (env) => {
+    const tokens = documentMd.parse(source, env);
+    let mismatches: Mismatch[];
+    try {
+      const attached = attachIds(blockMap(source, tokens), document.blocks);
+      for (const [token, block] of attached.blocks) {
+        token.attrSet('data-block', block.id);
+        if (block.status !== 'kept') token.attrSet('data-status', block.status);
+      }
+      for (const token of attached.unmatched) token.attrSet('data-unmatched', '');
+      for (const [token, id] of attached.spans) token.meta = { ...(token.meta ?? {}), span: id };
+      mismatches = attached.mismatches;
+    } catch (error) {
+      // The document still renders, without IDs, and says why.
+      const lines = source.split('\n').length;
+      mismatches = [{ lines: [0, lines], message: `the browser could not map its parse: ${String(error)}` }];
     }
-    current.texts += 1;
-    const rendering = newRendering(repairs, state);
-    const html = md.render(source, { [RENDERING]: rendering });
-    rendered = { html, waiting: rendering.waiting, unfinished: rendering.unfinished };
-    if (state !== null && rendering.unfinished) {
-      state.results = rendering.used;
-      state.last = { source, rendered };
-      return rendered;
+    for (const token of tokens) {
+      if (token.type === 'math_block' || token.type === 'math_block_label') {
+        token.meta = { ...(token.meta ?? {}), tex: bareTex(source, token) };
+      }
     }
-  }
-  if (state !== null) {
-    state.results = new Map();
-    state.last = { source, rendered };
-  }
-  return rendered;
+    return { html: documentMd.renderer.render(tokens, documentMd.options, env), mismatches };
+  });
 }

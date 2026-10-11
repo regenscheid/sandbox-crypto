@@ -2,6 +2,8 @@
 <script lang="ts">
   import { api } from './lib/api';
   import { parseRoute } from './lib/router';
+  import DocumentView from './views/DocumentView.svelte';
+  import HistoryView from './views/HistoryView.svelte';
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import SessionView from './views/SessionView.svelte';
@@ -43,6 +45,18 @@
   {:else if route.view === 'session'}
     {#key `${route.project}/${route.session}`}
       <SessionView projectId={route.project} sessionId={route.session} />
+    {/key}
+  {:else if route.view === 'document'}
+    {#key `${route.project}/${route.document}/${route.revision}`}
+      <DocumentView
+        projectId={route.project}
+        documentId={route.document}
+        revision={route.revision}
+      />
+    {/key}
+  {:else if route.view === 'history'}
+    {#key `${route.project}/${route.document}`}
+      <HistoryView projectId={route.project} documentId={route.document} />
     {/key}
   {:else}
     <p>There is nothing at this address. <a href="#/">See the projects.</a></p>

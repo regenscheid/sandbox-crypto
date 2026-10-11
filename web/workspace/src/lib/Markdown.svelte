@@ -7,14 +7,23 @@
   a text that comes after a go's time is spent, or that has math the go had no time for,
   waits for its turn in a later go, showing its last rendering (or itself, as written)
   meanwhile, and starts where it stopped. The mark on a repaired formula shows or hides
-  why, and the formula as written.
+  why, and the formula as written. Given a `document`, the server's view of a living
+  document's revision, it renders `source` as that document (markdown.ts,
+  `renderDocument`), with the server's IDs and the document's macros, and reports where
+  the two parsers disagree in `mismatches`.
 -->
 <script lang="ts">
   import { flushSync } from 'svelte';
-  import { renderMarkdown, textState, whenMathTime } from './markdown';
+  import type { Mismatch } from './attach';
+  import { renderDocument, renderMarkdown, textState, whenMathTime } from './markdown';
+  import type { DocumentInput } from './markdown';
   import { pageRepairs } from './mathrepair';
 
-  let { source }: { source: string } = $props();
+  let {
+    source,
+    document = null,
+    mismatches = $bindable([]),
+  }: { source: string; document?: DocumentInput | null; mismatches?: Mismatch[] } = $props();
   /** Counts what makes this text render again: repairs it waits for, or its turn in a go. */
   let arrivals = $state(0);
   let element: HTMLDivElement | undefined = $state();
@@ -23,7 +32,12 @@
 
   const rendered = $derived.by(() => {
     void arrivals;
-    return renderMarkdown(source, pageRepairs, kept);
+    if (document === null) return { ...renderMarkdown(source, pageRepairs, kept), mismatches: [] };
+    return renderDocument(source, document, pageRepairs, kept);
+  });
+
+  $effect(() => {
+    mismatches = rendered.mismatches;
   });
 
   $effect(() => {
