@@ -723,6 +723,70 @@ async def test_the_openai_adapter() -> None:
     assert body["model"] == "main"
     assert body["tools"][0]["function"]["name"] == "python"
     assert body["tool_choice"] == "auto"
+    assert "max_tokens" not in body
+
+
+async def test_the_openai_adapter_limits_answers_and_reports_the_gateways_status() -> None:
+    seen: list[dict[str, Any]] = []
+
+    async def completions(request: web.Request) -> web.Response:
+        seen.append(await request.json())
+        if len(seen) == 1:
+            return web.json_response({"choices": [{"message": {"content": "x^2"}}]})
+        return web.json_response({"error": "upstream"}, status=502)
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", completions)
+    async with TestServer(app) as server:
+        model = OpenAICompatibleModel(
+            str(server.make_url("/v1")), "reviewer", "virtual-key", max_tokens=512
+        )
+        turn = await model.complete([{"role": "user", "content": "fix x^"}], [])
+        with pytest.raises(ModelError) as failed:
+            await model.complete([{"role": "user", "content": "fix y^"}], [])
+        await model.close()
+    assert turn.text == "x^2"
+    assert [body["max_tokens"] for body in seen] == [512, 512]
+    assert "tools" not in seen[0]
+    assert failed.value.status == 502
+
+
+async def test_the_openai_adapter_refuses_redirects_large_answers_and_bad_encodings() -> None:
+    elsewhere: list[bytes] = []
+
+    async def other(request: web.Request) -> web.Response:
+        elsewhere.append(await request.read())
+        return web.json_response({"choices": [{"message": {"content": "x"}}]})
+
+    async def completions(request: web.Request) -> web.StreamResponse:
+        kind = (await request.json())["messages"][0]["content"]
+        if kind == "redirect":
+            raise web.HTTPTemporaryRedirect(str(request.url.with_path("/other")))
+        if kind == "large":
+            return web.Response(body=b"z" * 70_000, content_type="application/json")
+        return web.Response(
+            body=b'{"choices": [{"message": {"content": "\xff\xfe"}}]}',
+            content_type="application/json",
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", completions)
+    app.router.add_post("/other", other)
+    async with TestServer(app) as server:
+        model = OpenAICompatibleModel(
+            str(server.make_url("/v1")), "reviewer", "virtual-key", max_response_bytes=65_536
+        )
+        failures: dict[str, ModelError] = {}
+        for kind in ("redirect", "large", "undecodable"):
+            with pytest.raises(ModelError) as failed:
+                await model.complete([{"role": "user", "content": kind}], [])
+            failures[kind] = failed.value
+        await model.close()
+    assert failures["redirect"].status == 307
+    assert elsewhere == []  # the request went nowhere else
+    assert "larger than 65536 bytes" in str(failures["large"])
+    assert "not UTF-8" in str(failures["undecodable"])
+    assert failures["undecodable"].status is None  # an answer, not an HTTP error
 
 
 async def test_the_client_resumes_a_dropped_event_stream() -> None:
