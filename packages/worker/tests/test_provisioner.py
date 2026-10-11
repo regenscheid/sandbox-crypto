@@ -1225,3 +1225,9 @@ async def test_clients_limited_to_projects_reach_only_their_operations(make_worl
         f"/v1/provisioning/{provision_id}", params={"project_id": "p2"}, headers=AUTH
     )
     assert response.status == 404
+    # The pool's token names the project too, for the queue: env1 is p1's.
+    for project_id, expected in (("p2", 404), ("p1", 200)):
+        response = await world.client.get(
+            "/v1/environments/env1/provisioning", params={"project_id": project_id}, headers=AUTH
+        )
+        assert response.status == expected, project_id
