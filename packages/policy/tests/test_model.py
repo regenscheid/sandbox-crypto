@@ -271,6 +271,16 @@ def test_accepts_placeholder_headers(headers: str) -> None:
     )
 
 
+def test_mcp_proxy_size_limits() -> None:
+    proxy = parse_policy(HEADER).policy.mcp.proxy
+    assert (proxy.max_argument_bytes, proxy.max_response_bytes) == (64 * 1024, 2 * 1024 * 1024)
+    text = policy_text("mcp: {proxy: {max_argument_bytes: 4Ki, max_response_bytes: 1Mi}}\n")
+    proxy = parse_policy(text).policy.mcp.proxy
+    assert (proxy.max_argument_bytes, proxy.max_response_bytes) == (4096, 1024 * 1024)
+    with pytest.raises(PolicyLoadError, match="max_argument_bytes"):
+        parse_policy(policy_text("mcp: {proxy: {max_argument_bytes: 0}}\n"))
+
+
 def test_worker_tools_must_be_inherit_or_patterns() -> None:
     with pytest.raises(PolicyLoadError, match="worker_tools"):
         parse_policy(policy_text("mcp: {proxy: {worker_tools: everything}}\n"))
