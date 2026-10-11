@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Ubuntu packages in crypto-base, installed without recommends from the Ubuntu archive as it was at
+# the Containerfile's UBUNTU_SNAPSHOT. The image record lists every installed version.
+
+# TeX: latexmk with pdflatex, the common math, theorem, algorithm, cryptocode and TikZ packages,
+# the publishers' classes (llncs), and Type 1 versions of the T1-encoded fonts, so that PDFs
+# need no bitmap fonts.
+latexmk
+texlive-latex-base
+texlive-latex-recommended
+texlive-latex-extra
+texlive-fonts-recommended
+texlive-science
+texlive-pictures
+texlive-publishers
+cm-super
+
+# PDF tools (D59): pdftotext and friends, and qpdf.
+poppler-utils
+qpdf
+
+# Fetching and unpacking sources.
+git
+curl
+unzip
+xz-utils
+bzip2
+patch

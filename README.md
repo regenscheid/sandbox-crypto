@@ -52,6 +52,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Policy file](docs/POLICY.md) | Permissive-by-default YAML project policy, precedence, escalation timeout ([example](examples/policy.yaml)) |
 | [MCP connectors](docs/MCP-CONNECTORS.md) | OAuth (primary), bearer and custom-header auth for MCP servers; connector auth service and the MCP proxy that all MCP traffic goes through |
 | [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |
+| [Base profile images](docs/IMAGES.md) | The `minimal` and `crypto-base` images: contract, pinned sources, building and tests |
 | [Deployment examples](examples/deployment-profiles.json) | Illustrative placements; not executable manifests |
 | [Run request](examples/run-request.json) | Illustrative batch contract; not an OpenShell request |
 
@@ -65,4 +66,4 @@ Portability initially means redeploying services, reconnecting storage, and rest
 
 ## License
 
-This project is released under the MIT License (see [LICENSE](LICENSE), D45). Platform code uses permissive dependencies only. GPL research tools such as Sage are installed at runtime into worker environments rather than shipped. AGPL components are avoided. See [licensing](docs/LICENSING.md).
+This project is released under the MIT License (see [LICENSE](LICENSE), D45). Platform code uses permissive dependencies only. GPL research tools such as Sage are installed at runtime into worker environments, or built into the private `crypto-base` image, rather than shipped. AGPL components are avoided. See [licensing](docs/LICENSING.md).
