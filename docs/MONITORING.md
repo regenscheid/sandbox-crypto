@@ -73,6 +73,10 @@ flowchart LR
 
 Keep monitoring code/configuration, event storage, and enforcement credentials outside agent-writable mounts. Agent-supplied descriptions do not authorize activity. The monitor uses approved project policy and trusted dispatch/runtime observations. Scope the monitor's data and credentials per pool/project; it should not become a second unrestricted administration service.
 
+## Event store
+
+Monitor evidence is kept in the [event store](EVENT-STORE.md) (D74, proposed), an append-only SQLite database whose records form a SHA-256 hash chain. Verification finds a record that was changed, removed, inserted or moved, unless whoever did it also recomputed every later hash. Checkpoints of the head, kept where the store's writers cannot change them, also catch that, and records removed from the end. The policy middleware records its escalations, alerts and monitor findings there; the behavior monitor, the worker service and the orchestrator are to follow.
+
 ## OpenShell fit: verified documentation and source
 
 The current v0.1.3 middleware documentation describes checking allowed HTTP requests and responses, plus outgoing WebSocket text. Middleware runs after network policy and before provider credential injection; it can deny otherwise allowed traffic. Coverage excludes WebSocket binary/server messages, `tls: skip`, and bodies of compressed, partial, or no-transform responses. These are limits to test, not coverage we can assume. [Supervisor middleware](https://docs.nvidia.com/openshell/latest/extensibility/supervisor-middleware)

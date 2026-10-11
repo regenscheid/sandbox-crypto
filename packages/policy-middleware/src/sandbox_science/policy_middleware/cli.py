@@ -27,6 +27,7 @@ from types import FrameType
 
 import grpc
 
+from sandbox_science.event_store import EventStore, EventStoreError
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
 from sandbox_science.policy.loader import read_limited
 
@@ -39,7 +40,7 @@ from .auth import (
 )
 from .errors import MiddlewareError, SettingsError
 from .evaluator import PolicyMiddleware
-from .events import JsonLinesEventLog
+from .events import STORE_TIMEOUT, StoreSink
 from .service import MiddlewareService, build_server
 from .settings import Settings, load_settings
 from .store import PolicyStore
@@ -89,19 +90,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 removed = PolicyStore(args.state_dir).unbind(args.sandbox)
                 print(f"unbound {args.sandbox}" if removed else f"{args.sandbox} was not bound")
                 return 0
-    except (MiddlewareError, PolicyLoadError, OSError) as exc:
+    except (MiddlewareError, PolicyLoadError, EventStoreError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
 
 def _serve(settings: Settings) -> int:
     ceiling = load_ceiling(settings.ceiling)
-    middleware = PolicyMiddleware(
-        PolicyStore(settings.state_dir),
-        ceiling=ceiling,
-        floor=HardFloor(frozenset(settings.admin_hosts)),
-        events=JsonLinesEventLog(settings.state_dir / "events.jsonl"),
-    )
+    with EventStore(settings.event_store_path, timeout=STORE_TIMEOUT) as events:
+        _log.info("recording escalations, alerts and monitor findings in %s", events.path)
+        middleware = PolicyMiddleware(
+            PolicyStore(settings.state_dir),
+            ceiling=ceiling,
+            floor=HardFloor(frozenset(settings.admin_hosts)),
+            events=StoreSink(events),
+        )
+        return _run(settings, middleware)
+
+
+def _run(settings: Settings, middleware: PolicyMiddleware) -> int:
     authenticator: Authenticator
     audience = ""
     if settings.tokens is not None:

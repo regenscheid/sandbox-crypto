@@ -16,16 +16,16 @@ SANDBOX_ID = "sbx-0001"
 
 
 class RecordingSink:
-    """An event sink that keeps records in memory, or fails on demand."""
+    """An event sink that keeps ``(kind, payload)`` records in memory, or fails on demand."""
 
     def __init__(self) -> None:
-        self.events: list[Mapping[str, object]] = []
+        self.events: list[tuple[str, Mapping[str, object]]] = []
         self.fail = False
 
-    def record(self, event: Mapping[str, object]) -> None:
+    def record(self, kind: str, payload: Mapping[str, object]) -> None:
         if self.fail:
-            raise OSError("test: the event log is unavailable")
-        self.events.append(event)
+            raise OSError("test: the event store is unavailable")
+        self.events.append((kind, payload))
 
 
 FactsFactory = Callable[..., HttpRequestFacts]
