@@ -26,12 +26,14 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 import platform
 import re
 import shlex
 import signal
+import socket
 import stat
 import sys
 import tempfile
@@ -65,6 +67,10 @@ SI_KERNEL: Final = 0x80
 """``si_code`` of a signal the kernel sent, such as a terminal's: the whole process group
 gets it, the command too, so the wrapper does not pass it on again."""
 PR_SET_PDEATHSIG: Final = 1
+LEFTOVER_GRACE: Final = 2.0
+"""Seconds a command's own steps get to end after the command did, before its turn ends
+them."""
+KILL_ROUNDS: Final = 5
 
 CHANGING: Final[Mapping[str, frozenset[str]]] = {
     "pip": frozenset({"install", "uninstall"}),
@@ -103,7 +109,8 @@ SOURCE_SCHEMES: Final = frozenset(
     | {f"{vcs}+{scheme}" for vcs in ("git", "hg", "svn", "bzr") for scheme in ("ssh", "file")}
 )
 PYTHONS: Final = ("python", "python3", f"python{sys.version_info[0]}.{sys.version_info[1]}")
-"""What gets a stand-in beside the wrappers, for scripts that run the Python next to pip."""
+"""What gets a stand-in beside the wrappers, for scripts that run the Python next to pip: a
+Python started by a link there would take the link's directory for its own."""
 
 # The lockfile's fields, as packages/contracts says them (sandbox_science.contracts.revisions).
 _NAME: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._+-]{0,255}")
@@ -121,9 +128,24 @@ _PIP: Final = re.compile(r"pip(?:[0-9]+(?:\.[0-9]+)?)?")
 _FINGERPRINT: Final = re.compile(r"[0-9a-f]{32}")
 _SHA256: Final = re.compile(r"[0-9a-f]{64}")
 _TOKEN: Final = re.compile(r"^/t/[^/]+")
+_LEGACY_IPV4: Final = re.compile(r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+)){0,3}")
+"""An IPv4 address as ``inet_aton`` reads it, in decimal, octal or hexadecimal parts."""
 # What a command line must not keep: credentials in URLs, and the values of token options.
 # Each pattern takes time linear in what it reads, and options are short.
 _AUTHORITY_END: Final = re.compile(r"[/?#\s]")
+_WORD: Final = re.compile(r"\S+")
+_PASSWORD: Final = re.compile(r"[^:]*:(?![0-9]+$)")
+"""The start of an authority that is ``user:password``, not ``host:port``."""
+_LATE_USERINFO: Final = re.compile(r"@[A-Za-z0-9.-]+(?::[0-9]+)?/")
+"""The ``@host/`` that ends user information with a ``/``, ``?`` or ``#`` in its password."""
+_PATH_TOKEN: Final = re.compile(r"(://[^/?#\s]*/t/)[^/?#\s]+")
+"""anaconda.org's token in a channel's path: ``https://conda.anaconda.org/t/<token>/…``."""
+_HOST_TOKEN: Final = re.compile(
+    r"(://(?:[^/?#@\s]*@)?(?:dl\.cloudsmith\.io|(?:[A-Za-z0-9-]+\.)*fury\.io)(?::[0-9]+)?/)"
+    r"(?!(?:public|basic)/)[^/?#\s]+(?=/[^/?#\s])",
+    re.IGNORECASE,
+)
+"""The token Cloudsmith and Gemfury take as an index URL's first path segment."""
 _SECRET_PARAMETER: Final = re.compile(
     r"([?&;][A-Za-z0-9_.-]*(?:token|key|secret|password|passwd|auth|sig|signature)=)[^&;#\s]*",
     re.IGNORECASE,
@@ -274,9 +296,12 @@ def tool_names() -> tuple[str, ...]:
 
 
 def redact(argument: str) -> str:
-    """An argument without credentials: a URL's user information and the values of
-    parameters that name a token, key, secret or password become ``***``."""
-    argument = _without_userinfo(argument)
+    """An argument without credentials: a URL's user information, the token some indexes
+    take in a URL's path, and the values of parameters that name a token, key, secret or
+    password become ``***``. Only what records keep is redacted, never what runs."""
+    argument = _WORD.sub(lambda word: _without_userinfo(word.group()), argument)
+    argument = _PATH_TOKEN.sub(r"\1***", argument)
+    argument = _HOST_TOKEN.sub(r"\1***", argument)
     argument = _SECRET_PARAMETER.sub(r"\1***", argument)
     option, equals, _ = argument.partition("=")
     if equals and _secret_option(option):
@@ -284,22 +309,30 @@ def redact(argument: str) -> str:
     return argument
 
 
-def _without_userinfo(text: str) -> str:
-    """``text`` with the user information of each URL in it, all that comes between ``://``
-    and the last ``@`` before the URL's path, replaced by ``***``."""
+def _without_userinfo(word: str) -> str:
+    """``word`` with the user information of each URL in it replaced by ``***``: all that
+    comes between ``://`` and the last ``@`` before the URL's path. A password with a
+    ``/``, ``?`` or ``#`` in it ends the path early; then user information runs to the
+    ``@host/`` after it."""
     kept: list[str] = []
     start = 0
-    while (index := text.find("://", start)) != -1:
+    first = True
+    while (index := word.find("://", start)) != -1:
         begin = index + 3
-        end = _AUTHORITY_END.search(text, begin)
-        at = text.rfind("@", begin, end.start() if end else len(text))
-        kept.append(text[start:begin])
+        end = _AUTHORITY_END.search(word, begin)
+        stop = end.start() if end else len(word)
+        at = word.rfind("@", begin, stop)
+        if at == -1 and first and end is not None and _PASSWORD.match(word, begin, stop):
+            late = _LATE_USERINFO.search(word, stop)
+            at = late.start() if late else -1
+        first = False
+        kept.append(word[start:begin])
         if at != -1:
             kept.append("***")
             start = at
         else:
             start = begin
-    kept.append(text[start:])
+    kept.append(word[start:])
     return "".join(kept)
 
 
@@ -612,7 +645,35 @@ def _parse(value: str, schemes: frozenset[str]) -> tuple[str, str, str] | None:
         host = host.encode("idna").decode("ascii")
     except UnicodeError:
         return None
-    return scheme, _netloc(host.lower(), port, scheme), parts.path
+    return scheme, _netloc(canonical_host(host), port, scheme), parts.path
+
+
+def canonical_host(host: str) -> str:
+    """A host as URLs compare it: lower case, without a trailing dot, an IPv6 address
+    without brackets, and an IPv4 address in its one spelling (``0x7f.1``,
+    ``2130706433`` and ``::ffff:127.0.0.1`` are ``127.0.0.1``)."""
+    host = host.lower().rstrip(".")
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        if _LEGACY_IPV4.fullmatch(host):
+            with contextlib.suppress(OSError):
+                return socket.inet_ntoa(socket.inet_aton(host))
+        return host
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return str(address.ipv4_mapped)
+    return str(address)
+
+
+def url_host(value: str) -> str | None:
+    """The host a URL names, as canonical_host spells it; None for no URL, or no host."""
+    try:
+        host = urllib.parse.urlsplit(value).hostname
+    except ValueError:
+        return None
+    return canonical_host(host) if host else None
 
 
 def _cache_base(cache: str) -> str | None:
@@ -1027,26 +1088,29 @@ def refresh(state: State, config: Config, path: str) -> list[str]:
 
 def _mirror(state: State, prefix: Path) -> None:
     """Lay the prefix out around the wrappers, so that what scripts look for beside a
-    package manager is there: ``$(dirname "$(command -v conda)")/../etc/profile.d/conda.sh``
-    and ``$(dirname "$(command -v pip)")/python``. Every entry of the prefix but ``bin`` is a
-    link; in ``bin``, the Pythons are stand-ins that run the prefix's own, and ``activate``
-    and ``deactivate`` links."""
-    entries: set[str] = set()
+    package manager, or beside its Python, is there: ``$(dirname "$(command -v
+    conda)")/../etc/profile.d/conda.sh``, ``$(dirname "$(command -v pip)")/python`` and
+    ``$(dirname "$(command -v python)")/jupyter``. Every entry of the prefix but ``bin`` is
+    a link, and so is every program in its ``bin`` but the package managers, which have
+    wrappers, and the Pythons, which have stand-ins that run the prefix's own. A link
+    whose target is gone goes too."""
+    entries: list[str] = []
     with contextlib.suppress(OSError), os.scandir(prefix) as scan:
-        entries = {entry.name for entry in scan if entry.name != "bin"}
-    with contextlib.suppress(OSError), os.scandir(state.mirror) as scan:
-        for entry in list(scan):
-            if entry.name != "bin" and entry.name not in entries and entry.is_symlink():
-                with contextlib.suppress(OSError):
-                    os.unlink(entry.path)
+        entries = [entry.name for entry in scan if entry.name != "bin"]
+    programs: list[str] = []
+    with contextlib.suppress(OSError), os.scandir(prefix / "bin") as scan:
+        skipped = {*tool_names(), *PYTHONS}
+        programs = [entry.name for entry in scan if entry.name not in skipped]
+    for directory in (state.mirror, state.bin):
+        with contextlib.suppress(OSError), os.scandir(directory) as scan:
+            for entry in list(scan):
+                if entry.is_symlink() and not os.path.exists(entry.path):
+                    with contextlib.suppress(OSError):
+                        os.unlink(entry.path)
     for name in entries:
         _link(state.mirror / name, prefix / name)
-    for name in ("activate", "deactivate"):
-        if (prefix / "bin" / name).is_file():
-            _link(state.bin / name, prefix / "bin" / name)
-        elif (state.bin / name).is_symlink():
-            with contextlib.suppress(OSError):
-                (state.bin / name).unlink()
+    for name in programs:
+        _link(state.bin / name, prefix / "bin" / name)
     for name in PYTHONS:
         real = prefix / "bin" / name
         if real.is_file() and os.access(real, os.X_OK):
@@ -1117,6 +1181,71 @@ def find(name: str, path: str, skip: Path) -> str | None:
     return None
 
 
+def _marked(marker: str) -> list[tuple[int, int | None]]:
+    """The processes that carry ``marker`` as their HOLDER, with their start times: what
+    a package command started, unless it cleared its environment. This one aside."""
+    needle = f"\0{HOLDER}={marker}\0".encode()
+    me = os.getpid()
+    found: list[tuple[int, int | None]] = []
+    with contextlib.suppress(OSError), os.scandir("/proc") as scan:
+        for entry in scan:
+            if not entry.name.isdigit() or int(entry.name) == me:
+                continue
+            try:
+                with open(f"/proc/{entry.name}/environ", "rb") as handle:
+                    data = handle.read(1 << 20)
+            except OSError:
+                continue
+            if needle in b"\0" + data:
+                found.append((int(entry.name), process_start(int(entry.name))))
+    return found
+
+
+def end_marked(marker: str, grace: float = 0.0) -> int:
+    """End the processes that carry ``marker``: after ``grace`` seconds for them to end on
+    their own, with SIGKILL, in rounds that catch those forked meanwhile. Returns how many
+    were killed."""
+    deadline = time.monotonic() + grace
+    found = _marked(marker)
+    while found and time.monotonic() < deadline:
+        time.sleep(0.05)
+        found = _marked(marker)
+    killed = 0
+    for _ in range(KILL_ROUNDS):
+        if not found:
+            break
+        for pid, start in found:
+            if start is not None and process_start(pid) == start:  # still the one found
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.kill(pid, signal.SIGKILL)
+                    killed += 1
+        found = _marked(marker)
+    return killed
+
+
+def end_strays(state: State) -> int:
+    """End what a package command whose wrapper died left running, such as the build
+    backend or post-link script its command started: the processes that carry its turn's
+    mark. A wrapper killed with SIGKILL leaves its holder's record behind. Call this
+    holding the lock; returns how many processes were ended."""
+    holder = state.holding()
+    if holder is None:
+        return 0
+    pid, start = holder.get("pid"), holder.get("start")
+    if (
+        not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or not isinstance(start, int)
+        or isinstance(start, bool)
+        or process_start(pid) == start  # alive, so not what held the lock
+    ):
+        return 0
+    ended = end_marked(f"{pid}:{start}")
+    with contextlib.suppress(OSError):
+        state.holder.unlink()
+    return ended
+
+
 def baseline(state: State, places: Places) -> str:
     """The fingerprint as an executor starts: records left from before it are dropped,
     since the worker may have seen their changes another way."""
@@ -1152,7 +1281,8 @@ def observe(
     """Read the journal and the packages, unless a package command is changing them.
 
     ``held`` is a descriptor on which the caller holds the lock shared, and which this
-    closes; otherwise this tries to take it. Under the lock no record can appear between
+    closes; otherwise this tries to take it. Under the lock, what a killed package command
+    left running is ended first (end_strays), and no record can appear between
     reading the journal and reading the packages, so a change no record accounts for is
     one no package command made. The packages are read only once every record has been,
     so that a change is never reported before the records that come before it. The
@@ -1160,6 +1290,8 @@ def observe(
     """
     descriptor = held if held is not None else state.try_lock(exclusive=False)
     try:
+        if descriptor is not None and (ended := end_strays(state)):
+            sys.stderr.write(f"executor: ended {ended} processes a killed package command left\n")
         records, complete = state.read_records()
         if descriptor is None:
             return Observation(records, busy=state.holding() or {}, complete=complete)
@@ -1252,6 +1384,11 @@ class Turn:
             sys.stderr.flush()
             descriptor = self.state.wait_lock()
         self.descriptor = descriptor
+        if ended := end_strays(self.state):
+            sys.stderr.write(
+                f"sandbox-science: ended {ended} processes that a killed package command "
+                "left running in this environment\n"
+            )
         self.started = time.time()
         holder = {
             "pid": os.getpid(),
@@ -1266,9 +1403,17 @@ class Turn:
         return True
 
     def end(self, code: int | None) -> None:
-        """Record the command, then give the lock up. A record that cannot be written is
-        lost, never the command's exit status: the executor then sees an unmanaged change."""
+        """End what the command left running, record it, then give the lock up. A record
+        that cannot be written is lost, never the command's exit status: the executor then
+        sees an unmanaged change. The programs the command installed get their links beside
+        the wrappers."""
         try:
+            if ended := end_marked(_marker(), LEFTOVER_GRACE):
+                sys.stderr.write(
+                    f"sandbox-science: ended {ended} processes the package command left running\n"
+                )
+            with contextlib.suppress(OSError):
+                _mirror(self.state, Path(self.config.prefix))
             after = fingerprint(self.config.places)
             entry: Message = {
                 "version": RECORD_VERSION,
@@ -1315,10 +1460,15 @@ def run(path: str, argv: Sequence[str], env: Mapping[str, str]) -> int:
     killed if this process dies first (``PR_SET_PDEATHSIG``), as it would have been
     without a wrapper, so a wrapper killed with SIGKILL leaves no command running outside
     its turn. The lock's descriptor is not passed on: a process the command left running
-    in the background would hold the environment's lock for as long as it ran. A signal
-    the kernel sent, as a terminal sends one to its whole foreground process group,
-    reached the command already. The child is forked, as multiprocessing forks, rather
-    than spawned through ``clone3``, which a sandbox's seccomp filter may refuse.
+    in the background would hold the environment's lock for as long as it ran.
+
+    Off a terminal, the command gets a process group of its own, so that a signal sent to
+    this process's group (a kernel interrupt is ``killpg``) reaches it once, from here;
+    this process then passes on every signal it gets. On a terminal, the command stays in
+    the foreground group, to read from the terminal, and a signal the kernel sent to the
+    group (``SI_KERNEL``), as a terminal's are, reached it already. The child is forked, as
+    multiprocessing forks, rather than spawned through ``clone3``, which a sandbox's
+    seccomp filter may refuse.
     """
     import subprocess
 
@@ -1327,9 +1477,13 @@ def run(path: str, argv: Sequence[str], env: Mapping[str, str]) -> int:
     original = signal.pthread_sigmask(signal.SIG_BLOCK, waited)
     prctl = _death_signal()
     parent = os.getpid()
+    terminal = os.isatty(0)
 
     def prepare_child() -> None:  # in the child, just before it runs the command
         signal.pthread_sigmask(signal.SIG_SETMASK, original)
+        if not terminal:
+            with contextlib.suppress(OSError):
+                os.setpgid(0, 0)
         if prctl is not None:
             prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
         if os.getppid() != parent:  # the wrapper died before the death signal was set
@@ -1344,10 +1498,13 @@ def run(path: str, argv: Sequence[str], env: Mapping[str, str]) -> int:
         signal.pthread_sigmask(signal.SIG_SETMASK, original)
         raise
     pid = child.pid
+    own_group = False
+    with contextlib.suppress(OSError):
+        own_group = os.getpgid(pid) == pid
     while True:
         info = signal.sigtimedwait(waited, 1.0)
         if info is not None and info.si_signo != signal.SIGCHLD:
-            if info.si_code != SI_KERNEL:
+            if own_group or info.si_code != SI_KERNEL:
                 with contextlib.suppress(ProcessLookupError):
                     os.kill(pid, info.si_signo)
             continue

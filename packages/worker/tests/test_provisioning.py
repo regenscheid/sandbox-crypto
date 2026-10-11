@@ -7,9 +7,10 @@ installs a real package or reaches the network. The wrappers and the hook run as
 processes; the worker tests use the local backend and real executors, or
 hostile_executor.py for an executor that research code has taken over.
 
-The last section holds the regression tests for the adversarial review of package
-commands (2026-10-11). Each names the finding it covers (C1, H1, M1 to M6, L1 to L5)
-and repeats its probe.
+The last two sections hold the regression tests for the adversarial reviews of package
+commands (2026-10-11). Each names the finding it covers, of the first review (C1, H1,
+M1 to M6, L1 to L5) or of the second (review2, M1 to M3 and L1 to L6), and repeats its
+probe.
 """
 
 from __future__ import annotations
@@ -1502,3 +1503,365 @@ async def test_l5_index_credentials_are_never_stored(worker: Worker) -> None:
         rows = database.execute("SELECT record FROM revision_entries").fetchall()
     assert rows
     assert all(credential not in row[0] for row in rows)
+
+
+# Regression tests for the second review of package commands (2026-10-11). Each names
+# the finding it covers (review2: M1 to M3, L1 to L6) and repeats its probe.
+
+
+def _logged_pids(log: Path, name: str, timeout: float = 30) -> tuple[int, int]:
+    """The command's and its step's pids, as the fake manager logs them for ``name``."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for line in log.read_text().splitlines() if log.exists() else []:
+            words = line.split()
+            if words[:2] == ["ready", name] and len(words) == 4:
+                return int(words[2]), int(words[3])
+        time.sleep(0.02)
+    raise AssertionError(f"ready {name} never appeared in the log")
+
+
+def _until_gone(pid: int, timeout: float = 10) -> None:
+    deadline = time.monotonic() + timeout
+    while alive(pid):
+        assert time.monotonic() < deadline, f"process {pid} is still running"
+        time.sleep(0.02)
+
+
+def test_review2_m2_the_prefixs_programs_are_beside_the_python_on_path(
+    sandbox: Sandbox,
+) -> None:
+    # `command -v python` names the stand-in beside the wrappers: the prefix's other
+    # programs must be there too, as they are beside the prefix's own Python.
+    root = sandbox.prefix.root
+    for tool in ("jupyter", "gp"):
+        program = root / "bin" / tool
+        program.write_text(f"#!/bin/sh\necho ran-{tool}\n")
+        program.chmod(0o755)
+    path = hermetic_path(sandbox.prefix, root.parent) + ":/usr/bin:/bin"
+    provisioning.refresh(sandbox.state, sandbox.config, path)
+    env = {**sandbox.env, "PATH": f"{sandbox.state.bin}:{path}"}
+
+    def shell(script: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603
+            ["/bin/sh", "-c", script], env=env, capture_output=True, text=True, check=False
+        )
+
+    found = shell(
+        '"$(dirname "$(command -v python)")/jupyter"'
+        ' && "$(dirname "$(command -v python3)")/gp"'
+        ' && "$(dirname "$(command -v pip)")/python" -c "import sys; print(sys.executable)"'
+    )
+    assert found.returncode == 0, found.stderr
+    assert found.stdout.split() == ["ran-jupyter", "ran-gp", str(sandbox.prefix.python)]
+    # A program a package command installs is there as soon as the command ends.
+    installed = shell('pip install withscript && "$(dirname "$(command -v python)")/withscript"')
+    assert installed.returncode == 0, installed.stderr
+    assert installed.stdout.split() == ["ran-withscript"]
+    # A program that goes loses its link.
+    (root / "bin" / "gp").unlink()
+    provisioning.refresh(sandbox.state, sandbox.config, path)
+    assert not os.path.lexists(sandbox.state.bin / "gp")
+    assert (sandbox.state.bin / "pip").read_text().startswith("#!/bin/sh")  # still the wrapper
+
+
+@pytest.mark.parametrize(
+    "lockfile",
+    [
+        {f"k{index:x}": 0 for index in range(100)},  # keys no lockfile has
+        {"conda": [{"name": "numpy", "version": "1", "build": "0", "extra": 1}]},
+        {"conda": [{f"k{index}": 0 for index in range(20)}]},  # more keys than an entry has
+        {"conda": ["numpy-1-0"]},  # an entry that is no object
+        {"pip": [{"name": "x", "version": "1"}] * 20_001},  # more entries than a section has
+    ],
+)
+def test_a_lockfile_of_another_shape_is_refused(tmp_path: Path, lockfile: dict[str, Any]) -> None:
+    revisions = Revisions(Store(tmp_path / "worker.sqlite3"), Blobs(tmp_path / "lockfiles"))
+    try:
+        assert revisions.prepare(lockfile) is None
+        assert revisions.prepare({"conda": [{"name": "numpy", "version": "1", "build": "0"}]})
+    finally:
+        revisions.store.close()
+
+
+MEASURE = """
+import resource, sys, tempfile
+from pathlib import Path
+from sandbox_science.worker.artifacts import Blobs
+from sandbox_science.worker.channel import decode_line
+from sandbox_science.worker.revisions import Revisions
+from sandbox_science.worker.store import Store
+d = Path(tempfile.mkdtemp(dir=sys.argv[1]))
+revisions = Revisions(Store(d / "w.sqlite3"), Blobs(d / "lockfiles"))
+keys = int(sys.argv[2])
+body = ",".join(f'"{i:x}":0' for i in range(keys))
+line = ('{"type":"event","lockfile":{' + body + "}}").encode()
+message = decode_line(line)
+size = len(line)
+del line
+before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+assert revisions.prepare(message["lockfile"]) is None
+after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+print(size, (after - before) * 1024)
+"""
+
+
+def test_review2_m3_refusing_a_lockfile_of_unknown_keys_takes_no_memory(tmp_path: Path) -> None:
+    # 1.5 million unknown keys in one object (14.7 MiB, as the channel decodes it): the
+    # check took 873 MiB, building and formatting an error for each.
+    done = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", MEASURE, str(tmp_path), "1500000"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=True,
+    )
+    size, grown = (int(word) for word in done.stdout.split())
+    assert grown < size // 4
+
+
+async def _longest_stall(action: Callable[[], Awaitable[Any]]) -> tuple[float, Any]:
+    """The longest the event loop waited while ``action`` ran, and its result."""
+    gaps: list[float] = []
+    done = False
+
+    async def ticker() -> None:
+        last = time.monotonic()
+        while not done:
+            await asyncio.sleep(0.005)
+            now = time.monotonic()
+            gaps.append(now - last)
+            last = now
+
+    task = asyncio.ensure_future(ticker())
+    await asyncio.sleep(0.05)
+    result = await action()
+    done = True
+    await task
+    return max(gaps), result
+
+
+@pytest.mark.asyncio
+async def test_review2_l1_checking_a_lockfile_in_a_thread_holds_the_interpreter_briefly(
+    tmp_path: Path,
+) -> None:
+    # pydantic held the GIL for 0.6 s while it built an error for each of 1.5 million
+    # unknown keys; a lockfile of the largest shape is checked an entry at a time.
+    revisions = Revisions(Store(tmp_path / "worker.sqlite3"), Blobs(tmp_path / "lockfiles"))
+    unknown = {f"{index:x}": 0 for index in range(1_500_000)}
+    largest = {
+        "conda": [
+            {
+                "name": f"n{index}" + "a" * 200,
+                "version": "1.0",
+                "build": "0",
+                "channel": "conda-forge",
+                "subdir": "noarch",
+                "license": "L" * 200,
+            }
+            for index in range(20_000)
+        ]
+    }
+    try:
+        for lockfile in (unknown, largest):
+            worst, prepared = await _longest_stall(
+                lambda lockfile=lockfile: asyncio.to_thread(revisions.prepare, lockfile)
+            )
+            assert prepared is None  # unknown keys; over 8 MiB
+            assert worst < 0.25, worst
+    finally:
+        revisions.store.close()
+
+
+@pytest.mark.asyncio
+async def test_review2_l1_an_execution_gets_at_most_four_lockfiles_checked(
+    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The requests an attempt's start and end made were not counted: five a run.
+    monkeypatch.setenv("HOSTILE_ENTRIES", "1000")
+    worker, store = await hostile_worker(aiohttp_client, tmp_path, "lockfile_requests")
+    checked: list[float] = []
+    real = worker.manager.revisions.prepare
+
+    def counting(raw: object) -> Prepared | None:
+        checked.append(time.monotonic())
+        return real(raw)
+
+    monkeypatch.setattr(worker.manager.revisions, "prepare", counting)
+    try:
+        counts: list[int] = []
+        for index in range(6):
+            before = len(checked)
+            execution = await worker.run(f"op-{index}", script="true")
+            assert execution["state"] == "succeeded"
+            await asyncio.sleep(0.3)  # what its end asked for
+            counts.append(len(checked) - before)
+    finally:
+        await worker.manager.close()
+        store.close()
+    assert max(counts) <= 4, counts
+    assert min(counts) >= 1, counts  # the budget is spent, not withheld
+
+
+def test_review2_l2_the_cache_is_known_by_its_host_in_one_spelling(tmp_path: Path) -> None:
+    def revisions(cache: str, name: str) -> Revisions:
+        return Revisions(
+            Store(tmp_path / f"{name}.sqlite3"), Blobs(tmp_path / f"lockfiles-{name}"), cache=cache
+        )
+
+    def conda(channel: str) -> dict[str, Any]:
+        return {"conda": [{"name": "numpy", "version": "1", "build": "0", "channel": channel}]}
+
+    # A cache URL without a port is no text to search for: honest lockfiles pass.
+    honest = {"pip": [{"name": "cachetools", "version": "5.3.3", "installer": "pip"}]}
+    assert revisions("http://cache", "a").prepare(honest) is not None
+    assert revisions("http://conda", "b").prepare(conda("conda-forge")) is not None
+    # The cache's host however spelled: renamed as the cache's, or refused.
+    named = revisions(CACHE, "c")
+    renamed = named.prepare(conda(f"http://{CACHE_HOST.upper()}.:8090/conda/conda-forge"))
+    assert renamed is not None
+    assert Lockfile.model_validate_json(renamed.data).conda[0].channel == "conda-forge"
+    assert named.prepare(conda(f"http://{CACHE_HOST}.:8090/pypi/simple")) is None
+    pip = {"pip": [{"name": "y", "version": "1", "url": f"http://{CACHE_HOST}.:8090/y.tar.gz"}]}
+    assert named.prepare(pip) is None
+    by_address = revisions("http://10.0.0.5:8090", "d")
+    for spelling in ("167772165", "0xa.0.0.5", "012.0.0.5", "[::ffff:10.0.0.5]"):
+        assert by_address.prepare(conda(f"http://{spelling}:8090/pypi/simple")) is None, spelling
+        renamed = by_address.prepare(conda(f"http://{spelling}:8090/conda/conda-forge"))
+        assert renamed is not None, spelling
+        assert b"conda-forge" in renamed.data
+        assert b"10.0.0.5" not in renamed.data
+
+
+@pytest.mark.parametrize(
+    ("argument", "kept"),
+    [
+        (
+            "--channel=https://conda.anaconda.org/t/test-secret-anaconda-token/private",
+            "--channel=https://conda.anaconda.org/t/***/private",
+        ),
+        (
+            "--extra-index-url=https://dl.cloudsmith.io/test-secret-entitlement/org/repo/python/simple/",
+            "--extra-index-url=https://dl.cloudsmith.io/***/org/repo/python/simple/",
+        ),
+        (
+            "--index-url=https://pypi.fury.io/test-secret-fury-token/someone/",
+            "--index-url=https://pypi.fury.io/***/someone/",
+        ),
+        (
+            "--index-url=https://user:test-secret#pw@private.example/simple",
+            "--index-url=https://***@private.example/simple",
+        ),
+        (
+            "--index-url=https://user:test-secret/pw@private.example/simple",
+            "--index-url=https://***@private.example/simple",
+        ),
+        (
+            "--index-url=https://user:test-secret?pw@private.example/simple",
+            "--index-url=https://***@private.example/simple",
+        ),
+    ],
+)
+def test_review2_l3_credentials_in_a_urls_path_are_redacted(argument: str, kept: str) -> None:
+    assert provisioning.redact(argument) == kept
+    assert provisioning.bounded_command(["conda", argument]) == ["conda", kept]
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "https://dl.cloudsmith.io/public/org/repo/python/simple/",
+        "https://pypi.fury.io/someone/",
+        "git+https://github.com/o/r.git@release/1.0#subdirectory=pkg/sub",
+        "git+https://github.com/o/r.git@main",
+        "https://host.example:8080/path@x/y",
+        "numpy>=2.1",
+    ],
+)
+def test_redaction_keeps_what_is_no_credential(argument: str) -> None:
+    assert provisioning.redact(argument) == argument
+
+
+@pytest.mark.asyncio
+async def test_review2_l3_an_anaconda_token_never_reaches_the_history(worker: Worker) -> None:
+    await worker.run("op-0", script="true")
+    channel = "--channel=https://conda.anaconda.org/t/test-secret-anaconda-token/private"
+    done = await worker.run("op-token", script=f"micromamba install -y {channel} toolz")
+    assert done["state"] == "succeeded", done["result"]
+    status, body = await worker.get("/v1/environments/env1/revisions")
+    assert status == 200
+    assert "test-secret-anaconda-token" not in json.dumps(body)
+    [command] = RevisionHistory.model_validate(body).revisions[-1].commands
+    assert "--channel=https://conda.anaconda.org/t/***/private" in command.argv
+
+
+def test_review2_l4_what_a_killed_wrapper_left_is_ended_before_the_next_turn(
+    sandbox: Sandbox,
+) -> None:
+    # The death signal ends the command with its wrapper, not what the command started:
+    # a post-link script or a build backend went on writing outside any turn.
+    wrapper = sandbox.start("pip", "install", "spawning")
+    command, step = _logged_pids(sandbox.prefix.log, "spawning")
+    wrapper.kill()
+    assert wrapper.wait(30) == -signal.SIGKILL
+    _until_gone(command)
+    assert alive(step)
+    second = sandbox.run("pip", "install", "other")
+    assert second.returncode == 0, second.stderr
+    assert "ended 1 processes that a killed package command left running" in second.stderr
+    assert not alive(step)
+    assert not (sandbox.prefix.site / "spawning-step-1.0.dist-info").exists()
+    assert [record["command"] for record in sandbox.records()] == [["pip", "install", "other"]]
+
+
+def test_review2_l4_the_executors_look_ends_what_a_killed_wrapper_left(
+    sandbox: Sandbox,
+) -> None:
+    # In a kernel, no other turn may come: the executor's look before the next attempt
+    # ends the steps.
+    wrapper = sandbox.start("pip", "install", "spawning")
+    command, step = _logged_pids(sandbox.prefix.log, "spawning")
+    wrapper.kill()
+    wrapper.wait(30)
+    _until_gone(command)
+    known = provisioning.fingerprint(sandbox.config.places)
+    provisioning.observe(sandbox.state, sandbox.config.places, known)
+    assert not alive(step)
+    assert not sandbox.state.holder.exists()
+
+
+def test_review2_l4_what_a_command_leaves_running_ends_with_its_turn(sandbox: Sandbox) -> None:
+    done = sandbox.run("pip", "install", "detaching")
+    assert done.returncode == 0, done.stderr
+    assert "ended 1 processes the package command left running" in done.stderr
+    _, step = _logged_pids(sandbox.prefix.log, "detaching")
+    assert not alive(step)
+
+
+def test_review2_l5_a_signal_to_the_process_group_reaches_the_command_once(
+    sandbox: Sandbox,
+) -> None:
+    # A kernel interrupt is killpg(SIGINT): off a terminal, the command no longer shares
+    # its wrapper's group, and gets the signal once, from the wrapper.
+    wrapper = subprocess.Popen(  # noqa: S603
+        [str(sandbox.state.bin / "pip"), "install", "counting"],
+        env=sandbox.env,
+        start_new_session=True,  # a group of its own, as a kernel's
+        stdin=subprocess.DEVNULL,
+    )
+    sandbox.prefix.pid("ready", "counting")
+    os.killpg(wrapper.pid, signal.SIGINT)
+    wrapper.wait(30)
+    assert sandbox.prefix.log.read_text().splitlines().count("got INT") == 1
+
+
+@pytest.mark.asyncio
+async def test_review2_l6_a_timed_out_install_gets_its_grace_to_roll_back(worker: Worker) -> None:
+    # A script of more than one command: bash ends on SIGTERM at once, and the call's
+    # other processes got SIGKILL right after, in the middle of the rollback.
+    await worker.run("op-0", script="true")
+    done = await worker.run("op-t", script="pip install rollback; echo after", timeout_seconds=2)
+    assert done["state"] == "timed_out", done["result"]
+    lines = worker.prefix.log.read_text().splitlines()
+    assert "got TERM" in lines
+    assert "rolled back" in lines

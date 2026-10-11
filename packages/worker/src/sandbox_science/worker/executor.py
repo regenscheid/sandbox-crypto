@@ -86,6 +86,8 @@ MAX_ERROR_TEXT = 64 * 1024
 MAX_TRACEBACK_LINES = 100
 MAX_TRACEBACK_LINE = 8 * 1024
 TERM_GRACE = 2.0
+PACKAGE_GRACE = 10.0
+"""Seconds a package command still in its turn gets after SIGTERM, to roll back (conda does)."""
 INTERRUPT_GRACE = 5.0
 KERNEL_START_TIMEOUT = 120.0
 KILL_ROUNDS = 5
@@ -1837,6 +1839,8 @@ class Executor:
         """SIGTERM to the command and what it started, then SIGKILL after a grace period.
 
         A package command's wrapper passes its SIGTERM on, so the command gets one only.
+        The grace is for every process of the call, not only its shell, which may end at
+        once and leave the others; a package command still in its turn gets PACKAGE_GRACE.
         """
         process = running.process
         if process is None:
@@ -1847,11 +1851,25 @@ class Executor:
                 without_wrapped(owned_processes(owner, leader)), signal.SIGTERM
             )
         )
-        try:
+        started = time.monotonic()
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(process.wait(), TERM_GRACE)
-        except TimeoutError:
+        while True:
+            left, in_turn = await asyncio.to_thread(self.leftovers, owner, leader)
+            grace = PACKAGE_GRACE if in_turn else TERM_GRACE
+            if not left or time.monotonic() - started >= grace:
+                break
+            await asyncio.sleep(0.1)
+        if left or process.returncode is None:
             await asyncio.to_thread(end_owned, owner, leader)
-            await process.wait()
+        await process.wait()
+
+    def leftovers(self, owner: str, leader: Leader | None) -> tuple[list[Process], bool]:
+        """The call's processes still running, and whether a package command among them
+        holds its turn."""
+        left = owned_processes(owner, leader)
+        holder = (self.packages.holding() or {}).get("pid")
+        return left, isinstance(holder, int) and any(info.pid == holder for info in left)
 
     def kernel(self, session: str, language: str) -> Kernel:
         if language not in KERNEL_NAMES:
