@@ -442,3 +442,43 @@ async def test_the_probe_operation(tmp_path: Path) -> None:
     assert reply["sentinels"] == {paths[0]: "present", paths[1]: "absent"}
     assert ProbeFacts.model_validate(reply["facts"]).uid == os.getuid()
     assert [refusal["error"]["kind"] for refusal in refusals] == ["invalid_request"] * 3
+
+
+@pytest.mark.parametrize(
+    ("sockets", "protected", "calls"),
+    [
+        # Sockets still work once it is not dumpable: it stays protected.
+        ([True, True], True, [(executor.PR_SET_DUMPABLE, 0)]),
+        # OpenShell: sockets stop working, so it becomes dumpable again (lab 8).
+        ([True, False], False, [(executor.PR_SET_DUMPABLE, 0), (executor.PR_SET_DUMPABLE, 1)]),
+        # No sockets to lose: protected anyway.
+        ([False, False], True, [(executor.PR_SET_DUMPABLE, 0)]),
+    ],
+)
+def test_the_executor_stays_dumpable_where_sockets_need_it(
+    monkeypatch: pytest.MonkeyPatch,
+    sockets: list[bool],
+    protected: bool,
+    calls: list[tuple[int, int]],
+) -> None:
+    answers = iter(sockets)
+    made: list[tuple[int, int]] = []
+
+    def prctl(option: int, value: int) -> bool:
+        made.append((option, value))
+        return True
+
+    monkeypatch.setattr(executor, "_sockets_work", lambda: next(answers))
+    monkeypatch.setattr(executor, "_prctl", prctl)
+    assert executor.protect_process() is protected
+    assert made == calls
+
+
+def test_a_refused_prctl_leaves_the_executor_unprotected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(executor, "_sockets_work", lambda: True)
+    monkeypatch.setattr(executor, "_prctl", lambda option, value: False)
+    assert executor.protect_process() is False
+
+
+def test_loopback_sockets_work_here() -> None:
+    assert executor._sockets_work()  # pyright: ignore[reportPrivateUsage]
