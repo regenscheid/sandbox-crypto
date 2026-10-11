@@ -56,7 +56,7 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | **Grafana** | **AGPL-3.0** | **Avoid**; build monitor views into the GUI |
 | marker | Code Apache-2.0; weights under a modified OpenRAIL-M with revenue limits | Flag before adopting; weights are not permissive |
 | Claude Science runtime (CScience base) | Proprietary upstream distribution | **Not used** (D11). Behavior is reimplemented; no code, prompts, skill text, schemas or assets are copied (D56). |
-| User's own `cscience-crypto` wrapper code | The user's own | Reusable where it embeds no upstream code; `src/patches.mjs` embeds upstream fragments and is excluded |
+| User's own `cscience-crypto` wrapper code | The user's own | Reusable where it embeds no upstream code; `src/patches.mjs` embeds upstream fragments and is excluded. The workspace's math repairs and LaTeX delimiter rules are adapted from its `src/web/cscience-math.js` and `pkg/platform/lib/math-repair.mjs`, with their tests, which the user contributed under the MIT License; each ported file says so. Its patches to the upstream Web UI were not ported |
 | Anthropic client SDKs (Python, TypeScript) | MIT | Harness model access |
 | MCP Python SDK | MIT | Harness and connector tools |
 | OpenCode | MIT | Harness reuse candidate |
