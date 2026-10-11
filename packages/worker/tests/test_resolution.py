@@ -365,6 +365,29 @@ def test_lockfiles_tell_what_changed_and_what_was_not_decided() -> None:
         for n, v in (("gmp", "6.3.0"), ("pari", "2.15.4"))
     ]
     assert resolution.unplanned(changes, planned) == ["conda:extra 1.0"]
+    # A build or a channel the decision did not see is beyond it too: micromamba 2.9 holds a
+    # pin to its name, version and build, but not to its channel.
+    decided = [
+        ResolvedFile.model_validate(
+            {
+                "ecosystem": "conda",
+                "name": "gmp",
+                "version": "6.3.0",
+                "build": build,
+                "channel": "conda-forge",
+                "file": f"gmp-6.3.0-{build}.conda",
+                "action": "allow",
+            }
+        )
+        for build in ("h0_1", "h0_9")
+    ]
+    gmp = [change for change in changes if change.name == "gmp"]
+    assert resolution.unplanned(gmp, decided[:1]) == []
+    assert resolution.unplanned(gmp, decided[1:]) == ["conda:gmp 6.3.0"]
+    elsewhere = Lockfile(
+        conda=(CondaPackage(name="gmp", version="6.3.0", build="h0_1", channel="other"),)
+    )
+    assert resolution.unplanned(gmp, decided[:1], elsewhere) == ["conda:gmp 6.3.0"]
 
 
 def test_specs_reach_package_managers_as_arguments_only() -> None:

@@ -137,7 +137,9 @@ def conda_pins(files: Iterable[ResolvedFile]) -> str:
             and _PIN_PART.fullmatch(parts[1])
             and all(_PIN_PART.fullmatch(part) for part in parts[2:])
         ):
-            raise ValueError(f"cannot pin {file.file}: it names no channel at the cache")
+            raise ValueError(
+                f"cannot pin {file.file}: it lacks a channel at the cache, a subdir or a build"
+            )
         pins.append(f"{parts[0]}/{parts[1]}::{parts[2]}=={parts[3]}={parts[4]}")
     return ",".join(pins)
 
@@ -561,19 +563,35 @@ def package_changes(before: Lockfile | None, after: Lockfile) -> list[PackageCha
     return changes
 
 
-def unplanned(changes: Iterable[PackageChange], files: Iterable[ResolvedFile]) -> list[str]:
-    """Packages an install added or changed that the decided set does not hold."""
-    planned = {
-        (f.ecosystem, normalize_pypi(f.name) if f.ecosystem == "pypi" else f.name, f.version)
-        for f in files
-    }
+def unplanned(
+    changes: Iterable[PackageChange],
+    files: Iterable[ResolvedFile],
+    lockfile: Lockfile | None = None,
+) -> list[str]:
+    """Packages an install added or changed that the decided set does not hold: by name and
+    version, and for Conda by build and, from ``lockfile``, channel too, since micromamba
+    2.9 keeps a pin to its name, version and build but not to its channel."""
+    decided = list(files)
+    conda = {f.name: f for f in decided if f.ecosystem == "conda"}
+    pip = {(normalize_pypi(f.name), f.version) for f in decided if f.ecosystem == "pypi"}
+    channels = {p.name: p.channel for p in lockfile.conda} if lockfile is not None else {}
     found: list[str] = []
     for change in changes:
         if change.after is None:
             continue
-        name = normalize_pypi(change.name) if change.ecosystem == "pypi" else change.name
-        if (change.ecosystem, name, change.after) not in planned:
-            found.append(f"{change.ecosystem}:{change.name} {change.after}")
+        if change.ecosystem == "pypi":
+            if (normalize_pypi(change.name), change.after) not in pip:
+                found.append(f"pypi:{change.name} {change.after}")
+            continue
+        file = conda.get(change.name)
+        same = file is not None and file.version == change.after
+        if same and file is not None and file.build is not None:
+            same = file.build == change.build_after
+        channel = channels.get(change.name)
+        if same and file is not None and file.channel is not None and channel is not None:
+            same = file.channel == channel
+        if not same:
+            found.append(f"conda:{change.name} {change.after}")
     return found
 
 
@@ -600,4 +618,8 @@ def installed_version(lockfile: Lockfile, kind: Kind, name: str) -> str | None:
     for distribution in lockfile.pip:
         if normalize_pypi(distribution.name) == name:
             return distribution.version
+    # A distribution a Conda package installed is the Conda package's, in the lockfile.
+    for package in lockfile.conda:
+        if normalize_pypi(package.name) == name:
+            return f"{package.version} (the Conda package {package.name})"
     return None
