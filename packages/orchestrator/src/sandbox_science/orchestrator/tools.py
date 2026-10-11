@@ -24,11 +24,13 @@ from typing import Any, Final, cast
 from pydantic import ValidationError
 
 from sandbox_science.contracts import (
+    MAX_ADMISSION_HOSTS,
     CellRequest,
     ErrorKind,
     Execution,
     ExecutionContext,
     ExecutionState,
+    HostPort,
     ListFilesRequest,
     PdfRequest,
     PublishRequest,
@@ -50,6 +52,30 @@ SHOWN_ENTRIES: Final = 200
 _UNSAFE: Final = re.compile(r"[^A-Za-z0-9._-]")
 
 _TIMEOUT = {"type": "number", "exclusiveMinimum": 0, "description": "Wall-time limit in seconds"}
+
+ADMIT_HOSTS: Final = ToolSpec(
+    "admit_hosts",
+    "Make sites reachable before your code contacts them. Give host names, or host:port "
+    "(the port is 443 unless given). The project's policy decides each: a host it allows "
+    "becomes reachable at once, and a refused one comes back with the reason. Use it before "
+    "downloading, cloning or calling an API on a site this session has not reached yet; "
+    "otherwise the first connection to such a site fails, and it becomes reachable some "
+    "seconds later. Being reachable does not mean every request is allowed: the policy still "
+    "decides each one.",
+    {
+        "type": "object",
+        "properties": {
+            "hosts": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": 1,
+                "maxItems": MAX_ADMISSION_HOSTS,
+            }
+        },
+        "required": ["hosts"],
+        "additionalProperties": False,
+    },
+)
 
 SAGE: Final = ToolSpec(
     "sage",
@@ -266,6 +292,8 @@ class Toolbox:
             )
         if "pdf" in features:
             specs.extend(PDF_SPECS)
+        if "admission" in features:
+            specs.append(ADMIT_HOSTS)
         self.specs = tuple(specs)
 
     async def call(self, call: ToolCall, operation: str) -> ToolOutcome:
@@ -300,6 +328,7 @@ class Toolbox:
             "pdf_pages": partial(self._pdf, "pages"),
             "pdf_search": partial(self._pdf, "search"),
             "pdf_render": partial(self._pdf, "render"),
+            "admit_hosts": self._admit,
         }
         handler = handlers.get(call.name)
         if handler is None or call.name not in {spec.name for spec in self.specs}:
@@ -500,6 +529,28 @@ class Toolbox:
                 return ToolOutcome(text)
             shown //= 2
 
+    async def _admit(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        hosts = args.get("hosts")
+        if (
+            not isinstance(hosts, list)
+            or not 1 <= len(cast(list[object], hosts)) <= MAX_ADMISSION_HOSTS
+            or not all(isinstance(host, str) for host in cast(list[object], hosts))
+        ):
+            return _failure(
+                ErrorKind.INVALID_REQUEST,
+                f"hosts must be a list of 1 to {MAX_ADMISSION_HOSTS} host names",
+            )
+        wanted = [_host_port(host) for host in cast(list[str], hosts)]
+        result = await self.client.admit_hosts(self.context.environment_id, wanted)
+        decisions = [decision.model_dump(mode="json") for decision in result.decisions]
+        lines = [
+            f"{d.host}:{d.port} reachable"
+            if d.admitted
+            else f"{d.host}:{d.port} refused: {_bound(d.reason, 300)}"
+            for d in result.decisions
+        ]
+        return ToolOutcome("\n".join(lines), {"admissions": decisions})
+
     async def _publish(self, args: dict[str, Any], operation: str) -> ToolOutcome:
         request = PublishRequest.model_validate(
             {"context": self.context, **_known(args, "path", "media_type")}
@@ -643,6 +694,22 @@ def format_pdf(kind: str, result: dict[str, Any]) -> str:
             f"sha256 {image.get('sha256')}. Publish it to keep it as evidence."
         )
     return "\n".join(lines)
+
+
+def _host_port(text: str) -> HostPort:
+    """``host``, ``host:port``, or ``[address]:port`` for an IPv6 literal."""
+    host, port = text.strip(), None
+    if host.startswith("["):
+        address, _, rest = host[1:].partition("]")
+        host = address
+        port = rest[1:] if rest.startswith(":") else None
+    elif host.count(":") == 1:
+        host, _, port = host.partition(":")
+    if port is None:
+        return HostPort(host=host)
+    if not port.isdigit():
+        return HostPort(host=text.strip())  # refused by the worker as no host it knows
+    return HostPort(host=host, port=int(port))
 
 
 def _known(args: dict[str, Any], *names: str) -> dict[str, Any]:

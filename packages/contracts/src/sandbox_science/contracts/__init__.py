@@ -9,9 +9,14 @@ shared contracts ("Shared contracts to establish first").
 from .artifacts import ArtifactRef
 from .context import ExecutionContext
 from .environments import (
+    MAX_ADMISSION_HOSTS,
+    AdmissionDecision,
+    AdmissionRequest,
+    AdmissionResult,
     EnvironmentInfo,
     EnvironmentRequest,
     EnvironmentState,
+    HostPort,
     PolicyRevision,
     PolicyRevisionRequest,
 )
@@ -51,7 +56,11 @@ from .worker import (
 )
 
 __all__ = [
+    "MAX_ADMISSION_HOSTS",
     "TERMINAL_STATES",
+    "AdmissionDecision",
+    "AdmissionRequest",
+    "AdmissionResult",
     "ArtifactRef",
     "Capabilities",
     "CellRequest",
@@ -69,6 +78,7 @@ __all__ = [
     "FileContent",
     "FileEntry",
     "FileListing",
+    "HostPort",
     "Identifier",
     "IsolationEvidence",
     "KernelInfo",

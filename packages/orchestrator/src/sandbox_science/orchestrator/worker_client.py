@@ -13,13 +13,15 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from typing import Any, Final, TypeVar
 
 import aiohttp
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
+    AdmissionRequest,
+    AdmissionResult,
     ArtifactRef,
     Capabilities,
     EnvironmentInfo,
@@ -31,6 +33,7 @@ from sandbox_science.contracts import (
     ExecutionRequest,
     FileContent,
     FileListing,
+    HostPort,
     KernelInfo,
     KernelRestartRequest,
     ListFilesRequest,
@@ -160,6 +163,15 @@ class WorkerClient:
 
     async def delete_environment(self, environment_id: str) -> EnvironmentInfo:
         return await self._call("DELETE", f"/v1/environments/{environment_id}", EnvironmentInfo)
+
+    async def admit_hosts(self, environment_id: str, hosts: Sequence[HostPort]) -> AdmissionResult:
+        """Have the worker admit hosts before code contacts them (D69)."""
+        return await self._call(
+            "POST",
+            f"/v1/environments/{environment_id}/admissions",
+            AdmissionResult,
+            AdmissionRequest(hosts=tuple(hosts)),
+        )
 
     # Executions.
 
