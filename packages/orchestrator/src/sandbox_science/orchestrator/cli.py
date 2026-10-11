@@ -13,15 +13,31 @@ sandbox-science-harness project revise --state-dir state --project p1 --policy s
     [--worker URL --token-file worker.token]
 sandbox-science-harness session close --state-dir state --project p1 --session s1 \\
     --worker URL --token-file worker.token
+sandbox-science-harness document import --state-dir state --project p1 [--session s1] \\
+    --name ff [--title "…"] [--reason "…"] [--base N] ff.md
+sandbox-science-harness document export DOC [--revision N] [--output ff.md] \\
+    --state-dir state --project p1
+sandbox-science-harness document (list | show DOC [--revision N] | history DOC) \\
+    --state-dir state --project p1
+sandbox-science-harness document suggestions DOC (on | off) --state-dir state --project p1
+sandbox-science-harness document decide DOC PATCH (accept | reject) --state-dir state \\
+    --project p1
+sandbox-science-harness document delete DOC --reason "…" --state-dir state --project p1
 ```
 
 With ``--state-dir``, the session runs in its project's default environment, or in
 an environment of its own with ``--dedicated`` (W3, projects.py). The harness has
 the worker create or revise it first, and keeps the run's record, the same that
 ``--transcript`` writes, beside the project's (W4). The run ID then names that
-record, so it must be an identifier. The harness refuses a worker whose isolation
-tier in effect is below the minimum, so a misconfigured deployment cannot quietly
-run research code without a sandbox.
+record, so it must be an identifier. The agent also gets the document tools, over the
+living documents in the state directory's control store (documents/store.py). The
+harness refuses a worker whose isolation tier in effect is below the minimum, so a
+misconfigured deployment cannot quietly run research code without a sandbox.
+
+The ``document`` commands act as the user: an import is attributed to an import the
+user started, and the other changes to the user. An import into an existing document
+names the revision its file was made from (``--base``), which must be the current one,
+so that it never undoes revisions made since.
 """
 
 from __future__ import annotations
@@ -32,11 +48,15 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 
+from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
+from .documents.errors import CONFLICT
+from .documents.tool import view_blocks
 from .loop import run_task
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
@@ -121,19 +141,32 @@ async def _run(args: argparse.Namespace) -> int:
         async def show(name: str, arguments: str, outcome: ToolOutcome) -> None:
             print(f"\n→ {name} {arguments}\n← {outcome.text}")
 
-        transcript = await run_task(
-            model,
-            Toolbox(
-                client,
+        documents = None
+        if args.state_dir is not None:
+            documents = DocumentTool(
+                DocumentStore(store_path(args.state_dir), producer="harness"),
                 context,
-                languages=capabilities.languages,
-                features=capabilities.features,
-            ),
-            args.task,
-            run_id=run_id,
-            max_turns=args.max_turns,
-            on_tool=show,
-        )
+                run_id=run_id,
+                alias="scripted" if args.script is not None else args.model,
+            )
+        try:
+            transcript = await run_task(
+                model,
+                Toolbox(
+                    client,
+                    context,
+                    languages=capabilities.languages,
+                    features=capabilities.features,
+                    documents=documents,
+                ),
+                args.task,
+                run_id=run_id,
+                max_turns=args.max_turns,
+                on_tool=show,
+            )
+        finally:
+            if documents is not None:
+                documents.store.close()
     if isinstance(model, OpenAICompatibleModel):
         await model.close()
     print(f"\n{transcript.final_text or '(no answer)'}")
@@ -218,6 +251,155 @@ async def _session(args: argparse.Namespace) -> int:
     return 0
 
 
+def _document(args: argparse.Namespace) -> int:
+    """The user's document commands, on the control store in the state directory."""
+    projects = ProjectStore(args.state_dir)
+    project = projects.get(args.project)
+    store = DocumentStore(store_path(args.state_dir), producer="harness-cli")
+    try:
+        match args.action:
+            case "import":
+                if args.session is not None and args.session not in project.sessions:
+                    raise ProjectError(
+                        ErrorKind.NOT_FOUND,
+                        f"project {args.project} has no session {args.session}",
+                    )
+                text = args.file.read_text(encoding="utf-8")
+                author = Author(kind="import", user=USER.user, import_id=new_id("import"))
+                reason = args.reason or f"imported from {args.file.name}"
+                existing = [
+                    info
+                    for info in store.documents(args.project)
+                    if info.name == args.name.removesuffix(".md")
+                    and info.session_id == args.session
+                ]
+                if existing:
+                    if args.base is None:
+                        # Saving over the current revision would undo what others wrote
+                        # after the file was made.
+                        raise DocumentError(
+                            CONFLICT,
+                            f"document {existing[0].name} exists, at revision "
+                            f"{existing[0].head}: give --base, the revision the file was "
+                            "made from (document export writes one to a file)",
+                        )
+                    result = store.save_text(
+                        args.project,
+                        existing[0].document_id,
+                        base=args.base,
+                        text=text,
+                        author=author,
+                        reason=reason,
+                    )
+                else:
+                    result = store.create(
+                        args.project,
+                        name=args.name,
+                        title=args.title or args.name,
+                        text=text,
+                        author=author,
+                        session_id=args.session,
+                        reason=reason,
+                    )
+                print(result.model_dump_json(indent=2, exclude_defaults=True))
+            case "list":
+                for info in store.documents(args.project, deleted=args.deleted):
+                    where = f"session {info.session_id}" if info.session_id else "project"
+                    state = " (deleted)" if info.deleted else ""
+                    print(
+                        f"{info.document_id}  {info.name}  r{info.head}  {where}  "
+                        f"{info.title}{state}"
+                    )
+            case "show":
+                mapped = store.mapped(args.project, args.document, args.revision)
+                print(json.dumps(view_blocks(mapped), indent=2, ensure_ascii=False))
+            case "export":
+                revision = store.revision(args.project, args.document, args.revision)
+                if args.output is None:
+                    sys.stdout.write(revision.text)
+                else:
+                    args.output.write_text(revision.text, encoding="utf-8")
+                print(
+                    f"revision {revision.info.number} of document {args.document}: import "
+                    f"the file again with --base {revision.info.number}",
+                    file=sys.stderr,
+                )
+            case "history":
+                print(
+                    json.dumps(
+                        store.history(args.project, args.document), indent=2, ensure_ascii=False
+                    )
+                )
+            case "suggestions":
+                info = store.set_suggestions(
+                    args.project, args.document, on=args.state == "on", author=USER
+                )
+                taken = "as suggestions" if info.takes_suggestions else "directly"
+                print(f"document {info.name} takes agent patches {taken}")
+            case "decide":
+                result = store.decide(
+                    args.project,
+                    args.document,
+                    args.patch,
+                    accept=args.decision == "accept",
+                    author=USER,
+                )
+                print(result.model_dump_json(indent=2, exclude_defaults=True))
+            case _:
+                result = store.delete(args.project, args.document, author=USER, reason=args.reason)
+                print(result.model_dump_json(indent=2, exclude_defaults=True))
+    except DocumentError as error:
+        print(f"error: {error.kind}: {error.message}", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    return 0
+
+
+def _document_commands(commands: Any) -> None:
+    document = commands.add_parser("document", help="living documents, as the user")
+    actions = document.add_subparsers(dest="action", required=True)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--state-dir", type=Path, required=True)
+    common.add_argument("--project", required=True)
+    imported = actions.add_parser(
+        "import", parents=[common], help="create a document, or a new revision of it"
+    )
+    imported.add_argument("--name", required=True)
+    imported.add_argument("--title", help="a new document's title (default: its name)")
+    imported.add_argument("--session", help="a workbook document of this session")
+    imported.add_argument("--reason")
+    imported.add_argument(
+        "--base", type=int, help="the revision the file was made from, to save it over"
+    )
+    imported.add_argument("file", type=Path)
+    exported = actions.add_parser(
+        "export", parents=[common], help="write a revision's text, to edit and import again"
+    )
+    exported.add_argument("document")
+    exported.add_argument("--revision", type=int)
+    exported.add_argument("--output", type=Path, help="the file (default: standard output)")
+    listed = actions.add_parser("list", parents=[common], help="the project's documents")
+    listed.add_argument("--deleted", action="store_true", help="include deleted documents")
+    shown = actions.add_parser("show", parents=[common], help="a revision's blocks with IDs")
+    shown.add_argument("document")
+    shown.add_argument("--revision", type=int)
+    history = actions.add_parser("history", parents=[common], help="who changed which blocks")
+    history.add_argument("document")
+    suggestions = actions.add_parser(
+        "suggestions", parents=[common], help="take agent patches as suggestions, or not"
+    )
+    suggestions.add_argument("document")
+    suggestions.add_argument("state", choices=("on", "off"))
+    decide = actions.add_parser("decide", parents=[common], help="accept or reject a suggestion")
+    decide.add_argument("document")
+    decide.add_argument("patch")
+    decide.add_argument("decision", choices=("accept", "reject"))
+    delete = actions.add_parser("delete", parents=[common], help="delete a document")
+    delete.add_argument("document")
+    delete.add_argument("--reason", required=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sandbox-science-harness")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -268,7 +450,14 @@ def main(argv: list[str] | None = None) -> int:
     session.add_argument("--session", required=True)
     session.add_argument("--worker", required=True)
     session.add_argument("--token-file", type=Path, required=True)
+    _document_commands(commands)
     args = parser.parse_args(argv)
+    if args.command == "document":
+        try:
+            return _document(args)
+        except (ProjectError, OSError, UnicodeDecodeError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     match args.command:
         case "run":
             if args.model_url is not None and args.api_key_file is None:

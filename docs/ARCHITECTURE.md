@@ -93,7 +93,7 @@ Authoritative project knowledge, board/ledger state, document revisions/comments
 
 Document edits name an expected revision and affected blocks/math nodes. Preserve user/agent attribution and stable anchors; reject or reconcile stale patches. Recompute dependent review/claim validity when assumptions or inputs change. Ledger and board are views over one coherent project record. Files exported into worker workspaces are snapshots, not an implicit replacement for authoritative history. See [research workspace](RESEARCH-WORKSPACE.md).
 
-Start with one embedded store (SQLite) for the control application on a private durable volume, behind a repository interface (D12). Move to PostgreSQL only when multi-replica control is needed; it is not a prerequisite for proving the worker split.
+Start with one embedded store (SQLite) for the control application on a private durable volume, behind a repository interface (D12). It has begun with living documents, in the harness's state directory ([living documents](LIVING-DOCUMENTS.md#the-control-store), D85). Move to PostgreSQL only when multi-replica control is needed; it is not a prerequisite for proving the worker split.
 
 Give each project shared storage plus session workspaces. Separate session containers can share project data through scoped mounts/API references; container selection does not imply copying or abandoning that data. Use explicit write ownership/version checks and snapshots/output publication for batch/review workers. Cross-host access requires authenticated transfer or reachable storage; never assume shared host mounts. Enrolled worker-local datasets remain confined to permitted pools. Record content hashes and file versions, and resolve publication conflicts deliberately.
 

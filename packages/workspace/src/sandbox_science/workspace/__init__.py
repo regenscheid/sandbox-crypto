@@ -4,6 +4,7 @@
 It serves the GUI, a Svelte app built into static files (``web/workspace``), and a
 read-only JSON API over the harness's state directory. Until the control application
 has an API of its own (W5), it reads the harness's records through the orchestrator's
-``ProjectStore``. When it is configured to, it asks the reviewer model to repair LaTeX
-that KaTeX rejects (``mathrepair``).
+``ProjectStore``, and the living documents through its ``DocumentStore``, opened
+read-only (``documents``). When it is configured to, it asks the reviewer model to
+repair LaTeX that KaTeX rejects (``mathrepair``).
 """

@@ -68,7 +68,7 @@ async def run(request: web.Request) -> web.Response:
 async def _answer(view: Callable[[ProjectStore], Json], request: web.Request) -> web.Response:
     """The view of the store as JSON; reading and encoding happen in a thread."""
     store = request.app[STORE]
-    text = await asyncio.to_thread(lambda: _dumps(view(store)))
+    text = await asyncio.to_thread(lambda: dumps(view(store)))
     return web.Response(
         text=text, content_type="application/json", headers={hdrs.CACHE_CONTROL: "no-store"}
     )
@@ -134,7 +134,7 @@ def _no_session(project_id: str, session_id: str) -> ProjectError:
     )
 
 
-def _dumps(data: object) -> str:
+def dumps(data: object) -> str:
     """JSON a browser parses: ASCII, with lone surrogates escaped and no NaN or infinity,
     which a record can hold (a float a tool's JSON carried) but JSON cannot."""
     try:

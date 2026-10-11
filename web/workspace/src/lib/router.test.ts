@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
-import { parseRoute, projectHref, sessionHref } from './router';
+import { documentHref, historyHref, parseRoute, projectHref, sessionHref } from './router';
 
 describe('routes', () => {
   it.each([
@@ -16,6 +16,20 @@ describe('routes', () => {
     ['#/projects//sessions/a', { view: 'missing' }],
     ['#/projects/p1/runs/a', { view: 'missing' }],
     ['#/elsewhere', { view: 'missing' }],
+    [
+      '#/projects/p1/documents/doc-1',
+      { view: 'document', project: 'p1', document: 'doc-1', revision: null },
+    ],
+    [
+      '#/projects/p1/documents/doc-1/revisions/3',
+      { view: 'document', project: 'p1', document: 'doc-1', revision: 3 },
+    ],
+    ['#/projects/p1/documents/doc-1/history', { view: 'history', project: 'p1', document: 'doc-1' }],
+    ['#/projects/p1/documents/doc-1/revisions/0', { view: 'missing' }],
+    ['#/projects/p1/documents/doc-1/revisions/x', { view: 'missing' }],
+    ['#/projects/p1/documents/doc-1/revisions', { view: 'missing' }],
+    ['#/projects/p1/documents', { view: 'missing' }],
+    ['#/projects/p1/documents/doc-1/elsewhere', { view: 'missing' }],
   ])('%s', (hash, route) => {
     expect(parseRoute(hash)).toEqual(route);
   });
@@ -26,6 +40,17 @@ describe('routes', () => {
       view: 'session',
       project: 'p1',
       session: 's#1',
+    });
+    expect(parseRoute(documentHref('p1', 'notes.md', 2))).toEqual({
+      view: 'document',
+      project: 'p1',
+      document: 'notes.md',
+      revision: 2,
+    });
+    expect(parseRoute(historyHref('p 1', 'doc-1'))).toEqual({
+      view: 'history',
+      project: 'p 1',
+      document: 'doc-1',
     });
   });
 });
