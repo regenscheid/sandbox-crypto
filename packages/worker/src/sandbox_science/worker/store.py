@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Durable worker state in SQLite: executions, their events, kernels, environment revisions
-and artifacts."""
+"""Durable worker state in SQLite: executions, their events, kernels, environment revisions,
+artifacts and provisioning operations."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from sandbox_science.contracts import (
     EnvironmentRevision,
     Event,
     Execution,
+    ProvisionOperation,
+    ProvisionState,
 )
 
 _log = logging.getLogger(__name__)
@@ -69,6 +71,22 @@ CREATE INDEX IF NOT EXISTS revision_entries_lockfile ON revision_entries (lockfi
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
     record TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS provisions (
+    provision_id TEXT PRIMARY KEY,
+    operation_key TEXT NOT NULL UNIQUE,
+    request_digest TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    finished INTEGER NOT NULL,
+    submitted REAL NOT NULL,
+    record TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS provisions_environment ON provisions (environment_id, finished);
+CREATE TABLE IF NOT EXISTS package_status (
+    environment_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    provision_id TEXT NOT NULL,
+    revision INTEGER
 );
 """
 
@@ -339,6 +357,9 @@ class Store:
             self._db.execute(
                 "DELETE FROM environment_revisions WHERE environment_id = ?", (environment_id,)
             )
+            self._db.execute(
+                "DELETE FROM package_status WHERE environment_id = ?", (environment_id,)
+            )
         return [str(found[0]) for found in gone]
 
     # Kernels.
@@ -372,6 +393,84 @@ class Store:
             "SELECT record FROM artifacts WHERE artifact_id = ?", (artifact_id,)
         ).fetchone()
         return ArtifactRef.model_validate_json(row[0]) if row else None
+
+    # Provisioning operations (Conda provisioning), keyed by project like executions.
+
+    def find_provision(self, project_id: str, operation_id: str) -> tuple[str, str] | None:
+        """The provisioning operation and request digest of a project's operation ID."""
+        row = self._db.execute(
+            "SELECT provision_id, request_digest FROM provisions WHERE operation_key = ?",
+            (_operation_key(project_id, operation_id),),
+        ).fetchone()
+        return (str(row[0]), str(row[1])) if row else None
+
+    def insert_provision(self, operation: ProvisionOperation, digest: str) -> None:
+        request = operation.request
+        self._db.execute(
+            "INSERT INTO provisions VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                operation.provision_id,
+                _operation_key(request.context.project_id, request.operation_id),
+                digest,
+                request.context.environment_id,
+                int(operation.state is ProvisionState.FINISHED),
+                operation.submitted_at.timestamp(),
+                operation.model_dump_json(),
+            ),
+        )
+
+    def update_provision(self, operation: ProvisionOperation) -> None:
+        self._db.execute(
+            "UPDATE provisions SET record = ?, finished = ? WHERE provision_id = ?",
+            (
+                operation.model_dump_json(),
+                int(operation.state is ProvisionState.FINISHED),
+                operation.provision_id,
+            ),
+        )
+
+    def provision(self, provision_id: str) -> ProvisionOperation | None:
+        row = self._db.execute(
+            "SELECT record FROM provisions WHERE provision_id = ?", (provision_id,)
+        ).fetchone()
+        return _provision(str(row[0])) if row else None
+
+    def unfinished_provisions(self) -> list[ProvisionOperation]:
+        """Operations not yet finished, oldest first; unreadable ones are skipped."""
+        rows = self._db.execute(
+            "SELECT record FROM provisions WHERE finished = 0 ORDER BY submitted"
+        ).fetchall()
+        return [found for row in rows if (found := _provision(str(row[0]))) is not None]
+
+    def package_status(self, environment_id: str) -> tuple[str, str, int | None] | None:
+        """An environment's package status other than ``ready``: the status, the operation
+        that left it so, and the revision."""
+        row = self._db.execute(
+            "SELECT status, provision_id, revision FROM package_status WHERE environment_id = ?",
+            (environment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row[0]), str(row[1]), None if row[2] is None else int(row[2])
+
+    def set_package_status(
+        self, environment_id: str, status: str, provision_id: str, revision: int | None
+    ) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO package_status VALUES (?, ?, ?, ?)",
+            (environment_id, status, provision_id, revision),
+        )
+
+    def forget_package_status(self, environment_id: str) -> None:
+        self._db.execute("DELETE FROM package_status WHERE environment_id = ?", (environment_id,))
+
+
+def _provision(record: str) -> ProvisionOperation | None:
+    try:
+        return ProvisionOperation.model_validate_json(record)
+    except ValidationError:
+        _log.error("a stored provisioning operation does not validate")
+        return None
 
 
 def _readable(execution_id: str, record: object) -> Execution | None:

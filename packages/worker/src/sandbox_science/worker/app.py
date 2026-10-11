@@ -41,6 +41,8 @@ from sandbox_science.contracts import (
     KernelRestartRequest,
     ListFilesRequest,
     PolicyRevisionRequest,
+    ProvisionOperation,
+    ProvisionRequest,
     PublishRequest,
     ReadFileRequest,
     SessionClosed,
@@ -54,12 +56,14 @@ from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
 from .environments import Environments
 from .errors import WorkerError
 from .manager import ExecutionManager
+from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
 from .settings import ClientSettings, token_digest
 
 _log = logging.getLogger(__name__)
 
 MANAGER: Final = web.AppKey("manager", ExecutionManager)
 ENVIRONMENTS: Final = web.AppKey("environments", Environments)
+PROVISIONER: Final = web.AppKey("provisioner", Provisioner)
 CREATING: Final = web.AppKey("creating", dict[str, set[str]])
 """The environments each limited client is creating right now, which its limit counts too."""
 MAX_BODY: Final = 16 * 1024 * 1024
@@ -101,6 +105,7 @@ def create_app(
     token: str,
     environments: Environments | None = None,
     clients: Sequence[ClientSettings] = (),
+    provisioner: Provisioner | None = None,
 ) -> web.Application:
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
@@ -150,6 +155,10 @@ def create_app(
     if environments is not None:
         app[ENVIRONMENTS] = environments
         environments.deleted.append(manager.forget_revisions)
+    if provisioner is not None:
+        app[PROVISIONER] = provisioner
+        if environments is not None:
+            environments.deleted.append(provisioner.forget)
     app.add_routes(
         [
             web.post("/v1/environments", create_environment),
@@ -162,6 +171,10 @@ def create_app(
                 "/v1/environments/{environment_id}/revisions/{revision}/lockfile",
                 revision_lockfile,
             ),
+            web.get("/v1/environments/{environment_id}/provisioning", provisioning_queue),
+            web.post("/v1/provisioning", submit_provision),
+            web.get("/v1/provisioning/{provision_id}", get_provision),
+            web.post("/v1/provisioning/{provision_id}/cancel", cancel_provision),
             web.get("/v1/capabilities", capabilities),
             web.post("/v1/executions", submit),
             web.get("/v1/executions/{execution_id}", get_execution),
@@ -471,14 +484,78 @@ async def capabilities(request: web.Request) -> web.Response:
             # Hosts can be admitted ahead of use (POST .../admissions).
             features = tuple(dict.fromkeys([*offered.features, "admission"]))
             offered = offered.model_copy(update={"features": features})
+    provisioner = request.app.get(PROVISIONER)
+    if provisioner is not None and provisioner.supports(environment_id):
+        # Capabilities and packages can be installed on request (POST /v1/provisioning).
+        features = tuple(dict.fromkeys([*offered.features, "provisioning"]))
+        offered = offered.model_copy(update={"features": features})
     return _json(offered)
 
 
 async def submit(request: web.Request) -> web.Response:
     execution_request = _REQUEST.validate_json(await _body(request))
     _context(request, execution_request.context)
+    if RESERVED_OPERATION.fullmatch(execution_request.operation_id):
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST,
+            "operation IDs of the form prv-<24 hex digits>.<step> are the worker's own, for "
+            "provisioning operations' steps",
+        )
     execution, created = await request.app[MANAGER].submit(execution_request)
     return _json(execution, 201 if created else 200)
+
+
+# Provisioning operations (Conda provisioning, CP-1 to CP-25).
+
+
+def _provisioner(request: web.Request) -> Provisioner:
+    provisioner = request.app.get(PROVISIONER)
+    if provisioner is None:
+        raise WorkerError(ErrorKind.UNSUPPORTED, "this worker does not provision environments")
+    return provisioner
+
+
+def _provision(request: web.Request) -> ProvisionOperation:
+    """The route's operation, once it is known to belong to the client's projects."""
+    provision_id = request.match_info["provision_id"]
+    operation = _provisioner(request).get(provision_id, _project(request))
+    _visible(
+        request, operation.request.context.project_id, f"provisioning operation {provision_id}"
+    )
+    return operation
+
+
+async def submit_provision(request: web.Request) -> web.Response:
+    """Ask for a capability or packages in an environment: one operation, queued."""
+    body = ProvisionRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
+    operation, created = await _provisioner(request).submit(body)
+    return _json(operation, 201 if created else 200)
+
+
+async def get_provision(request: web.Request) -> web.Response:
+    """The operation; with ``after``, once its record is newer than that ``seq``, it has
+    finished, or ``wait`` seconds (at most 60) have passed."""
+    operation = _provision(request)
+    after = _number(request, "after", -1, -1, 2**62)
+    wait = _number(request, "wait", 0, 0, int(MAX_WAIT))
+    if after < 0 or wait == 0:
+        return _json(operation)
+    waited = await _provisioner(request).wait(
+        operation.provision_id, after, float(wait), operation.request.context.project_id
+    )
+    return _json(waited)
+
+
+async def cancel_provision(request: web.Request) -> web.Response:
+    operation = _provision(request)
+    return _json(await _provisioner(request).cancel(operation.provision_id))
+
+
+async def provisioning_queue(request: web.Request) -> web.Response:
+    """The environment's operations that have not finished, in request order (CP-11)."""
+    environment_id, _ = _revisions_of(request)
+    return _json(_provisioner(request).queue(environment_id))
 
 
 def _execution(request: web.Request) -> Execution:

@@ -1641,6 +1641,7 @@ source = { editable = "packages/worker" }
 dependencies = [
     { name = "aiohttp" },
     { name = "sandbox-science-contracts" },
+    { name = "sandbox-science-event-store" },
     { name = "sandbox-science-policy" },
 ]
 
@@ -1660,6 +1661,7 @@ requires-dist = [
     { name = "jupyter-client", marker = "extra == 'kernels'", specifier = ">=8.6" },
     { name = "pdf-oxide", marker = "extra == 'pdf'", specifier = ">=0.3.78" },
     { name = "sandbox-science-contracts", editable = "packages/contracts" },
+    { name = "sandbox-science-event-store", editable = "packages/event-store" },
     { name = "sandbox-science-policy", editable = "packages/policy" },
 ]
 provides-extras = ["kernels", "pdf"]

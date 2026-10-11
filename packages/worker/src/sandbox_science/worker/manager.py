@@ -683,8 +683,14 @@ class ExecutionManager:
 
     # Submission and dispatch.
 
-    async def submit(self, request: ExecutionRequest) -> tuple[Execution, bool]:
-        """Return the execution for ``request.operation_id``, creating it if it is new."""
+    async def submit(
+        self, request: ExecutionRequest, *, origin: str | None = None
+    ) -> tuple[Execution, bool]:
+        """Return the execution for ``request.operation_id``, creating it if it is new.
+
+        ``origin`` names the provisioning operation the execution is a step of: a change it
+        makes to the packages is recorded as that operation's.
+        """
         digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
         found = self.store.find_operation(request.context.project_id, request.operation_id)
         if found is not None:
@@ -703,6 +709,7 @@ class ExecutionManager:
             context=request.context,
             state=ExecutionState.QUEUED,
             submitted_at=_now(),
+            origin=origin,
         )
         self.store.insert_execution(execution, digest)
         live = self._track(execution, request.output_limit_bytes)
@@ -1133,11 +1140,22 @@ class ExecutionManager:
 
     def _revision_after(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> str | None:
         """The environment's revision once the attempt's fingerprint is counted."""
-        revision = self._observe(environment_id, raw.get("environment"), live.execution.attempt_id)
+        revision = self._observe(
+            environment_id,
+            raw.get("environment"),
+            live.execution.attempt_id,
+            live.execution.origin,
+        )
         self._ask_lockfile(environment_id, live)
         return None if revision is None else str(revision)
 
-    def _observe(self, environment_id: str, fingerprint: object, changed_by: str) -> int | None:
+    def _observe(
+        self,
+        environment_id: str,
+        fingerprint: object,
+        changed_by: str,
+        operation: str | None = None,
+    ) -> int | None:
         """The environment's revision after the executor reported ``fingerprint`` (W3).
 
         The first fingerprint is revision 0, and each different one counts one up,
@@ -1146,7 +1164,7 @@ class ExecutionManager:
         here is one it could not account for. The executor is untrusted: research code
         can only make its own environment's revisions count up.
         """
-        return self.revisions.observe(environment_id, fingerprint, changed_by)
+        return self.revisions.observe(environment_id, fingerprint, changed_by, operation=operation)
 
     async def _revised(self, environment_id: str, live: _Live, message: Message) -> None:
         """A change to the environment's packages that the executor saw (CP-4, CP-16).
@@ -1169,7 +1187,9 @@ class ExecutionManager:
             return
         managed = message.get("managed")
         cause = message.get("cause")
-        attempt = self._attempt(environment_id, cause) if isinstance(cause, str) else ""
+        attempt, origin = (
+            self._attempt(environment_id, cause) if isinstance(cause, str) else ("", None)
+        )
         prepared: Prepared | None = None
         raw = message.get("lockfile")
         if (
@@ -1194,6 +1214,7 @@ class ExecutionManager:
             commands=commands,
             omitted=omitted,
             lockfile=prepared,
+            operation=origin,
         )
         self._ask_lockfile(environment_id, live)
 
@@ -1203,18 +1224,19 @@ class ExecutionManager:
         if live.lockfiles < MAX_EXECUTION_LOCKFILES and self._want_lockfile(environment_id):
             live.lockfiles += 1
 
-    def _attempt(self, environment_id: str, execution_id: str) -> str:
-        """The current attempt of one of the environment's executions; empty for any other."""
+    def _attempt(self, environment_id: str, execution_id: str) -> tuple[str, str | None]:
+        """The current attempt of one of the environment's executions, and the provisioning
+        operation it is a step of; empty for any other execution."""
         if not _EXECUTION.fullmatch(execution_id):
-            return ""
+            return "", None
         live = self._live.get(execution_id)
         try:
             execution = live.execution if live is not None else self.store.execution(execution_id)
         except ValidationError:
-            return ""
+            return "", None
         if execution is None or execution.context.environment_id != environment_id:
-            return ""
-        return execution.attempt_id
+            return "", None
+        return execution.attempt_id, execution.origin
 
     def _kernel(
         self, environment_id: str, session_id: str, raw: object, state_lost: bool
@@ -1311,6 +1333,17 @@ class ExecutionManager:
                 await asyncio.wait_for(asyncio.shield(changed), heartbeat)
             except TimeoutError:
                 yield None
+
+    async def wait(self, execution_id: str) -> Execution:
+        """The execution once it is terminal."""
+        while True:
+            live = self._live.get(execution_id)
+            if live is None:
+                return self.get(execution_id)
+            if live.execution.state in TERMINAL_STATES:
+                return live.execution
+            # Every waiter shares the future: one that goes away must not cancel it.
+            await asyncio.shield(live.changed)
 
     async def cancel(self, execution_id: str, project_id: str | None = None) -> Execution:
         execution = self.get(execution_id, project_id)
