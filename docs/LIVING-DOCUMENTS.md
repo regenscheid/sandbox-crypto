@@ -1,0 +1,106 @@
+# Living documents
+
+Living documents are Markdown with LaTeX math that the user and agents write together (D23, D65). Their behavior is specified in [living documents](specs/living-documents.md). This page describes what is built: the server side of W4's first slice, in `packages/orchestrator` (`sandbox_science.orchestrator.documents`). It parses documents as the browser does, gives their blocks and formulas IDs that last across revisions, keeps attributed revisions in the control store, and gives agents a document tool whose patches are rebased or refused rather than overwriting newer changes. The user acts through the harness's `document` commands until the GUI can edit (W4's second slice). Read-only views in the workspace GUI are the next part of this slice ([workspace](WORKSPACE.md)).
+
+## The control store
+
+Documents live in one SQLite database in the harness's state directory, `<state-dir>/control.sqlite3` (D83, proposed). More than one process writes it: each harness run, and the workspace server once user edits come. Each change is one transaction that starts with `BEGIN IMMEDIATE`, so it holds SQLite's write lock before it reads the current revision, and commits the revision, the patch record, the operation ID and the events together, or nothing. The database uses write-ahead logging, so readers never wait for a writer, and `synchronous=FULL`, so a change reported done survives a crash. Like the [event store](EVENT-STORE.md), it must be on a local filesystem.
+
+| Table | Holds |
+| --- | --- |
+| `documents` | Each document's ID (`doc-…`), project, scope (the project, or one session's workbook), name, title, creator and the session it came from, whether agent patches wait as suggestions, its current revision, whether it is deleted, and the counters its block and span IDs come from |
+| `revisions` | Every revision, append-only: its number, author, the user who accepted it if it was a suggestion, session, base and parent revisions, reason, operations, the patch it came from, its text and SHA-256, whether it is a tombstone, what was normalized, its warnings, its block map, and the profile and parser versions that made the map |
+| `patches` | Every patch an agent submitted: applied, unchanged, conflicted (a rejected patch, LD-19), refused, suggested, accepted or declined, with its base, operations, author and the user's decision |
+| `requests` | The first result of each change made under an operation ID, so a retry returns it |
+| `events` | The changes' events (LD-39), numbered in commit order |
+
+Triggers refuse updates and deletions of revisions and events, as a guard against mistakes; anyone who can write the file can drop them. The schema's version is SQLite's `user_version`, 1; a database in another version, or an SQLite file that is not a control store, is refused. The workspace server will read the store through the orchestrator package, as it reads the projects' records, until W5 gives the control application an API of its own.
+
+**Events.** `document.created`; `document.revision_created`, with the revision, its base and parent, the author and the author's kind, the blocks changed, added, removed and moved, the structural blocks added, the characters of text an agent added or changed, whether delimiters were normalized, and whether it is a tombstone; `document.patch_conflicted`, with the conflicts; `document.patch_refused`, with the blocks the patch would have changed without naming them; `document.suggestion_created`; `document.suggestion_decided`; and `document.settings_changed`. Each names the service that recorded it (`harness`, or `harness-cli` for the user's commands) and the session of the agent that made the change.
+
+## Parsing
+
+The profile is the browser's, rule for rule ([where math begins and ends](WORKSPACE.md#where-math-begins-and-ends)): markdown-it's default dialect (markdown-it-py's `js-default`) with raw HTML off and links only to http, https and mailto addresses, which affects what parses as a link and so where math can be; mdit-py-plugins' YAML front matter; its dollar math with the workspace's settings, with the 200-line limit on `$$` blocks applied by giving the plugin's block rule a nearer last line; LaTeX's own delimiters, `\(…\)`, `\[…\]` and bare display environments, read while parsing, a port of the browser's `mathdelimiters.ts`; and mdit-py-plugins' container for theorem-like blocks, `::: lemma (label)` to `:::`, whose kinds are those of LD-4. The parsers' versions are pinned exactly, markdown-it-py 4.2.0 and mdit-py-plugins 0.6.1, since they change in pairs with the browser's (LD-5); the profile's own version, `ss-markdown-1`, is recorded with each revision.
+
+**Shared cases.** Three files in `web/workspace/src/lib` hold the cases both parsers must pass: `dollarmath.fixtures.json`, `mathdelimiters.fixtures.json` (PR #61's) and `documents.fixtures.json`, which gives for each document its blocks (kind, depth and lines) and its formulas (block, kind and TeX). pytest runs all three against the server's parser in the `check` job, and vitest runs the browser's parser on them in the `web` job (the delimiter cases with PR #61, the document cases with the GUI part of this slice). Formulas in an image's description are not spans: the browser shows a description as text.
+
+**Positions.** markdown-it records each block's lines, not where its text starts on them, and nothing about where an inline formula sits. The parser wraps markdown-it's rules: each block rule records, for each line of each block it makes, where the block's own text begins after the markers and indentation of the blocks around it, and the content of each paragraph, heading and table cell is mapped back to the text it was cut from. The mapping is checked against the content markdown-it built, and dropped where they differ, so a wrong position is never used; an operation on a formula whose place is unknown asks for its block to be replaced instead.
+
+**Limits.** A revision holds at most 1 MiB of UTF-8, with blocks nested at most 32 deep, at most 10,000 blocks and 20,000 formulas; text that is not valid Unicode or holds a NUL is refused. Line breaks are stored as `\n`, as markdown-it reads them, so positions agree. Front matter is read with PyYAML's safe loader, without aliases, up to 16 KiB; what it cannot read as a title and macros is a warning, and the text stays as written.
+
+## Blocks and IDs
+
+A block is a unit the parser finds: front matter, heading, paragraph, list, list item, quote, code block, display equation, table, theorem-like container or thematic break. Its own text is its lines without the markers and indentation of the blocks around it and without trailing blank lines; a container's includes its children's, so a container changes when a child does (LD-F5). The SHA-256 of the own text tells whether a block changed. Structural blocks (LD-40) are headings, tables, theorem-like containers and figures, a figure being a paragraph that holds one image and nothing else. A math span is one formula: inline, displayed within a paragraph, or a display equation.
+
+Only the server assigns IDs: `b1`, `b2`, … for blocks and `m1`, `m2`, … for spans, per document, never reused. They carry from one revision to the next by LD-7's rules, in order. The spec leaves some choices open, settled here:
+
+- **Equal blocks** (rule 2) are compared by kind and text with whitespace collapsed. They are paired along their longest common order first, then in document order, so that deleting one of two identical paragraphs removes its own ID, not the other's.
+- **Similar blocks** (rule 4) count words, lowercased, and TeX commands. In each gap between blocks paired in the same order, the best-scoring pairs of the same kind are taken first; ties go in document order. A gap with more than 40,000 pairs to compare compares each block only with the 200 parent blocks nearest its place in the gap.
+- **Named blocks** (rule 1): an operation that replaces a block, moves it, or rewrites text or a formula in it, names the region of the text it wrote, and the first block of the named kind starting there keeps the ID.
+
+A block is `moved` when it is not in the longest run of blocks the two revisions share in the same order, or has another parent; `changed` when its text hash differs, whether or not it moved. A span is `changed` when its TeX or its kind (inline or displayed) changed.
+
+## Changes
+
+**Creating and saving.** A document is created with a name, unique among the live documents of its scope, a title and its first text. A whole new text, an import or a save by the user in a test, must come from the current revision; reconciling a save from an older one is the second slice's (LD-13). Text identical to the current revision makes no revision (LD-11). Deleting a document adds a tombstone revision with no text; its history remains, its name is free again, and an agent may delete only the documents its own session created (LD-12).
+
+**Patches.** A patch names its base revision, an operation ID, a reason and its operations, which name blocks and spans by the base revision's IDs: `replace` a block with Markdown; `insert` Markdown before or after a block, or at the start (after the front matter) or end; `move` a block before or after another; `delete` a block; `replace_math`, a formula's TeX; and `replace_text`, a quote that occurs exactly once in a block's text. Markdown is written as if at the top level; the operation lays it inside the lists and quotes around its place, with their markers on each line, and keeps it apart from the blocks beside it with blank lines. Operations apply in turn, each to the text the one before left, and the text is parsed again after each.
+
+- **Stale bases** (LD-17). When revisions came after the base, the patch conflicts if one of them changed or removed a block or formula it names, moved a block it moves, or put a block where it inserts or moves one; containers count as changed when their children did. A conflict writes nothing but the rejected patch and its event, and names the current revision and each conflicting block or formula with its text at the base and now, and the revisions and authors that changed it. Otherwise the patch applies to the current revision by ID, and the new revision records both its base and its parent.
+- **Blocks it does not name** (LD-18). After the operations, every block of the revision the patch applied to must be there with the same text, except the blocks it rewrites, replaces or deletes with everything inside them, and the blocks that contain any block it names. Otherwise the patch is refused with `patch_changes_unnamed_blocks` and nothing but its record and event is written.
+- **Suggestions** (LD-20). A document can be set to take agent patches as suggestions, as open question 4 recommends; patches apply directly by default. A suggestion is checked as a patch is, then waits. The user's acceptance applies it as LD-17 says, attributed to its author with the acceptance recorded; a rejection writes nothing.
+- **Retries.** A change made again under the same operation ID returns its first result, marked `replayed`; the same ID with another change is refused. Operation IDs belong to the session for agents, so a retry from a new run of the same session finds the first result, and to the user for the user's changes.
+
+**Delimiters on save** (LD-41, LD-42). Text a change brings in is rewritten as it is saved so that its formulas use dollars: the whole text of a new document or a whole-text save, and only what each operation wrote for a patch, so blocks a patch does not name are never touched. `\(…\)` becomes `$…$` without the spaces inside; `\[…\]` and `\begin{displaymath}…` become `$$…$$` in the same place, with a blank line before a block that followed a paragraph, since a `$$` line cannot end one; a display environment written outside math goes inside `$$` lines, or between `$$` within its paragraph; and an empty `\( \)` or `\[ \]` is removed. The text is then parsed again, and a conversion that would change its blocks, or which formulas it has, their kinds or their TeX (with whitespace collapsed), is left out; a multi-line `\[…\]` in a quote is one, since a `$$` block keeps the quote's markers in its TeX. The revision records what was converted and what was kept, and why.
+
+One case awaits the user's decision. LD-41 drafts `$$…$$` for a `\(…\)` that single dollars would make ambiguous elsewhere: one holding a dollar sign or a line break, or followed by a digit. In this dialect `$$…$$` within a paragraph is displayed math, so the formula would leave its sentence. Such a formula is kept as written, which both parsers read as inline math, as recommended; `normalize.AMBIGUOUS_INLINE` switches to `$$…$$` ([open question 15](specs/living-documents.md#open-questions)).
+
+**Warnings** (LD-30). Each revision's new and changed blocks are checked for math KaTeX does not see, and the findings are kept on the revision and returned to the patching agent: `unbalanced_dollar`, a `$` that opens no formula when a letter, backslash or other symbol follows it, or a stray `$$` (a `$` before a digit or a space is left alone, as amounts are written); `definition_in_math`, `\def`, `\gdef`, `\newcommand` and the like inside a formula, which the GUI applies to that formula alone while TeX may make it global in an export (LD-28); `display_swallows_text`, a displayed formula holding a `$` or a line that reads as Markdown or prose; and `front_matter`. They are heuristics, and change nothing. KaTeX's own check, which makes `math` findings (LD-53 to LD-55, D82), is a later slice; `checks.math_check` is where it plugs in.
+
+## The agents' document tool
+
+With `--state-dir`, the harness gives the agent five tools over the project's documents: `document_list`; `document_read`, which shows a revision as blocks in order, each with its ID, kind and own text (containers with their opening line or marker instead, so text is not repeated), each formula's ID and TeX, and the front matter's macros, in parts when it is long; `document_create`, for the project or the session's workbook; `document_patch`; and `document_delete`. Every session of the project reads and patches every document, under the project's grant (LD-1). A name finds the session's workbook document first, then the project's. Results are JSON; a conflict and a refusal come back as errors, with the conflicting blocks' texts or the blocks the patch would have changed. Unknown arguments are refused, so no argument can name an author: each change is attributed to the run, with its session, role (`main`), the model the gateway said answered, the alias asked for, and the tool call (LD-10, RA-16). A patch without an operation ID of its own uses the tool call's, so a run repeated under its run ID gets the first results.
+
+**Notices** (LD-15). The tool remembers the revision of each document the run has read or written. After each tool call, the run's next safe point, the harness looks for newer revisions of them made by anyone else, and adds a notice to that call's result (`platform_notices`) naming the revisions, their authors and the blocks they changed, once for each.
+
+## The user's commands
+
+Until the GUI can edit, the user works on documents with the harness's command line, on the state directory:
+
+```bash
+sandbox-science-harness document import --state-dir state --project p1 --name ff ff.md
+sandbox-science-harness document list --state-dir state --project p1
+sandbox-science-harness document show ff --state-dir state --project p1
+sandbox-science-harness document history ff --state-dir state --project p1
+sandbox-science-harness document suggestions ff on --state-dir state --project p1
+sandbox-science-harness document decide ff patch-… accept --state-dir state --project p1
+sandbox-science-harness document delete ff --reason "…" --state-dir state --project p1
+```
+
+`import` creates the document, or saves the file as its next revision, attributed to an import the user started; `--session` makes it a workbook document. `show` prints the blocks with their IDs, `history` each revision with its author, reason and changed blocks, each block's revisions, and the patches with their states (LD-11).
+
+## Checkpoint triggers
+
+Consistency reviews are not built yet. `reviews.CheckpointWindow` is the part of CR-10 that documents feed: it counts a session's agent revisions by the characters the agents wrote and the structural blocks they added, never as artifact revisions, and a checkpoint review is due once the minimum interval has passed and the agents wrote 2,000 characters or added a structural block (CR-10 as amended, LD-40). The user's own revisions count toward no review. Its snapshot is the revisions since the last dispatch.
+
+## Measured
+
+On babbage, documents of repeated sections, each a heading and a paragraph with three formulas:
+
+| Document | Parse | Create | Patch | Patch from 10 revisions back |
+| --- | --- | --- | --- | --- |
+| 17 KiB, 200 blocks, 600 formulas | 9 ms | 13 ms | 17 ms | 35 ms |
+| 85 KiB, 1,000 blocks, 3,000 formulas | 43 ms | 56 ms | 99 ms | 221 ms |
+| 344 KiB, 4,000 blocks, 12,000 formulas | 278 ms | 302 ms | 784 ms | 1,731 ms |
+
+A patch parses the text again after each operation and carries the IDs over; one from an older base also reads the block maps of the revisions after it. Changes wait for one another, so on the largest documents a few concurrent patches take seconds.
+
+## Not built yet
+
+- The GUI's views of documents, their history and the parser mismatch of LD-9 (this slice's next part), and the browser's half of the document cases.
+- User edits in the GUI, by block or as source, reconciled as patches, and their conflicts (LD-13, LD-14); the user applying a rejected patch (LD-19); moving a workbook document to the project (LD-1); reverts.
+- Comments and the work requests they carry (LD-21 to LD-24), and review findings on blocks (LD-25).
+- References, embedded artifacts and ledger bindings (LD-31 to LD-34), and exports (LD-35 to LD-38).
+- Document files in every environment, direct edits of them, and the `ss-doc` helper (LD-3, LD-49 to LD-52).
+- Math repairs proposed into a document (LD-48) and math findings from KaTeX's check on save (LD-53 to LD-55, D82).
+- The consistency review itself, which the trigger window will feed.

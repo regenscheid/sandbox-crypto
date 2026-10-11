@@ -10,7 +10,9 @@ with these rules added, in this order on both sides:
 - dollar math, mdit-py-plugins' ``dollarmath`` with the workspace's settings, and this
   project's limit: a ``$$`` block ends within ``MAX_BLOCK_LINES`` lines of its opening line;
 - LaTeX's own delimiters, ``\\(…\\)``, ``\\[…\\]`` and bare display environments, read while
-  parsing: a port of the browser's ``mathdelimiters.ts``;
+  parsing: a port of the browser's ``mathdelimiters.ts``, whose rules are adapted from the
+  user's own cscience-crypto (``src/web/cscience-math.js``), contributed under the MIT
+  License by its author;
 - fenced containers for theorem-like blocks (``::: lemma``), mdit-py-plugins' ``container``
   with the kinds of LD-4.
 
