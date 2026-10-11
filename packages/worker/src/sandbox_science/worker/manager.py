@@ -417,6 +417,13 @@ class ExecutionManager:
         if not isinstance(hostname, str):
             hostname = ""
         hostname = "".join(char for char in hostname[:MAX_HOSTNAME] if char.isprintable())
+        if hello.get("not_dumpable") is False:
+            _log.info(
+                "the executor for %s stays dumpable, so research code in that environment can "
+                "reach its file descriptors through /proc (the sandbox refuses sockets to a "
+                "process that is not dumpable)",
+                environment_id,
+            )
         if hello.get("subreaper") is False:
             _log.warning(
                 "the executor for %s cannot adopt orphaned processes; a shell call's processes "

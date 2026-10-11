@@ -563,6 +563,34 @@ def _reap(pids: Iterable[int]) -> None:
         time.sleep(0.01)
 
 
+def _sockets_work() -> bool:
+    """Whether this process may bind a loopback socket, as a kernel's client must."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+    except OSError:
+        return False
+    return True
+
+
+def protect_process() -> bool:
+    """Make this process not dumpable, unless that takes its sockets away; say whether it is.
+
+    Research code runs as this same user. Not dumpable, this process keeps its /proc
+    files (fd, environ, mem) and ptrace closed to it, so research code cannot write into
+    the protocol or read other sessions' requests. OpenShell's supervisor refuses socket
+    calls from a process it cannot inspect, which stops every kernel starting (lab 8);
+    there the executor stays dumpable.
+    """
+    sockets = _sockets_work()
+    if not _prctl(PR_SET_DUMPABLE, 0):
+        return False
+    if sockets and not _sockets_work():
+        _prctl(PR_SET_DUMPABLE, 1)
+        return False
+    return True
+
+
 def _prctl(option: int, value: int) -> bool:
     """One prctl(2) call through libc; False where it is unavailable or refused."""
     try:
@@ -702,10 +730,13 @@ async def _interrupt(manager: Any) -> None:
 class Executor:
     """Handles one connection's requests. ``root`` holds sessions/ and shared/."""
 
-    def __init__(self, root: Path, send: Send, *, subreaper: bool = False) -> None:
+    def __init__(
+        self, root: Path, send: Send, *, subreaper: bool = False, protected: bool = False
+    ) -> None:
         self.root = root
         self.send = send
         self.subreaper = subreaper
+        self.protected = protected
         """Whether this process adopts orphans, so leftovers are found below it."""
         self.running: dict[str, Running] = {}
         self.kernels: dict[tuple[str, str], Kernel] = {}
@@ -871,6 +902,7 @@ class Executor:
                 "root": str(self.root),
             },
             subreaper=self.subreaper,
+            not_dumpable=self.protected,
         )
 
     async def op_probe(self, request: Message) -> None:
@@ -1683,7 +1715,7 @@ def _item(container: object, key: str) -> object:
     return cast(Message, container).get(key) if isinstance(container, dict) else None
 
 
-async def serve_stdio(root: Path, *, subreaper: bool = False) -> None:
+async def serve_stdio(root: Path, *, subreaper: bool = False, protected: bool = False) -> None:
     """Serve one connection on stdin and stdout until stdin closes."""
     loop = asyncio.get_running_loop()
     # Keep the protocol on its own descriptor; anything else printing to stdout
@@ -1707,7 +1739,7 @@ async def serve_stdio(root: Path, *, subreaper: bool = False) -> None:
             writer.write(line)
             await writer.drain()
 
-    executor = Executor(root, send, subreaper=subreaper)
+    executor = Executor(root, send, subreaper=subreaper, protected=protected)
     try:
         while True:
             try:
@@ -1750,13 +1782,10 @@ def main(argv: list[str] | None = None) -> int:
     (state / "ipython").mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("JUPYTER_RUNTIME_DIR", str(state / "runtime"))
     os.environ.setdefault("IPYTHONDIR", str(state / "ipython"))
-    # Research code runs as this same user. Not dumpable, this process keeps its
-    # /proc files (fd, environ, mem) and ptrace closed to it, so research code
-    # cannot write into the protocol or read other sessions' requests.
-    _prctl(PR_SET_DUMPABLE, 0)
+    protected = protect_process()
     # A subreaper adopts its descendants' orphans, so leftovers stay findable below it.
     subreaper = _prctl(PR_SET_CHILD_SUBREAPER, 1)
-    asyncio.run(serve_stdio(root.resolve(), subreaper=subreaper))
+    asyncio.run(serve_stdio(root.resolve(), subreaper=subreaper, protected=protected))
     return 0
 
 
