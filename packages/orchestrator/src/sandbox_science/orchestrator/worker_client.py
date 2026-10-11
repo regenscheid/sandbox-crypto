@@ -39,6 +39,9 @@ from sandbox_science.contracts import (
     ListFilesRequest,
     Lockfile,
     PolicyRevisionRequest,
+    ProvisioningQueue,
+    ProvisionOperation,
+    ProvisionRequest,
     PublishRequest,
     ReadFileRequest,
     ResultEvent,
@@ -206,6 +209,56 @@ class WorkerClient:
             f"/v1/environments/{environment_id}/revisions/{revision}/lockfile",
             Lockfile,
             max_bytes=MAX_LOCKFILE_BYTES,
+        )
+
+    # Provisioning operations (Conda provisioning, CP-1 to CP-25).
+
+    async def provision(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
+        """Ask for a capability or packages; True when the worker created the operation,
+        False when it had one from an earlier submission with the same operation ID."""
+        operation, status = await self._request(
+            "POST", "/v1/provisioning", ProvisionOperation, request
+        )
+        return operation, status == 201
+
+    async def provision_status(
+        self,
+        provision_id: str,
+        *,
+        after: int = -1,
+        wait: float = 0.0,
+        project_id: str | None = None,
+    ) -> ProvisionOperation:
+        """The operation; with ``after``, once its record is newer than that ``seq``, it has
+        finished, or ``wait`` seconds (at most 60) have passed."""
+        params = {"after": str(after), "wait": str(max(0, min(60, int(wait))))}
+        return await self._call(
+            "GET",
+            f"/v1/provisioning/{provision_id}",
+            ProvisionOperation,
+            params={**params, **_project(project_id)},
+        )
+
+    async def cancel_provision(
+        self, provision_id: str, *, project_id: str | None = None
+    ) -> ProvisionOperation:
+        return await self._call(
+            "POST",
+            f"/v1/provisioning/{provision_id}/cancel",
+            ProvisionOperation,
+            params=_project(project_id),
+        )
+
+    async def provisioning_queue(
+        self, environment_id: str, *, project_id: str | None = None
+    ) -> ProvisioningQueue:
+        """The environment's operations that have not finished, in request order; with
+        ``project_id``, only if the environment is that project's."""
+        return await self._call(
+            "GET",
+            f"/v1/environments/{environment_id}/provisioning",
+            ProvisioningQueue,
+            params=_project(project_id),
         )
 
     # Executions.

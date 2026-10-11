@@ -40,6 +40,7 @@ from sandbox_science.policy.approvals import (
     Approvals,
     pending_lines,
     prepare_answer,
+    request_lines,
 )
 from sandbox_science.policy.loader import read_limited
 
@@ -82,6 +83,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     unbind.add_argument("--sandbox", required=True)
     pending = commands.add_parser("pending", help="list permission requests nobody answered")
     pending.add_argument("--settings", type=Path, required=True)
+    pending.add_argument(
+        "--request",
+        type=int,
+        help="show this request in full, answered or not, with every package file it lists",
+    )
     for name, text in (("approve", "approve a permission request"), ("deny", "deny one")):
         answer = commands.add_parser(name, help=text)
         answer.add_argument("--settings", type=Path, required=True)
@@ -90,7 +96,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             answer.add_argument(
                 "--scope",
                 choices=ALL_SCOPES,
-                help="request (the default), or host: any path on its host with its method",
+                help="request (the default), or host: any path on its host with its method; "
+                "a provisioning operation's request takes files, its exact file set",
             )
             answer.add_argument("--for", dest="hours", type=float, default=8.0, help="hours")
     args = parser.parse_args(argv)
@@ -117,12 +124,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"unbound {args.sandbox}" if removed else f"{args.sandbox} was not bound")
                 return 0
             case "pending":
-                return _pending(load_settings(args.settings).event_store_path)
+                return _pending(load_settings(args.settings).event_store_path, args.request)
             case _:
                 path = load_settings(args.settings).event_store_path
                 hours = getattr(args, "hours", None)
                 return _answer(
-                    path, args.command, args.request, getattr(args, "scope", "request"), hours
+                    path, args.command, args.request, getattr(args, "scope", None), hours
                 )
     except (MiddlewareError, StoreError, PolicyLoadError, EventStoreError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -135,9 +142,16 @@ def _read_records(path: Path, after: int) -> list[Record]:
         return list(reader.records(after=after))
 
 
-def _pending(path: Path) -> int:
+def _pending(path: Path, seq: int | None = None) -> int:
     approvals = Approvals()
     approvals.load(_read_records(path, 0))
+    if seq is not None:
+        shown = request_lines(approvals, seq)
+        if shown is None:
+            print(f"error: no permission request {seq}", file=sys.stderr)
+            return 1
+        print("\n".join(shown))
+        return 0
     lines = pending_lines(approvals)
     print("\n".join(lines) if lines else "no permission requests are waiting")
     return 0
@@ -158,6 +172,9 @@ def _answer(path: Path, command: str, seq: int, scope: str | None, hours: float 
     with EventStore(path) as events:
         record = events.append(kind, OPERATOR, payload)
     print(f"{'approved' if kind == APPROVAL else 'denied'} request {seq} as record {record.seq}")
+    files = approvals.files(seq)
+    if files and kind == APPROVAL:
+        print(f"its {len(files)} package files may download; pending --request {seq} lists them")
     return 0
 
 

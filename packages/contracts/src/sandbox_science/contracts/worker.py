@@ -113,9 +113,11 @@ class CellRequest(Contract):
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
 
 
-Feature = Literal["pdf", "admission"]
+Feature = Literal["pdf", "admission", "provisioning"]
 """Capabilities beyond kernels that an environment can offer. ``pdf`` needs pdf_oxide (D59);
-``admission`` means the worker admits hosts ahead of use (D69, ``AdmissionRequest``)."""
+``admission`` means the worker admits hosts ahead of use (D69, ``AdmissionRequest``);
+``provisioning`` that it installs capabilities and packages on request (``ProvisionRequest``,
+Conda provisioning)."""
 FEATURES: Final[tuple[Feature, ...]] = ("pdf",)
 """The features an executor may report; the worker adds ``admission`` itself."""
 PdfOperation = Literal["info", "pages", "search", "render"]
@@ -368,6 +370,9 @@ class Execution(Contract):
     result: Result | None = None
     last_seq: Annotated[int, Field(ge=0)] = 0
     """The sequence number of the latest event."""
+    origin: Identifier | None = None
+    """The provisioning operation this execution is a step of (its dry run, install or a
+    probe), when the worker ran it for one."""
 
 
 class KernelRestartRequest(Contract):

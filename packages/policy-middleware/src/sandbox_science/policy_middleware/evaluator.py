@@ -435,11 +435,30 @@ class PolicyMiddleware:
             except Exception:
                 # Without the records no answer is known; the request waits, as before.
                 _log.exception("could not read permission requests from the event store")
+        rule = decision.rule or "escalation"
         answer = self._approvals.answer(target, now)
+        if isinstance(operation, PackageOperation) and operation.kind == "artifact":
+            # A provisioning operation's approved file set (Conda provisioning, CP-8): the
+            # files it lists download to this sandbox under this revision, nothing else. An
+            # answer to this very download that came later still decides it.
+            grant = self._approvals.granted(facts.sandbox_id, loaded.digest, facts.path, now)
+            if grant is not None and (answer is None or answer.seq < grant.seq):
+                extra = {
+                    "approval_seq": grant.seq,
+                    "request_seq": grant.request_seq,
+                    "grant": "packages",
+                }
+                try:
+                    self._record("approved", facts, loaded, decision, operation, extra=extra)
+                except Exception:
+                    _log.exception("could not record approved request %s", facts.request_id)
+                    return _deny(
+                        AUDIT_UNAVAILABLE, "the approved request could not be recorded", decision
+                    )
+                return (Finding("policy_approval", rule, "low"),)
         if answer is not None and answer.kind == "denial":
             reason = f"permission request {answer.request_seq} was denied"
             return _deny(APPROVAL_DENIED, reason, decision)
-        rule = decision.rule or "escalation"
         if answer is not None:
             extra = {"approval_seq": answer.seq, "request_seq": answer.request_seq}
             try:
