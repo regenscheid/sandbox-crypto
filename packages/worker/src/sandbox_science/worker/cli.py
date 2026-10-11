@@ -96,8 +96,11 @@ async def serve(settings: Settings) -> None:
     environments = _environments(settings)
     store = Store(settings.state_dir / "worker.sqlite3")
     blobs = Blobs(settings.state_dir / "artifacts")
+    # The shared files' blobs are kept apart from published artifacts, by project (D79).
     shared = (
-        SharedSync(SharedRecords(settings.state_dir / "shared.sqlite3"), blobs)
+        SharedSync(
+            SharedRecords(settings.state_dir / "shared.sqlite3"), settings.state_dir / "shared"
+        )
         if settings.shared_sync
         else None
     )
@@ -114,6 +117,8 @@ async def serve(settings: Settings) -> None:
         environments.release = manager.release
         environments.release_idle = manager.release_if_idle
         manager.notices = environments.notices
+        if shared is not None:
+            environments.deleted = shared.forget
     # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
     # attempts still running are stored as lost.
     stopping = asyncio.Event()
@@ -125,6 +130,10 @@ async def serve(settings: Settings) -> None:
     )
     background: list[asyncio.Task[None]] = []
     try:
+        if shared is not None:
+            removed = await shared.sweep()
+            if removed:
+                _log.info("deleted %d blobs no shared file uses", removed)
         await manager.start()
         await runner.setup()
         site = web.TCPSite(runner, settings.listen_host, settings.listen_port)

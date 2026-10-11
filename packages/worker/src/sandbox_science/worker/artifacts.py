@@ -6,8 +6,11 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import os
+import re
 import tempfile
 from pathlib import Path
+
+_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 class Blobs:
@@ -18,6 +21,9 @@ class Blobs:
         (root / "tmp").mkdir(parents=True, exist_ok=True)
 
     def path(self, sha256: str) -> Path:
+        # A digest names a file here, so it must be one: never a path of its own.
+        if not _DIGEST.fullmatch(sha256):
+            raise ValueError("not a SHA-256 digest")
         return self.root / "blobs" / sha256[:2] / sha256
 
     def writer(self) -> BlobWriter:

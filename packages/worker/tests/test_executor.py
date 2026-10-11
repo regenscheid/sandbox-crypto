@@ -301,6 +301,101 @@ def _reply(request_id: int) -> Callable[[dict[str, Any]], bool]:
 
 
 @pytest.mark.asyncio
+async def test_the_shared_scan_reports_stamps_digests_and_the_mark(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    (shared / "bin").mkdir(parents=True)
+    (shared / "a.txt").write_bytes(b"a")
+    (shared / "bin" / "run.sh").write_bytes(b"#!/bin/sh\n")
+    (shared / "bin" / "run.sh").chmod(0o755)
+    (shared / "big.bin").write_bytes(b"x" * 100)
+    (shared / ".write-0123456789abcdef").write_bytes(b"a write under way")
+    (shared / "bad\x01name").write_bytes(b"?")
+    recorder = Recorder(tmp_path)
+    wanted = ["shared/a.txt", "shared/bin/run.sh", "shared/big.bin"]
+    request = {"id": 1, "op": "shared", "hash": wanted, "hash_limit": 50, "hash_budget": 1 << 20}
+    reply = await recorder.ask({**request, "mark": "m1 p1"})
+    assert reply["ok"] is True
+    assert sorted(reply["files"]) == ["shared/a.txt", "shared/big.bin", "shared/bin/run.sh"]
+    info = os.stat(shared / "a.txt")
+    assert reply["files"]["shared/a.txt"] == [info.st_mtime_ns, 1, info.st_ino, 0]
+    assert reply["files"]["shared/bin/run.sh"][3] == 1
+    assert reply["sha256"] == {
+        "shared/a.txt": hashlib.sha256(b"a").hexdigest(),
+        "shared/bin/run.sh": hashlib.sha256(b"#!/bin/sh\n").hexdigest(),
+    }
+    assert reply["too_large"] == ["shared/big.bin"]
+    assert reply["odd"] == ["shared/bad\x01name"]
+    assert reply["partial"] is True  # a name it could not report
+    assert reply["mark"] == "m1 p1"
+    assert (tmp_path / ".sandbox-science-sync").read_text() == "m1 p1"
+    again = await recorder.ask(
+        {"id": 2, "op": "shared", "hash": [], "hash_limit": 0, "hash_budget": 0}
+    )
+    assert again["mark"] == "m1 p1"
+    assert again["sha256"] == {}
+
+
+def test_a_digest_belongs_to_the_stamp_it_was_scanned_with(tmp_path: Path) -> None:
+    (tmp_path / "f").write_bytes(b"one")
+    info = os.stat(tmp_path / "f")
+    stamp = [info.st_mtime_ns, info.st_size, info.st_ino]
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        digest = executor._stamped_sha256(directory, "f", stamp)  # pyright: ignore[reportPrivateUsage]
+        assert digest == hashlib.sha256(b"one").hexdigest()
+        # Replaced since the scan: no digest, so the worker compares it again later.
+        (tmp_path / "g").write_bytes(b"two")
+        os.replace(tmp_path / "g", tmp_path / "f")
+        assert executor._stamped_sha256(directory, "f", stamp) is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+        os.close(directory)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_file_is_removed_only_as_it_was_synced(tmp_path: Path) -> None:
+    deep = tmp_path / "shared" / "d" / "e"
+    deep.mkdir(parents=True)
+    (deep / "f.txt").write_bytes(b"synced")
+    recorder = Recorder(tmp_path)
+    base = {"op": "remove", "path": "shared/d/e/f.txt"}
+    changed = await recorder.ask({"id": 1, **base, "expected_sha256": "0" * 64})
+    assert changed["error"]["kind"] == "conflict"
+    assert (deep / "f.txt").exists()
+    expected = hashlib.sha256(b"synced").hexdigest()
+    removed = await recorder.ask({"id": 2, **base, "expected_sha256": expected})
+    assert removed["ok"] is True
+    # The directories it leaves empty go too, up to the shared area.
+    assert not (tmp_path / "shared" / "d").exists()
+    assert (tmp_path / "shared").is_dir()
+    (tmp_path / "sessions" / "s1").mkdir(parents=True)
+    (tmp_path / "sessions" / "s1" / "w.txt").write_bytes(b"w")
+    outside = await recorder.ask(
+        {"id": 3, "op": "remove", "session": "s1", "path": "w.txt", "expected_sha256": "0" * 64}
+    )
+    assert outside["error"]["kind"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_a_sync_write_sets_the_mode_and_reports_the_stamp(tmp_path: Path) -> None:
+    (tmp_path / "shared").mkdir()
+    recorder = Recorder(tmp_path)
+    reply = await recorder.ask(
+        {
+            "id": 1,
+            "op": "write",
+            "path": "shared/bin/run.sh",
+            "content_b64": base64.b64encode(b"#!/bin/sh\n").decode(),
+            "create_only": True,
+            "executable": True,
+        }
+    )
+    written = tmp_path / "shared" / "bin" / "run.sh"
+    info = os.stat(written)
+    assert reply["stamp"] == [info.st_mtime_ns, info.st_size, info.st_ino]
+    assert info.st_mode & 0o777 == 0o755
+
+
+@pytest.mark.asyncio
 async def test_a_shell_call_cancelled_before_it_starts_ends_at_once(tmp_path: Path) -> None:
     # A cancel read together with its shell call cancelled a task that had not started:
     # no end ever came, and the call stayed in the executor's table.
