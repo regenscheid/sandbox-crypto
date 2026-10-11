@@ -421,6 +421,8 @@ class OrchestratorTarget(StrictModel):
     worker_api: ServiceEndpoint
     model_gateway: ServiceEndpoint | None = None
     binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
+    filesystem: SandboxFilesystem = SandboxFilesystem()
+    """Paths the harness's image provides outside the workdir, such as its interpreter's prefix."""
 
 
 class OpenShellTargets(StrictModel):
@@ -921,8 +923,13 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
             ),
             binaries=binaries,
         )
+    extra = target.filesystem
+    read_write = tuple(dict.fromkeys(extra.read_write))
+    read_only = tuple(path for path in dict.fromkeys(extra.read_only) if path not in read_write)
     return OpenShellPolicy(
-        filesystem_policy=FilesystemPolicy(include_workdir=True),
+        filesystem_policy=FilesystemPolicy(
+            include_workdir=True, read_only=read_only, read_write=read_write
+        ),
         network_policies=network_policies,
     )
 

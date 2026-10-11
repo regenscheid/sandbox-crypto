@@ -28,5 +28,6 @@ orchestrator:
   # The harness's own sandbox (Z2) reaches only these platform services.
   worker_api: {host: worker.sandbox-science.internal, port: 8100}
   model_gateway: {host: litellm.sandbox-science.internal, port: 4000}
-  # The interpreter that runs the harness.
+  # The interpreter that runs the harness, and the image prefix it lives in (docs/IMAGES.md).
   binaries: [/opt/sandbox-science/bin/python*]
+  filesystem: {read_only: [/opt/sandbox-science]}
