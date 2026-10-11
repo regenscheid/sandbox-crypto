@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Check a profile image as a sandbox sees it: images/test.sh PROFILE [IMAGE]
-# PROFILE is minimal, crypto-base or orchestrator.
+# PROFILE is minimal, crypto-base, orchestrator or mcp-proxy.
 #
 # Runs images/checks/check_image.py in the image as uid 1000, with no capabilities, a read-only
 # root filesystem and only the declared paths writable (docs/IMAGES.md, "Tests"):
@@ -9,8 +9,8 @@
 #              prefix (D48), as a container driver would run it;
 #   landlock   the same under a Landlock ruleset like OpenShell's: its baseline, the devices the
 #              policy compiler adds to research sandboxes, and the image's filesystem section
-#              (images/common/sandbox-filesystem.yml, or images/orchestrator/filesystem.yml for
-#              the orchestrator's sandbox, which gets no devices).
+#              (images/common/sandbox-filesystem.yml, or images/<profile>/filesystem.yml for the
+#              orchestrator's and the MCP proxy's sandboxes, which get no devices).
 # IMAGE defaults to the tag build.sh gives. MODES picks the modes (default
 # "container landlock"); NETWORK=0 skips the runtime installs, which need conda-forge and PyPI;
 # FILESYSTEM names another filesystem section to try. Prints one JSON line per check and exits 1
@@ -19,8 +19,8 @@ set -euo pipefail
 
 profile=${1:-}
 case $profile in
-  minimal | crypto-base | orchestrator) ;;
-  *) echo "usage: images/test.sh minimal|crypto-base|orchestrator [IMAGE]" >&2; exit 2 ;;
+  minimal | crypto-base | orchestrator | mcp-proxy) ;;
+  *) echo "usage: images/test.sh minimal|crypto-base|orchestrator|mcp-proxy [IMAGE]" >&2; exit 2 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
 worker="$here/../packages/worker/src/sandbox_science/worker"   # its in-sandbox files
@@ -43,13 +43,16 @@ devices_rw=(/dev/full /dev/ptmx /dev/pts /dev/shm /dev/tty /dev/zero)
 filesystem=${FILESYSTEM:-$here/common/sandbox-filesystem.yml}
 # Runtime installs go into the Conda prefix, a writable volume (D48).
 prefix=(--mount type=volume,target=/opt/sandbox-science)
-if [ "$profile" = orchestrator ]; then
-  # compile_orchestrator() adds no devices, and the harness's prefix stays read-only.
-  devices_ro=()
-  devices_rw=()
-  filesystem=${FILESYSTEM:-$here/orchestrator/filesystem.yml}
-  prefix=()
-fi
+case $profile in
+  orchestrator | mcp-proxy)
+    # compile_orchestrator() and compile_mcp_proxy() add no devices, and the services' prefixes
+    # stay read-only.
+    devices_ro=()
+    devices_rw=()
+    filesystem=${FILESYSTEM:-$here/$profile/filesystem.yml}
+    prefix=()
+    ;;
+esac
 list() { sed -n "s/^$1: \[\(.*\)\]\$/\1/p" "$filesystem" | tr -d ' ' | tr ',' ' '; }
 read -r -a image_ro <<<"$(list read_only)"
 read -r -a image_rw <<<"$(list read_write)"

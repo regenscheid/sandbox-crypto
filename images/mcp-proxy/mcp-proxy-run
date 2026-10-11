@@ -1,0 +1,63 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# The mcp-proxy image's command, for the proxy's OpenShell sandbox (docs/IMAGES.md):
+#
+#   /opt/sandbox-science/bin/mcp-proxy-run [SETTINGS]
+#
+# Waits until the settings file exists (default /sandbox/mcp-proxy/proxy.toml), since the
+# operator uploads it after creating the sandbox, then runs
+# `sandbox-science-mcp-proxy serve --settings SETTINGS`. Whenever the proxy exits, it starts it
+# again after a pause: 1 s, doubling to at most 10 s while the proxy keeps exiting within a
+# minute of its start. The proxy gets this script's environment, with the credential
+# placeholders OpenShell sets. Both log to stderr. SIGTERM, SIGINT or SIGHUP stops the proxy,
+# then this script.
+set -u
+
+settings=${1:-/sandbox/mcp-proxy/proxy.toml}
+proxy=/opt/sandbox-science/bin/sandbox-science-mcp-proxy
+# OpenShell's VM driver does not apply the image's environment variables.
+PATH=/opt/sandbox-science/bin:/usr/local/bin:/usr/bin:/bin
+export PATH
+
+log() { echo "$(date '+%Y-%m-%d %H:%M:%S') mcp-proxy-run: $*" >&2; }
+
+# The process being waited for: the proxy, or a pause. Waiting with `wait` rather than in the
+# foreground lets a signal's trap run at once.
+child=
+stop() {
+  log "stopping"
+  if [ -n "$child" ]; then
+    kill -TERM "$child" 2>/dev/null
+    wait "$child"
+  fi
+  exit 0
+}
+trap stop HUP INT TERM
+
+pause() {
+  sleep "$1" &
+  child=$!
+  wait "$child"
+  child=
+}
+
+delay=1
+while :; do
+  if [ ! -f "$settings" ]; then
+    log "waiting for $settings"
+    until [ -f "$settings" ]; do pause 1; done
+  fi
+  started=$(date +%s)
+  "$proxy" serve --settings "$settings" &
+  child=$!
+  log "started the proxy (pid $child) with $settings"
+  wait "$child"
+  status=$?
+  child=
+  ran=$(($(date +%s) - started))
+  [ "$ran" -lt 60 ] || delay=1
+  log "the proxy exited with status $status after $ran s; starting it again in $delay s"
+  pause "$delay"
+  delay=$((delay * 2))
+  [ "$delay" -le 10 ] || delay=10
+done

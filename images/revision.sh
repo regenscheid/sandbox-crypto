@@ -5,16 +5,24 @@
 # those files have uncommitted changes. Changes to the scripts, the tests, another profile or
 # anything else outside them leave the tag alone.
 
+# Sets packages: the repository's packages the profile installs as wheels, by their directories
+# under packages/. build.sh builds them from the checkout; their sources are build inputs.
+recipe_packages() {
+  case $1 in
+    orchestrator) packages=(contracts orchestrator) ;;
+    mcp-proxy) packages=(contracts policy event-store mcp-proxy) ;;
+    *) packages=() ;;
+  esac
+}
+
 # Sets inputs: the files the profile's build reads, relative to images/.
 recipe_inputs() {
+  local package
   inputs=(Containerfile .dockerignore common "$1")
-  if [ "$1" = orchestrator ]; then
-    # build.sh builds the harness's wheels from these packages.
-    inputs+=(
-      ../packages/contracts/pyproject.toml ../packages/contracts/src
-      ../packages/orchestrator/pyproject.toml ../packages/orchestrator/src
-    )
-  fi
+  recipe_packages "$1"
+  for package in "${packages[@]}"; do
+    inputs+=("../packages/$package/pyproject.toml" "../packages/$package/src")
+  done
 }
 
 # Sets revision (the commit, with -dirty) and short (its short form, the image's tag).
