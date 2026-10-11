@@ -72,6 +72,11 @@ Each server entry declares one mode:
 | `headers` | Custom header schemes (`X-Api-Key`, `Authorization: Basic …`, several headers) | One provider credential per secret value. Header values in the server entry reference them, and the MCP proxy places the placeholders. OpenShell resolves placeholders in any header value, including Basic auth. The roadmap's "profile-driven placement" is not needed, because the MCP proxy places the placeholder |
 | `none` | Public servers | No credential |
 
+Checked on babbage ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)):
+- A provider named by `credential_binding` must be attached to the MCP proxy's sandbox, and its profile must declare no endpoints.
+- OpenShell substitutes placeholders in headers, never in a JSON-RPC body, which it forwards unchanged.
+- After `initialize`, the proxy must send `MCP-Protocol-Version` on every request. Without it, OpenShell assumes 2025-03-26 and refuses requests that a policy limits to later revisions.
+
 ## OAuth flow (MCP 2025-11-25)
 
 The connector auth service performs the client side of MCP authorization when the user clicks **Connect** in the GUI:

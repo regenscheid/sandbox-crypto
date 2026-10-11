@@ -180,6 +180,9 @@ def test_cargo(cache_url: str, tmp_path: Path) -> None:
     (home / "config.toml").write_text(
         '[source.crates-io]\nreplace-with = "cache"\n'
         f'[source.cache]\nregistry = "sparse+{cache_url}/cargo/index/"\n'
+        # As documented: over plain HTTP, multiplexing makes Cargo send an h2c
+        # upgrade, which OpenShell refuses. The cache alone would not notice.
+        "[http]\nmultiplexing = false\n"
     )
     project = tmp_path / "project"
     (project / "src").mkdir(parents=True)

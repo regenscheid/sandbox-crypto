@@ -162,6 +162,11 @@ The compiler in `sandbox_science.policy.openshell` (D69) produces OpenShell v0.1
     - Nothing is excluded from the middleware, because OpenShell selects middleware by host alone: excluding a service host would take every port on it out of the middleware.
   - **Service hosts.** Platform services must have private addresses, so that the host-less endpoint never admits them. A single-host deployment (the VM driver) runs them at `host.openshell.internal` on different ports. The floor keeps project rules away from that name, which would otherwise reach every service on the gateway host.
   - **Reserved hosts.** The compiler does not admit hosts the library always denies (registries, declared MCP servers' hosts, platform service hosts), even when a rule names them, so that the middleware is never the only barrier.
+  - **Provider credentials (open).** OpenShell refuses endpoints that overlap on host and port unless their address ranges agree, and the host-less endpoint overlaps every host on ports 80 and 443. A provider whose profile names a host, as OpenShell's example profiles do, therefore cannot be attached as it stands. Two arrangements worked on babbage ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)):
+    - the profile's endpoints repeat the compiler's address ranges;
+    - the profile has no endpoints, and the compiled policy binds the credential with `credential_binding` on an endpoint for each host it may reach, with path `/**`.
+
+    Which one the compiler uses is pending a decision. Either way the middleware decides every request, including those a provider's rule admits, and OpenShell substitutes the credential afterwards, only at endpoints it is bound to.
 - **The MCP proxy's sandbox** gets one inspected `protocol: mcp` endpoint per declared server, in `enforce` mode, with the server URL's path as an exact selector.
   - **Methods and tools.** The MCP protocol methods are allowed explicitly, as OpenShell requires. Allowed tools are listed by exact name or pattern, and deny entries are added only to carve exceptions out of allow patterns, since OpenShell denies everything else.
   - **Escalated tools** stay denied at this fence; approved grants are not compiled in yet.
@@ -184,7 +189,7 @@ The middleware path has these limits, checked against a real gateway on babbage 
 | `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The policy middleware, with this library, behind OpenShell's admission endpoints and address checks |
 | `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox; `worker_access` also decides whether research sandboxes can reach the MCP proxy |
 | `mcp.servers.*.auth` | The connector auth service and OpenShell providers bound with `credential_binding` ([MCP connectors](MCP-CONNECTORS.md), D66, D67) |
-| `credentials.providers` | OpenShell providers (D57), which inject credentials after the middleware has decided |
+| `credentials.providers` | OpenShell providers (D57), which inject credentials after the middleware has decided, only at the endpoints each credential is bound to. How research sandboxes bind them is open (see "Provider credentials" above) |
 | `escalate` | A denial with `approval_required` and a durable permission request (MONITORING.md); the agent retries after approval |
 | `alert`, `monitors` | Middleware findings and request records |
 | `packages` | The policy middleware, with this library, for every request to the package cache; registries are reachable only through the cache ([package cache](PACKAGE-CACHE.md)) |

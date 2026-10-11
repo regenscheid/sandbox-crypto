@@ -138,7 +138,7 @@ The environment layer writes these into each sandbox, where `<cache>` is the cac
 | --- | --- |
 | pip, uv | `index-url = <cache>/pypi/simple/` (and `trusted-host` while the cache is plain HTTP) |
 | conda, mamba, pixi | `channel_alias: <cache>/conda`, `channels: [conda-forge]` |
-| cargo | `[source.crates-io] replace-with = "cache"`, `[source.cache] registry = "sparse+<cache>/cargo/index/"` |
+| cargo | `[source.crates-io] replace-with = "cache"`, `[source.cache] registry = "sparse+<cache>/cargo/index/"`, and `[http] multiplexing = false` while the cache is plain HTTP: Cargo then asks to upgrade the connection to HTTP/2 (`Upgrade: h2c`), which OpenShell refuses on inspected endpoints (403 `unsupported_l7_protocol`) |
 | go | `GOPROXY=<cache>/go`, `GOSUMDB=sum.golang.org` (checksum lookups go through the proxy), `GOTOOLCHAIN=local` |
 | npm, pnpm, yarn 1 | `registry=<cache>/npm/`, `audit=false`, `fund=false` in `.npmrc` |
 | yarn 2+ | `npmRegistryServer: <cache>/npm` and `unsafeHttpWhitelist` for the cache's host in `.yarnrc.yml` (yarn ignores `.npmrc`) |
@@ -170,4 +170,5 @@ Adapters are pure functions of the path, the request headers and their settings,
 - A cooling-off period: refuse versions published in the last N days unless approved. Every one of the five ecosystems publishes release times. The middleware can pass the project's setting to the cache in a request header that it sets itself, overwriting anything the sandbox sent; the cache must accept the setting only from the middleware.
 - conda index files are passed through unchanged because conda-forge's base URLs are relative (empty). The cache should refuse index files whose `base_url` is absolute, in case a channel changes that.
 - Keeping files that active lockfiles use from eviction.
+- Lockfiles that travel. A lockfile written in a sandbox names the cache: npm records the rewritten download links, and `uv.lock` the cache's index and file URLs. It fails outside a sandbox, or after `public_url` changes. `Cargo.lock` and `go.sum` are unaffected.
 - TLS between OpenShell and the cache, for deployments where the cache is not on the gateway's host.
