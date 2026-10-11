@@ -521,6 +521,35 @@ async def test_file_round_trip_and_preconditions(worker: Target) -> None:
     assert body["error"]["kind"] == "conflict"
 
 
+async def test_two_sessions_editing_one_shared_file_get_an_explicit_conflict(
+    worker: Target,
+) -> None:
+    # W3: a deliberate edit of a shared file names the version it replaces, so of two
+    # sessions that read the same version, the second writer gets `conflict` and
+    # nothing is silently overwritten.
+    first, second = worker.context, worker.new_session()
+    path = f"shared/{first['session_id']}-results.txt"
+
+    async def write(context: dict[str, str], data: bytes, **precondition: Any) -> tuple[int, Any]:
+        body = {"context": context, "path": path, "content_b64": base64.b64encode(data).decode()}
+        return await worker.post("/v1/files/write", {**body, **precondition})
+
+    status, created = await write(first, b"v1", create_only=True)
+    assert status == 200, created
+    status, again = await write(second, b"v1 again", create_only=True)
+    assert (status, again["error"]["kind"]) == (409, "conflict")
+    status, seen = await worker.post("/v1/files/read", {"context": second, "path": path})
+    assert seen["sha256"] == created["sha256"]
+    status, updated = await write(first, b"v2 by the first", expected_sha256=created["sha256"])
+    assert status == 200, updated
+    status, stale = await write(second, b"v2 by the second", expected_sha256=seen["sha256"])
+    assert (status, stale["error"]["kind"]) == (409, "conflict")
+    status, final = await worker.post("/v1/files/read", {"context": second, "path": path})
+    assert base64.b64decode(final["content_b64"]) == b"v2 by the first"
+    status, retried = await write(second, b"v3 by the second", expected_sha256=final["sha256"])
+    assert status == 200, retried
+
+
 async def test_confinement(worker: Target) -> None:
     made = await worker.run(
         kind="shell", script="ln -s /etc/passwd link; mkdir inside; ln -s inside dirlink"

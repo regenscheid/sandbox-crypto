@@ -89,6 +89,7 @@ sandbox-science-harness project revise --state-dir state --project p1 --policy s
 - **Closing a session** stops its kernels; running it again opens it again. Files stay.
 - **Revising a project** records the new revision. With `--worker`, it also revises the project's environments at once; otherwise each is revised when a session next runs there.
 - **Concurrency.** Records are JSON files rewritten atomically under a lock, so concurrent harness processes keep each other's sessions.
+- **Shared files.** A write to the shared area names the version it replaces (`expected_sha256`, or `create_only` for a new file). So of two sessions that read the same version, the second writer gets `conflict`, rereads and tries again; nothing is silently overwritten. The conformance suite checks this with two sessions.
 
 Not yet built:
 - shared data across environments, which waits on the user's choice (worker-brokered copies with conflict copies, or explicit transfer);
