@@ -6,6 +6,13 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Conda provisioning: the provisioning tool** (W3, D83 proposed; [worker](../docs/WORKER.md#provisioning-operations)). An agent asks for a capability of a reviewed catalog (gp, gap, sage, sympy, fpylll, python-flint and others) or for package specs with `provision`, and the worker runs it as an operation, one at a time in each environment, in request order, with the queue visible through its API.
+  - A capability whose probe passes at the current revision is `already_satisfied`. Otherwise dry runs in the sandbox resolve the exact files, and each is decided with the policy library as the policy middleware will decide its download.
+  - AGPL packages are refused, naming the package and its license, unless the policy's new `packages.agpl_exceptions` names them.
+  - When the policy escalates, the operation asks once for the whole resolved set, as a permission request the operator answers with the middleware's `approve`; the middleware then lets exactly those files download, and nothing else that escalates.
+  - The install runs in the environment's turn under the policy's wall time, becomes a managed revision attributed to the operation, and is probed; every operation is recorded with the stage where it stopped. A failed install that changed the packages ends `needs_recovery`, since restoring a revision is the next slice's.
+  - The first slice (PR #54, lab 17) made shell and kernel installs take turns through wrappers and recorded each change as a revision with a lockfile.
+  - Locally with fake package managers and a cache behind the real middleware; the catalog's probes passed on babbage's conda-forge SageMath environment, outside a sandbox. A babbage lab is next.
 - **Decisions on living documents and the ledger** (2026-10-11; D65 amended, D82). Living documents are also Markdown files under `documents/` in every environment, kept at their current revisions; agents change them through the document tool or its `ss-doc` helper, and direct edits of the files are merged or kept as rejected patches. Formulas KaTeX rejects in an agent's text come back to that agent as `math` findings at the end of its turn, while the display shows the repair. The other main questions of both drafts are approved as drafted, and the approved research-artifacts and consistency-review specs carry dated amendments to match.
 - **Shared data across a project's environments** (D79, [lab 16](docs/agent-reports/babbage-openshell-lab-16-2026-10-11.md)). The worker keeps a project's `shared/` area in step across its environments, before and after every call. A dedicated session now sees the shared results of the project's other sessions, and two environments changing one file leave a conflict copy, of which the agent is told. An adversarial review found that a reported digest was used as a host path, that naming another project's digest got its content, and that a sandbox made again looked as if all its files were deleted; the reworked sync checks what executors report, keeps each project's blobs apart and marks each environment's directory. On babbage, across two VMs, a call that changes nothing costs 0.03 s.
 - **Specs for living documents and the project ledger** (W0, drafts to review with the user). [Living documents](../docs/specs/living-documents.md): block and math-span IDs kept across edits, agent patches that name their base and blocks and are rebased or refused, never overwriting a newer edit, comments that carry work requests to agents, and the user's CScience math handling: dollar delimiters on save, and LaTeX that KaTeX rejects repaired for display by rules, the reviewer model or a Unicode approximation. [Ledger](../docs/specs/ledger.md): typed entries with evidence types apart from status, a frontier compared within a category and its conditions, flags after assumption changes, and the external pack's board records. Every W4 feature now has a spec, apart from the GUI's PDF viewer.
@@ -76,7 +83,7 @@ Updated: 2026-10-11.
 
 ## Next
 
-- M2 (W3): the Conda provisioning spec (installs queued, recorded with lockfiles and probed). The read-only root filesystem is deferred (D48).
+- M2 (W3): Conda provisioning on babbage (a lab with a real gateway, middleware and cache), then restoring a revision after a failed install (CP-13), disk limits and uninstalls (CP-14, CP-20). The read-only root filesystem is deferred (D48).
 - M2 (W4): the research workspace (living documents, ledger and board, comments, automatic consistency review), which the M2 exit run needs.
 - MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
 - Worker: environment IDs per project, and limits per client.
@@ -102,6 +109,11 @@ Questions with a recommendation, waiting for the user:
   - Decide whether worker code may use `resources/read`, `prompts/get` and `completion/complete`, which `worker_tools` does not restrict.
 - **The W0 specs** still in draft (tools, skills, plans and delegation, PDF sources, living documents, and the project ledger, board and frontier), each with its open questions; the last two record the user's decisions on their main questions, and the spec index's question 15 asks about stray files under `documents/` and edits from overlapping calls; the Conda provisioning, research-artifacts and consistency-review specs are approved. The consistency review's trigger defaults wait for the user's own CScience settings.
 - **A real model.** The first slice with a real model needs the user's LiteLLM gateway and a virtual key.
+- **Conda provisioning** (D83, proposed). Settled in implementation, to confirm:
+  - one permission request per resolved install, for its whole file set, which the middleware honors as a grant of exactly those files (open question 3); an operation that waits for an answer keeps its environment's turn, so later operations there wait too;
+  - AGPL exceptions in the policy's `packages.agpl_exceptions`, per ecosystem (open question 5);
+  - the capability catalog extended by the platform only, for now (open question 6);
+  - until restoring exists, an environment a failed install left changed is marked `needs_recovery` but still runs executions.
 - **Upstream.** Whether to file the OpenShell and libzmq descriptions in `.agents/upstream/`.
 - **Workspace GUI.**
   - The GUI shows conversation text in its own origin, under its Markdown rules and a policy without inline script, while D54 puts previews of agent-written artifacts on a separate origin. Recommended: keep conversation text where it is, and give rich artifacts (HTML, SVG, notebook output, PDFs) the separate origin when previews come.
