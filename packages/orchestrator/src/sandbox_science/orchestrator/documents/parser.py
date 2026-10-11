@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 import threading
+from array import array
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
@@ -100,8 +101,12 @@ MAX_NESTING: Final = 100
 
 _LINK: Final = re.compile(r"(?:https?://|mailto:)", re.IGNORECASE)
 _ENVIRONMENT: Final = re.compile(r"\\begin\{([A-Za-z*]+)\}")
-_ESCAPED_BRACKETS: Final = re.compile(r"[0-9]+|[A-Za-z]+")
-"""What Markdown writers put between escaped brackets: a number, or a word."""
+_ASCII_PUNCTUATION: Final = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+"""A backslash before one of these is a Markdown escape (CommonMark)."""
+_PADDING: Final = frozenset(" \t\n")
+"""What pads displayed math just inside its brackets."""
+_MATH_CHARACTERS: Final = frozenset("{}=+<>")
+"""Characters that math uses and bracketed prose seldom does."""
 _JS_SPACE: Final = (
     "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009"
     "\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
@@ -140,8 +145,10 @@ def _validate_link(url: str) -> bool:
 # not math; a block begins a line and its closing delimiter ends one, within
 # MAX_BLOCK_LINES lines, without a blank line between and inside the block's list item or
 # quote. A `\[` or `\begin{…}` line may begin a block after a line of a paragraph. Within
-# a paragraph, `\[…\]` around only a number or only letters stays text, as Markdown
-# writers escape brackets (`\[1\]`, `- \[x\] done`).
+# a paragraph, `\[…\]` is displayed math only when its content is padded just inside both
+# brackets or holds what math uses and bracketed prose seldom does; otherwise it stays
+# text, as Markdown writers escape brackets (`\[1\]`, `\[sic\]`, `- \[x\] done`, Pandoc's
+# `\[@smith2020\]` and `\[^1\]`).
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +221,73 @@ def _closers(env: MutableMapping[str, Any], src: str, close: str) -> list[int]:
     return listed
 
 
+@dataclass
+class _Signs:
+    """Where math's signs stand in one text (``_displayed_in_paragraph``): from each
+    position, where the next one does (-1 for none), and which are scripts."""
+
+    src: str
+    following: array[int]
+    script: bytearray
+
+
+def _signs(env: MutableMapping[str, Any], src: str) -> _Signs:
+    """The signs of the text being parsed, kept in the parse's environment.
+
+    Escapes pair from the start of each run of backslashes, and a content starts after
+    the ``[`` of an opener that is not escaped, so they pair as within it alone. Judging
+    each ``\\[`` by reading its content would take time quadratic in the number of ``\\[``
+    before one ``\\]``.
+    """
+    found = env.get("_signs")
+    if isinstance(found, _Signs) and found.src is src:
+        return found
+    length = len(src)
+    marked = bytearray(length)
+    script = bytearray(length)
+    at = 0
+    while at < length:
+        character = src[at]
+        if character == "\\":
+            following = src[at + 1 : at + 2]
+            if following.isascii() and following.isalpha():
+                marked[at] = 1
+            elif following in _ASCII_PUNCTUATION:
+                at += 1
+        elif character in _MATH_CHARACTERS:
+            marked[at] = 1
+        elif character in "^_":
+            marked[at] = 1
+            script[at] = 1
+        at += 1
+    following = array("q", [-1]) * (length + 1)
+    for at in range(length - 1, -1, -1):
+        following[at] = at if marked[at] else following[at + 1]
+    found = _Signs(src, following, script)
+    env["_signs"] = found
+    return found
+
+
+def _displayed_in_paragraph(env: MutableMapping[str, Any], src: str, start: int, end: int) -> bool:
+    """Whether ``\\[…\\]`` around ``src[start:end]``, within a paragraph, is displayed math
+    rather than escaped brackets.
+
+    Math when the content is padded just inside both brackets (``\\[ a - b \\]``), as TeX
+    writers pad and Markdown writers' escapes do not; otherwise only when it holds a
+    command (a backslash and a letter), a brace, one of ``= + < >``, or ``^`` or ``_``
+    after its first character (``^1`` alone is a footnote's reference). A Markdown escape
+    and the character it escapes count as neither. The content is read character by
+    character, a line break as any other.
+    """
+    if src[start] in _PADDING and src[end - 1] in _PADDING:
+        return True
+    signs = _signs(env, src)
+    first = signs.following[start]
+    if first == start and signs.script[start]:
+        first = signs.following[start + 1]
+    return first != -1 and first < end
+
+
 def _first_from(positions: list[int], start: int) -> int | None:
     index = bisect_left(positions, start)
     return positions[index] if index < len(positions) else None
@@ -238,7 +312,7 @@ def _backslash_inline(state: StateInline, silent: bool) -> bool:
     content = src[start:end] if opener.kept else src[opener.body : close]
     if _is_blank(content, 0, len(content)):
         return False
-    if opener.markup == "\\[" and _ESCAPED_BRACKETS.fullmatch(content):
+    if opener.markup == "\\[" and not _displayed_in_paragraph(state.env, src, opener.body, close):
         return False
     if not silent:
         token = state.push("math_inline_double" if opener.display else "math_inline", "math", 0)
