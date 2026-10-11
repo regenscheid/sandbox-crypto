@@ -80,6 +80,8 @@ from .settings import EnvironmentSettings, OpenShellBackendSettings
 _log = logging.getLogger(__name__)
 
 SANDBOX_PREFIX: Final = "ss-"
+MAX_SANDBOX_NAME: Final = 19
+"""OpenShell's limit on a sandbox's name (``MAX_ROUTABLE_NAME_LEN``)."""
 _UNSAFE: Final = re.compile(r"[^a-z0-9]+")
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
@@ -122,9 +124,16 @@ def printable(text: str, limit: int = 255) -> str:
 
 
 def sandbox_name(environment_id: str) -> str:
-    """A stable OpenShell sandbox name for an environment: lowercase, short and unique."""
-    slug = _UNSAFE.sub("-", environment_id.lower()).strip("-")[:40] or "env"
+    """A stable OpenShell sandbox name for an environment: lowercase, short and unique.
+
+    OpenShell v0.1.3 takes at most 19 characters, a DNS label that may not contain the
+    ``--`` it uses between the segments of routable names. So the name is the prefix,
+    at most seven characters of the ID for people to recognize, and eight hex digits of
+    its SHA-256 for uniqueness.
+    """
     digest = hashlib.sha256(environment_id.encode()).hexdigest()[:8]
+    room = MAX_SANDBOX_NAME - len(SANDBOX_PREFIX) - len(digest) - 1
+    slug = _UNSAFE.sub("-", environment_id.lower()).strip("-")[:room].strip("-") or "env"
     return f"{SANDBOX_PREFIX}{slug}-{digest}"
 
 
