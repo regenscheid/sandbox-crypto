@@ -112,13 +112,14 @@ async def serve(settings: Settings) -> None:
         max_artifact_size=settings.max_artifact_size,
         state_dir=settings.state_dir,
         shared=shared,
+        package_cache=settings.openshell.package_cache if settings.openshell else None,
     )
     if environments is not None:
         environments.release = manager.release
         environments.release_idle = manager.release_if_idle
         manager.notices = environments.notices
         if shared is not None:
-            environments.deleted = shared.forget
+            environments.deleted.append(shared.forget)
     # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
     # attempts still running are stored as lost.
     stopping = asyncio.Event()

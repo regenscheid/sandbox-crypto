@@ -613,6 +613,11 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
                 f"the environment's installed packages changed while this ran (revision "
                 f"{before} to {after}); kernels started before keep the packages they loaded"
             )
+        elif result is not None and result.overlapping_change:
+            summary["environment_changed"] = (
+                "a package command was still changing the environment's installed packages "
+                "when this ended; what this ran may have seen them half installed"
+            )
     summary["attempt_id"] = execution.attempt_id
     return summary
 

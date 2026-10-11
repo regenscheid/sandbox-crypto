@@ -311,8 +311,9 @@ class Location(Contract):
     """The tier the backend's settings declare."""
     isolation_evidence: IsolationEvidence | None = None
     environment_revision: str | None = None
-    """The environment's revision when the attempt started: ``0`` for the packages it was
-    first seen with, one more for each change to its installed packages (W3)."""
+    """The environment's revision when the attempt started, after any wait for a package
+    command (CP-12): ``0`` for the packages it was first seen with, one more for each change
+    to its installed packages (W3). Until it starts, the revision when it was dispatched."""
 
 
 class Result(Contract):
@@ -342,6 +343,10 @@ class Result(Contract):
     """The environment's revision when the attempt ended. It differs from the location's
     when the installed packages changed while it ran, which it or an attempt running
     beside it did."""
+    overlapping_change: bool = False
+    """The environment's packages changed while the attempt ran, or a package command was
+    still changing them when it ended (Conda provisioning, CP-12). Code it ran may have
+    seen the packages before, after or in between; the revisions say who changed what."""
     notices: tuple[str, ...] = ()
     """What the platform did for the environment since the session's previous result, such
     as admitting a host that a connection was refused for (D69)."""
