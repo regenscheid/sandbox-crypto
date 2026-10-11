@@ -91,7 +91,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W0: behavior specification and harness foundation
 
-- [ ] Behavior specs with acceptance fixtures: tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, automatic review, Conda provisioning, artifacts; all to review with the user
+- [ ] Behavior specs with acceptance fixtures: Conda provisioning, research artifacts and automatic review approved by the user (2026-10-11); tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, and PDF sources to review with the user; living documents and the ledger, board and frontier to specify
 - [x] Harness building-block decision with licenses recorded: D72, proposed, to confirm with the user
 
 ## W1: shared references and one worker adapter
