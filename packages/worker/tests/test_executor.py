@@ -301,6 +301,277 @@ def _reply(request_id: int) -> Callable[[dict[str, Any]], bool]:
 
 
 @pytest.mark.asyncio
+async def test_the_shared_scan_reports_stamps_digests_and_the_mark(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    (shared / "bin").mkdir(parents=True)
+    (shared / "a.txt").write_bytes(b"a")
+    (shared / "bin" / "run.sh").write_bytes(b"#!/bin/sh\n")
+    (shared / "bin" / "run.sh").chmod(0o755)
+    (shared / "big.bin").write_bytes(b"x" * 100)
+    (shared / ".write-0123456789abcdef").write_bytes(b"a write under way")
+    (shared / "bad\x01name").write_bytes(b"?")
+    recorder = Recorder(tmp_path)
+    wanted = ["shared/a.txt", "shared/bin/run.sh", "shared/big.bin"]
+    request = {"id": 1, "op": "shared", "hash": wanted, "hash_limit": 50, "hash_budget": 1 << 20}
+    reply = await recorder.ask({**request, "mark": "m1 p1"})
+    assert reply["ok"] is True
+    assert sorted(reply["files"]) == ["shared/a.txt", "shared/big.bin", "shared/bin/run.sh"]
+    info = os.stat(shared / "a.txt")
+    assert reply["files"]["shared/a.txt"] == [info.st_mtime_ns, 1, info.st_ino, 0]
+    assert reply["files"]["shared/bin/run.sh"][3] == 1
+    assert reply["sha256"] == {
+        "shared/a.txt": hashlib.sha256(b"a").hexdigest(),
+        "shared/bin/run.sh": hashlib.sha256(b"#!/bin/sh\n").hexdigest(),
+    }
+    assert reply["too_large"] == ["shared/big.bin"]
+    assert reply["odd"] == ["shared/bad\x01name"]
+    # A name that can never be synced proves nothing missing, so the scan is not partial.
+    assert reply["partial"] is False
+    assert reply["mark"] == "m1 p1"
+    assert (tmp_path / ".sandbox-science-sync").read_text() == "m1 p1"
+    again = await recorder.ask(
+        {"id": 2, "op": "shared", "hash": [], "hash_limit": 0, "hash_budget": 0}
+    )
+    assert again["mark"] == "m1 p1"
+    assert again["sha256"] == {}
+
+
+def test_a_digest_belongs_to_the_stamp_it_was_scanned_with(tmp_path: Path) -> None:
+    (tmp_path / "f").write_bytes(b"one")
+    info = os.stat(tmp_path / "f")
+    stamp = [info.st_mtime_ns, info.st_size, info.st_ino]
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        digest = executor._stamped_sha256(directory, "f", stamp)  # pyright: ignore[reportPrivateUsage]
+        assert digest == hashlib.sha256(b"one").hexdigest()
+        # Replaced since the scan: no digest, so the worker compares it again later.
+        (tmp_path / "g").write_bytes(b"two")
+        os.replace(tmp_path / "g", tmp_path / "f")
+        assert executor._stamped_sha256(directory, "f", stamp) is None  # pyright: ignore[reportPrivateUsage]
+    finally:
+        os.close(directory)
+
+
+@pytest.mark.asyncio
+async def test_a_shared_file_is_removed_only_as_it_was_synced(tmp_path: Path) -> None:
+    deep = tmp_path / "shared" / "d" / "e"
+    deep.mkdir(parents=True)
+    (deep / "f.txt").write_bytes(b"synced")
+    recorder = Recorder(tmp_path)
+    base = {"op": "remove", "path": "shared/d/e/f.txt"}
+    changed = await recorder.ask({"id": 1, **base, "expected_sha256": "0" * 64})
+    assert changed["error"]["kind"] == "conflict"
+    assert (deep / "f.txt").exists()
+    expected = hashlib.sha256(b"synced").hexdigest()
+    removed = await recorder.ask({"id": 2, **base, "expected_sha256": expected})
+    assert removed["ok"] is True
+    # The directories it leaves empty go too, up to the shared area.
+    assert not (tmp_path / "shared" / "d").exists()
+    assert (tmp_path / "shared").is_dir()
+    (tmp_path / "sessions" / "s1").mkdir(parents=True)
+    (tmp_path / "sessions" / "s1" / "w.txt").write_bytes(b"w")
+    outside = await recorder.ask(
+        {"id": 3, "op": "remove", "session": "s1", "path": "w.txt", "expected_sha256": "0" * 64}
+    )
+    assert outside["error"]["kind"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_a_sync_write_sets_the_mode_and_reports_the_stamp(tmp_path: Path) -> None:
+    (tmp_path / "shared").mkdir()
+    recorder = Recorder(tmp_path)
+    reply = await recorder.ask(
+        {
+            "id": 1,
+            "op": "write",
+            "path": "shared/bin/run.sh",
+            "content_b64": base64.b64encode(b"#!/bin/sh\n").decode(),
+            "create_only": True,
+            "executable": True,
+        }
+    )
+    written = tmp_path / "shared" / "bin" / "run.sh"
+    info = os.stat(written)
+    assert reply["stamp"] == [info.st_mtime_ns, info.st_size, info.st_ino]
+    assert info.st_mode & 0o777 == 0o755
+
+
+@pytest.mark.asyncio
+async def test_a_moved_file_keeps_its_inode_and_its_writers(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "results.csv").write_bytes(b"n\n1\n")
+    recorder = Recorder(tmp_path)
+    with open(shared / "results.csv", "ab") as writer:  # a job appending to it
+        moved = await recorder.ask(
+            {
+                "id": 1,
+                "op": "move",
+                "path": "shared/results.csv",
+                "target": "shared/results.conflict-env2.csv",
+            }
+        )
+        writer.write(b"2\n")
+    target = shared / "results.conflict-env2.csv"
+    assert moved["ok"] is True
+    assert not (shared / "results.csv").exists()
+    assert target.read_bytes() == b"n\n1\n2\n"
+    info = os.stat(target)
+    assert moved["stamp"][2] == info.st_ino
+    (shared / "other.csv").write_bytes(b"x")
+    taken = await recorder.ask(
+        {
+            "id": 2,
+            "op": "move",
+            "path": "shared/other.csv",
+            "target": "shared/results.conflict-env2.csv",
+        }
+    )
+    assert taken["error"]["kind"] == "conflict"
+    assert target.read_bytes() == b"n\n1\n2\n"
+
+
+def _holder(path: Path, mode: str) -> subprocess.Popen[bytes]:
+    """A process that keeps ``path`` open in ``mode`` until it is killed."""
+    script = (
+        "import sys, time; f = open(sys.argv[1], sys.argv[2]); print(flush=True); time.sleep(30)"
+    )
+    holder = subprocess.Popen(  # noqa: S603 - a fixed command
+        [sys.executable, "-c", script, str(path), mode], stdout=subprocess.PIPE
+    )
+    assert holder.stdout is not None
+    holder.stdout.readline()  # the file is open
+    return holder
+
+
+def test_only_a_writer_keeps_a_file_from_being_replaced(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    target = shared / "data.h5"
+    target.write_bytes(b"v1")
+    reader = _holder(target, "rb")
+    try:
+        assert not executor.being_written(os.path.realpath(target))
+        directory = os.open(shared, os.O_RDONLY | os.O_DIRECTORY)
+        expected = hashlib.sha256(b"v1").hexdigest()
+        reply = executor.write_file(directory, "data.h5", b"v2", expected, False, "x", None, True)
+        assert "busy" not in reply
+        assert target.read_bytes() == b"v2"
+    finally:
+        reader.kill()
+        reader.wait()
+    writer = _holder(target, "ab")
+    try:
+        assert executor.being_written(os.path.realpath(target))
+        directory = os.open(shared, os.O_RDONLY | os.O_DIRECTORY)
+        expected = hashlib.sha256(b"v2").hexdigest()
+        reply = executor.write_file(directory, "data.h5", b"v3", expected, False, "x", None, True)
+        assert reply == {"busy": True}
+        assert target.read_bytes() == b"v2"
+        assert [path.name for path in shared.iterdir()] == ["data.h5"]  # nothing left over
+    finally:
+        writer.kill()
+        writer.wait()
+
+
+def test_a_writer_that_opens_the_file_just_before_the_swap_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.csv"
+    target.write_bytes(b"v1\n")
+    exchange = executor._exchange  # pyright: ignore[reportPrivateUsage]
+    holders: list[subprocess.Popen[bytes]] = []
+
+    def a_job_opens_it_first(parent: int, first: str, second: str) -> bool:
+        if not holders:  # after the check made before the swap
+            holders.append(_holder(target, "ab"))
+        return exchange(parent, first, second)
+
+    monkeypatch.setattr(executor, "_exchange", a_job_opens_it_first)
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    expected = hashlib.sha256(b"v1\n").hexdigest()
+    try:
+        reply = executor.write_file(directory, "log.csv", b"v2\n", expected, False, "x", None, True)
+        assert reply == {"busy": True}  # swapped, seen and swapped back
+        assert target.read_bytes() == b"v1\n"
+        assert [path.name for path in tmp_path.iterdir()] == ["log.csv"]
+    finally:
+        for holder in holders:
+            holder.kill()
+            holder.wait()
+
+
+def test_a_write_that_lands_after_the_check_is_a_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "f").write_bytes(b"old")
+    expected = hashlib.sha256(b"old").hexdigest()
+    hashed = executor._hashed  # pyright: ignore[reportPrivateUsage]
+
+    def and_then_research_code_writes(
+        parent: int, name: str, path: str
+    ) -> tuple[str, os.stat_result]:
+        result = hashed(parent, name, path)
+        (tmp_path / "f").write_bytes(b"theirs")
+        return result
+
+    monkeypatch.setattr(executor, "_hashed", and_then_research_code_writes)
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    with pytest.raises(executor.ToolError, match="changed while it was written"):
+        executor.write_file(directory, "f", b"ours", expected, False, "f")
+    assert (tmp_path / "f").read_bytes() == b"theirs"
+
+
+def test_a_write_landing_just_before_the_swap_is_kept(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "f").write_bytes(b"old")
+    exchange = executor._exchange  # pyright: ignore[reportPrivateUsage]
+    swaps: list[tuple[str, str]] = []
+
+    def research_code_writes_first(parent: int, first: str, second: str) -> bool:
+        if not swaps:
+            with open(tmp_path / "f", "ab") as handle:  # after every check
+                handle.write(b"+theirs")
+        swaps.append((first, second))
+        return exchange(parent, first, second)
+
+    monkeypatch.setattr(executor, "_exchange", research_code_writes_first)
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    expected = hashlib.sha256(b"old").hexdigest()
+    with pytest.raises(executor.ToolError, match="changed while it was written"):
+        executor.write_file(directory, "f", b"ours", expected, False, "f")
+    assert (tmp_path / "f").read_bytes() == b"old+theirs"
+    assert len(swaps) == 2  # swapped, and swapped back
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["f"]
+
+
+@pytest.mark.asyncio
+async def test_a_pipe_in_place_of_the_mark_does_not_hang_the_scan(tmp_path: Path) -> None:
+    (tmp_path / "shared").mkdir()
+    os.mkfifo(tmp_path / ".sandbox-science-sync")
+    recorder = Recorder(tmp_path)
+    request = {"id": 1, "op": "shared", "hash": [], "hash_limit": 0, "hash_budget": 0}
+    reply = await asyncio.wait_for(recorder.ask(request), 5)
+    assert reply["mark"] is None
+
+
+def test_escaped_names_count_in_full_against_the_reply_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    for n in range(10):
+        (shared / ("\\" * 20 + str(n))).write_bytes(b"x")
+    # Each path is about 30 bytes as text, about 70 once JSON escapes it.
+    monkeypatch.setattr(executor, "SHARED_REPLY_BYTES", 400)
+    directory = os.open(shared, os.O_RDONLY | os.O_DIRECTORY)
+    files, truncated, _, _ = executor.scan_shared(directory)
+    assert truncated
+    assert len(files) < 10
+
+
+@pytest.mark.asyncio
 async def test_a_shell_call_cancelled_before_it_starts_ends_at_once(tmp_path: Path) -> None:
     # A cancel read together with its shell call cancelled a task that had not started:
     # no end ever came, and the call stayed in the executor's table.

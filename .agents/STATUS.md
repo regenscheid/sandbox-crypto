@@ -6,6 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Shared data across a project's environments** (D79, [lab 16](docs/agent-reports/babbage-openshell-lab-16-2026-10-11.md)). The worker keeps a project's `shared/` area in step across its environments, before and after every call. A dedicated session now sees the shared results of the project's other sessions, and two environments changing one file leave a conflict copy, of which the agent is told. An adversarial review found that a reported digest was used as a host path, that naming another project's digest got its content, and that a sandbox made again looked as if all its files were deleted; the reworked sync checks what executors report, keeps each project's blobs apart and marks each environment's directory. On babbage, across two VMs, a call that changes nothing costs 0.03 s.
 - **Specs for living documents and the project ledger** (W0, drafts to review with the user). [Living documents](../docs/specs/living-documents.md): block and math-span IDs kept across edits, agent patches that name their base and blocks and are rebased or refused, never overwriting a newer edit, comments that carry work requests to agents, and the user's CScience math handling: dollar delimiters on save, and LaTeX that KaTeX rejects repaired for display by rules, the reviewer model or a Unicode approximation. [Ledger](../docs/specs/ledger.md): typed entries with evidence types apart from status, a frontier compared within a category and its conditions, flags after assumption changes, and the external pack's board records. Every W4 feature now has a spec, apart from the GUI's PDF viewer.
 - **The workspace GUI, first slice** (W4, D80; [workspace](../docs/WORKSPACE.md)). A Svelte app, built into static files, and an aiohttp server, `sandbox-science-workspace`, show the harness's projects, sessions and runs, read-only: the agent's messages, its tool calls with their arguments and results, and the LaTeX in them, rendered by KaTeX.
   - Login works like Jupyter's: a token printed once opens an HttpOnly, SameSite=Strict session. Changes need the server's own origin, a loopback server answers only to its own names, and the content policy admits no inline script.
@@ -74,7 +75,7 @@ Updated: 2026-10-11.
 
 ## Next
 
-- M2 (W3): shared data across a project's environments by worker-synced copies (D79), and the Conda provisioning spec: installs queued, recorded with lockfiles and probed. The read-only root filesystem is deferred (D48).
+- M2 (W3): the Conda provisioning spec (installs queued, recorded with lockfiles and probed). The read-only root filesystem is deferred (D48).
 - M2 (W4): the research workspace (living documents, ledger and board, comments, automatic consistency review), which the M2 exit run needs.
 - MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
 - Worker: environment IDs per project, and limits per client.
