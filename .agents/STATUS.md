@@ -81,11 +81,12 @@ Updated: 2026-10-11.
 - M2 (W3): the rest of the Conda provisioning spec: the provisioning tool, with requests, decisions through the package cache, dry runs, permission requests, probes and rollback. The read-only root filesystem is deferred (D48).
 - M2 (W4): the research workspace (living documents, ledger and board, comments, automatic consistency review), which the M2 exit run needs.
 - MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
+- Background jobs (D83): long computations that run without holding the agent's turn, and the executor daemon in the sandbox that lets them survive worker restarts.
 - Worker: environment IDs per project, and limits per client.
 
 ## Blockers and open questions
 
-Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning, research-artifacts and consistency-review specs approved as drafted, with the artifacts spec's shared-file rule amended for D79; the workspace GUI as a Svelte web app (D80); delegated agents are runs in their session's environment, not sessions, with an environment of their own as a later opt-in (D81); living documents as files in every environment with merged edits (D65 amended); math findings for the agents that wrote the math (D82); and the other main questions of the living-documents and ledger drafts as drafted, with RA-1, RA-24, CR-10 and CR-28 amended.
+Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning, research-artifacts and consistency-review specs approved as drafted, with the artifacts spec's shared-file rule amended for D79; the workspace GUI as a Svelte web app (D80); delegated agents are runs in their session's environment, not sessions, with an environment of their own as a later opt-in (D81); living documents as files in every environment with merged edits (D65 amended); math findings for the agents that wrote the math (D82); and the other main questions of the living-documents and ledger drafts as drafted, with RA-1, RA-24, CR-10 and CR-28 amended; and long computations as background jobs (D83).
 
 Decisions to confirm: PSF-2.0 and MIT-0 in tier 1.
 
