@@ -384,11 +384,14 @@ def write_file(
     create_only: bool,
     path: str,
     executable: bool | None = None,
+    if_unused: bool = False,
 ) -> Message:
     """Create or atomically replace ``name`` in the directory ``parent``, which is consumed.
 
     The reply's ``stamp`` is the new file's modification time, size and inode as written,
     taken before the file takes its name, so a later change shows as a different stamp.
+    With ``if_unused``, a file that another process is writing is left alone, and the
+    reply says ``busy``.
     """
     try:
         try:
@@ -411,6 +414,7 @@ def write_file(
         temporary = f".write-{secrets.token_hex(8)}"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
         descriptor = os.open(temporary, flags, 0o600, dir_fd=parent)
+        swapped = False
         try:
             with os.fdopen(descriptor, "wb") as handle:
                 handle.write(content)
@@ -418,20 +422,42 @@ def write_file(
                     os.fchmod(handle.fileno(), 0o755 if executable else 0o644)
                 handle.flush()
                 written = os.fstat(handle.fileno())
-            if checked is not None and _exchange(parent, temporary, name):
-                # Swapped at once: the file that was there is at the temporary name now,
-                # and if it changed since it was checked, it goes back.
-                if _changed_since(parent, temporary, checked):
+            if info is not None and if_unused and being_written(_absolute(parent, name)):
+                os.unlink(temporary, dir_fd=parent)
+                return {"busy": True}
+            try:
+                swapped = checked is not None and _exchange(parent, temporary, name)
+            except FileNotFoundError:
+                raise ToolError("conflict", f"{path!r} changed while it was written") from None
+            if swapped:
+                # The file that was there is at the temporary name now; if it changed
+                # after its check, it goes back, and so it does if a process opened it for
+                # writing just before the swap, whose writes would otherwise be lost.
+                if checked is not None and _changed_since(parent, temporary, checked):
                     _exchange(parent, temporary, name)
+                    swapped = False
                     raise ToolError("conflict", f"{path!r} changed while it was written")
+                if if_unused and being_written(_absolute(parent, temporary)):
+                    _exchange(parent, temporary, name)
+                    swapped = False
+                    os.unlink(temporary, dir_fd=parent)
+                    return {"busy": True}
+                swapped = False
                 os.unlink(temporary, dir_fd=parent)
             else:
                 if checked is not None and _changed_since(parent, name, checked):
                     raise ToolError("conflict", f"{path!r} changed while it was written")
                 os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
         except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary, dir_fd=parent)
+            if swapped:
+                # The file that was there could not go back: it keeps a name of its own,
+                # in sight, rather than being lost under the temporary one.
+                with contextlib.suppress(OSError):
+                    recovered = f"{name}.recovered-{secrets.token_hex(4)}"
+                    os.rename(temporary, recovered, src_dir_fd=parent, dst_dir_fd=parent)
+            else:
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary, dir_fd=parent)
             raise
     finally:
         os.close(parent)
@@ -463,6 +489,11 @@ def _exchange(parent: int, first: str, second: str) -> bool:
     if code in (errno.EINVAL, errno.ENOSYS, errno.EPERM, errno.EOPNOTSUPP):
         return False  # not on this file system, or refused by the sandbox
     raise OSError(code, os.strerror(code), second)
+
+
+def _absolute(parent: int, name: str) -> str:
+    """The path of ``name`` in the directory ``parent``, as ``/proc`` shows it."""
+    return os.path.join(os.readlink(f"/proc/self/fd/{parent}"), name)
 
 
 def _changed_since(parent: int, name: str, before: os.stat_result) -> bool:
@@ -503,9 +534,15 @@ def _move_file(source: int, name: str, destination: int, target: str, path: str)
     return [moved.st_mtime_ns, moved.st_size, moved.st_ino]
 
 
+_WHOLE_EXECUTOR: Final = frozenset(
+    {errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EROFS, errno.EMFILE, errno.ENFILE, errno.ENOMEM}
+)
+"""Errors that concern the executor or its disk rather than one file."""
+
+
 def _file_error(exc: OSError, path: str) -> ToolError:
-    """A failure on one file, by kind; a full or failing disk stops the sync instead."""
-    if exc.errno in (errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EROFS):
+    """A failure on one file, by kind; a full disk or an exhausted executor stops the sync."""
+    if exc.errno in _WHOLE_EXECUTOR:
         return ToolError("unavailable", f"cannot change {path!r}: {exc.strerror}")
     if exc.errno in (errno.EACCES, errno.EPERM):
         return ToolError("policy_denied", f"cannot change {path!r}: {exc.strerror}")
@@ -536,19 +573,17 @@ def _write_mark(root: Path, mark: str) -> None:
     os.replace(temporary, root / SYNC_MARK)
 
 
-def open_shared_files(shared: Path, limit: int = 10_000) -> list[str]:
-    """The files in the shared area that some other process has open, as ``shared/`` paths.
+def being_written(path: str) -> bool:
+    """Whether another process has the file ``path`` open for writing, or mapped writable.
 
-    Read from ``/proc``. Processes it may not inspect are left out, so a file missing
-    from the list can still be open.
+    Read from ``/proc``, at the moment it matters. Processes it may not inspect, such as
+    non-dumpable ones, are left out, so False is not a proof.
     """
-    prefix = os.path.realpath(shared) + os.sep
-    found: set[str] = set()
     own = str(os.getpid())
     try:
         processes = [entry for entry in os.listdir("/proc") if entry.isdigit() and entry != own]
     except OSError:
-        return []
+        return False
     for process in processes:
         try:
             descriptors = os.listdir(f"/proc/{process}/fd")
@@ -556,18 +591,37 @@ def open_shared_files(shared: Path, limit: int = 10_000) -> list[str]:
             continue
         for descriptor in descriptors:
             try:
-                target = os.readlink(f"/proc/{process}/fd/{descriptor}")
-            except OSError:
+                if os.readlink(f"/proc/{process}/fd/{descriptor}") != path:
+                    continue
+                with open(f"/proc/{process}/fdinfo/{descriptor}") as info:
+                    flags = next(
+                        int(line.split()[1], 8) for line in info if line.startswith("flags:")
+                    )
+            except (OSError, StopIteration, ValueError, IndexError):
                 continue
-            if target.startswith(prefix):
-                found.add(SHARED + "/" + target[len(prefix) :])
-                if len(found) >= limit:
-                    return sorted(found)
-    return sorted(found)
+            if flags & (os.O_WRONLY | os.O_RDWR):
+                return True
+        try:
+            with open(f"/proc/{process}/maps") as maps:
+                for line in maps:
+                    fields = line.split(maxsplit=5)
+                    shared_write = len(fields) == 6 and "w" in fields[1] and "s" in fields[1]
+                    if shared_write and fields[5].rstrip("\n") == path:
+                        return True  # a shared, writable mapping writes to the file
+        except OSError:
+            continue
+    return False
 
 
-def _remove_checked(parent: int, name: str, expected: str, path: str) -> None:
-    """Unlink ``name`` if it is the regular file whose content hashes to ``expected``."""
+def _remove_checked(
+    parent: int, name: str, expected: str, path: str, *, if_unused: bool = False
+) -> bool:
+    """Unlink ``name`` if it is the regular file whose content hashes to ``expected``.
+
+    With ``if_unused``, a file that another process is writing stays, and the result is
+    False: the file is first moved aside, so a writer that opened it a moment before is
+    still seen, and then put back.
+    """
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     try:
         descriptor = os.open(name, flags, dir_fd=parent)
@@ -585,7 +639,25 @@ def _remove_checked(parent: int, name: str, expected: str, path: str) -> None:
         # The name must still be this file, not one put in its place meanwhile.
         if os.stat(name, dir_fd=parent, follow_symlinks=False).st_ino != info.st_ino:
             raise ToolError("conflict", f"{path!r} changed while it was checked")
-        os.unlink(name, dir_fd=parent)
+        if not if_unused:
+            os.unlink(name, dir_fd=parent)
+            return True
+        if being_written(_absolute(parent, name)):
+            return False
+        aside = f".write-remove-{secrets.token_hex(8)}"  # a name scans leave out
+        os.rename(name, aside, src_dir_fd=parent, dst_dir_fd=parent)
+        if being_written(_absolute(parent, aside)):
+            # Back under its name, unless a new file took the name meanwhile.
+            try:
+                os.link(aside, name, src_dir_fd=parent, dst_dir_fd=parent)
+            except FileExistsError:
+                recovered = f"{name}.recovered-{secrets.token_hex(4)}"
+                os.rename(aside, recovered, src_dir_fd=parent, dst_dir_fd=parent)
+                return False
+            os.unlink(aside, dir_fd=parent)
+            return False
+        os.unlink(aside, dir_fd=parent)
+        return True
 
 
 def _stamped_sha256(parent: int, name: str, stamp: Sequence[int]) -> str | None:
@@ -1866,6 +1938,7 @@ class Executor:
                 create_only,
                 str(path),
                 executable if isinstance(executable, bool) else None,
+                request.get("if_unused") is True,
             )
         except OSError as exc:
             raise _file_error(exc, str(path)) from exc
@@ -1890,7 +1963,6 @@ class Executor:
             limit,
             budget,
             mark if isinstance(mark, str) else None,
-            request.get("open") is True,
         )
         await self.reply(request, **reply)
 
@@ -1900,7 +1972,6 @@ class Executor:
         limit: int,
         budget: int,
         mark: str | None,
-        open_files: bool = False,
     ) -> Message:
         if mark is not None:
             _write_mark(self.root, mark[:256])
@@ -1941,8 +2012,6 @@ class Executor:
             "mark": current,
             "now": time.time_ns(),
         }
-        if open_files:
-            reply["open"] = open_shared_files(self.root / SHARED)
         return reply
 
     async def op_remove(self, request: Message) -> None:
@@ -1961,7 +2030,17 @@ class Executor:
         try:
             for name in rest[:-1]:
                 directories.append(_walk(os.dup(directories[-1]), [name], str(path), create=False))
-            await asyncio.to_thread(_remove_checked, directories[-1], rest[-1], expected, str(path))
+            removed = await asyncio.to_thread(
+                _remove_checked,
+                directories[-1],
+                rest[-1],
+                expected,
+                str(path),
+                if_unused=request.get("if_unused") is True,
+            )
+            if not removed:
+                await self.reply(request, removed=False, busy=True)
+                return
             for depth in range(len(rest) - 1, 0, -1):
                 try:
                     os.rmdir(rest[depth - 1], dir_fd=directories[depth - 1])

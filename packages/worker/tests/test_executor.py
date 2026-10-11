@@ -431,32 +431,74 @@ async def test_a_moved_file_keeps_its_inode_and_its_writers(tmp_path: Path) -> N
     assert target.read_bytes() == b"n\n1\n2\n"
 
 
-@pytest.mark.asyncio
-async def test_the_shared_scan_names_files_another_process_has_open(tmp_path: Path) -> None:
+def _holder(path: Path, mode: str) -> subprocess.Popen[bytes]:
+    """A process that keeps ``path`` open in ``mode`` until it is killed."""
+    script = (
+        "import sys, time; f = open(sys.argv[1], sys.argv[2]); print(flush=True); time.sleep(30)"
+    )
+    holder = subprocess.Popen(  # noqa: S603 - a fixed command
+        [sys.executable, "-c", script, str(path), mode], stdout=subprocess.PIPE
+    )
+    assert holder.stdout is not None
+    holder.stdout.readline()  # the file is open
+    return holder
+
+
+def test_only_a_writer_keeps_a_file_from_being_replaced(tmp_path: Path) -> None:
     shared = tmp_path / "shared"
     shared.mkdir()
-    (shared / "open.txt").write_bytes(b"o")
-    (shared / "closed.txt").write_bytes(b"c")
-    holder = subprocess.Popen(  # noqa: S603 - a fixed command
-        [
-            sys.executable,
-            "-c",
-            "import sys, time; f = open(sys.argv[1]); print(flush=True); time.sleep(30)",
-            str(shared / "open.txt"),
-        ],
-        stdout=subprocess.PIPE,
-    )
+    target = shared / "data.h5"
+    target.write_bytes(b"v1")
+    reader = _holder(target, "rb")
     try:
-        assert holder.stdout is not None
-        holder.stdout.readline()  # the file is open
-        recorder = Recorder(tmp_path)
-        base = {"op": "shared", "hash": [], "hash_limit": 0, "hash_budget": 0}
-        reply = await recorder.ask({"id": 1, **base, "open": True})
-        assert reply["open"] == ["shared/open.txt"]
-        assert "open" not in await recorder.ask({"id": 2, **base})
+        assert not executor.being_written(os.path.realpath(target))
+        directory = os.open(shared, os.O_RDONLY | os.O_DIRECTORY)
+        expected = hashlib.sha256(b"v1").hexdigest()
+        reply = executor.write_file(directory, "data.h5", b"v2", expected, False, "x", None, True)
+        assert "busy" not in reply
+        assert target.read_bytes() == b"v2"
     finally:
-        holder.kill()
-        holder.wait()
+        reader.kill()
+        reader.wait()
+    writer = _holder(target, "ab")
+    try:
+        assert executor.being_written(os.path.realpath(target))
+        directory = os.open(shared, os.O_RDONLY | os.O_DIRECTORY)
+        expected = hashlib.sha256(b"v2").hexdigest()
+        reply = executor.write_file(directory, "data.h5", b"v3", expected, False, "x", None, True)
+        assert reply == {"busy": True}
+        assert target.read_bytes() == b"v2"
+        assert [path.name for path in shared.iterdir()] == ["data.h5"]  # nothing left over
+    finally:
+        writer.kill()
+        writer.wait()
+
+
+def test_a_writer_that_opens_the_file_just_before_the_swap_keeps_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "log.csv"
+    target.write_bytes(b"v1\n")
+    exchange = executor._exchange  # pyright: ignore[reportPrivateUsage]
+    holders: list[subprocess.Popen[bytes]] = []
+
+    def a_job_opens_it_first(parent: int, first: str, second: str) -> bool:
+        if not holders:  # after the check made before the swap
+            holders.append(_holder(target, "ab"))
+        return exchange(parent, first, second)
+
+    monkeypatch.setattr(executor, "_exchange", a_job_opens_it_first)
+    directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    expected = hashlib.sha256(b"v1\n").hexdigest()
+    try:
+        reply = executor.write_file(directory, "log.csv", b"v2\n", expected, False, "x", None, True)
+        assert reply == {"busy": True}  # swapped, seen and swapped back
+        assert target.read_bytes() == b"v1\n"
+        assert [path.name for path in tmp_path.iterdir()] == ["log.csv"]
+    finally:
+        for holder in holders:
+            holder.kill()
+            holder.wait()
 
 
 def test_a_write_that_lands_after_the_check_is_a_conflict(

@@ -92,7 +92,8 @@ SHARED_TIMEOUT = 120.0
 """The longest one step of the shared files' sync may take around a call (D79)."""
 MAX_HELD_NOTICES = 20
 """Sync notices held for one call's or one session's next result."""
-MAX_HELD_SESSIONS = 1000
+MAX_HELD_BYTES = 16 * 1024
+MAX_HELD_SESSIONS = 256
 _UNSYNCED = (
     "shared/ could not be synced with the project's other environments just now; "
     "it is synced again at the next call"
@@ -909,18 +910,20 @@ class ExecutionManager:
             return
         told = False
         for live in self._live.values():
+            running = live.execution.context
             if (
                 live.environment_id == context.environment_id
+                and running.project_id == context.project_id  # never another project's
                 and live.dispatched
                 and live.final is None
                 and live.execution.state not in TERMINAL_STATES
             ):
-                live.notices = [*live.notices, *notices][-MAX_HELD_NOTICES:]
-                told = told or live.execution.context.session_id == context.session_id
+                live.notices = _held([*live.notices, *notices])
+                told = told or running.session_id == context.session_id
         if not told:
             key = (context.environment_id, context.session_id)
             held = self._held_notices.pop(key, [])
-            self._held_notices[key] = [*held, *notices][-MAX_HELD_NOTICES:]
+            self._held_notices[key] = _held([*held, *notices])
             while len(self._held_notices) > MAX_HELD_SESSIONS:
                 self._held_notices.popitem(last=False)
 
@@ -1305,15 +1308,19 @@ class ExecutionManager:
             }
             if self.shared is not None and _in_shared(request.path):
                 # The expected SHA-256 is checked against the project's version (D79).
-                reply, notices = await self.shared.write(
-                    context.project_id,
-                    context.environment_id,
-                    context.session_id,
-                    channel,
-                    fields,
-                    SHARED_TIMEOUT,
-                )
-                self._tell(context, notices)
+                notices: list[str] = []
+                try:
+                    reply = await self.shared.write(
+                        context.project_id,
+                        context.environment_id,
+                        context.session_id,
+                        channel,
+                        fields,
+                        SHARED_TIMEOUT,
+                        notices,
+                    )
+                finally:  # what the sync found is told even when the write is refused
+                    self._tell(context, notices)
             else:
                 reply = await channel.request("write", session=context.session_id, **fields)
             return _checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
@@ -1444,6 +1451,18 @@ class ExecutionManager:
 
 def _size(text: str) -> int:
     return len(text.encode("utf-8", "replace"))
+
+
+def _held(notices: list[str]) -> list[str]:
+    """The latest notices, within ``MAX_HELD_NOTICES`` and ``MAX_HELD_BYTES``."""
+    kept: list[str] = []
+    size = 0
+    for notice in reversed(notices[-MAX_HELD_NOTICES:]):
+        size += len(notice)
+        if size > MAX_HELD_BYTES:
+            break
+        kept.append(notice)
+    return kept[::-1]
 
 
 def _in_shared(path: str) -> bool:
