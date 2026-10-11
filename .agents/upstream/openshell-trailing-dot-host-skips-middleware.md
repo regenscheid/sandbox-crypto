@@ -53,3 +53,5 @@ The gateway-alias check strips a trailing dot again (`proxy.rs:4088-4104`). So `
 ## Our mitigation
 
 None is possible in the Sandbox Science policy middleware, because it is never called for these requests. On babbage the VM driver keeps workloads away from the explicit proxy. Until this is fixed, container drivers should use closed-internet policies, meaning no host-less endpoint ([policy](../../docs/POLICY.md), "Residual risks").
+
+Since lab 10 (2026-10-11) the compiler emits no host-less endpoint at all: the worker admits hosts on demand instead (D69). A request to `example.com..` then needs an endpoint that names that host, which the compiler never writes, so the path above is closed in Sandbox Science's policies. The inconsistent normalization remains for other configurations.

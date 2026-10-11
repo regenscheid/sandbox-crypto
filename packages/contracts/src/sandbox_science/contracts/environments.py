@@ -57,5 +57,8 @@ class EnvironmentInfo(Contract):
     state: EnvironmentState
     findings: tuple[str, ...] = ()
     """What the policy compiler reported, such as rules OpenShell cannot express exactly."""
+    admitted_hosts: tuple[str, ...] = ()
+    """Hosts the worker admitted on demand (D69): names the policy reaches without naming
+    them, which the sandbox can resolve only once admitted."""
     created_at: datetime
     updated_at: datetime

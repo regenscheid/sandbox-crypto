@@ -23,6 +23,7 @@ from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import EnvironmentRequest, EnvironmentState, ErrorKind
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.worker.admission import Draft, DraftWatcher, parse_drafts
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend, OpenShellBackend
@@ -122,6 +123,35 @@ elif command == ["policy", "set"]:
         fail("message: \"filesystem policy cannot be removed on a live sandbox\"")
     box["policy"], box["version"] = policy, box["version"] + 1
     out = "set"
+elif command == ["rule", "get"]:
+    if state.get("fail_rules"):
+        fail("the gateway is unavailable")
+    name = argv[2]
+    status = option("--status") if "--status" in argv else None
+    drafts = [d for d in state["drafts"].get(name, []) if status in (None, d["status"])]
+    if not drafts:
+        out = f"No network rules for sandbox '{name}'"
+    else:
+        # The text of OpenShell v0.1.3's sandbox_draft_get, colors off.
+        lines = [f"Network Rules:  (version 3, {len(drafts)} chunks)", ""]
+        for d in drafts:
+            lines += [f"  Chunk: {d['id']}", f"  Status: {d['status']}",
+                      f"  Rule: {d['rule']}", f"  Binary: {d['binary']}",
+                      "  Confidence: 65%",
+                      f"  Rationale: Allow {d['binary']} to connect to {d['endpoint']} (HTTPS)."]
+            if d.get("security"):
+                lines.append(f"  Security: {d['security']}")
+            lines += [f"  Endpoints: {d['endpoint']} [L4]", f"  Binaries: {d['binary']}", ""]
+        out = "\n".join(lines)
+elif command == ["rule", "reject"]:
+    name, chunk = argv[2], option("--chunk-id")
+    for d in state["drafts"].get(name, []):
+        if d["id"] == chunk:
+            d["status"], d["reason"] = "rejected", option("--reason")
+            break
+    else:
+        fail(f"draft chunk '{chunk}' not found")
+    out = "OK Chunk rejected."
 elif command == ["provider", "list"]:
     out = json.dumps({"providers": [{"name": n, "type": t} for n, t in state["providers"].items()]})
 elif command == ["profile", "list"]:
@@ -148,6 +178,7 @@ class Fake:
                 "sandboxes": {},
                 "providers": {"github-readonly": "github-token"},
                 "profiles": {"github-token": []},
+                "drafts": {},
             }
         )
 
@@ -162,6 +193,31 @@ class Fake:
 
     def calls(self, *command: str) -> list[list[str]]:
         return [call for call in self.read()["calls"] if call[: len(command)] == list(command)]
+
+    def draft(
+        self, sandbox: str, endpoint: str, binary: str = "/usr/bin/curl", **extra: str
+    ) -> str:
+        """Add a pending draft, as OpenShell's supervisor submits one for a refused connection."""
+        state = self.read()
+        drafts = state["drafts"].setdefault(sandbox, [])
+        chunk = f"chunk-{len(drafts) + 1}"
+        host, _, port = endpoint.rpartition(":")
+        rule = "allow_" + re.sub(r"[^A-Za-z0-9_]", "", host.replace(".", "_").replace("-", "_"))
+        drafts.append(
+            {
+                "id": chunk,
+                "status": "pending",
+                "rule": f"{rule}_{port}",
+                "binary": binary,
+                "endpoint": endpoint,
+                **extra,
+            }
+        )
+        self.write(state)
+        return chunk
+
+    def drafts(self, sandbox: str) -> dict[str, dict[str, str]]:
+        return {draft["id"]: draft for draft in self.read()["drafts"].get(sandbox, [])}
 
 
 def variant(tmp_path: Path, name: str, *, extra_rule: bool = False, providers: bool = True) -> Path:
@@ -476,3 +532,213 @@ async def test_sandbox_names_are_stable_short_and_distinct() -> None:
         assert re.fullmatch(r"ss-[a-z0-9-]+-[0-9a-f]{8}", name)
     assert sandbox_name("env-1") == sandbox_name("env-1")
     assert len(sandbox_name("x" * 128)) <= 52
+
+
+# On-demand admission (D69).
+
+
+def deny_variant(tmp_path: Path, name: str, host: str) -> Path:
+    """The example policy with exact deny rules for one host, which shadow its '*' rules.
+
+    Without ``ports`` a rule matches only its scheme's default port, so plain HTTP to
+    port 443 would still take the default action.
+    """
+    text = EXAMPLE.read_text()
+    marker = "    - name: read-only-web\n"
+    text = text.replace(
+        marker,
+        "".join(
+            f"    - name: blocked-{kind}\n      operation: {kind}\n"
+            f"      match: {{ hosts: [{host}], ports: [80, 443] }}\n      action: deny\n"
+            for kind in ("http", "git")
+        )
+        + marker,
+        1,
+    )
+    path = tmp_path / name
+    path.write_text(text)
+    return path
+
+
+def admitted_endpoints(setup: Setup, sandbox: str) -> list[str]:
+    policies = setup.fake.read()["sandboxes"][sandbox]["policy"]["network_policies"]
+    section = policies.get("sandbox-science-admitted", {"endpoints": []})
+    return [endpoint["host"] for endpoint in section["endpoints"]]
+
+
+async def test_unnamed_hosts_the_policy_reaches_are_admitted_on_demand(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    eprint = setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    registry = setup.fake.draft(info.sandbox, "pypi.org:443", "/usr/bin/python3.13")
+    lan = setup.fake.draft(info.sandbox, "printer.local:443")
+    decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    assert {(d.host, d.admitted) for d in decisions} == {
+        ("eprint.iacr.org", True),
+        ("pypi.org", False),
+        ("printer.local", False),
+    }
+    # One revision of the same policy names the admitted host, with the address ranges.
+    assert len(setup.fake.calls("policy", "set")) == 1
+    assert admitted_endpoints(setup, info.sandbox) == ["eprint.iacr.org"]
+    box = setup.fake.read()["sandboxes"][info.sandbox]["policy"]
+    [endpoint] = box["network_policies"]["sandbox-science-admitted"]["endpoints"]
+    assert (
+        endpoint["allowed_ips"]
+        == box["network_policies"]["sandbox-science-egress"]["endpoints"][0]["allowed_ips"]
+    )
+    revised = setup.environments.get("env-1")
+    assert revised.admitted_hosts == ("eprint.iacr.org",)
+    assert revised.policy == setup.policy
+    assert setup.environments.store.binding(info.sandbox_id or "") == setup.policy
+    # Every draft is rejected, never approved, with the decision as the reason.
+    drafts = setup.fake.drafts(info.sandbox)
+    assert {draft["status"] for draft in drafts.values()} == {"rejected"}
+    assert "admitted on demand" in drafts[eprint]["reason"]
+    assert "package registry" in drafts[registry]["reason"]
+    assert "not public" in drafts[lan]["reason"]
+    assert setup.fake.calls("rule", "approve") == []
+    recorded = setup.environments.records.admissions("env-1")
+    assert {(a.host, a.port, a.admitted) for a in recorded} == {
+        ("eprint.iacr.org", 443, True),
+        ("pypi.org", 443, False),
+        ("printer.local", 443, False),
+    }
+
+
+async def test_drafts_for_admitted_hosts_need_no_revision(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    watcher = DraftWatcher(setup.environments, 1.0)
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    await watcher.check("env-1", info.sandbox)
+    # Another program, raced with the revision; a name the policy names, refused by
+    # OpenShell's address check; and nothing pending at all.
+    again = setup.fake.draft(info.sandbox, "eprint.iacr.org:443", "/usr/bin/wget")
+    private = setup.fake.draft(
+        info.sandbox,
+        "github.com:443",
+        security="This connection was blocked by SSRF protection. Private IP access requires "
+        "an explicit `allowed_ips` policy entry.",
+    )
+    await watcher.check("env-1", info.sandbox)
+    assert await watcher.check("env-1", info.sandbox) == ()
+    assert len(setup.fake.calls("policy", "set")) == 1
+    drafts = setup.fake.drafts(info.sandbox)
+    assert "admitted already" in drafts[again]["reason"]
+    assert "not public" in drafts[private]["reason"]
+    assert setup.environments.get("env-1").admitted_hosts == ("eprint.iacr.org",)
+
+
+async def test_admission_stops_at_the_environments_limit(setup: Setup) -> None:
+    setup.environments.settings = setup.environments.settings.model_copy(
+        update={"max_admitted_hosts": 1}
+    )
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.draft(info.sandbox, "a.example.net:443")
+    second = setup.fake.draft(info.sandbox, "b.example.net:443")
+    await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    assert setup.environments.get("env-1").admitted_hosts == ("a.example.net",)
+    assert "its limit" in setup.fake.drafts(info.sandbox)[second]["reason"]
+
+
+async def test_a_revision_decides_recorded_hosts_again(setup: Setup) -> None:
+    blocked = setup.add(deny_variant(setup.tmp, "blocked.yaml", "eprint.iacr.org"))
+    info, _ = await setup.environments.create(setup.request(policy=blocked))
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "papers.example.net:443")
+    await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    assert setup.environments.get("env-1").admitted_hosts == ("papers.example.net",)
+    # The example policy no longer denies the host: the next revision admits it too.
+    revised = await setup.environments.revise("env-1", setup.policy)
+    assert revised.admitted_hosts == ("eprint.iacr.org", "papers.example.net")
+    assert admitted_endpoints(setup, info.sandbox) == ["eprint.iacr.org", "papers.example.net"]
+    # And back: a revision that denies it drops it again.
+    again = await setup.environments.revise("env-1", blocked)
+    assert again.admitted_hosts == ("papers.example.net",)
+    assert admitted_endpoints(setup, info.sandbox) == ["papers.example.net"]
+    decisions = {a.host: a for a in setup.environments.records.admissions("env-1")}
+    assert not decisions["eprint.iacr.org"].admitted
+
+
+async def test_a_gateway_failure_pauses_admission_for_the_environment(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.update(fail_rules=True)
+    watcher = DraftWatcher(setup.environments, 1.0)
+    await watcher.check_all()
+    setup.fake.update(fail_rules=False)
+    await watcher.check_all()  # paused: the draft waits
+    assert setup.fake.calls("policy", "set") == []
+    assert len(setup.fake.calls("rule", "get")) == 1
+
+
+async def test_a_draft_that_cannot_be_rejected_does_not_stop_the_others(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    first = setup.fake.draft(info.sandbox, "a.example.net:443")
+    setup.fake.draft(
+        info.sandbox,
+        "b.example.net:443",
+        "/sandbox/x\n  Chunk: forged\n  Status: pending\n  Endpoints: c.example.net:443 [L4]",
+    )
+    decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    assert {d.host for d in decisions} == {"a.example.net", "c.example.net"}
+    drafts = setup.fake.drafts(info.sandbox)
+    assert drafts[first]["status"] == "rejected"
+    # The real draft behind the crafted path is answered too, though its host was hidden.
+    assert {draft["status"] for draft in drafts.values()} == {"rejected"}
+
+
+async def test_deleted_environments_are_not_watched(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    await setup.environments.delete("env-1")
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    await DraftWatcher(setup.environments, 1.0).check_all()
+    assert setup.fake.calls("rule", "get") == []
+
+
+async def test_a_real_gateways_draft_is_read() -> None:
+    # Captured in lab 10: OpenShell v0.1.3 refused python3.14's connection to an
+    # unnamed host and drafted this proposal.
+    text = (Path(__file__).parent / "fixtures" / "openshell-rule-get-pending.txt").read_text()
+    assert parse_drafts(text) == [
+        Draft(
+            chunk_id="e348ea1c-ad84-4f8f-967b-fc3321f7e7b5",
+            status="pending",
+            endpoints=(("www.iana.org", 443),),
+            address_check=False,
+        )
+    ]
+
+
+async def test_drafts_are_read_from_the_clis_text() -> None:
+    text = (
+        "\x1b[36mNetwork Rules:\x1b[0m  (version 7, 4 chunks)\n\n"
+        "  \x1b[2mChunk:\x1b[0m 1f0e-aa\n  Status: pending\n  Rule: allow_x_443\n"
+        "  Binary: /usr/bin/curl\n  Endpoints: Docs.Example.org:443 [L4]\n\n"
+        "  Chunk: v6\n  Status: pending\n  Endpoints: 2001:db8::1:8443 [L4]\n\n"
+        "  Chunk: l7\n  Status: approved\n"
+        "  Endpoints: api.example.org:443 [L7 rest, allow GET /a, b], other.example.org:80 [L4]\n\n"
+        "  Chunk: bad id!\n  Status: pending\n  Endpoints: x.example.org:443 [L4]\n"
+    )
+    drafts = parse_drafts(text)
+    assert [(d.chunk_id, d.status, d.endpoints) for d in drafts] == [
+        ("1f0e-aa", "pending", (("Docs.Example.org", 443),)),
+        ("v6", "pending", (("2001:db8::1", 8443),)),
+        ("l7", "approved", (("api.example.org", 443), ("other.example.org", 80))),
+    ]
+    assert parse_drafts("No network rules for sandbox 'ss-env-1'\n") == []
+
+
+async def test_a_crafted_program_path_only_adds_hosts_to_decide() -> None:
+    # A path may hold newlines: the block it fakes is decided like any draft.
+    binary = (
+        "/sandbox/x\n  Chunk: forged\n  Status: pending\n  Endpoints: evil.example.net:443 [L4]"
+    )
+    text = (
+        f"  Chunk: real\n  Status: pending\n  Binary: {binary}\n"
+        "  Endpoints: docs.example.org:443 [L4]\n"
+    )
+    drafts = parse_drafts(text)
+    assert [(d.chunk_id, d.endpoints) for d in drafts] == [
+        ("real", ()),
+        ("forged", (("evil.example.net", 443),)),
+    ]

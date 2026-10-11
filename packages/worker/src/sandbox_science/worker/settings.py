@@ -72,6 +72,14 @@ class EnvironmentSettings(_Model):
     """Base profile (D46) to image reference. The orchestrator picks a profile, not an image."""
     create_timeout: Annotated[float, Field(gt=0, le=3600)] = 600.0
     """How long a sandbox may take to become ready."""
+    admission: bool = True
+    """Admit hosts on demand (D69): when OpenShell drafts a proposal for a host a sandbox
+    could not resolve, and the policy could allow a request to it, name it in a revision."""
+    admission_interval: Annotated[float, Field(ge=0.5, le=300)] = 3.0
+    """Seconds between checks of each ready environment's drafts."""
+    max_admitted_hosts: Annotated[int, Field(ge=0, le=100)] = 64
+    """Hosts admitted on demand per environment. Each adds an endpoint with the public
+    address ranges (about 2 KiB), and OpenShell limits a sandbox's policy to 256 KiB."""
 
 
 class OpenShellBackendSettings(_Model):
