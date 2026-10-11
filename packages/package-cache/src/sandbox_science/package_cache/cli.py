@@ -5,13 +5,18 @@
 sandbox-science-package-cache serve --settings cache.toml [--log-level INFO]
 sandbox-science-package-cache stats --settings cache.toml
 sandbox-science-package-cache prune --settings cache.toml
+sandbox-science-package-cache forget --settings cache.toml KEY_OR_PATH
 ```
 
-``stats`` and ``prune`` print JSON and work on the store directly, so they may
-run while the cache serves. ``prune`` purges expired negative entries and
-evicts down to the size cap now, as the cache does after storing a file, and
-deletes blobs no entry refers to that are over an hour old (younger ones may be
-about to get their entry).
+``stats``, ``prune`` and ``forget`` print JSON and work on the store directly,
+so they may run while the cache serves. ``prune`` purges expired negative
+entries and evicts down to the size cap now, as the cache does after storing a
+file, and deletes blobs no entry refers to that are over an hour old (younger
+ones may be about to get their entry). ``forget`` drops one entry, such as a
+bad copy of a file the cache cannot verify, so that the next request fetches
+it again: give its cache key (``hackage:hackage/package/split-0.2.5.tar.gz``)
+or the path a client requested (``/hackage/package/split-0.2.5.tar.gz``, as the
+request log shows it), which the adapters turn into the key.
 
 ``serve`` warns when the open file limit is below ``wanted_open_files``: each
 request being served may hold several descriptors, and idle connections one
@@ -30,7 +35,8 @@ from pathlib import Path
 
 from aiohttp import web
 
-from .app import KEEPALIVE_TIMEOUT, create_app, negative_expiry
+from .adapter import Fetch
+from .app import KEEPALIVE_TIMEOUT, create_app, negative_expiry, store_key
 from .errors import PackageCacheError, StoreError
 from .settings import Settings, load_settings
 from .store import ORPHAN_GRACE, Store
@@ -61,6 +67,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     stats.add_argument("--settings", type=Path, required=True)
     prune = commands.add_parser("prune", help="evict down to the size cap now")
     prune.add_argument("--settings", type=Path, required=True)
+    forget = commands.add_parser("forget", help="drop one entry, to fetch it again")
+    forget.add_argument("--settings", type=Path, required=True)
+    forget.add_argument(
+        "target", metavar="KEY_OR_PATH", help="a cache key, or a request path starting with /"
+    )
     args = parser.parse_args(argv)
     try:
         settings = load_settings(args.settings)
@@ -73,8 +84,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _serve(settings)
             case "stats":
                 return _stats(settings)
-            case _:
+            case "prune":
                 return _prune(settings)
+            case _:
+                return _forget(settings, args.target)
     except (PackageCacheError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -152,6 +165,29 @@ def _prune(settings: Settings) -> int:
     }
     print(json.dumps(report))
     return 0
+
+
+def _forget(settings: Settings, target: str) -> int:
+    key = _key_of_path(settings, target) if target.startswith("/") else target
+    if key is None:
+        print(f"error: the cache stores nothing for {target}", file=sys.stderr)
+        return 1
+    with _open(settings) as store:
+        removed = store.forget(key)
+    if not removed.entries:
+        print(f"error: no entry has the key {key!r}", file=sys.stderr)
+        return 1
+    report = {"key": key, "deleted_blobs": removed.blobs, "freed_bytes": removed.bytes}
+    print(json.dumps(report))
+    return 0
+
+
+def _key_of_path(settings: Settings, path: str) -> str | None:
+    """The store key that the enabled adapters give a request path (without its query)."""
+    prefix, _, tail = path.partition("?")[0].removeprefix("/").partition("/")
+    adapter = build_adapters(settings).get(prefix)
+    route = adapter.route(tail, {}) if adapter is not None else None
+    return store_key(prefix, route.key) if isinstance(route, Fetch) else None
 
 
 if __name__ == "__main__":

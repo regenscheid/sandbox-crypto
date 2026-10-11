@@ -29,17 +29,20 @@ from sandbox_science.policy.openshell import (
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
     AnyOf,
+    Binary,
     Compiled,
     CompileError,
     Endpoint,
     FilesystemPolicy,
     McpProxyTarget,
     OpenShellPolicy,
+    OrchestratorTarget,
     SandboxFilesystem,
     SandboxTarget,
     ServiceEndpoint,
     Severity,
     compile_mcp_proxy,
+    compile_orchestrator,
     compile_sandbox,
     load_targets,
     parse_targets,
@@ -517,6 +520,79 @@ def test_without_worker_access_no_endpoint_admits_the_mcp_proxy() -> None:
     assert middlewares is not None
     assert middlewares["sandbox-science-policy"].endpoints.exclude is None
     assert any(finding.subject == "mcp.proxy.worker_access" for finding in compiled.findings)
+
+
+EXAMPLE_OPAM = "  opam:                     # OCaml: EasyCrypt, Jasmin\n    action: allow\n"
+
+
+def example_with_opam(action: str) -> LoadedPolicy:
+    text = (ROOT / "examples" / "policy.yaml").read_text()
+    assert EXAMPLE_OPAM in text
+    return parse_policy(text.replace(EXAMPLE_OPAM, EXAMPLE_OPAM.replace("allow", action)))
+
+
+def opam_findings(compiled: Compiled) -> list[str]:
+    return [
+        finding.message
+        for finding in compiled.findings
+        if finding.subject == "packages.opam" and finding.severity is Severity.WARNING
+    ]
+
+
+@pytest.mark.parametrize("action", ["escalate", "deny", "alert"])
+def test_an_opam_action_the_network_rules_undo_is_reported(action: str) -> None:
+    # opam downloads an archive from the package's own URL whenever the cache does not
+    # deliver it, and the example's source-downloads rule allows GitHub.
+    (message,) = opam_findings(compile_research(example_with_opam(action)))
+    assert message.startswith(f"packages.opam is {action}, which does not hold")
+    assert "rule source-downloads allows that (GET https://github.com/" in message
+
+
+def test_an_allowed_opam_is_not_reported() -> None:
+    assert opam_findings(compile_research(EXAMPLE)) == []
+
+
+def test_an_unset_opam_is_reported_with_the_default_it_takes() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: reads, operation: http, match: {hosts: ['*'], methods: [GET]}, "
+        "action: allow}\n"
+    )
+    (message,) = opam_findings(compile_research(policy))
+    assert message.startswith("packages.opam is unset, so opam archives take defaults.action")
+    assert "rule reads allows that" in message
+
+
+@pytest.mark.parametrize(
+    "network",
+    [
+        pytest.param("", id="nothing-allowed"),
+        pytest.param(
+            "network:\n  rules:\n"
+            "    - {name: api, operation: http, match: {hosts: [api.example.org], "
+            "methods: [GET]}, action: allow}\n",
+            id="unrelated-host",
+        ),
+        pytest.param(
+            "network:\n  rules:\n"
+            "    - {name: reads, operation: http, match: {hosts: ['*'], methods: [GET]}, "
+            "action: escalate}\n",
+            id="downloads-escalate",
+        ),
+    ],
+)
+def test_an_opam_action_holds_when_the_rules_stop_the_downloads(network: str) -> None:
+    for default in ("deny", "escalate"):
+        policy = network_policy(network + "packages:\n  opam: {action: escalate}\n", default)
+        assert opam_findings(compile_research(policy)) == []
+
+
+def test_the_pool_ceiling_counts_when_opam_downloads_are_checked() -> None:
+    # A pool that reaches only the registries stops opam's own downloads as well.
+    compiled = compile_research(
+        example_with_opam("escalate"), network={"allow_hosts": ["opam.ocaml.org"]}
+    )
+    assert opam_findings(compiled) == []
 
 
 # MCP proxy sandbox.
@@ -1206,6 +1282,57 @@ def test_too_many_paths_are_a_compile_error() -> None:
 
 def test_example_targets_name_no_image_paths() -> None:
     assert TARGETS.sandbox.filesystem == SandboxFilesystem()
+
+
+# The orchestrator's sandbox.
+
+
+def test_the_orchestrator_reaches_only_the_worker_api_and_the_model_gateway() -> None:
+    assert TARGETS.orchestrator is not None
+    policy = compile_orchestrator(TARGETS.orchestrator)
+    assert list(policy.network_policies) == [
+        "sandbox-science-worker-api",
+        "sandbox-science-model-gateway",
+    ]
+    endpoints = [
+        (endpoint.host, endpoint.ports, endpoint.protocol, endpoint.enforcement, endpoint.access)
+        for entry in policy.network_policies.values()
+        for endpoint in entry.endpoints
+    ]
+    assert endpoints == [
+        ("worker.sandbox-science.internal", (8100,), "rest", "enforce", "full"),
+        ("litellm.sandbox-science.internal", (4000,), "rest", "enforce", "full"),
+    ]
+    for entry in policy.network_policies.values():
+        assert entry.binaries == (Binary(path="/opt/sandbox-science/bin/python*"),)
+    assert policy.network_middlewares is None
+    assert policy.filesystem_policy == FilesystemPolicy(include_workdir=True)
+    document = yaml.safe_load(policy.to_yaml())
+    assert schema_keys(document) <= ALLOWED_KEYS
+    assert None not in leaf_values(document)
+
+
+def test_the_model_gateway_is_optional_and_cannot_share_the_worker_api() -> None:
+    target = OrchestratorTarget(
+        worker_api=ServiceEndpoint(host="host.openshell.internal", port=8100),
+        binaries=("/usr/local/bin/python3*",),
+    )
+    assert list(compile_orchestrator(target).network_policies) == ["sandbox-science-worker-api"]
+    with pytest.raises(CompileError, match=r"share host\.openshell\.internal:8100"):
+        compile_orchestrator(target.model_copy(update={"model_gateway": target.worker_api}))
+
+
+@pytest.mark.parametrize(
+    "service",
+    [
+        {"host": "169.254.169.254", "port": 80},
+        {"host": "metadata.google.internal", "port": 80},
+        {"host": "worker.sandbox-science.internal", "port": 6443},
+    ],
+)
+def test_the_orchestrators_services_obey_the_service_rules(service: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        OrchestratorTarget.model_validate({"worker_api": service, "binaries": ["/usr/bin/python3"]})
 
 
 def test_tcp_service_hosts_must_be_names() -> None:

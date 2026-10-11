@@ -45,6 +45,10 @@ packages:
     action: allow
   npm:
     action: allow
+  opam:                     # OCaml: EasyCrypt, Jasmin
+    action: allow
+  hackage:                  # Haskell: Cryptol, Tamarin
+    action: allow
   system_packages: deny     # read-only rootfs; change the base image instead
   # Packages come only through the package cache (docs/PACKAGE-CACHE.md); C and
   # C++ libraries and toolchains for every language come from conda-forge.

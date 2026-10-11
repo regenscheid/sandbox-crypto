@@ -109,20 +109,65 @@ def test_prune_purges_negative_entries_past_their_use(
         assert store.keys() == ["k0-410", "k1-410"]
 
 
-@pytest.mark.parametrize("command", ["stats", "prune"])
-def test_stats_and_prune_need_an_existing_cache(
+def test_forget_drops_one_entry_by_its_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    root = tmp_path / "cache"
+    fill(root, [b"a bad copy", b"kept"])
+    assert cli.main(["forget", "--settings", str(settings_file(tmp_path)), "k0-200"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "key": "k0-200",
+        "deleted_blobs": 1,
+        "freed_bytes": 10,
+    }
+    with Store(root, max_size=10**9) as store:
+        assert store.keys() == ["k1-200"]
+
+
+def test_forget_finds_the_key_of_a_request_path(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The request log shows paths; the adapters turn them into the store's keys.
+    path = settings_file(tmp_path)
+    path.write_text(path.read_text() + "[hackage]\n")
+    root = tmp_path / "cache"
+    key = "hackage:hackage/package/split-0.2.5.tar.gz"
+    with Store(root, max_size=10**9) as store:
+        store.put(key, store.write_temp(b"\x1f\x8b bad"), kind=Kind.ARTIFACT, content_type="x/y")
+    for request in ("/hackage/package/split-0.2.5/split-0.2.5.tar.gz", "/hackage/x"):
+        status = cli.main(["forget", "--settings", str(path), request])
+        assert status == (0 if "split" in request else 1)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["key"] == key
+    assert "the cache stores nothing for /hackage/x" in captured.err
+    with Store(root, max_size=10**9) as store:
+        assert store.keys() == []
+
+
+def test_forgetting_a_missing_key_is_an_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fill(tmp_path / "cache", [b"kept"])
+    assert cli.main(["forget", "--settings", str(settings_file(tmp_path)), "missing"]) == 1
+    assert "no entry has the key 'missing'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["stats", "prune", "forget"])
+def test_stats_prune_and_forget_need_an_existing_cache(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
 ) -> None:
-    assert cli.main([command, "--settings", str(settings_file(tmp_path))]) == 1
+    key = ["k0-200"] if command == "forget" else []
+    assert cli.main([command, "--settings", str(settings_file(tmp_path)), *key]) == 1
     assert "no package cache" in capsys.readouterr().err
     assert not (tmp_path / "cache").exists()
 
 
-@pytest.mark.parametrize("command", ["serve", "stats", "prune"])
+@pytest.mark.parametrize("command", ["serve", "stats", "prune", "forget"])
 def test_bad_settings_are_reported(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], command: str
 ) -> None:
-    assert cli.main([command, "--settings", str(tmp_path / "missing.toml")]) == 1
+    key = ["k0-200"] if command == "forget" else []
+    assert cli.main([command, "--settings", str(tmp_path / "missing.toml"), *key]) == 1
     assert "cannot read settings" in capsys.readouterr().err
 
 
