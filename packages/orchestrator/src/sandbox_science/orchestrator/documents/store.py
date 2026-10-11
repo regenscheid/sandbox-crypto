@@ -534,16 +534,20 @@ class DocumentStore:
             ).fetchall()
         return [_revision(found) for found in rows]
 
-    def block_maps(self, project_id: str, reference: str) -> list[tuple[int, Json]]:
-        """Every revision's block map, oldest first."""
+    def changes(
+        self, project_id: str, reference: str, after: int = 0
+    ) -> list[tuple[RevisionInfo, Json]]:
+        """The revisions after ``after``, oldest first, with their block maps but not their
+        texts."""
         with self._read() as db:
             row = self._find(db, project_id, reference)
             assert db is not None  # noqa: S101
             rows = db.execute(
-                "SELECT number, block_map FROM revisions WHERE document_id = ? ORDER BY number",
-                (row.info.document_id,),
+                _REVISION.replace("FROM revisions", ", block_map FROM revisions")
+                + " WHERE document_id = ? AND number > ? ORDER BY number",
+                (row.info.document_id, after),
             ).fetchall()
-        return [(number, json.loads(stored)) for number, stored in rows]
+        return [(_revision(found), json.loads(found[16])) for found in rows]
 
     def history(self, project_id: str, reference: str) -> Json:
         """Who changed what (LD-11): each revision with its author, reason and changed
