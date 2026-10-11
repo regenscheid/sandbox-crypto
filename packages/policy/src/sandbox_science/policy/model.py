@@ -500,7 +500,7 @@ CredentialHost = Annotated[
 class ProviderRef(StrictModel):
     """A worker-visible OpenShell provider (placeholders only).
 
-    ``hosts`` are the only destinations its credential may reach, over HTTPS:
+    ``hosts`` are the only destinations its credential may reach, on port 443:
     the compiled sandbox policy binds the credential to each of them, and
     OpenShell substitutes it nowhere else.
     """

@@ -20,6 +20,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Credential handling: OpenShell providers inject credentials after the policy middleware decides (D57, D69); confirmed in lab 2
 - [x] Provider credentials in research sandboxes (D57 amended; the user chose the arrangement after [lab 2](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)): `credentials.providers[].hosts` names where each credential may go. The compiler binds it there with `credential_binding` on port 443, providers use profiles without endpoints, and the middleware treats only those hosts as credentialed. Tests check the compiled policies with a port of OpenShell's ambiguity check
 - [ ] On babbage: run the compiled credential bindings at the next lab, including a bound host that rules also name (its other egress endpoint then keeps only port 80)
+- [ ] Orchestrator: attach to each research sandbox exactly the providers `credentials.providers` lists, each with a profile without endpoints. The middleware counts only those hosts as credentialed, and OpenShell would bind any other provider to its profile's endpoints
 - [ ] Escalation grants: record approvals as scoped grants that the policy middleware and MCP proxy honour, and compile them into the MCP proxy's fence
 - [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint, so the compiler admits public address ranges with a host-less endpoint and the policy middleware decides each request (D69)
 - [ ] Policy revisions: GUI and file edits, re-authentication for widening (D54)
@@ -38,6 +39,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Package cache: opam and Hackage adapters (EasyCrypt, Jasmin, ProVerif, Cryptol, Tamarin)
 - [ ] Package cache: a cooling-off period for new releases, keeping lockfile files from eviction, TLS between OpenShell and the cache
 - [ ] Package cache: per-sandbox rate limits. The policy middleware writes a sandbox header on cache requests (overwriting anything the sandbox sent), which the cache uses to give each sandbox its own budget; the cooling-off period needs the same mechanism
+- [ ] Report upstream (user's call): OpenShell v0.1.3 substitutes a bound credential into plain HTTP sent to its port, and forwards it unencrypted; ask for substitution only on TLS ([policy](../docs/POLICY.md), "Residual risks")
 - [ ] Report upstream (user's call): OpenShell v0.1.3 selects no middleware for a host ending in two dots through its explicit proxy ([policy](../docs/POLICY.md), "Residual risks")
 - [ ] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox
 - [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic checked in lab 2: the middleware decides it, and the floor holds

@@ -30,7 +30,7 @@ The middleware runs before OpenShell injects credentials and cannot tell which r
 | `deny` by the hard floor | deny | `destination_forbidden` | |
 | unclassifiable request | deny | `request_unclassifiable` | |
 
-The middleware itself can also deny: `git_request_invalid` (a fetch body that is not an upload-pack request), `sandbox_unbound`, `policy_stale`, `policy_unavailable` and `config_invalid`. OpenShell returns the reason code to the sandbox in its `middleware_denied` error and logs it; the free-form reason stays in the middleware's own log. Calls it cannot authenticate fail with a gRPC error, which OpenShell treats as a middleware failure and, with `on_error: fail_closed`, blocks.
+The middleware itself can also deny: `git_request_invalid` (a fetch body that is not an upload-pack request), `credential_unencrypted` (plain HTTP to port 443 of a host a credential is bound to, which OpenShell would send unencrypted), `sandbox_unbound`, `policy_stale`, `policy_unavailable` and `config_invalid`. OpenShell returns the reason code to the sandbox in its `middleware_denied` error and logs it; the free-form reason stays in the middleware's own log. Calls it cannot authenticate fail with a gRPC error, which OpenShell treats as a middleware failure and, with `on_error: fail_closed`, blocks.
 
 **WebSockets.** The library does not support upgrades, since a WebSocket would carry traffic the policy never sees. OpenShell first asks about the upgrade request, which the middleware denies as unclassifiable because of its `Sec-WebSocket-*` headers. As a second check, the service also declares the `WEBSOCKET_MESSAGE` binding and denies every upgrade at its preflight (`websocket_not_supported`), before OpenShell contacts the server.
 
