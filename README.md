@@ -52,7 +52,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Policy file](docs/POLICY.md) | Permissive-by-default YAML project policy, precedence, escalation timeout ([example](examples/policy.yaml)) |
 | [MCP connectors](docs/MCP-CONNECTORS.md) | OAuth (primary), bearer and custom-header auth for MCP servers; connector auth service and the MCP proxy that all MCP traffic goes through |
 | [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |
-| [Base profile images](docs/IMAGES.md) | The `minimal` and `crypto-base` images: contract, pinned sources, building and tests |
+| [Base profile images](docs/IMAGES.md) | The `minimal` and `crypto-base` images, and the harness's `orchestrator` image: contract, pinned sources, building and tests |
 | [Deployment examples](examples/deployment-profiles.json) | Illustrative placements; not executable manifests |
 | [Run request](examples/run-request.json) | Illustrative batch contract; not an OpenShell request |
 
