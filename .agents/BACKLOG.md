@@ -14,7 +14,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Example policy validated by tests; crypto-research-mcp tool outcomes pinned by a fixture
 - [ ] Data-class limits in the pool ceiling (D50)
 - [x] OpenShell v0.1.3 compiler (D69): admission endpoints and the policy middleware for research sandboxes, and the MCP proxy's `protocol: mcp` policy, with findings for everything not expressed exactly. Filesystem policy belongs to the environment layer (D48)
-- [ ] Validate the compiled policies against a real OpenShell v0.1.3 gateway on babbage (`openshell policy set --wait`, the prover's boundary check); so far they are checked only against the documented schema
+- [ ] Validate the compiled policies against a real OpenShell v0.1.3 gateway on babbage. Done for the research sandbox's policy (loaded and enforced, 2026-10-10); still to do: the MCP proxy's policy and the prover's boundary check
+- [x] Name every public host the policy mentions beside the host-less endpoint, and compile `*.suffix` to `**.suffix`: a sandbox resolves only names an endpoint names (D69, amended after the babbage lab)
+- [ ] On-demand admission: when OpenShell drafts a policy advisor proposal for a blocked host, the orchestrator approves it if the library could allow a request to that host, so `*` rules and the default reach unnamed hosts (D69)
 - [x] Credential handling: OpenShell providers inject credentials after the policy middleware decides (D57, D69)
 - [ ] Escalation grants: record approvals as scoped grants that the policy middleware and MCP proxy honour, and compile them into the MCP proxy's fence
 - [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint, so the compiler admits public address ranges with a host-less endpoint and the policy middleware decides each request (D69)
@@ -28,7 +30,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
 - [ ] Orchestrator: write the middleware's policy store and sandbox bindings when it creates sandboxes and revises policies (the `bind` command stands in until then)
 - [ ] Package mirror (D44), the only route to package indexes
-- [ ] On babbage: verify the middleware path (host-less public endpoint and DNS, bodies over the payload limit, WebSocket upgrades, provider-admitted traffic passing the middleware, latency)
+- [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic is still to check
 - [ ] MCP proxy: forward only tool names the server advertises, exactly as advertised; bound argument sizes
 - [ ] Event store with an append-only hash chain
 - [ ] Adversarial fixture suite
@@ -49,8 +51,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## babbage
 
 - [x] Install OpenShell v0.1.3: release binaries in `~/.local/opt/openshell-0.1.3/bin`, checked against the published SHA-256 checksums, GitHub's digests and the release workflow's build attestations
-- [ ] Run OpenShell's kernel qualification outside agent shells
-- [ ] Exercise the VM driver (experimental at v0.1.3) on KVM
+- [x] OpenShell's kernel qualification: it runs inside each sandbox (the guest kernel, for the VM driver) and passed; no host-side check needs user namespaces (lab, 2026-10-10)
+- [x] Exercise the VM driver (experimental at v0.1.3) on KVM: gateway and sandboxes ran from a systemd user unit (lab, 2026-10-10)
 
 ## Repository
 
