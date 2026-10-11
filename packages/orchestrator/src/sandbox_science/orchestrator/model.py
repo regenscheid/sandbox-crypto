@@ -110,25 +110,38 @@ class OpenAICompatibleModel:
 
 
 def _parse_completion(text: str) -> ModelTurn:
+    """A completion as a turn; anything not shaped like one is a ModelError."""
     try:
-        data = cast(dict[str, Any], json.loads(text))
-        choice = cast(dict[str, Any], data["choices"][0])
-        message = cast(dict[str, Any], choice["message"])
-    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        data: object = json.loads(text)
+        choice = _object(_object(data)["choices"][0])
+        message = _object(choice["message"])
+        raw_calls: object = message.get("tool_calls") or []
+        if not isinstance(raw_calls, list):
+            raise TypeError("tool_calls is not a list")
+        calls: list[ToolCall] = []
+        for raw in cast(list[object], raw_calls):
+            call = _object(raw)
+            function = _object(call.get("function") or {})
+            arguments = function.get("arguments", "{}")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments)
+            calls.append(
+                ToolCall(str(call.get("id", "")), str(function.get("name", "")), arguments)
+            )
+    except (ValueError, KeyError, IndexError, TypeError, RecursionError) as exc:
         raise ModelError(f"unexpected completion: {text[:300]}") from exc
-    calls: list[ToolCall] = []
-    for raw in cast(list[dict[str, Any]], message.get("tool_calls") or []):
-        function = cast(dict[str, Any], raw.get("function") or {})
-        arguments = function.get("arguments", "{}")
-        if not isinstance(arguments, str):
-            arguments = json.dumps(arguments)
-        calls.append(ToolCall(str(raw.get("id", "")), str(function.get("name", "")), arguments))
-    content = message.get("content")
+    content, finish = message.get("content"), choice.get("finish_reason")
     return ModelTurn(
         text=content if isinstance(content, str) else None,
         tool_calls=tuple(calls),
-        finish_reason=cast(str | None, choice.get("finish_reason")),
+        finish_reason=finish if isinstance(finish, str) else None,
     )
+
+
+def _object(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise TypeError(f"expected an object, not {type(value).__name__}")
+    return cast(dict[str, Any], value)
 
 
 class ScriptedModel:
