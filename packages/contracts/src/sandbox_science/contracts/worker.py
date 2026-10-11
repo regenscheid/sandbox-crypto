@@ -359,6 +359,17 @@ class KernelRestartRequest(Contract):
     language: Language = "python"
 
 
+class SessionCloseRequest(Contract):
+    """Stop a session's kernels in one environment. Its files stay, and so do shell calls."""
+
+    context: ExecutionContext
+
+
+class SessionClosed(Contract):
+    kernels: tuple[KernelInfo, ...] = ()
+    """The kernels that were running and are now stopped."""
+
+
 class ReadFileRequest(Contract):
     """Read up to ``length`` bytes from ``offset``; larger files are read in ranges."""
 

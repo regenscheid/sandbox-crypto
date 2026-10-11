@@ -7,6 +7,7 @@ Updated: 2026-10-11.
 ## Recent progress
 
 - Base profile images (D46, D77 proposed; [images](../docs/IMAGES.md)). `images/` holds the recipes for `minimal` and `crypto-base`, pinned throughout, with Conda lockfiles for both architectures. Both were built for linux/amd64 on babbage and passed their checks as plain containers: read-only root, uid 1000, and under a Landlock ruleset like OpenShell's. In crypto-base the executor offers Python and Sage, and SageMath, fpylll, G6K, lattice-estimator, `latexmk`, the PDF tools and the in-sandbox PDF helper work. Next: run them in an OpenShell lab; build arm64.
+- MCP proxy, first version (`packages/mcp-proxy`, D75 proposed, [docs](../docs/MCP-CONNECTORS.md#the-mcp-proxy-as-built)). It decides every MCP message with the policy library under the project's revision, refuses escalations as pending requests, records alerts before they proceed and keeps one record per call. It applies lab 2's findings: exact advertised tool names, `MCP-Protocol-Version` after `initialize`, and placeholders only in headers. Tested against a fake Streamable HTTP server; not yet run in its OpenShell sandbox.
 - W1 boundary end to end ([lab 7](docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md)). The harness ran in its own OpenShell sandbox, whose compiled policy admits only the worker API, and drove tools in a research sandbox the worker created. Every tool ran there at tier 3, with the probe's evidence and Python state kept. Neither sandbox could reach what it shouldn't. A harness killed mid-cell reattached to the same execution.
 - Package clients in sandboxes: with its `package_cache` setting, the worker has the executor write pip, uv, conda (mamba, micromamba), Cargo, Go and npm configuration that reaches the cache only, keeping files someone changed ([client configuration](../docs/PACKAGE-CACHE.md#client-configuration)). Real clients installed through a loopback cache with it; an OpenShell lab is still to come.
 - Event store (`packages/event-store`, D74 proposed, [docs](../docs/EVENT-STORE.md)): hash-chained SQLite records, checkpoints and the `sandbox-science-events` command. The policy middleware records its escalations, alerts and monitor findings there instead of `events.jsonl`.
@@ -37,11 +38,13 @@ Updated: 2026-10-11.
 
 - Orchestrator: the middleware's policy store and bindings, escalation grants, and on-demand admission of hosts.
 - W0 behavior specifications.
+- The MCP proxy in its OpenShell sandbox (lab), and the connector auth service for crypto-research-mcp.
 
 ## Blockers and open questions
 
 - Confirm D68 (policy evaluation details), the details of D69 (its direction, OpenShell plus a policy middleware, is confirmed), D70 (the middleware service) and PSF-2.0 and MIT-0 in tier 1.
 - Confirm D74 (event store), and decide where its checkpoints are kept.
+- Confirm D75 (the MCP proxy on its own JSON-RPC layer rather than the MCP SDK, which D67 planned).
 - OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's planned tier 3 isolation depends on it (D43). It worked throughout the lab.
 - babbage enforces Ubuntu's AppArmor restriction on unprivileged user namespaces. Shells started from Claude Desktop run under its `claude-desktop` profile and are exempt, so qualification checks must run from a plain terminal or `systemd-run --user`.
 - crypto-analysis-skills: confirm the copyright holder before merging its MIT LICENSE pull request.
