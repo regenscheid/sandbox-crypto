@@ -22,6 +22,15 @@ from .environments import (
 )
 from .events import Event, OutputEvent, ResultEvent, StateEvent, StreamEvent
 from .model import Contract, Identifier, new_id
+from .revisions import (
+    CondaPackage,
+    EnvironmentRevision,
+    Lockfile,
+    LockfileRef,
+    PackageCommand,
+    PipDistribution,
+    RevisionHistory,
+)
 from .worker import (
     TERMINAL_STATES,
     Capabilities,
@@ -64,9 +73,11 @@ __all__ = [
     "ArtifactRef",
     "Capabilities",
     "CellRequest",
+    "CondaPackage",
     "Contract",
     "EnvironmentInfo",
     "EnvironmentRequest",
+    "EnvironmentRevision",
     "EnvironmentState",
     "ErrorInfo",
     "ErrorKind",
@@ -85,8 +96,12 @@ __all__ = [
     "KernelRestartRequest",
     "ListFilesRequest",
     "Location",
+    "Lockfile",
+    "LockfileRef",
     "OutputEvent",
+    "PackageCommand",
     "PdfRequest",
+    "PipDistribution",
     "PolicyRevision",
     "PolicyRevisionRequest",
     "ProbeFacts",
@@ -94,6 +109,7 @@ __all__ = [
     "ReadFileRequest",
     "Result",
     "ResultEvent",
+    "RevisionHistory",
     "RichOutput",
     "SessionCloseRequest",
     "SessionClosed",
