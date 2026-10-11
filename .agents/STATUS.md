@@ -6,6 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Shared data across a project's environments** (D79). The worker keeps a project's `shared/` area in step across its environments, before and after every call. A dedicated session now sees the shared results of the project's other sessions, and two environments changing one file leave a conflict copy, of which the agent is told. Still to run on babbage.
 - **An image for the MCP proxy** ([lab 15](docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md)). The `mcp-proxy` image runs the proxy as its sandbox's command, through a launcher that waits for its settings and restarts it. In OpenShell, the providers' placeholders reached it, and it came back after the sandbox stopped and started; the port forward has to be started again.
 - **One policy store.** The middleware, the worker and the MCP proxy now share one store module in the policy library, and the worker no longer depends on the middleware package.
 - **Admission ahead of use** (D69). The agent can name the sites its code will contact before running it (`admit_hosts`), and the worker admits the allowed ones in one policy reload, so the first connection need not fail and no transfer is cut. In [lab 14](docs/agent-reports/babbage-openshell-lab-14-2026-10-11.md), a host named this way was reachable on the first connection, and clients limited to projects held against a real gateway.
@@ -66,7 +67,7 @@ Updated: 2026-10-11.
 
 ## Next
 
-- M2 (W3): shared data across a project's environments by worker-synced copies (D79), and the Conda provisioning spec: installs queued, recorded with lockfiles and probed. The read-only root filesystem is deferred (D48).
+- M2 (W3): the Conda provisioning spec (installs queued, recorded with lockfiles and probed), and a lab of shared data across environments (D79) with it. The read-only root filesystem is deferred (D48).
 - M2 (W4): the research workspace (living documents, ledger and board, comments, automatic consistency review), which the M2 exit run needs.
 - MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
 - Worker: environment IDs per project, and limits per client.
