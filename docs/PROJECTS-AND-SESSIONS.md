@@ -43,7 +43,10 @@ Use a project data namespace with session workspaces and a shared area. Proposed
 project/
   shared/                 reusable sources, inputs, code, and published results
   sessions/<session-id>/  workbook files, intermediate work, and outputs
+  documents/              living documents, kept by the platform at their current revisions
 ```
+
+The `documents/` area holds each living document as a Markdown file, in every environment of the project; its history stays in the control store, and edits made to the files are merged into it ([living documents](specs/living-documents.md), D65).
 
 A separate session container can access project data through scoped mounts, a storage API, or explicit transfer. The same API should resolve project references on local and remote pools. Cross-host sessions cannot assume access to a host-local volume. Kubernetes storage access modes and the selected storage driver constrain which mounts can be shared. [Persistent volumes](https://kubernetes.io/docs/concepts/storage/persistent-volumes/)
 
