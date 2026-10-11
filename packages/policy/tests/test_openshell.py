@@ -1306,7 +1306,10 @@ def test_the_orchestrator_reaches_only_the_worker_api_and_the_model_gateway() ->
     for entry in policy.network_policies.values():
         assert entry.binaries == (Binary(path="/opt/sandbox-science/bin/python*"),)
     assert policy.network_middlewares is None
-    assert policy.filesystem_policy == FilesystemPolicy(include_workdir=True)
+    # The harness runs from the image's prefix, which Landlock must let it read (lab 9).
+    assert policy.filesystem_policy == FilesystemPolicy(
+        include_workdir=True, read_only=("/opt/sandbox-science",)
+    )
     document = yaml.safe_load(policy.to_yaml())
     assert schema_keys(document) <= ALLOWED_KEYS
     assert None not in leaf_values(document)

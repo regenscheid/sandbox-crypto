@@ -2,10 +2,19 @@
 
 Updated: 2026-10-11.
 
-**Phase:** 1 (babbage), milestone M0. **Focus:** infrastructure track P: the policy library, its OpenShell compiler and the policy middleware.
+**Phase:** 1 (babbage), milestone M1: its exit run passed on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M0's specs and decisions still await the user's review. **Focus:** toward M2: project and session state, shared data across environments, and the MCP connectors.
 
 ## Recent progress
 
+- **The M1 exit run** ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)).
+  - The harness ran in its own sandbox (A), which can reach only the worker API, and drove a research sandbox (B) that the worker had created from the `crypto-base` image, at tier 3 with the probe's evidence.
+  - In B the agent:
+    - fetched Regev's LWE paper;
+    - read it with the PDF tools (37 pages and the outline; hits cited as `p15:23`);
+    - published a page render and a crop of two equations, located from the line boxes;
+    - ran Sage with LaTeX results;
+    - got a useful Python error;
+    - installed through the package cache, with `pypi.org` refused.
 - Base profile images (D46, D77 proposed; [images](../docs/IMAGES.md)). `images/` holds the recipes for `minimal` and `crypto-base`, pinned throughout, with Conda lockfiles for both architectures. Both were built for linux/amd64 on babbage and passed their checks as plain containers: read-only root, uid 1000, and under a Landlock ruleset like OpenShell's. In crypto-base the executor offers Python and Sage, and SageMath, fpylll, G6K, lattice-estimator, `latexmk`, the PDF tools and the in-sandbox PDF helper work. Next: run them in an OpenShell lab; build arm64.
 - MCP proxy, first version (`packages/mcp-proxy`, D75 proposed, [docs](../docs/MCP-CONNECTORS.md#the-mcp-proxy-as-built)). It decides every MCP message with the policy library under the project's revision, refuses escalations as pending requests, records alerts before they proceed and keeps one record per call. It applies lab 2's findings: exact advertised tool names, `MCP-Protocol-Version` after `initialize`, and placeholders only in headers. Tested against a fake Streamable HTTP server; not yet run in its OpenShell sandbox.
 - W1 boundary end to end ([lab 7](docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md)). The harness ran in its own OpenShell sandbox, whose compiled policy admits only the worker API, and drove tools in a research sandbox the worker created. Every tool ran there at tier 3, with the probe's evidence and Python state kept. Neither sandbox could reach what it shouldn't. A harness killed mid-cell reattached to the same execution.
@@ -36,15 +45,35 @@ Updated: 2026-10-11.
 
 ## Next
 
-- Orchestrator: the middleware's policy store and bindings, escalation grants, and on-demand admission of hosts.
-- W0 behavior specifications.
-- The MCP proxy in its OpenShell sandbox (lab), and the connector auth service for crypto-research-mcp.
+- M2: project and session state (W3), shared data across a project's environments, and the orchestrator closing sessions and creating environments itself.
+- The MCP proxy in its OpenShell sandbox (lab), the connector auth service for crypto-research-mcp, and grants in the proxy (D76).
+- On-demand admission of hosts (D69).
 
 ## Blockers and open questions
 
-- Confirm D68 (policy evaluation details), the details of D69 (its direction, OpenShell plus a policy middleware, is confirmed), D70 (the middleware service) and PSF-2.0 and MIT-0 in tier 1.
-- Confirm D74 (event store), and decide where its checkpoints are kept.
-- Confirm D75 (the MCP proxy on its own JSON-RPC layer rather than the MCP SDK, which D67 planned).
-- OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's planned tier 3 isolation depends on it (D43). It worked throughout the lab.
+Decisions to confirm, each proposed with a recommendation in its row:
+- D68 (policy evaluation details), the details of D69 and D70, and PSF-2.0 and MIT-0 in tier 1.
+- D72 (harness components), D73 (the worker creates sandboxes), D74 (event store), D75 (MCP proxy on its own JSON-RPC layer), D76 (permission requests) and D77 (image contract).
+
+Questions with a recommendation, waiting for the user:
+- **Shared data across environments.** OpenShell VMs share no filesystem, so a workbook in its own environment cannot see the project's `shared/` area (W3). Recommended: the worker keeps the project's shared area and copies changes between environments before and after each call, with a conflict copy when two environments change the same file. The alternative is explicit transfer only.
+- **Event store checkpoints.** Recommended: a user timer on babbage that writes each checkpoint to the journal, which the user's processes cannot rewrite.
+- **Images.**
+  - No registry on babbage, since OpenShell reads the local Docker store; a self-hosted Zot or Distribution on the cluster.
+  - Keep G6K at x86-64-v3 (AVX2).
+  - Accept the GPL runtime libraries in `minimal` and add an SBOM before it is ever published.
+  - Keep crypto-base's compilers, R and OpenJDK.
+  - Let projects carry the IACR LaTeX classes.
+- **MCP proxy.**
+  - Build MCP 2026-07-28 only when a server needs it.
+  - Keep binary results withheld until artifact references exist.
+  - Keep `max_argument_bytes` in the policy.
+  - Decide whether worker code may use `resources/read`, `prompts/get` and `completion/complete`, which `worker_tools` does not restrict.
+- **The W0 specs** (tools, skills, plans and delegation, consistency review, Conda provisioning, research artifacts, PDF sources), each with its open questions.
+- **A real model.** The first slice with a real model needs the user's LiteLLM gateway and a virtual key.
+- **Upstream.** Whether to file the OpenShell and libzmq descriptions in `.agents/upstream/`.
+
+Known facts to keep in mind:
+- OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's tier 3 depends on it (D43); it worked in every lab.
 - babbage enforces Ubuntu's AppArmor restriction on unprivileged user namespaces. Shells started from Claude Desktop run under its `claude-desktop` profile and are exempt, so qualification checks must run from a plain terminal or `systemd-run --user`.
 - crypto-analysis-skills: confirm the copyright holder before merging its MIT LICENSE pull request.
