@@ -16,7 +16,7 @@ from .errors import ClassificationError
 from .floor import HardFloor
 from .hosts import HostKind, address_forms, is_public, parse_ip
 from .loader import LoadedPolicy
-from .model import GitRule, HttpRule, OnTimeout
+from .model import CondaPackages, GitRule, HttpRule, OnTimeout, Packages, RegistryPackages
 from .operations import (
     DEFAULT_PORTS,
     GitOperation,
@@ -105,7 +105,7 @@ def evaluate(
         case McpOperation():
             return _evaluate_mcp(operation, policy, ceiling, floor, resolved)
         case PackageOperation():
-            return _evaluate_package(operation, policy)
+            return _evaluate_package(operation, policy, ceiling, floor)
         case _:
             assert_never(operation)
 
@@ -279,15 +279,78 @@ def _operation_path(operation: HttpOperation | GitOperation) -> str:
 
 PACKAGE_INDEX_HOSTS: Final = frozenset(
     {
+        # PyPI
         "pypi.org",
         "pypi.python.org",
         "files.pythonhosted.org",
+        # conda
         "conda.anaconda.org",
         "repo.anaconda.com",
         "repo.prefix.dev",
+        # Cargo
+        "crates.io",
+        "index.crates.io",
+        "static.crates.io",
+        # Go
+        "proxy.golang.org",
+        "sum.golang.org",
+        # npm
+        "registry.npmjs.org",
+        "registry.yarnpkg.com",
+        # Aliases and mirrors of the same registries
+        "test.pypi.org",
+        "anaconda.org",
+        "repo.continuum.io",
+        "prefix.dev",
+        "registry.npmjs.com",
+        "replicate.npmjs.com",
+        "skimdb.npmjs.com",
+        "npm.pkg.github.com",
+        "registry.npmmirror.com",
+        "cdn.jsdelivr.net",
+        "unpkg.com",
+        "goproxy.io",
+        "goproxy.cn",
+        "proxy.golang.com.cn",
+        "sum.golang.google.cn",
     }
 )
-"""Package indexes, which workers reach only through the package mirror (D44)."""
+"""Package registries, which workers reach only through the package cache (D44, D71)."""
+
+PACKAGE_REGISTRY_SUFFIXES: Final = (
+    ".pythonhosted.org",
+    ".anaconda.org",
+    ".prefix.dev",
+    ".crates.io",
+)
+"""Domains whose every host serves a package registry or its files."""
+
+ECOSYSTEM_UPSTREAMS: Final[dict[str, tuple[str, ...]]] = {
+    "pypi": ("pypi.org", "files.pythonhosted.org"),
+    "conda": ("conda.anaconda.org",),
+    "cargo": ("index.crates.io", "static.crates.io"),
+    "go": ("proxy.golang.org", "sum.golang.org"),
+    "npm": ("registry.npmjs.org",),
+}
+"""The registries the package cache fetches from, per ecosystem; the pool ceiling applies."""
+
+
+def registry_reason(host: str) -> str | None:
+    """Why a host is reachable only through the package cache, or None."""
+    if host in PACKAGE_INDEX_HOSTS or host.endswith(PACKAGE_REGISTRY_SUFFIXES):
+        return f"{host} is a package registry, reachable only through the package cache"
+    return None
+
+
+def reserved_host_reason(host: str, policy: LoadedPolicy) -> str | None:
+    """Why a host is reserved for a platform route (a registry or a declared MCP server)."""
+    reason = registry_reason(host)
+    if reason is not None:
+        return reason
+    for name, server in policy.policy.mcp.servers.items():
+        if server.host == host:
+            return f"{host} hosts MCP server {name!r}, reachable only through the MCP proxy"
+    return None
 
 
 def _mcp_host(
@@ -328,14 +391,11 @@ def _evaluate_network(
             "the MCP proxy (D67)",
             policy,
         )
-    if operation.host in PACKAGE_INDEX_HOSTS:
-        # Otherwise a read rule would let workers fetch packages around the mirror and the
-        # packages section (channel and ecosystem rules).
-        return _deny(
-            "floor",
-            f"{operation.host} is a package index, reachable only through the package mirror",
-            policy,
-        )
+    # Otherwise a read rule would let workers fetch packages around the package
+    # cache and the packages section (ecosystem and channel rules).
+    reason = registry_reason(operation.host)
+    if reason is not None:
+        return _deny("floor", reason, policy)
 
     operation_class = "http" if isinstance(operation, HttpOperation) else "git"
     candidates: list[_Candidate] = []
@@ -504,31 +564,102 @@ def _evaluate_mcp(
     return _decision(action, "policy", f"tool {tool!r} matched {label}", policy, rule=label)
 
 
-def _evaluate_package(operation: PackageOperation, policy: LoadedPolicy) -> Decision:
+def _evaluate_package(
+    operation: PackageOperation, policy: LoadedPolicy, ceiling: PoolCeiling, floor: HardFloor
+) -> Decision:
+    """Decide a request to the package cache ("Packages").
+
+    The ecosystem's action applies to package files. Index lookups install
+    nothing, so they are allowed unless that action is ``deny``: an escalation
+    then asks about the install, not about reading the index the solver needs.
+    The pool ceiling applies to the registries the cache fetches from. A Go
+    module request also counts as a read of the module's origin host, because
+    the Go module proxy fetches modules it lacks from there.
+    """
     packages = policy.policy.packages
-    if operation.ecosystem == "conda":
-        conda = packages.conda
-        if conda is None:
-            action = policy.policy.defaults.action
-            return _decision(
-                action, "default", f"conda is not configured; defaults.action is {action}", policy
-            )
-        if operation.channel not in conda.channels:
-            return _deny(
-                "policy",
-                f"conda channel {operation.channel!r} is not allowed",
-                policy,
-                rule="packages.conda",
-            )
-        return _decision(
-            conda.action, "policy", f"conda package {operation.name}", policy, rule="packages.conda"
-        )
-    pypi = packages.pypi
-    if pypi is None:
+    label = _ECOSYSTEM_LABELS[operation.ecosystem]
+    for host in ECOSYSTEM_UPSTREAMS[operation.ecosystem]:
+        reason = ceiling.check_host(host)
+        if reason is not None:
+            return _deny("ceiling", f"{label} registry: {reason}", policy)
+    config = _ecosystem_config(packages, operation.ecosystem)
+    if config is None:
         action = policy.policy.defaults.action
-        return _decision(
-            action, "default", f"PyPI is not configured; defaults.action is {action}", policy
+        layer: Layer = "default"
+        rule = None
+        reason = f"{label} is not configured; defaults.action is {action}"
+        channels: tuple[str, ...] = ("conda-forge",)
+    else:
+        action = config.action
+        layer = "policy"
+        rule = f"packages.{operation.ecosystem}"
+        reason = f"{label} package {operation.name}" if operation.name else f"{label} index"
+        channels = config.channels if isinstance(config, CondaPackages) else ()
+    if operation.channel is not None and operation.channel not in channels:
+        return _deny("policy", f"conda channel {operation.channel!r} is not allowed", policy, rule)
+    if operation.kind == "index":
+        if action is Action.DENY:
+            return _deny(layer, f"{reason}: {label} is denied", policy, rule)
+        decision = _decision(Action.ALLOW, layer, f"{reason} (index lookup)", policy, rule=rule)
+    else:
+        decision = _decision(action, layer, reason, policy, rule=rule)
+    if operation.ecosystem == "go" and operation.name is not None:
+        origin = _go_origin_decision(operation.name, policy, ceiling, floor)
+        if origin.action.restrictiveness > decision.action.restrictiveness:
+            return origin
+    return decision
+
+
+def _go_origin_decision(
+    module: str, policy: LoadedPolicy, ceiling: PoolCeiling, floor: HardFloor
+) -> Decision:
+    """Decide a Go module request as a read of its origin, which the module proxy contacts."""
+    origin, _, rest = module.partition("/")
+    path = f"/{rest}"
+    try:
+        probe = HttpOperation(
+            method="GET",
+            scheme="https",
+            host=origin,
+            port=443,
+            path=path,
+            url_bytes=len(f"https://{origin}{path}"),
         )
-    return _decision(
-        pypi.action, "policy", f"PyPI package {operation.name}", policy, rule="packages.pypi"
+    except ClassificationError as exc:
+        return _deny("classification", f"Go module origin {origin!r}: {exc}", policy)
+    decision = _evaluate_network(probe, policy, ceiling, floor, ())
+    return Decision(
+        action=decision.action,
+        layer=decision.layer,
+        reason=f"Go module origin {origin}: {decision.reason}",
+        rule=decision.rule,
+        policy_digest=decision.policy_digest,
+        escalation=decision.escalation,
     )
+
+
+_ECOSYSTEM_LABELS: Final[dict[str, str]] = {
+    "pypi": "PyPI",
+    "conda": "conda",
+    "cargo": "Cargo",
+    "go": "Go",
+    "npm": "npm",
+}
+
+
+def _ecosystem_config(
+    packages: Packages, ecosystem: str
+) -> CondaPackages | RegistryPackages | None:
+    match ecosystem:
+        case "conda":
+            return packages.conda
+        case "pypi":
+            return packages.pypi
+        case "cargo":
+            return packages.cargo
+        case "go":
+            return packages.go
+        case "npm":
+            return packages.npm
+        case _:
+            return None

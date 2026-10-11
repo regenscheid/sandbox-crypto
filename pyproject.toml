@@ -5,11 +5,16 @@ version = "0.0.0"
 description = "Workspace root for the Sandbox Science research workbench"
 requires-python = ">=3.12"
 license = "MIT"
-dependencies = ["sandbox-science-policy", "sandbox-science-policy-middleware"]
+dependencies = [
+    "sandbox-science-package-cache",
+    "sandbox-science-policy",
+    "sandbox-science-policy-middleware",
+]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "pytest-aiohttp>=1.0",
     "pyright>=1.1.390",
     "ruff>=0.8",
     "grpcio-tools>=1.66",
@@ -27,6 +32,7 @@ members = ["packages/*"]
 [tool.uv.sources]
 sandbox-science-policy = { workspace = true }
 sandbox-science-policy-middleware = { workspace = true }
+sandbox-science-package-cache = { workspace = true }
 
 [tool.ruff]
 line-length = 100

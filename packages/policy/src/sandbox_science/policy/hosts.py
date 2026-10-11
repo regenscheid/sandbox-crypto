@@ -33,6 +33,9 @@ _FLOOR_NAMES: Final = frozenset(
         "gateway.docker.internal",
         "host.containers.internal",
         "host.lima.internal",
+        # OpenShell's alias for the gateway host: a VM sandbox reaches the host's
+        # loopback services through it.
+        "host.openshell.internal",
         "metadata",
         "metadata.google.internal",
         "metadata.goog",
