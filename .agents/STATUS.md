@@ -6,6 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Project records in the orchestrator** (W3). The harness records each project's profile, policy and sessions, and creates the default and dedicated environments through the worker. `run --state-dir` picks the session's environment, and `session close` stops its kernels.
 - **The M1 exit run** ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)).
   - The harness ran in its own sandbox (A), which can reach only the worker API, and drove a research sandbox (B) that the worker had created from the `crypto-base` image, at tier 3 with the probe's evidence.
   - In B the agent:

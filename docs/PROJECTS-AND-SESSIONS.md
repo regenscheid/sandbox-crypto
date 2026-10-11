@@ -69,6 +69,32 @@ Use one environment manager for creation, provisioning, capability probes and ca
 
 Closing the GUI does not terminate active computations or discard state. Live kernel recovery remains best effort, with explicit restart/state-loss reporting; stopping or recreating a container does not itself preserve process memory. A new session container still starts from the base image, while restoring an existing logical environment restores that environment's captured state.
 
+## As built: the harness's project records
+
+The harness keeps a record of each project in its state directory (`packages/orchestrator`, `projects.py`). A record holds:
+- the project's base profile and policy revision;
+- its default environment, `<project>-default`;
+- its sessions, each with the environment it runs in and when it was last closed.
+
+```bash
+sandbox-science-harness project create --state-dir state --project p1 --profile minimal --policy sha256:...
+sandbox-science-harness run --state-dir state --project p1 --session a ... "task"
+sandbox-science-harness run --state-dir state --project p1 --session c --dedicated ... "task"
+sandbox-science-harness session close --state-dir state --project p1 --session a --worker ... --token-file ...
+sandbox-science-harness project revise --state-dir state --project p1 --policy sha256:... --worker ... --token-file ...
+```
+
+- **Running a session.** A session runs in the default environment, with its own kernels and workspace. With `--dedicated`, a new session gets an environment of its own, `<project>-<session>`, from the same base profile. A session keeps the mode it started with.
+- **Environments.** Before a session runs, the harness has the worker create its environment, or revise it to the project's current policy revision (D73). A worker that does not manage environments, such as the local one, takes the ID as it is.
+- **Closing a session** stops its kernels; running it again opens it again. Files stay.
+- **Revising a project** records the new revision. With `--worker`, it also revises the project's environments at once; otherwise each is revised when a session next runs there.
+- **Concurrency.** Records are JSON files rewritten atomically under a lock, so concurrent harness processes keep each other's sessions.
+
+Not yet built:
+- shared data across environments, which waits on the user's choice (worker-brokered copies with conflict copies, or explicit transfer);
+- environment revisions that count package changes;
+- capture and restore.
+
 ## Backend feasibility checks
 
 Verify local and hosted pools support persistent data and dependency state, idle suspend/restore, multiple sessions/kernels in the project container, dedicated session provisioning, scoped same-project sharing, concurrent file publication, and truthful restart/reset behavior. Local Kubernetes is an accepted initial execution path. Test monitor attribution when two sessions share one sandbox: sandbox identity alone cannot identify the requesting workbook.
