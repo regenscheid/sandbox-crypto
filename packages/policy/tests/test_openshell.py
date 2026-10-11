@@ -182,11 +182,15 @@ def test_example_sandbox_policy() -> None:
         "sandbox-science-package-mirror",
         "sandbox-science-mcp-proxy",
     ]
-    (public,) = entries["sandbox-science-egress"].endpoints
+    public, *named = entries["sandbox-science-egress"].endpoints
     assert public.host is None
     assert (public.protocol, public.enforcement, public.access) == ("rest", "enforce", "full")
     assert public.ports == (80, 443)
     assert public.allowed_ips == public_address_ranges()
+    # The git-fetch rule names its hosts, so the sandbox can resolve them.
+    assert [endpoint.host for endpoint in named] == ["codeberg.org", "github.com", "gitlab.com"]
+    for endpoint in named:
+        assert endpoint.model_dump(exclude={"host"}) == public.model_dump(exclude={"host"})
     for key in ("sandbox-science-package-mirror", "sandbox-science-mcp-proxy"):
         (service,) = entries[key].endpoints
         assert service.protocol == "tcp"
@@ -259,6 +263,66 @@ def test_lan_addresses_join_the_public_endpoint_and_lan_names_are_refused() -> N
     refused = [finding for finding in compiled.findings if finding.subject == "hosts.nas.local"]
     assert refused
     assert refused[0].severity is Severity.WARNING
+
+
+def test_named_public_hosts_get_endpoints_beside_the_host_less_one() -> None:
+    # OpenShell's policy DNS answers only for hosts an endpoint names, so a
+    # sandbox could not resolve these names through the host-less endpoint.
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: web, operation: http, match: {hosts: ['*'], methods: [GET]}, action: allow}\n"
+        "    - {name: api, operation: http, match: {hosts: [api.example.org, 93.184.215.14], "
+        "methods: [POST]}, action: allow}\n"
+        "    - {name: blocked, operation: http, match: {hosts: [bad.example.org]}, action: deny}\n"
+    )
+    compiled = compile_research(policy)
+    public, *named = compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    assert public.host is None
+    assert [endpoint.host for endpoint in named] == ["api.example.org"]
+    (api,) = named
+    assert api.allowed_ips == public.allowed_ips
+    assert (api.ports, api.protocol, api.enforcement, api.access) == (
+        public.ports,
+        "rest",
+        "enforce",
+        "full",
+    )
+    warnings = [f.message for f in compiled.findings if f.severity is Severity.WARNING]
+    assert any("reach only the hosts this policy names" in message for message in warnings)
+
+
+def test_wildcard_rules_become_openshell_subdomain_wildcards() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: arxiv, operation: http, match: {hosts: ['*.arxiv.org', '*.org', "
+        "'*.corp.internal']}, action: allow}\n",
+        default="deny",
+    )
+    compiled = compile_research(policy)
+    public, *named = compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    assert public.host is None
+    # The library's *.suffix matches any depth below the suffix: OpenShell's **.
+    assert [endpoint.host for endpoint in named] == ["**.arxiv.org"]
+    assert named[0].allowed_ips == public.allowed_ips
+    tld = [f for f in compiled.findings if f.subject == "hosts.*.org"]
+    assert len(tld) == 1
+    assert tld[0].severity is Severity.WARNING
+    assert "three labels" in tld[0].message
+    # Wildcards never grant non-public names, so none is admitted or reported.
+    assert not any("corp.internal" in f.subject for f in compiled.findings)
+    # Defaults deny and no rule is for '*': nothing is limited to named hosts.
+    assert not any("reach only the hosts" in f.message for f in compiled.findings)
+
+
+def test_floor_hosts_are_not_named_beside_the_host_less_endpoint() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: web, operation: http, match: {hosts: ['*', metadata.goog, "
+        "blocked.example.org]}, action: allow}\n"
+    )
+    compiled = compile_research(policy, network={"deny_hosts": ["blocked.example.org"]})
+    (public,) = compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    assert public.host is None
 
 
 def test_floor_and_ceiling_hosts_are_not_admitted() -> None:

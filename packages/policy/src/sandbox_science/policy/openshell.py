@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from os import PathLike
@@ -39,6 +40,8 @@ from .loader import LoadedPolicy, parse_model, read_limited
 from .model import (
     API_VERSION,
     BearerAuth,
+    GitRule,
+    HttpRule,
     McpServer,
     Name,
     NoAuth,
@@ -370,6 +373,35 @@ def public_address_ranges() -> tuple[str, ...]:
     return tuple(str(network) for network in (*ipv4, *ipv6))
 
 
+def _wildcard_hosts(rules: Sequence[HttpRule | GitRule], findings: list[Finding]) -> list[str]:
+    """OpenShell host patterns for the rules' ``*.suffix`` wildcards.
+
+    The library's ``*.suffix`` matches names at any depth below the suffix, which
+    is OpenShell's ``**.suffix``. OpenShell requires three labels in a wildcard
+    host, so a wildcard over a top-level domain cannot be named; wildcards never
+    grant non-public names, so those are not named either.
+    """
+    hosts: set[str] = set()
+    for rule in rules:
+        for pattern in rule.match.hosts:
+            # The suffix itself may be a lone label such as "org"; what matters is
+            # whether the names under it are public.
+            if pattern.kind is not HostKind.WILDCARD or not is_public(f"x.{pattern.value}"):
+                continue
+            if pattern.labels < 2:
+                findings.append(
+                    Finding(
+                        Severity.WARNING,
+                        f"hosts.{pattern}",
+                        "OpenShell wildcard hosts need three labels, so names under this "
+                        "pattern cannot be resolved in a sandbox (stricter)",
+                    )
+                )
+                continue
+            hosts.add(f"**.{pattern.value}")
+    return sorted(hosts)
+
+
 def compile_sandbox(
     policy: LoadedPolicy,
     target: SandboxTarget,
@@ -416,13 +448,20 @@ def compile_sandbox(
     )
     endpoints: list[Endpoint] = []
     private_addresses: list[str] = []
+    # OpenShell's policy DNS answers only for host names that an endpoint names;
+    # a sandbox cannot resolve any other name, so the host-less endpoint admits
+    # only requests to addresses. Public names the rules mention get endpoints of
+    # their own, beside it.
+    named_hosts: list[str] = []
     for host in exact_hosts:
         reason = floor.check_host(host) or ceiling.check_host(host)
         if reason is not None:
             findings.append(Finding(Severity.WARNING, f"hosts.{host}", f"not admitted: {reason}"))
             continue
         if open_internet and is_public(host):
-            continue  # admitted by the host-less endpoint
+            if parse_ip(host) is None:
+                named_hosts.append(host)
+            continue  # addresses: admitted by the host-less endpoint
         if not open_internet:
             endpoints.append(
                 Endpoint(
@@ -454,6 +493,7 @@ def compile_sandbox(
                 )
             )
     if open_internet:
+        allowed_ips = (*public_address_ranges(), *private_addresses)
         endpoints.insert(
             0,
             Endpoint(
@@ -461,18 +501,44 @@ def compile_sandbox(
                 protocol="rest",
                 enforcement="enforce",
                 access="full",
-                allowed_ips=(*public_address_ranges(), *private_addresses),
+                allowed_ips=allowed_ips,
             ),
         )
+        # Overlapping OpenShell endpoints must agree on allowed_ips, so the named
+        # endpoints repeat the host-less endpoint's ranges.
+        for host in [*named_hosts, *_wildcard_hosts(reachable, findings)]:
+            endpoints.append(
+                Endpoint(
+                    host=host,
+                    ports=admitted_ports,
+                    protocol="rest",
+                    enforcement="enforce",
+                    access="full",
+                    allowed_ips=allowed_ips,
+                )
+            )
         findings.append(
             Finding(
                 Severity.INFO,
                 "network",
                 "public destinations are admitted by a host-less endpoint limited to public "
                 "address ranges, so OpenShell refuses private and special addresses, as the "
-                "library's wildcard rule does",
+                "library's wildcard rule does; host names reach it only when an endpoint names "
+                "them, because OpenShell's policy DNS answers only for named hosts",
             )
         )
+        if project.defaults.action is not Action.DENY or any(
+            pattern.kind is HostKind.ANY for rule in reachable for pattern in rule.match.hosts
+        ):
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    "network",
+                    "rules for '*' and the default action reach only the hosts this policy "
+                    "names and IP addresses: a sandbox cannot resolve other names until "
+                    "on-demand admission approves them (stricter)",
+                )
+            )
 
     services = [("package-mirror", "package mirror", target.package_mirror)]
     if project.mcp.proxy.worker_access:
