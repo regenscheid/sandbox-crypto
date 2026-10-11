@@ -28,6 +28,7 @@ from sandbox_science.contracts import (
     PolicyRevisionRequest,
     PublishRequest,
     ReadFileRequest,
+    SessionCloseRequest,
     WorkerErrorResponse,
     WriteFileRequest,
 )
@@ -98,6 +99,7 @@ def create_app(
             web.get("/v1/executions/{execution_id}/events", events),
             web.post("/v1/executions/{execution_id}/cancel", cancel),
             web.post("/v1/kernels/restart", restart_kernel),
+            web.post("/v1/sessions/close", close_session),
             web.post("/v1/files/read", read_file),
             web.post("/v1/files/write", write_file),
             web.post("/v1/files/list", list_files),
@@ -208,6 +210,11 @@ async def events(request: web.Request) -> web.StreamResponse:
 async def cancel(request: web.Request) -> web.Response:
     execution_id = request.match_info["execution_id"]
     return _json(await request.app[MANAGER].cancel(execution_id, _project(request)))
+
+
+async def close_session(request: web.Request) -> web.Response:
+    body = SessionCloseRequest.model_validate_json(await _body(request))
+    return _json(await request.app[MANAGER].close_session(body))
 
 
 async def restart_kernel(request: web.Request) -> web.Response:

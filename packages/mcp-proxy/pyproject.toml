@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT
+[project]
+name = "sandbox-science-mcp-proxy"
+version = "0.1.0"
+description = "MCP proxy that decides every call to a project's MCP servers with the Sandbox Science policy library"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "sandbox-science-contracts",
+    "sandbox-science-event-store",
+    "sandbox-science-policy",
+    "aiohttp>=3.10",
+    "pydantic>=2.9",
+]
+
+[project.scripts]
+sandbox-science-mcp-proxy = "sandbox_science.mcp_proxy.cli:main"
+
+[tool.uv.sources]
+sandbox-science-contracts = { workspace = true }
+sandbox-science-event-store = { workspace = true }
+sandbox-science-policy = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_science"]
