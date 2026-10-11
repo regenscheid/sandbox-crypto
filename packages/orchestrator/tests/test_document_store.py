@@ -839,6 +839,16 @@ def test_warnings_on_new_math(store: DocumentStore) -> None:
     assert all(warning["block"] != ids["P"] for warning in stored)
 
 
+def test_a_quoted_equation_is_read_without_its_markers(store: DocumentStore) -> None:
+    # Its TeX keeps the quote's "> ", which reads as Markdown; the checks leave it out.
+    text = "> A display:\n>\n> $$\n> \\sum_{a} a = 0\n> $$\n"
+    created = store.create("p1", name="q", title="Q", text=text, author=USER)
+    assert created.warnings == []
+    swallowing = "> $$\n> x = 1\n> Then we have the following\n> $$\n"
+    found = store.create("p1", name="s", title="S", text=swallowing, author=USER)
+    assert [warning["kind"] for warning in found.warnings] == ["display_swallows_text"]
+
+
 def test_front_matter_problems_are_warnings(store: DocumentStore) -> None:
     result = store.create(
         "p1", name="bad", title="Bad", text="---\nmacros: [1]\n---\nText.\n", author=USER

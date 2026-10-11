@@ -13,10 +13,19 @@ The YAML is read with PyYAML's safe loader, without aliases (which can make a fe
 expand into a great many), within a size limit. What it cannot read, or reads as
 something other than a title and macros, is reported as a warning on the revision; the
 text is kept as it is.
+
+Macros are passed to KaTeX, which expands them as it renders, and a few short ones that
+use one another can expand into a great many characters. So a macro is left out, with a
+warning, when its definition defines another (as ``\\def`` does), uses one of its
+arguments more than once (which would let it multiply what it is given), expands into
+itself, or expands to more than ``MAX_EXPANDED`` characters with the macros it uses
+expanded too. The browser checks the same as it renders, and bounds what each formula's
+macros expand to in all (web/workspace/src/lib/macros.ts).
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
@@ -28,8 +37,33 @@ MAX_FRONT_MATTER: Final = 16 * 1024
 MAX_MACROS: Final = 200
 MAX_MACRO: Final = 1000
 """Characters in one macro's definition."""
+MAX_EXPANDED: Final = 2000
+"""Characters a macro may expand to, the macros it uses expanded too."""
 
 _MACRO_NAME: Final = re.compile(r"\\?([A-Za-z]+|[^A-Za-z\s])")
+_CONTROL: Final = re.compile(r"\\(?:[A-Za-z]+|.)", re.DOTALL)
+_ARGUMENT: Final = re.compile(r"#([1-9])")
+_DEFINITIONS: Final = frozenset(
+    {
+        "\\def",
+        "\\gdef",
+        "\\edef",
+        "\\xdef",
+        "\\let",
+        "\\futurelet",
+        "\\global",
+        "\\long",
+        "\\outer",
+        "\\newcommand",
+        "\\renewcommand",
+        "\\providecommand",
+        "\\DeclareRobustCommand",
+        "\\DeclareMathOperator",
+        "\\newenvironment",
+        "\\renewenvironment",
+    }
+)
+"""Commands that define macros, as the browser refuses them in a formula."""
 
 
 class _NoAliases(yaml.SafeLoader):
@@ -91,5 +125,57 @@ def read_front_matter(content: str) -> FrontMatter:
                     continue
                 macros["\\" + match[1]] = text
     return FrontMatter(
-        title=None if title is None else str(title), macros=macros, problems=tuple(problems)
+        title=None if title is None else str(title),
+        macros=_bounded(macros, problems),
+        problems=tuple(problems),
     )
+
+
+def _bounded(macros: dict[str, str], problems: list[str]) -> dict[str, str]:
+    """The macros without those that define others or expand without bound."""
+    kept: dict[str, str] = {}
+    for name, body in macros.items():
+        defines = next(
+            (found[0] for found in _CONTROL.finditer(body) if found[0] in _DEFINITIONS), None
+        )
+        if defines is not None:
+            problems.append(f"macro {name} defines another ({defines}): it is left out")
+            continue
+        arguments = [found[1] for found in _ARGUMENT.finditer(body.replace("##", ""))]
+        repeated = next((number for number in arguments if arguments.count(number) > 1), None)
+        if repeated is not None:
+            problems.append(f"macro {name} uses #{repeated} more than once: it is left out")
+            continue
+        kept[name] = body
+    sizes: dict[str, float] = {}
+
+    def expanded(name: str, visiting: set[str]) -> float:
+        """What ``name`` expands to, in characters; infinite when it expands into itself."""
+        if name in sizes:
+            return sizes[name]
+        if name in visiting:
+            return math.inf
+        visiting.add(name)
+        body = kept[name]
+        total: float = len(body)
+        for found in _CONTROL.finditer(body):
+            if found[0] in kept:
+                total += expanded(found[0], visiting) - len(found[0])
+                if total == math.inf:
+                    break
+        visiting.discard(name)
+        sizes[name] = total
+        return total
+
+    bounded: dict[str, str] = {}
+    for name, body in kept.items():
+        size = expanded(name, set())
+        if size == math.inf:
+            problems.append(f"macro {name} expands into itself: it is left out")
+        elif size > MAX_EXPANDED:
+            problems.append(
+                f"macro {name} expands to more than {MAX_EXPANDED} characters: it is left out"
+            )
+        else:
+            bounded[name] = body
+    return bounded
