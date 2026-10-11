@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 
 class McpProxyError(Exception):
     """Base class for MCP proxy errors."""
@@ -23,12 +25,16 @@ class MessageError(McpProxyError):
 class RefusalError(McpProxyError):
     """The proxy refuses a call before sending it to the server.
 
-    ``reason_code`` is what the caller is told; the message is for the proxy's log.
+    ``reason_code`` is what the caller is told, with ``data`` such as a permission request's
+    number; the message is for the proxy's log.
     """
 
-    def __init__(self, reason_code: str, detail: str) -> None:
+    def __init__(
+        self, reason_code: str, detail: str, *, data: Mapping[str, object] | None = None
+    ) -> None:
         super().__init__(detail)
         self.reason_code = reason_code
+        self.data = dict(data or {})
 
 
 class UpstreamError(McpProxyError):

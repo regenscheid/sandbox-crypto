@@ -39,9 +39,9 @@ from sandbox_science.policy import (
     evaluate_monitors,
     normalize_host,
 )
+from sandbox_science.policy.approvals import Approvals, RequestKey
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
 
-from .approvals import Approvals, Target
 from .archives import MAX_PACKAGES, ArchiveLookup
 from .errors import MiddlewareError, StoreError
 from .events import EventSink
@@ -260,7 +260,8 @@ class PolicyMiddleware:
         """``archives``, when given, names the opam packages of escalated opam archives.
 
         ``requests`` reads the event store's records after a sequence number, from which
-        permission requests and their answers are known (approvals.py). Without it,
+        permission requests and their answers are known
+        (``sandbox_science.policy.approvals``). Without it,
         every escalation is recorded and denied, and none can be approved.
         """
         self._store = store
@@ -411,7 +412,7 @@ class PolicyMiddleware:
         terms = decision.escalation
         if terms is None:  # the library pairs terms with every escalation
             return _deny(APPROVAL_REQUIRED, decision.reason, decision)
-        target = Target(
+        target = RequestKey.http(
             facts.sandbox_id,
             loaded.digest,
             facts.method.upper(),
@@ -512,7 +513,7 @@ class PolicyMiddleware:
         decision: Decision,
         operation: Operation | None = None,
         *,
-        target: Target | None = None,
+        target: RequestKey | None = None,
         extra: Mapping[str, object] | None = None,
     ) -> int | None:
         """Record the request; return the record's sequence number where the sink tells it."""

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Permission requests, approvals, denials and escalation timeouts (approvals.py)."""
+"""Permission requests, approvals, denials and escalation timeouts (D76), in the middleware."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import pytest
 
 from sandbox_science.event_store import EventStore, StoreReader, verify_store
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
+from sandbox_science.policy.approvals import APPROVAL, DENIAL, Approvals, RequestKey
 from sandbox_science.policy_middleware import evaluator
-from sandbox_science.policy_middleware.approvals import APPROVAL, DENIAL, Approvals, Target
 from sandbox_science.policy_middleware.cli import _read_records, main  # pyright: ignore[reportPrivateUsage]
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import OPERATOR, StoreSink
@@ -253,7 +253,7 @@ def test_malformed_records_are_skipped(events: EventStore) -> None:
     approvals.load(_read_records(events.path, 0))
     assert approvals.unanswered() == []
     assert approvals.last_seq == 3
-    target = Target("s", "sha256:" + "0" * 64, "POST", "example.org", 443, "/")
+    target = RequestKey.http("s", "sha256:" + "0" * 64, "POST", "example.org", 443, "/")
     assert approvals.answer(target, datetime.now(UTC)) is None
 
 

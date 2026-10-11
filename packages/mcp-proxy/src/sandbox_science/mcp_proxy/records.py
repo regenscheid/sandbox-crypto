@@ -25,6 +25,9 @@ from sandbox_science.event_store import EventStore
 SOURCE: Final = "mcp-proxy"
 """The source of every record the proxy writes."""
 
+OPERATOR: Final = "operator"
+"""The source of approvals and denials written with the command line (D76)."""
+
 STORE_TIMEOUT: Final = 1.0
 """Seconds an append may wait for the store's locks before it fails."""
 
@@ -32,8 +35,8 @@ STORE_TIMEOUT: Final = 1.0
 class EventSink(Protocol):
     """Somewhere to append records."""
 
-    async def record(self, kind: str, payload: Mapping[str, object]) -> None:
-        """Append one record; raise if it could not be stored."""
+    async def record(self, kind: str, payload: Mapping[str, object]) -> int | None:
+        """Append one record and return its sequence number if known; raise if not stored."""
         ...
 
 
@@ -43,6 +46,9 @@ class StoreSink:
     def __init__(self, store: EventStore) -> None:
         self._store = store
 
-    async def record(self, kind: str, payload: Mapping[str, object]) -> None:
-        """Append one record off the event loop; raise EventStoreError if it was not stored."""
-        await self._store.append_async(kind, SOURCE, payload)
+    async def record(self, kind: str, payload: Mapping[str, object]) -> int:
+        """Append one record off the event loop and return its sequence number.
+
+        Raise EventStoreError if it was not stored.
+        """
+        return (await self._store.append_async(kind, SOURCE, payload)).seq

@@ -401,17 +401,50 @@ class StaticResolver(AbstractResolver):
         pass
 
 
+@dataclass(frozen=True)
+class MemoryRecord:
+    """A record as the shared approvals code reads it (``sandbox_science.policy.approvals``)."""
+
+    seq: int
+    time: str
+    kind: str
+    payload: Mapping[str, object]
+
+    def data(self) -> dict[str, object]:
+        return dict(self.payload)
+
+
+def _now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC)
+
+
 class RecordingSink:
-    """An event sink that keeps ``(kind, payload)`` records in memory, or fails on demand."""
+    """An event sink that keeps numbered records in memory, or fails on demand.
+
+    ``now`` gives each record its time, so a test can move time on.
+    """
 
     def __init__(self) -> None:
         self.events: list[tuple[str, Mapping[str, object]]] = []
+        self.stored: list[MemoryRecord] = []
         self.fail = False
+        self.now: Callable[[], datetime.datetime] = lambda: datetime.datetime.now(datetime.UTC)
 
-    async def record(self, kind: str, payload: Mapping[str, object]) -> None:
+    async def record(self, kind: str, payload: Mapping[str, object]) -> int:
         if self.fail:
             raise OSError("test: the event store is unavailable")
         self.events.append((kind, payload))
+        return self.append(kind, payload)
+
+    def append(self, kind: str, payload: Mapping[str, object]) -> int:
+        """Store a record directly, as the command line does for approvals."""
+        seq = len(self.stored) + 1
+        time = self.now().isoformat(timespec="microseconds")
+        self.stored.append(MemoryRecord(seq, time, kind, dict(payload)))
+        return seq
+
+    def records(self, after: int) -> list[MemoryRecord]:
+        return [record for record in self.stored if record.seq > after]
 
     def kinds(self, kind: str) -> list[Mapping[str, object]]:
         return [payload for name, payload in self.events if name == kind]
@@ -480,6 +513,9 @@ class Harness:
             sessions=Sessions(limit=8, per_caller=4, idle=3600),
             credentials={"papers-token": "PAPERS_TOKEN", "papers-key.API_KEY": "PAPERS_API_KEY"},
             environ=self.environ,
+            # test_records.py swaps in a sink on a real store, which has no reader.
+            requests=self.sink.records if isinstance(self.sink, RecordingSink) else None,
+            now=lambda: self.sink.now() if isinstance(self.sink, RecordingSink) else _now(),
         )
         app = proxy.application(max_body_bytes=64 * 1024)
 
