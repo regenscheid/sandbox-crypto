@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "sandbox-science-contracts",
+    "sandbox-science-event-store",
     "sandbox-science-orchestrator",
     "sandbox-science-package-cache",
     "sandbox-science-policy",
@@ -34,6 +35,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 sandbox-science-contracts = { workspace = true }
+sandbox-science-event-store = { workspace = true }
 sandbox-science-orchestrator = { workspace = true }
 sandbox-science-policy = { workspace = true }
 sandbox-science-policy-middleware = { workspace = true }
