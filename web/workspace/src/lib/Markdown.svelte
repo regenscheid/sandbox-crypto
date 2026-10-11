@@ -3,25 +3,27 @@
   The one component that shows text: Markdown with LaTeX math (markdown.ts). It renders a
   view of `source` and never changes it. When answers arrive for model repairs of formulas
   it shows, it renders again, at most once a frame (mathrepair.ts); the page keeps KaTeX's
-  results, so that costs little. KaTeX works a bounded time in one go, which the page's
-  texts share: math it had no time for shows as written, and the text renders again in a
-  later go, starting where the last stopped, until all of it is rendered. The mark on a
-  repaired formula shows or hides why, and the formula as written.
+  results, so that costs little. Texts render in goes of bounded time, one after another:
+  a text that comes after a go's time is spent, or that has math the go had no time for,
+  waits for its turn in a later go, showing its last rendering (or itself, as written)
+  meanwhile, and starts where it stopped. The mark on a repaired formula shows or hides
+  why, and the formula as written.
 -->
 <script lang="ts">
-  import { renderMarkdown, whenMathTime, type TextResults } from './markdown';
+  import { flushSync } from 'svelte';
+  import { renderMarkdown, textState, whenMathTime } from './markdown';
   import { pageRepairs } from './mathrepair';
 
   let { source }: { source: string } = $props();
-  /** Counts what makes this text render again: repairs it waits for, or time for its math. */
+  /** Counts what makes this text render again: repairs it waits for, or its turn in a go. */
   let arrivals = $state(0);
   let element: HTMLDivElement | undefined = $state();
-  /** KaTeX's results for this text's formulas, kept while some of its math waits for time. */
-  const earlier: TextResults = new Map();
+  /** KaTeX's results for this text and its last rendering, from one rendering to the next. */
+  const kept = textState();
 
   const rendered = $derived.by(() => {
     void arrivals;
-    return renderMarkdown(source, pageRepairs, earlier);
+    return renderMarkdown(source, pageRepairs, kept);
   });
 
   $effect(() => {
@@ -41,10 +43,12 @@
   });
 
   $effect(() => {
-    // Math KaTeX had no time for in this go: the next go renders more of it.
     if (!rendered.unfinished) return;
+    // Its turn in a later go: render now, so that the go counts the time.
     return whenMathTime(() => {
-      arrivals += 1;
+      flushSync(() => {
+        arrivals += 1;
+      });
     });
   });
 

@@ -30,10 +30,10 @@
  * the list items it is in.
  *
  * Markdown writers escape brackets (`\[1\]`, `\[sic\]`, `- \[x\] done`, Pandoc's
- * `\[@smith2020\]` and `\[^1\]`), so within a paragraph, `\[…\]` is displayed math only
- * when its content holds a character that math uses and bracketed prose seldom does
- * (`TEX_CHARACTERS`), and is not a footnote's reference; otherwise it stays text, as the
- * escapes make it.
+ * `\[@smith2020\]`, `\[^1\]` and `\[path\_to\_dir\]`), so within a paragraph, `\[…\]` is
+ * displayed math only when its content is padded inside both brackets or holds what math
+ * uses and bracketed prose seldom does (`displayedInParagraph`); otherwise it stays
+ * text, as the escapes make it.
  *
  * The tokens carry the delimiters as written: `markup` opens and `meta.close` closes.
  * A display environment is its own delimiter, so its content is the whole environment.
@@ -54,23 +54,64 @@ export interface MathMeta {
 
 const BACKSLASH = 0x5c;
 const ENVIRONMENT = /\\begin\{([A-Za-z*]+)\}/y;
-/**
- * Characters that math uses and prose between brackets seldom does: within a paragraph,
- * `\[…\]` is math only when its content holds one. Found anywhere in it (Python's
- * `re.search`).
- */
-const TEX_CHARACTERS = /[\\^_={}+<>]/;
-/**
- * A footnote's reference as Pandoc writes it with its brackets escaped, `\[^1\]`: text.
- * Matched against the whole content, as JavaScript's `^…$` matches without the `m` flag. A
- * port to Python must use `re.fullmatch` (or `\A…\Z`): Python's `$` also matches before a
- * final line feed, so `re.match` with `^…$` would take `^1` and a line break for one too.
- */
-const FOOTNOTE = /^\^[A-Za-z0-9-]+$/;
+/** ASCII punctuation: a backslash before one is a Markdown escape (CommonMark). */
+const ASCII_PUNCTUATION: ReadonlySet<string> = new Set('!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~');
+/** What pads displayed math: a space, a tab or a line feed. */
+const PADDING: ReadonlySet<string> = new Set([' ', '\t', '\n']);
+/** Characters that math uses and bracketed prose seldom does. */
+const MATH_CHARACTERS: ReadonlySet<string> = new Set(['{', '}', '=', '+', '<', '>']);
 
-/** Whether `\[…\]` around `content`, within a paragraph, is escaped brackets: text. */
-function escapedBrackets(content: string): boolean {
-  return !TEX_CHARACTERS.test(content) || FOOTNOTE.test(content);
+/**
+ * For the text being parsed: where math's signs stand (`displayedInParagraph`), and from
+ * each position where the next one does (-1 for none), so that each `\[` is judged at
+ * once: judging each by reading its content took time quadratic in the number of `\[`
+ * before one `\]`. A `^` or `_` is marked a script, which counts only after a content's
+ * first character. Escapes pair from the start of each run of backslashes, and a content
+ * starts after the `[` of an opener that is not escaped, so they pair as within it alone.
+ */
+let signs: { src: string; next: Int32Array; script: Uint8Array } | null = null;
+
+function signsIn(src: string): { next: Int32Array; script: Uint8Array } {
+  if (signs?.src === src) return signs;
+  const marked = new Uint8Array(src.length);
+  const script = new Uint8Array(src.length);
+  for (let at = 0; at < src.length; at += 1) {
+    const char = src[at]!;
+    if (char === '\\') {
+      const next = src[at + 1] ?? '';
+      if (/^[A-Za-z]$/.test(next)) marked[at] = 1;
+      else if (ASCII_PUNCTUATION.has(next)) at += 1;
+    } else if (MATH_CHARACTERS.has(char)) {
+      marked[at] = 1;
+    } else if (char === '^' || char === '_') {
+      marked[at] = 1;
+      script[at] = 1;
+    }
+  }
+  const next = new Int32Array(src.length + 1);
+  next[src.length] = -1;
+  for (let at = src.length - 1; at >= 0; at -= 1) next[at] = marked[at] ? at : next[at + 1]!;
+  signs = { src, next, script };
+  return signs;
+}
+
+/**
+ * Whether `\[…\]` around `src[from, to)`, within a paragraph, is displayed math rather
+ * than escaped brackets, which stay text. Math when the content is padded just inside both
+ * brackets (`\[ a - b \]`), as TeX writers pad and Markdown writers' escapes do not;
+ * otherwise only when it holds a command (a backslash and a letter), a brace, one of
+ * `= + < >`, or `^` or `_` after its first character (`^1` alone is a footnote's
+ * reference). A backslash before ASCII punctuation is a Markdown escape, and it and the
+ * character it escapes count as neither (`\[path\_to\_dir\]`, `\[\*\]`). The content is
+ * read character by character, a line break as any other: a port must read it the same
+ * way, with no pattern anchored at its ends (were it one, in Python `re.fullmatch`).
+ */
+function displayedInParagraph(src: string, from: number, to: number): boolean {
+  if (PADDING.has(src[from]!) && PADDING.has(src[to - 1]!)) return true;
+  const { next, script } = signsIn(src);
+  let first = next[from]!;
+  if (first === from && script[from] === 1) first = next[from + 1]!;
+  return first !== -1 && first < to;
 }
 
 interface Opener {
@@ -156,7 +197,7 @@ function mathInline(state: StateInline, silent: boolean): boolean {
   if (end > state.posMax) return false;
   const content = opener.kept ? src.slice(start, end) : src.slice(opener.body, close);
   if (isBlank(content, 0, content.length)) return false;
-  if (opener.markup === '\\[' && escapedBrackets(content)) return false;
+  if (opener.markup === '\\[' && !displayedInParagraph(src, opener.body, close)) return false;
   if (!silent) {
     const token = state.push(opener.display ? 'math_inline_double' : 'math_inline', 'math', 0);
     token.content = content;

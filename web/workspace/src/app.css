@@ -271,6 +271,16 @@ details.record > summary {
   width: auto;
 }
 
+/* A text waiting for its turn to render shows as written, as prose rather than code. */
+.markdown .markdown-waiting {
+  background: none;
+  padding: 0;
+  font-family: inherit;
+  font-size: inherit;
+  max-height: none;
+  overflow: visible;
+}
+
 .markdown blockquote {
   margin: 0.5rem 0;
   padding-left: 0.8rem;

@@ -16,13 +16,13 @@
  *
  * A text sends at most `MAX_FORMULAS` formulas and `MAX_MATH` characters of math to
  * KaTeX, and a formula at most `MAX_FORMULA`; its repairs send at most `MAX_REPAIR_MATH`
- * characters more. KaTeX works at most `MAX_MATH_TIME` milliseconds in one go, a task of
- * the page's thread that every text rendered in it shares, as when a page first shows
- * all its texts; the math it had no time for is shown as written meanwhile, and rendered
- * in later goes (`whenMathTime`), each a task of its own. Without definitions, the worst
- * formula within these sizes takes KaTeX about 60 to 80 ms. The page keeps KaTeX's result
- * for each formula, so a text rendered again, as when a model repair arrives, sends KaTeX
- * only what is new. Rendering is a view: the text is never changed.
+ * characters more. Texts render in goes of at most `MAX_GO_TIME` milliseconds, each a task
+ * of the page's thread, as when a page first shows all its texts: a text that comes after
+ * a go's time is spent waits for a later go (`whenMathTime`), and so does the math a text
+ * had no time for, shown as written meanwhile. Without definitions, the worst formula
+ * within these sizes takes KaTeX about 60 to 80 ms. The page keeps KaTeX's result for
+ * each formula, so a text rendered again, as when a model repair arrives, sends KaTeX only
+ * what is new. Rendering is a view: the text is never changed.
  *
  * KaTeX caps only positive sizes, so a formula can still draw outside its own box (with
  * `\smash` or a negative `\raisebox`); the stylesheet clips each rendered text to its
@@ -74,11 +74,13 @@ export const MAX_FORMULA = 5_000;
 /** The characters of repaired math one text may send to KaTeX besides. */
 export const MAX_REPAIR_MATH = 20_000;
 /**
- * The milliseconds KaTeX may work in one go: a task of the page's thread, which every text
- * rendered in it shares. It stops before a formula, never within one, so a go can run
- * over by one formula's time.
+ * The milliseconds one go may take: a task of the page's thread in which texts render, one
+ * after another, Markdown, KaTeX and the page's update all counted. Once they are spent,
+ * no further text starts and KaTeX takes no further formula; but the first text and the
+ * first formula of a go always render, so that each go gets further. A go can so run over
+ * by one text's Markdown and one formula.
  */
-export const MAX_MATH_TIME = 250;
+export const MAX_GO_TIME = 250;
 
 const LINK = /^(?:https?:\/\/|mailto:)/i;
 const OPENS_APART = 'target="_blank" rel="noopener noreferrer nofollow"';
@@ -94,12 +96,20 @@ interface MathBudget {
 /** KaTeX's result for one formula: its HTML, or what it threw. */
 type Result = { html: string } | { error: unknown };
 
-/**
- * KaTeX's results for one text's formulas, which its component keeps while some of its
- * math waits for time (`renderMarkdown`): a later go starts where the last one stopped,
- * whatever the page's cache has dropped since.
- */
-export type TextResults = Map<string, Result>;
+/** What a text's component keeps from one rendering to the next (`renderMarkdown`). */
+export interface TextState {
+  /**
+   * KaTeX's results for the text's formulas, while some of its math waits for a go: the
+   * next go starts where the last one stopped, whatever the page's cache has dropped.
+   */
+  results: Map<string, Result>;
+  /** Its last rendering, and the source it is of: shown again while the text waits. */
+  last: { source: string; rendered: Rendered } | null;
+}
+
+export function textState(): TextState {
+  return { results: new Map(), last: null };
+}
 
 /**
  * KaTeX's results, for the page, by formula and display mode: KaTeX's settings are the
@@ -112,50 +122,75 @@ const results = new Kept<Result>(4_000, 8_000_000, (key, result) =>
   key.length + ('html' in result ? result.html.length : 200),
 );
 
-/** The milliseconds KaTeX has worked in this go. */
-let spent = 0;
-/** What waits for the next go: the texts with math they had no time for. */
-const waitingForTime = new Set<{ run: () => void }>();
-let renewal: ReturnType<typeof setTimeout> | null = null;
+/** One go: when it began, and what it has rendered. */
+interface Go {
+  started: number;
+  texts: number;
+  formulas: number;
+}
 
-/** A new go, in a task after this one: KaTeX's time renewed, then the texts that wait. */
-function renewLater(): void {
-  if (renewal !== null) return;
-  renewal = setTimeout(() => {
-    renewal = null;
-    spent = 0;
-    const waiting = [...waitingForTime];
-    waitingForTime.clear();
-    for (const entry of waiting) entry.run();
-  }, 0);
+/** The go of this task, from its first rendering on; the next task begins another. */
+let go: Go | null = null;
+let goTimer: ReturnType<typeof setTimeout> | null = null;
+/** The texts waiting for a go, in the order they asked. */
+const waitingForTime = new Set<{ run: () => void }>();
+
+function scheduleNextGo(): void {
+  if (goTimer === null) goTimer = setTimeout(nextGo, 0);
+}
+
+/** The go this task renders in, begun by its first rendering; it ends with the task. */
+function currentGo(): Go {
+  if (go === null) {
+    go = { started: performance.now(), texts: 0, formulas: 0 };
+    scheduleNextGo();
+  }
+  return go;
+}
+
+function timeLeft(current: Go): boolean {
+  return performance.now() - current.started < MAX_GO_TIME;
+}
+
+/** A new go: the texts that wait render one at a time while it has time; the rest wait on. */
+function nextGo(): void {
+  goTimer = null;
+  go = null;
+  if (waitingForTime.size === 0) return;
+  const current = currentGo();
+  for (const entry of [...waitingForTime]) {
+    if (current.texts > 0 && !timeLeft(current)) break;
+    if (waitingForTime.delete(entry)) entry.run();
+  }
 }
 
 /**
- * Call `callback` once, in a later go, with KaTeX's time renewed: for a text with math
- * its last rendering had no time for. Returns a function that cancels it.
+ * Call `callback` once, in its turn in a later go, for a text that waits: it is to render
+ * the text then, at once, so that the go counts the time. Returns a function that cancels
+ * it.
  */
 export function whenMathTime(callback: () => void): () => void {
   const entry = { run: callback };
   waitingForTime.add(entry);
-  renewLater();
+  scheduleNextGo();
   return () => {
     waitingForTime.delete(entry);
   };
 }
 
-/** Forget KaTeX's results and its time in this go; for tests. */
+/** Forget KaTeX's results, and begin a new go; for tests. */
 export function forgetResults(): void {
   results.clear();
-  spent = 0;
+  go = null;
 }
 
-/** A marker: KaTeX's time in this go is spent. */
+/** A marker: this go's time is spent. */
 const OUT_OF_TIME = Symbol('out of time');
 
 /**
  * KaTeX's result for `tex`: the text's own from its last rendering, the page's, or worked
- * out now. A `limited` call works it out only while the go has time left; any call spends
- * the go's time.
+ * out now. A `limited` call works one out only while the go has time left, or when it is
+ * the go's first.
  */
 function resultFor(
   tex: string,
@@ -164,17 +199,16 @@ function resultFor(
   limited: boolean,
 ): Result | typeof OUT_OF_TIME {
   const key = repairKey(tex, display);
-  let result = rendering?.earlier?.get(key) ?? results.get(key);
+  let result = rendering?.state?.results.get(key) ?? results.get(key);
   if (result === undefined) {
-    if (limited && spent >= MAX_MATH_TIME) return OUT_OF_TIME;
-    const started = performance.now();
+    const current = currentGo();
+    if (limited && current.formulas > 0 && !timeLeft(current)) return OUT_OF_TIME;
     try {
       result = { html: katex.renderToString(tex, { ...KATEX_OPTIONS, displayMode: display }) };
     } catch (error) {
       result = { error };
     }
-    spent += performance.now() - started;
-    renewLater();
+    current.formulas += 1;
     results.set(key, result);
   }
   rendering?.used.set(key, result);
@@ -187,22 +221,22 @@ interface Rendering {
   repairs: ModelRepairs | null;
   /** The keys of the model repairs the text shows as pending. */
   waiting: Set<string>;
-  /** KaTeX's results from the text's last rendering, when it left math for later. */
-  earlier: TextResults | null;
+  /** What the text's component keeps, with KaTeX's results from its last rendering. */
+  state: TextState | null;
   /** KaTeX's results in this rendering. */
-  used: TextResults;
+  used: Map<string, Result>;
   /** Whether some of the text's math waits for a later go. */
   unfinished: boolean;
 }
 
 const RENDERING = Symbol('rendering');
 
-function newRendering(repairs: ModelRepairs | null, earlier: TextResults | null): Rendering {
+function newRendering(repairs: ModelRepairs | null, state: TextState | null): Rendering {
   return {
     budget: { formulas: 0, characters: 0, repairs: 0 },
     repairs,
     waiting: new Set(),
-    earlier,
+    state,
     used: new Map(),
     unfinished: false,
   };
@@ -361,33 +395,56 @@ export interface Rendered {
   html: string;
   /** Keys (mathrepair.ts, `repairKey`) of the formulas shown until a repair arrives. */
   waiting: ReadonlySet<string>;
-  /** Whether some of its math waits for a later go (`whenMathTime`). */
+  /** Whether the text, or some of its math, waits for a later go (`whenMathTime`). */
   unfinished: boolean;
+}
+
+/** A text no go has had time for yet: shown as written. */
+function waitingHtml(source: string): string {
+  return `<pre class="markdown-waiting">${escapeHtml(source)}</pre>`;
 }
 
 /**
  * Markdown with math as HTML, asking `repairs` for the formulas nothing else repairs.
- * `earlier` is the text's own record of KaTeX's results: while the rendering leaves math
- * for a later go, it holds this rendering's results, for the next; otherwise it is
- * emptied.
+ * With the text's `state`, a text that comes after this go's time is spent is not
+ * rendered: it shows its last rendering again (or itself, as written, if it has none) and
+ * waits for a later go; and a rendering that leaves math for later keeps KaTeX's results
+ * for the next.
  */
 export function renderMarkdown(
   source: string,
   repairs: ModelRepairs | null = null,
-  earlier: TextResults | null = null,
+  state: TextState | null = null,
 ): Rendered {
+  let rendered: Rendered;
   if (source.length > MAX_RENDERED) {
     const html =
       `<p class="note">This text has ${source.length} characters, more than are rendered, ` +
       `so it is shown as written.</p><pre>${escapeHtml(source)}</pre>`;
-    earlier?.clear();
-    return { html, waiting: new Set(), unfinished: false };
+    rendered = { html, waiting: new Set(), unfinished: false };
+  } else {
+    const current = currentGo();
+    if (state !== null && current.texts > 0 && !timeLeft(current)) {
+      const last = state.last?.source === source ? state.last.rendered : null;
+      return {
+        html: last?.html ?? waitingHtml(source),
+        waiting: last?.waiting ?? new Set(),
+        unfinished: true,
+      };
+    }
+    current.texts += 1;
+    const rendering = newRendering(repairs, state);
+    const html = md.render(source, { [RENDERING]: rendering });
+    rendered = { html, waiting: rendering.waiting, unfinished: rendering.unfinished };
+    if (state !== null && rendering.unfinished) {
+      state.results = rendering.used;
+      state.last = { source, rendered };
+      return rendered;
+    }
   }
-  const rendering = newRendering(repairs, earlier);
-  const html = md.render(source, { [RENDERING]: rendering });
-  if (earlier !== null) {
-    earlier.clear();
-    if (rendering.unfinished) for (const [key, result] of rendering.used) earlier.set(key, result);
+  if (state !== null) {
+    state.results = new Map();
+    state.last = { source, rendered };
   }
-  return { html, waiting: rendering.waiting, unfinished: rendering.unfinished };
+  return rendered;
 }

@@ -8,13 +8,14 @@ import {
   forgetResults,
   MAX_FORMULA,
   MAX_FORMULAS,
-  MAX_MATH_TIME,
+  MAX_GO_TIME,
   MAX_RENDERED,
   MAX_REPAIR_MATH,
   renderMarkdown,
+  textState,
   whenMathTime,
   type Rendered,
-  type TextResults,
+  type TextState,
 } from './markdown';
 import { ModelRepairs, repairKey } from './mathrepair';
 
@@ -29,31 +30,64 @@ function count(text: string, pattern: RegExp): number {
   return (text.match(pattern) ?? []).length;
 }
 
-/** The next go: a later task, with KaTeX's time renewed. */
+/** The next go: a later task. */
 function nextGo(): Promise<void> {
   return new Promise((resolve) => whenMathTime(resolve));
 }
 
-/** Texts rendered as their components render them: again in later goes, until done. */
-async function renderAll(
-  sources: string[],
-  repairs: ModelRepairs | null = null,
-): Promise<{ rendered: Rendered[]; goes: number[] }> {
-  const earlier: TextResults[] = sources.map(() => new Map());
+/** What `renderAll` saw. */
+interface Pages {
+  rendered: Rendered[];
+  /** For each text, its renderings that did work, not the turns it waited through. */
+  renders: number[];
+  /** How long the first view took, and each go after it. */
+  firstView: number;
+  goes: number[];
+}
+
+/**
+ * Texts rendered as their components render them: all at once for the page's first view,
+ * then each again in its turn in later goes, until all are done.
+ */
+async function renderAll(sources: string[], repairs: ModelRepairs | null = null): Promise<Pages> {
+  const states: TextState[] = sources.map(() => textState());
+  const renders = sources.map(() => 0);
   const goes: number[] = [];
-  let started = performance.now();
-  let rendered = sources.map((source, index) => renderMarkdown(source, repairs, earlier[index]));
-  goes.push(performance.now() - started);
-  while (rendered.some((text) => text.unfinished)) {
-    if (goes.length > 1_000) throw new Error('the texts never finished');
-    await nextGo();
-    started = performance.now();
-    rendered = rendered.map((text, index) =>
-      text.unfinished ? renderMarkdown(sources[index]!, repairs, earlier[index]) : text,
-    );
-    goes.push(performance.now() - started);
+  let go: { started: number; ended: number } | null = null;
+  const render = (index: number): Rendered => {
+    const before = states[index]!.last;
+    const out = renderMarkdown(sources[index]!, repairs, states[index]!);
+    if (states[index]!.last !== before) renders[index]! += 1;
+    return out;
+  };
+  const wait = (index: number): void => {
+    whenMathTime(() => {
+      const started = performance.now();
+      rendered[index] = render(index);
+      // The turns one go gives, one after another in its task, timed together.
+      if (go === null) {
+        go = { started, ended: performance.now() };
+        queueMicrotask(() => {
+          goes.push(go!.ended - go!.started);
+          go = null;
+        });
+      } else {
+        go.ended = performance.now();
+      }
+      if (rendered[index]!.unfinished) wait(index);
+    });
+  };
+  const started = performance.now();
+  const rendered = sources.map((_, index) => render(index));
+  const firstView = performance.now() - started;
+  rendered.forEach((text, index) => {
+    if (text.unfinished) wait(index);
+  });
+  for (let turn = 0; rendered.some((text) => text.unfinished); turn += 1) {
+    if (turn > 20_000) throw new Error('the texts never finished');
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  return { rendered, goes };
+  return { rendered, renders, firstView, goes };
 }
 
 describe('raw HTML', () => {
@@ -208,16 +242,28 @@ describe('math', () => {
     expect(html('$\\verb|x|\\def\\a{x}\\a$')).toContain('may not define macros (\\def)');
   });
 
+  it('refuses at once a definition hidden behind % and a combining mark', () => {
+    // The third review's formula: \@secondoftwo skips `{%\u0301}` unparsed, and KaTeX took 39 s.
+    const bomb =
+      `\\@secondoftwo{%\u0301}{}\\def\\a{${'x'.repeat(400)}}\\def\\b{${'\\a'.repeat(10)}}` +
+      `\\def\\c{${'\\b'.repeat(10)}}${'\\c'.repeat(8)}`;
+    const started = performance.now();
+    const out = html(`$$${bomb}$$`);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(out).toContain('not rendered: a formula may not define macros (\\def)');
+    expect(out).not.toContain('katex-display');
+  });
+
   it('shows bidirectional controls in a formula shown as written as code points', () => {
-    const out = html(`$\\gdef\\a{x}\\text{‮evil}$`);
-    expect(out).not.toContain('‮');
+    const out = html(`$\\gdef\\a{x}\\text{\u202Eevil}$`);
+    expect(out).not.toContain('\u202E');
     expect(out).toContain('\\text{⟦U+202E⟧evil}');
   });
 
   it("shows bidirectional controls in KaTeX's error, in a mark's message and title, as code points", () => {
     // KaTeX's error quotes the formula.
-    const out = html('$x^^‮abc$');
-    expect(out).not.toContain('‮');
+    const out = html('$x^^\u202Eabc$');
+    expect(out).not.toContain('\u202E');
     expect(out).toMatch(/<button [^>]*title="[^"]*⟦U\+202E⟧/);
     expect(out).toMatch(/<span class="math-message">[^<]*⟦U\+202E⟧/);
   });
@@ -306,98 +352,148 @@ describe('repairs', () => {
   });
 });
 
-describe("KaTeX's time", () => {
-  /** Every reading of the clock 100 ms after the last: each formula takes KaTeX 100 ms. */
-  function slowClock() {
+describe('goes', () => {
+  /** A clock that moves only while KaTeX works: each formula takes it `ms`. */
+  function slowKatex(ms: number) {
     let now = 0;
-    return vi.spyOn(performance, 'now').mockImplementation(() => (now += 100));
+    const original = katex.renderToString.bind(katex);
+    const calls: string[] = [];
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => now);
+    const spy = vi.spyOn(katex, 'renderToString').mockImplementation((tex, options) => {
+      calls.push(tex);
+      now += ms;
+      return original(tex, options);
+    });
+    return {
+      calls,
+      restore: () => {
+        clock.mockRestore();
+        spy.mockRestore();
+      },
+    };
   }
 
-  it('is shared by the texts rendered in one go, and the rest renders in later goes', async () => {
-    expect(MAX_MATH_TIME).toBe(250);
-    const calls = vi.spyOn(katex, 'renderToString');
-    const clock = slowClock();
+  it('render texts one after another until the time is spent; the rest wait their turn', async () => {
+    expect(MAX_GO_TIME).toBe(250);
+    const katexTime = slowKatex(100);
     try {
-      const earlier: TextResults[] = [new Map(), new Map(), new Map()];
-      const sources = ['$a$ $b$', '$c$ $d$', '$e$ $f$'];
-      // One go: a and b, then c, and the time is spent.
-      const first = sources.map((source, index) => renderMarkdown(source, null, earlier[index]));
-      expect(first.map((text) => text.unfinished)).toEqual([false, true, true]);
-      expect(first.map((text) => count(text.html, /<annotation /g))).toEqual([2, 1, 0]);
-      expect(first[1]!.html).toContain(
+      const sources = ['$a$ $b$ $c$', '$d$ $e$ $f$', '$g$'];
+      const states = sources.map(() => textState());
+      const rendered = sources.map((source, index) => renderMarkdown(source, null, states[index]));
+      // The first view: a, b and c spend the go, so the other texts wait, shown as written.
+      expect(katexTime.calls).toEqual(['a', 'b', 'c']);
+      expect(rendered.map((text) => text.unfinished)).toEqual([false, true, true]);
+      expect(rendered[1]!.html).toBe('<pre class="markdown-waiting">$d$ $e$ $f$</pre>');
+      expect(states.map((state) => state.last !== null)).toEqual([true, false, false]);
+      // Each renders in its turn, as its component does; a turn the time does not reach
+      // waits for the next go, unrendered.
+      for (const index of [1, 2]) {
+        whenMathTime(() => {
+          rendered[index] = renderMarkdown(sources[index]!, null, states[index]);
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(katexTime.calls).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+      expect(rendered.map((text) => text.unfinished)).toEqual([false, false, true]);
+      expect(states[2]!.last).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(katexTime.calls).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
+      expect(rendered.every((text) => !text.unfinished)).toBe(true);
+    } finally {
+      katexTime.restore();
+    }
+  });
+
+  it('show a text that waits as it was last rendered', () => {
+    const katexTime = slowKatex(300); // one formula spends the go
+    try {
+      const state = textState();
+      const first = renderMarkdown('$a$ and *more*', null, state);
+      expect(first.unfinished).toBe(false);
+      // Rendered again in the same go, as when a repair arrives: it waits, as it was.
+      const again = renderMarkdown('$a$ and *more*', null, state);
+      expect(again.unfinished).toBe(true);
+      expect(again.html).toBe(first.html);
+      expect(katexTime.calls).toEqual(['a']);
+    } finally {
+      katexTime.restore();
+    }
+  });
+
+  it('keep a text’s own results for its next go, whatever the page’s cache drops', () => {
+    const katexTime = slowKatex(100);
+    try {
+      const state = textState();
+      const first = renderMarkdown('$a$ $b$ $c$ $d$', null, state);
+      expect(first.unfinished).toBe(true);
+      expect(first.html).toContain(
         '<span class="math math-skipped"><code class="math-source">$d$</code>' +
           '<span class="math-message">not rendered yet: KaTeX renders a page’s math a part at a time',
       );
-      expect(calls.mock.calls.map(([tex]) => tex)).toEqual(['a', 'b', 'c']);
-      expect(earlier.map((results) => results.size)).toEqual([0, 1, 0]);
-      // The next go starts where this one stopped.
-      await nextGo();
-      const second = [1, 2].map((index) => renderMarkdown(sources[index]!, null, earlier[index]));
-      expect(second.map((text) => text.unfinished)).toEqual([false, false]);
-      expect(second.map((text) => count(text.html, /<annotation /g))).toEqual([2, 2]);
-      expect(calls.mock.calls.map(([tex]) => tex)).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
-      expect(earlier.map((results) => results.size)).toEqual([0, 0, 0]);
-    } finally {
-      clock.mockRestore();
-      calls.mockRestore();
-    }
-  });
-
-  it('keeps a text’s own results for its next go, whatever the page’s cache drops', async () => {
-    const calls = vi.spyOn(katex, 'renderToString');
-    const clock = slowClock();
-    try {
-      const earlier: TextResults = new Map();
-      expect(renderMarkdown('$a$ $b$ $c$ $d$', null, earlier).unfinished).toBe(true);
       forgetResults(); // the page's cache dropped all, and a go began
-      expect(renderMarkdown('$a$ $b$ $c$ $d$', null, earlier).unfinished).toBe(false);
-      expect(calls.mock.calls.map(([tex]) => tex)).toEqual(['a', 'b', 'c', 'd']);
+      expect(renderMarkdown('$a$ $b$ $c$ $d$', null, state).unfinished).toBe(false);
+      expect(katexTime.calls).toEqual(['a', 'b', 'c', 'd']);
     } finally {
-      clock.mockRestore();
-      calls.mockRestore();
+      katexTime.restore();
     }
   });
 
-  it('does not ask the model for a formula whose rules had no time, and tries them next go', async () => {
+  it('always give the first formula of a go, however long the Markdown took', () => {
+    // Without that, a text whose Markdown alone took a go would never get further.
+    let now = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => (now += 1_000));
+    try {
+      const out = renderMarkdown('*slow* $a$ $b$', null, textState());
+      expect(count(out.html, /<annotation /g)).toBe(1);
+      expect(out.unfinished).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('do not ask the model for a formula whose rules had no time, and try them next go', async () => {
     let asked = 0;
     const repairs = new ModelRepairs(async () => {
       asked += 1;
       return { enabled: true, tex: 'x', model: 'reviewer' };
     });
-    const clock = vi.spyOn(performance, 'now');
-    let now = 0;
-    clock.mockImplementation(() => (now += 300)); // one formula spends the go
+    const katexTime = slowKatex(300); // one formula spends the go
     try {
-      const earlier: TextResults = new Map();
-      const first = renderMarkdown('$\\Tr x$', repairs, earlier);
+      const state = textState();
+      const first = renderMarkdown('$\\Tr x$', repairs, state);
       expect(first.unfinished).toBe(true);
       expect(first.waiting.size).toBe(0);
       expect(first.html).toContain('not rendered yet');
       await repairs.settled();
       expect(asked).toBe(0);
       await nextGo();
-      const second = renderMarkdown('$\\Tr x$', repairs, earlier);
+      const second = renderMarkdown('$\\Tr x$', repairs, state);
       expect(second.unfinished).toBe(false);
       expect(second.html).toContain('data-repair="heuristic"');
       await repairs.settled();
       expect(asked).toBe(0);
     } finally {
-      clock.mockRestore();
+      katexTime.restore();
     }
   });
 
-  it("holds the page's thread a bounded time on its first view, and renders it all in later goes", async () => {
-    // The review's page: texts of the slowest formulas found, broken so the repairs run.
+  it("hold the page's thread a bounded time, render each text only in its turn, and finish", async () => {
+    // The review's page, smaller: long texts of Markdown, each with slow formulas, broken
+    // so that the repairs run too.
+    const prose = 'Lorem *ipsum* `code` [link](https://example.org/a) dolor $5 and **bold** text.\n';
     const formula = (n: number) => `$$${'\\Huge xy\\tiny xy'.repeat(300)}${n}\\notdefined$$`;
-    const sources = Array.from({ length: 8 }, (_, text) =>
-      [0, 1].map((n) => formula(text * 10 + n)).join('\n\n'),
+    const sources = Array.from(
+      { length: 10 },
+      (_, text) => `${prose.repeat(1_250)}\n\n${[0, 1].map((n) => formula(text * 10 + n)).join('\n\n')}`,
     );
-    const { rendered, goes } = await renderAll(sources);
-    expect(goes[0]).toBeLessThan(1_000);
-    expect(goes.length).toBeGreaterThan(1);
-    expect(Math.max(...goes)).toBeLessThan(1_000);
-    for (const text of rendered) expect(count(text.html, />auto-repaired</g)).toBe(2);
-  }, 30_000);
+    const pages = await renderAll(sources);
+    expect(pages.firstView).toBeLessThan(1_000);
+    expect(pages.goes.length).toBeGreaterThan(1);
+    expect(Math.max(...pages.goes)).toBeLessThan(1_000);
+    for (const text of pages.rendered) expect(count(text.html, />auto-repaired</g)).toBe(2);
+    // Before, every waiting text rendered again in every go: here, only in its turn.
+    expect(Math.max(...pages.renders)).toBeLessThanOrEqual(6);
+  }, 60_000);
 });
 
 describe('long text', () => {
@@ -441,6 +537,9 @@ describe('long text', () => {
     ['a definition used 20 times', `$$\\def\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(20)}$$`],
     ['a definition joined by the repairs', `$\\d\\label{x}ef\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(20)}\\foo$`],
     ['the heaviest formulas without definitions', '$\\Huge x\\tiny y$'.repeat(1).concat(`$$${'\\Huge x\\tiny y'.repeat(357)}$$\n\n`.repeat(4))],
+    // The third review's round: every \[ before one \] judged by reading its content.
+    ['escaped brackets opening before one closing bracket', `x ${'\\[a '.repeat(45_000)}\\]`],
+    ['escapes in brackets opening before one closing bracket', `x ${'\\[\\* '.repeat(35_000)}\\]`],
   ])('renders %s quickly', (_name, source) => {
     const started = performance.now();
     html(source);
@@ -450,9 +549,9 @@ describe('long text', () => {
 
 describe('code', () => {
   it('shows bidirectional controls as code points, and leaves prose alone', () => {
-    const out = html('Run `rm -i ‮exe.txt` or\n\n```\nok⁦ ⁩\n```\n\nתודה‏.');
+    const out = html('Run `rm -i \u202Eexe.txt` or\n\n```\nok\u2066 \u2069\n```\n\nתודה\u200F.');
     expect(out).toContain('<code>rm -i ⟦U+202E⟧exe.txt</code>');
     expect(out).toContain('ok⟦U+2066⟧ ⟦U+2069⟧');
-    expect(out).toContain('תודה‏.');
+    expect(out).toContain('תודה\u200F.');
   });
 });
