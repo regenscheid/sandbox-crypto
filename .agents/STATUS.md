@@ -6,6 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Per-project worker credentials** (D78, proposed). Besides the pool's own token, the worker accepts client tokens that act only for the projects the settings list. For such a client, other projects' executions, artifacts and environments do not exist, and it can use only environments the worker created for its projects. Operation IDs are now kept per project. Environment IDs are still shared by the pool, so one client can take an ID another project would use (backlog).
 - **Idle suspension** (W3; [lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md)). The worker can stop the sandbox of an environment nobody is using, and start it again on the next use, which then takes about 7 s. Files, installed tools and the policy survive; kernels are reported lost. A computation in a kernel keeps its environment up.
 - **Admission on demand** (D69, amended; [lab 10](docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md)).
   - A sandbox now reaches hosts its policy allows but does not name. The first connection fails. The worker then reads OpenShell's draft for it, checks the host against the policy, and names it in a new compilation. On a real gateway the host was reachable 9 to 20 s later.
@@ -58,7 +59,7 @@ Updated: 2026-10-11.
 
 Decisions to confirm, each proposed with a recommendation in its row:
 - D68 (policy evaluation details), the details of D69 (including how admission on demand works, after lab 10) and D70, and PSF-2.0 and MIT-0 in tier 1.
-- D72 (harness components), D73 (the worker creates sandboxes), D74 (event store), D75 (MCP proxy on its own JSON-RPC layer), D76 (permission requests) and D77 (image contract).
+- D72 (harness components), D73 (the worker creates sandboxes), D74 (event store), D75 (MCP proxy on its own JSON-RPC layer), D76 (permission requests), D77 (image contract) and D78 (per-project worker credentials).
 
 Questions with a recommendation, waiting for the user:
 - **Shared data across environments.** OpenShell VMs share no filesystem, so a workbook in its own environment cannot see the project's `shared/` area (W3). Recommended: the worker keeps the project's shared area and copies changes between environments before and after each call, with a conflict copy when two environments change the same file. The alternative is explicit transfer only.

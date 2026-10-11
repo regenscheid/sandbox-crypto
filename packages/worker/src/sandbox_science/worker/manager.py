@@ -579,7 +579,7 @@ class ExecutionManager:
     async def submit(self, request: ExecutionRequest) -> tuple[Execution, bool]:
         """Return the execution for ``request.operation_id``, creating it if it is new."""
         digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
-        found = self.store.find_operation(request.operation_id)
+        found = self.store.find_operation(request.context.project_id, request.operation_id)
         if found is not None:
             execution_id, existing = found
             if existing != digest:
