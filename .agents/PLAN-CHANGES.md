@@ -4,6 +4,11 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **W1 started** ([execution tools spec](../docs/specs/tools.md), [worker](../docs/WORKER.md)).
+  - New workspace members: `contracts` (library), `worker` (the trusted worker service, plus an executor that runs inside sandboxes) and `orchestrator` (the harness).
+  - Proposed in the spec, for the user to review: shell calls keep no state between calls, and a cell exception is its own error kind (`exception`).
+  - The first slice uses its own code for the tool loop, an aiohttp client for LiteLLM's OpenAI-compatible endpoint (no SDK), and jupyter_client/ipykernel for kernels. Evaluating OpenCode and OpenScience Desktop for reuse is still open (W0).
+  - The license check now accepts an SPDX identifier in the legacy `License` field (psutil).
 - **Lab 3 on babbage** ([lab report](docs/agent-reports/babbage-openshell-lab-3-2026-10-11.md)). The compiled credential bindings loaded with an endpointless provider and behaved as designed, including for a bound host that rules also name. OpenShell's substitution of credentials into plain HTTP on port 443 was seen at runtime. The bug description now says so; it remains a residual risk.
 - **Upstream bug descriptions** ([conventions](CONVENTIONS.md)). `.agents/upstream/` holds descriptions of bugs found in upstream projects. The user chose to keep the two OpenShell v0.1.3 bugs there rather than file them:
   - provider credentials substituted into plain HTTP and sent unencrypted;

@@ -28,7 +28,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ### Other track P items
 
-- [ ] Worker API schema and worker service
+- [x] Worker API schema and worker service, first version ([worker](../docs/WORKER.md)): idempotent executions with numbered, replayable events, cancellation, watchdogs, kernels through the Jupyter protocol, files and publication; local (tier 0, tests only) and OpenShell backends
+- [ ] Worker service: an executor daemon in the sandbox that survives worker restarts; spilling large rich outputs to files; data grants and session containers
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48)
 - [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
 - [ ] Orchestrator: write the middleware's policy store and sandbox bindings when it creates sandboxes and revises policies (the `bind` command stands in until then)
@@ -51,13 +52,13 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W0: behavior specification and harness foundation
 
-- [ ] Behavior specs with acceptance fixtures: tools, skills, plans and delegation, automatic review, Conda provisioning, artifacts
+- [ ] Behavior specs with acceptance fixtures: tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, automatic review, Conda provisioning, artifacts; all to review with the user
 - [ ] Harness building-block decision with licenses recorded
 
 ## W1: shared references and one worker adapter
 
-- [ ] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, ...)
-- [ ] First slice: one shell command and two stateful Python cells through the worker API
+- [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
+- [ ] First slice: one shell command and two stateful Python cells through the worker API. Works locally through the harness's tool loop and a separate worker process (scripted model); still to do on babbage with the OpenShell backend
 
 ## babbage
 
