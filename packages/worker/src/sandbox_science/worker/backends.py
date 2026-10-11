@@ -78,14 +78,21 @@ class OpenShellBackend:
 
     name: Literal["openshell"] = "openshell"
 
-    def __init__(self, settings: OpenShellBackendSettings, state_dir: Path) -> None:
+    def __init__(
+        self,
+        settings: OpenShellBackendSettings,
+        state_dir: Path,
+        resolve: Callable[[str], str | None] | None = None,
+    ) -> None:
         self.settings = settings
         self.state_dir = state_dir
+        self.resolve = resolve
+        """Finds the sandboxes the worker created (environments.py) before the static map."""
         self._shim_lock = asyncio.Lock()
         self._clients = None if settings.package_cache is None else render(settings.package_cache)
 
     def _sandbox(self, environment_id: str) -> str:
-        sandbox = self.settings.sandboxes.get(environment_id)
+        sandbox = self.sandbox_id(environment_id)
         if sandbox is None:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,
@@ -177,7 +184,12 @@ class OpenShellBackend:
         return channel
 
     def sandbox_id(self, environment_id: str) -> str | None:
-        return self.settings.sandboxes.get(environment_id)
+        created = self.resolve(environment_id) if self.resolve is not None else None
+        return created or self.settings.sandboxes.get(environment_id)
+
+    def cli_env(self) -> dict[str, str]:
+        """The environment the ``openshell`` CLI runs with."""
+        return self._env()
 
     @property
     def isolation_tier(self) -> int:
