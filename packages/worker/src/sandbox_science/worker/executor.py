@@ -644,6 +644,8 @@ class Kernel:
     client: Any = None
     owner: str = ""
     leader: Leader | None = None
+    last_used: float = field(default_factory=time.monotonic)
+    """When a cell last started or ended, for stopping idle kernels."""
 
     @property
     def kernel_id(self) -> str:
@@ -735,9 +737,18 @@ class Executor:
     """Handles one connection's requests. ``root`` holds sessions/ and shared/."""
 
     def __init__(
-        self, root: Path, send: Send, *, subreaper: bool = False, protected: bool = False
+        self,
+        root: Path,
+        send: Send,
+        *,
+        subreaper: bool = False,
+        protected: bool = False,
+        kernel_idle: float | None = None,
     ) -> None:
         self.root = root
+        self.kernel_idle = kernel_idle
+        """Stop a kernel nobody has used for this many seconds; None keeps them."""
+        self.reaper: asyncio.Task[None] | None = None
         self.send = send
         self.subreaper = subreaper
         self.protected = protected
@@ -810,6 +821,8 @@ class Executor:
     async def shutdown(self) -> None:
         """Stop every command and kernel, then anything still running below this process."""
         self.closing = True
+        if self.reaper is not None:
+            self.reaper.cancel()
         running = list(self.running.values())
         await asyncio.gather(
             *(self.terminate(item) for item in running if item.process is not None),
@@ -1196,6 +1209,7 @@ class Executor:
         finally:
             running.queued = False
             self.running.pop(execution, None)
+            kernel.last_used = time.monotonic()
             if ran_on is None and kernel.generation:
                 ran_on = kernel.info()
             result.update(
@@ -1406,6 +1420,27 @@ class Executor:
             else:
                 await kernel.restart()
         await self.reply(request, kernel=kernel.info())
+
+    async def reap_idle_kernels(self, idle: float) -> None:
+        """Stop kernels unused for ``idle`` seconds; the session's next cell reports lost state."""
+        interval = max(0.2, min(30.0, idle / 2))
+        while True:
+            await asyncio.sleep(interval)
+            for kernel in list(self.kernels.values()):
+                if kernel.manager is None or time.monotonic() - kernel.last_used < idle:
+                    continue
+                async with kernel.control:
+                    busy = any(running.kernel is kernel for running in self.running.values())
+                    if kernel.manager is None or busy:
+                        continue
+                    if time.monotonic() - kernel.last_used < idle:
+                        continue
+                    await kernel.stop()
+                    kernel.state_lost = True
+                print(
+                    f"executor: stopped kernel {kernel.kernel_id} after {idle:.0f} s unused",
+                    file=sys.stderr,
+                )
 
     async def op_close_session(self, request: Message) -> None:
         """Stop a session's kernels; reply with the ones that were running.
@@ -1790,7 +1825,13 @@ def _item(container: object, key: str) -> object:
     return cast(Message, container).get(key) if isinstance(container, dict) else None
 
 
-async def serve_stdio(root: Path, *, subreaper: bool = False, protected: bool = False) -> None:
+async def serve_stdio(
+    root: Path,
+    *,
+    subreaper: bool = False,
+    protected: bool = False,
+    kernel_idle: float | None = None,
+) -> None:
     """Serve one connection on stdin and stdout until stdin closes."""
     loop = asyncio.get_running_loop()
     # Keep the protocol on its own descriptor; anything else printing to stdout
@@ -1814,7 +1855,11 @@ async def serve_stdio(root: Path, *, subreaper: bool = False, protected: bool = 
             writer.write(line)
             await writer.drain()
 
-    executor = Executor(root, send, subreaper=subreaper, protected=protected)
+    executor = Executor(
+        root, send, subreaper=subreaper, protected=protected, kernel_idle=kernel_idle
+    )
+    if kernel_idle is not None:
+        executor.reaper = executor.spawn(executor.reap_idle_kernels(kernel_idle))
     try:
         while True:
             try:
@@ -1848,6 +1893,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Sandbox Science executor")
     parser.add_argument("--stdio", action="store_true", required=True, help="serve on stdin/stdout")
     parser.add_argument("--root", required=True, type=Path, help="project directory")
+    parser.add_argument(
+        "--kernel-idle", type=float, default=None, help="stop kernels unused this many seconds"
+    )
     args = parser.parse_args(argv)
     root: Path = args.root
     root.mkdir(parents=True, exist_ok=True)
@@ -1860,7 +1908,12 @@ def main(argv: list[str] | None = None) -> int:
     protected = protect_process()
     # A subreaper adopts its descendants' orphans, so leftovers stay findable below it.
     subreaper = _prctl(PR_SET_CHILD_SUBREAPER, 1)
-    asyncio.run(serve_stdio(root.resolve(), subreaper=subreaper, protected=protected))
+    idle: float | None = args.kernel_idle
+    if idle is not None and not idle > 0:
+        parser.error("--kernel-idle must be a positive number of seconds")
+    asyncio.run(
+        serve_stdio(root.resolve(), subreaper=subreaper, protected=protected, kernel_idle=idle)
+    )
     return 0
 
 

@@ -507,3 +507,8 @@ def test_pdf_requests_become_the_helpers_command_line() -> None:
 def test_pdf_is_offered_with_the_helper_and_pdf_oxide() -> None:
     pytest.importorskip("pdf_oxide")
     assert executor.available_features() == ["pdf"]
+
+
+def test_the_kernel_idle_option_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        executor.main(["--stdio", "--root", str(tmp_path), "--kernel-idle", "0"])

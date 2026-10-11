@@ -347,3 +347,27 @@ async def test_closing_a_session_starts_no_executor(worker: Worker) -> None:
     status, closed = await worker.post("/v1/sessions/close", {"context": idle})
     assert (status, closed) == (200, {"kernels": []})
     assert "env-idle" not in worker.manager._environments  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_an_idle_kernel_is_stopped_and_its_state_reported_lost(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    root = tmp_path / "worker"
+    manager = ExecutionManager(
+        Store(root / "worker.sqlite3"),
+        LocalBackend(LocalBackendSettings(), root, ["--kernel-idle", "0.5"]),
+        Blobs(root / "artifacts"),
+        pool_id="test",
+        max_artifact_size=1 << 20,
+        state_dir=root,
+    )
+    try:
+        idle = Worker(await aiohttp_client(create_app(manager, TOKEN)), manager, root)
+        await idle.run("op-i1", kind="cell", code="x = 1")
+        await asyncio.sleep(1.5)
+        after = await idle.run("op-i2", kind="cell", code="x")
+        assert after["result"]["state_lost"] is True
+        assert after["result"]["error"]["name"] == "NameError"
+        assert after["result"]["kernel"]["generation"] == 2
+    finally:
+        await manager.close()
