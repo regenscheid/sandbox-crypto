@@ -4,7 +4,11 @@
 ```
 sandbox-science-worker serve --settings worker.toml [--log-level info]
 sandbox-science-worker token --out worker.token
+sandbox-science-worker policy add --settings worker.toml policy.yaml
 ```
+
+``policy add`` is the operator's way to put a project policy revision into the pool's
+policy store, where environments can then use it (D73); the worker API cannot.
 """
 
 from __future__ import annotations
@@ -19,9 +23,14 @@ from pathlib import Path
 
 from aiohttp import web
 
+from sandbox_science.policy.openshell import CompileError, compile_sandbox
+from sandbox_science.policy_middleware.errors import StoreError
+
 from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
+from .environments import Environments
+from .errors import WorkerError
 from .manager import ExecutionManager
 from .settings import Settings, SettingsError, load_settings
 from .store import Store
@@ -29,9 +38,18 @@ from .store import Store
 _log = logging.getLogger("sandbox_science.worker")
 
 
-def _backend(settings: Settings) -> Backend:
+def _environments(settings: Settings) -> Environments | None:
+    openshell = settings.openshell
+    if openshell is None or openshell.environments is None:
+        return None
+    cli_env = OpenShellBackend(openshell, settings.state_dir).cli_env()
+    return Environments(openshell, openshell.environments, settings.state_dir, cli_env)
+
+
+def _backend(settings: Settings, environments: Environments | None) -> Backend:
     if settings.openshell is not None:
-        return OpenShellBackend(settings.openshell, settings.state_dir)
+        resolve = environments.sandbox if environments is not None else None
+        return OpenShellBackend(settings.openshell, settings.state_dir, resolve)
     if settings.local is None:
         raise SettingsError("no backend is configured")
     _log.warning("the local backend runs research code without any isolation (tier 0)")
@@ -40,17 +58,20 @@ def _backend(settings: Settings) -> Backend:
 
 async def serve(settings: Settings) -> None:
     token = settings.token()
+    environments = _environments(settings)
     store = Store(settings.state_dir / "worker.sqlite3")
     manager = ExecutionManager(
         store,
-        _backend(settings),
+        _backend(settings, environments),
         Blobs(settings.state_dir / "artifacts"),
         pool_id=settings.pool_id,
         max_artifact_size=settings.max_artifact_size,
         state_dir=settings.state_dir,
     )
     await manager.start()
-    runner = web.AppRunner(create_app(manager, token), access_log=None)
+    if environments is not None:
+        environments.release = manager.release
+    runner = web.AppRunner(create_app(manager, token, environments), access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
     await site.start()
@@ -61,6 +82,39 @@ async def serve(settings: Settings) -> None:
         await runner.cleanup()
         await manager.close()
         store.close()
+        if environments is not None:
+            environments.close()
+
+
+def add_policies(settings: Settings, paths: list[Path]) -> int:
+    """Store project policy revisions for environments, after compiling each to check it."""
+    openshell = settings.openshell
+    if openshell is None or openshell.environments is None:
+        print("error: the settings have no [openshell.environments] table", file=sys.stderr)
+        return 1
+    try:
+        environments = Environments(openshell, openshell.environments, settings.state_dir, {})
+    except WorkerError as error:
+        print(f"error: {error.message}", file=sys.stderr)
+        return 1
+    status = 0
+    try:
+        for path in paths:
+            try:
+                loaded = environments.store.add_policy(path.read_bytes())
+                compiled = compile_sandbox(
+                    loaded, environments.targets.sandbox, ceiling=environments.ceiling
+                )
+            except (OSError, StoreError, CompileError) as exc:
+                print(f"error: {path}: {exc}", file=sys.stderr)
+                status = 1
+                continue
+            print(f"stored {path} as {loaded.digest}")
+            for finding in compiled.findings:
+                print(f"  {finding.severity}: {finding.subject}: {finding.message}")
+    finally:
+        environments.close()
+    return status
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -73,12 +127,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     token_parser = commands.add_parser("token", help="write a new random bearer token")
     token_parser.add_argument("--out", type=Path, required=True)
+    policy_parser = commands.add_parser("policy", help="manage the pool's policy store")
+    policy_commands = policy_parser.add_subparsers(dest="policy_command", required=True)
+    add_parser = policy_commands.add_parser("add", help="store project policy revisions")
+    add_parser.add_argument("--settings", type=Path, required=True)
+    add_parser.add_argument("policies", type=Path, nargs="+")
     args = parser.parse_args(argv)
     if args.command == "token":
         descriptor = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as handle:
             handle.write(secrets.token_urlsafe(32) + "\n")
         return 0
+    if args.command == "policy":
+        try:
+            return add_policies(load_settings(args.settings), args.policies)
+        except SettingsError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
     logging.basicConfig(
         level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )

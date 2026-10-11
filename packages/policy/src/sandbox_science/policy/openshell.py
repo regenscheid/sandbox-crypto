@@ -203,12 +203,13 @@ class FilesystemPolicy(_OpenShellModel):
 class OpenShellPolicy(_OpenShellModel):
     """An OpenShell policy document.
 
-    The filesystem section is fixed when a sandbox is created; later revisions may
-    change only the network sections. Create a sandbox with the whole document,
-    and apply a revision with ``network_only()`` so that it replaces the
-    sandbox's network sections entirely: an entry left over from an earlier
-    compilation could admit what the policy no longer allows. Landlock and
-    process settings belong to the environment layer (D48).
+    Create a sandbox with the whole document. OpenShell fixes the filesystem section
+    then, adding its baseline paths, and refuses a later revision that removes any of
+    them. Apply a revision with ``with_filesystem()`` and the section the sandbox
+    reports (``openshell policy get --base``), with ``policy set``, so that it replaces
+    the sandbox's network sections entirely: an entry left over from an earlier
+    compilation could admit what the policy no longer allows. Landlock and process
+    settings belong to the environment layer (D48).
     """
 
     version: Literal[1] = 1
@@ -225,9 +226,9 @@ class OpenShellPolicy(_OpenShellModel):
         document = self.model_dump(mode="json", exclude_none=True)
         return yaml.dump(document, Dumper=_Dumper, sort_keys=False, default_flow_style=False)
 
-    def network_only(self) -> OpenShellPolicy:
-        """The document without its filesystem section, for revising a running sandbox."""
-        return self.model_copy(update={"filesystem_policy": None})
+    def with_filesystem(self, filesystem: FilesystemPolicy) -> OpenShellPolicy:
+        """The document with a running sandbox's filesystem section, for revising it."""
+        return self.model_copy(update={"filesystem_policy": filesystem})
 
 
 _YAML12_NON_STRING_RE: Final = re.compile(
