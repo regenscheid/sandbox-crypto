@@ -76,7 +76,7 @@ Performance-sensitive work (timing and side-channel measurements, `perf_event_op
 | A3 | Agent text never authorizes anything; policy advisor with auto-approval off; prover flags new credentialed reach (at v0.1.3 it cannot check policies that use middleware or MCP endpoints, so for those the compiler and orchestrator check); approval prompts built from observed facts; re-authentication for policy widening and credential changes (D54); local policy ceiling per pool | Pending-decision log; prover findings |
 | A4 | CPU/memory/PID/disk/wall-time limits from the policy file; per-project quotas; LiteLLM virtual-key spend limits (D61); escalation for credit-spending MCP tools | Quota and spend alerts |
 | T1 | Mirror-only package egress; lockfiles; rebuild-from-lockfile | Mirror logs; install-phase correlation |
-| T4 | Tier 3 isolation; no Z1/Z2 credentials in the sandbox | Runtime security events |
+| T4 | Tier 3 isolation; no Z1/Z2 credentials in the sandbox; everything an executor reports is checked, including for the shared-data sync (D79): its digests are never paths, content is kept only if it hashes to its digest, each project has its own blob store, an environment is synced for one project only, and each step has time and byte budgets ([worker](WORKER.md#shared-data-across-environments)) | Runtime security events |
 | T5 | Per-pool local policy ceiling; local enrollment needs local user action | Local audit log of remote commands |
 | T2 | Same as A1–A3; source content is data, not instructions | Content guard flags instruction-like text |
 | T6 | Separate artifact origin, sandboxed iframes, CSP, KaTeX `trust: false`, PDF.js scripting off | CSP violation reports |
@@ -87,6 +87,7 @@ Performance-sensitive work (timing and side-channel measurements, `perf_event_op
 - A placeholder still lets an agent do whatever the token permits at its bound endpoint. Token scope and tool/method rules are the real limit.
 - OpenShell v0.1.3 resolves static placeholders per endpoint, not per binary, so any process in the sandbox can use an attached credential. In a shared project container this includes other workbooks' processes, so session attribution and session-scoped grants there are not trustworthy without a verified process-to-execution mapping ([MCP connectors](MCP-CONNECTORS.md#mcp-proxy)).
 - Low-bandwidth covert channels through allowed fetches cannot be eliminated, only bounded and logged.
+- The shared-data sync (D79) carries what one environment writes in `shared/` into the project's other environments. Research code that controls one environment of a project can therefore put files, within the project's limits (32 MiB each, 2 GiB and 10,000 files in all), into its other environments, as a writable shared directory would. It cannot reach another project's data or the worker's own files.
 - The event store's hash chain is not keyed. Whoever can write the store can rewrite its records consistently or remove the newest; only checkpoints kept out of their reach show it ([event store](EVENT-STORE.md)).
 - Tier 1 local deployments share a kernel with trusted services.
 - Model providers receive project content. Data classes (D50) decide which classes may go to which endpoints.
