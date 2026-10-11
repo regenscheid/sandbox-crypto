@@ -55,7 +55,7 @@ from sandbox_science.worker.backends import ClosedHandler, LocalBackend
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel
 from sandbox_science.worker.executor import Executor, Running, signal_processes, without_wrapped
 from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.revisions import Prepared, Revisions
+from sandbox_science.worker.revisions import Prepared, Revisions, package_command
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
 
@@ -876,7 +876,9 @@ async def test_a_limited_client_sees_only_its_projects_revisions(
             return info if environment_id == "env-a" else None
 
     class Environments:
-        records = Records()
+        def __init__(self) -> None:
+            self.records = Records()
+            self.deleted: list[Any] = []
 
     manager.revisions.observe("env-a", "a" * 32)
     clients = [
@@ -1865,3 +1867,61 @@ async def test_review2_l6_a_timed_out_install_gets_its_grace_to_roll_back(worker
     lines = worker.prefix.log.read_text().splitlines()
     assert "got TERM" in lines
     assert "rolled back" in lines
+
+
+# Regression tests for the third review of package commands and lab 17 (2026-10-11).
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        # A password with "#", "/" or "?" when no path follows the host.
+        "--extra-index-url=https://user:test-secret#pw@private.example",
+        "--extra-index-url=https://user:test-secret/pw@private.example",
+        "--find-links=https://user:test-secret?pw@private.example:8443",
+        "--find-links=https://user:test-secret/pw@private.example?x=1",
+        # A bracketed IPv6 host.
+        "--extra-index-url=https://user:test-secret/pw@[fd00::1]/simple",
+        "--extra-index-url=https://user:test-secret#pw@[fd00::1]:8443",
+    ],
+)
+def test_review3_l1_a_password_with_delimiters_is_redacted_whatever_follows_its_host(
+    argument: str,
+) -> None:
+    words = provisioning.bounded_command(["pip", "install", argument, "x"])
+    assert "test-secret" not in words[2]
+    assert "://***@" in words[2]
+    command = package_command({"command": words, "via": "wrapper"})  # the worker's pass
+    assert command is not None
+    assert command.argv == tuple(words)
+
+
+def test_lab17_an_install_that_links_nothing_changes_no_fingerprint(sandbox: Sandbox) -> None:
+    # Lab 17: `micromamba install -y toolz` with toolz installed linked nothing, but noted
+    # the request in conda-meta/history, which the fingerprint covered: a revision with
+    # the lockfile of the one before.
+    places = sandbox.config.places
+    before = provisioning.fingerprint(places)
+    assert sandbox.run("micromamba", "install", "-y", "toolz").returncode == 0
+    installed = provisioning.fingerprint(places)
+    assert installed != before  # a real install still counts
+    history = sandbox.prefix.root / "conda-meta" / "history"
+    noted = history.stat().st_size
+    assert sandbox.run("micromamba", "install", "-y", "toolz").returncode == 0
+    assert history.stat().st_size > noted  # the request was noted...
+    assert provisioning.fingerprint(places) == installed  # ...and changed nothing
+    record = sandbox.prefix.root / "conda-meta" / "toolz-1.0-pyhd8ed1ab_0.json"
+    record.write_text(record.read_text().replace('"1.0"', '"1.1"', 1))  # an unmanaged change
+    assert provisioning.fingerprint(places) != installed
+
+
+@pytest.mark.asyncio
+async def test_lab17_an_install_that_links_nothing_makes_no_revision(worker: Worker) -> None:
+    await worker.run("op-0", script="true")
+    first = await worker.run("op-1", script="micromamba install -y toolz")
+    again = await worker.run("op-2", script="micromamba install -y toolz")
+    assert (first["state"], again["state"]) == ("succeeded", "succeeded"), again["result"]
+    history = (await worker.revisions()).revisions
+    assert [entry.revision for entry in history] == [0, 1]
+    assert again["result"]["environment_revision"] == "1"
+    assert again["result"]["overlapping_change"] is False

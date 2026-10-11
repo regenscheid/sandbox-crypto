@@ -136,8 +136,10 @@ _AUTHORITY_END: Final = re.compile(r"[/?#\s]")
 _WORD: Final = re.compile(r"\S+")
 _PASSWORD: Final = re.compile(r"[^:]*:(?![0-9]+$)")
 """The start of an authority that is ``user:password``, not ``host:port``."""
-_LATE_USERINFO: Final = re.compile(r"@[A-Za-z0-9.-]+(?::[0-9]+)?/")
-"""The ``@host/`` that ends user information with a ``/``, ``?`` or ``#`` in its password."""
+_LATE_USERINFO: Final = re.compile(r"@(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]+)?(?=[/?#]|$)")
+"""The ``@host`` that ends user information with a ``/``, ``?`` or ``#`` in its password:
+a host name or a bracketed IPv6 address, and a port, before a path, a query, a fragment
+or the end."""
 _PATH_TOKEN: Final = re.compile(r"(://[^/?#\s]*/t/)[^/?#\s]+")
 """anaconda.org's token in a channel's path: ``https://conda.anaconda.org/t/<token>/…``."""
 _HOST_TOKEN: Final = re.compile(
@@ -312,8 +314,8 @@ def redact(argument: str) -> str:
 def _without_userinfo(word: str) -> str:
     """``word`` with the user information of each URL in it replaced by ``***``: all that
     comes between ``://`` and the last ``@`` before the URL's path. A password with a
-    ``/``, ``?`` or ``#`` in it ends the path early; then user information runs to the
-    ``@host/`` after it."""
+    ``/``, ``?`` or ``#`` in it ends the authority early; then user information runs to the
+    ``@host`` after it."""
     kept: list[str] = []
     start = 0
     first = True
@@ -431,7 +433,8 @@ def fingerprint(places: Places) -> str:
     Conda records each package of the prefix in ``conda-meta``, and pip each
     distribution in a ``.dist-info`` or ``.egg-info`` directory. Installing, removing or
     upgrading one changes the digest. The files the packages own do not count, which
-    keeps the scan cheap.
+    keeps the scan cheap, and nor do ``conda-meta``'s ``history`` and ``pinned``, which
+    record requests: an install that links nothing changes nothing (CP-16).
     """
     digest = hashlib.sha256()
     for place in places.all():
@@ -441,7 +444,7 @@ def fingerprint(places: Places) -> str:
         except OSError:
             continue
         for name, entry in entries:
-            if not (name.endswith((".json", ".dist-info", ".egg-info")) or name == "history"):
+            if not name.endswith((".json", ".dist-info", ".egg-info")):
                 continue
             try:
                 info = entry.stat(follow_symlinks=False)

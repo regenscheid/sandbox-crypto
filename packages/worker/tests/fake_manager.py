@@ -5,7 +5,8 @@ The tests copy it into the environment's site-packages as ``fakepm``. ``bin/pip`
 ``bin/micromamba`` run it, and so does ``python -m pip``, through a ``pip`` package. It
 installs a package by writing the records pip or micromamba would, once the file
 ``FAKEPM_GATE`` names exists and ``FAKEPM_DELAY`` seconds have passed, and appends when
-each install starts and ends to the file ``FAKEPM_LOG`` names. It never reaches the
+each install starts and ends to the file ``FAKEPM_LOG`` names. Like micromamba, it only
+notes in ``conda-meta/history`` a Conda package installed already. It never reaches the
 network.
 
 Some package names do more: ``broken`` fails with exit code 3, ``sleepy`` waits for
@@ -166,6 +167,12 @@ def conda(tool: str, args: list[str]) -> int:
         log("start", name, time.time())
         pause()
         file = f"{name}-1.0-pyhd8ed1ab_0.conda"
+        record_path = prefix / "conda-meta" / f"{name}-1.0-pyhd8ed1ab_0.json"
+        if record_path.exists():  # installed already: micromamba links nothing
+            with open(prefix / "conda-meta" / "history", "a") as history:
+                history.write(f'==> {time.ctime()} <==\n# update specs: ["{name}"]\n')
+            log("end", name, time.time())
+            continue
         digest = hashlib.sha256(name.encode()).hexdigest()
         record = {
             "name": name,
@@ -186,7 +193,7 @@ def conda(tool: str, args: list[str]) -> int:
                 f"lib/{version}/site-packages/{name}-1.0.dist-info/INSTALLER",
             ],
         }
-        (prefix / "conda-meta" / f"{name}-1.0-pyhd8ed1ab_0.json").write_text(json.dumps(record))
+        record_path.write_text(json.dumps(record))
         site = Path(sysconfig.get_paths()["purelib"])
         (site / f"{name}-1.0.dist-info").mkdir(exist_ok=True)
         (site / f"{name}-1.0.dist-info" / "INSTALLER").write_text("conda\n")
