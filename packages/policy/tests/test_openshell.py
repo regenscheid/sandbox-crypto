@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from sandbox_science.policy import (
     Action,
+    HardFloor,
     LoadedPolicy,
     McpOperation,
     PolicyLoadError,
@@ -41,12 +42,12 @@ from sandbox_science.policy.openshell import (
     SandboxTarget,
     ServiceEndpoint,
     Severity,
+    admission_ranges,
     admission_refusal,
     compile_mcp_proxy,
     compile_orchestrator,
     compile_sandbox,
     load_targets,
-    names_host,
     parse_targets,
     public_address_ranges,
 )
@@ -57,6 +58,8 @@ EXAMPLE_TEXT = (ROOT / "examples" / "policy.yaml").read_text()
 TARGETS = load_targets(ROOT / "examples" / "openshell" / "targets.yaml")
 FIXTURE = Path(__file__).parent / "fixtures" / "crypto-research-mcp-tools.json"
 OPEN = PoolCeiling.unrestricted()
+RANGES = admission_ranges(EXAMPLE, OPEN)
+"""The public ranges less the floor's public metadata address, as compiled for EXAMPLE."""
 HEADER = "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\nmetadata: {name: test}\n"
 
 # Fields of OpenShell's authored schema (v0.1.3) that the compiler may emit. OpenShell
@@ -219,7 +222,7 @@ def test_example_sandbox_policy() -> None:
             "enforce",
             "full",
         )
-        assert endpoint.allowed_ips == public_address_ranges()
+        assert endpoint.allowed_ips == RANGES
         # github.com's HTTPS traffic belongs to its credential endpoint.
         assert endpoint.ports == ((80,) if endpoint.host == "github.com" else (80, 443))
     credentials = entries["sandbox-science-credentials"]
@@ -228,7 +231,7 @@ def test_example_sandbox_policy() -> None:
     for endpoint in credentials.endpoints:
         assert (endpoint.ports, endpoint.path, endpoint.protocol) == ((443,), "/**", "rest")
         assert (endpoint.enforcement, endpoint.access) == ("enforce", "full")
-        assert endpoint.allowed_ips == public_address_ranges()
+        assert endpoint.allowed_ips == RANGES
         assert endpoint.credential_binding is not None
         assert endpoint.credential_binding.provider == "github-readonly"
     (cache,) = entries["sandbox-science-package-cache"].endpoints
@@ -309,7 +312,7 @@ def test_lan_hosts_a_rule_names_get_endpoints_without_the_public_ranges() -> Non
     ranges = {endpoint.host: endpoint.allowed_ips for endpoint in endpoints}
     assert ranges == {
         "10.0.0.5": None,
-        "93.184.215.14": public_address_ranges(),
+        "93.184.215.14": RANGES,
         "nas.local": None,
     }
     assert not any(finding.subject.startswith("hosts.") for finding in compiled.findings)
@@ -329,7 +332,7 @@ def test_named_public_hosts_get_endpoints_limited_to_public_ranges() -> None:
     named = compiled.policy.network_policies["sandbox-science-egress"].endpoints
     assert [endpoint.host for endpoint in named] == ["93.184.215.14", "api.example.org"]
     for endpoint in named:
-        assert endpoint.allowed_ips == public_address_ranges()
+        assert endpoint.allowed_ips == RANGES
         assert (endpoint.ports, endpoint.protocol, endpoint.enforcement, endpoint.access) == (
             (80, 443),
             "rest",
@@ -351,7 +354,7 @@ def test_wildcard_rules_become_openshell_subdomain_wildcards() -> None:
     named = compiled.policy.network_policies["sandbox-science-egress"].endpoints
     # The library's *.suffix matches any depth below the suffix: OpenShell's **.
     assert [endpoint.host for endpoint in named] == ["**.arxiv.org"]
-    assert named[0].allowed_ips == public_address_ranges()
+    assert named[0].allowed_ips == RANGES
     tld = [f for f in compiled.findings if f.subject == "hosts.*.org"]
     assert len(tld) == 1
     assert tld[0].severity is Severity.WARNING
@@ -380,7 +383,7 @@ def test_hosts_admitted_on_demand_get_endpoints_like_named_hosts() -> None:
     assert [endpoint.host for endpoint in admitted] == ["api.example.org", "papers.example.net"]
     for endpoint in admitted:
         # The ranges keep names that resolve to private addresses out.
-        assert endpoint.allowed_ips == public_address_ranges()
+        assert endpoint.allowed_ips == RANGES
         assert (endpoint.ports, endpoint.protocol, endpoint.enforcement, endpoint.access) == (
             (80, 443),
             "rest",
@@ -450,14 +453,73 @@ def test_the_example_policy_admits_unnamed_public_hosts_on_demand() -> None:
     assert "port 8443 is not admitted" in (refusal("eprint.iacr.org", 8443) or "")
     assert "package registry" in (refusal("pypi.org") or "")
     assert refusal("github.com") is None
-    assert names_host(EXAMPLE, "github.com")
-    assert not names_host(EXAMPLE, "eprint.iacr.org")
+    compiled = compile_research(EXAMPLE)
+    assert compiled.names("github.com")
+    assert compiled.names("GitHub.com.")
+    assert not compiled.names("eprint.iacr.org")
     # Addresses are admitted on demand too, when public.
     assert refusal("93.184.215.14") is None
     assert "not public" in (refusal("203.0.113.7") or "")
     assert "not public" in (refusal("printer.local") or "")
     assert "not a host name" in (refusal("bad host") or "")
     assert refusal("metadata.goog") is not None
+
+
+def test_admission_ranges_leave_out_addresses_the_library_always_denies() -> None:
+    # The middleware sees names only, so a name the sandbox picks (such as
+    # 168-63-129-16.sslip.io) must not reach these through allowed_ips.
+    policy = parse_policy(
+        HEADER + "mcp:\n  servers:\n    tools:\n      url: https://52.1.2.3/mcp\n"
+        "      revision: '2025-11-25'\n      auth: {mode: none}\n      tools: {allow: [search]}\n"
+    )
+    ceiling = PoolCeiling.model_validate({"network": {"deny_hosts": ["1.2.3.4"]}})
+    floor = HardFloor(admin_hosts=frozenset({"34.120.1.2", "admin.example.org"}))
+    ranges = [ipaddress.ip_network(block) for block in admission_ranges(policy, ceiling, floor)]
+
+    def covered(address: str) -> bool:
+        return any(ipaddress.ip_address(address) in network for network in ranges)
+
+    for denied in ("168.63.129.16", "1.2.3.4", "34.120.1.2", "52.1.2.3"):
+        assert not covered(denied), denied
+    for ordinary in ("8.8.8.8", "1.2.3.5", "168.63.129.17", "2606:4700:4700::1111"):
+        assert covered(ordinary), ordinary
+    assert not covered("10.0.0.5")
+
+
+def test_compiled_names_are_exactly_its_endpoints() -> None:
+    policy = network_policy(
+        READ_ANYWHERE
+        + "    - {name: named, operation: http, match: {hosts: [api.example.org, '*.arxiv.org', "
+        "'*.pypi.org', '*.org']}, action: allow}\n",
+        default="deny",
+    )
+    compiled = compile_sandbox(policy, TARGETS.sandbox, ceiling=OPEN, admitted=["x.example.net"])
+    assert compiled.names("api.example.org")
+    assert compiled.names("export.arxiv.org")
+    assert compiled.names("x.example.net")
+    assert compiled.admitted == ("x.example.net",)
+    assert compiled.names(TARGETS.sandbox.package_cache.host)
+    # Wildcards the compiler cannot emit name nothing (review L3).
+    assert not compiled.names("docs.pypi.org")
+    assert not compiled.names("example.org")
+    assert not compiled.names("bad host")
+
+
+def test_a_service_under_a_wildcard_on_an_admitted_port_is_a_compile_error() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: lab, operation: http, match: {hosts: ['*.example.org']}, action: allow}\n",
+        default="deny",
+    )
+    target = TARGETS.sandbox.model_copy(
+        update={
+            "package_cache": ServiceEndpoint.model_validate(
+                {"host": "cache.lab.example.org", "port": 443}
+            )
+        }
+    )
+    with pytest.raises(CompileError, match="under the wildcard"):
+        compile_sandbox(policy, target, ceiling=OPEN)
 
 
 def test_a_closed_policy_refuses_every_admission() -> None:

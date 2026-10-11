@@ -16,6 +16,16 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
   - Each admission reloads the sandbox's policy, and OpenShell then closes the sandbox's open connections, cutting transfers in progress. The docs say so.
   - The harness's instructions tell the agent to retry after `Permission denied`.
   - Two OpenShell behaviours are described for upstream: refused connections to unapproved names are not proposed when an endpoint allows the host, and a reload closes even connections whose decision did not change.
+  - An adversarial review of the change found one high-severity issue, now fixed.
+    - The issue: endpoints carried the whole public address space. A name the sandbox chose, under a wildcard DNS service, could therefore reach public addresses the library always denies: Azure's metadata address, administration endpoints and the ceiling's denied addresses. The middleware sees only names.
+    - The fix: the ranges now leave those out, and the worker applies the deployment's `admin_hosts`.
+    - Also fixed:
+      - a rule path the classifier refuses stopped admission for every environment;
+      - one sandbox could flood the shared watcher, and its records were never pruned;
+      - in-use hosts could be displaced at the limit;
+      - a failing batch was retried forever;
+      - a host could be recorded as admitted that no endpoint named;
+      - a service under a wildcard was no longer caught.
 - **M1's exit run passed on babbage** ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). Container A (the harness, under the orchestrator policy) drove container B (a worker-created crypto-base sandbox at tier 3) through the research tools: PDF evidence from a real paper, Sage with LaTeX, useful errors, and egress only through the cache and the policy. `compile_orchestrator()` now takes the image's filesystem paths.
 - **D77 (proposed): the base profile image contract** ([images](../docs/IMAGES.md)). Recipes for `minimal` and `crypto-base` (D46) are in `images/`, with Conda lockfiles for linux-64 and linux-aarch64. Both images keep one Conda prefix, `/opt/sandbox-science`, whose Python runs the executor and holds the kernelspecs, and which takes runtime installs (D48). The OpenShell targets file must list `/opt/sandbox-science` read-write and `/var/lib/texmf` read-only. Both images were built for linux/amd64 on babbage and passed their checks as plain containers, including under a Landlock ruleset like OpenShell's. `minimal` is permissive apart from the runtime libraries conda-forge's Python needs (the GCC runtime, readline, GNU ld, keyutils), which LICENSING.md's tier 2 now names. arm64 images remain to build.
 - **MCP proxy, first version (D75, proposed;** [MCP connectors](../docs/MCP-CONNECTORS.md#the-mcp-proxy-as-built)**).** New member `packages/mcp-proxy` (conventions: planned member). It decides every MCP message with the policy library before anything goes upstream, refuses escalations as pending requests, records alerts before they proceed, and writes one record per call to the event store.

@@ -156,9 +156,12 @@ A sandbox resolves only the host names its compiled policy names. A policy with 
 2. OpenShell drafts a proposal for that program, host and port. Drafts reach the gateway about every 10 s.
 3. Every `admission_interval`, the worker lists each ready environment's pending drafts (`openshell rule get --status pending`) and decides each host and port with the policy library (`admission_refusal`):
    - the policy must reach hosts it does not name;
+   - the host must be public and not a platform service host;
    - the port must be one the compiled policy admits;
-   - some HTTP or git request to the host there must be allowed or escalated, after the hard floor, the pool ceiling and the reserved hosts.
-4. It names the admitted hosts in one new compilation of the environment's revision. Each gets an endpoint limited to public address ranges, so a name that resolves to a private address stays refused. It applies the result with `openshell policy set --wait`. The policy middleware still decides every request.
+   - some HTTP or git request to the host there must be allowed or escalated, after the hard floor (with the settings' `admin_hosts`), the pool ceiling and the reserved hosts.
+4. It names the admitted hosts in one new compilation of the environment's revision, and applies the result with `openshell policy set --wait`. The policy middleware still decides every request.
+   - Each admitted host gets an endpoint limited to the public address ranges, less the addresses the library always denies ([policy](POLICY.md), "Names, not addresses"). So a name that resolves to a private, metadata or administration address stays refused.
+   - Hosts already in use keep their place, so a new batch or a revision never displaces them.
 5. It rejects every draft it read, giving its decision as the reason, and records the decisions. It never approves a draft: a draft's rule is raw TCP for one program, which the fail-closed middleware could not inspect.
 
 The environment's `admitted_hosts` lists the hosts admitted so far. A revision decides every recorded host again. Hosts the new policy no longer reaches are dropped, and hosts it now reaches are admitted.
@@ -166,9 +169,19 @@ The environment's `admitted_hosts` lists the hosts admitted so far. A revision d
 Things to know:
 - **Timing.** In [lab 10](../.agents/docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md), a host was reachable 9 to 20 s after the first refused connection. OpenShell's 10 s draft flush and the sandbox's 10 s policy poll account for most of it. Research code, or the agent, retries.
 - **Reloads interrupt transfers.** When a sandbox loads a new compilation, OpenShell closes every connection opened under the old one, so an admission cuts downloads in progress.
-- **Limit.** An environment admits at most `max_admitted_hosts` hosts (64 by default). Each adds an endpoint of about 2 KiB, and OpenShell limits a sandbox's policy to 256 KiB. Beyond the limit, hosts are refused.
-- **Failures.** If the gateway cannot list or answer drafts, the worker leaves that environment's drafts pending and tries again a minute later.
-- **Untrusted text.** At v0.1.3, `openshell rule get` has no JSON output, so the worker reads its text. The sandbox chooses the host names and program paths in it. A crafted path can add hosts to decide, which the sandbox could have tried anyway, or hide its own draft.
+- **Limits.**
+  - An environment admits at most `max_admitted_hosts` hosts (64 by default). Each adds an endpoint of about 4 KiB of YAML, and OpenShell limits a sandbox's policy to 256 KiB.
+  - Beyond that limit, or once the compiled policy would pass 320 KiB of YAML, new hosts are refused.
+  - One check of an environment handles at most 32 drafts and 64 endpoints; real drafts beyond that wait for the next check.
+  - The worker keeps at most 512 decisions per environment: every admitted one, then the newest refusals. It forgets them when the environment is deleted.
+- **Failures.**
+  - If an environment's check fails, the worker leaves its drafts pending and skips it for a minute. A failure in one environment never stops the others.
+  - If the same batch fails three times because OpenShell refuses the revision, its hosts are refused with the error as the reason. A later revision of the policy decides them again.
+- **Untrusted text.**
+  - At v0.1.3, `openshell rule get` has no JSON output, so the worker reads its text.
+  - The sandbox chooses the host names and program paths in it. A crafted path can add hosts to decide, which the sandbox could have tried anyway, or hide its own draft.
+  - Such text is made printable before it reaches records, logs or the reasons OpenShell stores.
+- **Leave OpenShell's approval mode manual.** With `proposal_approval_mode` set to `auto`, OpenShell would approve drafts itself and add its own raw-TCP rules. The fail-closed middleware would deny their traffic, but the policy would no longer be the worker's alone.
 
 ## PDFs
 
@@ -215,6 +228,7 @@ ceiling = "pool-ceiling.yaml"        # the same pool ceiling the middleware appl
 profiles = {minimal = "sandbox-science/minimal:<sha>", crypto-base = "sandbox-science/crypto-base:<sha>"}   # base profile -> image (IMAGES.md)
 create_timeout = 600                 # seconds for a sandbox to become ready
 admission = true                     # admit hosts on demand (D69)
+admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's admin_hosts
 admission_interval = 3               # seconds between checks of each environment's drafts
 max_admitted_hosts = 64              # hosts admitted on demand per environment
 ```

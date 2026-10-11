@@ -50,7 +50,13 @@ from sandbox_science.contracts import (
     EnvironmentState,
     ErrorKind,
 )
-from sandbox_science.policy import LoadedPolicy, PolicyLoadError, load_ceiling, normalize_host
+from sandbox_science.policy import (
+    HardFloor,
+    LoadedPolicy,
+    PolicyLoadError,
+    load_ceiling,
+    normalize_host,
+)
 from sandbox_science.policy.openshell import (
     Compiled,
     CompileError,
@@ -58,7 +64,6 @@ from sandbox_science.policy.openshell import (
     admission_refusal,
     compile_sandbox,
     load_targets,
-    names_host,
 )
 from sandbox_science.policy_middleware.errors import StoreError
 from sandbox_science.policy_middleware.store import PolicyStore
@@ -74,6 +79,11 @@ _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLL_SECONDS: Final = 1.0
 _POLICY_TIMEOUT: Final = 120
+MAX_POLICY_YAML: Final = 320 * 1024
+"""The largest compiled policy, as YAML, that admission grows to. OpenShell limits a
+sandbox's policy to 256 KiB as protobuf, which is smaller than its YAML."""
+MAX_RECORDED: Final = 512
+"""Decisions kept per environment: every admitted one, then the newest refusals."""
 
 Release = Callable[[str], Awaitable[None]]
 
@@ -91,6 +101,11 @@ class Admission:
     admitted: bool
     reason: str
     decided_at: datetime
+
+
+def printable(text: str, limit: int = 255) -> str:
+    """Text a sandbox chose, safe for records, logs and the reasons OpenShell stores."""
+    return "".join(char if char.isprintable() else "?" for char in text[:limit])
 
 
 def sandbox_name(environment_id: str) -> str:
@@ -128,6 +143,9 @@ class OpenShellCli:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE, f"openshell {' '.join(args[:2])} took over {timeout:.0f} s"
             ) from exc
+        except asyncio.CancelledError:
+            process.kill()
+            raise
         if process.returncode != 0:
             text = _ANSI.sub("", (errors or output).decode("utf-8", "replace")).strip()
             raise WorkerError(
@@ -223,6 +241,17 @@ class EnvironmentRecords:
                     for admission in admissions
                 ],
             )
+            self._db.execute(
+                "DELETE FROM admissions WHERE environment_id = ? AND rowid NOT IN ("
+                " SELECT rowid FROM admissions WHERE environment_id = ?"
+                " ORDER BY admitted DESC, decided_at DESC LIMIT ?)",
+                (environment_id, environment_id, MAX_RECORDED),
+            )
+
+    def forget(self, environment_id: str) -> None:
+        """Drop an environment's decisions, when its sandbox is deleted."""
+        with self._lock:
+            self._db.execute("DELETE FROM admissions WHERE environment_id = ?", (environment_id,))
 
     def admissions(self, environment_id: str) -> list[Admission]:
         """An environment's decisions, oldest first."""
@@ -261,6 +290,7 @@ class Environments:
         self.settings = settings
         self.cli = OpenShellCli(backend, cli_env)
         self.store = PolicyStore(settings.policy_store)
+        self.floor = HardFloor(frozenset(settings.admin_hosts))
         try:
             self.targets = load_targets(settings.targets)
             self.ceiling = load_ceiling(settings.ceiling)
@@ -369,11 +399,12 @@ class Environments:
                 return info
             policy = self._policy(revision)
             # Hosts decided under the old revision are decided again under the new one.
-            decisions = self._decide(
-                policy, [(old.host, old.port) for old in self.records.admissions(environment_id)]
+            recorded = [(old.host, old.port) for old in self.records.admissions(environment_id)]
+            decisions = await asyncio.to_thread(self._decide, policy, recorded)
+            compiled, decisions = await asyncio.to_thread(
+                self._settle, policy, info.admitted_hosts, decisions
             )
-            admitted, decisions = self._admitted(policy, (), decisions)
-            compiled = self._compile(policy, admitted)
+            admitted = compiled.admitted
             providers = await self._check_providers(policy)
             if providers != info.providers:
                 raise WorkerError(
@@ -412,11 +443,13 @@ class Environments:
                     ErrorKind.CONFLICT, f"environment {environment_id!r} is {info.state}"
                 )
             policy = self._policy(info.policy)
-            decisions = self._decide(policy, requests)
-            admitted, decisions = self._admitted(policy, info.admitted_hosts, decisions)
-            if admitted != info.admitted_hosts:
+            decisions = await asyncio.to_thread(self._decide, policy, requests)
+            compiled, decisions = await asyncio.to_thread(
+                self._settle, policy, info.admitted_hosts, decisions
+            )
+            admitted = compiled.admitted
+            if set(admitted) != set(info.admitted_hosts):
                 new = sorted(set(admitted) - set(info.admitted_hosts))
-                compiled = self._compile(policy, admitted)
                 await self._set_policy(info, info.policy, compiled)
                 info = info.model_copy(
                     update={
@@ -426,9 +459,21 @@ class Environments:
                     }
                 )
                 self.records.save(info)
-                _log.info("environment %s admitted %s", environment_id, ", ".join(new))
+                _log.info("environment %s admitted %s", environment_id, ", ".join(new) or "none")
             self.records.decide(environment_id, decisions)
             return decisions
+
+    def refuse(
+        self, environment_id: str, requests: Sequence[tuple[str, int]], reason: str
+    ) -> list[Admission]:
+        """Record hosts as refused without deciding them, after admission kept failing."""
+        now = datetime.now(UTC)
+        decisions = {
+            (_name(host), port): Admission(_name(host), port, False, reason, now)
+            for host, port in requests
+        }
+        self.records.decide(environment_id, decisions.values())
+        return list(decisions.values())
 
     async def delete(self, environment_id: str) -> EnvironmentInfo:
         """Stop the environment's executor and delete its sandbox and binding."""
@@ -441,6 +486,7 @@ class Environments:
             await self.cli.run("sandbox", "delete", info.sandbox)
             if info.sandbox_id is not None:
                 self.store.unbind(info.sandbox_id)
+            self.records.forget(environment_id)
             deleted = info.model_copy(
                 update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
             )
@@ -464,14 +510,11 @@ class Environments:
         now = datetime.now(UTC)
         decisions: dict[tuple[str, int], Admission] = {}
         for host, port in requests:
-            try:
-                name = normalize_host(host)
-            except ValueError:
-                name = host
+            name = _name(host)
             if (name, port) in decisions:
                 continue
             refusal = admission_refusal(
-                policy, self.targets.sandbox, name, port, ceiling=self.ceiling
+                policy, self.targets.sandbox, name, port, ceiling=self.ceiling, floor=self.floor
             )
             decisions[name, port] = Admission(
                 host=name,
@@ -482,33 +525,52 @@ class Environments:
             )
         return list(decisions.values())
 
-    def _admitted(
+    def _settle(
         self, policy: LoadedPolicy, current: Sequence[str], decisions: Sequence[Admission]
-    ) -> tuple[tuple[str, ...], list[Admission]]:
-        """The hosts to compile in, and the decisions with the environment's limit applied.
+    ) -> tuple[Compiled, list[Admission]]:
+        """Compile with the hosts in use and the newly admissible ones, within the limits.
 
-        Hosts the policy names need no admission. Admitting more than
-        ``max_admitted_hosts`` is refused.
+        Hosts in use come first, so a revision or a new batch never displaces them.
+        Hosts the compiled policy names already need no endpoint of their own. New
+        hosts beyond ``max_admitted_hosts``, or that would make the compiled policy
+        too large, are refused.
         """
         limit = self.settings.max_admitted_hosts
-        admitted = [host for host in current if not names_host(policy, host)]
-        decided: list[Admission] = []
+        new = [d.host for d in decisions if d.admitted and d.host not in current]
+        candidates = list(dict.fromkeys([*current, *new]))
+        compiled = self._compile(policy, candidates)
+        emitted = set(compiled.admitted)
+        keep = [host for host in candidates if host in emitted]
+        refusals: dict[str, str] = {}
+        if len(keep) > limit:
+            for host in keep[limit:]:
+                refusals[host] = f"the environment has {limit} hosts admitted on demand, its limit"
+            keep = keep[:limit]
+        if refusals or len(compiled.policy.to_yaml()) > MAX_POLICY_YAML:
+            compiled = self._compile(policy, keep)
+            if len(compiled.policy.to_yaml()) > MAX_POLICY_YAML:
+                fresh = [host for host in keep if host not in current]
+                for host in fresh:
+                    refusals[host] = "the sandbox's policy would exceed OpenShell's size limit"
+                keep = [host for host in keep if host in current]
+                compiled = self._compile(policy, keep)
+        settled: list[Admission] = []
         for decision in decisions:
             host = decision.host
             if not decision.admitted:
                 pass
-            elif host in admitted or names_host(policy, host):
+            elif host in refusals:
+                decision = replace(decision, admitted=False, reason=refusals[host])
+            elif host in compiled.admitted:
+                if host in current:
+                    decision = replace(decision, reason="admitted already")
+            elif compiled.names(host):
                 decision = replace(decision, reason="admitted already")
-            elif len(admitted) >= limit:
-                decision = replace(
-                    decision,
-                    admitted=False,
-                    reason=f"the environment has {limit} hosts admitted on demand, its limit",
-                )
             else:
-                admitted.append(host)
-            decided.append(decision)
-        return tuple(sorted(admitted)), decided
+                reason = "the compiler did not admit it; see the environment's findings"
+                decision = replace(decision, admitted=False, reason=reason)
+            settled.append(decision)
+        return compiled, settled
 
     async def _set_policy(self, info: EnvironmentInfo, revision: str, compiled: Compiled) -> None:
         """Replace the sandbox's network sections, keeping the filesystem section it reports."""
@@ -524,7 +586,11 @@ class Environments:
     def _compile(self, policy: LoadedPolicy, admitted: Sequence[str] = ()) -> Compiled:
         try:
             return compile_sandbox(
-                policy, self.targets.sandbox, ceiling=self.ceiling, admitted=admitted
+                policy,
+                self.targets.sandbox,
+                ceiling=self.ceiling,
+                floor=self.floor,
+                admitted=admitted,
             )
         except CompileError as exc:
             raise WorkerError(
@@ -629,6 +695,14 @@ class Environments:
         path = directory / f"openshell-{revision.removeprefix('sha256:')[:16]}.yaml"
         path.write_text(text)
         return path
+
+
+def _name(host: str) -> str:
+    """A host as admission records it: normalized, or printable when it is no name at all."""
+    try:
+        return normalize_host(host)
+    except ValueError:
+        return printable(host)
 
 
 def _findings(compiled: Compiled) -> tuple[str, ...]:

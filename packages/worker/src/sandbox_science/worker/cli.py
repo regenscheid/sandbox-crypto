@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import logging
 import os
 import secrets
@@ -117,8 +116,12 @@ async def serve(settings: Settings) -> None:
     finally:
         if watcher is not None:
             watcher.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await watcher
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _log.exception("the admission watcher failed")
         await runner.cleanup()
         await manager.close()
         store.close()
@@ -143,7 +146,10 @@ def add_policies(settings: Settings, paths: list[Path]) -> int:
             try:
                 loaded = environments.store.add_policy(path.read_bytes())
                 compiled = compile_sandbox(
-                    loaded, environments.targets.sandbox, ceiling=environments.ceiling
+                    loaded,
+                    environments.targets.sandbox,
+                    ceiling=environments.ceiling,
+                    floor=environments.floor,
                 )
             except (OSError, StoreError, CompileError) as exc:
                 print(f"error: {path}: {exc}", file=sys.stderr)

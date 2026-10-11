@@ -6,6 +6,7 @@ docs/POLICY.md defines the semantics; the section names in comments refer to it.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, NamedTuple, assert_never
@@ -145,9 +146,10 @@ def host_reach(
     Rules tell requests to one host and port apart only by scheme, method, path
     and git service. One request for each scheme, each method a rule names plus
     one it does not, and each path a rule names plus one it does not, therefore
-    meets every combination of matching rules. URL limits are ignored, since a
-    short URL stays under them. On-demand admission (D69) asks this before it
-    lets a sandbox resolve a host that the policy does not name.
+    meets every combination of matching rules. URL limits are ignored, as if
+    a short enough URL always existed: under a tiny ``max_url_bytes`` this may
+    report a request that no real URL could make. On-demand admission (D69) asks
+    this before it lets a sandbox resolve a host that the policy does not name.
 
     Raises ClassificationError for an invalid host or port.
     """
@@ -155,30 +157,41 @@ def host_reach(
     http_rules = [rule for rule in rules if isinstance(rule, HttpRule)]
     git_rules = [rule for rule in rules if isinstance(rule, GitRule)]
     methods = sorted({method for rule in http_rules for method in rule.match.methods})
+    # An invalid host or port fails here, before any path is tried.
+    HttpOperation(method="GET", scheme="https", host=host, port=port, path="/", url_bytes=0)
     operations: list[HttpOperation | GitOperation] = []
     schemes: tuple[Scheme, ...] = ("https", "http")
     services: tuple[GitService, ...] = ("upload-pack", "receive-pack")
     for scheme in schemes:
         for path in _representative_paths(http_rules):
-            operations += [
-                HttpOperation(
-                    method=method, scheme=scheme, host=host, port=port, path=path, url_bytes=0
-                )
-                for method in (*methods, UNNAMED_METHOD)
-            ]
+            for method in (*methods, UNNAMED_METHOD):
+                # A rule path the classifier refuses, such as one with "::$", matches no
+                # request, so no request stands for it.
+                with contextlib.suppress(ClassificationError):
+                    operations.append(
+                        HttpOperation(
+                            method=method,
+                            scheme=scheme,
+                            host=host,
+                            port=port,
+                            path=path,
+                            url_bytes=0,
+                        )
+                    )
         for path in _representative_paths(git_rules):
-            operations += [
-                GitOperation(
-                    service=service,
-                    method="POST",
-                    scheme=scheme,
-                    host=host,
-                    port=port,
-                    repo_path=path,
-                    url_bytes=0,
-                )
-                for service in services
-            ]
+            for service in services:
+                with contextlib.suppress(ClassificationError):
+                    operations.append(
+                        GitOperation(
+                            service=service,
+                            method="POST",
+                            scheme=scheme,
+                            host=host,
+                            port=port,
+                            repo_path=path,
+                            url_bytes=0,
+                        )
+                    )
     decisions = (
         _evaluate_network(operation, policy, ceiling, floor, ()) for operation in operations
     )

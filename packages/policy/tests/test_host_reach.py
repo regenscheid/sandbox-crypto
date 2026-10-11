@@ -238,3 +238,18 @@ def test_the_decision_explains_a_refusal() -> None:
 def test_invalid_hosts_and_ports_are_refused(host: str, port: int) -> None:
     with pytest.raises(ClassificationError):
         host_reach(host, port, load(), ceiling=UNRESTRICTED)
+
+
+def test_a_rule_path_no_request_can_have_is_skipped() -> None:
+    # The model accepts "::$" in a path, but the classifier refuses any request with
+    # it, so such a rule matches nothing and must not break the search (review M1).
+    policy = load(
+        READ_ANYWHERE
+        + """\
+    - name: streams
+      operation: http
+      match: {hosts: [files.example.org], paths: ["/files::$DATA"]}
+      action: deny
+"""
+    )
+    assert reach(policy, "files.example.org") is Action.ALLOW

@@ -9,11 +9,13 @@ refuses a document that removes any filesystem path.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,12 +25,26 @@ from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import EnvironmentRequest, EnvironmentState, ErrorKind
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
-from sandbox_science.worker.admission import Draft, DraftWatcher, parse_drafts
+from sandbox_science.policy import HardFloor
+from sandbox_science.worker import environments as environments_module
+from sandbox_science.worker.admission import (
+    MAX_DRAFTS,
+    MAX_ENDPOINTS,
+    MAX_FAILURES,
+    Draft,
+    DraftWatcher,
+    parse_drafts,
+)
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend, OpenShellBackend
 from sandbox_science.worker.cli import main
-from sandbox_science.worker.environments import Environments, sandbox_name
+from sandbox_science.worker.environments import (
+    MAX_RECORDED,
+    Admission,
+    Environments,
+    sandbox_name,
+)
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import (
@@ -112,6 +128,8 @@ elif command == ["policy", "get"]:
     box = sandboxes[argv[2]]
     out = json.dumps({"policy": box["policy"], "version": box["version"], "status": "effective"})
 elif command == ["policy", "set"]:
+    if state.get("fail_policy_set"):
+        fail("policy serialized size exceeds maximum")
     box = sandboxes[argv[2]]
     with open(option("--policy")) as handle:
         policy = yaml.safe_load(handle)
@@ -742,3 +760,149 @@ async def test_a_crafted_program_path_only_adds_hosts_to_decide() -> None:
         ("real", ()),
         ("forged", (("evil.example.net", 443),)),
     ]
+
+
+# Review fixes (PR #39).
+
+
+def path_variant(tmp_path: Path) -> Path:
+    """The example policy with a rule path the classifier refuses (it matches nothing)."""
+    text = EXAMPLE.read_text()
+    marker = "    - name: read-only-web\n"
+    rule = (
+        "    - name: streams\n      operation: http\n"
+        "      match: { hosts: [files.example.org], paths: ['/files::$DATA'] }\n"
+        "      action: deny\n"
+    )
+    path = tmp_path / "streams.yaml"
+    path.write_text(text.replace(marker, rule + marker, 1))
+    return path
+
+
+async def test_a_rule_path_no_request_can_have_does_not_stop_admission(setup: Setup) -> None:
+    streams = setup.add(path_variant(setup.tmp))
+    info, _ = await setup.environments.create(setup.request(policy=streams))
+    setup.fake.draft(info.sandbox, "files.example.org:443")
+    decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    assert [(d.host, d.admitted) for d in decisions] == [("files.example.org", True)]
+
+
+async def test_an_unexpected_error_pauses_one_environment_not_the_watcher(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, _ = await setup.environments.create(setup.request("env-a"))
+    second, _ = await setup.environments.create(setup.request("env-b"))
+    setup.fake.draft(first.sandbox, "a.example.net:443")
+    setup.fake.draft(second.sandbox, "b.example.net:443")
+    real = setup.environments.admit
+
+    async def broken(environment_id: str, requests: Sequence[tuple[str, int]]) -> list[Admission]:
+        if environment_id == "env-a":
+            raise RuntimeError("database is locked")
+        return await real(environment_id, requests)
+
+    monkeypatch.setattr(setup.environments, "admit", broken)
+    await DraftWatcher(setup.environments, 1.0).check_all()
+    assert setup.environments.get("env-b").admitted_hosts == ("b.example.net",)
+    assert setup.environments.get("env-a").admitted_hosts == ()
+
+
+async def test_one_check_handles_a_bounded_number_of_drafts_and_endpoints(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    for index in range(MAX_DRAFTS + 8):
+        setup.fake.draft(info.sandbox, f"h{index}.example.net:443")
+    decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    assert len(decisions) == MAX_DRAFTS
+    pending = [d for d in setup.fake.drafts(info.sandbox).values() if d["status"] == "pending"]
+    assert len(pending) == 8
+    # A crafted program path can fake many endpoints; one check decides at most this many.
+    other, _ = await setup.environments.create(setup.request("env-2"))
+    forged = ", ".join(f"f{i}.example.org:443 [L4]" for i in range(MAX_ENDPOINTS + 40))
+    setup.fake.draft(other.sandbox, f"{forged}, x.example.org:443")
+    decisions = await DraftWatcher(setup.environments, 1.0).check("env-2", other.sandbox)
+    assert len(decisions) == MAX_ENDPOINTS
+
+
+async def test_decision_records_are_bounded_and_forgotten_on_delete(setup: Setup) -> None:
+    await setup.environments.create(setup.request())
+    now = datetime.now(UTC)
+    refusals = [Admission(f"r{i}.example.net", 443, False, "no", now) for i in range(600)]
+    setup.environments.records.decide(
+        "env-1", [Admission("kept.example.net", 443, True, "admitted", now)]
+    )
+    setup.environments.records.decide("env-1", refusals)
+    recorded = setup.environments.records.admissions("env-1")
+    assert len(recorded) == MAX_RECORDED
+    assert any(a.host == "kept.example.net" for a in recorded)
+    await setup.environments.delete("env-1")
+    assert setup.environments.records.admissions("env-1") == []
+
+
+async def test_a_revision_keeps_the_hosts_in_use_at_the_limit(setup: Setup) -> None:
+    setup.environments.settings = setup.environments.settings.model_copy(
+        update={"max_admitted_hosts": 2}
+    )
+    info, _ = await setup.environments.create(setup.request())
+    watcher = DraftWatcher(setup.environments, 1.0)
+    for host in ("a.example.net", "b.example.net", "c.example.net"):
+        setup.fake.draft(info.sandbox, f"{host}:443")
+    await watcher.check("env-1", info.sandbox)
+    assert setup.environments.get("env-1").admitted_hosts == ("a.example.net", "b.example.net")
+    # Another program's draft for a host in use refreshes its record (review L1).
+    setup.fake.draft(info.sandbox, "a.example.net:443", "/usr/bin/wget")
+    await watcher.check("env-1", info.sandbox)
+    revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
+    revised = await setup.environments.revise("env-1", revision)
+    assert revised.admitted_hosts == ("a.example.net", "b.example.net")
+
+
+async def test_a_batch_whose_revision_keeps_failing_is_refused(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    chunk = setup.fake.draft(info.sandbox, "a.example.net:443")
+    setup.fake.update(fail_policy_set=True)
+    watcher = DraftWatcher(setup.environments, 1.0)
+    for _ in range(MAX_FAILURES - 1):
+        with pytest.raises(WorkerError):
+            await watcher.check("env-1", info.sandbox)
+    assert setup.fake.drafts(info.sandbox)[chunk]["status"] == "pending"
+    decisions = await watcher.check("env-1", info.sandbox)
+    assert [(d.host, d.admitted) for d in decisions] == [("a.example.net", False)]
+    assert "could not revise" in setup.fake.drafts(info.sandbox)[chunk]["reason"]
+    assert setup.environments.get("env-1").admitted_hosts == ()
+
+
+async def test_admission_stops_before_the_policy_grows_too_large(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    monkeypatch.setattr(environments_module, "MAX_POLICY_YAML", 1)
+    chunk = setup.fake.draft(info.sandbox, "a.example.net:443")
+    decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    assert [(d.host, d.admitted) for d in decisions] == [("a.example.net", False)]
+    assert "size limit" in setup.fake.drafts(info.sandbox)[chunk]["reason"]
+    assert setup.fake.calls("policy", "set") == []
+
+
+async def test_admitted_names_cannot_reach_the_deployments_admin_addresses(setup: Setup) -> None:
+    # The middleware sees only names, so the ranges must leave these out (review H1).
+    setup.environments.floor = HardFloor(frozenset({"34.120.1.2"}))
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.draft(info.sandbox, "34-120-1-2.sslip.io:443")
+    await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    policies = setup.fake.read()["sandboxes"][info.sandbox]["policy"]["network_policies"]
+    [endpoint] = policies["sandbox-science-admitted"]["endpoints"]
+    covered = [
+        block
+        for block in endpoint["allowed_ips"]
+        if ipaddress.ip_address("34.120.1.2") in ipaddress.ip_network(block)
+        or ipaddress.ip_address("168.63.129.16") in ipaddress.ip_network(block)
+    ]
+    assert covered == []
+
+
+async def test_text_from_the_sandbox_is_made_printable(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    chunk = setup.fake.draft(info.sandbox, "evil\x01.example.org:443")
+    decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    assert all(d.host.isprintable() for d in decisions)
+    assert setup.fake.drafts(info.sandbox)[chunk]["reason"].isprintable()
