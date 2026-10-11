@@ -5,6 +5,9 @@
 sandbox-science-mcp-proxy serve --settings proxy.toml [--log-level INFO]
 sandbox-science-mcp-proxy bind --state-dir DIR --project ID --policy policy.yaml
 sandbox-science-mcp-proxy unbind --state-dir DIR --project ID
+sandbox-science-mcp-proxy pending --settings proxy.toml
+sandbox-science-mcp-proxy approve --settings proxy.toml --request SEQ [--scope tool] [--for HOURS]
+sandbox-science-mcp-proxy deny --settings proxy.toml --request SEQ
 sandbox-science-mcp-proxy new-token
 ```
 
@@ -22,19 +25,22 @@ import os
 import secrets
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 import aiohttp
 from aiohttp import web
 
-from sandbox_science.event_store import EventStore, EventStoreError
+from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
+from sandbox_science.policy.approvals import ALL_SCOPES, Approvals, pending_lines, prepare_answer
 from sandbox_science.policy.loader import read_limited
 
 from .callers import Callers, token_digest
 from .errors import McpProxyError
 from .proxy import McpProxy
-from .records import STORE_TIMEOUT, StoreSink
+from .records import OPERATOR, STORE_TIMEOUT, StoreSink
 from .sessions import Sessions
 from .settings import Settings, load_settings
 from .store import PolicyStore
@@ -59,6 +65,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     unbind.add_argument("--state-dir", type=Path, required=True)
     unbind.add_argument("--project", required=True)
     commands.add_parser("new-token", help="print a new caller token and its hash")
+    pending = commands.add_parser("pending", help="list permission requests nobody answered")
+    pending.add_argument("--settings", type=Path, required=True)
+    for name, text in (("approve", "approve a permission request"), ("deny", "deny one")):
+        answer = commands.add_parser(name, help=text)
+        answer.add_argument("--settings", type=Path, required=True)
+        answer.add_argument("--request", type=int, required=True, help="its sequence number")
+        if name == "approve":
+            answer.add_argument(
+                "--scope",
+                choices=ALL_SCOPES,
+                help="call (the default), or tool: the tool with any arguments",
+            )
+            answer.add_argument("--for", dest="hours", type=float, default=8.0, help="hours")
     args = parser.parse_args(argv)
     try:
         match args.command:
@@ -78,6 +97,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 removed = PolicyStore(args.state_dir).unbind(args.project)
                 print(f"unbound {args.project}" if removed else f"{args.project} was not bound")
                 return 0
+            case "pending":
+                return _pending(load_settings(args.settings).event_store_path)
+            case "approve" | "deny":
+                return _answer(
+                    load_settings(args.settings).event_store_path,
+                    approve=args.command == "approve",
+                    seq=args.request,
+                    scope=getattr(args, "scope", None),
+                    hours=getattr(args, "hours", None),
+                )
             case _:
                 token = secrets.token_urlsafe(32)
                 print(f"token = {token}")
@@ -86,6 +115,37 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (McpProxyError, PolicyLoadError, EventStoreError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+
+def _read_records(path: Path, after: int) -> list[Record]:
+    """Records after ``after``, read with a connection of this thread's own."""
+    with StoreReader(path) as reader:
+        return list(reader.records(after=after))
+
+
+def _pending(path: Path) -> int:
+    approvals = Approvals()
+    approvals.load(_read_records(path, 0))
+    lines = pending_lines(approvals)
+    print("\n".join(lines) if lines else "no permission requests are waiting")
+    return 0
+
+
+def _answer(path: Path, *, approve: bool, seq: int, scope: str | None, hours: float | None) -> int:
+    """Append an approval or a denial of permission request ``seq``."""
+    approvals = Approvals()
+    approvals.load(_read_records(path, 0))
+    try:
+        kind, payload = prepare_answer(
+            approvals, seq, approve=approve, scope=scope, hours=hours, now=datetime.now(UTC)
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    with EventStore(path) as events:
+        record = events.append(kind, OPERATOR, payload)
+    print(f"{'approved' if approve else 'denied'} request {seq} as record {record.seq}")
+    return 0
 
 
 def _serve(settings: Settings) -> int:
@@ -115,6 +175,7 @@ def _serve(settings: Settings) -> int:
             ),
             credentials=settings.credentials,
             environ=os.environ,
+            requests=partial(_read_records, settings.event_store_path),
         )
         app = proxy.application(max_body_bytes=settings.max_body_bytes)
 
