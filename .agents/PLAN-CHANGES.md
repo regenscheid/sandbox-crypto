@@ -4,6 +4,11 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **Environment revisions (W3).** After every call, the executor reports a fingerprint of the installed packages. The worker counts each change as a new revision of the environment. Each execution reports the revision it started and ended under, and the harness tells the model when a call changed the packages. Installs are recorded, not yet serialized.
+- **Idle suspension (W3;** [lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md)**).** The confirmed idle behaviour says environments persist but need not keep running. With `suspend_after`, the worker now stops the sandbox of an idle environment and starts it again on the next use.
+  - Idle means no executions, no requests and almost no CPU use by its kernels. The executor's new `usage` operation reports that CPU time, so a computation in a kernel thread keeps the environment up.
+  - Environments gain the state `stopped`.
+  - In the lab, files, installed tools, the policy and admitted hosts survived. The first call after a suspension took 7.6 s, and the kernel's lost state was reported.
 - **Admission on demand, and no host-less endpoint (D69 amended, details proposed;** [lab 10](docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md)**).**
   - The worker admits hosts that the policy reaches but does not name. It reads the proposals OpenShell drafts for refused connections, and decides each host with the library (`host_reach`, `admission_refusal`). It names admitted hosts in a new compilation of the same revision, with the public address ranges, then rejects the draft with its decision. It never approves a draft, records every decision, and decides recorded hosts again under each new revision.
   - D69 had the orchestrator approving drafts. The worker does it, because it holds the gateway's credentials (D73).
