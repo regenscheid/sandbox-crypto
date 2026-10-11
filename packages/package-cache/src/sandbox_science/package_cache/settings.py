@@ -36,6 +36,12 @@ sumdb = "https://sum.golang.org"
 
 [npm]
 registry = "https://registry.npmjs.org"
+
+[opam]
+repository = "https://opam.ocaml.org"
+
+[hackage]
+repository = "https://hackage.haskell.org"
 ```
 
 ``public_url`` and ``cache_dir`` are required; every other key has the default
@@ -206,6 +212,18 @@ class NpmSettings(_Model):
     registry: HttpsUrl = "https://registry.npmjs.org"
 
 
+class OpamSettings(_Model):
+    """opam: an HTTP repository, which serves its index and its archive cache."""
+
+    repository: HttpsUrl = "https://opam.ocaml.org"
+
+
+class HackageSettings(_Model):
+    """Hackage: a hackage-security repository (signed metadata, index and packages)."""
+
+    repository: HttpsUrl = "https://hackage.haskell.org"
+
+
 class Settings(_Model):
     """Settings for one package cache."""
 
@@ -234,6 +252,8 @@ class Settings(_Model):
     cargo: CargoSettings | None = None
     go: GoSettings | None = None
     npm: NpmSettings | None = None
+    opam: OpamSettings | None = None
+    hackage: HackageSettings | None = None
 
     @model_validator(mode="after")
     def _limits(self) -> Self:
@@ -291,6 +311,10 @@ class Settings(_Model):
             urls += [self.go.proxy, self.go.sumdb]
         if self.npm is not None:
             urls.append(self.npm.registry)
+        if self.opam is not None:
+            urls.append(self.opam.repository)
+        if self.hackage is not None:
+            urls.append(self.hackage.repository)
         return tuple(dict.fromkeys(urls))
 
 
