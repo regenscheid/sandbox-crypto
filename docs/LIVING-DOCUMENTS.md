@@ -89,9 +89,9 @@ On babbage, documents of repeated sections, each a heading and a paragraph with 
 
 | Document | Parse | Create | Patch | Patch from 10 revisions back |
 | --- | --- | --- | --- | --- |
-| 17 KiB, 200 blocks, 600 formulas | 9 ms | 13 ms | 17 ms | 35 ms |
-| 85 KiB, 1,000 blocks, 3,000 formulas | 43 ms | 56 ms | 99 ms | 221 ms |
-| 344 KiB, 4,000 blocks, 12,000 formulas | 278 ms | 302 ms | 784 ms | 1,731 ms |
+| 17 KiB, 200 blocks, 600 formulas | 13 ms | 18 ms | 16 ms | 22 ms |
+| 85 KiB, 1,000 blocks, 3,000 formulas | 42 ms | 54 ms | 97 ms | 140 ms |
+| 344 KiB, 4,000 blocks, 12,000 formulas | 246 ms | 281 ms | 746 ms | 1,040 ms |
 
 A patch parses the text again after each operation and carries the IDs over; one from an older base also reads the block maps of the revisions after it. Changes wait for one another, so on the largest documents a few concurrent patches take seconds.
 
