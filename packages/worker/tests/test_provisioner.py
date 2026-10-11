@@ -129,6 +129,7 @@ INDEX: dict[str, dict[str, dict[str, Any]]] = {
             "postlink": "fail",
         },
         "slowlink": {"version": "1.0", "build": "h0_0", "subdir": "linux-64", "postlink": "slow"},
+        "lostlink": {"version": "1.0", "build": "h0_0", "subdir": "linux-64", "postlink": "lost"},
         "wronggp": {
             "version": "1.0",
             "build": "h0_0",
@@ -1001,6 +1002,41 @@ async def test_a_cancellation_between_installs_is_no_silent_mix(make_world: Fact
     assert (done.revision_before, done.revision_after) == (0, 1)
     labels = [(await world.execution(e))["operation_id"].rsplit(".", 1)[1] for e in done.executions]
     assert labels == ["resolve-conda", "resolve-pip", "install-conda"]
+
+
+@pytest.mark.asyncio
+async def test_an_install_whose_executor_is_lost_is_looked_at_again(make_world: Factory) -> None:
+    # CP-13: an install step that ends without a revision is no proof that nothing changed.
+    world = await make_world()
+    done = await world.finished((await world.provision("op-1", conda=["lostlink"]))["provision_id"])
+    assert (done.outcome, done.reason, done.stage) == (
+        "needs_recovery",
+        "environment_changed",
+        "link",
+    )
+    assert (done.revision_before, done.revision_after) == (0, 1)
+    labels = [(await world.execution(e))["operation_id"].rsplit(".", 1)[1] for e in done.executions]
+    assert labels == ["resolve-conda", "install-conda", "install-conda-look"]
+    assert (await world.execution(done.executions[1]))["state"] == "lost"
+    assert (await world.queue()).status == "needs_recovery"
+
+
+class Blind(Provisioner):
+    """Cannot look at the packages after an install step."""
+
+    async def _look(self, op: Any, label: str) -> int | None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_an_install_whose_effect_is_unseen_claims_nothing(make_world: Factory) -> None:
+    world = await make_world(kind=Blind)
+    done = await world.finished((await world.provision("op-1", conda=["lostlink"]))["provision_id"])
+    assert (done.outcome, done.reason, done.stage) == ("failed", "install_failed", "link")
+    assert (done.revision_before, done.revision_after) == (0, None)
+    assert any("whether they changed is unknown" in note for note in done.notes)
+    assert done.next_step is not None
+    assert "may have changed some packages" in done.next_step
 
 
 @pytest.mark.asyncio
