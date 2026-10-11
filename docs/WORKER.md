@@ -387,7 +387,7 @@ The local runs are then skipped; setting only some of the variables is an error.
 
 ## Not yet done
 
-- **Survival across worker restarts.** The executor serves one stdio connection, so it ends when the worker restarts, and kernels end with it. The planned fix is a daemon in the sandbox listening on a socket, with the worker reconnecting through `openshell sandbox exec`.
+- **Survival across worker restarts.** The executor serves one stdio connection, so it ends when the worker restarts, and kernels end with it. The planned fix is a daemon in the sandbox listening on a socket, with the worker reconnecting through `openshell sandbox exec`. Background jobs, which run for hours (D83, [tools](specs/tools.md#background-jobs)), need it to survive a worker restart.
 - **Environment lifecycle.** The worker creates, revises and deletes sandboxes ([environments](#environments)). Suspending and restoring them, and the provisioning tool with its probes and rollback ([package commands](#package-commands)), belong to the environment manager (W3). Policy revisions enter the store only through the operator's command; an approval path from the GUI, with re-authentication for widening (D54), comes later.
 - **Data grants.** Scoped grants of project data, and session containers beside the project container.
 - **Large outputs.** A rich output over the limit is replaced by a note; the spec's spill to a referenced file is not implemented.
