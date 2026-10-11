@@ -424,13 +424,15 @@ async def test_an_escalated_tool_is_held_and_recorded_as_pending(harness: Harnes
     assert "secret-ish" not in repr(harness.sink.events)
 
 
-async def test_an_escalation_is_refused_even_when_it_cannot_be_recorded(
+async def test_an_escalation_that_cannot_be_recorded_is_not_left_pending(
     harness: Harness,
 ) -> None:
+    # There is no request to approve, so the caller must not wait for one.
     session = await harness.initialize()
     harness.sink.fail = True
     answer = await harness.tool(session, "crawl")
-    assert reason(answer) == "approval_required"
+    assert answer.body["error"]["code"] == REFUSED
+    assert reason(answer) == "audit_unavailable"
     assert harness.fake.tool_calls() == []
 
 

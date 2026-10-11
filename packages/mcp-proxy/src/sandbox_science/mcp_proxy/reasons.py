@@ -64,7 +64,7 @@ MESSAGES: Final[Mapping[str, str]] = {
     POOL_CEILING_DENIED: "the worker pool's ceiling denies this call",
     DESTINATION_FORBIDDEN: "the server's address is forbidden",
     REQUEST_UNCLASSIFIABLE: "the request is malformed or uses a feature the proxy does not support",
-    AUDIT_UNAVAILABLE: "the call needs a recorded alert, and the record could not be stored",
+    AUDIT_UNAVAILABLE: "the call needs an alert or permission request that could not be stored",
     POLICY_UNAVAILABLE: "the project's policy cannot be loaded",
     PROJECT_UNBOUND: "no policy revision is bound to the project",
     UNAUTHENTICATED: "a valid bearer token is required",

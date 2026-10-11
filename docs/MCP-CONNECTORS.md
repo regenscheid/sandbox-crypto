@@ -91,7 +91,7 @@ A caller holds at most `max_sessions_per_caller` sessions; its next one ends its
 | Nothing in the parameters that reads as an OpenShell placeholder | `credential_in_body` |
 | A placeholder for the server's credentials in the proxy's environment | `credential_unavailable` |
 | For `tools/call`, a name in the server's latest complete `tools/list`, compared exactly. The proxy lists the tools itself when it has no complete listing, and again after the server reports a change; the caller's own listings count once their last page arrives | `tool_not_advertised` |
-| An escalation is recorded as a pending request and refused, whether or not the record could be stored | `approval_required` |
+| An escalation is recorded as a pending request and refused. If the record cannot be stored, there is no request to approve, as for the middleware | `approval_required`, `audit_unavailable` |
 | An alert proceeds only once its record is stored | `audit_unavailable` |
 | The server's resolved addresses pass the hard floor and the pool ceiling, checked before each new connection | `destination_forbidden`, `pool_ceiling_denied` |
 
