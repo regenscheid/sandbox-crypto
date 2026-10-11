@@ -151,6 +151,8 @@ class RuleEscalation(StrictModel):
 
     timeout: Duration | None = None
     on_timeout: OnTimeout | None = None
+    allow_credentialed: StrictBool = False
+    """With ``on_timeout: allow``, also let a request that may carry a credential proceed."""
 
 
 class Resources(StrictModel):
@@ -243,6 +245,10 @@ class _Rule(StrictModel):
             raise ValueError(
                 f"rule {self.name!r}: on_timeout: allow is only permitted on read-only rules "
                 "(http rules limited to GET/HEAD, git rules for upload-pack)"
+            )
+        if self.escalation.allow_credentialed and self.escalation.on_timeout is not OnTimeout.ALLOW:
+            raise ValueError(
+                f"rule {self.name!r}: allow_credentialed applies only with on_timeout: allow"
             )
         return self
 
