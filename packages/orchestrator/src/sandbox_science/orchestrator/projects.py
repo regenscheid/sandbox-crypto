@@ -15,6 +15,13 @@ processes cannot lose one another's sessions.
 Environment IDs end with a random tag, kept in the record. A worker shared with other
 projects' orchestrators keeps each ID for the project that first creates it (D78), so
 an ID another orchestrator could predict, such as ``p1-default``, could be taken first.
+
+Each run of a session is kept too, as the record ``run --transcript`` writes, in
+``runs/<project>/<session>/`` beside ``projects/`` (W4). A tree of its own keeps a
+project's runs clear of other projects' files, whose names may contain dots. A run's
+record is named by when the run started and its run ID, so a run ID used again adds a
+record rather than replacing one, and it is written once: complete, synced, and never
+over another.
 """
 
 from __future__ import annotations
@@ -22,20 +29,24 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import hashlib
+import json
 import os
+import re
 import secrets
+import tempfile
 from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import Field, JsonValue, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
     EnvironmentInfo,
     EnvironmentRequest,
     EnvironmentState,
     ErrorKind,
+    ExecutionContext,
     Identifier,
     PolicyRevision,
 )
@@ -46,6 +57,8 @@ from .worker_client import WorkerAPIError, WorkerClient
 _MAX_ID: Final = 128
 _IDENTIFIER: Final = TypeAdapter(Identifier)
 _TAG_BYTES: Final = 6
+_STARTED: Final = "%Y%m%dT%H%M%S%fZ"
+_RUN_NAME: Final = re.compile(r"([0-9]{8}T[0-9]{12}Z)-([A-Za-z0-9][A-Za-z0-9._-]{0,127})")
 
 
 class ProjectError(Exception):
@@ -82,6 +95,40 @@ class ProjectRecord(Contract):
         return [self.default_environment_id, *sorted(dedicated - {self.default_environment_id})]
 
 
+class RunRecord(Contract):
+    """One run of the harness: what ``run --transcript`` writes, and what a session keeps."""
+
+    run_id: str
+    """The run's ID, which starts every operation ID of its tool calls."""
+    context: ExecutionContext
+    task: str
+    started_at: datetime
+    ended_at: datetime
+    stopped: str
+    """``answered``, or ``turn_limit`` when the model was still asking for tools."""
+    final_text: str | None = None
+    messages: list[dict[str, JsonValue]]
+    """The conversation in the OpenAI chat format the harness uses, system prompt first."""
+    tools: list[dict[str, JsonValue]]
+    """One record per tool call, in order: its name, arguments and outcome."""
+
+    def to_json(self) -> str:
+        """The record as JSON text.
+
+        The standard library's encoder escapes what it cannot write as UTF-8, such as a
+        lone surrogate in a model's reply, where pydantic's would fail at the end of a run.
+        """
+        return json.dumps(self.model_dump(mode="json"), indent=2)
+
+
+class RunEntry(Contract):
+    """A run a session keeps, named by when it started and its run ID."""
+
+    name: str
+    run_id: Identifier
+    started_at: datetime
+
+
 def environment_id(*parts: str) -> str:
     """An environment ID from its parts, such as a project's and a session's IDs, short
     enough to be one."""
@@ -97,11 +144,33 @@ def _new_environment_id(project_id: str, name: str) -> str:
     return environment_id(project_id, name, secrets.token_hex(_TAG_BYTES))
 
 
+def _is_identifier(value: str) -> bool:
+    try:
+        _IDENTIFIER.validate_python(value)
+    except ValidationError:
+        return False
+    return True
+
+
+def _run_entry(name: str) -> RunEntry | None:
+    """The run a record's name stands for; None for any other name, which is never a path."""
+    match = _RUN_NAME.fullmatch(name)
+    if match is None:
+        return None
+    try:
+        started = datetime.strptime(match[1], _STARTED).replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return RunEntry(name=name, run_id=match[2], started_at=started)
+
+
 class ProjectStore:
-    """The orchestrator's project records, in ``<state_dir>/projects``."""
+    """The orchestrator's project records, in ``<state_dir>/projects``, and the runs of
+    their sessions, in ``<state_dir>/runs``."""
 
     def __init__(self, state_dir: Path) -> None:
         self.root = state_dir / "projects"
+        self.runs_root = state_dir / "runs"
         self.root.mkdir(parents=True, exist_ok=True)
 
     def get(self, project_id: str) -> ProjectRecord:
@@ -206,14 +275,92 @@ class ProjectStore:
             )
             return closed
 
+    def project_ids(self) -> list[str]:
+        """The IDs of the projects recorded here, sorted."""
+        found = (path.name.removesuffix(".json") for path in self.root.glob("*.json"))
+        return sorted(
+            project_id
+            for project_id in found
+            if _is_identifier(project_id) and self._path(project_id).is_file()
+        )
+
+    def save_run(self, record: RunRecord) -> RunEntry:
+        """Keep a run of one of the project's sessions; the record is written once."""
+        project_id, session_id = record.context.project_id, record.context.session_id
+        if session_id not in self.get(project_id).sessions:
+            raise ProjectError(
+                ErrorKind.NOT_FOUND, f"project {project_id!r} has no session {session_id!r}"
+            )
+        started = record.started_at.astimezone(UTC).strftime(_STARTED)
+        entry = _run_entry(f"{started}-{record.run_id}")
+        if entry is None:
+            raise ProjectError(
+                ErrorKind.INVALID_REQUEST,
+                f"run ID {record.run_id!r} cannot name a record: use letters, digits, '.', "
+                "'_' and '-', starting with a letter or digit",
+            )
+        directory = self._runs(project_id, session_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        # A partial file of its own, synced, then linked to its name, which fails rather
+        # than replace a record that has the name already.
+        descriptor, partial = tempfile.mkstemp(dir=directory, prefix=".", suffix=".partial")
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(record.to_json())
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(partial, directory / f"{entry.name}.json")
+        except FileExistsError:
+            raise ProjectError(
+                ErrorKind.CONFLICT, f"session {session_id!r} has a run {entry.name!r} already"
+            ) from None
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(partial)
+        return entry
+
+    def runs(self, project_id: str, session_id: str) -> list[RunEntry]:
+        """The runs a session keeps, oldest first."""
+        directory = self._runs(project_id, session_id)
+        entries = (_run_entry(path.name.removesuffix(".json")) for path in directory.glob("*.json"))
+        return sorted((entry for entry in entries if entry is not None), key=lambda e: e.name)
+
+    def run(
+        self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = None
+    ) -> RunRecord:
+        """A run the session keeps, by its name; larger than ``max_bytes`` is refused."""
+        if _run_entry(name) is None:
+            raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid run name {name!r}")
+        path = self._runs(project_id, session_id) / f"{name}.json"
+        try:
+            with path.open("rb") as handle:
+                data = handle.read() if max_bytes is None else handle.read(max_bytes + 1)
+        except FileNotFoundError:
+            raise ProjectError(
+                ErrorKind.NOT_FOUND, f"session {session_id!r} of {project_id!r} has no run {name!r}"
+            ) from None
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ProjectError(
+                ErrorKind.UNSUPPORTED, f"run {name!r} has a record larger than {max_bytes} bytes"
+            )
+        try:
+            return RunRecord.model_validate(json.loads(data))
+        except (ValueError, RecursionError) as exc:  # ValidationError is a ValueError
+            raise ProjectError(
+                ErrorKind.INTERNAL, f"run record {path} is damaged: {str(exc)[:300]}"
+            ) from exc
+
+    def _runs(self, project_id: str, session_id: str) -> Path:
+        """Where a session's runs are kept; both IDs are checked, so it is a safe path."""
+        self._path(project_id)
+        if not _is_identifier(session_id):
+            raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid session ID {session_id!r}")
+        return self.runs_root / project_id / session_id
+
     def _path(self, project_id: str) -> Path:
         # An identifier is a safe file name.
-        try:
-            _IDENTIFIER.validate_python(project_id)
-        except ValidationError:
-            raise ProjectError(
-                ErrorKind.INVALID_REQUEST, f"invalid project ID {project_id!r}"
-            ) from None
+        if not _is_identifier(project_id):
+            raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid project ID {project_id!r}")
         return self.root / f"{project_id}.json"
 
     @contextlib.contextmanager
