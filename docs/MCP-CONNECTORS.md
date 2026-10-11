@@ -192,7 +192,16 @@ openshell forward service --target-port 8080 --local 127.0.0.1:8080 mcp-proxy
   - The providers' placeholders reach the sandbox's command.
   - The launcher and the proxy come back a few seconds after the sandbox is `Ready` again.
   - The launcher restarts a proxy that exits.
-  - The forward ends when the sandbox stops, so whatever runs `openshell forward service` must start it again afterwards, for example a unit that retries.
+  - The forward ends when the sandbox stops, so whatever runs `openshell forward service` must start it again afterwards.
+
+To keep the forward up, run it from the systemd user unit in [`examples/systemd`](../examples/systemd), whose instance is the proxy's sandbox. It starts the forward again every two seconds until the sandbox is back. The proxy itself comes back a few seconds after the sandbox is `Ready`, so a caller should retry a refused connection briefly. Lab 17 ran the unit's settings on babbage: while the sandbox was stopped, systemd tried every 2 s without reaching a start limit; the forward was running again when the sandbox was `Ready`, 6 s after `sandbox start`, and a call succeeded 9 s after it, on its second try.
+
+```bash
+cp examples/systemd/sandbox-science-mcp-proxy-forward@.service ~/.config/systemd/user/
+# set the path to openshell in it, then:
+systemctl --user daemon-reload
+systemctl --user enable --now sandbox-science-mcp-proxy-forward@mcp-proxy.service
+```
 
 ### Not built yet
 
