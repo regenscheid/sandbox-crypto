@@ -11,7 +11,9 @@ Requests carry an ``id`` and an ``op``; each gets one reply
 (``{"type": "reply", "id": …, "ok": …}``). Shell commands and cells reply as
 soon as they are accepted, then send events
 (``{"type": "event", "execution": …, "event": …}``) ending with ``end``.
-When stdin closes, the executor stops every command and kernel and exits.
+Every line it sends is shorter than MAX_LINE: output goes in chunks, and a
+result too large for one line keeps less of its output. When stdin closes,
+the executor stops every command and kernel, and what they left running.
 """
 
 from __future__ import annotations
@@ -21,33 +23,49 @@ import asyncio
 import base64
 import codecs
 import contextlib
+import errno
 import hashlib
 import importlib.util
 import json
 import os
 import platform
 import re
+import secrets
 import signal
 import socket
 import stat
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
 PROTOCOL = 1
-MAX_LINE = 64 * 1024 * 1024
+MAX_LINE = 16 * 1024 * 1024
+"""The longest line the executor sends; the worker drops longer ones."""
+MAX_REQUEST = 64 * 1024 * 1024
+"""The longest request line it reads (a file write carries the file)."""
 MAX_READ = 8 * 1024 * 1024
 MAX_LIST = 5000
 MAX_SNAPSHOT = 20000
 """Files scanned before and after an attempt to find the ones it wrote."""
+MAX_DEPTH = 128
+"""Directory levels scanned below the session workspace and the shared area."""
 MAX_WRITTEN = 1000
+MAX_PATH_BYTES = 4096
+MAX_OUTPUTS = 10_000
+"""Rich outputs a cell returns; one note stands for any beyond them or the limit."""
+STREAM_CHUNK = 64 * 1024
+"""Characters of output per stream event."""
+MAX_ERROR_TEXT = 64 * 1024
+MAX_TRACEBACK_LINES = 100
+MAX_TRACEBACK_LINE = 8 * 1024
 TERM_GRACE = 2.0
 INTERRUPT_GRACE = 5.0
 KERNEL_START_TIMEOUT = 120.0
+KILL_ROUNDS = 5
 KERNEL_NAMES = {"python": "python3", "sage": "sagemath"}
 """Each language's Jupyter kernelspec; SageMath installs ``sagemath`` beside its Python."""
 PROBE_TEXT = 256
@@ -56,12 +74,22 @@ MAX_SENTINELS = 8
 SHARED = "shared"
 CONFIG_RECORD = "configured.json"
 """In the executor's own directory: what ``configure`` wrote, by path and SHA-256."""
+OWNER = "SANDBOX_SCIENCE_OWNER"
+"""Names the call or kernel that started a process, in its environment. Processes
+keep it unless they replace their whole environment."""
+PR_SET_DUMPABLE = 4
+PR_SET_CHILD_SUBREAPER = 36
+_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_spawned: set[int] = set()
+"""Processes asyncio or jupyter_client started, and will reap: never reaped here."""
 
 Message = dict[str, Any]
 Send = Callable[[Message], Awaitable[None]]
+Leader = tuple[int, int]
+"""A session leader's process ID and start time."""
 
 
 class ToolError(Exception):
@@ -71,6 +99,10 @@ class ToolError(Exception):
         super().__init__(message)
         self.kind = kind
         self.message = message
+
+
+class _NotStartedError(Exception):
+    """A cell cancelled before it reached its kernel."""
 
 
 # Output capture.
@@ -119,7 +151,21 @@ class Capture:
         }
 
 
-# Paths.
+def bounded(text: str, limit: int) -> str:
+    """``text``, keeping its head and tail if it is longer than ``limit`` characters."""
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return f"{text[:half]}\n[… {len(text) - 2 * half} characters omitted …]\n{text[-half:]}"
+
+
+def printable_path(name: str) -> str:
+    """A file name as text: bytes that are not UTF-8 become U+FFFD."""
+    return name.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+# Paths. File operations open one directory at a time, relative to the last, and
+# never follow a symlink, so a symlink swapped in on the way cannot redirect them.
 
 
 def check_relative(path: str) -> str:
@@ -133,16 +179,446 @@ def check_relative(path: str) -> str:
     return path
 
 
+def _refused(parent: int, name: str, path: str, exc: OSError) -> ToolError:
+    """Why ``name`` in the directory ``parent`` cannot be used on the way to ``path``."""
+    with contextlib.suppress(OSError):
+        if stat.S_ISLNK(os.lstat(name, dir_fd=parent).st_mode):
+            return ToolError("invalid_request", f"path {path!r} goes through a symlink")
+    if exc.errno == errno.ENOTDIR:
+        return ToolError("invalid_request", f"path {path!r}: {name!r} is not a directory")
+    return ToolError("invalid_request", f"cannot use {path!r}: {exc.strerror}")
+
+
+def _open_directory(parent: int, name: str, path: str, *, create: bool) -> int:
+    try:
+        return os.open(name, _DIRECTORY, dir_fd=parent)
+    except FileNotFoundError:
+        if not create:
+            raise ToolError("not_found", f"{path!r} does not exist") from None
+    except OSError as exc:
+        raise _refused(parent, name, path, exc) from exc
+    with contextlib.suppress(FileExistsError):
+        os.mkdir(name, dir_fd=parent)
+    try:
+        return os.open(name, _DIRECTORY, dir_fd=parent)
+    except OSError as exc:
+        raise _refused(parent, name, path, exc) from exc
+
+
+def _walk(directory: int, names: Sequence[str], path: str, *, create: bool) -> int:
+    """Open ``names`` one directory at a time below ``directory``, which is consumed."""
+    try:
+        for name in names:
+            child = _open_directory(directory, name, path, create=create)
+            os.close(directory)
+            directory = child
+    except BaseException:
+        os.close(directory)
+        raise
+    return directory
+
+
+def scan_files(directory: int, prefix: str, files: dict[str, tuple[int, int, int]]) -> bool:
+    """Add the regular files below ``directory`` (which is consumed) to ``files``.
+
+    Depth first, holding open only the directories on the current path. Returns
+    True when MAX_SNAPSHOT files stopped the scan.
+    """
+    path = [(directory, prefix, _subdirectories(directory, prefix, files))]
+    try:
+        while path:
+            if len(files) >= MAX_SNAPSHOT:
+                return True
+            current, relative, pending = path[-1]
+            if not pending or len(path) > MAX_DEPTH:
+                os.close(current)
+                path.pop()
+                continue
+            name = pending.pop()
+            try:
+                child = os.open(name, _DIRECTORY, dir_fd=current)
+            except OSError:
+                continue
+            below = f"{relative}{name}/"
+            path.append((child, below, _subdirectories(child, below, files)))
+        return False
+    finally:
+        for current, _, _ in path:
+            os.close(current)
+
+
+def _subdirectories(
+    directory: int, relative: str, files: dict[str, tuple[int, int, int]]
+) -> list[str]:
+    """Record a directory's regular files in ``files``; return its subdirectories' names."""
+    names: list[str] = []
+    try:
+        with os.scandir(directory) as listing:
+            for entry in listing:
+                if len(files) >= MAX_SNAPSHOT:
+                    break
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        names.append(entry.name)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                files[relative + entry.name] = (info.st_mtime_ns, info.st_size, info.st_ino)
+    except OSError:
+        pass
+    return names
+
+
+def read_range(descriptor: int, offset: int, length: int, hashed: bool, path: str) -> Message:
+    """A range of an open file and, when ``hashed``, the whole file's SHA-256.
+
+    One pass over the file gives both. The descriptor is consumed.
+    """
+    with os.fdopen(descriptor, "rb") as handle:
+        info = os.fstat(handle.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ToolError("invalid_request", f"{path!r} is not a regular file")
+        content = bytearray()
+        reply: Message = {"modified": info.st_mtime, "offset": offset}
+        if hashed:
+            digest = hashlib.sha256()
+            position = 0
+            while block := handle.read(1024 * 1024):
+                digest.update(block)
+                end = position + len(block)
+                if end > offset and position < offset + length:
+                    content += block[max(0, offset - position) : offset + length - position]
+                position = end
+            reply.update(sha256=digest.hexdigest(), size=position)
+        else:
+            handle.seek(offset)
+            content += handle.read(length)
+            reply["size"] = info.st_size
+    reply.update(
+        content_b64=base64.b64encode(content).decode(),
+        eof=offset + len(content) >= reply["size"],
+    )
+    return reply
+
+
+def write_file(
+    parent: int, name: str, content: bytes, expected: object, create_only: bool, path: str
+) -> Message:
+    """Create or atomically replace ``name`` in the directory ``parent``, which is consumed."""
+    try:
+        try:
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            info = None
+        if info is not None and stat.S_ISLNK(info.st_mode):
+            raise ToolError("invalid_request", f"path {path!r} goes through a symlink")
+        if info is not None and stat.S_ISDIR(info.st_mode):
+            raise ToolError("invalid_request", f"{path!r} is a directory")
+        if create_only and info is not None:
+            raise ToolError("conflict", f"{path!r} already exists")
+        if expected is not None:
+            if info is None:
+                raise ToolError("conflict", f"{path!r} does not exist")
+            current = _file_sha256(parent, name, path)
+            if current != expected:
+                raise ToolError("conflict", f"{path!r} changed: its SHA-256 is {current}")
+        temporary = f".write-{secrets.token_hex(8)}"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content)
+            os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary, dir_fd=parent)
+            raise
+    finally:
+        os.close(parent)
+    return {"sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
+
+
+def _file_sha256(parent: int, name: str, path: str) -> str:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    with os.fdopen(os.open(name, flags, dir_fd=parent), "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ToolError("invalid_request", f"{path!r} is not a regular file")
+        digest = hashlib.sha256()
+        while block := handle.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def list_directory(directory: int, limit: int) -> tuple[list[Message], bool]:
+    """Up to ``limit`` entries of a directory, by name; symlinks are not followed.
+
+    The descriptor is consumed.
+    """
+    try:
+        with os.scandir(directory) as listing:
+            names = sorted(entry.name for entry in listing)
+        entries: list[Message] = []
+        for name in names[:limit]:
+            try:
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                kind = "symlink"
+            elif stat.S_ISDIR(info.st_mode):
+                kind = "directory"
+            elif stat.S_ISREG(info.st_mode):
+                kind = "file"
+            else:
+                kind = "other"
+            entries.append(
+                {
+                    "name": printable_path(name),
+                    "type": kind,
+                    "size": info.st_size,
+                    "modified": info.st_mtime,
+                }
+            )
+        return entries, len(names) > limit
+    finally:
+        os.close(directory)
+
+
+# Processes. Every command and kernel runs with its own OWNER mark, and the
+# executor adopts orphaned processes where the kernel lets it (a subreaper), so
+# what a call started is found when it ends, even outside its process group or
+# session. Signals go to one process at a time: OpenShell's seccomp filter
+# refuses signals to process groups (lab 4).
+
+
+@dataclass(frozen=True)
+class Process:
+    """A process as /proc showed it. Its pid and start time together name it."""
+
+    pid: int
+    ppid: int
+    session: int
+    start: int
+    zombie: bool
+
+
+def process_info(pid: int) -> Process | None:
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return None
+    # The command name is in parentheses and may contain anything: parse after the
+    # last ')'. Then come state, ppid, pgrp and session; start time is the 20th.
+    fields = data[data.rfind(b")") + 2 :].split()
+    try:
+        return Process(pid, int(fields[1]), int(fields[3]), int(fields[19]), fields[0] == b"Z")
+    except (IndexError, ValueError):
+        return None
+
+
+def process_table() -> dict[int, Process]:
+    table: dict[int, Process] = {}
+    with contextlib.suppress(OSError):
+        for entry in os.listdir("/proc"):
+            if entry.isdigit() and (info := process_info(int(entry))) is not None:
+                table[info.pid] = info
+    return table
+
+
+def process_owner(pid: int) -> str | None:
+    """The OWNER a process started with: ``""`` without one, None when unreadable.
+
+    Unreadable are zombies, other users' processes, and children of this executor
+    between fork and exec, since the executor is not dumpable.
+    """
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as handle:
+            environ = handle.read()
+    except OSError:
+        return None
+    if not environ:
+        return None
+    prefix = OWNER.encode() + b"="
+    for item in environ.split(b"\0"):
+        if item.startswith(prefix):
+            return item[len(prefix) :].decode("utf-8", "replace")
+    return ""
+
+
+def owned_processes(owner: str, leader: Leader | None) -> list[Process]:
+    """The live processes that belong to ``owner``, a call or a kernel.
+
+    A process belongs to it when it is in the session ``leader`` began, carries
+    the owner's mark, or descends from such a process without a mark of its
+    own. Below this executor, a process with no mark at all has replaced its
+    environment to get away, and belongs to whichever owner ends first. A
+    process whose environment cannot be read is left alone.
+    """
+    table = process_table()
+    me = os.getpid()
+    session = leader[0] if leader is not None else None
+    if (
+        leader is not None
+        and (head := table.get(leader[0])) is not None
+        and head.start != leader[1]
+    ):
+        session = None  # the leader's pid was reused: the session number means nothing now
+    children: dict[int, list[int]] = {}
+    for info in table.values():
+        children.setdefault(info.ppid, []).append(info.pid)
+    found: list[Process] = []
+    seen = {me}
+    stack: list[tuple[int, str]] = [(pid, "") for pid in children.get(me, ())]
+    while stack:
+        pid, inherited = stack.pop()
+        info = table.get(pid)
+        if info is None or pid in seen:
+            continue
+        seen.add(pid)
+        mark = process_owner(pid)
+        if mark is None and not info.zombie:
+            continue
+        whose = owner if session is not None and info.session == session else mark or inherited
+        if whose in (owner, "") and not info.zombie:
+            found.append(info)
+        stack.extend((child, whose) for child in children.get(pid, ()))
+    # Without a subreaper, init adopts orphans: find them by session and mark.
+    for info in table.values():
+        if info.pid in seen or info.zombie:
+            continue
+        if (session is not None and info.session == session) or process_owner(info.pid) == owner:
+            found.append(info)
+    return found
+
+
+def signal_processes(processes: Iterable[Process], signum: int) -> list[Process]:
+    """Signal each process that is still the one scanned; return those signalled."""
+    sent: list[Process] = []
+    for info in processes:
+        current = process_info(info.pid)
+        if current is None or current.start != info.start:
+            continue  # gone, or its pid reused since the scan
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.kill(info.pid, signum)
+            sent.append(info)
+    return sent
+
+
+def end_owned(owner: str, leader: Leader | None) -> int:
+    """SIGKILL everything ``owner`` left running; return how many processes that was.
+
+    A few rounds catch processes forked meanwhile. Processes this executor
+    adopted are reaped, so they do not stay as zombies.
+    """
+    killed: dict[int, Process] = {}
+    for _ in range(KILL_ROUNDS):
+        targets = owned_processes(owner, leader)
+        if not targets:
+            break
+        for info in signal_processes(targets, signal.SIGKILL):
+            killed[info.pid] = info
+        time.sleep(0.01)
+    _reap(killed)
+    return len(killed)
+
+
+def end_descendants() -> None:
+    """SIGKILL every process below this executor, as it shuts down."""
+    for _ in range(KILL_ROUNDS):
+        table = process_table()
+        children: dict[int, list[int]] = {}
+        for info in table.values():
+            children.setdefault(info.ppid, []).append(info.pid)
+        targets: list[Process] = []
+        stack = list(children.get(os.getpid(), ()))
+        while stack:
+            pid = stack.pop()
+            if not table[pid].zombie:
+                targets.append(table[pid])
+            stack.extend(children.get(pid, ()))
+        if not signal_processes(targets, signal.SIGKILL):
+            break
+        time.sleep(0.01)
+
+
+def _reap(pids: Iterable[int]) -> None:
+    """Collect the status of killed processes this executor adopted, so none stays a zombie."""
+    waiting = [pid for pid in pids if pid not in _spawned]
+    for _ in range(20):
+        if not waiting:
+            return
+        still: list[int] = []
+        for pid in waiting:
+            try:
+                done, _ = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:  # not adopted (yet): another parent reaps it
+                continue
+            if not done:
+                still.append(pid)
+        waiting = still
+        time.sleep(0.01)
+
+
+def _sockets_work() -> bool:
+    """Whether this process may bind a loopback socket, as a kernel's client must."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+    except OSError:
+        return False
+    return True
+
+
+def protect_process() -> bool:
+    """Make this process not dumpable, unless that takes its sockets away; say whether it is.
+
+    Research code runs as this same user. Not dumpable, this process keeps its /proc
+    files (fd, environ, mem) and ptrace closed to it, so research code cannot write into
+    the protocol or read other sessions' requests. OpenShell's supervisor refuses socket
+    calls from a process it cannot inspect, which stops every kernel starting (lab 8);
+    there the executor stays dumpable.
+    """
+    sockets = _sockets_work()
+    if not _prctl(PR_SET_DUMPABLE, 0):
+        return False
+    if sockets and not _sockets_work():
+        _prctl(PR_SET_DUMPABLE, 1)
+        return False
+    return True
+
+
+def _prctl(option: int, value: int) -> bool:
+    """One prctl(2) call through libc; False where it is unavailable or refused."""
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        arguments = (ctypes.c_ulong(value), ctypes.c_ulong(0), ctypes.c_ulong(0), ctypes.c_ulong(0))
+        return bool(libc.prctl(option, *arguments) == 0)
+    except (ImportError, OSError, AttributeError):
+        return False
+
+
 @dataclass
 class Running:
     """An accepted shell command or cell."""
 
     execution: str
     kind: str
+    owner: str = field(default_factory=lambda: f"call-{secrets.token_hex(8)}")
     task: asyncio.Task[None] | None = None
+    queued: bool = False
+    """A cell waiting for its kernel; cancelling drops it from the queue."""
     started: bool = False
     cancel_requested: bool = False
+    restarted: bool = False
+    """Its kernel was restarted under it."""
     process: asyncio.subprocess.Process | None = None
+    leader: Leader | None = None
     kernel: Kernel | None = None
 
 
@@ -157,12 +633,22 @@ class Kernel:
     generation: int = 0
     state_lost: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Held by the running cell: cells queue on it in submission order."""
+    control: asyncio.Lock = field(default_factory=asyncio.Lock)
+    """Held while the kernel starts, stops or restarts."""
     manager: Any = None
     client: Any = None
+    owner: str = ""
+    leader: Leader | None = None
 
     @property
     def kernel_id(self) -> str:
-        return f"krn-{self.session}-{self.language}"
+        name = f"krn-{self.session}-{self.language}"
+        if len(name) <= 128:
+            return name
+        # A long session ID would make an ID longer than the worker can report.
+        digest = hashlib.sha256(f"{self.session}\0{self.language}".encode()).hexdigest()[:24]
+        return f"krn-{digest}-{self.language}"
 
     def info(self) -> Message:
         return {
@@ -172,7 +658,7 @@ class Kernel:
         }
 
     async def alive(self) -> bool:
-        return self.manager is not None and bool(await self.manager.is_alive())
+        return self.manager is not None and await _alive(self.manager)
 
     async def ensure_started(self) -> None:
         if await self.alive():
@@ -185,28 +671,43 @@ class Kernel:
             from jupyter_client.manager import AsyncKernelManager
         except ImportError as exc:
             raise ToolError("unsupported", "jupyter_client is not installed here") from exc
+        owner = f"kernel-{secrets.token_hex(8)}"
         manager: Any = AsyncKernelManager(kernel_name=KERNEL_NAMES[self.language])
+        leader: Leader | None = None
         try:
-            await manager.start_kernel(cwd=str(self.cwd), env=self.env)
+            await manager.start_kernel(cwd=str(self.cwd), env={**self.env, OWNER: owner})
+            pid = getattr(manager.provisioner, "pid", None)
+            if isinstance(pid, int) and (info := process_info(pid)) is not None:
+                _spawned.add(pid)
+                leader = (pid, info.start)
             client = manager.client()
             client.start_channels()
             await client.wait_for_ready(timeout=KERNEL_START_TIMEOUT)
         except Exception as exc:
             with contextlib.suppress(Exception):
                 await manager.shutdown_kernel(now=True)
+            await asyncio.to_thread(end_owned, owner, leader)
+            if leader is not None:
+                _spawned.discard(leader[0])
             raise ToolError("unsupported", f"cannot start a {self.language} kernel: {exc}") from exc
-        self.manager, self.client = manager, client
+        self.manager, self.client, self.owner, self.leader = manager, client, owner, leader
         self.generation += 1
 
     async def stop(self) -> None:
-        client, manager = self.client, self.manager
-        self.client = self.manager = None
+        """Shut the kernel down, and end what it started."""
+        client, manager, owner, leader = self.client, self.manager, self.owner, self.leader
+        self.client = self.manager = self.leader = None
+        self.owner = ""
         if client is not None:
             with contextlib.suppress(Exception):
                 client.stop_channels()
         if manager is not None:
             with contextlib.suppress(Exception):
                 await manager.shutdown_kernel(now=True)
+        if owner:
+            await asyncio.to_thread(end_owned, owner, leader)
+        if leader is not None:
+            _spawned.discard(leader[0])
 
     async def restart(self) -> None:
         await self.stop()
@@ -214,17 +715,37 @@ class Kernel:
         await self.ensure_started()
 
 
+async def _alive(manager: Any) -> bool:
+    try:
+        return bool(await manager.is_alive())
+    except Exception:
+        return False
+
+
+async def _interrupt(manager: Any) -> None:
+    with contextlib.suppress(Exception):
+        await manager.interrupt_kernel()
+
+
 class Executor:
     """Handles one connection's requests. ``root`` holds sessions/ and shared/."""
 
-    def __init__(self, root: Path, send: Send) -> None:
+    def __init__(
+        self, root: Path, send: Send, *, subreaper: bool = False, protected: bool = False
+    ) -> None:
         self.root = root
         self.send = send
+        self.subreaper = subreaper
+        self.protected = protected
+        """Whether this process adopts orphans, so leftovers are found below it."""
         self.running: dict[str, Running] = {}
         self.kernels: dict[tuple[str, str], Kernel] = {}
         self.tasks: set[asyncio.Task[None]] = set()
         self.configured: dict[str, str] = {}
         """Variables from ``configure``, added to every command's and kernel's environment."""
+        self.closing = False
+        """Shutting down: attempts it stops are not reported as ended. The worker
+        reports them lost when this connection closes, since it stopped them."""
 
     # Plumbing.
 
@@ -243,6 +764,12 @@ class Executor:
 
     async def event(self, execution: str, event: str, **payload: Any) -> None:
         await self.send({"type": "event", "execution": execution, "event": event, **payload})
+
+    async def stream(self, execution: str, name: str, text: str) -> None:
+        """Send live output, in events of at most STREAM_CHUNK characters."""
+        for start in range(0, len(text), STREAM_CHUNK):
+            chunk = text[start : start + STREAM_CHUNK]
+            await self.event(execution, "stream", name=name, text=chunk)
 
     def spawn(self, coroutine: Awaitable[None]) -> asyncio.Task[None]:
         task = asyncio.ensure_future(coroutine)
@@ -271,77 +798,72 @@ class Executor:
         except ToolError as error:
             await self.fail(request, error)
         except Exception as exc:  # every request gets a reply
-            await self.fail(request, ToolError("internal", f"{type(exc).__name__}: {exc}"))
+            message = bounded(f"{type(exc).__name__}: {exc}", 2000)
+            await self.fail(request, ToolError("internal", message))
 
     async def shutdown(self) -> None:
-        for running in list(self.running.values()):
-            if running.process is not None:
-                await self.terminate(running.process)
-            if running.task is not None:
-                running.task.cancel()
-        for kernel in self.kernels.values():
-            await kernel.stop()
+        """Stop every command and kernel, then anything still running below this process."""
+        self.closing = True
+        running = list(self.running.values())
+        await asyncio.gather(
+            *(self.terminate(item) for item in running if item.process is not None),
+            return_exceptions=True,
+        )
+        for item in running:
+            if item.task is not None:
+                item.task.cancel()
+        await asyncio.gather(
+            *(kernel.stop() for kernel in self.kernels.values()), return_exceptions=True
+        )
+        await asyncio.to_thread(end_descendants)
 
     # Paths and environment.
 
     def session(self, request: Message) -> str:
-        session = request.get("session")
+        return self.session_name(request.get("session"))
+
+    def session_name(self, session: object) -> str:
         if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
             raise ToolError("invalid_request", f"invalid session {session!r}")
         return session
 
     def session_dir(self, session: object) -> Path:
-        if not isinstance(session, str) or not _SESSION_RE.fullmatch(session):
-            raise ToolError("invalid_request", f"invalid session {session!r}")
-        return self.root / "sessions" / session
+        return self.root / "sessions" / self.session_name(session)
 
-    def resolve(self, session: object, path: object) -> Path:
-        """Map a workspace path to a file system path, refusing symlinks on the way."""
+    def split(self, session: object, path: object) -> tuple[list[str], list[str]]:
+        """A workspace path's base (its directories below the root) and the rest of it."""
         if not isinstance(path, str):
             raise ToolError("invalid_request", "path must be a string")
         check_relative(path)
         if path == SHARED or path.startswith(SHARED + "/"):
-            base, rest = self.root / SHARED, path[len(SHARED) + 1 :]
-        else:
-            base, rest = self.session_dir(session), "" if path == "." else path
-        base.mkdir(parents=True, exist_ok=True)
-        target = base
-        for segment in rest.split("/") if rest else ():
-            target = target / segment
-            if target.is_symlink():
-                raise ToolError("invalid_request", f"path {path!r} goes through a symlink")
-        return target
+            return [SHARED], path.split("/")[1:]
+        return ["sessions", self.session_name(session)], [] if path == "." else path.split("/")
+
+    def open_base(self, base: Sequence[str]) -> int:
+        """Open the session workspace or the shared area, creating it, through no symlink."""
+        root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        return _walk(root, base, "/".join(base), create=True)
+
+    def directory(self, session: object, path: object) -> Path:
+        """A workspace directory's path, once it is known to exist with no symlink on the way."""
+        base, rest = self.split(session, path)
+        os.close(_walk(self.open_base(base), rest, str(path), create=False))
+        return self.root.joinpath(*base, *rest)
 
     def snapshot(self, session: str) -> tuple[dict[str, tuple[int, int, int]], bool]:
         """The regular files of the session workspace and the shared area.
 
-        Maps each path to its modification time, size and inode number.
+        Maps each path to its modification time, size and inode number. No
+        symlink is followed, to the areas themselves included.
         """
         files: dict[str, tuple[int, int, int]] = {}
-        roots = [("", self.session_dir(session)), (SHARED + "/", self.root / SHARED)]
-        for prefix, root in roots:
-            stack = [(root, prefix)]
-            while stack:
-                directory, relative = stack.pop()
-                try:
-                    listing = os.scandir(directory)
-                except OSError:
-                    continue
-                with listing:
-                    for entry in listing:
-                        name = relative + entry.name
-                        try:
-                            if entry.is_dir(follow_symlinks=False):
-                                stack.append((Path(entry.path), name + "/"))
-                                continue
-                            if not entry.is_file(follow_symlinks=False):
-                                continue
-                            info = entry.stat(follow_symlinks=False)
-                        except OSError:
-                            continue
-                        if len(files) >= MAX_SNAPSHOT:
-                            return files, True
-                        files[name] = (info.st_mtime_ns, info.st_size, info.st_ino)
+        for prefix, base in (("", ["sessions", session]), (SHARED + "/", [SHARED])):
+            try:
+                directory = self.open_base(base)
+            except (OSError, ToolError):
+                continue
+            if scan_files(directory, prefix, files):
+                return files, True
         return files, False
 
     async def written(
@@ -350,8 +872,9 @@ class Executor:
         """The files created or changed since ``before``, for the attempt's result."""
         after = await asyncio.to_thread(self.snapshot, session)
         changed = sorted(path for path, stamp in after[0].items() if before[0].get(path) != stamp)
+        names = [printable_path(path) for path in changed[:MAX_WRITTEN]]
         return {
-            "written_files": changed[:MAX_WRITTEN],
+            "written_files": [name for name in names if len(name.encode()) <= MAX_PATH_BYTES],
             "written_files_truncated": before[1] or after[1] or len(changed) > MAX_WRITTEN,
         }
 
@@ -378,6 +901,8 @@ class Executor:
                 "uid": os.getuid(),
                 "root": str(self.root),
             },
+            subreaper=self.subreaper,
+            not_dumpable=self.protected,
         )
 
     async def op_probe(self, request: Message) -> None:
@@ -442,11 +967,14 @@ class Executor:
 
     async def op_shell(self, request: Message) -> None:
         session = self.session(request)
-        cwd = self.resolve(session, request.get("cwd", "."))
-        if not cwd.is_dir():
+        try:
+            cwd = self.directory(session, request.get("cwd", "."))
+        except ToolError as error:
+            if error.kind != "not_found":
+                raise
             raise ToolError(
                 "invalid_request", f"working directory {request.get('cwd')!r} does not exist"
-            )
+            ) from None
         raw_argv: object = request.get("argv")
         if raw_argv is None:
             raw_argv = ["/bin/bash", "-c", str(request.get("script", ""))]
@@ -484,13 +1012,20 @@ class Executor:
         state, error, exit_code, signal_number = "failed", None, None, None
         written: Message = {}
         session = env["SESSION_WORKSPACE"].rsplit("/", 1)[-1]
+        not_started = {"kind": "cancelled", "message": "cancelled before it started"}
         try:
+            if running.cancel_requested:
+                state, error = "cancelled", not_started
+                return
             before = await asyncio.to_thread(self.snapshot, session)
+            if running.cancel_requested:
+                state, error = "cancelled", not_started
+                return
             try:
                 process = await asyncio.create_subprocess_exec(
                     *argv,
                     cwd=cwd,
-                    env=env,
+                    env={**env, OWNER: running.owner},
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
@@ -499,6 +1034,9 @@ class Executor:
             except OSError as exc:
                 error = {"kind": "invalid_request", "message": f"cannot run {argv[0]!r}: {exc}"}
                 return
+            _spawned.add(process.pid)
+            info = process_info(process.pid)
+            running.leader = (process.pid, info.start) if info is not None else None
             running.process = process
             running.started = True
             await self.event(execution, "state", state="running")
@@ -506,14 +1044,16 @@ class Executor:
                 asyncio.ensure_future(self.pump(execution, process.stdout, captures["stdout"])),
                 asyncio.ensure_future(self.pump(execution, process.stderr, captures["stderr"])),
             ]
+            if running.cancel_requested:  # asked for while the command was starting
+                self.spawn(self.terminate(running))
             timed_out = False
             try:
                 await asyncio.wait_for(process.wait(), timeout)
             except TimeoutError:
                 timed_out = True
-                await self.terminate(process)
-            # Processes the command left behind would hold its pipes open.
-            signal_group(process.pid, signal.SIGKILL)
+                await self.terminate(running)
+            # What the command left running may not outlive it, and would hold its pipes.
+            await asyncio.to_thread(end_owned, running.owner, running.leader)
             _, pending = await asyncio.wait(readers, timeout=5)
             for reader in pending:
                 reader.cancel()
@@ -530,6 +1070,8 @@ class Executor:
             else:
                 state = "succeeded" if code == 0 else "failed"
         finally:
+            if running.process is not None:
+                _spawned.discard(running.process.pid)
             self.running.pop(execution, None)
             result = {
                 "exit_code": exit_code,
@@ -542,7 +1084,8 @@ class Executor:
                 "sandbox_ended": time.time(),
                 **written,
             }
-            await self.event(execution, "end", state=state, result=result)
+            if not self.closing:
+                await self.event(execution, "end", state=state, result=result)
 
     async def pump(
         self, execution: str, stream: asyncio.StreamReader | None, capture: Capture
@@ -551,15 +1094,21 @@ class Executor:
             return
         while chunk := await stream.read(65536):
             if text := capture.feed(chunk):
-                await self.event(execution, "stream", name=capture.name, text=text)
+                await self.stream(execution, capture.name, text)
 
-    async def terminate(self, process: asyncio.subprocess.Process) -> None:
-        """SIGTERM to the process group, then SIGKILL after a grace period."""
-        signal_group(process.pid, signal.SIGTERM)
+    async def terminate(self, running: Running) -> None:
+        """SIGTERM to the command and what it started, then SIGKILL after a grace period."""
+        process = running.process
+        if process is None:
+            return
+        owner, leader = running.owner, running.leader
+        await asyncio.to_thread(
+            lambda: signal_processes(owned_processes(owner, leader), signal.SIGTERM)
+        )
         try:
             await asyncio.wait_for(process.wait(), TERM_GRACE)
         except TimeoutError:
-            signal_group(process.pid, signal.SIGKILL)
+            await asyncio.to_thread(end_owned, owner, leader)
             await process.wait()
 
     def kernel(self, session: str, language: str) -> Kernel:
@@ -567,7 +1116,7 @@ class Executor:
             raise ToolError("unsupported", f"no {language!r} kernel here")
         key = (session, language)
         if key not in self.kernels:
-            cwd = self.resolve(session, ".")
+            cwd = self.directory(session, ".")
             self.kernels[key] = Kernel(session, language, cwd, self.environment(session))
         return self.kernels[key]
 
@@ -600,10 +1149,19 @@ class Executor:
         outputs: list[Message] = []
         result: Message = {}
         state = "failed"
+        ran_on: Message | None = None
         try:
+            if running.cancel_requested:
+                raise _NotStartedError
+            running.queued = True
             async with kernel.lock:
+                running.queued = False
+                async with kernel.control:
+                    await kernel.ensure_started()
+                if running.cancel_requested:  # asked for while the kernel started
+                    raise _NotStartedError
                 running.started = True
-                await kernel.ensure_started()
+                ran_on = kernel.info()
                 state_lost, kernel.state_lost = kernel.state_lost, False
                 before = await asyncio.to_thread(self.snapshot, kernel.session)
                 await self.event(execution, "state", state="running")
@@ -612,24 +1170,32 @@ class Executor:
                 )
                 result["state_lost"] = state_lost or result.get("state_lost", False)
                 result.update(await self.written(kernel.session, before))
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, _NotStartedError):
             state = "cancelled"
             result = {"error": {"kind": "cancelled", "message": "cancelled before it started"}}
         except ToolError as error:
             state = "failed"
             result = {"error": {"kind": error.kind, "message": error.message}}
+        except Exception as exc:
+            state = "failed"
+            message = bounded(f"{type(exc).__name__}: {exc}", 2000)
+            result = {"error": {"kind": "internal", "message": message}}
         finally:
+            running.queued = False
             self.running.pop(execution, None)
+            if ran_on is None and kernel.generation:
+                ran_on = kernel.info()
             result.update(
                 stdout=captures["stdout"].summary(),
                 stderr=captures["stderr"].summary(),
                 outputs=outputs,
-                kernel=kernel.info() if kernel.generation else None,
+                kernel=ran_on,
                 elapsed_seconds=time.monotonic() - started,
                 sandbox_started=wall_started,
                 sandbox_ended=time.time(),
             )
-            await self.event(execution, "end", state=state, result=result)
+            if not self.closing:
+                await self.event(execution, "end", state=state, result=result)
 
     async def execute(
         self,
@@ -644,23 +1210,36 @@ class Executor:
         from queue import Empty
 
         loop = asyncio.get_running_loop()
-        client = kernel.client
+        # This generation's client and manager, even once a restart replaces the kernel's.
+        client, manager = kernel.client, kernel.manager
         msg_id = client.execute(code, store_history=True, allow_stdin=False)
         deadline = loop.time() + timeout
         interrupted_at: float | None = None
         timed_out = False
         error: Message | None = None
         execution_count: int | None = None
-        spent = 0
+        spent = omitted = 0
+        died: Message = {
+            "status": "error",
+            "error": {"kind": "kernel_died", "message": "the kernel process ended"},
+        }
         while True:
+            if running.restarted:
+                return "cancelled", {
+                    "status": "aborted",
+                    "error": {"kind": "cancelled", "message": "the kernel was restarted"},
+                    "state_lost": True,
+                }
             now = loop.time()
             if not timed_out and now >= deadline:
                 timed_out = True
                 interrupted_at = now
-                await kernel.manager.interrupt_kernel()
+                await _interrupt(manager)
             if interrupted_at is not None and now - interrupted_at > INTERRUPT_GRACE:
                 # The kernel ignored the interrupt: restart it, losing its state.
-                await kernel.restart()
+                async with kernel.control:
+                    if not running.restarted:
+                        await kernel.restart()
                 kind = "timed_out" if timed_out else "cancelled"
                 return kind, {
                     "status": "aborted",
@@ -669,61 +1248,113 @@ class Executor:
                 }
             if running.cancel_requested and interrupted_at is None:
                 interrupted_at = now
-                await kernel.manager.interrupt_kernel()
+                await _interrupt(manager)
             try:
                 message = await client.get_iopub_msg(timeout=0.5)
             except Empty:
-                if not await kernel.alive():
+                if running.restarted:
+                    continue
+                if not await _alive(manager):
                     kernel.state_lost = True
-                    return "failed", {
-                        "status": "error",
-                        "error": {"kind": "kernel_died", "message": "the kernel process ended"},
-                    }
+                    return "failed", died
                 continue
-            if message.get("parent_header", {}).get("msg_id") != msg_id:
+            except (Exception, asyncio.CancelledError):
+                # Its channels closed under it, which cancels a pending receive: a
+                # restart, or a kernel gone away. Unless this task itself is cancelled.
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise
+                if running.restarted:
+                    continue
+                kernel.state_lost = True
+                return "failed", died
+            # The kernel runs research code: its messages are checked like anything else.
+            if not isinstance(message, dict):
                 continue
-            kind, content = message["msg_type"], message["content"]
+            message = cast(Message, message)
+            header = message.get("parent_header")
+            if not isinstance(header, dict) or cast(Message, header).get("msg_id") != msg_id:
+                continue
+            kind, content = message.get("msg_type"), message.get("content")
+            if not isinstance(content, dict):
+                continue
+            content = cast(Message, content)
             if kind == "status" and content.get("execution_state") == "idle":
                 break
             if kind == "stream":
-                capture = captures.get(content.get("name", "stdout"), captures["stdout"])
-                if text := capture.feed(str(content.get("text", "")).encode()):
-                    await self.event(running.execution, "stream", name=capture.name, text=text)
+                capture = captures.get(str(content.get("name", "stdout")), captures["stdout"])
+                data = str(content.get("text", "")).encode("utf-8", "replace")
+                if text := capture.feed(data):
+                    await self.stream(running.execution, capture.name, text)
             elif kind == "execute_input":
-                execution_count = content.get("execution_count")
+                execution_count = _count(content.get("execution_count"))
             elif kind in ("display_data", "execute_result"):
                 data = _mime_bundle(content.get("data", {}))
-                size = sum(len(value) for value in data.values())
+                size = sum(len(value.encode("utf-8", "replace")) for value in data.values())
                 spent += size
-                if spent > limit:
+                if spent > limit or len(outputs) >= MAX_OUTPUTS:
+                    omitted += 1
+                    if omitted > 1:
+                        continue  # one note at the end stands for the rest
                     data = {"text/plain": f"[output of {size} bytes omitted: over the limit]"}
                 output: Message = {
                     "type": "result" if kind == "execute_result" else "display",
                     "data": data,
-                    "execution_count": content.get("execution_count"),
+                    "execution_count": _count(content.get("execution_count")),
                 }
                 outputs.append(output)
                 await self.event(running.execution, "output", output=output)
             elif kind == "error":
+                name = bounded(str(content.get("ename") or ""), 256)
+                value = bounded(str(content.get("evalue") or ""), MAX_ERROR_TEXT)
+                lines = content.get("traceback")
+                lines = (
+                    cast(list[object], lines)[-MAX_TRACEBACK_LINES:]
+                    if isinstance(lines, list)
+                    else []
+                )
                 error = {
                     "kind": "exception",
-                    "message": f"{content.get('ename')}: {content.get('evalue')}",
-                    "name": content.get("ename"),
-                    "value": content.get("evalue"),
-                    "traceback": [_ANSI_RE.sub("", line) for line in content.get("traceback", [])],
+                    "message": f"{name}: {value}",
+                    "name": name,
+                    "value": value,
+                    "traceback": [
+                        bounded(_ANSI_RE.sub("", str(line)), MAX_TRACEBACK_LINE) for line in lines
+                    ],
                 }
+        if omitted > 1:
+            note: Message = {
+                "type": "display",
+                "data": {"text/plain": f"[{omitted - 1} more outputs omitted: over the limit]"},
+                "execution_count": None,
+            }
+            outputs.append(note)
+            await self.event(running.execution, "output", output=note)
         status = "error" if error else "ok"
         with contextlib.suppress(Empty, Exception):
             reply = await client.get_shell_msg(timeout=5)
             if reply.get("parent_header", {}).get("msg_id") == msg_id:
-                status = str(reply["content"].get("status", status))
+                reported = reply["content"].get("status")
+                status = reported if reported in ("ok", "error", "aborted") else status
         result: Message = {"status": status, "execution_count": execution_count}
-        if running.cancel_requested:
-            result["error"] = {"kind": "cancelled", "message": "interrupted on request"}
-            return "cancelled", result
-        if timed_out:
-            result["error"] = {"kind": "timed_out", "message": f"exceeded the {timeout:g} s limit"}
-            return "timed_out", result
+        if running.cancel_requested or timed_out:
+            kind = "cancelled" if running.cancel_requested else "timed_out"
+            reason = (
+                "interrupted on request"
+                if running.cancel_requested
+                else f"exceeded the {timeout:g} s limit"
+            )
+            interruption: Message = {"kind": kind, "message": reason}
+            if error is not None:
+                # The kernel's own account of the interrupt: KeyboardInterrupt in Python.
+                interruption.update(
+                    message=f"{reason}: {error['name']}",
+                    name=error["name"],
+                    value=error["value"],
+                    traceback=error["traceback"],
+                )
+            result["error"] = interruption
+            return kind, result
         if error is not None:
             # A cell that raised: its exception, as the kernel reported it.
             result["error"] = error
@@ -737,16 +1368,23 @@ class Executor:
             return
         running.cancel_requested = True
         await self.reply(request, found=True)
-        if running.kind == "shell" and running.process is not None:
-            self.spawn(self.terminate(running.process))
-        elif not running.started and running.task is not None:
-            running.task.cancel()
-        # A running cell is interrupted by its own loop, which sees cancel_requested.
+        if running.kind == "shell":
+            if running.process is not None:
+                self.spawn(self.terminate(running))
+            # Before then, run_shell sees cancel_requested and never starts the command.
+        elif running.queued and running.task is not None:
+            running.task.cancel()  # waiting for its kernel: it leaves the queue
+        # A cell starting or running sees cancel_requested itself: one starting never
+        # runs, and a running one is interrupted by its loop.
 
     async def op_restart(self, request: Message) -> None:
         session = self.session(request)
         kernel = self.kernel(session, str(request.get("language", "python")))
-        async with kernel.lock:
+        async with kernel.control:
+            # The running cell does not hold up a restart: it ends, cancelled.
+            for running in self.running.values():
+                if running.kernel is kernel and running.started:
+                    running.restarted = True
             if kernel.manager is None:
                 await kernel.ensure_started()
             else:
@@ -754,99 +1392,63 @@ class Executor:
         await self.reply(request, kernel=kernel.info())
 
     async def op_read(self, request: Message) -> None:
-        target = self.resolve(request.get("session"), request.get("path"))
+        path = request.get("path")
         offset = int(request.get("offset", 0))
         length = min(int(request.get("length", MAX_READ)), MAX_READ)
         if offset < 0 or length < 0:
             raise ToolError("invalid_request", "offset and length must not be negative")
+        base, rest = self.split(request.get("session"), path)
+        if not rest:
+            raise ToolError("invalid_request", f"{path!r} is not a regular file")
+        parent = _walk(self.open_base(base), rest[:-1], str(path), create=False)
         try:
-            descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
-        except FileNotFoundError as exc:
-            raise ToolError("not_found", f"no file {request.get('path')!r}") from exc
+            # Without O_NONBLOCK, opening a FIFO would wait for a writer.
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+            descriptor = os.open(rest[-1], flags, dir_fd=parent)
+        except FileNotFoundError:
+            raise ToolError("not_found", f"no file {path!r}") from None
         except OSError as exc:
-            raise ToolError(
-                "invalid_request", f"cannot read {request.get('path')!r}: {exc}"
-            ) from exc
-        with os.fdopen(descriptor, "rb") as handle:
-            info = os.fstat(handle.fileno())
-            if not stat.S_ISREG(info.st_mode):
-                raise ToolError("invalid_request", f"{request.get('path')!r} is not a regular file")
-            digest = hashlib.sha256()
-            size = 0
-            while block := handle.read(1024 * 1024):
-                digest.update(block)
-                size += len(block)
-            handle.seek(offset)
-            content = handle.read(length)
-        await self.reply(
-            request,
-            sha256=digest.hexdigest(),
-            size=size,
-            modified=info.st_mtime,
-            offset=offset,
-            content_b64=base64.b64encode(content).decode(),
-            eof=offset + len(content) >= size,
-        )
+            raise _refused(parent, rest[-1], str(path), exc) from exc
+        finally:
+            os.close(parent)
+        # In a thread: hashing a large file takes a while, and must not stall other work.
+        hashed = request.get("hash", True) is not False
+        reply = await asyncio.to_thread(read_range, descriptor, offset, length, hashed, str(path))
+        await self.reply(request, **reply)
 
     async def op_write(self, request: Message) -> None:
         path = request.get("path")
-        target = self.resolve(request.get("session"), path)
+        base, rest = self.split(request.get("session"), path)
+        if not rest:
+            raise ToolError("invalid_request", f"{path!r} is a directory")
         try:
             content = base64.b64decode(str(request.get("content_b64", "")), validate=True)
         except ValueError as exc:
             raise ToolError("invalid_request", "content_b64 is not base64") from exc
         expected = request.get("expected_sha256")
         create_only = bool(request.get("create_only", False))
-        shared = isinstance(path, str) and (path == SHARED or path.startswith(SHARED + "/"))
-        if shared and expected is None and not create_only:
+        if base == [SHARED] and expected is None and not create_only:
             raise ToolError(
                 "invalid_request", "writes to the shared area need expected_sha256 or create_only"
             )
-        if target.is_dir():
-            raise ToolError("invalid_request", f"{path!r} is a directory")
-        exists = target.exists()
-        if create_only and exists:
-            raise ToolError("conflict", f"{path!r} already exists")
-        if expected is not None:
-            if not exists:
-                raise ToolError("conflict", f"{path!r} does not exist")
-            current = hashlib.sha256(target.read_bytes()).hexdigest()
-            if current != expected:
-                raise ToolError("conflict", f"{path!r} changed: its SHA-256 is {current}")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".write-")
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(content)
-            os.replace(temporary, target)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(temporary)
-            raise
-        await self.reply(request, sha256=hashlib.sha256(content).hexdigest(), size=len(content))
+        parent = _walk(self.open_base(base), rest[:-1], str(path), create=True)
+        reply = await asyncio.to_thread(
+            write_file, parent, rest[-1], content, expected, create_only, str(path)
+        )
+        await self.reply(request, **reply)
 
     async def op_list(self, request: Message) -> None:
-        target = self.resolve(request.get("session"), request.get("path", "."))
-        if not target.is_dir():
-            raise ToolError("not_found", f"no directory {request.get('path')!r}")
+        path = request.get("path", ".")
+        base, rest = self.split(request.get("session"), path)
+        try:
+            directory = _walk(self.open_base(base), rest, str(path), create=False)
+        except ToolError as error:
+            if error.kind == "not_found":
+                raise ToolError("not_found", f"no directory {path!r}") from None
+            raise
         limit = min(int(request.get("limit", MAX_LIST)), MAX_LIST)
-        entries: list[Message] = []
-        with os.scandir(target) as listing:
-            items = sorted(listing, key=lambda entry: entry.name)
-        for entry in items[:limit]:
-            info = entry.stat(follow_symlinks=False)
-            if entry.is_symlink():
-                kind = "symlink"
-            elif entry.is_dir(follow_symlinks=False):
-                kind = "directory"
-            elif entry.is_file(follow_symlinks=False):
-                kind = "file"
-            else:
-                kind = "other"
-            entries.append(
-                {"name": entry.name, "type": kind, "size": info.st_size, "modified": info.st_mtime}
-            )
-        await self.reply(request, entries=entries, truncated=len(items) > limit)
+        entries, truncated = await asyncio.to_thread(list_directory, directory, limit)
+        await self.reply(request, entries=entries, truncated=truncated)
 
 
 def tool_environment(base: Mapping[str, str], python: str, prefix: str) -> dict[str, str]:
@@ -1024,46 +1626,8 @@ def _replace_file(target: Path, data: bytes) -> None:
         raise
 
 
-def group_members(pgid: int) -> list[int]:
-    """The processes in a process group, from /proc."""
-    members: list[int] = []
-    for entry in os.listdir("/proc"):
-        if not entry.isdigit():
-            continue
-        try:
-            with open(f"/proc/{entry}/stat", "rb") as handle:
-                data = handle.read()
-        except OSError:
-            continue
-        # The command name is in parentheses and may contain anything, so parse
-        # after the last ')': state, ppid, then pgrp.
-        fields = data[data.rfind(b")") + 2 :].split()
-        if len(fields) > 2 and fields[2].isdigit() and int(fields[2]) == pgid:
-            members.append(int(entry))
-    return members
-
-
-def signal_group(pgid: int, signum: int) -> None:
-    """Signal a process group, one process at a time where the sandbox refuses kill(-pgid).
-
-    OpenShell v0.1.3's seccomp filter refuses signals to process groups (lab 4)
-    but allows them to single processes. For SIGKILL, processes forked meanwhile
-    are caught in a few more rounds.
-    """
-    try:
-        os.killpg(pgid, signum)
-        return
-    except ProcessLookupError:
-        return
-    except PermissionError:
-        pass
-    for _ in range(3 if signum == signal.SIGKILL else 1):
-        members = group_members(pgid)
-        if not members:
-            return
-        for pid in members:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, signum)
+def _count(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _mime_bundle(data: object) -> dict[str, str]:
@@ -1075,14 +1639,90 @@ def _mime_bundle(data: object) -> dict[str, str]:
     }
 
 
-async def serve_stdio(root: Path) -> None:
+# Lines.
+
+
+def encode_line(message: Message) -> bytes:
+    """One protocol line: JSON in UTF-8. An unpaired surrogate becomes '?'."""
+    text = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+    return (text + "\n").encode("utf-8", "replace")
+
+
+def fit_line(message: Message) -> bytes | None:
+    """``message`` as a line no longer than MAX_LINE, or None if it cannot be one.
+
+    An ``end`` event's result gives up output, its largest part first, until it
+    fits. A reply that does not fit becomes an error reply.
+    """
+    line = encode_line(message)
+    if len(line) <= MAX_LINE:
+        return line
+    if message.get("type") == "event" and message.get("event") == "end":
+        result = dict(cast(Message, message.get("result") or {}))
+        while _shrink(result):
+            line = encode_line({**message, "result": result})
+            if len(line) <= MAX_LINE:
+                return line
+        error = {"kind": "internal", "message": "the result was too large to send"}
+        return encode_line({**message, "state": "failed", "result": {"error": error}})
+    if message.get("type") == "reply":
+        error = {"kind": "internal", "message": f"the reply was over {MAX_LINE} bytes"}
+        return encode_line({"type": "reply", "id": message.get("id"), "ok": False, "error": error})
+    return None
+
+
+def _shrink(result: Message) -> bool:
+    """Halve the largest part of a result over 1 KiB; False when no part is that large."""
+    sizes: dict[str, int] = {}
+    parts: dict[str, object] = {
+        "stdout": _item(result.get("stdout"), "text"),
+        "stderr": _item(result.get("stderr"), "text"),
+        "outputs": result.get("outputs"),
+        "traceback": _item(result.get("error"), "traceback"),
+        "written_files": result.get("written_files"),
+    }
+    for name, part in parts.items():
+        if part:
+            sizes[name] = len(json.dumps(part, ensure_ascii=False))
+    largest = max(sizes, key=sizes.__getitem__, default=None)
+    if largest is None or sizes[largest] <= 1024:
+        return False
+    if largest in ("stdout", "stderr"):
+        text = str(parts[largest])
+        keep = len(text) // 4
+        marker = f"\n[… {len(text) - 2 * keep} characters omitted to fit the result …]\n"
+        shorter = text[:keep] + marker + text[len(text) - keep :]
+        result[largest] = {**result[largest], "text": shorter, "truncated": True}
+    elif largest == "outputs":
+        outputs = cast(list[Message], parts[largest])
+        kept = outputs[: len(outputs) // 2]
+        note = f"[{len(outputs) - len(kept)} outputs omitted to fit the result]"
+        result["outputs"] = [*kept, {"type": "display", "data": {"text/plain": note}}]
+    elif largest == "traceback":
+        lines = cast(list[str], parts[largest])
+        shorter = (
+            lines[len(lines) // 2 :] if len(lines) > 1 else [bounded(lines[0], len(lines[0]) // 2)]
+        )
+        result["error"] = {**result["error"], "traceback": shorter}
+    else:
+        files = cast(list[str], parts[largest])
+        result["written_files"] = files[: len(files) // 2]
+        result["written_files_truncated"] = True
+    return True
+
+
+def _item(container: object, key: str) -> object:
+    return cast(Message, container).get(key) if isinstance(container, dict) else None
+
+
+async def serve_stdio(root: Path, *, subreaper: bool = False, protected: bool = False) -> None:
     """Serve one connection on stdin and stdout until stdin closes."""
     loop = asyncio.get_running_loop()
     # Keep the protocol on its own descriptor; anything else printing to stdout
     # (a library, a kernel's launcher) goes to stderr instead.
     protocol_fd = os.dup(1)
     os.dup2(2, 1)
-    reader = asyncio.StreamReader(limit=MAX_LINE)
+    reader = asyncio.StreamReader(limit=MAX_REQUEST)
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
     transport, protocol = await loop.connect_write_pipe(
         asyncio.streams.FlowControlMixin, os.fdopen(protocol_fd, "wb", buffering=0)
@@ -1091,17 +1731,26 @@ async def serve_stdio(root: Path) -> None:
     lock = asyncio.Lock()
 
     async def send(message: Message) -> None:
-        line = json.dumps(message, separators=(",", ":")) + "\n"
+        line = fit_line(message)
+        if line is None:
+            print("executor: dropped an event too large to send", file=sys.stderr)
+            return
         async with lock:
-            writer.write(line.encode())
+            writer.write(line)
             await writer.drain()
 
-    executor = Executor(root, send)
+    executor = Executor(root, send, subreaper=subreaper, protected=protected)
     try:
-        while line := await reader.readline():
+        while True:
+            try:
+                line = await reader.readline()
+            except ValueError:  # a request over MAX_REQUEST, already discarded
+                continue
+            if not line:
+                break
             try:
                 request = json.loads(line)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
                 await send(
                     {
                         "type": "reply",
@@ -1133,7 +1782,10 @@ def main(argv: list[str] | None = None) -> int:
     (state / "ipython").mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("JUPYTER_RUNTIME_DIR", str(state / "runtime"))
     os.environ.setdefault("IPYTHONDIR", str(state / "ipython"))
-    asyncio.run(serve_stdio(root.resolve()))
+    protected = protect_process()
+    # A subreaper adopts its descendants' orphans, so leftovers stay findable below it.
+    subreaper = _prctl(PR_SET_CHILD_SUBREAPER, 1)
+    asyncio.run(serve_stdio(root.resolve(), subreaper=subreaper, protected=protected))
     return 0
 
 
