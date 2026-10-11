@@ -50,6 +50,10 @@ packages:
   hackage:                  # Haskell: Cryptol, Tamarin
     action: allow
   system_packages: deny     # read-only rootfs; change the base image instead
+  # The provisioning tool refuses AGPL-licensed packages unless they are named here,
+  # per ecosystem (docs/LICENSING.md); PyPI names in normalized form. For example:
+  # agpl_exceptions: {conda: [pymupdf], pypi: [pymupdf]}
+  agpl_exceptions: {}
   # Packages come only through the package cache (docs/PACKAGE-CACHE.md); C and
   # C++ libraries and toolchains for every language come from conda-forge.
 

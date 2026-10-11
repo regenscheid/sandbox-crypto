@@ -80,6 +80,8 @@ CHANGING: Final[Mapping[str, frozenset[str]]] = {
 """Subcommands that change an environment, for each family of package managers."""
 MODULES: Final = frozenset({"pip", "uv", "conda"})
 """Package managers that run as ``python -m <module>``."""
+DRY_RUN: Final = "--dry-run"
+"""The option with which every package manager here only reports what it would change."""
 FORWARDED: Final = frozenset(
     {
         signal.SIGHUP,
@@ -280,13 +282,19 @@ def changes_environment(tool: str, args: Sequence[str]) -> bool:
 
     Any argument that names a changing subcommand counts, wherever it stands: an
     option's value that happens to be ``install`` costs a turn, never a missed change.
-    uv changes the environment only through its pip interface (``uv pip install``).
+    uv changes the environment only through its pip interface (``uv pip install``). A dry
+    run only reads, as the provisioning tool's resolve step does (CP-7), and runs at once:
+    ``install --dry-run`` as the command's first words, where ``--dry-run`` can be no other
+    option's value (``pip install --no-binary --dry-run x`` installs).
     """
     kind = family(tool)
     if kind is None:
         return False
     words = set(args)
     if kind == "uv" and "pip" not in words:
+        return False
+    lead = list(args[1:3] if kind == "uv" else args[:2])
+    if lead == ["install", DRY_RUN]:
         return False
     return not words.isdisjoint(CHANGING[kind])
 
