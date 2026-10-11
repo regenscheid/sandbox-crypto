@@ -309,6 +309,8 @@ class Location(Contract):
     """The tier the backend's settings declare."""
     isolation_evidence: IsolationEvidence | None = None
     environment_revision: str | None = None
+    """The environment's revision when the attempt started: ``0`` for the packages it was
+    first seen with, one more for each change to its installed packages (W3)."""
 
 
 class Result(Contract):
@@ -334,6 +336,10 @@ class Result(Contract):
     while the attempt ran. An attempt running at the same time in the session may have
     written some of them."""
     written_files_truncated: bool = False
+    environment_revision: str | None = None
+    """The environment's revision when the attempt ended. It differs from the location's
+    when the installed packages changed while it ran, which it or an attempt running
+    beside it did."""
 
 
 class Execution(Contract):
