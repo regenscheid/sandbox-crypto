@@ -45,6 +45,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Idle suspension (W3): with `suspend_after`, the worker stops the sandbox of an environment with no executions, no requests and no kernel CPU use, and starts it again on the next use. Files, installed tools, the policy and admitted hosts survive; kernels are reported lost ([lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md))
 - [x] The orchestrator keeps project records and creates environments itself (W3): `sandbox-science-harness project create|show|revise`, `run --state-dir [--dedicated]` and `session close`. Sessions share the project's default environment, each with its own kernels and workspace, or get a dedicated one from the same base profile ([projects and sessions](../docs/PROJECTS-AND-SESSIONS.md#as-built-the-harnesss-project-records))
 - [ ] The orchestrator closes sessions when they end, without an explicit command (needs the session lifecycle of the control application, W4)
+- [ ] Delegations that opt into an environment of their own, made from the project's base image, for work that needs isolation, such as an independent check (D81; agreed with the user on 2026-10-11 as a later feature). By default delegated runs stay in their session's environment, with kernels of their own (PD-14); the worker keys kernels by session today, so per-run kernels need the execution context to name the run
 - [x] Environment revisions: count package changes in a shared environment and report the revision each execution started and ended under (W3). Changes are recorded, not yet serialized
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48): deferred by the user on 2026-10-11; sandboxes keep a writable root filesystem for now
 - [ ] Shared data across a project's environments (D79): the worker copies changed files in `shared/` between the project's environments before and after each tool call, keeping a conflict copy when two changed the same file
@@ -91,7 +92,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W0: behavior specification and harness foundation
 
-- [ ] Behavior specs with acceptance fixtures: tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, automatic review, Conda provisioning, artifacts; all to review with the user
+- [ ] Behavior specs with acceptance fixtures: Conda provisioning, research artifacts and automatic review approved by the user (2026-10-11); tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, and PDF sources to review with the user; living documents and the ledger, board and frontier to specify
 - [x] Harness building-block decision with licenses recorded: D72, proposed, to confirm with the user
 
 ## W1: shared references and one worker adapter

@@ -1,6 +1,6 @@
 # Behavior specifications
 
-Date: 2026-10-11. **Status: Drafts to review with the user, except [Conda provisioning](conda-provisioning.md), approved for implementation as drafted (2026-10-11).** Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.md#w0--behavior-specification-and-harness-foundation-roadmap-m0), roadmap M0, D51). Nothing here is implemented.
+Date: 2026-10-11. **Status: Drafts to review with the user, except [Conda provisioning](conda-provisioning.md), [research artifacts](research-artifacts.md) and [consistency review](consistency-review.md), approved as drafted (2026-10-11).** Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.md#w0--behavior-specification-and-harness-foundation-roadmap-m0), roadmap M0, D51). Nothing here is implemented.
 
 These specifications state what the new harness must do for the CScience features it reimplements (D03, D11), and how to test it. They are written in the project's own words from observed use, the agent reports and public documentation (D56). The agent reports serve as evidence of *what* CScience does; their line anchors are not reproduced. No Claude Science code, prompt, skill text, schema or SQL is used. The reviewer rubric, role prompts and tool descriptions are written independently when each feature is built.
 
@@ -21,7 +21,7 @@ Not yet specified: native Sage kernel behavior (roadmap M0), living documents an
 ## Conventions
 
 - **Requirements.** Every item under *Behavior* with an ID (`SK-3`, `CR-12`) is a requirement, including its sub-bullets. IDs are never renumbered or reused; a withdrawn requirement keeps its ID and says so. Plain present-tense statements are binding. **MUST** and **MUST NOT** mark requirements whose violation would corrupt evidence, weaken isolation or contradict a confirmed decision; **SHOULD** allows a justified exception; **MAY** marks an option.
-- **Sources of each requirement.** `(D35)` cites the [decision register](../DECISIONS.md); the decision's status there (confirmed, recommended or proposed) applies. `(CScience)` marks behavior observed in CScience that the reimplementation keeps (D03, D04, D35). `(new)` marks behavior this draft proposes and the user has not decided. Other notes in parentheses name the evidence for a choice, such as OpenScience Desktop or Claude Code behavior. Unmarked items restate other repository documents, listed under *Sources* in each spec.
+- **Sources of each requirement.** `(D35)` cites the [decision register](../DECISIONS.md); the decision's status there (confirmed, recommended or proposed) applies. `(CScience)` marks behavior observed in CScience that the reimplementation keeps (D03, D04, D35). `(new)` marks behavior a spec proposes beyond what CScience does: in a draft the user has not decided it, and in an approved spec the user approved it with the spec. Other notes in parentheses name the evidence for a choice, such as OpenScience Desktop or Claude Code behavior. Unmarked items restate other repository documents, listed under *Sources* in each spec.
 - **Contracts.** The shared contract names come from the [implementation plan](../IMPLEMENTATION-PLAN.md#shared-contracts-to-establish-first). Field and event names in these specs are descriptive; W1 settles names and serialization in `packages/contracts`.
 - **Actors.** The user; agent runs with the role `main`, `delegated` or `reviewer` ([plans and delegation](plans-and-delegation.md)); and the platform services (harness, worker, policy middleware, monitor). Every event names its producer. A record made by a platform service is an observation; a statement by an agent is an assertion and is stored as one.
 - **Time.** Thresholds and timeouts use an injectable clock, so fixtures can advance time.
@@ -61,17 +61,19 @@ What each feature needs from the shared contracts. The *Contracts used* section 
 5. `PermissionRequest`: a scope that is an exact set of package files resolved before an install.
 6. `EnvironmentRecord`: per-revision lockfile, package licenses and probe results; a status (`ready`, `changing`, `needs_recovery`); a read-only skill staging location among its declared locations.
 
+Additions 1–3, which the research-artifacts and consistency-review specs use, and 5 and 6, which Conda provisioning uses, are approved with those specs (2026-10-11). Addition 4 is still proposed.
+
 The specs also introduce domain records: agent runs, plans and progress, delegations and outcomes, questions, reviews and findings, provisioning operations and annotations. They reuse the shared contracts and keep their own schemas and lifecycles ([consistency review of the plan](../CONSISTENCY-REVIEW.md#shared-foundations-and-their-consumers)).
 
 ## Main open questions
 
 Each spec lists its own. These need the user first:
 
-1. **Review settings.** The defaults in [consistency review](consistency-review.md) start from the inspected CScience source defaults. Which settings does the user's CScience actually run with (PRODUCT.md asks for the active configuration)?
-2. **Terminal review as a completion gate.** The draft holds a turn's completion until its terminal review and at most two response rounds finish. Is that how the user experiences CScience, or should the turn complete at once with findings arriving later?
-3. **A `withdrawn` finding status** for accepted rebuttals and user dismissals, beside the six outcomes in the feature plan.
-4. **Shell-invoked installs.** Route `conda`, `mamba` and `pip` run from the shell through the environment manager, or refuse them and require the provisioning tool?
-5. **Which files become artifacts.** Every file an execution writes in its session workspace (minus ignore patterns), or only declared output locations?
+1. **Review settings.** The defaults in [consistency review](consistency-review.md) start from the inspected CScience source defaults, and stand until the user's own settings are known. Which settings does the user's CScience actually run with (PRODUCT.md asks for the active configuration)?
+2. **Terminal review as a completion gate.** Settled 2026-10-11: the terminal review holds the turn's completion.
+3. **A `withdrawn` finding status.** Settled 2026-10-11: yes.
+4. **Shell-invoked installs.** Settled 2026-10-11: through wrappers ([Conda provisioning](conda-provisioning.md)).
+5. **Which files become artifacts.** Settled 2026-10-11: every file an execution writes in its session workspace, minus ignore patterns.
 6. **Delegation defaults.** Depth 1, four concurrent delegated agents per session, and a separate kernel for each delegated agent.
 7. **Skill helper injection.** Inject a skill's kernel helpers when the skill is loaded (as CScience does), or only on an explicit call?
 8. **Plan approval.** Should plans need the user's approval before execution by default, and should every new version of an approved plan need approval again?
