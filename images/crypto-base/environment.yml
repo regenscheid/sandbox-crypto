@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT
+# The crypto-base profile's Conda environment, installed at /opt/sandbox-science (D46,
+# docs/IMAGES.md). It contains GPL tools, so the image is never published; this recipe is MIT.
+# Lock with images/lock.sh; the build installs conda-lock.yml.
+name: crypto-base
+channels:
+  - conda-forge
+  - nodefaults
+platforms:
+  - linux-64
+  - linux-aarch64
+dependencies:
+  - python 3.14.*
+  - ipykernel >=6.29
+  - jupyter_client >=8.6
+  - pip
+  # SageMath with its sagemath kernelspec, and the libraries named in D46.
+  - sage 10.9.*
+  - fpylll
+  - fplll
+  - pari
+  - libflint
+  # G6K has no conda-forge package; the image builds it from source with these. They stay
+  # in the image, since research code builds C and C++ too.
+  - cython >=3.0
+  - setuptools
+  - c-compiler
+  - cxx-compiler
+  - make
+  - autoconf
+  - automake
+  - libtool
