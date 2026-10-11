@@ -17,11 +17,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 
-from sandbox_science.package_cache.adapter import Adapter, Fetch, Kind
+from sandbox_science.package_cache.adapter import GZIP_MAGIC, Adapter, Fetch, Kind
 from sandbox_science.package_cache.adapters.hackage import (
+    SDIST_REVALIDATION,
     HackageAdapter,
     is_package_name,
     is_version,
@@ -87,6 +89,8 @@ def test_signed_metadata_is_revalidated_on_every_request(name: str) -> None:
     assert answer.digest is None
     assert answer.rewrite is None
     assert answer.headers == {}
+    # JSON may come compressed: decoding gives back the signed bytes.
+    assert not answer.exact
 
 
 def test_the_index_is_revalidated_on_every_request_and_stored_as_published() -> None:
@@ -96,7 +100,10 @@ def test_the_index_is_revalidated_on_every_request_and_stored_as_published() -> 
     assert answer.kind is Kind.METADATA
     assert answer.max_age == 0
     assert answer.rewrite is None
-    assert answer.headers == {"Accept-Encoding": "identity"}
+    # Byte for byte, as the snapshot names it: a content coding is refused, not decoded.
+    assert answer.exact
+    assert answer.magic == GZIP_MAGIC
+    assert answer.headers == {}
 
 
 def test_the_signed_metadata_names_only_files_the_cache_serves() -> None:
@@ -136,8 +143,11 @@ def test_every_captured_target_downloads_by_its_package_id() -> None:
             assert answer.key == f"hackage/{path}"
             assert answer.kind is Kind.ARTIFACT
             assert answer.immutable
-            # cabal checks the file against the signed index; the cache does not.
+            # cabal checks the file against the signed index; the cache checks only
+            # that it is a gzip file, and asks Hackage again now and then.
             assert answer.digest is None
+            assert answer.magic == GZIP_MAGIC
+            assert answer.revalidate_after == SDIST_REVALIDATION == 86400
             assert answer.rewrite is None
 
 
@@ -318,19 +328,35 @@ def test_policy_refuses_what_the_adapter_refuses(path: str) -> None:
         classify_package_request("GET", f"/hackage/{path}")
 
 
-def test_the_signed_mirror_list_names_only_hosts_on_the_floor() -> None:
+def test_every_signed_mirror_is_on_the_floor() -> None:
     # cabal falls back to the mirrors in mirrors.json when the cache fails; reaching
     # them directly would fetch packages around the cache and the packages section.
+    # The floor's list is fixed while the signed list can change: refreshing this
+    # fixture checks every mirror it names, over both schemes, whatever the rules allow.
     policy = parse_policy(
         "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\n"
         "metadata: {name: reads}\ndefaults: {action: allow}\n"
         "network:\n  rules:\n"
         '    - {name: reads, operation: http, match: {hosts: ["*"]}, action: allow}\n'
+        '    - {name: fetch, operation: git, match: {hosts: ["*"]}, action: allow}\n'
     )
-    mirrors = [mirror["urlbase"] for mirror in signed("mirrors.json")["mirrors"]]
-    assert len(mirrors) == 2
-    for base in mirrors:
-        for name in ("timestamp.json", "01-index.tar.gz", "package/split-0.2.5.tar.gz"):
-            request = HttpRequest(method="GET", url=f"{base}{name}")
-            decision = evaluate_request(request, policy, ceiling=PoolCeiling.unrestricted())
+    mirrors = [urlsplit(mirror["urlbase"]) for mirror in signed("mirrors.json")["mirrors"]]
+    assert [mirror.hostname for mirror in mirrors] == [
+        "hackage.fpcomplete.com",
+        "objects-us-east-1.dream.io",
+    ]
+    for mirror in mirrors:
+        assert mirror.hostname is not None
+        bases = [f"{scheme}://{mirror.hostname}{mirror.path}" for scheme in ("http", "https")]
+        bucket = mirror.path.strip("/")
+        if bucket:
+            # A bucket on a shared object store answers under its own host name too.
+            bases += [f"{scheme}://{bucket}.{mirror.hostname}/" for scheme in ("http", "https")]
+        for base in bases:
+            for name in ("", "timestamp.json", "01-index.tar.gz", "package/split-0.2.5.tar.gz"):
+                request = HttpRequest(method="GET", url=f"{base}{name}")
+                decision = evaluate_request(request, policy, ceiling=PoolCeiling.unrestricted())
+                assert (decision.action, decision.layer) == (Action.DENY, "floor"), base + name
+            clone = HttpRequest(method="GET", url=f"{base}repo/info/refs?service=git-upload-pack")
+            decision = evaluate_request(clone, policy, ceiling=PoolCeiling.unrestricted())
             assert (decision.action, decision.layer) == (Action.DENY, "floor"), base

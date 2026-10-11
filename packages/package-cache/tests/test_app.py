@@ -22,7 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from multidict import CIMultiDictProxy
 from pytest_aiohttp import AiohttpClient
 
-from sandbox_science.package_cache.adapter import Digest, Fetch, Kind, Route, Static
+from sandbox_science.package_cache.adapter import GZIP_MAGIC, Digest, Fetch, Kind, Route, Static
 from sandbox_science.package_cache.app import (
     CACHE,
     MAX_REWRITES,
@@ -730,6 +730,102 @@ async def test_a_lifetime_shortens_the_ttl_but_never_extends_it(harness: Harness
     harness.clock.now += 240  # 301 seconds after the first fetch: past the 300-second TTL
     await harness.get("long")
     assert harness.upstream.count("/long") == 2
+
+
+# Byte-exact index data and artifacts the cache cannot verify (Hackage, opam's index).
+
+TARBALL = gzip.compress(b"a source distribution")
+
+
+async def test_byte_exact_index_data_is_requested_and_stored_unencoded(harness: Harness) -> None:
+    # A gzip file sent without a content coding is the file itself.
+    harness.upstream.set("/index.tar.gz", TARBALL, headers={"Content-Encoding": "identity"})
+    harness.route("index.tar.gz", exact=True, magic=GZIP_MAGIC)
+    assert (await harness.get("index.tar.gz"))[:2] == (200, TARBALL)
+    assert harness.upstream.requests[-1].headers["accept-encoding"] == "identity"
+
+
+@pytest.mark.parametrize("coding", ["gzip", "br", "identity, gzip", "x-gzip"])
+async def test_byte_exact_index_data_with_a_content_coding_is_refused(
+    harness: Harness, coding: str
+) -> None:
+    # Decoding would store the unpacked tar as the .tar.gz; keeping the bytes would
+    # store a second gzip layer if the server really applied one. Neither is the file.
+    harness.upstream.set(
+        "/index.tar.gz", gzip.compress(TARBALL), headers={"Content-Encoding": coding}
+    )
+    harness.route("index.tar.gz", exact=True)
+    assert (await harness.get("index.tar.gz"))[:2] == (502, b"unexpected upstream content\n")
+    assert (await harness.stats())["entries"] == 0
+    assert harness.files("blobs") == harness.files("tmp") == []
+
+
+async def test_a_stale_copy_is_served_when_byte_exact_data_comes_encoded(harness: Harness) -> None:
+    harness.upstream.set("/index.tar.gz", TARBALL, headers={"ETag": '"v1"'})
+    harness.route("index.tar.gz", exact=True)
+    await harness.get("index.tar.gz")
+    harness.clock.now += 301
+    harness.upstream.set(
+        "/index.tar.gz", gzip.compress(TARBALL), headers={"Content-Encoding": "gzip"}
+    )
+    assert (await harness.get("index.tar.gz"))[:2] == (200, TARBALL)
+    assert (await harness.stats())["stale"] == 1
+
+
+@pytest.mark.parametrize("body", [b"<html>Service Unavailable</html>", b"", b"\x1f"])
+async def test_a_body_without_its_magic_number_is_refused(harness: Harness, body: bytes) -> None:
+    # One bad 200 from upstream or a CDN would otherwise be stored and served to all.
+    harness.upstream.set("/split-0.2.5.tar.gz", body)
+    harness.route("split-0.2.5.tar.gz", kind=Kind.ARTIFACT, magic=GZIP_MAGIC)
+    status, answer, _ = await harness.get("split-0.2.5.tar.gz")
+    assert (status, answer) == (502, b"unexpected upstream content\n")
+    assert (await harness.stats())["entries"] == 0
+    assert harness.files("blobs") == harness.files("tmp") == []
+    harness.upstream.set("/split-0.2.5.tar.gz", TARBALL)
+    assert (await harness.get("split-0.2.5.tar.gz"))[:2] == (200, TARBALL)
+
+
+async def test_an_unverified_artifact_is_revalidated_after_its_interval(harness: Harness) -> None:
+    harness.upstream.set("/s.tar.gz", TARBALL, headers={"ETag": '"v1"'})
+    harness.route("s.tar.gz", kind=Kind.ARTIFACT, magic=GZIP_MAGIC, revalidate_after=86400)
+    await harness.get("s.tar.gz")
+    harness.clock.now += 86399
+    assert (await harness.get("s.tar.gz"))[:2] == (200, TARBALL)
+    assert harness.upstream.count("/s.tar.gz") == 1
+    # A day on: a conditional request, which confirms the copy.
+    harness.clock.now += 2
+    harness.upstream.set("/s.tar.gz", status=304, headers={"ETag": '"v1"'})
+    assert (await harness.get("s.tar.gz"))[:2] == (200, TARBALL)
+    seen = harness.upstream.requests[-1].headers
+    assert (seen["if-none-match"], seen["accept-encoding"]) == ('"v1"', "identity")
+    assert (await harness.get("s.tar.gz"))[:2] == (200, TARBALL)
+    assert harness.upstream.count("/s.tar.gz") == 2
+    # Another day on, upstream has other bytes (the stored copy was bad): replaced.
+    harness.clock.now += 86401
+    fixed = gzip.compress(b"the right source distribution")
+    harness.upstream.set("/s.tar.gz", fixed, headers={"ETag": '"v2"'})
+    assert (await harness.get("s.tar.gz"))[:2] == (200, fixed)
+    stats = await harness.stats()
+    assert (stats["entries"], stats["misses"], stats["revalidated"]) == (1, 2, 1)
+    assert len(harness.files("blobs")) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "body"), [(500, b"broken"), (404, b"gone"), (200, b"<html>maintenance</html>")]
+)
+async def test_a_stored_artifact_outlives_a_failed_revalidation(
+    harness: Harness, status: int, body: bytes
+) -> None:
+    # However old the copy, a failure to confirm it (an error, a 404 or a body that is
+    # no gzip file) serves it rather than nothing.
+    harness.upstream.set("/s.tar.gz", TARBALL, headers={"ETag": '"v1"'})
+    harness.route("s.tar.gz", kind=Kind.ARTIFACT, magic=GZIP_MAGIC, revalidate_after=86400)
+    await harness.get("s.tar.gz")
+    harness.clock.now += 30 * 86400
+    harness.upstream.set("/s.tar.gz", body, status=status)
+    assert (await harness.get("s.tar.gz"))[:2] == (200, TARBALL)
+    assert (await harness.stats())["stale"] == 1
+    assert harness.cache.store.get("pkg:s.tar.gz") is not None
 
 
 # What reaches adapters and upstreams.

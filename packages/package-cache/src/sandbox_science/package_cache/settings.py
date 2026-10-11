@@ -81,6 +81,7 @@ from pydantic import (
 
 from sandbox_science.policy.units import parse_duration, parse_size
 
+from .adapter import check_base_url
 from .errors import SettingsError
 
 _MIB: Final = 1024**2
@@ -125,6 +126,12 @@ def _public_url(value: str) -> str:
     return _check_url(value, schemes=("http", "https"))
 
 
+def _repository_url(value: str) -> str:
+    # The adapter's own check, so that the service never fails to start on a URL
+    # these settings accepted (such as one with percent-escapes).
+    return check_base_url(_https_url(value), "a repository")
+
+
 def _split_listen(value: str) -> tuple[str, int]:
     host, separator, port = value.rpartition(":")
     if not separator or not host or not _PORT_RE.fullmatch(port) or not 1 <= int(port) <= 65535:
@@ -158,6 +165,9 @@ HttpsUrl = Annotated[str, AfterValidator(_https_url)]
 
 PublicUrl = Annotated[str, AfterValidator(_public_url)]
 """An absolute ``http(s)://`` URL without query, fragment or trailing slash."""
+
+RepositoryUrl = Annotated[str, AfterValidator(_repository_url)]
+"""An ``HttpsUrl`` that the opam and Hackage adapters accept: no percent-escapes either."""
 
 Size = Annotated[int, BeforeValidator(parse_size), Field(gt=0)]
 """A positive byte count such as ``100Gi``."""
@@ -215,13 +225,13 @@ class NpmSettings(_Model):
 class OpamSettings(_Model):
     """opam: an HTTP repository, which serves its index and its archive cache."""
 
-    repository: HttpsUrl = "https://opam.ocaml.org"
+    repository: RepositoryUrl = "https://opam.ocaml.org"
 
 
 class HackageSettings(_Model):
     """Hackage: a hackage-security repository (signed metadata, index and packages)."""
 
-    repository: HttpsUrl = "https://hackage.haskell.org"
+    repository: RepositoryUrl = "https://hackage.haskell.org"
 
 
 class Settings(_Model):

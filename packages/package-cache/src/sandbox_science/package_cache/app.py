@@ -6,6 +6,9 @@ Routes, all on one listener:
 - ``GET|HEAD /-/health`` answers ``{"status": "ok"}``;
 - ``GET|HEAD /-/stats`` answers the store's entries and bytes, and the hit,
   miss, revalidation, stale and error counts since the cache started;
+- ``GET|HEAD /-/opam/archives/<algorithm>/<hex>`` answers which opam packages
+  list that archive digest in the stored opam index (``opam_archives``): 503
+  until the index has been read, 404 when opam is not enabled;
 - ``GET|HEAD /<prefix>/<path>`` is answered through the adapter for ``<prefix>``.
 
 Any other method is answered 405. A path must be a plain URL path: one with
@@ -15,12 +18,13 @@ is answered 400 before any adapter sees it. An unknown prefix, or an adapter
 answering None, is a 404; a ``Static`` answer is served as given.
 
 For a ``Fetch``, the stored copy is served while it is fresh: artifacts and
-immutable index files until they are evicted, other index data for
-``metadata_ttl`` (or the fetch's shorter ``max_age``), negative (404/410)
-entries for a minute at most. Otherwise the cache
-fetches it, or revalidates it with its stored validators; concurrent requests
-for one key share one fetch. If the fetch fails, a stale copy at most
-``stale_if_error`` old is served; without one the answer is 502 (503 with
+immutable index files until they are evicted (or the fetch's
+``revalidate_after``), other index data for ``metadata_ttl`` (or the fetch's
+shorter ``max_age``), negative (404/410) entries for a minute at most.
+Otherwise the cache fetches it, or revalidates it with its stored validators;
+concurrent requests for one key share one fetch. If the fetch fails, a stale
+copy of index data at most ``stale_if_error`` old is served, and a stored
+artifact whatever its age; without one the answer is 502 (503 with
 ``Retry-After`` when the cache is busy: the upstream rate limit, download
 slots, temp space or upstream connections). Upstream 404 and 410 pass
 through, and are cached briefly for index data. HEAD is answered like GET
@@ -31,7 +35,7 @@ lies beyond the body (``ranges``).
 Load is bounded so that one client cannot degrade the cache for the others:
 
 - at most ``max_requests`` package requests are served at once; more are
-  answered 503 at once (the status routes are exempt);
+  answered 503 at once (the status and archive routes are exempt);
 - index data that is rewritten may be at most ``rewrite_limit`` bytes, and at
   most ``MAX_REWRITES`` rewrites run at once;
 - a client must accept each ``SEND_CHUNK`` of a body within ``send_timeout``
@@ -59,7 +63,9 @@ import aiohttp
 from aiohttp import web
 
 from .adapter import Adapter, Fetch, Kind, Rewrite, Static
+from .adapters.opam import INDEX_KEY, OpamAdapter, parse_archive_path
 from .errors import PackageCacheError, RewriteError, StoreError, UpstreamError
+from .opam_archives import OpamArchives
 from .ranges import UNSATISFIABLE, select_range, unsatisfied_range
 from .settings import Settings
 from .store import Entry, Store, TempBlob
@@ -95,6 +101,7 @@ _MAX_KEY_LENGTH: Final = 4096
 _PREFIX_RE: Final = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 _PATH_RE: Final = re.compile(r"/(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/]|%[0-9A-Fa-f]{2})*")
 _STATUS_PATHS: Final = frozenset({"/-/health", "/-/stats"})
+_ARCHIVES_PATH: Final = "/-/opam/archives/"
 
 _log = logging.getLogger(__name__)
 _requests = logging.getLogger("sandbox_science.package_cache.requests")
@@ -171,10 +178,12 @@ class PackageCache:
         *,
         clock: Callable[[], float] = time.time,
         send_timeout: float = SEND_TIMEOUT,
+        opam_archives: OpamArchives | None = None,
     ) -> None:
         if send_timeout <= 0:
             raise ValueError("send_timeout must be positive")
         self._adapters = dict(adapters)
+        self._opam_archives = opam_archives
         self._store = store
         self._upstream = upstream
         self._clock = clock
@@ -203,12 +212,17 @@ class PackageCache:
         return self._active
 
     def start(self) -> None:
-        """Evict in the background if the store starts out over its cap."""
+        """Evict in the background if the store starts out over its cap, and list the
+        archives of a stored opam index."""
         self._evict_if_needed()
+        if self._opam_archives is not None:
+            self._opam_archives.refresh()
 
     async def close(self) -> None:
         """Cancel fetches in progress and wait for a running eviction."""
         await self._flights.close()
+        if self._opam_archives is not None:
+            await self._opam_archives.close()
         if self._eviction is not None:
             await self._eviction
 
@@ -230,7 +244,8 @@ class PackageCache:
         """Answer one request and log it; beyond ``max_requests`` at once, answer 503."""
         log = _RequestLog()
         try:
-            if request.raw_path.partition("?")[0] in _STATUS_PATHS:
+            path = request.raw_path.partition("?")[0]
+            if path in _STATUS_PATHS or path.startswith(_ARCHIVES_PATH):
                 response = await self._dispatch(request, log)
             elif self._active >= self._max_requests:
                 response = _text(
@@ -285,6 +300,8 @@ class PackageCache:
             except StoreError as exc:
                 _log.error("%s", exc)
                 return _text(500, "cache storage error")
+        if path.startswith(_ARCHIVES_PATH):
+            return self._archive_packages(path.removeprefix(_ARCHIVES_PATH))
         if not _safe_path(path):
             return _text(400, "bad request path")
         prefix, _, tail = path[1:].partition("/")
@@ -308,11 +325,26 @@ class PackageCache:
             )
         return await self._serve(request, prefix, route, log)
 
+    def _archive_packages(self, rest: str) -> web.Response:
+        """Answer which opam packages list an archive digest (``<algorithm>/<hex>``)."""
+        if self._opam_archives is None:
+            return _text(404, "not found")
+        algorithm, _, hex_digest = rest.partition("/")
+        digest = parse_archive_path(f"cache/{algorithm}/{hex_digest[:2]}/{hex_digest}")
+        if digest is None:
+            return _text(400, "bad archive digest")
+        packages = self._opam_archives.packages(digest)
+        if packages is None:
+            return _text(503, "the opam index has not been read yet", headers={"Retry-After": "1"})
+        return web.json_response(
+            {"digest": f"{digest.algorithm}:{digest.hex}", "packages": list(packages)}
+        )
+
     async def _serve(
         self, request: web.Request, prefix: str, fetch: Fetch, log: _RequestLog
     ) -> web.StreamResponse:
         try:
-            key = _store_key(prefix, fetch.key)
+            key = store_key(prefix, fetch.key)
             found = await asyncio.to_thread(self._store.lookup, key)
         except (ValueError, StoreError) as exc:
             _log.error("cannot look up %s: %s", _printable(fetch.key), exc)
@@ -424,7 +456,7 @@ class PackageCache:
         try:
             outcome = await self._fetch(key, fetch, stale)
         except (UpstreamError, StoreError) as exc:
-            outcome = self._fallback(key, stale, exc)
+            outcome = self._fallback(key, fetch, stale, exc)
         except Exception:
             # A bug: log it once here rather than in every request sharing the fetch.
             _log.exception("fetching %s for %s failed", fetch.url, _printable(key))
@@ -461,6 +493,10 @@ class PackageCache:
                 return await self._fetch(key, fetch, None)
             return _Outcome(CacheResult.REVALIDATED, entry=entry)
         try:
+            if result.status != 200 and stale is not None and fetch.kind is Kind.ARTIFACT:
+                # Revalidating a package file it holds, the cache asks only whether
+                # upstream now has other bytes; a 404 leaves the stored copy in place.
+                raise UpstreamError(f"{fetch.url} answered {result.status} on revalidation")
             return await self._keep(key, fetch, result)
         finally:
             result.close()  # deleting the temp file is a no-op once stored
@@ -503,6 +539,8 @@ class PackageCache:
             )
         finally:
             blob.path.unlink(missing_ok=True)  # a no-op once stored
+        if self._opam_archives is not None and key == self._opam_archives.key:
+            self._opam_archives.refresh()
         self._evict_if_needed()
         return _Outcome(CacheResult.MISS, entry=entry)
 
@@ -517,8 +555,14 @@ class PackageCache:
             del raw  # free it before the rewritten body is written out
             return await asyncio.to_thread(self._store.write_temp, body)
 
-    def _fallback(self, key: str, stale: Entry | None, error: PackageCacheError) -> _Outcome:
-        if stale is not None and 0 <= self._clock() - stale.fetched <= self._stale_if_error:
+    def _fallback(
+        self, key: str, fetch: Fetch, stale: Entry | None, error: PackageCacheError
+    ) -> _Outcome:
+        # A package file stays good however old it is; index data only for a while.
+        if stale is not None and (
+            fetch.kind is Kind.ARTIFACT
+            or 0 <= self._clock() - stale.fetched <= self._stale_if_error
+        ):
             _log.warning("serving a stale copy of %s: %s", _printable(key), error)
             return _Outcome(CacheResult.STALE, entry=stale)
         _log.warning("cannot serve %s: %s", _printable(key), error)
@@ -536,7 +580,7 @@ class PackageCache:
         if entry.status != 200:
             return age < min(self._negative_ttl, ttl)
         if fetch.kind is Kind.ARTIFACT or fetch.immutable:
-            return True
+            return fetch.revalidate_after is None or age < fetch.revalidate_after
         return age < ttl
 
     def _record(self, log: _RequestLog, result: CacheResult) -> None:
@@ -623,8 +667,17 @@ def create_app(
                     max_artifact_downloads=settings.max_artifact_downloads,
                     max_wait=download_wait,
                 )
+                archives = None
+                if isinstance(checked.get("opam"), OpamAdapter):
+                    archives = OpamArchives(store, store_key("opam", INDEX_KEY))
                 cache = PackageCache(
-                    settings, checked, store, upstream, clock=clock, send_timeout=send_timeout
+                    settings,
+                    checked,
+                    store,
+                    upstream,
+                    clock=clock,
+                    send_timeout=send_timeout,
+                    opam_archives=archives,
                 )
                 app[CACHE] = cache
                 cache.start()
@@ -696,8 +749,9 @@ def _safe_path(path: str) -> bool:
     return True
 
 
-def _store_key(prefix: str, key: str) -> str:
-    """Namespace an adapter's key with its prefix, so adapters cannot collide."""
+def store_key(prefix: str, key: str) -> str:
+    """The store's key for an adapter's key: namespaced with its prefix, so adapters cannot
+    collide. Raises ValueError for an empty, overlong or NUL-holding key."""
     if not key or len(key) > _MAX_KEY_LENGTH or "\x00" in key:
         raise ValueError(f"invalid cache key {key[:80]!r}")
     return f"{prefix}:{key}"

@@ -7,13 +7,15 @@
   may redirect (at most five times) to other ``https://`` URLs, on the host of
   a configured upstream or on a public host only (``check_redirect``);
 - only the adapter's ``Fetch.headers`` are sent, plus a User-Agent,
-  ``Accept-Encoding: identity`` for artifacts and the stored validators when
-  revalidating; client headers never reach upstream;
+  ``Accept-Encoding: identity`` for artifacts and byte-exact index data, and
+  the stored validators when revalidating; client headers never reach upstream;
 - the body streams to a temp file in the store while SHA-256 (the blob name)
   and the expected digest's algorithm are computed, and the download is
   abandoned as soon as ``Content-Length`` or the bytes received exceed the
-  limit; artifacts are stored exactly as sent, while index data may arrive
-  compressed and is decoded (and measured after decoding);
+  limit; artifacts are stored exactly as sent, and so is byte-exact index data
+  (``Fetch.exact``), which is refused if it names a content coding, while other
+  index data may arrive compressed and is decoded (and measured after
+  decoding); a body must start with the fetch's ``magic``;
 - every request takes a token from one ``TokenBucket`` shared by all clients.
 
 So that no kind of request can starve the others, capacity is bounded and
@@ -71,9 +73,10 @@ from yarl import URL
 
 from sandbox_science.policy.hosts import floor_reason, is_public, normalize_host
 
-from .adapter import Digest, Fetch, Kind
+from .adapter import MAX_MAGIC, Digest, Fetch, Kind
 from .errors import (
     BusyError,
+    ContentError,
     DigestMismatchError,
     RateLimitedError,
     RedirectError,
@@ -633,8 +636,9 @@ class UpstreamClient:
     ) -> UpstreamResult:
         headers = _request_headers(fetch, validators)
         # Artifacts are stored exactly as sent, even when a server labels a
-        # .tar.gz "Content-Encoding: gzip"; index data is decoded.
-        decode = fetch.kind is not Kind.ARTIFACT
+        # .tar.gz "Content-Encoding: gzip"; index data is decoded, unless it is
+        # stored byte for byte, when it must come without a content coding.
+        decode = fetch.kind is not Kind.ARTIFACT and not fetch.exact
         for _ in range(self._max_redirects + 1):
             await self._limiter.acquire()
             try:
@@ -659,11 +663,14 @@ class UpstreamClient:
                             last_modified=_header(response, "Last-Modified"),
                         )
                     if status == 200:
+                        if fetch.exact:
+                            _check_no_coding(response)
                         return await self._receive(
                             response,
                             max_size,
                             fetch.digest,
                             remember=fetch.url if remember else None,
+                            magic=fetch.magic,
                         )
                     if status in _NEGATIVE_STATUSES:
                         return await self._receive(response, NEGATIVE_BODY_LIMIT, None, cut=True)
@@ -685,23 +692,30 @@ class UpstreamClient:
         *,
         cut: bool = False,
         remember: str | None = None,
+        magic: bytes = b"",
     ) -> Downloaded:
         """Stream a body to a temp file; with ``cut``, keep only its first ``limit`` bytes.
 
         With ``remember``, record the body's digests under that URL in the digest
-        memory, whether or not it matches ``digest``.
+        memory, whether or not it matches ``digest``. The body must start with
+        ``magic``.
         """
         length = response.content_length
         if not cut and length is not None and length > limit:
             raise TooLargeError(f"{response.url} is {length} bytes, over the {limit}-byte limit")
         reservation = self._space.reserve(min(length, limit) if length is not None else 0)
         try:
-            blob, actual = await self._stream(response, limit, digest, reservation, cut=cut)
+            blob, actual, head = await self._stream(response, limit, digest, reservation, cut=cut)
             if remember is not None:
                 digests = {"sha256": blob.sha256}
                 if digest is not None:
                     digests[digest.algorithm] = actual
                 self._digests.remember(remember, digests)
+            if not head.startswith(magic):
+                blob.path.unlink(missing_ok=True)
+                raise ContentError(
+                    f"{response.url} starts with {head[: len(magic)]!r}, not {magic!r}"
+                )
             verified = None
             if digest is not None:
                 if actual != digest.hex:
@@ -732,8 +746,12 @@ class UpstreamClient:
         reservation: Reservation,
         *,
         cut: bool,
-    ) -> tuple[TempBlob, str]:
-        """Write the body to a temp file, growing ``reservation`` to cover what arrives."""
+    ) -> tuple[TempBlob, str, bytes]:
+        """Write the body to a temp file, growing ``reservation`` to cover what arrives.
+
+        Returns the blob, the hex digest of ``digest``'s algorithm and the body's
+        first ``MAX_MAGIC`` bytes.
+        """
         sink = await _run_io(_Sink.create, self._temp_dir, digest)
         try:
             received = 0
@@ -789,6 +807,7 @@ class _Sink:
             else None
         )
         self._size = 0
+        self._head = b""
 
     @classmethod
     def create(cls, directory: Path, digest: Digest | None) -> _Sink:
@@ -799,17 +818,20 @@ class _Sink:
         self._sha256.update(data)
         if self._other is not None:
             self._other.update(data)
+        if len(self._head) < MAX_MAGIC:
+            self._head += data[: MAX_MAGIC - len(self._head)]
         self._file.write(data)
         self._size += len(data)
 
-    def finish(self) -> tuple[TempBlob, str]:
-        """Flush, fsync and close; return the blob and the hex digest of the expected algorithm."""
+    def finish(self) -> tuple[TempBlob, str, bytes]:
+        """Flush, fsync and close; return the blob, the expected algorithm's hex digest and
+        the first ``MAX_MAGIC`` bytes."""
         self._file.flush()
         os.fsync(self._file.fileno())
         self._file.close()
         sha256 = self._sha256.hexdigest()
         other = self._other.hexdigest() if self._other is not None else sha256
-        return TempBlob(self._path, sha256, self._size), other
+        return TempBlob(self._path, sha256, self._size), other, self._head
 
     def discard(self) -> None:
         """Close and delete the temp file (on the event loop: both are quick)."""
@@ -827,10 +849,25 @@ async def _run_io[**P, R](function: Callable[P, R], *args: P.args, **kwargs: P.k
         raise StoreError(f"cannot write a download: {exc}") from exc
 
 
+def _check_no_coding(response: aiohttp.ClientResponse) -> None:
+    """Refuse an answer that names a content coding, for a file stored byte for byte."""
+    codings = [
+        coding.strip().lower()
+        for value in response.headers.getall("Content-Encoding", [])
+        for coding in value.split(",")
+    ]
+    applied = [coding for coding in codings if coding not in ("", "identity")]
+    if applied:
+        raise ContentError(
+            f"{response.url} came with Content-Encoding {', '.join(applied)!r}, "
+            "but it is stored exactly as published"
+        )
+
+
 def _request_headers(fetch: Fetch, validators: Validators | None) -> CIMultiDict[str]:
     headers = CIMultiDict(fetch.headers)
-    if fetch.kind is Kind.ARTIFACT:
-        # Store the file exactly as published; index data may come compressed.
+    if fetch.kind is Kind.ARTIFACT or fetch.exact:
+        # Store the file exactly as published; other index data may come compressed.
         headers["Accept-Encoding"] = "identity"
     if validators is not None:
         if validators.etag is not None:
