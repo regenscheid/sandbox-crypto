@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-10",
-  "status": "planning and source inspection, plus two runtime validation records (babbage labs, 2026-10-10). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, plus three runtime validation records (babbage labs, 2026-10-10 and 2026-10-11). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 2541,
-      "sha256": "795e80b784ba43bf46281115720558cf9e9cd80e03bfa355512142adb108db34"
+      "bytes": 2750,
+      "sha256": "1815356ea17af31f264b6260f74cca467876585540e82f280b8975da5fdf8639"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-2-2026-10-10.md",
@@ -20,6 +20,12 @@
       "category": "runtime-validation",
       "bytes": 5977,
       "sha256": "96639ca8a6e22c4822da8a2fcb7b8c0ee3f7bb43698f4076266cfd0688b344b0"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 5100,
+      "sha256": "ecbef5a06fc6611a2e1408d552c7138794b4b6ef1706d22ccdeed4d883b41d74"
     },
     {
       "path": "agent-reports/claude-code-desktop.md",
