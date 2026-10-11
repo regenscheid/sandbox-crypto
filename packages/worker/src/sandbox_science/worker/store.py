@@ -120,6 +120,12 @@ class Store:
         ).fetchall()
         return [Execution.model_validate_json(row[0]) for row in rows]
 
+    def environment_executions(self, environment_id: str) -> list[Execution]:
+        rows = self._db.execute(
+            "SELECT record FROM executions WHERE environment_id = ?", (environment_id,)
+        ).fetchall()
+        return [Execution.model_validate_json(row[0]) for row in rows]
+
     # Events.
 
     def add_event(self, event: Event) -> None:

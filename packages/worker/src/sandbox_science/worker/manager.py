@@ -428,6 +428,8 @@ class ExecutionManager:
             elapsed_seconds=max(0.0, float(raw.get("elapsed_seconds", 0.0))),
             sandbox_started_at=_epoch(raw.get("sandbox_started")),
             sandbox_ended_at=_epoch(raw.get("sandbox_ended")),
+            written_files=tuple(str(path) for path in raw.get("written_files", ())),
+            written_files_truncated=bool(raw.get("written_files_truncated")),
         )
 
     def _kernel(
@@ -626,33 +628,35 @@ class ExecutionManager:
             size=first.size,
             media_type=media_type,
             source_path=request.path,
-            produced_by=self._producer(
-                context.environment_id, context.session_id, first.modified_at
-            ),
+            produced_by=self._producer(context.environment_id, context.session_id, request.path),
             created_at=_now(),
         )
         self.store.insert_artifact(artifact)
         return artifact
 
-    def _producer(
-        self, environment_id: str, session_id: str, modified: datetime | None
-    ) -> str | None:
-        """The attempt that was running when the file last changed, if exactly one was.
+    def _producer(self, environment_id: str, session_id: str, path: str) -> str | None:
+        """The last finished attempt that wrote ``path``, as the executor observed it.
 
-        Both times come from the sandbox's clock, so no allowance is needed for a
-        difference between the sandbox's clock and the worker's.
+        A session path names a file of that session only, so only its attempts
+        count; any session's attempts count for the shared area.
         """
-        if modified is None:
-            return None
-        candidates = [
-            execution.attempt_id
-            for execution in self.store.session_executions(environment_id, session_id)
+        shared = path == "shared" or path.startswith("shared/")
+        executions = (
+            self.store.environment_executions(environment_id)
+            if shared
+            else self.store.session_executions(environment_id, session_id)
+        )
+        writers = [
+            execution
+            for execution in executions
             if execution.result is not None
-            and execution.result.sandbox_started_at is not None
-            and execution.result.sandbox_ended_at is not None
-            and execution.result.sandbox_started_at <= modified <= execution.result.sandbox_ended_at
+            and execution.ended_at is not None
+            and path in execution.result.written_files
         ]
-        return candidates[0] if len(candidates) == 1 else None
+        if not writers:
+            return None
+        latest = max(writers, key=lambda execution: execution.ended_at or execution.submitted_at)
+        return latest.attempt_id
 
     def artifact(self, artifact_id: str) -> ArtifactRef:
         artifact = self.store.artifact(artifact_id)
