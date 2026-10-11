@@ -8,7 +8,9 @@ server stops. Browsers send a host's cookies to every port on it, so the cookie'
 carries the server's port, and two workspaces on one machine keep their sessions apart.
 Every ``/api/`` route needs a session. A request with any method other than GET or HEAD
 also needs an ``Origin`` that is this server's own, so that a page on another site
-cannot act through the user's browser; nothing here answers CORS. With a loopback
+cannot act through the user's browser; nothing here answers CORS. Two routes take a
+POST: logout, and ``/api/v0/math-repair``, which asks the reviewer model to repair one
+expression (mathrepair.py) within the limits of the browser session. With a loopback
 listener, every request must also name this server in ``Host`` (localhost, 127.0.0.1,
 ::1 or the address it listens on, with its port), which stops a DNS name rebound to
 127.0.0.1 from reaching it.
@@ -42,6 +44,12 @@ from sandbox_science.contracts import ErrorKind
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
 from . import api
+from .mathrepair import (
+    MathRepairService,
+    RepairRequestError,
+    SessionLimitError,
+    parse_request,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -193,11 +201,14 @@ def create_app(
     login_token: str,
     check_host: bool = True,
     max_run_bytes: int = api.MAX_RUN_BYTES,
+    math_repair: MathRepairService | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
-    on loopback, where the names that reach it are not known."""
+    on loopback, where the names that reach it are not known. Without ``math_repair``,
+    the page is told that there is no reviewer model to repair math."""
     sessions = Sessions(login_token)
     files = StaticFiles(static_dir)
+    repairs = math_repair if math_repair is not None else MathRepairService()
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
@@ -258,15 +269,37 @@ def create_app(
         response.del_cookie(name, path="/")
         return response
 
+    async def repair_math(request: web.Request) -> web.StreamResponse:
+        try:
+            payload: object = await request.json()
+        except (ValueError, RecursionError):  # not JSON, or nested past Python's stack
+            return json_error(400, ErrorKind.INVALID_REQUEST, "the request's body is not JSON")
+        try:
+            wanted = parse_request(payload)
+        except RepairRequestError as error:
+            return json_error(400, ErrorKind.INVALID_REQUEST, str(error))
+        # The guard checked the session; its cookie's digest names it to the service.
+        session = _digest(request.cookies.get(cookie_name(request), "")).hex()
+        try:
+            answer = await repairs.repair(wanted, session)
+        except SessionLimitError as error:
+            return json_error(429, ErrorKind.UNAVAILABLE, str(error))
+        return web.json_response(answer.to_json(), headers={hdrs.CACHE_CONTROL: "no-store"})
+
     async def no_route(request: web.Request) -> web.StreamResponse:
         return json_error(404, ErrorKind.NOT_FOUND, f"no API route {request.path}")
+
+    async def close_repairs(app: web.Application) -> None:
+        await repairs.close()
 
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
     app[api.STORE] = store
     app[api.MAX_RUN] = max_run_bytes
     app.on_response_prepare.append(secure)
+    app.on_cleanup.append(close_repairs)
     api.add_routes(app)
     app.router.add_post("/api/v0/logout", logout)
+    app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)
     app.router.add_get("/login", login)
     app.router.add_get("/{path:.*}", files.handle)

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 /**
  * The workspace API, version 0 (packages/workspace, api.py): read-only views of the
- * harness's projects, sessions and runs. The session cookie travels with every request;
- * there is nothing else to send.
+ * harness's projects, sessions and runs, and repairs of LaTeX by the reviewer model
+ * (mathrepair.py). The session cookie travels with every request, and the browser adds
+ * the `Origin` header the server requires of a POST; there is nothing else to send.
  */
 
 export interface ProjectSummary {
@@ -90,6 +91,25 @@ export interface RunRecord {
   tools: ToolRecord[];
 }
 
+/** One expression KaTeX rejected, as the page asks for its repair. */
+export interface MathRepairRequest {
+  tex: string;
+  display: boolean;
+  /** KaTeX's error. */
+  error: string;
+}
+
+/** The server's answer: `enabled` false when it has no reviewer model to ask. */
+export interface MathRepairAnswer {
+  enabled: boolean;
+  tex?: string | null;
+  /** The reviewer model's alias. */
+  model?: string | null;
+  /** Why there is no repair. */
+  reason?: string | null;
+  cached?: boolean;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -104,20 +124,32 @@ export class ApiError extends Error {
   }
 }
 
+async function failure(response: Response): Promise<ApiError> {
+  let kind = 'unavailable';
+  let message = `the server answered ${response.status}`;
+  try {
+    const body = (await response.json()) as { error?: { kind?: string; message?: string } };
+    kind = body.error?.kind ?? kind;
+    message = body.error?.message ?? message;
+  } catch {
+    // Not JSON: keep the status.
+  }
+  return new ApiError(response.status, kind, message);
+}
+
 async function get<T>(path: string): Promise<T> {
   const response = await fetch(`/api/v0${path}`, { headers: { Accept: 'application/json' } });
-  if (!response.ok) {
-    let kind = 'unavailable';
-    let message = `the server answered ${response.status}`;
-    try {
-      const body = (await response.json()) as { error?: { kind?: string; message?: string } };
-      kind = body.error?.kind ?? kind;
-      message = body.error?.message ?? message;
-    } catch {
-      // Not JSON: keep the status.
-    }
-    throw new ApiError(response.status, kind, message);
-  }
+  if (!response.ok) throw await failure(response);
+  return (await response.json()) as T;
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`/api/v0${path}`, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await failure(response);
   return (await response.json()) as T;
 }
 
@@ -131,6 +163,7 @@ export const api = {
     get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`),
   run: (project: string, session: string, run: string) =>
     get<RunRecord>(`/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}`),
+  mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),
   async logout(): Promise<void> {
     const response = await fetch('/api/v0/logout', { method: 'POST' });
     if (!response.ok && response.status !== 401) {
