@@ -38,6 +38,8 @@ PROJECT = Path("/sandbox/project")
 SESSION = "image-check"
 WORKSPACE = PROJECT / "sessions" / SESSION
 LANGUAGES = {"minimal": ["python"], "crypto-base": ["python", "sage"]}
+FEATURES = {"minimal": [], "crypto-base": ["pdf"]}
+"""What the executor offers beyond kernels: ``pdf`` where the PDF helper finds pdf_oxide."""
 MARKER = "Sandbox Science image check"
 
 Message = dict[str, Any]
@@ -119,6 +121,11 @@ class Executor:
     def shell(self, script: str, limit: float = 120) -> str:
         result = self.run("shell", limit, script=script)
         return str(result.get("stdout", {}).get("text", ""))
+
+    def pdf(self, operation: str, path: str, **fields: Any) -> Message:
+        """A PDF operation, as the worker sends a ``PdfRequest``; the helper's JSON."""
+        result = self.run("pdf", 120, operation=operation, path=path, **fields)
+        return json.loads(str(result.get("stdout", {}).get("text", "")))
 
     def cell(self, code: str, language: str = "python", limit: float = 120) -> tuple[str, str]:
         """Run a cell; return its standard output and the text of its result, if any."""
@@ -222,11 +229,12 @@ class Checks:
         script = EXECUTOR_DIR / "executor.py"
         self.client = Executor(script, PROJECT, Path("/tmp/executor.log"))  # noqa: S108
         reply = self.client.request("hello", timeout=60)
-        languages = reply.get("languages")
+        languages, features = reply.get("languages"), reply.get("features")
         expect(languages == LANGUAGES[self.profile], f"languages {languages}")
+        expect(features == FEATURES[self.profile], f"features {features}")
         location = reply.get("location", {})
         expect(location.get("uid") == 1000, f"executor uid {location.get('uid')}")
-        return f"languages {languages}; python {location.get('python')}"
+        return f"languages {languages}; features {features}; python {location.get('python')}"
 
     def ex(self) -> Executor:
         if self.client is None:
@@ -379,19 +387,21 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         expect(found == "True", f"output {stdout!r}")
         return f"pdf_oxide {version} extracted the text"
 
-    def pdf_helper(self) -> str:
-        """The worker's in-sandbox PDF helper (docs/specs/pdf-sources.md), with this pdf_oxide."""
-        helper = f"python -I {EXECUTOR_DIR / 'pdfhelper.py'}"
-        info = json.loads(self.ex().shell(f"{helper} info tex/paper.pdf"))
+    def pdf_tools(self) -> str:
+        """The worker's PDF operations (docs/specs/pdf-sources.md), as the executor runs them."""
+        client = self.ex()
+        info = client.pdf("info", "tex/paper.pdf")
         expect(info["page_count"] == 1 and info["pages"][0]["has_text"], f"info {info}")
-        pages = json.loads(self.ex().shell(f"{helper} pages tex/paper.pdf --pages 1"))
+        pages = client.pdf("pages", "tex/paper.pdf", pages="1")
         lines = [line["text"] for line in pages["pages"][0]["lines"]]
         expect(any(MARKER in line for line in lines), f"lines {lines[:5]}")
-        render = json.loads(self.ex().shell(f"{helper} render tex/paper.pdf --page 1 --dpi 100"))
-        image = render["image"]
+        hits = client.pdf("search", "tex/paper.pdf", query="lattice")["hits"]
+        expect(len(hits) >= 1, "no search hits")
+        image = client.pdf("render", "tex/paper.pdf", page=1, dpi=100)["image"]
         expect((WORKSPACE / image["path"]).is_file(), f"no render at {image['path']}")
         parser = f"{info['parser']['name']} {info['parser']['version']}"
-        return f"{parser}: page facts, line anchors and a {image['width']}x{image['height']} render"
+        size = f"{image['width']}x{image['height']}"
+        return f"{parser}: page facts, line anchors, {len(hits)} search hits and a {size} render"
 
     def runtime_install(self) -> str:
         # Neither package is in either image.
@@ -419,7 +429,7 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
     names += ["executor", "python-kernel", "tools-on-path", "multiprocessing"]
     if profile == "crypto-base":
         names += ["sage-kernel", "sage-interfaces", "fpylll", "g6k", "lattice-estimator"]
-        names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-helper"]
+        names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]
     if network:
         names.append("runtime-install")
     return names
