@@ -73,7 +73,7 @@ Updated: 2026-10-11.
 
 ## Blockers and open questions
 
-Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning, research-artifacts and consistency-review specs approved as drafted, with the artifacts spec's shared-file rule amended for D79; the workspace GUI as a Svelte web app (D80).
+Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning, research-artifacts and consistency-review specs approved as drafted, with the artifacts spec's shared-file rule amended for D79; the workspace GUI as a Svelte web app (D80); delegated agents are runs in their session's environment, not sessions, with an environment of their own as a later opt-in (D81).
 
 Decisions to confirm: PSF-2.0 and MIT-0 in tier 1.
 
