@@ -1,0 +1,109 @@
+{
+  "about": "Project pages from pypi.org's simple index, captured with plain GET requests sending 'accept' on 2026-10-10. HTML pages keep upstream's bytes line for line; JSON pages keep upstream's key order and compact separators. 'filter' says how a long file list was trimmed (whole HTML anchor lines and the matching JSON file objects, nothing else). 'path' is the request path below /pypi/ that maps to 'url'. test_adapter_pypi.py rewrites every body and checks the result.",
+  "fixtures": [
+    {
+      "file": "sampleproject.json",
+      "path": "simple/sampleproject/",
+      "url": "https://pypi.org/simple/sampleproject/",
+      "accept": "application/vnd.pypi.simple.v1+json",
+      "content_type": "application/vnd.pypi.simple.v1+json",
+      "date": "Sun, 11 Oct 2026 00:58:13 GMT",
+      "project": "sampleproject",
+      "note": "complete page: core metadata, requires-python with < and >, provenance, project-status"
+    },
+    {
+      "file": "sampleproject.html",
+      "path": "simple/sampleproject/",
+      "url": "https://pypi.org/simple/sampleproject/",
+      "accept": "application/vnd.pypi.simple.v1+html",
+      "content_type": "application/vnd.pypi.simple.v1+html",
+      "date": "Sun, 11 Oct 2026 00:58:13 GMT",
+      "project": "sampleproject",
+      "note": "complete page"
+    },
+    {
+      "file": "requests.json",
+      "path": "simple/requests/",
+      "url": "https://pypi.org/simple/requests/",
+      "accept": "application/vnd.pypi.simple.v1+json",
+      "content_type": "application/vnd.pypi.simple.v1+json",
+      "date": "Sun, 11 Oct 2026 00:58:13 GMT",
+      "project": "requests",
+      "filter": "8 of 244 files",
+      "note": "yanked files with reasons (one with a trailing space), a legacy .egg, provenance"
+    },
+    {
+      "file": "requests.html",
+      "path": "simple/requests/",
+      "url": "https://pypi.org/simple/requests/",
+      "accept": "application/vnd.pypi.simple.v1+html",
+      "content_type": "application/vnd.pypi.simple.v1+html",
+      "date": "Sun, 11 Oct 2026 00:58:14 GMT",
+      "project": "requests",
+      "filter": "8 of 244 files"
+    },
+    {
+      "file": "numpy.json",
+      "path": "simple/numpy/",
+      "url": "https://pypi.org/simple/numpy/",
+      "accept": "application/vnd.pypi.simple.v1+json",
+      "content_type": "application/vnd.pypi.simple.v1+json",
+      "date": "Sun, 11 Oct 2026 00:58:14 GMT",
+      "project": "numpy",
+      "filter": "8 of 4298 files",
+      "note": "platform wheels, .zip and .tar.gz sdists, a bdist_wininst .exe, a yanked wheel"
+    },
+    {
+      "file": "numpy.html",
+      "path": "simple/numpy/",
+      "url": "https://pypi.org/simple/numpy/",
+      "accept": "application/vnd.pypi.simple.v1+html",
+      "content_type": "application/vnd.pypi.simple.v1+html",
+      "date": "Sun, 11 Oct 2026 00:58:15 GMT",
+      "project": "numpy",
+      "filter": "8 of 4298 files"
+    },
+    {
+      "file": "setuptools.json",
+      "path": "simple/setuptools/",
+      "url": "https://pypi.org/simple/setuptools/",
+      "accept": "application/vnd.pypi.simple.v1+json",
+      "content_type": "application/vnd.pypi.simple.v1+json",
+      "date": "Sun, 11 Oct 2026 00:58:14 GMT",
+      "project": "setuptools",
+      "filter": "8 of 1530 files",
+      "note": "legacy .egg, .exe, .src.rpm and .zip files; a yanked wheel whose reason is a URL"
+    },
+    {
+      "file": "setuptools.html",
+      "path": "simple/setuptools/",
+      "url": "https://pypi.org/simple/setuptools/",
+      "accept": "application/vnd.pypi.simple.v1+html",
+      "content_type": "application/vnd.pypi.simple.v1+html",
+      "date": "Sun, 11 Oct 2026 00:58:14 GMT",
+      "project": "setuptools",
+      "filter": "8 of 1530 files"
+    },
+    {
+      "file": "typing-extensions.json",
+      "path": "simple/typing-extensions/",
+      "url": "https://pypi.org/simple/typing-extensions/",
+      "accept": "application/vnd.pypi.simple.v1+json",
+      "content_type": "application/vnd.pypi.simple.v1+json",
+      "date": "Sun, 11 Oct 2026 00:58:14 GMT",
+      "project": "typing-extensions",
+      "filter": "4 of 116 files",
+      "note": "the project is named typing_extensions: clients may ask for simple/Typing_Extensions/, and file names use the escaped name"
+    },
+    {
+      "file": "typing-extensions.html",
+      "path": "simple/typing-extensions/",
+      "url": "https://pypi.org/simple/typing-extensions/",
+      "accept": "application/vnd.pypi.simple.v1+html",
+      "content_type": "application/vnd.pypi.simple.v1+html",
+      "date": "Sun, 11 Oct 2026 00:58:14 GMT",
+      "project": "typing-extensions",
+      "filter": "4 of 116 files"
+    }
+  ]
+}

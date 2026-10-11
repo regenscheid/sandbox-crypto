@@ -30,7 +30,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
 - [ ] Orchestrator: write the middleware's policy store and sandbox bindings when it creates sandboxes and revises policies (the `bind` command stands in until then)
 - [x] Package policy (D71): `packages` covers PyPI, conda, Cargo, Go and npm; the library classifies requests to the package cache; the compiler puts the cache behind the policy middleware; registries are on the floor for generic HTTP
-- [ ] Package cache service (`packages/package-cache`, D71): pull-through, size-capped, verifying, for the five ecosystems ([package cache](../docs/PACKAGE-CACHE.md))
+- [x] Package cache service (`packages/package-cache`, D71): pull-through, size-capped, verifying, for the five ecosystems ([package cache](../docs/PACKAGE-CACHE.md)). Real pip, uv, mamba, cargo, go and npm install through it on loopback (`test_clients_integration.py`)
+- [ ] On babbage: the package cache through OpenShell, with the compiled policy and real clients in a sandbox
 - [ ] Package cache: opam and Hackage adapters (EasyCrypt, Jasmin, ProVerif, Cryptol, Tamarin)
 - [ ] Package cache: a cooling-off period for new releases, keeping lockfile files from eviction, TLS between OpenShell and the cache
 - [ ] Report upstream (user's call): OpenShell v0.1.3 selects no middleware for a host ending in two dots through its explicit proxy ([policy](../docs/POLICY.md), "Residual risks")
