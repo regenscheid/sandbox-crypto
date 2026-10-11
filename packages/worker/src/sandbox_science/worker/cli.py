@@ -36,10 +36,13 @@ from .admission import DraftWatcher
 from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
+from .catalog import CatalogError, load_catalog
 from .environments import EnvironmentRecords, Environments, printable
 from .errors import WorkerError
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
+from .permissions import Permissions
+from .provisioner import Provisioner
 from .settings import MIN_TOKEN, Settings, SettingsError, load_settings, token_digest
 from .shared_sync import SharedRecords, SharedSync
 from .store import Store
@@ -73,6 +76,26 @@ def _environments(settings: Settings) -> Environments | None:
             f"the package cache ({target.host}:{target.port})"
         )
     return environments
+
+
+def _provisioner(
+    settings: Settings, manager: ExecutionManager, environments: Environments | None
+) -> Provisioner:
+    """Provisioning for the environments the worker creates: their policies decide, and
+    permission requests go to the policy middleware's event store (Conda provisioning)."""
+    try:
+        catalog = load_catalog()
+    except CatalogError as exc:
+        raise SettingsError(str(exc)) from exc
+    openshell = settings.openshell
+    managed = openshell.environments if openshell is not None else None
+    return Provisioner(
+        manager,
+        catalog=catalog,
+        policies=environments,
+        permissions=Permissions(managed.event_store_path) if managed is not None else None,
+        cache=openshell.package_cache if openshell is not None else None,
+    )
 
 
 def _backend(settings: Settings, environments: Environments | None) -> Backend:
@@ -120,6 +143,7 @@ async def serve(settings: Settings) -> None:
         manager.notices = environments.notices
         if shared is not None:
             environments.deleted.append(shared.forget)
+    provisioner = _provisioner(settings, manager, environments)
     # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
     # attempts still running are stored as lost.
     stopping = asyncio.Event()
@@ -127,7 +151,8 @@ async def serve(settings: Settings) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
     runner = web.AppRunner(
-        create_app(manager, token, environments, settings.clients), access_log=None
+        create_app(manager, token, environments, settings.clients, provisioner),
+        access_log=None,
     )
     background: list[asyncio.Task[None]] = []
     try:
@@ -136,6 +161,7 @@ async def serve(settings: Settings) -> None:
             if removed:
                 _log.info("deleted %d blobs no shared file uses", removed)
         await manager.start()
+        await provisioner.start()
         await runner.setup()
         site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
         await site.start()
@@ -158,7 +184,10 @@ async def serve(settings: Settings) -> None:
             except Exception:
                 _log.exception("a background task failed")
         await runner.cleanup()
+        await provisioner.close()
         await manager.close()
+        if provisioner.permissions is not None:
+            provisioner.permissions.close()
         store.close()
         if shared is not None:
             shared.records.close()
