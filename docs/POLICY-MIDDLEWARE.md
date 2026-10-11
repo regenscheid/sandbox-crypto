@@ -38,6 +38,8 @@ The middleware itself can also deny: `git_request_invalid` (a fetch body that is
 
 Records are appended to `events.jsonl` in the state directory, one JSON object per line. They keep the request's method, scheme, host, port and path, and only the size of its query string, which can hold data and credential placeholders. The event store with its hash chain will replace this file.
 
+**opam archives.** opam fetches archives from the package cache by digest, so the request names no package. The record of an escalated or alerted archive therefore has `opam_archive`: the digest (`"md5:ca77…"`) and, when `package_cache_url` is set, the packages that the cache's copy of the opam index lists for it (`"packages": ["ocamlfind.1.9.8"]`, at most 100, with `more_packages` counting the rest). The middleware asks the cache's `GET /-/opam/archives/<algorithm>/<hex>` ([package cache](PACKAGE-CACHE.md), "URL layout"), waiting at most 200 ms for each step. When the cache cannot answer, the record keeps only the digest. An empty list means that no opam file in the index lists the digest. The answer never changes a decision. Such an escalation holds an install back only if the network rules also stop opam's own downloads ([policy](POLICY.md), "Packages").
+
 ## Policy store
 
 The orchestrator writes, and the middleware reads, a state directory:
@@ -73,6 +75,7 @@ listen = "127.0.0.1:50051"
 state_dir = "state"
 ceiling = "pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal"]   # added to the hard floor
+package_cache_url = "http://127.0.0.1:8090"          # optional: the cache from this host
 
 [tls]
 certificate = "tls/middleware.pem"

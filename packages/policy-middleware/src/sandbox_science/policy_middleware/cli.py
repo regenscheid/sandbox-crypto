@@ -30,6 +30,7 @@ import grpc
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
 from sandbox_science.policy.loader import read_limited
 
+from .archives import CacheArchiveLookup
 from .auth import (
     Authenticator,
     TokenAuthenticator,
@@ -101,6 +102,11 @@ def _serve(settings: Settings) -> int:
         ceiling=ceiling,
         floor=HardFloor(frozenset(settings.admin_hosts)),
         events=JsonLinesEventLog(settings.state_dir / "events.jsonl"),
+        archives=(
+            CacheArchiveLookup(settings.package_cache_url)
+            if settings.package_cache_url is not None
+            else None
+        ),
     )
     authenticator: Authenticator
     audience = ""
