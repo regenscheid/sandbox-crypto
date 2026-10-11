@@ -74,6 +74,7 @@ from sandbox_science.policy.openshell import (
 from sandbox_science.policy.store import PolicyStore, StoreError
 
 from .errors import WorkerError
+from .provisioner import Governing
 from .settings import EnvironmentSettings, OpenShellBackendSettings
 
 _log = logging.getLogger(__name__)
@@ -409,6 +410,24 @@ class Environments:
         if info is None:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
         return info
+
+    def governing(self, environment_id: str) -> Governing | None:
+        """What decides the environment's packages, for provisioning: its stored policy
+        revision, the pool's ceiling and floor, and its sandbox's ID, by which the policy
+        middleware knows it. None for an environment the worker did not create, or one
+        that is not ready or stopped."""
+        info = self.records.get(environment_id)
+        if (
+            info is None
+            or info.state not in (EnvironmentState.READY, EnvironmentState.STOPPED)
+            or info.sandbox_id is None
+        ):
+            return None
+        try:
+            policy = self.store.policy(info.policy)
+        except StoreError:
+            return None
+        return Governing(policy, self.ceiling, self.floor, info.sandbox_id)
 
     @contextlib.asynccontextmanager
     async def _lock(self, environment_id: str) -> AsyncGenerator[None]:

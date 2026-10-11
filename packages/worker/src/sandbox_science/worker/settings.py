@@ -23,6 +23,7 @@ policy_store = "/var/lib/sandbox-science/middleware"   # the policy middleware's
 targets = "targets.yaml"         # where the platform services run (OpenShell targets)
 ceiling = "pool-ceiling.yaml"    # the same pool ceiling the middleware applies
 profiles = {minimal = "docker.io/library/buildpack-deps:noble-scm"}   # profile -> image
+event_store = "/var/lib/sandbox-science/middleware/events.db"   # optional: the default
 
 [local]                          # development and tests only: no isolation
 python = "/usr/bin/python3"      # default: the worker's own interpreter
@@ -110,6 +111,13 @@ class EnvironmentSettings(_Model):
     suspend_after: Annotated[float, Field(gt=0)] | None = None
     """Seconds an environment may go without executions, and without CPU use by its kernels,
     before the worker stops its sandbox; the next use starts it again (W3). Off when unset."""
+    event_store: Path | None = None
+    """The policy middleware's event store, where provisioning operations ask for permission
+    (D76): ``events.db`` in ``policy_store`` unless the middleware's settings name another."""
+
+    @property
+    def event_store_path(self) -> Path:
+        return self.event_store if self.event_store is not None else self.policy_store / "events.db"
 
 
 class OpenShellBackendSettings(_Model):
@@ -226,7 +234,7 @@ def load_settings(path: Path) -> Settings:
         environments: object = cast(dict[str, object], openshell).get("environments")
         if isinstance(environments, dict):
             table = cast(dict[str, object], environments)
-            for key in ("policy_store", "targets", "ceiling"):
+            for key in ("policy_store", "targets", "ceiling", "event_store"):
                 value = table.get(key)
                 if isinstance(value, str) and value:
                     table[key] = base / value

@@ -97,9 +97,10 @@ sandbox-science-harness project revise --state-dir state --project p1 --policy s
 
 - **Environment revisions.** The worker counts changes to an environment's installed packages, and every execution reports the revision it started and ended under ([worker](WORKER.md#behavior-worth-knowing)).
 - **Shared data across environments** (D79). The worker keeps the project's `shared/` in step across its environments, before and after every call, so a dedicated session sees the shared results of the project's other sessions. Concurrent changes to one file leave a conflict copy beside it, and the agent is told ([worker](WORKER.md#shared-data-across-environments)).
+- **Serialized, recorded package installs** (the Conda provisioning spec). Shell and kernel installs take turns through wrappers and each change is a revision with a lockfile ([package commands](WORKER.md#package-commands)); the provisioning tool installs a capability or packages on an agent's request, one operation at a time per environment, decided by the project policy, recorded and probed ([provisioning operations](WORKER.md#provisioning-operations)). Each environment, dedicated ones included, has its own queue and history.
 
 Not yet built:
-- serialized, recorded package installs (the Conda provisioning spec, approved);
+- restoring a revision after a failed install, and rebuilding an environment from a lockfile (Conda provisioning, CP-13, CP-20);
 - capture and restore with a read-only root filesystem (D48, deferred by the user).
 
 ## Backend feasibility checks

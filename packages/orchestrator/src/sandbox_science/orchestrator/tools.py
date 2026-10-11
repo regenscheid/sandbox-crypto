@@ -41,6 +41,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.worker import Language
 
 from .model import ToolCall, ToolSpec
+from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
 _log = logging.getLogger(__name__)
@@ -294,6 +295,9 @@ class Toolbox:
             specs.extend(PDF_SPECS)
         if "admission" in features:
             specs.append(ADMIT_HOSTS)
+        if PROVISIONING in features:
+            specs.extend(PROVISION_SPECS)
+        self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         self.specs = tuple(specs)
 
     async def call(self, call: ToolCall, operation: str) -> ToolOutcome:
@@ -329,6 +333,7 @@ class Toolbox:
             "pdf_search": partial(self._pdf, "search"),
             "pdf_render": partial(self._pdf, "render"),
             "admit_hosts": self._admit,
+            **self.provisioning.handlers,
         }
         handler = handlers.get(call.name)
         if handler is None or call.name not in {spec.name for spec in self.specs}:

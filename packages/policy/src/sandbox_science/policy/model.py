@@ -185,6 +185,22 @@ class RegistryPackages(StrictModel):
 PypiPackages = RegistryPackages
 """PyPI installs (kept as a name for existing users of the model)."""
 
+CondaPackageName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9_][a-z0-9._+-]{0,127}$")]
+PypiProjectName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+){0,63}$")]
+"""A PyPI project in its normalized form (PEP 503): lower case, ``-`` between words."""
+
+
+class AgplExceptions(StrictModel):
+    """AGPL-licensed packages the project accepts (docs/LICENSING.md, tier 3).
+
+    The provisioning tool refuses an install whose resolved packages include one licensed
+    under the GNU Affero GPL, unless it is named here (Conda provisioning, CP-9). Names are
+    per ecosystem; PyPI's in their normalized form, so ``PyMuPDF`` is ``pymupdf``.
+    """
+
+    conda: tuple[CondaPackageName, ...] = ()
+    pypi: tuple[PypiProjectName, ...] = ()
+
 
 class Packages(StrictModel):
     """Package installation through the package cache (docs/PACKAGE-CACHE.md).
@@ -201,6 +217,7 @@ class Packages(StrictModel):
     opam: RegistryPackages | None = None
     hackage: RegistryPackages | None = None
     system_packages: Literal["deny"] = "deny"
+    agpl_exceptions: AgplExceptions = AgplExceptions()
 
 
 class HttpMatch(StrictModel):

@@ -15,8 +15,9 @@ executor wrote; and a lockfile that still names the cache is refused. That work 
 a thread (``prepare``), never on the event loop, an entry at a time, after the lockfile's
 shape and keys are checked, so that a hostile one costs little memory and holds the
 interpreter (CPython's GIL) only briefly at a time. An environment keeps its newest 500
-revisions, and lockfiles for its newest 50, in 64 MiB at most; a lockfile no revision
-names any more is deleted, and so are an environment's when it is deleted.
+revisions, and lockfiles for its newest 50, in 64 MiB at most, besides its last revision
+known good, with its lockfile, while it needs recovery; a lockfile no revision names any
+more is deleted, and so are an environment's when it is deleted.
 """
 
 from __future__ import annotations
@@ -43,12 +44,14 @@ from sandbox_science.contracts import (
     LockfileRef,
     PackageCommand,
     PipDistribution,
+    ProbeResult,
     RevisionHistory,
 )
 from sandbox_science.contracts.revisions import (
     MAX_COMMANDS,
     MAX_LOCKFILE_BYTES,
     MAX_LOCKFILE_ENTRIES,
+    MAX_PROBES,
     MAX_REVISION_PAGE,
     MAX_REVISION_PAGE_BYTES,
 )
@@ -185,17 +188,26 @@ class Revisions:
         commands: Sequence[PackageCommand] = (),
         omitted: int = 0,
         lockfile: Prepared | None = None,
+        operation: str | None = None,
     ) -> int | None:
         """The environment's revision once ``fingerprint`` is counted.
 
         The first fingerprint is revision 0, and each different one counts one up,
-        recorded with how its change came. ``lockfile`` is kept for a new revision, or for
-        the current one while it has none, and deleted otherwise. Returns None while the
-        environment has no revision, as when the fingerprint is not one.
+        recorded with how its change came, and the provisioning operation whose step made
+        it, if one did. ``lockfile`` is kept for a new revision, or for the current one while
+        it has none, and deleted otherwise. Returns None while the environment has no
+        revision, as when the fingerprint is not one.
         """
         try:
             return self._observe(
-                environment_id, fingerprint, changed_by, managed, commands, omitted, lockfile
+                environment_id,
+                fingerprint,
+                changed_by,
+                managed,
+                commands,
+                omitted,
+                lockfile,
+                operation,
             )
         finally:
             if lockfile is not None:
@@ -210,6 +222,7 @@ class Revisions:
         commands: Sequence[PackageCommand],
         omitted: int,
         lockfile: Prepared | None,
+        operation: str | None = None,
     ) -> int | None:
         record = self.store.revision(environment_id)
         if not isinstance(fingerprint, str) or not _FINGERPRINT.fullmatch(fingerprint):
@@ -228,6 +241,7 @@ class Revisions:
             commands=() if first else tuple(commands)[-MAX_COMMANDS:],
             omitted_commands=0 if first else omitted,
             lockfile=lockfile.ref if lockfile is not None else None,
+            operation=None if first else operation,
             recorded_at=_now(),
         )
         current = RevisionRecord(revision, fingerprint, entry.changed_by or "")
@@ -287,8 +301,12 @@ class Revisions:
     def _keep(self, environment_id: str) -> None:
         """Hold the environment to its newest revisions and lockfiles, and delete the
         lockfiles no revision names any more."""
-        dropped = self.store.trim_revisions(environment_id, MAX_HISTORY)
-        held = self.store.lockfiles(environment_id)
+        # The last revision known good of an environment that needs recovery stays, with
+        # its lockfile: it lists the packages to restore (CP-13).
+        marked = self.store.package_status(environment_id)
+        good = marked[2] if marked is not None else None
+        dropped = self.store.trim_revisions(environment_id, MAX_HISTORY, spare=good)
+        held = [item for item in self.store.lockfiles(environment_id) if item[0] != good]
         total = sum(size for _, _, size in held)
         while held and (len(held) > MAX_LOCKFILES or total > MAX_LOCKFILE_STORE):
             revision, sha256, size = held.pop(0)
@@ -311,6 +329,37 @@ class Revisions:
         """Forget an environment's revisions, and delete the lockfiles only they named: when
         the environment is deleted, and when a new environment takes its ID (D78)."""
         self._collect(self.store.forget_revisions(environment_id))
+
+    def record_probes(self, environment_id: str, probes: Sequence[ProbeResult]) -> None:
+        """Keep probe results with the revisions they ran at (CP-21, CP-24): the newest of
+        each probe, the newest MAX_PROBES of a revision. A revision no longer kept keeps
+        none."""
+        for revision in dict.fromkeys(probe.revision for probe in probes):
+            if revision is None:
+                continue  # it ran at no revision the worker could tell
+            entry = self.store.revision_entry(environment_id, revision)
+            if entry is None:
+                continue
+            fresh = [probe for probe in probes if probe.revision == revision]
+            keys = {(p.capability, p.probe, p.version) for p in fresh}
+            kept = [p for p in entry.probes if (p.capability, p.probe, p.version) not in keys]
+            merged = (*kept, *fresh)[-MAX_PROBES:]
+            self.store.save_revision_entry(
+                environment_id, entry.model_copy(update={"probes": merged})
+            )
+
+    def probes(self, environment_id: str, revision: int) -> tuple[ProbeResult, ...]:
+        """The probe results kept for a revision."""
+        entry = self.store.revision_entry(environment_id, revision)
+        return entry.probes if entry is not None else ()
+
+    def lockfile_path(self, environment_id: str, revision: int) -> Path | None:
+        """Where a revision's lockfile is stored, if the worker has it. On the event loop:
+        it reads the store."""
+        try:
+            return self.lockfile(environment_id, revision)[0]
+        except WorkerError:
+            return None
 
     # Reading.
 
@@ -357,6 +406,14 @@ class Revisions:
         if not path.is_file():
             raise WorkerError(ErrorKind.INTERNAL, f"the lockfile of revision {revision} is gone")
         return path, entry.lockfile
+
+
+def read_lockfile(path: Path) -> Lockfile | None:
+    """A stored lockfile, parsed; None if it cannot be read. Blocking: call it in a thread."""
+    try:
+        return Lockfile.model_validate_json(path.read_bytes())
+    except (OSError, ValidationError):
+        return None
 
 
 def _shape(raw: object) -> tuple[dict[str, Any], tuple[list[Any], list[Any]]] | None:

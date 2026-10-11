@@ -22,6 +22,16 @@ from .environments import (
 )
 from .events import Event, OutputEvent, ResultEvent, StateEvent, StreamEvent
 from .model import Contract, Identifier, new_id
+from .provisioning import (
+    CatalogRef,
+    PackageChange,
+    ProvisioningQueue,
+    ProvisionOperation,
+    ProvisionOutcome,
+    ProvisionRequest,
+    ProvisionState,
+    ResolvedFile,
+)
 from .revisions import (
     CondaPackage,
     EnvironmentRevision,
@@ -29,6 +39,7 @@ from .revisions import (
     LockfileRef,
     PackageCommand,
     PipDistribution,
+    ProbeResult,
     RevisionHistory,
 )
 from .worker import (
@@ -72,6 +83,7 @@ __all__ = [
     "AdmissionResult",
     "ArtifactRef",
     "Capabilities",
+    "CatalogRef",
     "CellRequest",
     "CondaPackage",
     "Contract",
@@ -99,14 +111,22 @@ __all__ = [
     "Lockfile",
     "LockfileRef",
     "OutputEvent",
+    "PackageChange",
     "PackageCommand",
     "PdfRequest",
     "PipDistribution",
     "PolicyRevision",
     "PolicyRevisionRequest",
     "ProbeFacts",
+    "ProbeResult",
+    "ProvisionOperation",
+    "ProvisionOutcome",
+    "ProvisionRequest",
+    "ProvisionState",
+    "ProvisioningQueue",
     "PublishRequest",
     "ReadFileRequest",
+    "ResolvedFile",
     "Result",
     "ResultEvent",
     "RevisionHistory",
