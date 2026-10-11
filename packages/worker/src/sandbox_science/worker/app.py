@@ -4,9 +4,10 @@
 Every route needs ``Authorization: Bearer <token>``: the pool's own token, which may act
 for every project, or a client's, which may act only for the projects its settings
 list. For such a client, the executions, artifacts and environments of other projects
-do not exist. When the worker manages environments, a request's environment must
-belong to the project it names. Errors are JSON ``WorkerErrorResponse`` bodies
-carrying an error kind from docs/specs/tools.md.
+do not exist, and only the policy revisions granted to its projects can be used. When
+the worker manages environments, a request's environment must belong to the project
+it names. Errors are JSON ``WorkerErrorResponse`` bodies carrying an error kind from
+docs/specs/tools.md.
 """
 
 from __future__ import annotations
@@ -61,6 +62,8 @@ _MEDIA_TYPE = TypeAdapter[str](MediaType)
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 _CLIENT: Final = "sandbox_science.client"
 _MAX_TOKEN: Final = 4096
+_READS: Final = frozenset({"/v1/files/read", "/v1/files/list"})
+"""Requests that change nothing, though sent with POST: not logged as changes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +97,8 @@ def create_app(
     expected = f"Bearer {token}".encode()
     pool = Client("pool", None)
     by_digest = {c.token_sha256: Client(c.name, frozenset(c.projects)) for c in clients}
+    if token_digest(token) in by_digest:
+        raise ValueError("a client has the pool's own token")
 
     def identify(header: str) -> Client | None:
         # Header bytes that are not UTF-8 arrive as surrogates; they must not raise.
@@ -112,6 +117,8 @@ def create_app(
         if client is None:
             return _error(ErrorKind.POLICY_DENIED, "missing or wrong bearer token", 401)
         request[_CLIENT] = client
+        if request.method != "GET" and request.path not in _READS:
+            _log.info("%s %s by %s", request.method, request.path, client.name)
         try:
             return await handler(request)
         except WorkerError as error:
@@ -185,8 +192,10 @@ def _allowed(request: web.Request, project_id: str) -> None:
 def _context(request: web.Request, context: ExecutionContext) -> None:
     """Check that the client may act for the project, and that the environment is the project's.
 
-    A client limited to some projects may use only the environments the worker created
-    for them. The pool's own token may also use sandboxes made by hand.
+    An environment ID the worker created stays with its project, deleted or not, so
+    what passes here cannot reach another project's sandbox later (D78). A client
+    limited to some projects may use only the environments the worker created for
+    them; the pool's own token may also use the sandboxes made by hand.
     """
     _allowed(request, context.project_id)
     environments = request.app.get(ENVIRONMENTS)
@@ -194,22 +203,38 @@ def _context(request: web.Request, context: ExecutionContext) -> None:
         return  # no environment belongs to a project here, and no client is limited
     environment_id = context.environment_id
     info = environments.records.get(environment_id)
-    if _client(request).projects is not None:
-        if (
-            info is None
-            or info.state is EnvironmentState.DELETED
-            or info.project_id != context.project_id
-        ):
+    limited = _client(request).projects is not None
+    if info is None:
+        if not limited and environments.handmade(environment_id):
+            return
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+    if info.project_id != context.project_id:
+        if limited:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
-    elif (
-        info is not None
-        and info.state is not EnvironmentState.DELETED
-        and info.project_id != context.project_id
-    ):
         raise WorkerError(
             ErrorKind.CONFLICT,
             f"environment {environment_id!r} belongs to project {info.project_id!r}, "
             f"not {context.project_id!r}",
+        )
+    if limited and info.state is EnvironmentState.DELETED:
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+
+
+def _revision(
+    request: web.Request, environments: Environments, project_id: str, policy: str
+) -> None:
+    """A limited client may use only the policy revisions granted to the project.
+
+    A revision not granted gets the same answer as one never stored, so that a client
+    learns nothing of other projects' revisions.
+    """
+    if _client(request).projects is not None and not environments.records.granted(
+        project_id, policy
+    ):
+        raise WorkerError(
+            ErrorKind.NOT_FOUND,
+            f"no policy revision {policy} for project {project_id!r}; an operator grants "
+            "revisions with `sandbox-science-worker policy add --project`",
         )
 
 
@@ -233,8 +258,10 @@ def _environments(request: web.Request) -> Environments:
 async def create_environment(request: web.Request) -> web.Response:
     body = EnvironmentRequest.model_validate_json(await _body(request))
     _allowed(request, body.project_id)
+    environments = _environments(request)
+    _revision(request, environments, body.project_id, body.policy)
     # An environment of another project is a conflict that does not name the project.
-    info, created = await _environments(request).create(body)
+    info, created = await environments.create(body)
     return _json(info, 201 if created else 200)
 
 
@@ -254,7 +281,10 @@ async def get_environment(request: web.Request) -> web.Response:
 async def revise_environment(request: web.Request) -> web.Response:
     body = PolicyRevisionRequest.model_validate_json(await _body(request))
     environments = _environments(request)
-    return _json(await environments.revise(_environment(request, environments), body.policy))
+    environment_id = _environment(request, environments)
+    project_id = environments.get(environment_id).project_id
+    _revision(request, environments, project_id, body.policy)
+    return _json(await environments.revise(environment_id, body.policy))
 
 
 async def delete_environment(request: web.Request) -> web.Response:

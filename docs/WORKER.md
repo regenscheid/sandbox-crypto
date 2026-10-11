@@ -49,11 +49,14 @@ For such a client:
 
 - A request that names another project, in its context or body, is `policy_denied`.
 - An execution, artifact or environment of another project is `not_found`, whatever the route: its state, events, results, files and policy are out of reach, and so is cancelling it.
-- The client may use only the environments the worker created for its projects. An environment of another project, or a sandbox made by hand, is `not_found`. Clients therefore need `[openshell.environments]`: only the environments the worker creates are known to belong to a project.
+- The client may use only the environments the worker created for its projects, and not once they are deleted. An environment of another project, or a sandbox made by hand, is `not_found`. Clients therefore need `[openshell.environments]`: only the environments the worker creates are known to belong to a project.
+- It may create or revise environments only under the policy revisions an operator granted to the project: `sandbox-science-worker policy add --project p1 policy.yaml`. A revision not granted gets the same `not_found` as one never stored, so a client learns nothing of other projects' revisions, and cannot borrow another project's credential providers by naming its revision.
 
-For every caller, an environment the worker created belongs to its project: a request that names it with another project is a `conflict`. Operation IDs are kept per project, so no project meets, or takes, another's.
+An environment ID stays with the project that first created it, even once the environment is deleted: creating it for another project is a `conflict`, from any token, and the answer does not name the project. Whatever a request was checked against therefore belongs to the same project when it runs, however long it waits for the environment (a revision, a resume, a deletion). For the same reason, the worker never creates an environment under an ID the settings map to a sandbox made by hand, and an ID the worker created never falls back to that map. Only the pool's own token may use sandboxes made by hand; with it, a request that names a worker's environment with another project is a `conflict`. Operation IDs are kept per project, so no project meets, or takes, another's.
 
-Environment IDs are still shared by the whole pool. A client can tell that an ID is taken (creating it again is a `conflict`, which does not name the project), and it can take an ID before the project that would use it. The harness names environments after their project (`p1-default`), so one client could hold up another project's first run that way; it learns nothing and changes nothing of that project. Keeping environment IDs per project is in the backlog.
+Environment IDs are still shared by the whole pool, so a client can take an ID before the project that would use it, and then keep it. It learns nothing of that project and reaches nothing of it: the ID never moves. The harness ends its environment IDs with a random tag (`p1-default-3f9c0a1b2d4e`), so no other orchestrator can predict one. Keeping environment IDs per project is in the backlog, as are limits per client on environments and executions.
+
+Changes a client makes (every request but `GET` and the file reads) are logged with its name.
 
 ## Behavior worth knowing
 
@@ -149,10 +152,10 @@ With an `[openshell.environments]` table, the worker creates the sandboxes behin
 - **Policy revisions** come from the pool's policy store, the policy middleware's state directory. Only an operator adds them, on the pool host:
 
   ```bash
-  sandbox-science-worker policy add --settings worker.toml policy.yaml
+  sandbox-science-worker policy add --settings worker.toml [--project p1] policy.yaml
   ```
 
-  The command compiles each file to check it, then prints its revision (`sha256:…`) and the compiler's findings. The API cannot add a revision, so a compromised orchestrator can only choose among the stored ones.
+  The command compiles each file to check it, then prints its revision (`sha256:…`) and the compiler's findings. The API cannot add a revision, so a compromised orchestrator can only choose among the stored ones, and a client limited to projects only among those granted to its projects (`--project`, [clients](#clients-limited-to-projects)).
 - **Creating** an environment:
   1. The worker compiles the revision under the pool ceiling, with the deployment's targets file.
   2. It checks the providers. Every provider in `credentials.providers` must be registered in the gateway under the profile the policy names, and that profile must name no endpoints (D57). Otherwise it reports `unavailable`.
@@ -302,7 +305,7 @@ sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.t
 | --- | --- |
 | `SS_CONFORMANCE_WORKER_URL` | The worker's base URL, such as `http://127.0.0.1:8100` |
 | `SS_CONFORMANCE_TOKEN_FILE` | The file holding its bearer token |
-| `SS_CONFORMANCE_ENVIRONMENT` | The logical environment to run in, which the worker maps to a sandbox |
+| `SS_CONFORMANCE_ENVIRONMENT` | The logical environment to run in, which the worker maps to a sandbox. The suite acts for the project `conformance`, so a worker's own environment must have been created for that project; a sandbox made by hand needs the pool's own token |
 
 ```bash
 SS_CONFORMANCE_WORKER_URL=http://127.0.0.1:8100 SS_CONFORMANCE_TOKEN_FILE=worker.token \

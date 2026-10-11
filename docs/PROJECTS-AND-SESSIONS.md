@@ -73,7 +73,7 @@ Closing the GUI does not terminate active computations or discard state. Live ke
 
 The harness keeps a record of each project in its state directory (`packages/orchestrator`, `projects.py`). A record holds:
 - the project's base profile and policy revision;
-- its default environment, `<project>-default`;
+- its default environment, `<project>-default-<tag>`, where the tag is random, so that no other project's client of a shared worker can predict the ID and take it first (D78);
 - its sessions, each with the environment it runs in and when it was last closed.
 
 ```bash
@@ -84,7 +84,7 @@ sandbox-science-harness session close --state-dir state --project p1 --session a
 sandbox-science-harness project revise --state-dir state --project p1 --policy sha256:... --worker ... --token-file ...
 ```
 
-- **Running a session.** A session runs in the default environment, with its own kernels and workspace. With `--dedicated`, a new session gets an environment of its own, `<project>-<session>`, from the same base profile. A session keeps the mode it started with.
+- **Running a session.** A session runs in the default environment, with its own kernels and workspace. With `--dedicated`, a new session gets an environment of its own, `<project>-<session>-<tag>`, from the same base profile. A session keeps the mode it started with.
 - **Environments.** Before a session runs, the harness has the worker create its environment, or revise it to the project's current policy revision (D73). A worker that does not manage environments, such as the local one, takes the ID as it is.
 - **Closing a session** stops its kernels; running it again opens it again. Files stay.
 - **Revising a project** records the new revision. With `--worker`, it also revises the project's environments at once; otherwise each is revised when a session next runs there.

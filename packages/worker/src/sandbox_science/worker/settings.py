@@ -3,7 +3,7 @@
 
 ```toml
 listen = "127.0.0.1:8100"
-token_file = "worker.token"      # the bearer token clients present, on one line
+token_file = "worker.token"      # the pool's own bearer token, on one line
 state_dir = "state"              # executions, events and published artifacts
 pool_id = "babbage"
 max_artifact_size = 1073741824   # bytes
@@ -42,7 +42,7 @@ import hashlib
 import sys
 import tomllib
 from pathlib import Path
-from typing import Annotated, Self, cast
+from typing import Annotated, Final, Self, cast
 
 from pydantic import (
     AfterValidator,
@@ -57,6 +57,9 @@ from pydantic import (
 from sandbox_science.contracts import Identifier
 
 from .package_clients import check_cache_url
+
+MIN_TOKEN: Final = 32
+"""The fewest characters a bearer token may have."""
 
 
 class SettingsError(Exception):
@@ -191,8 +194,10 @@ class Settings(_Model):
             token = self.token_file.read_text().strip()
         except OSError as exc:
             raise SettingsError(f"cannot read the token file {self.token_file}: {exc}") from exc
-        if len(token) < 32:
-            raise SettingsError(f"the token in {self.token_file} is shorter than 32 characters")
+        if len(token) < MIN_TOKEN:
+            raise SettingsError(
+                f"the token in {self.token_file} is shorter than {MIN_TOKEN} characters"
+            )
         if token_digest(token) in {client.token_sha256 for client in self.clients}:
             raise SettingsError("a client has the pool's own token; give it a token of its own")
         return token
