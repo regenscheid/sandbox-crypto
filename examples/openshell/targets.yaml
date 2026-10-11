@@ -23,3 +23,10 @@ mcp_proxy:
   # The MCP proxy's executable; for a Python entry point, the interpreter that runs it.
   binaries: [/opt/sandbox-science/bin/mcp-proxy]
   versions: ["2025-11-25"]
+
+orchestrator:
+  # The harness's own sandbox (Z2) reaches only these platform services.
+  worker_api: {host: worker.sandbox-science.internal, port: 8100}
+  model_gateway: {host: litellm.sandbox-science.internal, port: 4000}
+  # The interpreter that runs the harness.
+  binaries: [/opt/sandbox-science/bin/python*]
