@@ -52,9 +52,17 @@ class ChatModel(Protocol):
 class ModelError(Exception):
     """The model gateway failed or answered with something unusable."""
 
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+        """The gateway's HTTP status, when it answered with an error."""
+
 
 class OpenAICompatibleModel:
-    """Chat completions with function calling, as the LiteLLM proxy serves them."""
+    """Chat completions with function calling, as the LiteLLM proxy serves them.
+
+    ``max_tokens``, when given, limits each answer's length.
+    """
 
     def __init__(
         self,
@@ -64,6 +72,7 @@ class OpenAICompatibleModel:
         *,
         session: aiohttp.ClientSession | None = None,
         timeout: float = 600,
+        max_tokens: int | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -71,6 +80,7 @@ class OpenAICompatibleModel:
         self._session = session
         self._owns_session = session is None
         self._timeout = aiohttp.ClientTimeout(total=timeout)
+        self._max_tokens = max_tokens
 
     async def close(self) -> None:
         if self._owns_session and self._session is not None:
@@ -79,6 +89,8 @@ class OpenAICompatibleModel:
 
     async def complete(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> ModelTurn:
         body: dict[str, Any] = {"model": self.model, "messages": list(messages)}
+        if self._max_tokens is not None:
+            body["max_tokens"] = self._max_tokens
         if tools:
             body["tools"] = [
                 {
@@ -103,7 +115,10 @@ class OpenAICompatibleModel:
             ) as response:
                 text = await response.text()
                 if response.status >= 400:
-                    raise ModelError(f"the model gateway returned {response.status}: {text[:300]}")
+                    raise ModelError(
+                        f"the model gateway returned {response.status}: {text[:300]}",
+                        status=response.status,
+                    )
         except aiohttp.ClientError as exc:
             raise ModelError(f"cannot reach the model gateway: {exc}") from exc
         return _parse_completion(text)

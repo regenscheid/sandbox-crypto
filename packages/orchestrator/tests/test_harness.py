@@ -669,6 +669,32 @@ async def test_the_openai_adapter() -> None:
     assert body["model"] == "main"
     assert body["tools"][0]["function"]["name"] == "python"
     assert body["tool_choice"] == "auto"
+    assert "max_tokens" not in body
+
+
+async def test_the_openai_adapter_limits_answers_and_reports_the_gateways_status() -> None:
+    seen: list[dict[str, Any]] = []
+
+    async def completions(request: web.Request) -> web.Response:
+        seen.append(await request.json())
+        if len(seen) == 1:
+            return web.json_response({"choices": [{"message": {"content": "x^2"}}]})
+        return web.json_response({"error": "upstream"}, status=502)
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", completions)
+    async with TestServer(app) as server:
+        model = OpenAICompatibleModel(
+            str(server.make_url("/v1")), "reviewer", "virtual-key", max_tokens=512
+        )
+        turn = await model.complete([{"role": "user", "content": "fix x^"}], [])
+        with pytest.raises(ModelError) as failed:
+            await model.complete([{"role": "user", "content": "fix y^"}], [])
+        await model.close()
+    assert turn.text == "x^2"
+    assert [body["max_tokens"] for body in seen] == [512, 512]
+    assert "tools" not in seen[0]
+    assert failed.value.status == 502
 
 
 async def test_the_client_resumes_a_dropped_event_stream() -> None:
