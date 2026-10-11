@@ -547,12 +547,21 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
             summary["kernel_generation"] = result.kernel.generation
         if result.state_lost:
             summary["state_lost"] = "the kernel restarted before this cell; earlier state is gone"
+        if result.notices:
+            summary["platform_notices"] = [_bound(notice, limit) for notice in result.notices]
     if execution.location is not None:
         summary["ran_on"] = {
             "sandbox": execution.location.sandbox_id,
             "host": _bound(execution.location.hostname, 256),
             "isolation_tier": execution.location.isolation_tier,
         }
+        before = execution.location.environment_revision
+        after = result.environment_revision if result is not None else None
+        if before is not None and after is not None and before != after:
+            summary["environment_changed"] = (
+                f"the environment's installed packages changed while this ran (revision "
+                f"{before} to {after}); kernels started before keep the packages they loaded"
+            )
     summary["attempt_id"] = execution.attempt_id
     return summary
 

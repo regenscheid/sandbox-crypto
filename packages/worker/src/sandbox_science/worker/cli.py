@@ -31,12 +31,13 @@ from .admission import DraftWatcher
 from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
-from .environments import Environments
+from .environments import EnvironmentRecords, Environments, printable
 from .errors import WorkerError
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
 from .settings import Settings, SettingsError, load_settings
 from .store import Store
+from .suspend import Suspender
 
 _log = logging.getLogger("sandbox_science.worker")
 
@@ -70,9 +71,12 @@ def _environments(settings: Settings) -> Environments | None:
 
 def _backend(settings: Settings, environments: Environments | None) -> Backend:
     if settings.openshell is not None:
-        resolve = environments.sandbox if environments is not None else None
         return OpenShellBackend(
-            settings.openshell, settings.state_dir, resolve, executor_args=_executor_args(settings)
+            settings.openshell,
+            settings.state_dir,
+            environments.sandbox if environments is not None else None,
+            executor_args=_executor_args(settings),
+            prepare=environments.resume if environments is not None else None,
         )
     if settings.local is None:
         raise SettingsError("no backend is configured")
@@ -94,6 +98,8 @@ async def serve(settings: Settings) -> None:
     )
     if environments is not None:
         environments.release = manager.release
+        environments.release_idle = manager.release_if_idle
+        manager.notices = environments.notices
     # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
     # attempts still running are stored as lost.
     stopping = asyncio.Event()
@@ -101,7 +107,7 @@ async def serve(settings: Settings) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
     runner = web.AppRunner(create_app(manager, token, environments), access_log=None)
-    watcher: asyncio.Task[None] | None = None
+    background: list[asyncio.Task[None]] = []
     try:
         await manager.start()
         await runner.setup()
@@ -110,18 +116,21 @@ async def serve(settings: Settings) -> None:
         _log.info("worker API on %s (%s backend)", settings.listen, manager.backend.name)
         if environments is not None and environments.settings.admission:
             interval = environments.settings.admission_interval
-            watcher = asyncio.create_task(DraftWatcher(environments, interval).run())
+            background.append(asyncio.create_task(DraftWatcher(environments, interval).run()))
+        if environments is not None and environments.settings.suspend_after is not None:
+            suspender = Suspender(environments, manager, environments.settings.suspend_after)
+            background.append(asyncio.create_task(suspender.run()))
         await stopping.wait()
         _log.info("stopping")
     finally:
-        if watcher is not None:
-            watcher.cancel()
+        for task in background:
+            task.cancel()
             try:
-                await watcher
+                await task
             except asyncio.CancelledError:
                 pass
             except Exception:
-                _log.exception("the admission watcher failed")
+                _log.exception("a background task failed")
         await runner.cleanup()
         await manager.close()
         store.close()
@@ -163,6 +172,30 @@ def add_policies(settings: Settings, paths: list[Path]) -> int:
     return status
 
 
+def show_admissions(settings: Settings, environment_id: str) -> int:
+    """Print an environment's admission decisions (D69), oldest first."""
+    if settings.openshell is None or settings.openshell.environments is None:
+        print("error: the settings have no [openshell.environments] table", file=sys.stderr)
+        return 1
+    records = EnvironmentRecords(settings.state_dir / "environments.sqlite3")
+    try:
+        info = records.get(environment_id)
+        if info is None:
+            print(f"error: no environment {environment_id!r}", file=sys.stderr)
+            return 1
+        admitted = ", ".join(info.admitted_hosts) or "none"
+        print(f"{environment_id} ({info.state}, sandbox {info.sandbox}): admitted {admitted}")
+        for decision in records.admissions(environment_id):
+            outcome = "admitted" if decision.admitted else "refused"
+            print(
+                f"  {decision.decided_at:%Y-%m-%d %H:%M:%S} {printable(decision.host)}:"
+                f"{decision.port} {outcome}: {printable(decision.reason, 500)}"
+            )
+    finally:
+        records.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sandbox-science-worker")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -178,18 +211,26 @@ def main(argv: list[str] | None = None) -> int:
     add_parser = policy_commands.add_parser("add", help="store project policy revisions")
     add_parser.add_argument("--settings", type=Path, required=True)
     add_parser.add_argument("policies", type=Path, nargs="+")
+    admissions_parser = commands.add_parser(
+        "admissions", help="show an environment's admission decisions (D69)"
+    )
+    admissions_parser.add_argument("--settings", type=Path, required=True)
+    admissions_parser.add_argument("--environment", required=True)
     args = parser.parse_args(argv)
     if args.command == "token":
         descriptor = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as handle:
             handle.write(secrets.token_urlsafe(32) + "\n")
         return 0
-    if args.command == "policy":
+    if args.command in ("policy", "admissions"):
         try:
-            return add_policies(load_settings(args.settings), args.policies)
+            settings = load_settings(args.settings)
         except SettingsError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+        if args.command == "policy":
+            return add_policies(settings, args.policies)
+        return show_admissions(settings, args.environment)
     logging.basicConfig(
         level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
