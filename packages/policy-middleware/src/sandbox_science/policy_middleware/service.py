@@ -282,6 +282,14 @@ def _result(verdict: Verdict) -> pb.HttpRequestResult:
             )
             for finding in verdict.findings[:_MAX_FINDINGS]
         ],
+        header_mutations=[
+            pb.HeaderMutation(
+                write=pb.WriteHeader(
+                    name=name, value=value, on_existing=pb.EXISTING_HEADER_ACTION_OVERWRITE
+                )
+            )
+            for name, value in (verdict.headers if verdict.allowed else ())
+        ],
     )
     decision = verdict.decision
     if decision is not None:

@@ -7,6 +7,14 @@ Updated: 2026-10-11.
 ## Recent progress
 
 - **Shared data across a project's environments** (D79, [lab 16](docs/agent-reports/babbage-openshell-lab-16-2026-10-11.md)). The worker keeps a project's `shared/` area in step across its environments, before and after every call. A dedicated session now sees the shared results of the project's other sessions, and two environments changing one file leave a conflict copy, of which the agent is told. An adversarial review found that a reported digest was used as a host path, that naming another project's digest got its content, and that a sandbox made again looked as if all its files were deleted; the reworked sync checks what executors report, keeps each project's blobs apart and marks each environment's directory. On babbage, across two VMs, a call that changes nothing costs 0.03 s.
+- **Specs for living documents and the project ledger** (W0, drafts to review with the user). [Living documents](../docs/specs/living-documents.md): block and math-span IDs kept across edits, agent patches that name their base and blocks and are rebased or refused, never overwriting a newer edit, comments that carry work requests to agents, and the user's CScience math handling: dollar delimiters on save, and LaTeX that KaTeX rejects repaired for display by rules, the reviewer model or a Unicode approximation. [Ledger](../docs/specs/ledger.md): typed entries with evidence types apart from status, a frontier compared within a category and its conditions, flags after assumption changes, and the external pack's board records. Every W4 feature now has a spec, apart from the GUI's PDF viewer.
+- **The workspace GUI, first slice** (W4, D80; [workspace](../docs/WORKSPACE.md)). A Svelte app, built into static files, and an aiohttp server, `sandbox-science-workspace`, show the harness's projects, sessions and runs, read-only: the agent's messages, its tool calls with their arguments and results, and the LaTeX in them, rendered by KaTeX.
+  - Login works like Jupyter's: a token printed once opens an HttpOnly, SameSite=Strict session. Changes need the server's own origin, a loopback server answers only to its own names, and the content policy admits no inline script.
+  - One component shows all text: raw HTML stays text, links only for http, https and mailto, images never load, KaTeX in its untrusted mode. A formula KaTeX cannot parse shows as written, beside its error.
+  - The browser's math rules are a port of mdit-py-plugins', which the server is to use; shared cases pin them, and the plugin passes them.
+  - The harness now keeps every run's record with `--state-dir`.
+  - Checked in a browser against records the harness wrote. CI has a `web` job, and checks the npm lockfile's licenses, sources and install scripts.
+  - An adversarial review found no way to run script, and eight other issues, all fixed. The worst: a formula could draw fake code over the tool call below it, and some texts took minutes to render.
 - **An image for the MCP proxy** ([lab 15](docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md)). The `mcp-proxy` image runs the proxy as its sandbox's command, through a launcher that waits for its settings and restarts it. In OpenShell, the providers' placeholders reached it, and it came back after the sandbox stopped and started; the port forward has to be started again.
 - **One policy store.** The middleware, the worker and the MCP proxy now share one store module in the policy library, and the worker no longer depends on the middleware package.
 - **Admission ahead of use** (D69). The agent can name the sites its code will contact before running it (`admit_hosts`), and the worker admits the allowed ones in one policy reload, so the first connection need not fail and no transfer is cut. In [lab 14](docs/agent-reports/babbage-openshell-lab-14-2026-10-11.md), a host named this way was reachable on the first connection, and clients limited to projects held against a real gateway.
@@ -74,12 +82,12 @@ Updated: 2026-10-11.
 
 ## Blockers and open questions
 
-Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning spec approved as drafted.
+Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning, research-artifacts and consistency-review specs approved as drafted, with the artifacts spec's shared-file rule amended for D79; the workspace GUI as a Svelte web app (D80); delegated agents are runs in their session's environment, not sessions, with an environment of their own as a later opt-in (D81).
 
 Decisions to confirm: PSF-2.0 and MIT-0 in tier 1.
 
 Questions with a recommendation, waiting for the user:
-- **Event store checkpoints.** Recommended: a user timer on babbage that writes each checkpoint to the journal, which the user's processes cannot rewrite.
+- **Event store checkpoints.** The user timer that logs each checkpoint to the journal is in `examples/systemd` ([event store](../docs/EVENT-STORE.md#checkpoints-in-the-journal)); installing it on babbage is the user's call.
 - **Images.**
   - No registry on babbage, since OpenShell reads the local Docker store; a self-hosted Zot or Distribution on the cluster.
   - Keep G6K at x86-64-v3 (AVX2).
@@ -91,9 +99,12 @@ Questions with a recommendation, waiting for the user:
   - Keep binary results withheld until artifact references exist.
   - Keep `max_argument_bytes` in the policy.
   - Decide whether worker code may use `resources/read`, `prompts/get` and `completion/complete`, which `worker_tools` does not restrict.
-- **The W0 specs** (tools, skills, plans and delegation, consistency review, research artifacts, PDF sources), each with its open questions. The Conda provisioning spec is approved.
+- **The W0 specs** still in draft (tools, skills, plans and delegation, PDF sources, living documents, and the project ledger, board and frontier), each with its open questions; the Conda provisioning, research-artifacts and consistency-review specs are approved. The consistency review's trigger defaults wait for the user's own CScience settings.
 - **A real model.** The first slice with a real model needs the user's LiteLLM gateway and a virtual key.
 - **Upstream.** Whether to file the OpenShell and libzmq descriptions in `.agents/upstream/`.
+- **Workspace GUI.**
+  - The GUI shows conversation text in its own origin, under its Markdown rules and a policy without inline script, while D54 puts previews of agent-written artifacts on a separate origin. Recommended: keep conversation text where it is, and give rich artifacts (HTML, SVG, notebook output, PDFs) the separate origin when previews come.
+  - The workspace server reads the harness's state directory through the orchestrator's store, an exception to the rule that deployable members never import each other. Recommended: accept it until W5 gives the control application an API.
 
 Known facts to keep in mind:
 - OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's tier 3 depends on it (D43); it worked in every lab.

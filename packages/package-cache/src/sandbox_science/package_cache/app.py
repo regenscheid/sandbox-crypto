@@ -62,6 +62,8 @@ from urllib.parse import unquote
 import aiohttp
 from aiohttp import web
 
+from sandbox_science.policy.package_requests import SANDBOX_HEADER
+
 from .adapter import Adapter, Fetch, Kind, Rewrite, Static
 from .adapters.opam import INDEX_KEY, OpamAdapter, parse_archive_path
 from .errors import PackageCacheError, RewriteError, StoreError, UpstreamError
@@ -72,8 +74,10 @@ from .store import Entry, Store, TempBlob
 from .upstream import (
     DEFAULT_MAX_WAIT,
     DEFAULT_SLOT_WAIT,
+    REQUESTER,
     Downloaded,
     NotModified,
+    SandboxBudgets,
     SingleFlight,
     TempSpace,
     TokenBucket,
@@ -100,6 +104,7 @@ KEEPALIVE_TIMEOUT: Final = 15.0
 _MAX_KEY_LENGTH: Final = 4096
 _PREFIX_RE: Final = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 _PATH_RE: Final = re.compile(r"/(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/]|%[0-9A-Fa-f]{2})*")
+_SANDBOX_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _STATUS_PATHS: Final = frozenset({"/-/health", "/-/stats"})
 _ARCHIVES_PATH: Final = "/-/opam/archives/"
 
@@ -164,6 +169,7 @@ class _RequestLog:
     bytes: int = 0
     upstream_ms: float | None = None
     quiet: bool = False
+    sandbox: str | None = None
 
 
 class PackageCache:
@@ -179,11 +185,13 @@ class PackageCache:
         clock: Callable[[], float] = time.time,
         send_timeout: float = SEND_TIMEOUT,
         opam_archives: OpamArchives | None = None,
+        budgets: SandboxBudgets | None = None,
     ) -> None:
         if send_timeout <= 0:
             raise ValueError("send_timeout must be positive")
         self._adapters = dict(adapters)
         self._opam_archives = opam_archives
+        self._budgets = budgets
         self._store = store
         self._upstream = upstream
         self._clock = clock
@@ -242,7 +250,13 @@ class PackageCache:
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         """Answer one request and log it; beyond ``max_requests`` at once, answer 503."""
-        log = _RequestLog()
+        log = _RequestLog(sandbox=_sandbox(request))
+        # Upstream fetches for the request spend its sandbox's budget (``REQUESTER``).
+        requester = REQUESTER.set(
+            self._budgets.bucket(log.sandbox)
+            if self._budgets is not None and log.sandbox is not None
+            else None
+        )
         try:
             path = request.raw_path.partition("?")[0]
             if path in _STATUS_PATHS or path.startswith(_ARCHIVES_PATH):
@@ -263,6 +277,7 @@ class PackageCache:
                 await self._write_answer(request, response)
             return response
         finally:
+            REQUESTER.reset(requester)
             _log_request(request, log)
 
     async def _write_answer(self, request: web.Request, response: web.StreamResponse) -> None:
@@ -658,6 +673,13 @@ def create_app(
                 limiter = TokenBucket(
                     settings.upstream_rate, settings.upstream_burst, max_wait=rate_limit_wait
                 )
+                budgets = (
+                    None
+                    if settings.sandbox_rate == 0
+                    else SandboxBudgets(
+                        settings.sandbox_rate, settings.sandbox_burst, max_wait=rate_limit_wait
+                    )
+                )
                 upstream = UpstreamClient(
                     session,
                     temp_dir=store.temp_dir,
@@ -678,6 +700,7 @@ def create_app(
                     clock=clock,
                     send_timeout=send_timeout,
                     opam_archives=archives,
+                    budgets=budgets,
                 )
                 app[CACHE] = cache
                 cache.start()
@@ -843,10 +866,22 @@ def _printable(text: str) -> str:
     return "".join(char if " " < char < "\x7f" else f"\\x{ord(char):02x}" for char in text[:2048])
 
 
+def _sandbox(request: web.Request) -> str | None:
+    """The sandbox the policy middleware named in the request, if the name is well formed.
+
+    The middleware writes the header on every request a sandbox sends to the cache,
+    replacing whatever the sandbox sent; a request without it came from elsewhere.
+    """
+    value = request.headers.get(SANDBOX_HEADER)
+    if value is None or not _SANDBOX_RE.fullmatch(value):
+        return None
+    return value
+
+
 def _log_request(request: web.Request, log: _RequestLog) -> None:
     _requests.log(
         logging.DEBUG if log.quiet else logging.INFO,
-        "ecosystem=%s method=%s path=%s result=%s status=%s bytes=%d upstream_ms=%s",
+        "ecosystem=%s method=%s path=%s result=%s status=%s bytes=%d upstream_ms=%s sandbox=%s",
         log.ecosystem,
         _printable(request.method),
         _printable(request.raw_path),
@@ -854,4 +889,5 @@ def _log_request(request: web.Request, log: _RequestLog) -> None:
         log.status if log.status is not None else "-",
         log.bytes,
         "-" if log.upstream_ms is None else f"{log.upstream_ms:.0f}",
+        log.sandbox or "-",
     )

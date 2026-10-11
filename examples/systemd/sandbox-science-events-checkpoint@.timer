@@ -1,0 +1,11 @@
+# Takes a checkpoint of the event store %f every five minutes (docs/EVENT-STORE.md).
+[Unit]
+Description=Checkpoints of the event store %f every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

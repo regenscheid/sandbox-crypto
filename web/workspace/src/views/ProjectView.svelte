@@ -1,0 +1,87 @@
+<!-- SPDX-License-Identifier: MIT -->
+<script lang="ts">
+  import { api } from '../lib/api';
+  import { formatTime } from '../lib/format';
+  import { sessionHref } from '../lib/router';
+  import ErrorMessage from './ErrorMessage.svelte';
+
+  let { projectId }: { projectId: string } = $props();
+  const loading = $derived(api.project(projectId));
+</script>
+
+<nav class="trail"><a href="#/">Projects</a> /</nav>
+<h1>{projectId}</h1>
+
+{#await loading}
+  <p class="muted">Loading…</p>
+{:then project}
+  <dl class="facts">
+    <dt>Base profile</dt>
+    <dd>{project.profile}</dd>
+    <dt>Policy revision</dt>
+    <dd><code>{project.policy}</code></dd>
+    <dt>Default environment</dt>
+    <dd><code>{project.default_environment_id}</code></dd>
+    <dt>Created</dt>
+    <dd>{formatTime(project.created_at)}</dd>
+    <dt>Updated</dt>
+    <dd>{formatTime(project.updated_at)}</dd>
+  </dl>
+
+  <h2>Sessions</h2>
+  {#if project.sessions.length === 0}
+    <p>No sessions yet. A session starts with <code>sandbox-science-harness run</code>.</p>
+  {:else}
+    <table>
+      <thead>
+        <tr>
+          <th>Session</th>
+          <th>Environment</th>
+          <th>Runs</th>
+          <th>Opened</th>
+          <th>State</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each project.sessions as session (session.session_id)}
+          <tr>
+            <td><a href={sessionHref(projectId, session.session_id)}>{session.session_id}</a></td>
+            <td>
+              <code>{session.environment_id}</code>
+              <span class="muted">{session.dedicated ? 'its own' : "the project's"}</span>
+            </td>
+            <td>{session.runs}</td>
+            <td>{formatTime(session.opened_at)}</td>
+            <td>{session.closed_at ? `closed ${formatTime(session.closed_at)}` : 'open'}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
+  {/if}
+
+  <h2>Environments</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Environment</th>
+        <th>Kind</th>
+        <th>Sessions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {#each project.environments as environment (environment.environment_id)}
+        <tr>
+          <td><code>{environment.environment_id}</code></td>
+          <td>{environment.default ? "the project's default" : 'dedicated'}</td>
+          <td>{environment.sessions.join(', ') || '—'}</td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
+  <p class="muted">
+    These are the harness's records. The environments' live state is on the worker, which this
+    view does not ask yet.
+  </p>
+{:catch error}
+  <ErrorMessage {error} />
+{/await}
