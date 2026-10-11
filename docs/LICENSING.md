@@ -71,7 +71,7 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |
 | cryptography | Apache-2.0 OR BSD-3-Clause | Ed25519 verification for PyJWT |
 | cffi, pycparser | MIT-0; BSD-3-Clause | Required by cryptography. MIT-0 is MIT without the attribution condition |
-| aiohttp | Apache-2.0 AND MIT | Package cache HTTP server and upstream client |
+| aiohttp | Apache-2.0 AND MIT | HTTP servers and upstream clients of the package cache and the MCP proxy |
 | aiohappyeyeballs, aiosignal, attrs, frozenlist, multidict, propcache, yarl, idna | PSF-2.0; Apache-2.0; MIT; Apache-2.0; Apache-2.0; Apache-2.0; Apache-2.0; BSD-3-Clause | Required by aiohttp |
 | pytest, pluggy, iniconfig, ruff, pyright | MIT | Development and CI only |
 | types-PyYAML, types-grpcio, types-protobuf | Apache-2.0 | Development and CI only (type stubs) |
