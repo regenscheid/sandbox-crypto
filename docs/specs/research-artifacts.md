@@ -1,6 +1,6 @@
 # Research artifacts
 
-Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with RA-6 amended for the shared files' sync (D79).** Open questions 1 and 3 are settled as proposed; the others are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with RA-6 amended for the shared files' sync (D79), and RA-1 and RA-24 amended for living documents later the same day.** Open questions 1 and 3 are settled as proposed; the others are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md).
 
 ## Scope
 
@@ -19,7 +19,7 @@ Terms:
 
 ### Identity and revisions
 
-- RA-1. Every artifact has a stable ID and a project-scoped path (`shared/...` or `sessions/<session>/...`, [projects and sessions](../PROJECTS-AND-SESSIONS.md)). Revisions are append-only; none is changed in place (CScience; D28).
+- RA-1. Every artifact has a stable ID and a project-scoped path (`shared/...` or `sessions/<session>/...`, [projects and sessions](../PROJECTS-AND-SESSIONS.md); living documents under `documents/...`). Revisions are append-only; none is changed in place (CScience; D28). *Amended 2026-10-11: living documents have a third area, `documents/`, whose files the platform keeps at each document's current revision in every environment, while their history stays in the control store ([living documents](living-documents.md), LD-3, LD-49).*
 - RA-2. A revision records the SHA-256 of its content, size, media type, revision number, parent revisions, creation time and attribution. Hashes MUST be cryptographic (OpenScience Desktop's 64-bit hashes are not).
 - RA-3. Deleting a file adds a tombstone revision; history remains. Purging content is a separate action that only the user can take, and it keeps the revision records (new).
 - RA-4. Content of large revisions can be dropped under a retention setting. The record (hash, size, lineage) stays and is marked `content_dropped` (new).
@@ -62,7 +62,7 @@ Terms:
 - RA-21. Users and agents can annotate one revision. An annotation has an `Anchor` (a text range with its quote and surrounding context, lines, a table cell, a notebook cell or output, an image region, or a PDF page and region), a body in Markdown with LaTeX (D25), its author, times, replies and an `open` or `resolved` status (CScience anchors include points, selections, regions, page numbers and quoted context).
 - RA-22. An annotation stays attached to its revision. For each newer revision the platform tries to carry it forward, by block ID for documents or by quote and context otherwise, and reports the result: `current`, `moved`, `stale` (the anchored text changed) or `orphaned` (it is gone). Uncertain reattachment is visible ([research workspace](../RESEARCH-WORKSPACE.md)).
 - RA-23. Annotations live in the control store, not in the artifact's content; exports can carry them alongside (new).
-- RA-24. An annotation addressed to an agent becomes a scoped work request, and the agent's reply is attributed to its run (research workspace).
+- RA-24. An annotation the user addresses to an agent becomes a scoped work request, and the agent's reply is attributed to its run (research workspace). *Amended 2026-10-11: an agent's annotation addressed to an agent starts no work, so that agents cannot keep waking each other ([living documents](living-documents.md), LD-22).*
 - RA-25. Editing or resolving an annotation names the thread revision it expects; concurrent changes conflict instead of overwriting.
 
 ### Events
