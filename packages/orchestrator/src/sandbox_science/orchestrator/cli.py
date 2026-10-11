@@ -17,7 +17,9 @@ sandbox-science-harness session close --state-dir state --project p1 --session s
 
 With ``--state-dir``, the session runs in its project's default environment, or in
 an environment of its own with ``--dedicated`` (W3, projects.py). The harness has
-the worker create or revise it first. The harness refuses a worker whose isolation
+the worker create or revise it first, and keeps the run's record, the same that
+``--transcript`` writes, beside the project's (W4). The run ID then names that
+record, so it must be an identifier. The harness refuses a worker whose isolation
 tier in effect is below the minimum, so a misconfigured deployment cannot quietly
 run research code without a sandbox.
 """
@@ -28,13 +30,16 @@ import argparse
 import asyncio
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
-from sandbox_science.contracts import ExecutionContext, Location, new_id
+from pydantic import TypeAdapter, ValidationError
+
+from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 
 from .loop import run_task
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
-from .projects import ProjectError, ProjectStore, ensure_environment
+from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
 from .tools import Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -94,6 +99,8 @@ async def _run(args: argparse.Namespace) -> int:
         model = ScriptedModel.from_json(json.loads(args.script.read_text()))
     else:
         model = OpenAICompatibleModel(args.model_url, args.model, _read_secret(args.api_key_file))
+    run_id = args.run_id or new_id("run")
+    started = datetime.now(UTC)
     async with WorkerClient(args.worker, _read_secret(args.token_file)) as client:
         context = await _context(args, client)
         capabilities = await client.capabilities(context.environment_id)
@@ -123,26 +130,55 @@ async def _run(args: argparse.Namespace) -> int:
                 features=capabilities.features,
             ),
             args.task,
-            run_id=args.run_id or new_id("run"),
+            run_id=run_id,
             max_turns=args.max_turns,
             on_tool=show,
         )
     if isinstance(model, OpenAICompatibleModel):
         await model.close()
     print(f"\n{transcript.final_text or '(no answer)'}")
+    fields: dict[str, object] = {
+        "run_id": run_id,
+        "context": context.model_dump(mode="json"),
+        "task": args.task,
+        "started_at": started,
+        "ended_at": datetime.now(UTC),
+        "stopped": transcript.stopped,
+        "final_text": transcript.final_text,
+        "messages": transcript.messages,
+        "tools": transcript.tool_records,
+    }
+    return _keep(args, fields, 0 if transcript.stopped == "answered" else 3)
+
+
+def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> int:
+    """Write the run's transcript, then keep its record in the project's; ``status``
+    unless either fails.
+
+    A record that does not validate, such as a tool result nested deeper than pydantic
+    follows, still reaches ``--transcript`` as the harness has it.
+    """
+    try:
+        record: RunRecord | None = RunRecord.model_validate(fields)
+        invalid = ""
+    except (ValidationError, RecursionError) as exc:
+        record, invalid = None, str(exc)[:300]
     if args.transcript is not None:
-        args.transcript.write_text(
-            json.dumps(
-                {
-                    "context": context.model_dump(),
-                    "messages": transcript.messages,
-                    "tools": transcript.tool_records,
-                    "stopped": transcript.stopped,
-                },
-                indent=2,
-            )
-        )
-    return 0 if transcript.stopped == "answered" else 3
+        try:
+            text = record.to_json() if record is not None else json.dumps(fields, default=str)
+            args.transcript.write_text(text)
+        except (OSError, ValueError, RecursionError) as exc:
+            print(f"error: the transcript could not be written: {exc}", file=sys.stderr)
+            status = 1
+    if args.state_dir is not None:
+        try:
+            if record is None:
+                raise ProjectError(ErrorKind.INVALID_REQUEST, f"the record is invalid: {invalid}")
+            ProjectStore(args.state_dir).save_run(record)
+        except (ProjectError, OSError, ValueError, RecursionError) as exc:
+            print(f"error: the run's record could not be kept: {exc}", file=sys.stderr)
+            status = 1
+    return status
 
 
 async def _project(args: argparse.Namespace) -> int:
@@ -235,6 +271,14 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--model-url needs --api-key-file")
             if args.dedicated and args.state_dir is None:
                 parser.error("--dedicated needs --state-dir")
+            if args.state_dir is not None and args.run_id is not None:
+                try:
+                    TypeAdapter(Identifier).validate_python(args.run_id)
+                except ValidationError:
+                    parser.error(
+                        "with --state-dir, --run-id names the run's record: use letters, "
+                        "digits, '.', '_' and '-', starting with a letter or digit"
+                    )
             action = _run(args)
         case "project":
             if args.action == "create" and (args.profile is None or args.policy is None):

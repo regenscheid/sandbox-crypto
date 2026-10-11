@@ -45,6 +45,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Idle suspension (W3): with `suspend_after`, the worker stops the sandbox of an environment with no executions, no requests and no kernel CPU use, and starts it again on the next use. Files, installed tools, the policy and admitted hosts survive; kernels are reported lost ([lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md))
 - [x] The orchestrator keeps project records and creates environments itself (W3): `sandbox-science-harness project create|show|revise`, `run --state-dir [--dedicated]` and `session close`. Sessions share the project's default environment, each with its own kernels and workspace, or get a dedicated one from the same base profile ([projects and sessions](../docs/PROJECTS-AND-SESSIONS.md#as-built-the-harnesss-project-records))
 - [ ] The orchestrator closes sessions when they end, without an explicit command (needs the session lifecycle of the control application, W4)
+- [ ] Delegations that opt into an environment of their own, made from the project's base image, for work that needs isolation, such as an independent check (D81; agreed with the user on 2026-10-11 as a later feature). By default delegated runs stay in their session's environment, with kernels of their own (PD-14); the worker keys kernels by session today, so per-run kernels need the execution context to name the run
 - [x] Environment revisions: count package changes in a shared environment and report the revision each execution started and ended under (W3). Changes are recorded, not yet serialized
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48): deferred by the user on 2026-10-11; sandboxes keep a writable root filesystem for now
 - [x] Shared data across a project's environments (D79): the worker copies changed files in `shared/` between the project's environments before and after each tool call, keeping a conflict copy when two changed the same file ([worker](../docs/WORKER.md#shared-data-across-environments)); hardened after its review and run on babbage ([lab 16](docs/agent-reports/babbage-openshell-lab-16-2026-10-11.md))
@@ -58,7 +59,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Package cache: lockfiles written in a sandbox name the cache (npm's `resolved` links, `uv.lock`), so they fail elsewhere. Choose between handing out upstream links where the client maps them to the configured registry (npm does, pnpm does not) and rewriting lockfiles when work leaves the sandbox (lab 2)
 - [ ] Package cache: opam and Hackage adapters (EasyCrypt, Jasmin, ProVerif, Cryptol, Tamarin)
 - [ ] Package cache: a cooling-off period for new releases, keeping lockfile files from eviction, TLS between OpenShell and the cache
-- [ ] Package cache: per-sandbox rate limits. The policy middleware writes a sandbox header on cache requests (overwriting anything the sandbox sent), which the cache uses to give each sandbox its own budget; the cooling-off period needs the same mechanism
+- [x] Package cache: per-sandbox budgets of upstream fetches. The policy middleware writes the sandbox's ID in a header on every cache request it allows, replacing anything the sandbox sent, and the cache keeps a token bucket per sandbox besides the shared one ([package cache](../docs/PACKAGE-CACHE.md#logging-and-limits)). To check on babbage that OpenShell applies the header
 - [x] Describe OpenShell v0.1.3's seccomp restrictions on thread scheduling and process-group signals, and libzmq's abort on EPERM, in `.agents/upstream/` (lab 4; filing is the user's call)
 - [x] Describe the OpenShell v0.1.3 bugs we found, in `.agents/upstream/`: credentials substituted into plain HTTP and sent unencrypted; a host with two trailing dots selects no middleware. The user chose to keep the descriptions here; filing them upstream remains the user's call
 - [x] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox. The OpenShell backend's `package_cache` setting; the executor writes the files and sets the variables, keeping files someone changed ([client configuration](../docs/PACKAGE-CACHE.md#client-configuration)). Real pip, uv, conda, mamba, cargo, go and npm ran with it against a loopback cache (`test_package_clients_integration.py`)
@@ -76,7 +77,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] MCP proxy callers: identity from the policy middleware, which knows the sandbox, instead of per-sandbox tokens; `process`-level attribution (D67)
 - [x] One policy store library for the policy middleware, the worker and the MCP proxy: `sandbox_science.policy.store`, with sandbox bindings for the middleware and project bindings for the proxy. The worker no longer depends on the middleware package
 - [x] Event store with an append-only hash chain (`packages/event-store`, D74): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
-- [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer). On a single-user host such as babbage, a systemd user timer could log each checkpoint to the journal, whose files the user's processes cannot rewrite
+- [x] Event store checkpoints: a systemd user timer template logs a checkpoint every five minutes to the journal, whose files the user's processes cannot rewrite, and `verify` reads a journal export of them ([event store](../docs/EVENT-STORE.md#checkpoints-in-the-journal)). Sending checkpoints off the host remains
 - [ ] Event store growth: rotate old records (D74). Repeated escalations are no longer recorded again (D76)
 - [ ] Adversarial fixture suite
 - [x] Isolation-tier probes (D43): the worker probes each executor it starts and reports the tier in effect beside the declared one; evidence only lowers it, and the OpenShell backend must declare its tier ([worker](../docs/WORKER.md#isolation-tiers))
@@ -91,7 +92,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W0: behavior specification and harness foundation
 
-- [ ] Behavior specs with acceptance fixtures: tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, automatic review, Conda provisioning, artifacts; all to review with the user
+- [ ] Behavior specs with acceptance fixtures: Conda provisioning, research artifacts and automatic review approved by the user (2026-10-11); tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, PDF sources, living documents ([drafted](../docs/specs/living-documents.md)) and the project ledger, board and frontier ([drafted](../docs/specs/ledger.md)) to review with the user
 - [x] Harness building-block decision with licenses recorded: D72, proposed, to confirm with the user
 
 ## W1: shared references and one worker adapter
@@ -110,6 +111,21 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] `crypto-base` profile with Sage present at session start (D46): in [lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md) its executor offered `python` and `sage` at once, and Sage ran with LaTeX results
 - [x] PDF extraction and rendering in the worker (pdf_oxide, D59): the in-sandbox helper, the [spec](../docs/specs/pdf-sources.md), the worker's `PdfRequest` and the harness's `pdf_*` tools
 - [x] PDF evidence on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)): Regev's LWE paper through the PDF tools in a crypto-base sandbox; page labels, outline, line anchors, and page and equation crops published as artifacts. Text extraction garbles mathematics, and the renders do not
+
+## W4: integrate the initial research workspace
+
+- [x] GUI stack (D80, confirmed by the user): Svelte 5 with TypeScript built by Vite (`web/workspace`), an aiohttp server (`packages/workspace`), markdown-it and KaTeX in the browser
+- [x] First slice ([workspace](../docs/WORKSPACE.md)): a read-only API v0 and views of projects, their sessions and environments, and each session's runs (messages, tool calls with arguments and results); Jupyter-like login, origin and host checks, a strict content policy; one Markdown component for all text; a `web` CI job and the npm lockfile check (licenses, registry, integrity, install scripts)
+- [x] The harness keeps each run's record with `--state-dir`, the same that `--transcript` writes
+- [ ] Living documents (D23, D65; [spec drafted](../docs/specs/living-documents.md)): parsing on the server with markdown-it-py and mdit-py-plugins, passing the shared math cases (`web/workspace/src/lib/dollarmath.fixtures.json`), with the 200-line limit on `$$` blocks added to the plugin's block rule; block and math IDs; revision-checked edits; comments and anchors
+- [ ] Tables: markdown-it 15 and markdown-it-py 4.2 split a table differently when rare Unicode whitespace starts its rows (4 of 120,000 random texts); pin both parsers' versions and check again when the server parses Markdown
+- [ ] Ledger and board (D24; [spec drafted](../docs/specs/ledger.md)), and review findings (the consistency review spec)
+- [ ] Approvals in the GUI, with re-authentication for high-risk ones (D54); policy revisions from the GUI
+- [ ] Previews of rich artifacts (HTML, SVG, notebook output, PDFs) on a separate origin in sandboxed frames (D54); the PDF viewer
+- [ ] Live updates while a run is in progress; the environments' live state from the worker
+- [ ] Records of runs that end in an error
+- [ ] Ship the bundled npm packages' license notices with the built app before it is distributed: the build drops license comments
+- [ ] TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5)
 
 ## babbage
 

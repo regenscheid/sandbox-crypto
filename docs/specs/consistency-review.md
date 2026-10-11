@@ -1,6 +1,6 @@
 # Automatic consistency review
 
-Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user).** Open questions 2–5 and 7 are settled as proposed. The CR-10 defaults stand until the user's own CScience settings are known (question 1); questions 6 and 8 remain open. W0 behavior specification; conventions in the [index](README.md).
 
 ## Scope
 
@@ -177,12 +177,12 @@ All fixtures are `scripted`: the author's and the reviewer's model output is scr
 ## Open questions
 
 1. Which review settings does the user's CScience actually run with? The defaults in CR-10 are inspected source defaults. How the two kernel-work values combine, and what counts as a structural block, also need checking against the user's experience.
-2. Should the terminal review hold the turn's completion (proposed, CR-15), or should the turn complete at once with findings arriving later?
-3. Add `withdrawn` (proposed) for accepted rebuttals and user dismissals, beside the six outcomes in the feature plan?
-4. May the user mark a fix `confirmed fixed` directly (proposed, CR-25)?
-5. Severity names `fail`, `warn` and `note`?
+2. **Settled (2026-10-11):** the terminal review holds the turn's completion (CR-15).
+3. **Settled (2026-10-11):** `withdrawn` is a status, for accepted rebuttals and user dismissals (CR-27).
+4. **Settled (2026-10-11):** the user may mark a fix `confirmed fixed` directly, and the record shows it (CR-25).
+5. **Settled (2026-10-11):** severities are `fail`, `warn` and `note` (CR-18).
 6. Should a second reviewer pass validate `fail` findings before they interrupt the author, as Claude Code's public review command validates candidate issues, or keep one pass as CScience does?
-7. Bounds: 2 rounds per turn, 2 re-flags, 10 findings per review?
+7. **Settled (2026-10-11):** 2 response rounds per turn, 2 re-flags and 10 findings per review, as project settings (CR-19, CR-29, CR-30).
 8. Should the reviewer also check text the user wrote, or only agent work unless the user asks?
 
 ## Sources

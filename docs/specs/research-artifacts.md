@@ -1,6 +1,6 @@
 # Research artifacts
 
-Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with RA-6 amended for the shared files' sync (D79).** Open questions 1 and 3 are settled as proposed; the others are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md).
 
 ## Scope
 
@@ -27,7 +27,10 @@ Terms:
 ### Creating revisions
 
 - RA-5. Executions write in the session workspace. The worker reports every file an execution creates, changes or deletes there ([tools](tools.md)); each one becomes a new revision of the artifact at its path, except paths matching the project's ignore patterns (caches, temporary and build directories) (new; see open question 1). Shell commands, kernel cells and helper code are treated alike.
-- RA-6. Shared artifacts change only through publication, which copies a session revision to a shared path and names the expected current revision. If another revision was published meanwhile, publication returns a conflict with the current revision; nothing is overwritten. The rejected content stays as a conflict copy in the session and is listed (D37).
+- RA-6. Shared artifacts live in the project's `shared/` area, which the worker keeps in step across the project's environments ([worker](../WORKER.md#shared-data-across-environments), D79). *Amended 2026-10-11; the draft had shared artifacts change only through publication from a session.*
+  - A change made in an environment's `shared/`, by an execution or a file request, becomes a revision of the shared artifact when the worker syncs it after the call.
+  - A write that names the expected current revision (a file request, or publication of a session revision to a shared path) gets a conflict naming the current revision if another arrived meanwhile; nothing is overwritten (D37).
+  - When two environments changed the same file between syncs, the change that arrived first keeps the path, and the later one is kept beside it as a conflict copy named after its environment; the agent whose change came second is told (D79).
 - RA-7. Imports create revisions with import attribution instead of an execution: user uploads, connector and MCP results (binary results become artifacts in the MCP proxy, D67), and fetched sources. The attribution records the source (URL, DOI, or server, tool and an argument hash), retrieval time, importing actor and response metadata.
 - RA-8. Control-plane content (documents, plans, review reports) is written through `Mutation`s that name the expected revision ([plans and delegation](plans-and-delegation.md); research workspace for documents).
 - RA-9. Writing or publishing content identical to the current revision creates no new revision; it adds a `reproduced_by` link from the existing revision to the new attempt (new).
@@ -73,7 +76,7 @@ Terms:
 - `EnvironmentRecord`: environment revision, base image digest, platform and isolation tier in lineage.
 - `Anchor`: annotation locations, carry-forward and the `stale` and `orphaned` states; image regions are a proposed addition.
 - `Mutation`: shared publication and annotation changes name the expected revision; a conflict returns the current one.
-- `Event`: `artifact.revision_created` with a lineage summary, `artifact.publication_conflicted`, `annotation.created`, `annotation.changed` and `annotation.reanchored`, produced by the repository and the worker.
+- `Event`: `artifact.revision_created` with a lineage summary, `artifact.publication_conflicted`, `artifact.conflict_copied` (a sync kept a conflict copy, RA-6), `annotation.created`, `annotation.changed` and `annotation.reanchored`, produced by the repository and the worker.
 - `PermissionRequest`: not used directly. Publication inside the project follows the project grant without per-file approval ([projects and sessions](../PROJECTS-AND-SESSIONS.md)).
 
 ## Acceptance fixtures
@@ -96,10 +99,10 @@ Terms:
 - *When* r2 appears.
 - *Then* the document resolves r2 and shows "r2"; the finding still resolves r1.
 
-**RA-F5 Shared publication conflict** (`scripted`; RA-6)
-- *Given* sessions A and B both read shared `results/table.csv` at r3.
-- *When* A publishes with expected r3, then B publishes with expected r3.
-- *Then* A creates r4; B gets a conflict naming r4, nothing is overwritten, and B's content is listed as a conflict copy in session B.
+**RA-F5 Shared write conflicts** (`worker`; RA-6)
+- *Given* sessions A and B in different environments of one project, both of which read shared `results/table.csv` at r3.
+- *When* A writes it expecting r3, then B writes it expecting r3. Later, calls in A's and B's environments both change it before either syncs.
+- *Then* A's write creates r4, and B's gets a conflict naming r4; nothing is overwritten. Of the two later changes, the first to sync becomes r5, the other is kept as `results/table.conflict-<B's environment>.csv`, and B's call is told.
 
 **RA-F6 Import through a connector** (`worker`; RA-7)
 - *When* the agent retrieves a PDF with a crypto-research-mcp tool through the MCP proxy.
@@ -132,9 +135,9 @@ Terms:
 
 ## Open questions
 
-1. Which files become artifacts automatically: every file an execution writes in the session workspace, minus ignore patterns (proposed, RA-5), or only declared output locations?
+1. **Settled (2026-10-11):** every file an execution writes in the session workspace, minus ignore patterns, becomes an artifact automatically (RA-5); not only declared output locations.
 2. Retention: which size threshold, if any, should drop the content of old revisions (RA-4)?
-3. Should identical republication add a link instead of a revision (proposed, RA-9)?
+3. **Settled (2026-10-11):** identical content written again adds a `reproduced_by` link instead of a revision (RA-9).
 4. Observed inputs from monitor telemetry (RA-13): worth adding later, or are declared inputs and kernel chains enough?
 5. Should exports include annotations, and in what form?
 6. Renames: detect a move when a deleted file's content reappears at another path in the same execution, or treat it as a new artifact?

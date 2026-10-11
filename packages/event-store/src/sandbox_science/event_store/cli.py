@@ -11,7 +11,9 @@ sandbox-science-events export STORE [--after SEQ] [--output FILE]
 checkpoint. ``checkpoint`` verifies the store first and writes nothing unless
 it is intact, so a checkpoint never vouches for a broken chain. Keep
 checkpoints where whoever can write the store cannot change them
-(docs/EVENT-STORE.md). ``export`` writes one JSON object per line.
+(docs/EVENT-STORE.md). A checkpoint file holds one checkpoint, or one per
+line, as an export of the journal that a timer logged them to does.
+``export`` writes one JSON object per line.
 """
 
 from __future__ import annotations
@@ -50,7 +52,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             action="append",
             default=[],
             metavar="FILE",
-            help="a checkpoint the store must agree with (repeatable)",
+            help="checkpoints the store must agree with: one, or one per line (repeatable)",
         )
     checkpoint.add_argument("--output", type=Path, help="write here instead of to stdout")
     export = commands.add_parser("export", help="write the store's records as JSON lines")
@@ -115,12 +117,27 @@ def _report(result: Verification, stream: TextIO) -> None:
 
 
 def _checkpoints(paths: Sequence[Path]) -> list[Checkpoint]:
+    """The checkpoints in each file: one, in any JSON layout, or one per line.
+
+    In a file of lines, such as checkpoints exported from the journal, lines that
+    do not start with ``{`` are skipped, as the journal's own messages would be. A
+    file must hold at least one checkpoint, so a damaged one is never read as none.
+    """
     checkpoints: list[Checkpoint] = []
     for path in paths:
+        text = path.read_text(encoding="utf-8")
         try:
-            checkpoints.append(Checkpoint.from_json(path.read_text(encoding="utf-8")))
+            checkpoints.append(Checkpoint.from_json(text))
+            continue
         except EventStoreError as exc:
-            raise EventStoreError(f"{path}: {exc}") from exc
+            lines = [(n, line) for n, line in enumerate(text.splitlines(), 1) if line[:1] == "{"]
+            if not lines:
+                raise EventStoreError(f"{path}: {exc}") from exc
+        for number, line in lines:
+            try:
+                checkpoints.append(Checkpoint.from_json(line))
+            except EventStoreError as exc:
+                raise EventStoreError(f"{path}: line {number}: {exc}") from exc
     return checkpoints
 
 

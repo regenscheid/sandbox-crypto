@@ -1,0 +1,184 @@
+# SPDX-License-Identifier: MIT
+"""The API's answers, from a state directory the harness's own store wrote (conftest)."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import math
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+import pytest
+import pytest_asyncio
+from aiohttp.test_utils import TestClient
+
+from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
+from sandbox_science.workspace.app import create_app
+
+pytestmark = pytest.mark.asyncio
+
+TOKEN = "test-secret-login-token-0123456789abcdef"  # noqa: S105 - a test value
+POLICY = "sha256:" + "a" * 64
+FIRST_RUN = "20261011T130102345678Z-run-1"
+SECOND_RUN = "20261011T140102345678Z-run-2"
+
+ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
+
+
+async def logged_in(client: TestClient[Any, Any]) -> TestClient[Any, Any]:
+    response = await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
+    assert response.status == 303
+    return client
+
+
+@pytest_asyncio.fixture
+async def client(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> TestClient[Any, Any]:
+    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+    return await logged_in(await aiohttp_client(app))
+
+
+async def get(client: TestClient[Any, Any], path: str, status: int = 200) -> Any:
+    response = await client.get(path)
+    assert response.status == status, await response.text()
+    assert response.headers["Content-Type"].startswith("application/json")
+    assert response.headers["Cache-Control"] == "no-store"
+    return await response.json()
+
+
+async def test_the_projects(client: TestClient[Any, Any]) -> None:
+    listed = (await get(client, "/api/v0/projects"))["projects"]
+    assert [project["project_id"] for project in listed] == ["broken", "p1", "p2"]
+    broken, p1, p2 = listed
+    assert "is damaged" in broken["error"]
+    assert (p1["profile"], p1["policy"], p1["sessions"]) == ("crypto-base", POLICY, 3)
+    assert p1["default_environment_id"].startswith("p1-default-")
+    assert (p2["profile"], p2["sessions"]) == ("minimal", 0)
+    assert set(p1) == {
+        "project_id",
+        "profile",
+        "policy",
+        "default_environment_id",
+        "created_at",
+        "updated_at",
+        "sessions",
+    }
+
+
+async def test_one_project_with_its_sessions_and_environments(
+    client: TestClient[Any, Any], state_dir: Path
+) -> None:
+    record = ProjectStore(state_dir).get("p1")
+    found = (await get(client, "/api/v0/projects/p1"))["project"]
+    assert (found["profile"], found["policy"]) == ("crypto-base", POLICY)
+    sessions = {session["session_id"]: session for session in found["sessions"]}
+    assert list(sessions) == ["a", "b", "c"]
+    assert sessions["a"]["runs"] == 2
+    assert sessions["b"]["closed_at"] is not None
+    assert sessions["c"]["dedicated"] is True
+    assert sessions["a"]["environment_id"] == record.default_environment_id
+    assert found["environments"] == [
+        {"environment_id": record.default_environment_id, "default": True, "sessions": ["a", "b"]},
+        {"environment_id": sessions["c"]["environment_id"], "default": False, "sessions": ["c"]},
+    ]
+
+
+async def test_one_session_with_its_runs_oldest_first(client: TestClient[Any, Any]) -> None:
+    found = await get(client, "/api/v0/projects/p1/sessions/a")
+    assert found["project_id"] == "p1"
+    assert found["session"]["session_id"] == "a"
+    assert found["runs"] == [
+        {"name": FIRST_RUN, "run_id": "run-1", "started_at": "2026-10-11T13:01:02.345678Z"},
+        {"name": SECOND_RUN, "run_id": "run-2", "started_at": "2026-10-11T14:01:02.345678Z"},
+    ]
+    assert (await get(client, "/api/v0/projects/p1/sessions/c"))["runs"] == []
+
+
+async def test_one_run_as_the_harness_recorded_it(
+    client: TestClient[Any, Any], state_dir: Path
+) -> None:
+    found = await get(client, f"/api/v0/projects/p1/sessions/a/runs/{FIRST_RUN}")
+    kept = ProjectStore(state_dir).run("p1", "a", FIRST_RUN)
+    assert found == kept.model_dump(mode="json")
+    assert found["final_text"] == "It is $1$."
+    assert found["tools"][0]["arguments"] == '{"code": "print(1**2)"}'
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "kind"),
+    [
+        ("/api/v0/projects/missing", 404, "not_found"),
+        ("/api/v0/projects/bad%20id", 400, "invalid_request"),
+        ("/api/v0/projects/..", 400, "invalid_request"),
+        ("/api/v0/projects/broken", 500, "internal"),
+        ("/api/v0/projects/p1/sessions/missing", 404, "not_found"),
+        ("/api/v0/projects/p1/sessions/missing/runs/" + FIRST_RUN, 404, "not_found"),
+        ("/api/v0/projects/p2/sessions/a/runs/" + FIRST_RUN, 404, "not_found"),
+        ("/api/v0/projects/p1/sessions/a/runs/20261011T130102345678Z-run-9", 404, "not_found"),
+        ("/api/v0/projects/p1/sessions/a/runs/run-1", 400, "invalid_request"),
+        ("/api/v0/projects/p1/sessions/a/runs/..%2F..%2F..%2Fp1", 400, "invalid_request"),
+        ("/api/v0/projects/p1/sessions/a/runs/" + FIRST_RUN + "%2F..", 400, "invalid_request"),
+    ],
+)
+async def test_errors_name_their_kind(
+    client: TestClient[Any, Any], path: str, status: int, kind: str
+) -> None:
+    reader, writer = await asyncio.open_connection("127.0.0.1", client.port)
+    cookie = "; ".join(f"{c.key}={c.value}" for c in client.session.cookie_jar)
+    writer.write(
+        f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{client.port}\r\nCookie: {cookie}\r\n"
+        "Connection: close\r\n\r\n".encode()
+    )
+    reply = await asyncio.wait_for(reader.read(), 10)
+    writer.close()
+    await writer.wait_closed()
+    head, _, body = reply.partition(b"\r\n\r\n")
+    assert int(head.split(b" ", 2)[1]) == status, body
+    assert json.loads(body)["error"]["kind"] == kind
+
+
+async def test_a_run_too_large_to_show_is_refused(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, max_run_bytes=100)
+    client = await logged_in(await aiohttp_client(app))
+    refused = await get(client, f"/api/v0/projects/p1/sessions/a/runs/{FIRST_RUN}", 422)
+    assert refused["error"]["kind"] == "unsupported"
+
+
+async def test_a_run_holding_values_json_cannot_carry_is_still_shown(
+    client: TestClient[Any, Any], state_dir: Path
+) -> None:
+    # A lone surrogate from a model's reply and a NaN from a tool's JSON: the browser's
+    # JSON.parse must still read the answer.
+    store = ProjectStore(state_dir)
+    started = datetime(2026, 10, 11, 15, 0, tzinfo=UTC)
+    entry = store.save_run(
+        RunRecord(
+            run_id="run-3",
+            context=ExecutionContext(project_id="p1", session_id="a", environment_id="env-1"),
+            task="t",
+            started_at=started,
+            ended_at=started,
+            stopped="answered",
+            final_text="half an emoji \ud83d",
+            messages=[],
+            tools=[{"tool": "pdf_info", "pdf": {"x0": math.nan, "x1": math.inf}}],
+        )
+    )
+    response = await client.get(f"/api/v0/projects/p1/sessions/a/runs/{entry.name}")
+    assert response.status == 200
+    text = await response.text()
+
+    def no_constants(name: str) -> None:
+        raise AssertionError(f"{name} is not JSON")
+
+    found = json.loads(text, parse_constant=no_constants)
+    assert found["final_text"] == "half an emoji \ud83d"
+    assert found["tools"][0]["pdf"] == {"x0": "nan", "x1": "inf"}
+    assert text.isascii()

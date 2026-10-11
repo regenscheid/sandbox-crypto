@@ -78,7 +78,31 @@ A checkpoint is the head's sequence number and hash:
 {"format":"sandbox-science-event-store/v1","hash":"7155c4ba…","seq":1}
 ```
 
-`sandbox-science-events checkpoint` verifies the store first and writes nothing unless it is intact, so a checkpoint never vouches for a broken chain. Keep checkpoints where the store's writers cannot change them: another machine, the orchestrator's store, or a repository the middleware's account cannot write. Take them regularly, for example from a timer every few minutes; records after the newest checkpoint have only the chain's protection. Nothing takes checkpoints automatically yet.
+`sandbox-science-events checkpoint` verifies the store first and writes nothing unless it is intact, so a checkpoint never vouches for a broken chain. Keep checkpoints where the store's writers cannot change them: another machine, the orchestrator's store, or a repository the middleware's account cannot write. Take them regularly; records after the newest checkpoint have only the chain's protection.
+
+### Checkpoints in the journal
+
+On a single-user host such as babbage, a systemd user timer can take a checkpoint every five minutes and log it to the journal. The journal's files belong to root: the user's processes can read them, but cannot change or delete what is in them. A process running as the user, as the middleware does, could log lines that look like checkpoints, but not undo the ones logged before. A later checkpoint for the same record that disagrees with an earlier one is itself reported.
+
+The templates are in [`examples/systemd`](../examples/systemd). Their instance is the store's path, escaped:
+
+```bash
+cp examples/systemd/sandbox-science-events-checkpoint@.* ~/.config/systemd/user/
+# set the path to sandbox-science-events in the .service file, then:
+STORE=/path/to/middleware/state/events.db
+UNIT=sandbox-science-events-checkpoint@$(systemd-escape --path "$STORE")
+systemctl --user daemon-reload
+systemctl --user enable --now "$UNIT.timer"
+```
+
+To verify the store against every checkpoint the journal holds:
+
+```bash
+journalctl --user -u "$UNIT.service" -o cat > checkpoints.jsonl
+sandbox-science-events verify "$STORE" --checkpoint checkpoints.jsonl
+```
+
+A checkpoint file may hold one checkpoint, or one per line; lines that do not start with `{`, such as the journal's own messages, are skipped, and a file with no checkpoint in it is an error. A failed checkpoint (a broken chain) makes the service fail, with its problems in the journal. The journal keeps entries as long as its size limits allow, so copy the checkpoints elsewhere for longer retention. On babbage, a store rewritten with every hash recomputed passed the chain check alone and failed against the checkpoints a transient timer had logged.
 
 ## Command line
 
@@ -100,6 +124,6 @@ To back up a running store, export it or use SQLite's backup; a copy of `events.
 
 ## Not yet done
 
-- **Checkpoints** are not taken or sent anywhere automatically.
+- **Checkpoints** go to the journal only where someone installs the timer; nothing sends them off the host.
 - **Retention.** The store only grows. Rotating to a new file that starts from the old one's final checkpoint is a possible later step.
 - **Several hosts.** A store is one file on one host; components on other hosts would need a store service.

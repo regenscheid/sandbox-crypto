@@ -1,0 +1,10 @@
+# A checkpoint of one event store, logged to the journal (docs/EVENT-STORE.md).
+# The instance is the store's path, escaped: systemd-escape --path /path/to/events.db
+# Replace the path to sandbox-science-events below; the timer of the same instance runs it.
+[Unit]
+Description=Checkpoint of the event store %f
+
+[Service]
+Type=oneshot
+ExecStart=/path/to/.venv/bin/sandbox-science-events checkpoint %f
+SyslogIdentifier=sandbox-science-checkpoint

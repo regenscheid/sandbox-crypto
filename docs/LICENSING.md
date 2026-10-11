@@ -36,7 +36,7 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | TeX Live (Ubuntu packages), qpdf | LPPL-1.3c, GPL and others; Apache-2.0 | Tier 3, in the `crypto-base` image |
 | miniforge installer | BSD-3-Clause (bundled packages carry their own licenses) | Use conda-forge only; avoid Anaconda `defaults` (commercial terms) |
 | jupyter_client, ipykernel | BSD-3-Clause | Kernel protocol |
-| KaTeX | MIT | Math rendering |
+| KaTeX | MIT | Math rendering in the workspace GUI (D65, D80); its fonts ship in the build |
 | PDF.js | Apache-2.0 | PDF viewer |
 | **pdf_oxide** (`yfedoseev/pdf_oxide`) | MIT OR Apache-2.0 | **Primary PDF extraction candidate** (D59; already used by the user). Permissive enough for tier 1 or 2. Optional OCR features pull ONNX runtimes (`ort`, `tract-onnx`) and models; check their licenses separately before enabling |
 | pypdfium2 | Apache-2.0 | PDF rendering/extraction fallback candidate |
@@ -64,7 +64,13 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | LiteLLM | MIT core (enterprise directory under separate terms) | **Model gateway (D61)**: run the proxy; use only MIT-licensed features |
 | sparfenyuk/mcp-proxy, docker/mcp-gateway | MIT | MCP proxy references/possible bases (D67) |
 | IBM mcp-context-forge | Apache-2.0 | MCP proxy reference/possible base (D67) |
-| markdown-it-py, mdit-py-plugins, markdown-it | MIT | Living-document parsing (D65) |
+| markdown-it-py, mdit-py-plugins, markdown-it | MIT | Living-document parsing (D65); markdown-it renders the workspace GUI's text (D80). The GUI's math rules are a port of mdit-py-plugins' `dollarmath` (MIT, Copyright (c) 2020 ExecutableBookProject, v0.6.1 at `da70e05`), credited in the ported file |
+| Svelte | MIT | Workspace GUI framework (D80); its runtime is compiled into the app |
+| Vite, @sveltejs/vite-plugin-svelte, rolldown | MIT | Build only: bundle the workspace app |
+| lightningcss | MPL-2.0 | Build only: Vite's CSS processing, unmodified |
+| TypeScript | Apache-2.0 | Development and CI only: type checks |
+| svelte-check, vitest | MIT | Development and CI only |
+| The workspace app's other npm packages | MIT, except entities (BSD-2-Clause), argparse (PSF-2.0; markdown-it's command line only), aria-query, axobject-query, detect-libc and expect-type (Apache-2.0), picocolors (ISC) and source-map-js (BSD-3-Clause) | Dependencies of the above, pinned by `web/workspace/package-lock.json` and checked one by one in CI |
 | pydantic, pydantic-core, annotated-types, typing-inspection | MIT | Policy and API schemas (`packages/policy`) |
 | typing-extensions | PSF-2.0 | Required by pydantic; PSF-2.0 is permissive and GPL-compatible |
 | PyYAML | MIT | Policy file parsing |
@@ -96,6 +102,7 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 ## Enforcement
 
 - CI runs `scripts/check_licenses.py`, which fails when an installed distribution's license is undeclared or outside the tier 1 allowlist (so GPL/LGPL/AGPL/SSPL/BUSL fail).
+- For each web app, CI runs `scripts/check_licenses.py --npm` on its `package-lock.json` before installing anything. Every package must declare a tier 1 license, come from the npm registry with a SHA-512 integrity hash, and need no install script unless it is optional; packages install with `--ignore-scripts`. After the install, `--installed` checks each package's own `package.json` against the lockfile's license and version, since the integrity hashes cover the packages but not the lockfile's license fields. Both checks read SPDX expressions with their precedence.
 - The base image builds record every package and its license (`/usr/share/sandbox-science/image.json`). The `minimal`, `orchestrator` and `mcp-proxy` builds fail on any license that is not permissive, outside an explicit allowlist of the base distribution's runtime libraries ([images](IMAGES.md#licensing)). A standard-format SBOM for the published image is still to do.
 - Record tier 3 package licenses in each environment record (conda `info/licenses`, PyPI metadata). Show AGPL packages in the GUI when they are installed at runtime.
 - Before copying any code from a reuse source, record its license and revision in the commit.
