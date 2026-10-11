@@ -16,8 +16,8 @@ sandbox:
   binaries: [/**]
   # Paths the image provides outside the sandbox's workdir, such as a Conda prefix
   # (D48). The compiler adds the devices research code needs; OpenShell adds its
-  # baseline system paths.
-  # filesystem: {read_only: [/opt/conda], read_write: []}
+  # baseline system paths. The standard base profile images need (docs/IMAGES.md):
+  # filesystem: {read_only: [/var/lib/texmf], read_write: [/opt/sandbox-science]}
 
 mcp_proxy:
   # The MCP proxy's executable; for a Python entry point, the interpreter that runs it.

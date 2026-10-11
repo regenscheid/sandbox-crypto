@@ -124,7 +124,7 @@ Both restrictions are described for upstream in `.agents/upstream/`.
 
 ## Environments
 
-With an `[openshell.environments]` table, the worker creates the sandboxes behind logical environments itself (D73). The orchestrator holds no gateway credentials (threat model, Z2), so it asks the worker, naming an environment, a project, a base profile (D46) and a policy revision.
+With an `[openshell.environments]` table, the worker creates the sandboxes behind logical environments itself (D73). The orchestrator holds no gateway credentials (threat model, Z2), so it asks the worker, naming an environment, a project, a base profile (D46) and a policy revision. The standard profiles' images, the interpreter they provide and the filesystem paths the targets file must list for them are in [base profile images](IMAGES.md).
 
 - **Policy revisions** come from the pool's policy store, the policy middleware's state directory. Only an operator adds them, on the pool host:
 
@@ -177,7 +177,7 @@ pool_id = "babbage"
 
 [openshell]
 cli = "/home/andy/.local/opt/openshell-0.1.3/bin/openshell"
-python = "/sandbox/mamba/envs/tools/bin/python"   # an interpreter with ipykernel and jupyter_client
+python = "/opt/sandbox-science/bin/python"   # with ipykernel and jupyter_client; the base images' interpreter
 project_root = "/sandbox/project"
 isolation_tier = 3                   # required: the tier the driver gives (D43); the probe can lower it
 sched_shim = true                    # build and preload the scheduler shim (needs cc on this host)
@@ -189,7 +189,7 @@ sandboxes = {"env-1" = "research-1"}   # sandboxes made by hand
 policy_store = "/var/lib/sandbox-science/middleware"   # the policy middleware's state_dir
 targets = "targets.yaml"             # OpenShell targets for the compiler
 ceiling = "pool-ceiling.yaml"        # the same pool ceiling the middleware applies
-profiles = {minimal = "docker.io/library/python:3.13-slim"}   # base profile -> image
+profiles = {minimal = "sandbox-science/minimal:<sha>", crypto-base = "sandbox-science/crypto-base:<sha>"}   # base profile -> image (IMAGES.md)
 create_timeout = 600                 # seconds for a sandbox to become ready
 ```
 

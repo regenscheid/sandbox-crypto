@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Check a base profile image as a sandbox sees it: images/test.sh minimal|crypto-base [IMAGE]
+#
+# Runs images/checks/check_image.py in the image as uid 1000, with no capabilities, a read-only
+# root filesystem and only the declared paths writable (docs/IMAGES.md, "Tests"):
+#   container  tmpfs at /sandbox and /tmp, and a volume for the Conda prefix (D48), as a
+#              container driver would run it;
+#   landlock   the same under a Landlock ruleset like OpenShell's: its baseline, the devices the
+#              policy compiler adds, and images/common/sandbox-filesystem.yml.
+# IMAGE defaults to the tag build.sh gives. MODES picks the modes (default
+# "container landlock"); NETWORK=0 skips the runtime installs, which need conda-forge and PyPI;
+# FILESYSTEM names another sandbox-filesystem.yml to try. Prints one JSON line per check and
+# exits 1 if any failed.
+set -euo pipefail
+
+profile=${1:-}
+case $profile in
+  minimal | crypto-base) ;;
+  *) echo "usage: images/test.sh minimal|crypto-base [IMAGE]" >&2; exit 2 ;;
+esac
+here=$(cd "$(dirname "$0")" && pwd)
+worker="$here/../packages/worker/src/sandbox_science/worker"   # its in-sandbox files
+image=${2:-}
+if [ -z "$image" ]; then  # the tag build.sh gives
+  inputs=(Containerfile .dockerignore common minimal crypto-base)
+  short=$(git -C "$here" rev-parse --short "$(git -C "$here" log -1 --format=%H -- "${inputs[@]}")")
+  [ -z "$(git -C "$here" status --porcelain -- "${inputs[@]}")" ] || short="$short-dirty"
+  image="sandbox-science/$profile:$short"
+fi
+docker image inspect "$image" >/dev/null
+
+# OpenShell v0.1.3's baseline for a sandbox whose policy has network rules, and its workdir.
+baseline_ro=(/usr /lib /etc /app /var/log /proc /dev/urandom)
+baseline_rw=(/tmp /dev/null /sandbox)
+# The devices the policy compiler adds (sandbox_science.policy.openshell.SANDBOX_DEVICES_*).
+devices_ro=(/dev/random)
+devices_rw=(/dev/full /dev/ptmx /dev/pts /dev/shm /dev/tty /dev/zero)
+# The image's own paths, as the targets file lists them.
+filesystem=${FILESYSTEM:-$here/common/sandbox-filesystem.yml}
+list() { sed -n "s/^$1: \[\(.*\)\]\$/\1/p" "$filesystem" | tr -d ' ' | tr ',' ' '; }
+read -r -a image_ro <<<"$(list read_only)"
+read -r -a image_rw <<<"$(list read_write)"
+
+checks=$(mktemp -d)
+trap 'rm -rf "$checks"' EXIT
+cp "$here/checks/check_image.py" "$here/checks/landlock.py" "$worker/executor.py" "$worker/pdfhelper.py" "$checks/"
+chmod -R a+rX "$checks"
+
+check_args=(--profile "$profile" --worker-files /checks)
+network=(--network none)
+if [ "${NETWORK:-1}" != 0 ]; then
+  check_args+=(--network)
+  network=()
+fi
+
+landlock=(python -I /checks/landlock.py)
+for path in "${baseline_ro[@]}" "${devices_ro[@]}" "${image_ro[@]}" /checks; do landlock+=(--ro "$path"); done
+for path in "${baseline_rw[@]}" "${devices_rw[@]}" "${image_rw[@]}"; do landlock+=(--rw "$path"); done
+landlock+=(--)
+
+status=0
+for mode in ${MODES:-container landlock}; do
+  case $mode in
+    container) wrapper=() mode_args=() ;;
+    landlock) wrapper=("${landlock[@]}") mode_args=(--landlock) ;;
+    *) echo "test.sh: unknown mode $mode" >&2; exit 2 ;;
+  esac
+  echo "== $image ($mode)" >&2
+  docker run --rm --name "ss-image-test-$profile-$mode-$$" \
+    --user 1000:1000 --cap-drop ALL --security-opt no-new-privileges \
+    --read-only \
+    --tmpfs /sandbox:rw,exec,uid=1000,gid=1000,mode=0755,size=8g \
+    --tmpfs /tmp:rw,exec,mode=1777,size=4g \
+    --shm-size 1g \
+    --mount type=volume,target=/opt/sandbox-science \
+    --mount "type=bind,source=$checks,target=/checks,readonly" \
+    "${network[@]}" \
+    "$image" \
+    "${wrapper[@]}" python -I /checks/check_image.py "${check_args[@]}" "${mode_args[@]}" |
+    sed "s/^{/{\"mode\": \"$mode\", /" || status=1
+done
+exit $status

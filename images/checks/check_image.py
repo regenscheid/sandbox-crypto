@@ -1,0 +1,454 @@
+# SPDX-License-Identifier: MIT
+"""Check a base profile image from the inside (docs/IMAGES.md, "Tests").
+
+images/test.sh runs this in the image as uid 1000, with a read-only root filesystem and only the
+declared paths writable. It starts the worker's executor the way the OpenShell backend does
+(``python -I /sandbox/.sandbox-science/executor.py --stdio --root /sandbox/project``), asks it
+for its languages, and runs cells and shell commands through it. Kernels therefore start
+through jupyter_client with the executor's environment.
+
+It prints one JSON object per check (``check``, ``ok``, ``seconds``, ``detail``) and exits 1 if
+any failed. It needs only the standard library.
+
+Usage: check_image.py --profile minimal|crypto-base --worker-files DIR [--network] [--landlock]
+"""
+
+from __future__ import annotations
+
+import argparse
+import itertools
+import json
+import os
+import pwd
+import queue
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+PREFIX = "/opt/sandbox-science"
+EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
+WORKER_FILES = ("executor.py", "pdfhelper.py")
+"""The worker's files that run inside a sandbox (packages/worker/src/sandbox_science/worker)."""
+PROJECT = Path("/sandbox/project")
+SESSION = "image-check"
+WORKSPACE = PROJECT / "sessions" / SESSION
+LANGUAGES = {"minimal": ["python"], "crypto-base": ["python", "sage"]}
+FEATURES = {"minimal": [], "crypto-base": ["pdf"]}
+"""What the executor offers beyond kernels: ``pdf`` where the PDF helper finds pdf_oxide."""
+MARKER = "Sandbox Science image check"
+
+Message = dict[str, Any]
+
+
+class CheckError(Exception):
+    """A check's expectation did not hold."""
+
+
+def expect(condition: bool, message: str) -> None:
+    if not condition:
+        raise CheckError(message)
+
+
+class Executor:
+    """The worker's executor over stdin and stdout, one request at a time."""
+
+    def __init__(self, script: Path, root: Path, log: Path) -> None:
+        self.log = log
+        self.process = subprocess.Popen(  # noqa: S603 - as the OpenShell backend starts it
+            [sys.executable, "-I", str(script), "--stdio", "--root", str(root)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=log.open("wb"),
+        )
+        self.messages: queue.Queue[Message] = queue.Queue()
+        self.ids = itertools.count(1)
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        for line in self.process.stdout or ():
+            self.messages.put(json.loads(line))
+        self.messages.put({"type": "closed"})
+
+    def _wait(self, wanted: Callable[[Message], bool], timeout: float) -> Message:
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CheckError(f"no answer from the executor within {timeout:g} s")
+            try:
+                message = self.messages.get(timeout=remaining)
+            except queue.Empty:
+                continue
+            if message.get("type") == "closed":
+                raise CheckError(f"the executor exited: {self.stderr_tail()}")
+            if wanted(message):
+                return message
+
+    def request(self, op: str, timeout: float = 30, **fields: Any) -> Message:
+        ident = next(self.ids)
+        stdin = self.process.stdin
+        if stdin is None:
+            raise CheckError("the executor has no stdin")
+        stdin.write((json.dumps({"id": ident, "op": op, **fields}) + "\n").encode())
+        stdin.flush()
+        reply = self._wait(lambda m: m.get("type") == "reply" and m.get("id") == ident, timeout)
+        expect(bool(reply.get("ok")), f"{op} refused: {reply.get('error')}")
+        return reply
+
+    def run(self, op: str, limit: float, **fields: Any) -> Message:
+        """Run a shell command or cell; return its result after checking that it succeeded."""
+        execution = f"check-{next(self.ids)}"
+        self.request(op, execution=execution, session=SESSION, timeout=limit, **fields)
+        end = self._wait(
+            lambda m: m.get("execution") == execution and m.get("event") == "end", limit + 150
+        )
+        result: Message = end.get("result", {})
+        if end.get("state") != "succeeded":
+            error = result.get("error") or {}
+            output = result.get("stdout", {}).get("text", "") + result.get("stderr", {}).get(
+                "text", ""
+            )
+            traceback = "\n".join(error.get("traceback", [])[-5:])
+            state, message = end.get("state"), error.get("message")
+            raise CheckError(f"{op} ended {state}: {message}\n{traceback}\n{output[-1500:]}")
+        return result
+
+    def shell(self, script: str, limit: float = 120) -> str:
+        result = self.run("shell", limit, script=script)
+        return str(result.get("stdout", {}).get("text", ""))
+
+    def pdf(self, operation: str, path: str, **fields: Any) -> Message:
+        """A PDF operation, as the worker sends a ``PdfRequest``; the helper's JSON."""
+        result = self.run("pdf", 120, operation=operation, path=path, **fields)
+        return json.loads(str(result.get("stdout", {}).get("text", "")))
+
+    def cell(self, code: str, language: str = "python", limit: float = 120) -> tuple[str, str]:
+        """Run a cell; return its standard output and the text of its result, if any."""
+        result = self.run("cell", limit, code=code, language=language)
+        texts = [
+            str(output.get("data", {}).get("text/plain", ""))
+            for output in result.get("outputs", [])
+            if output.get("type") == "result"
+        ]
+        return str(result.get("stdout", {}).get("text", "")), "\n".join(texts)
+
+    def stderr_tail(self) -> str:
+        try:
+            return self.log.read_text(errors="replace")[-1500:]
+        except OSError:
+            return ""
+
+    def close(self) -> None:
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+
+
+class Checks:
+    def __init__(self, profile: str, worker_files: Path, network: bool, landlock: bool) -> None:
+        self.profile = profile
+        self.network = network
+        self.under_landlock = landlock
+        self.worker_files = worker_files
+        self.client: Executor | None = None
+        self.failed = 0
+
+    @property
+    def crypto(self) -> bool:
+        return self.profile == "crypto-base"
+
+    def check(self, name: str, function: Callable[[], str]) -> None:
+        started = time.monotonic()
+        try:
+            detail, ok = function(), True
+        except Exception as error:  # every check reports, whatever went wrong
+            detail, ok = f"{type(error).__name__}: {error}", False
+            self.failed += 1
+        line = {"check": name, "ok": ok, "seconds": round(time.monotonic() - started, 2)}
+        print(json.dumps({**line, "detail": detail}), flush=True)
+
+    # The sandbox as the executor sees it.
+
+    def identity(self) -> str:
+        entry = pwd.getpwuid(os.getuid())
+        expect((os.getuid(), os.getgid()) == (1000, 1000), f"uid {os.getuid()}, gid {os.getgid()}")
+        expect(entry.pw_name == "sandbox", f"uid 1000 is {entry.pw_name!r}, not 'sandbox'")
+        expect(entry.pw_dir == "/sandbox", f"the sandbox account's home is {entry.pw_dir}")
+        expect(os.environ.get("HOME") == "/sandbox", f"HOME is {os.environ.get('HOME')}")
+        return f"uid=1000({entry.pw_name}) gid=1000 home={entry.pw_dir}"
+
+    def filesystem(self) -> str:
+        def writable(directory: str) -> bool:
+            path = Path(directory) / f".image-check-{os.getpid()}"
+            try:
+                path.write_text("x")
+            except OSError:
+                return False
+            path.unlink()
+            return True
+
+        refused = ["/", "/usr/local", "/etc", "/opt", "/var/tmp", "/usr/share/sandbox-science"]  # noqa: S108
+        allowed = ["/sandbox", "/tmp", "/dev/shm", PREFIX]  # noqa: S108 - writable paths under test
+        wrongly = [path for path in refused if writable(path)]
+        missing = [path for path in allowed if not writable(path)]
+        expect(not wrongly, f"writable but should not be: {wrongly}")
+        expect(not missing, f"not writable: {missing}")
+        return f"writable: {', '.join(allowed)}; read-only: {', '.join(refused)}"
+
+    def landlock(self) -> str:
+        """The ruleset is in effect: a system file outside OpenShell's baseline is unreadable."""
+        try:
+            Path("/var/lib/dpkg/status").read_bytes()
+        except PermissionError:
+            return "/var/lib/dpkg/status is refused, as in an OpenShell sandbox"
+        raise CheckError("/var/lib/dpkg/status is readable: no Landlock ruleset applies")
+
+    def record(self) -> str:
+        record = json.loads(Path("/usr/share/sandbox-science/image.json").read_text())
+        expect(record["profile"] == self.profile, f"the record names {record['profile']}")
+        # OpenShell would use a policy baked into the image when given none; the worker gives one.
+        expect(not Path("/etc/openshell").exists(), "the image carries /etc/openshell")
+        counts = {kind: len(items) for kind, items in record["packages"].items()}
+        return f"revision {record['revision']}; packages {counts}; no image policy"
+
+    # The executor and its kernels.
+
+    def executor(self) -> str:
+        # The worker uploads its in-sandbox files here, beside each other.
+        EXECUTOR_DIR.mkdir(parents=True, exist_ok=True)
+        for name in WORKER_FILES:
+            shutil.copyfile(self.worker_files / name, EXECUTOR_DIR / name)
+        script = EXECUTOR_DIR / "executor.py"
+        self.client = Executor(script, PROJECT, Path("/tmp/executor.log"))  # noqa: S108
+        reply = self.client.request("hello", timeout=60)
+        languages, features = reply.get("languages"), reply.get("features")
+        expect(languages == LANGUAGES[self.profile], f"languages {languages}")
+        expect(features == FEATURES[self.profile], f"features {features}")
+        location = reply.get("location", {})
+        expect(location.get("uid") == 1000, f"executor uid {location.get('uid')}")
+        return f"languages {languages}; features {features}; python {location.get('python')}"
+
+    def ex(self) -> Executor:
+        if self.client is None:
+            raise CheckError("the executor did not start")
+        return self.client
+
+    def python_kernel(self) -> str:
+        stdout, result = self.ex().cell("import sys\nprint(sys.executable)\n6 * 7")
+        expect(result == "42", f"result {result!r}")
+        expect(stdout.strip() == f"{PREFIX}/bin/python", f"kernel interpreter {stdout.strip()}")
+        return f"6 * 7 = {result} in {stdout.strip()}"
+
+    def tools_on_path(self) -> str:
+        tools = ["python", "pip", "micromamba"]
+        if self.crypto:
+            tools += ["sage", "gp", "gap", "Singular", "gcc", "g++", "make", "latexmk", "pdflatex"]
+            tools += ["pdftotext", "qpdf", "git"]
+        out = self.ex().shell(f'for t in {" ".join(tools)}; do echo "$t $(command -v $t)"; done')
+        found = dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
+        missing = [tool for tool in tools if not found.get(tool, "").strip()]
+        expect(not missing, f"not on PATH: {missing}")
+        expect(found["python"].strip() == f"{PREFIX}/bin/python", f"python is {found['python']}")
+        return ", ".join(f"{tool}={found[tool].strip()}" for tool in tools[:4]) + ", ..."
+
+    def multiprocessing(self) -> str:
+        code = (
+            "import multiprocessing as mp, concurrent.futures as cf\n"
+            "lock = mp.Lock()\n"
+            "with lock:\n"
+            "    pass\n"
+            "with mp.Pool(2) as pool:\n"
+            "    a = pool.map(abs, [-1, -2, -3])\n"
+            "with cf.ProcessPoolExecutor(2) as ex:\n"
+            "    b = list(ex.map(abs, [-4, -5]))\n"
+            "print(a, b, mp.get_start_method())"
+        )
+        stdout, _ = self.ex().cell(code)
+        expect(stdout.startswith("[1, 2, 3] [4, 5]"), f"output {stdout!r}")
+        return f"Lock, Pool and ProcessPoolExecutor: {stdout.strip()}"
+
+    # crypto-base.
+
+    def sage_kernel(self) -> str:
+        code = (
+            "F = GF(17); a = F(3)\n"
+            "print(a^16, F.multiplicative_generator(), F(5)/F(3), F.order())\n"
+            "(2^10, 1/3 + 1/6)"
+        )
+        stdout, result = self.ex().cell(code, language="sage")
+        expect(stdout.split() == ["1", "3", "13", "17"], f"output {stdout!r}")
+        expect(result == "(1024, 1/2)", f"result {result!r}")
+        return f"GF(17): {stdout.strip()}; (2^10, 1/3 + 1/6) = {result}"
+
+    def sage_interfaces(self) -> str:
+        code = "print(gp('2 + 2'), libgap.SymmetricGroup(5).Size(), singular('3 * 7'))"
+        stdout, _ = self.ex().cell(code, language="sage")
+        expect(stdout.split() == ["4", "120", "21"], f"output {stdout!r}")
+        return f"gp and Singular through pexpect, libgap: {stdout.strip()}"
+
+    def fpylll(self) -> str:
+        code = (
+            "from fpylll import FPLLL, IntegerMatrix, LLL\n"
+            "FPLLL.set_random_seed(1337)\n"
+            "A = IntegerMatrix.random(60, 'qary', k=30, bits=20)\n"
+            "LLL.reduction(A)\n"
+            "print(LLL.is_reduced(A), A.nrows, round(A[0].norm()))"
+        )
+        stdout, _ = self.ex().cell(code)
+        expect(stdout.split()[:2] == ["True", "60"], f"output {stdout!r}")
+        return f"LLL on a 60-dimensional q-ary lattice: reduced, |b0| = {stdout.split()[2]}"
+
+    def g6k(self) -> str:
+        code = (
+            "from fpylll import FPLLL, IntegerMatrix, LLL\n"
+            "from g6k import Siever\n"
+            "FPLLL.set_random_seed(1337)\n"
+            "A = LLL.reduction(IntegerMatrix.random(50, 'qary', k=25, bits=10))\n"
+            "g6k = Siever(A, seed=0x1337)\n"
+            "g6k.initialize_local(0, 0, 50)\n"
+            "g6k(alg='gauss')\n"
+            "g6k()\n"
+            "print(len(g6k), g6k.max_sieving_dim)"
+        )
+        stdout, _ = self.ex().cell(code)
+        size, maximum = (int(part) for part in stdout.split())
+        expect(size > 0, f"empty database: {stdout!r}")
+        return f"sieve in dimension 50: {size} vectors; maximum sieving dimension {maximum}"
+
+    def lattice_estimator(self) -> str:
+        code = (
+            "from estimator import LWE, schemes\n"
+            "cost = LWE.primal_usvp(schemes.Kyber512)\n"
+            "print(schemes.Kyber512.n, float(log(cost['rop'], 2)).__round__(1))"
+        )
+        stdout, _ = self.ex().cell(code, language="sage", limit=300)
+        n, bits = stdout.split()
+        expect(n == "512" and 100 < float(bits) < 200, f"output {stdout!r}")
+        return f"primal uSVP on Kyber512: 2^{bits} operations"
+
+    def latexmk(self) -> str:
+        document = r"""\documentclass{llncs}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage[n,advantage,operators,sets,adversary,landau,probability,notions,logic,ff,mm,%
+  primitives,events,complexity,asymptotics,keys]{cryptocode}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{tikz}
+\usepackage{hyperref}
+\usepackage{cleveref}
+\begin{document}
+\section{Lattices}
+MARKER.
+\begin{theorem}\label{thm:mink}
+For a lattice $\Lambda\subset\mathbb{R}^n$,
+$\lambda_1(\Lambda)\le\sqrt{n}\,\det(\Lambda)^{1/n}$.
+\end{theorem}
+By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
+\begin{algorithm}\caption{Sieve}\begin{algorithmic}
+\State $L \gets \textsc{Sample}(B)$
+\end{algorithmic}\end{algorithm}
+\procedure{$\mathsf{Exp}_{\adv}$}{b \sample \bin \\ \pcreturn b}
+\begin{tikzpicture}\draw (0,0) -- (1,1);\end{tikzpicture}
+\end{document}
+""".replace("MARKER", MARKER)
+        (WORKSPACE / "tex").mkdir(parents=True, exist_ok=True)
+        (WORKSPACE / "tex" / "paper.tex").write_text(document)
+        fonts = self.ex().shell(
+            "cd tex && latexmk -pdf -interaction=nonstopmode -halt-on-error paper.tex >latexmk.log"
+            " 2>&1 || { tail -30 latexmk.log; exit 1; }; pdffonts paper.pdf"
+        )
+        expect((WORKSPACE / "tex" / "paper.pdf").is_file(), "no paper.pdf")
+        expect("Type 3" not in fonts, f"bitmap (Type 3) fonts in the PDF:\n{fonts}")
+        packages = "llncs, T1 fonts, amsmath, cryptocode, algorithmicx, TikZ, cleveref"
+        return f"latexmk -pdf built paper.pdf ({packages}) with no bitmap fonts"
+
+    def pdftotext(self) -> str:
+        text = self.ex().shell("pdftotext tex/paper.pdf - && qpdf --check tex/paper.pdf >/dev/null")
+        expect(MARKER in text and "Theorem 1" in text, f"text: {text[:200]!r}")
+        return "pdftotext found the document's text; qpdf --check passed"
+
+    def pdf_oxide(self) -> str:
+        code = (
+            "import pdf_oxide\n"
+            f"doc = pdf_oxide.PdfDocument({str(WORKSPACE / 'tex' / 'paper.pdf')!r})\n"
+            f"print({MARKER!r} in doc.extract_text(0), pdf_oxide.__version__)"
+        )
+        stdout, _ = self.ex().cell(code)
+        found, version = stdout.split()
+        expect(found == "True", f"output {stdout!r}")
+        return f"pdf_oxide {version} extracted the text"
+
+    def pdf_tools(self) -> str:
+        """The worker's PDF operations (docs/specs/pdf-sources.md), as the executor runs them."""
+        client = self.ex()
+        info = client.pdf("info", "tex/paper.pdf")
+        expect(info["page_count"] == 1 and info["pages"][0]["has_text"], f"info {info}")
+        pages = client.pdf("pages", "tex/paper.pdf", pages="1")
+        lines = [line["text"] for line in pages["pages"][0]["lines"]]
+        expect(any(MARKER in line for line in lines), f"lines {lines[:5]}")
+        hits = client.pdf("search", "tex/paper.pdf", query="lattice")["hits"]
+        expect(len(hits) >= 1, "no search hits")
+        image = client.pdf("render", "tex/paper.pdf", page=1, dpi=100)["image"]
+        expect((WORKSPACE / image["path"]).is_file(), f"no render at {image['path']}")
+        parser = f"{info['parser']['name']} {info['parser']['version']}"
+        size = f"{image['width']}x{image['height']}"
+        return f"{parser}: page facts, line anchors, {len(hits)} search hits and a {size} render"
+
+    def runtime_install(self) -> str:
+        # Neither package is in either image.
+        out = self.ex().shell(
+            "micromamba install -y -q -c conda-forge --override-channels toolz >/dev/null"
+            " && python -m pip install -q --no-deps --no-cache-dir tomli-w"
+            " && python -c 'import toolz, tomli_w; print(toolz.__file__, tomli_w.__file__)'",
+            limit=600,
+        )
+        paths = out.split()
+        expect(len(paths) == 2 and all(path.startswith(PREFIX) for path in paths), f"{out!r}")
+        return "micromamba and pip installed into the Conda prefix"
+
+    def run(self) -> int:
+        for name in planned(self.profile, landlock=self.under_landlock, network=self.network):
+            self.check(name, getattr(self, name.replace("-", "_")))
+        if self.client is not None:
+            self.client.close()
+        return 1 if self.failed else 0
+
+
+def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
+    """The checks for a profile, in order; each is the ``Checks`` method of the same name."""
+    names = ["identity", "filesystem", *(["landlock"] if landlock else []), "record"]
+    names += ["executor", "python-kernel", "tools-on-path", "multiprocessing"]
+    if profile == "crypto-base":
+        names += ["sage-kernel", "sage-interfaces", "fpylll", "g6k", "lattice-estimator"]
+        names += ["latexmk", "pdftotext", "pdf-oxide", "pdf-tools"]
+    if network:
+        names.append("runtime-install")
+    return names
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Check a base profile image from the inside.")
+    parser.add_argument("--profile", required=True, choices=sorted(LANGUAGES))
+    parser.add_argument(
+        "--worker-files",
+        required=True,
+        type=Path,
+        help="a directory with executor.py and pdfhelper.py",
+    )
+    parser.add_argument("--network", action="store_true", help="also install packages at runtime")
+    parser.add_argument("--landlock", action="store_true", help="expect a Landlock ruleset")
+    args = parser.parse_args(argv)
+    return Checks(args.profile, args.worker_files, args.network, args.landlock).run()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: MIT
+# The build context is images/; the tests and checks run against built images, not in them.
+**/__pycache__
+checks
+tests

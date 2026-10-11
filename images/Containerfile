@@ -1,0 +1,177 @@
+# SPDX-License-Identifier: MIT
+#
+# Recipes for the two standard base profiles (D46); docs/IMAGES.md is the contract they follow.
+#   minimal      the thin, permissive image the project could publish
+#   crypto-base  the pinned cryptography environment; it contains GPL tools and is never published
+# Build with images/build.sh (context: images/, target: the profile). Every download is pinned:
+# the Ubuntu image by digest, apt packages by archive snapshot, micromamba by SHA-256, Conda
+# packages by the lockfiles' SHA-256, Python wheels by hash and source trees by commit.
+
+ARG UBUNTU_IMAGE=docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
+ARG UBUNTU_SNAPSHOT=20261010T000000Z
+ARG MICROMAMBA_VERSION=2.9.0-0
+ARG MICROMAMBA_SHA256_AMD64=366cd9cd8be14df1ab8ed50352a82111082a36686b2d389fdb79a92c3fafb3e3
+ARG MICROMAMBA_SHA256_ARM64=9f93b974adcb4d166996af969b6cd371287d1a3e52733704727884d9b74cb7a7
+ARG G6K_COMMIT=c71e084dd003e1ffbfe8c91a7211b0ce9da22245
+# The CPU level G6K is compiled for on each architecture: never the build host's (-march=native).
+ARG G6K_MARCH_AMD64=x86-64-v3
+ARG G6K_MARCH_ARM64=armv8.2-a
+ARG LATTICE_ESTIMATOR_COMMIT=53da5982597709ba0fdf94ea37a84d822310fd84
+
+# micromamba's release binary for the target architecture, checked against its published SHA-256.
+FROM scratch AS micromamba-amd64
+ARG MICROMAMBA_VERSION
+ARG MICROMAMBA_SHA256_AMD64
+ADD --checksum=sha256:${MICROMAMBA_SHA256_AMD64} --chmod=0755 \
+    https://github.com/mamba-org/micromamba-releases/releases/download/${MICROMAMBA_VERSION}/micromamba-linux-64 /micromamba
+
+FROM scratch AS micromamba-arm64
+ARG MICROMAMBA_VERSION
+ARG MICROMAMBA_SHA256_ARM64
+ADD --checksum=sha256:${MICROMAMBA_SHA256_ARM64} --chmod=0755 \
+    https://github.com/mamba-org/micromamba-releases/releases/download/${MICROMAMBA_VERSION}/micromamba-linux-aarch64 /micromamba
+
+FROM micromamba-${TARGETARCH} AS micromamba
+
+# Source trees at pinned commits (git verifies the content against the commit's hash).
+FROM scratch AS g6k-src
+ARG G6K_COMMIT
+ADD https://github.com/fplll/g6k.git#${G6K_COMMIT} /
+
+FROM scratch AS lattice-estimator-src
+ARG LATTICE_ESTIMATOR_COMMIT
+ADD https://github.com/malb/lattice-estimator.git#${LATTICE_ESTIMATOR_COMMIT} /
+
+# A CA bundle for reaching the Ubuntu snapshot service over TLS. Only the bundle is used; the
+# images get ca-certificates from the snapshot like every other Ubuntu package.
+FROM ${UBUNTU_IMAGE} AS bootstrap-ca
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
+
+# What both profiles share: the sandbox account, micromamba and an empty Conda prefix.
+FROM ${UBUNTU_IMAGE} AS base
+ARG UBUNTU_SNAPSHOT
+ARG DEBIAN_FRONTEND=noninteractive
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN --mount=type=bind,from=bootstrap-ca,source=/etc/ssl/certs/ca-certificates.crt,target=/run/bootstrap-ca.crt \
+    apt-get -o Acquire::https::CaInfo=/run/bootstrap-ca.crt -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
+    apt-get -o Acquire::https::CaInfo=/run/bootstrap-ca.crt -o APT::Snapshot="${UBUNTU_SNAPSHOT}" \
+        install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+# OpenShell's VM driver runs workloads as the image's `sandbox` account, or uid 1000 when there is
+# none, with HOME=/sandbox. Ubuntu's own uid 1000 account would shadow it, so it goes.
+RUN userdel ubuntu && rm -rf /home/ubuntu && \
+    groupadd --gid 1000 sandbox && \
+    useradd --uid 1000 --gid 1000 --home-dir /sandbox --no-create-home --shell /bin/bash sandbox && \
+    install -d -o 1000 -g 1000 -m 0755 /sandbox /opt/sandbox-science
+COPY --from=micromamba /micromamba /usr/local/libexec/sandbox-science/micromamba
+COPY --chmod=0755 common/micromamba /usr/local/bin/micromamba
+ENV HOME=/sandbox \
+    USER=sandbox \
+    LANG=C.UTF-8 \
+    MAMBA_ROOT_PREFIX=/opt/sandbox-science \
+    CONDA_PREFIX=/opt/sandbox-science \
+    PATH=/opt/sandbox-science/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WORKDIR /sandbox
+
+# ---------------------------------------------------------------------------------------------
+FROM base AS minimal
+USER 1000:1000
+# micromamba keeps the extracted packages of a lockfile install (hard links into the environment)
+# under pkgs/, which `clean -a` leaves; a copy of the prefix would duplicate them.
+RUN --mount=type=bind,source=minimal/conda-lock.yml,target=/tmp/conda-lock.yml \
+    micromamba install -y -n base -f /tmp/conda-lock.yml && \
+    micromamba clean -a -y && \
+    find /opt/sandbox-science/pkgs -mindepth 1 -delete
+RUN --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
+    python -B /tmp/image_report.py kernels python3
+
+ARG UBUNTU_IMAGE
+ARG UBUNTU_SNAPSHOT
+ARG MICROMAMBA_VERSION
+ARG REVISION=unknown
+ARG VERSION=unknown
+ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
+ARG LICENSES=NOASSERTION
+USER root
+# The build ran with HOME=/sandbox; the image leaves it empty.
+RUN --mount=type=bind,source=minimal/conda-lock.yml,target=/tmp/conda-lock.yml \
+    --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
+    find /sandbox -mindepth 1 -delete && \
+    python -B /tmp/image_report.py record \
+        --profile minimal --policy permissive --revision "${REVISION}" --source-url "${SOURCE_URL}" \
+        --base-image "${UBUNTU_IMAGE}" --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" \
+        --micromamba "${MICROMAMBA_VERSION}" --lockfile /tmp/conda-lock.yml \
+        --expect-licenses "${LICENSES}"
+USER 1000:1000
+LABEL org.opencontainers.image.title="Sandbox Science minimal" \
+      org.opencontainers.image.description="Base profile: Python with ipykernel and jupyter_client, and micromamba for runtime installs" \
+      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="${LICENSES}" \
+      org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
+      io.github.regenscheid.sandbox-science.profile="minimal"
+
+# ---------------------------------------------------------------------------------------------
+FROM base AS crypto-base
+ARG UBUNTU_SNAPSHOT
+ARG DEBIAN_FRONTEND=noninteractive
+RUN --mount=type=bind,source=crypto-base/apt-packages.txt,target=/tmp/apt-packages.txt \
+    apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" update && \
+    grep -v -e '^#' -e '^$' /tmp/apt-packages.txt | \
+        xargs apt-get -o APT::Snapshot="${UBUNTU_SNAPSHOT}" install -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
+USER 1000:1000
+RUN --mount=type=bind,source=crypto-base/conda-lock.yml,target=/tmp/conda-lock.yml \
+    micromamba install -y -n base -f /tmp/conda-lock.yml && \
+    micromamba clean -a -y && \
+    find /opt/sandbox-science/pkgs -mindepth 1 -delete
+# G6K has no conda-forge package; build it with the environment's compilers for a named CPU level.
+ARG TARGETARCH
+ARG G6K_MARCH_AMD64
+ARG G6K_MARCH_ARM64
+RUN --mount=type=bind,from=g6k-src,target=/tmp/g6k-src \
+    --mount=type=bind,source=crypto-base/build-g6k.sh,target=/tmp/build-g6k.sh \
+    cp -r /tmp/g6k-src /tmp/g6k && \
+    G6K_MARCH=$([ "${TARGETARCH}" = arm64 ] && echo "${G6K_MARCH_ARM64}" || echo "${G6K_MARCH_AMD64}") \
+        micromamba run -n base bash /tmp/build-g6k.sh /tmp/g6k && \
+    rm -rf /tmp/g6k
+RUN --mount=type=bind,from=lattice-estimator-src,target=/tmp/lattice-estimator-src \
+    cp -r /tmp/lattice-estimator-src /tmp/lattice-estimator && \
+    python -m pip install --no-deps --no-build-isolation --no-index --no-cache-dir /tmp/lattice-estimator && \
+    rm -rf /tmp/lattice-estimator
+RUN --mount=type=bind,source=crypto-base/requirements.txt,target=/tmp/requirements.txt \
+    python -m pip install --no-deps --only-binary=:all: --require-hashes --no-cache-dir \
+        -r /tmp/requirements.txt
+RUN --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
+    python -B /tmp/image_report.py kernels python3 sagemath
+
+ARG UBUNTU_IMAGE
+ARG MICROMAMBA_VERSION
+ARG G6K_COMMIT
+ARG LATTICE_ESTIMATOR_COMMIT
+ARG REVISION=unknown
+ARG VERSION=unknown
+ARG SOURCE_URL=https://github.com/regenscheid/sandbox-crypto
+ARG LICENSES=NOASSERTION
+USER root
+RUN --mount=type=bind,source=crypto-base/conda-lock.yml,target=/tmp/conda-lock.yml \
+    --mount=type=bind,source=common/image_report.py,target=/tmp/image_report.py \
+    find /sandbox -mindepth 1 -delete && \
+    g6k_march=$([ "${TARGETARCH}" = arm64 ] && echo "${G6K_MARCH_ARM64}" || echo "${G6K_MARCH_AMD64}") && \
+    python -B /tmp/image_report.py record \
+        --profile crypto-base --policy report --revision "${REVISION}" --source-url "${SOURCE_URL}" \
+        --base-image "${UBUNTU_IMAGE}" --ubuntu-snapshot "${UBUNTU_SNAPSHOT}" \
+        --micromamba "${MICROMAMBA_VERSION}" --lockfile /tmp/conda-lock.yml \
+        --source "g6k|${G6K_COMMIT}|GPL-2.0-or-later|https://github.com/fplll/g6k|-march=${g6k_march}" \
+        --source "lattice-estimator|${LATTICE_ESTIMATOR_COMMIT}|LGPL-3.0-or-later|https://github.com/malb/lattice-estimator|" \
+        --expect-licenses "${LICENSES}"
+USER 1000:1000
+LABEL org.opencontainers.image.title="Sandbox Science crypto-base" \
+      org.opencontainers.image.description="Base profile: SageMath, fpylll, PARI, FLINT, G6K, lattice-estimator, TeX and PDF tools. Contains GPL software; never publish this image" \
+      org.opencontainers.image.source="${SOURCE_URL}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.licenses="${LICENSES}" \
+      org.opencontainers.image.base.name="${UBUNTU_IMAGE}" \
+      io.github.regenscheid.sandbox-science.profile="crypto-base"

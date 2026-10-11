@@ -1,0 +1,9 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# micromamba with the image's Conda prefix as its root prefix and active environment, also where
+# the sandbox runtime ignores the image's environment variables (OpenShell's VM driver). Without
+# this, packages would be cached under the home directory, which is the project's workdir.
+: "${MAMBA_ROOT_PREFIX:=/opt/sandbox-science}"
+: "${CONDA_PREFIX:=$MAMBA_ROOT_PREFIX}"
+export MAMBA_ROOT_PREFIX CONDA_PREFIX
+exec /usr/local/libexec/sandbox-science/micromamba "$@"
