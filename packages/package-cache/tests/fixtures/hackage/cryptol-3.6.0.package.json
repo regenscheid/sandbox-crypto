@@ -1,0 +1,1 @@
+{"signatures":[],"signed":{"_type":"Targets","expires":null,"targets":{"<repo>/package/cryptol-3.6.0.tar.gz":{"hashes":{"md5":"68dfcd0ad2add368db54c3d555ae5113","sha256":"cc0a7ef3b20f4543386209b9077c0d9064c22e0db81f30e8ab4cc8f5dc4a8d93"},"length":624186}},"version":0}}
