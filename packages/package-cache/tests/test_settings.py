@@ -7,12 +7,16 @@ from pathlib import Path
 
 import pytest
 
+from sandbox_science.package_cache.adapters.hackage import HackageAdapter
+from sandbox_science.package_cache.adapters.opam import OpamAdapter
 from sandbox_science.package_cache.errors import SettingsError
 from sandbox_science.package_cache.settings import (
     CargoSettings,
     CondaSettings,
     GoSettings,
+    HackageSettings,
     NpmSettings,
+    OpamSettings,
     PypiSettings,
     load_settings,
 )
@@ -70,6 +74,8 @@ def test_the_documented_example_is_valid(tmp_path: Path) -> None:
         proxy="https://proxy.golang.org", sumdb="https://sum.golang.org"
     )
     assert settings.npm == NpmSettings(registry="https://registry.npmjs.org")
+    assert settings.opam == OpamSettings(repository="https://opam.ocaml.org")
+    assert settings.hackage == HackageSettings(repository="https://hackage.haskell.org")
     assert settings.upstreams() == (
         "https://pypi.org/simple",
         "https://files.pythonhosted.org",
@@ -79,18 +85,16 @@ def test_the_documented_example_is_valid(tmp_path: Path) -> None:
         "https://proxy.golang.org",
         "https://sum.golang.org",
         "https://registry.npmjs.org",
+        "https://opam.ocaml.org",
+        "https://hackage.haskell.org",
     )
 
 
 def test_absent_tables_disable_their_ecosystem(tmp_path: Path) -> None:
     settings = load_settings(write(tmp_path, BASE))
-    assert (settings.pypi, settings.conda, settings.cargo, settings.go, settings.npm) == (
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    tables = (settings.pypi, settings.conda, settings.cargo, settings.go, settings.npm)
+    assert tables == (None, None, None, None, None)
+    assert (settings.opam, settings.hackage) == (None, None)
     assert settings.upstreams() == ()
     assert settings.listen == "127.0.0.1:8090"
     assert settings.max_size == 100 * GIB
@@ -119,13 +123,17 @@ def test_explicit_limits_are_kept(tmp_path: Path) -> None:
 
 
 def test_an_empty_table_enables_its_ecosystem_with_the_defaults(tmp_path: Path) -> None:
-    settings = load_settings(write(tmp_path, BASE + "[npm]\n[go]\n"))
+    settings = load_settings(write(tmp_path, BASE + "[npm]\n[go]\n[hackage]\n[opam]\n"))
     assert settings.npm == NpmSettings()
     assert settings.go == GoSettings()
+    assert settings.opam == OpamSettings()
+    assert settings.hackage == HackageSettings()
     assert settings.upstreams() == (
         "https://proxy.golang.org",
         "https://sum.golang.org",
         "https://registry.npmjs.org",
+        "https://opam.ocaml.org",
+        "https://hackage.haskell.org",
     )
 
 
@@ -195,7 +203,27 @@ def test_listen_addresses(tmp_path: Path, listen: str, host: str, port: int) -> 
         pytest.param(BASE + "unknown = 1\n", "unknown", id="unknown-key"),
         pytest.param(BASE + '[pypi]\nmirror = "https://m.test"\n', "mirror", id="unknown-in-table"),
         pytest.param(BASE + 'pypi = "yes"\n', "pypi", id="not-a-table"),
-        pytest.param(BASE + "[opam]\n", "opam", id="unknown-ecosystem"),
+        pytest.param(BASE + "[maven]\n", "maven", id="unknown-ecosystem"),
+        pytest.param(
+            BASE + '[opam]\nrepository = "http://opam.ocaml.org"\n', "https", id="http-opam"
+        ),
+        pytest.param(
+            BASE + '[hackage]\nrepository = "https://h.test/?x"\n', "query", id="hackage-query"
+        ),
+        pytest.param(BASE + '[hackage]\nindex = "https://h.test"\n', "index", id="hackage-key"),
+        pytest.param(
+            BASE + '[opam]\nrepository = "https://opam.ocaml.org/a%2Fb"\n',
+            "percent-escapes",
+            id="opam-escape",
+        ),
+        pytest.param(
+            BASE + '[hackage]\nrepository = "https://h.test/a b"\n', "spaces", id="hackage-space"
+        ),
+        pytest.param(
+            BASE + '[hackage]\nrepository = "https://h.test/~x/p@q"\n',
+            "percent-escapes",
+            id="hackage-at",
+        ),
         pytest.param(BASE + 'max_size = "100Q"\n', "invalid size", id="size-unit"),
         pytest.param(BASE + "max_size = 0\n", "max_size", id="size-zero"),
         pytest.param(BASE + "max_size = 1.5\n", "max_size", id="size-float"),
@@ -254,6 +282,42 @@ def test_listen_addresses(tmp_path: Path, listen: str, host: str, port: int) -> 
 def test_invalid_settings_are_rejected(tmp_path: Path, text: str, message: str) -> None:
     with pytest.raises(SettingsError, match=message):
         load_settings(write(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        "https://opam.ocaml.org",
+        "https://opam.ocaml.org/",
+        "https://OPAM.ocaml.org:8443/mirror/v2",
+        "https://[2001:db8::1]:8443",
+        "https://opam.ocaml.org/a%2Fb",
+        "https://opam.ocaml.org/a%41",
+        "https://opam.ocaml.org/a@b",
+        "https://opam.ocaml.org/a:b",
+        "https://opam.ocaml.org/a,b",
+        "https://opam.ocaml.org/a+b",
+        "https://opam.ocaml.org/.",
+        "https://user@opam.ocaml.org",
+        "http://opam.ocaml.org",
+        "https://opam.ocaml.org?x",
+        "https://opam_ocaml.org",
+    ],
+)
+def test_repositories_the_settings_accept_are_ones_the_adapters_accept(
+    tmp_path: Path, repository: str
+) -> None:
+    # A setting accepted here but refused by the adapter would stop the service at
+    # startup instead of being reported as invalid settings.
+    for table, adapter in (("opam", OpamAdapter), ("hackage", HackageAdapter)):
+        path = write(tmp_path, BASE + f'[{table}]\nrepository = "{repository}"\n')
+        try:
+            settings = load_settings(path)
+        except SettingsError:
+            continue
+        configured = settings.opam if table == "opam" else settings.hackage
+        assert configured is not None
+        adapter(repository=configured.repository)
 
 
 def test_a_missing_file_is_reported(tmp_path: Path) -> None:

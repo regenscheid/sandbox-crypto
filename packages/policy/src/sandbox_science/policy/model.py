@@ -198,6 +198,8 @@ class Packages(StrictModel):
     cargo: RegistryPackages | None = None
     go: RegistryPackages | None = None
     npm: RegistryPackages | None = None
+    opam: RegistryPackages | None = None
+    hackage: RegistryPackages | None = None
     system_packages: Literal["deny"] = "deny"
 
 

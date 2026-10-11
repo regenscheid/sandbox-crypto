@@ -29,6 +29,7 @@ from sandbox_science.policy import (
     HttpRequest,
     Layer,
     LoadedPolicy,
+    Operation,
     PackageOperation,
     PoolCeiling,
     classify_http_request,
@@ -39,6 +40,7 @@ from sandbox_science.policy import (
 )
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
 
+from .archives import MAX_PACKAGES, ArchiveLookup
 from .errors import MiddlewareError, StoreError
 from .events import EventSink
 from .gitproto import GitRequestError, check_upload_pack_request
@@ -246,13 +248,16 @@ class PolicyMiddleware:
         events: EventSink,
         meter: EgressMeter | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        archives: ArchiveLookup | None = None,
     ) -> None:
+        """``archives``, when given, names the opam packages of escalated opam archives."""
         self._store = store
         self._ceiling = ceiling
         self._floor = floor
         self._events = events
         self._meter = meter if meter is not None else EgressMeter()
         self._now = now
+        self._archives = archives
         self._monitor_alerts: dict[tuple[str, str], datetime] = {}
         self._lock = threading.Lock()
 
@@ -340,10 +345,14 @@ class PolicyMiddleware:
                 _check_git_body(facts)
             except GitRequestError as exc:
                 return _deny(GIT_REQUEST_INVALID, str(exc), decision)
-        return self._verdict(facts, loaded, decision)
+        return self._verdict(facts, loaded, decision, operation)
 
     def _verdict(
-        self, facts: HttpRequestFacts, loaded: LoadedPolicy, decision: Decision
+        self,
+        facts: HttpRequestFacts,
+        loaded: LoadedPolicy,
+        decision: Decision,
+        operation: Operation | None = None,
     ) -> Verdict:
         findings: tuple[Finding, ...]
         match decision.action:
@@ -351,7 +360,7 @@ class PolicyMiddleware:
                 return _deny(_LAYER_CODES[decision.layer], decision.reason, decision)
             case Action.ESCALATE:
                 try:
-                    self._record("escalation", facts, loaded, decision)
+                    self._record("escalation", facts, loaded, decision, operation)
                 except Exception:
                     # No permission request exists, so the agent must not wait for an approval.
                     _log.exception("could not record escalation of request %s", facts.request_id)
@@ -361,7 +370,7 @@ class PolicyMiddleware:
                 return _deny(APPROVAL_REQUIRED, decision.reason, decision)
             case Action.ALERT:
                 try:
-                    self._record("alert", facts, loaded, decision)
+                    self._record("alert", facts, loaded, decision, operation)
                 except Exception:
                     # An alert lets a request through only with a recorded finding.
                     _log.exception("could not record alert for request %s", facts.request_id)
@@ -415,7 +424,12 @@ class PolicyMiddleware:
         return tuple(findings)
 
     def _record(
-        self, kind: str, facts: HttpRequestFacts, loaded: LoadedPolicy, decision: Decision
+        self,
+        kind: str,
+        facts: HttpRequestFacts,
+        loaded: LoadedPolicy,
+        decision: Decision,
+        operation: Operation | None = None,
     ) -> None:
         # The store adds the time; the payload keeps the decision and the request.
         payload: dict[str, object] = {
@@ -440,7 +454,30 @@ class PolicyMiddleware:
                 "timeout_seconds": int(decision.escalation.timeout.total_seconds()),
                 "on_timeout": decision.escalation.on_timeout.value,
             }
+        if isinstance(operation, PackageOperation) and operation.digest is not None:
+            payload["opam_archive"] = self._opam_archive(operation.digest)
         self._events.record(kind, payload)
+
+    def _opam_archive(self, digest: str) -> dict[str, object]:
+        """An opam archive's digest and, if the package cache can tell, its packages.
+
+        opam fetches archives by digest, so the request names no package; the
+        cache finds the packages in the opam index it holds. An empty list means
+        that no package in that index lists the digest.
+        """
+        archive: dict[str, object] = {"digest": digest}
+        packages = None
+        if self._archives is not None:
+            try:
+                packages = self._archives.packages(digest)
+            except Exception:
+                # The record matters more than the names: never lose it to the lookup.
+                _log.exception("could not look up the packages of opam archive %s", digest)
+        if packages is not None:
+            archive["packages"] = list(packages[:MAX_PACKAGES])
+            if len(packages) > MAX_PACKAGES:
+                archive["more_packages"] = len(packages) - MAX_PACKAGES
+        return archive
 
 
 def _deny(code: str, reason: str, decision: Decision | None = None) -> Verdict:

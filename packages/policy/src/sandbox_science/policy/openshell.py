@@ -23,7 +23,10 @@ needs beyond OpenShell's baseline paths (pseudo-terminals, shared memory) and
 any paths the deployment's image adds.
 
 Everything the compiler cannot express exactly is reported, and where the
-compiled policy differs from the project policy it is stricter.
+compiled policy differs from the project policy it is stricter. The compiler
+also reports a ``packages.opam`` action that the network rules undo: opam
+downloads an archive from its own URL whenever the package cache does not
+deliver it.
 """
 
 from __future__ import annotations
@@ -42,7 +45,13 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstra
 
 from .ceiling import PoolCeiling
 from .decision import Action
-from .evaluate import DEFAULT_FLOOR, MCP_PROTOCOL_METHODS, registry_reason, reserved_host_reason
+from .evaluate import (
+    DEFAULT_FLOOR,
+    MCP_PROTOCOL_METHODS,
+    evaluate_request,
+    registry_reason,
+    reserved_host_reason,
+)
 from .floor import HardFloor
 from .hosts import HostKind, floor_reason, is_public, normalize_host, parse_ip
 from .loader import LoadedPolicy, parse_model, read_limited
@@ -58,6 +67,7 @@ from .model import (
     Port,
     StrictModel,
 )
+from .operations import HttpRequest
 
 CONTROL_PLANE_PORTS: Final = frozenset({2379, 2380, 6443, 10250, 10255})
 """Ports OpenShell blocks on exact-host endpoints (etcd, Kubernetes API, kubelet)."""
@@ -82,6 +92,19 @@ refuses every open."""
 
 MAX_FILESYSTEM_PATHS: Final = 256
 """OpenShell's limit on ``read_only`` plus ``read_write`` paths, its baseline included."""
+
+OPAM_SOURCES: Final = (
+    "https://github.com/ocaml/ocamlfind/archive/refs/tags/findlib-1.9.8.tar.gz",
+    "https://github.com/jasmin-lang/jasmin/releases/download/v2026.09.0/"
+    "jasmin-compiler-v2026.09.0.tar.bz2",
+    "https://raw.githubusercontent.com/ocaml/ocaml/8c17fd444391392c5f9801241374d749c080c1a8/"
+    "ocaml-variants.install",
+    "https://gitlab.com/dannywillems/ocaml-bls12-381/-/archive/0.4.3/ocaml-bls12-381-0.4.3.tar.bz2",
+    "https://ocaml.janestreet.com/ocaml-core/v0.16/files/accessor_base-v0.16.0.tar.gz",
+)
+"""Archive URLs from opam-repository's opam files, which opam downloads itself when the
+package cache does not deliver the archive: GitHub archives, releases and raw files (87% of
+the url sections in October 2026), GitLab, and another public host."""
 
 _PLACEHOLDER_PROVIDER_RE: Final = re.compile(
     r"\$\{provider:([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\."
@@ -796,6 +819,9 @@ def compile_sandbox(
             "request is recorded; the agent retries once the request is approved",
         )
     )
+    opam = _opam_fallback(policy, ceiling, floor)
+    if opam is not None:
+        findings.append(opam)
     findings.append(
         Finding(
             Severity.WARNING,
@@ -887,6 +913,39 @@ def _bound_hosts(
                 continue
             bound[host] = provider.name
     return bound
+
+
+def _opam_fallback(policy: LoadedPolicy, ceiling: PoolCeiling, floor: HardFloor) -> Finding | None:
+    """Report a ``packages.opam`` action that the network rules undo.
+
+    opam downloads an archive from the package's own URL whenever the package
+    cache does not deliver it: when the cache lacks it (404), and when the
+    middleware refuses or escalates it (403). The action therefore decides only
+    the cache's route, and holds only if the rules stop those downloads too.
+    """
+    project = policy.policy
+    configured = project.packages.opam
+    action = project.defaults.action if configured is None else configured.action
+    if action is Action.ALLOW:
+        return None
+    setting = (
+        f"packages.opam is {action}"
+        if configured is not None
+        else f"packages.opam is unset, so opam archives take defaults.action ({action})"
+    )
+    for url in OPAM_SOURCES:
+        decision = evaluate_request(HttpRequest("GET", url), policy, ceiling=ceiling, floor=floor)
+        if decision.action in (Action.ALLOW, Action.ALERT):
+            allowed_by = f"rule {decision.rule}" if decision.rule else "defaults.action"
+            return Finding(
+                Severity.WARNING,
+                "packages.opam",
+                f"{setting}, which does not hold: it decides only the archives opam fetches "
+                "through the package cache. When the cache refuses or lacks an archive, opam "
+                f"downloads it from the package's own URL instead, and {allowed_by} allows "
+                f"that (GET {url}). Deny or escalate those downloads too, or allow opam",
+            )
+    return None
 
 
 def compile_mcp_proxy(

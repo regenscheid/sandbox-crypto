@@ -76,7 +76,7 @@ class Tls(Protocol):
 
 
 ClientFactory = Callable[..., UpstreamClient]
-Algorithm = Literal["sha256", "sha512"]
+Algorithm = Literal["md5", "sha256", "sha512"]
 
 
 @pytest.fixture
@@ -407,7 +407,7 @@ async def test_only_the_adapters_headers_are_sent(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("algorithm", ["sha256", "sha512"])
+@pytest.mark.parametrize("algorithm", ["md5", "sha256", "sha512"])
 async def test_digests_are_verified(
     core_upstream: Upstream, make_client: ClientFactory, algorithm: Algorithm
 ) -> None:
@@ -421,7 +421,7 @@ async def test_digests_are_verified(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("algorithm", ["sha256", "sha512"])
+@pytest.mark.parametrize("algorithm", ["md5", "sha256", "sha512"])
 async def test_a_digest_mismatch_leaves_nothing_behind(
     core_upstream: Upstream, make_client: ClientFactory, temp_dir: Path, algorithm: Algorithm
 ) -> None:
