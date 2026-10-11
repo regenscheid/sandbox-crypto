@@ -141,7 +141,7 @@ The compiler in `sandbox_science.policy.openshell` (D69, proposed) produces Open
 
 - **Research sandboxes.** OpenShell's own proxy carries their HTTP and git traffic. It terminates TLS, normalizes requests, checks addresses, injects provider credentials and logs.
   - **Admission.** The compiled policy admits the destinations the project could reach. If any wildcard rule or a non-deny `defaults.action` needs it, a host-less endpoint admits public address ranges; otherwise exact endpoints admit the hosts the rules name.
-  - **The policy middleware** is attached to every host (`**`, `fail_closed`). OpenShell calls it for each admitted request, after its network rules and before injecting credentials. The middleware applies this library to the request, so every rule in this file is enforced exactly, including requests to hosts that providers admit.
+  - **The policy middleware** is attached to every host (`**`, `fail_closed`). OpenShell calls it for each admitted request, after its network rules and before injecting credentials. The middleware applies this library to the request, so every rule in this file is enforced exactly, including requests to hosts that providers admit. [Policy middleware](POLICY-MIDDLEWARE.md) describes the service.
   - **Escalations** are denied with the reason code `approval_required` and recorded as pending requests; the agent retries after approval.
   - **Platform services**, the package mirror and (with worker access) the MCP proxy, are raw TCP endpoints outside the middleware. They must have private addresses, so that the host-less endpoint never admits them.
 - **The MCP proxy's sandbox** gets one inspected `protocol: mcp` endpoint per declared server, in `enforce` mode, with the server URL's path as an exact selector.
@@ -157,7 +157,7 @@ The middleware path has limits to verify on babbage:
 - **Body size.** A request body larger than the middleware's registered `max_payload_bytes` (at most 4 MiB) is blocked, so larger uploads fail.
 - **Names, not addresses.** The middleware sees host names, not resolved addresses. The host-less endpoint's `allowed_ips` keep wildcard rules on public addresses. Exact endpoints let a named host resolve to a private address, as the library's exact-host rule does.
 - **LAN names.** OpenShell requires overlapping endpoints to agree on `allowed_ips`, so a non-public host name cannot be admitted beside the host-less endpoint. Name the address in the rule instead.
-- **Still to check:** how WebSocket upgrades and DNS resolution behave for the host-less endpoint.
+- **WebSockets.** The middleware denies every WebSocket upgrade at preflight, since the library does not support upgrades. Still to check: that upgrades reach the preflight, and how DNS resolution behaves for the host-less endpoint.
 
 | Policy element | Enforced by |
 | --- | --- |
@@ -178,7 +178,7 @@ Apply each compiled document so that it replaces the sandbox's network sections 
 Five adversarial review rounds of the library (2026-10-10, pinned by `test_review_regressions.py`) left these for the components around it:
 
 - Paths are compared case-sensitively, so a path `deny` can be bypassed on a server that ignores case. Prefer narrow allows to path denies.
-- An allowed git fetch sends a request body to the git host. The middleware receives the body, so it should check that upload-pack bodies are pkt-line requests, especially under rules that allow fetches from many hosts.
+- An allowed git fetch sends a request body to the git host. The policy middleware accepts only a well-formed upload-pack request (git's keywords, object IDs and bounded values), which stops arbitrary payloads but not volume: `have` object IDs and values such as `ref-prefix` are unchecked against any repository and can carry most of a 4 MiB body. Name the hosts in fetch rules; a host the agent cannot read back from receives such data harmlessly.
 - MCP tools that fetch URLs take the URL as an argument, which `max_url_bytes` does not see. The MCP proxy should bound argument sizes.
 - The policy middleware sees host names only, so address checks for traffic it decides rest on OpenShell's admission endpoints (see above).
 - The MCP host floor matches the declared host, so another name for a server declared by name (an alias, or the same app under another domain) is not recognized. MCP credentials stay in the MCP proxy, so such a request carries none, and writes still escalate as generic `http`. The MCP proxy must verify the upstream TLS certificate against the declared host.
@@ -187,7 +187,7 @@ Five adversarial review rounds of the library (2026-10-10, pinned by `test_revie
 
 ## Open items
 
-- Compiling to OpenShell v0.1.3: the facts above come from the [OpenShell policy investigation](../.agents/docs/agent-reports/openshell-policy-v0.1.3.md); the compiler itself is not written yet.
+- Compiling to OpenShell v0.1.3: the facts above come from the [OpenShell policy investigation](../.agents/docs/agent-reports/openshell-policy-v0.1.3.md). The compiled policies and the middleware path still need validating on a real gateway (babbage).
 - MCP tool-name patterns depend on the actual tool names the server exposes per revision; pin the server revision in the policy.
 - How GUI edits and file edits of the policy merge (proposed: the file is the source of truth, the GUI edits it, every change is a revision). Widening the policy is a re-authentication action (D54).
 - Data-class limits in the pool ceiling (D50) are not yet modeled.

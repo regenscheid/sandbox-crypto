@@ -1,0 +1,1410 @@
+{
+  "about": "git upload-pack request bodies for test_gitproto.py. 'captured' bodies were recorded byte for byte (after removing chunked transfer framing, before gzip decoding) from git 2.53.0 (libcurl 8.18.0, zlib 1.3.1) cloning and fetching local test repositories through git http-backend 2.53.0 on 127.0.0.1, 2026-10-10. Session IDs had their hostname hash replaced by H00000000 (same length). 'synthesized' bodies follow other clients' source code and were accepted by git's upload-pack.",
+  "fixtures": [
+    {
+      "file": "clone-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "clone-v1-1.bin",
+      "origin": "captured",
+      "command": "git clone (protocol.version=1)",
+      "content_encoding": null,
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "clone-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "clone-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "clone-v2-progress-1.bin",
+      "origin": "captured",
+      "command": "git clone --progress (no no-progress argument)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "clone-v2-progress-2.bin",
+      "origin": "captured",
+      "command": "git clone --progress (no no-progress argument)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "clone-v0-progress-1.bin",
+      "origin": "captured",
+      "command": "git clone --progress (no no-progress capability)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "clone-v2-mirror-1.bin",
+      "origin": "captured",
+      "command": "git clone --mirror",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "clone-v2-mirror-2.bin",
+      "origin": "captured",
+      "command": "git clone --mirror",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "ls-remote-v2-1.bin",
+      "origin": "captured",
+      "command": "git ls-remote",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "ls-remote-v2-heads-1.bin",
+      "origin": "captured",
+      "command": "git ls-remote --heads",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "ls-remote-v2-pattern-1.bin",
+      "origin": "captured",
+      "command": "git ls-remote URL refs/tags/v1.0 'feature-*'",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "ls-remote-v2-server-option-1.bin",
+      "origin": "captured",
+      "command": "git ls-remote -o trace=1 -o 'with space=yes'",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v0-1.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v0-2.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v0-3.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=0)",
+      "content_encoding": "gzip",
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v0-4.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=0)",
+      "content_encoding": "gzip",
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v0-5.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=0)",
+      "content_encoding": "gzip",
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v0-6.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=0)",
+      "content_encoding": "gzip",
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v1-1.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=1)",
+      "content_encoding": null,
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v1-2.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=1)",
+      "content_encoding": null,
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v1-3.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=1)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v1-4.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=1)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v1-5.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=1)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v1-6.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=1)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v2-3.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v2-4.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v2-5.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-haves-v2-6.bin",
+      "origin": "captured",
+      "command": "git fetch with 300 local commits the server lacks: several negotiation rounds; bodies over 1024 bytes are gzipped (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-tags-v0-1.bin",
+      "origin": "captured",
+      "command": "git fetch after new annotated tags (include-tag) (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-tags-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch after new annotated tags (include-tag) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-tags-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch after new annotated tags (include-tag) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-clone-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --depth 1 (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-clone-v0-2.bin",
+      "origin": "captured",
+      "command": "git clone --depth 1 (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-deepen-relative-v0-1.bin",
+      "origin": "captured",
+      "command": "git fetch --deepen=2 in a shallow clone (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-deepen-relative-v0-2.bin",
+      "origin": "captured",
+      "command": "git fetch --deepen=2 in a shallow clone (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-deepen-relative-v0-3.bin",
+      "origin": "captured",
+      "command": "git fetch --deepen=2 in a shallow clone (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-depth-v0-1.bin",
+      "origin": "captured",
+      "command": "git fetch --depth=5 in a shallow clone (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-depth-v0-2.bin",
+      "origin": "captured",
+      "command": "git fetch --depth=5 in a shallow clone (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-unshallow-v0-1.bin",
+      "origin": "captured",
+      "command": "git fetch --unshallow (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-unshallow-v0-2.bin",
+      "origin": "captured",
+      "command": "git fetch --unshallow (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-unshallow-v0-3.bin",
+      "origin": "captured",
+      "command": "git fetch --unshallow (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-since-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-since=2023-11-14T22:30:00Z (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-since-v0-2.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-since=2023-11-14T22:30:00Z (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-exclude-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-exclude=v1.0 --shallow-exclude=feature-a (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-exclude-v0-2.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-exclude=v1.0 --shallow-exclude=feature-a (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-clone-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --depth 1 (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-clone-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --depth 1 (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-deepen-relative-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch --deepen=2 in a shallow clone (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-deepen-relative-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch --deepen=2 in a shallow clone (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-deepen-relative-v2-3.bin",
+      "origin": "captured",
+      "command": "git fetch --deepen=2 in a shallow clone (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-deepen-relative-v2-4.bin",
+      "origin": "captured",
+      "command": "git fetch --deepen=2 in a shallow clone (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-depth-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch --depth=5 in a shallow clone (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-depth-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch --depth=5 in a shallow clone (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-unshallow-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch --unshallow (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-unshallow-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch --unshallow (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-unshallow-v2-3.bin",
+      "origin": "captured",
+      "command": "git fetch --unshallow (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-unshallow-v2-4.bin",
+      "origin": "captured",
+      "command": "git fetch --unshallow (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-unshallow-v2-5.bin",
+      "origin": "captured",
+      "command": "git fetch --unshallow (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-since-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-since=2023-11-14T22:30:00Z (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-since-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-since=2023-11-14T22:30:00Z (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-exclude-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-exclude=v1.0 --shallow-exclude=feature-a (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-exclude-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-exclude=v1.0 --shallow-exclude=feature-a (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-blob-none-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none (and the checkout's lazy fetch) (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-blob-none-v0-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none (and the checkout's lazy fetch) (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-blob-limit-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:limit=1k (sent expanded as 1024) (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-tree-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=tree:0 (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-combine-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none --filter=tree:3 (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-object-type-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=object:type=commit (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-blob-none-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none (and the checkout's lazy fetch) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-blob-none-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none (and the checkout's lazy fetch) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-blob-none-v2-3.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none (and the checkout's lazy fetch) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-blob-limit-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:limit=1k (sent expanded as 1024) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-blob-limit-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:limit=1k (sent expanded as 1024) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-tree-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=tree:0 (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-tree-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=tree:0 (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-combine-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none --filter=tree:3 (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-combine-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none --filter=tree:3 (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-object-type-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=object:type=commit (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "partial-object-type-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=object:type=commit (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-clone-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone of a repository created with --object-format=sha256 (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-clone-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone of a repository created with --object-format=sha256 (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-clone-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone of a repository created with --object-format=sha256 (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-fetch-haves-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch with haves from a SHA-256 repository (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-fetch-haves-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch with haves from a SHA-256 repository (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-fetch-haves-v2-3.bin",
+      "origin": "captured",
+      "command": "git fetch with haves from a SHA-256 repository (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-fetch-haves-v2-4.bin",
+      "origin": "captured",
+      "command": "git fetch with haves from a SHA-256 repository (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-fetch-haves-v2-5.bin",
+      "origin": "captured",
+      "command": "git fetch with haves from a SHA-256 repository (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-fetch-haves-v2-6.bin",
+      "origin": "captured",
+      "command": "git fetch with haves from a SHA-256 repository (protocol.version=2)",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-shallow-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --depth 2 of a SHA-256 repository (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-shallow-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --depth 2 of a SHA-256 repository (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-partial-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none of a SHA-256 repository (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-partial-v0-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:none of a SHA-256 repository (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sha256-ls-remote-v2-1.bin",
+      "origin": "captured",
+      "command": "git ls-remote of a SHA-256 repository (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v0-clone-probe-1.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=65520 clone: probe body 0000, then a chunked request",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v0-clone-probe-2.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=65520 clone: probe body 0000, then a chunked request",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "chunked",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v2-fetch-probe-1.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=70000 fetch with haves: probe body 0000 (no Git-Protocol header), then a chunked request",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v2-fetch-probe-2.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=70000 fetch with haves: probe body 0000 (no Git-Protocol header), then a chunked request",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v2-fetch-probe-3.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=70000 fetch with haves: probe body 0000 (no Git-Protocol header), then a chunked request",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v2-fetch-probe-4.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=70000 fetch with haves: probe body 0000 (no Git-Protocol header), then a chunked request",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v2-fetch-probe-5.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=70000 fetch with haves: probe body 0000 (no Git-Protocol header), then a chunked request",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v2-fetch-probe-6.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=70000 fetch with haves: probe body 0000 (no Git-Protocol header), then a chunked request",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "chunked",
+      "expect": "accept"
+    },
+    {
+      "file": "large-v2-fetch-probe-7.bin",
+      "origin": "captured",
+      "command": "git -c http.postBuffer=70000 fetch with haves: probe body 0000 (no Git-Protocol header), then a chunked request",
+      "content_encoding": "gzip",
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "session-id-v0-1.bin",
+      "origin": "captured",
+      "command": "git -c transfer.advertiseSID=true clone (server advertises session-id) (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "session-id-v2-1.bin",
+      "origin": "captured",
+      "command": "git -c transfer.advertiseSID=true clone (server advertises session-id) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "session-id-v2-2.bin",
+      "origin": "captured",
+      "command": "git -c transfer.advertiseSID=true clone (server advertises session-id) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "server-option-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch -o trace=1 -o 'x y' origin main",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "server-option-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch -o trace=1 -o 'x y' origin main",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "ref-in-want-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone from a server with uploadpack.allowRefInWant (want-ref)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "ref-in-want-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone from a server with uploadpack.allowRefInWant (want-ref)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "ref-in-want-fetch-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch origin feature-a:refs/remotes/origin/fa",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "refspec-utf8-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch origin fünf 'dir/naïve-ŝ:...' 'refs/heads/feature-*:...' v1.0",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "fetch-by-oid-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch origin <object id>",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sideband-all-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone from a server with uploadpack.allowSidebandAll",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "sideband-all-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone from a server with uploadpack.allowSidebandAll",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "packfile-uris-v2-1.bin",
+      "origin": "captured",
+      "command": "git -c fetch.uriProtocols=http,https clone from a server with uploadpack.blobPackfileUri",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "packfile-uris-v2-2.bin",
+      "origin": "captured",
+      "command": "git -c fetch.uriProtocols=http,https clone from a server with uploadpack.blobPackfileUri",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "bundle-uri-v2-1.bin",
+      "origin": "captured",
+      "command": "git -c transfer.bundleURI=true clone from a server advertising bundle-uri",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "bundle-uri-v2-2.bin",
+      "origin": "captured",
+      "command": "git -c transfer.bundleURI=true clone from a server advertising bundle-uri",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "bundle-uri-v2-3.bin",
+      "origin": "captured",
+      "command": "git -c transfer.bundleURI=true clone from a server advertising bundle-uri",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "promisor-remote-v2-1.bin",
+      "origin": "captured",
+      "command": "git -c promisor.acceptFromServer=All clone --filter=blob:none from a server advertising a promisor remote",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "promisor-remote-v2-2.bin",
+      "origin": "captured",
+      "command": "git -c promisor.acceptFromServer=All clone --filter=blob:none from a server advertising a promisor remote",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "promisor-remote-v2-3.bin",
+      "origin": "captured",
+      "command": "git -c promisor.acceptFromServer=All clone --filter=blob:none from a server advertising a promisor remote",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "push-negotiate-v2-1.bin",
+      "origin": "captured",
+      "command": "git -c push.negotiate=true push (upload-pack fetch with wait-for-done)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "negotiate-only-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch --negotiate-only --negotiation-tip=pushme",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-since-v1-1.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-since=2023-11-14T22:30:00Z (protocol.version=1)",
+      "content_encoding": null,
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "shallow-since-v1-2.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-since=2023-11-14T22:30:00Z (protocol.version=1)",
+      "content_encoding": null,
+      "git_protocol": "version=1",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "refetch-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch --refetch",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "refetch-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch --refetch",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-sparse-combine-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:limit=1m --filter=sparse:oid=main:main/file1.txt --filter=tree:1k (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-user-agent-v0-1.bin",
+      "origin": "captured",
+      "command": "GIT_USER_AGENT='my agent/1.0 (tést)' git clone (sanitized agent) (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-shallow-exclude-utf8-v0-1.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-exclude=fünf (protocol.version=0)",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "reject",
+      "note": "remote-curl.c passes the remote helper's C-quoted option value through, so git sends deepen-not \"f\\303\\274nf\"; git's upload-pack also rejects it as not a ref"
+    },
+    {
+      "file": "extra-sparse-combine-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:limit=1m --filter=sparse:oid=main:main/file1.txt --filter=tree:1k (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-sparse-combine-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=blob:limit=1m --filter=sparse:oid=main:main/file1.txt --filter=tree:1k (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-user-agent-v2-1.bin",
+      "origin": "captured",
+      "command": "GIT_USER_AGENT='my agent/1.0 (tést)' git clone (sanitized agent) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-user-agent-v2-2.bin",
+      "origin": "captured",
+      "command": "GIT_USER_AGENT='my agent/1.0 (tést)' git clone (sanitized agent) (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-shallow-exclude-utf8-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-exclude=fünf (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-shallow-exclude-utf8-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --shallow-exclude=fünf (protocol.version=2)",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-empty-server-option-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch -o '' origin main",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-depth-by-oid-v2-1.bin",
+      "origin": "captured",
+      "command": "git fetch --depth=1 URL <object id>",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-depth-by-oid-v2-2.bin",
+      "origin": "captured",
+      "command": "git fetch --depth=1 URL <object id>",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-sparse-oid-only-v2-1.bin",
+      "origin": "captured",
+      "command": "git clone --filter=sparse:oid=<blob id>",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "extra-sparse-oid-only-v2-2.bin",
+      "origin": "captured",
+      "command": "git clone --filter=sparse:oid=<blob id>",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-libgit2-v0-clone.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from smart_pkt.c; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-libgit2-v0-negotiation-round.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from smart_protocol.c: flush every 20 haves; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-libgit2-v0-shallow.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from smart_pkt.c git_pkt_buffer_wants with depth; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-libgit2-v0-no-capabilities.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from smart_pkt.c buffer_want_with_caps with no common capabilities; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-dulwich-v0-fetch.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from client.py _handle_upload_pack_head; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-dulwich-v2-fetch.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from client.py fetch_pack, build_fetch_request_v2; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-dulwich-v2-ls-refs.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from client.py build_ls_refs_request_v2; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-go-git-v2-fetch.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from packp/fetch.go FetchArgs.Encode, command.go CommandRequest.Encode; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-go-git-v0-shallow-since.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from packp/ulreq_encode.go UploadRequest.Encode; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": null,
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-git-object-info.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from fetch-object-info.c send_object_info_request; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    },
+    {
+      "file": "synthesized-v2-empty-request.bin",
+      "origin": "synthesized",
+      "command": "format transcribed from gitprotocol-v2 empty-request; accepted by git 2.53 upload-pack",
+      "content_encoding": null,
+      "git_protocol": "version=2",
+      "transfer": "content-length",
+      "expect": "accept"
+    }
+  ]
+}
