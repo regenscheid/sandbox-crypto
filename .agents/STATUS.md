@@ -6,6 +6,8 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **An image for the MCP proxy** ([lab 15](docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md)). The `mcp-proxy` image runs the proxy as its sandbox's command, through a launcher that waits for its settings and restarts it. In OpenShell, the providers' placeholders reached it, and it came back after the sandbox stopped and started; the port forward has to be started again.
+- **One policy store.** The middleware, the worker and the MCP proxy now share one store module in the policy library, and the worker no longer depends on the middleware package.
 - **Admission ahead of use** (D69). The agent can name the sites its code will contact before running it (`admit_hosts`), and the worker admits the allowed ones in one policy reload, so the first connection need not fail and no transfer is cut. In [lab 14](docs/agent-reports/babbage-openshell-lab-14-2026-10-11.md), a host named this way was reachable on the first connection, and clients limited to projects held against a real gateway.
 - **Per-project worker credentials** (D78, proposed). Besides the pool's own token, the worker accepts client tokens that act only for the projects the settings list.
   - For such a client, other projects' executions, artifacts and environments do not exist. It can use only environments the worker created for its projects, under policy revisions an operator granted to them.
@@ -64,14 +66,15 @@ Updated: 2026-10-11.
 
 ## Next
 
-- M2: project and session state (W3), shared data across a project's environments, and the orchestrator closing sessions and creating environments itself.
-- The MCP proxy in its OpenShell sandbox (lab), the connector auth service for crypto-research-mcp, and grants in the proxy (D76).
+- M2 (W3): serialize package changes in a shared environment (the Conda provisioning spec), and the read-only-rootfs layout with capture and rebuild (D48). Shared data across a project's environments waits on the user's decision.
+- MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
+- Worker: environment IDs per project, and limits per client.
 
 ## Blockers and open questions
 
 Decisions to confirm, each proposed with a recommendation in its row:
 - D68 (policy evaluation details), the details of D69 (including how admission on demand works, after lab 10) and D70, and PSF-2.0 and MIT-0 in tier 1.
-- D72 (harness components), D73 (the worker creates sandboxes), D74 (event store), D75 (MCP proxy on its own JSON-RPC layer), D76 (permission requests), D77 (image contract) and D78 (per-project worker credentials).
+- D72 (harness components), D73 (the worker creates sandboxes), D74 (event store), D75 (MCP proxy on its own JSON-RPC layer), D76 (permission requests), D77 (image contract) and D78 (per-project worker credentials, with tokens named by their hashes, policy revisions granted per project, and environment IDs that stay with their project).
 
 Questions with a recommendation, waiting for the user:
 - **Shared data across environments.** OpenShell VMs share no filesystem, so a workbook in its own environment cannot see the project's `shared/` area (W3). Recommended: the worker keeps the project's shared area and copies changes between environments before and after each call, with a conflict copy when two environments change the same file. The alternative is explicit transfer only.
