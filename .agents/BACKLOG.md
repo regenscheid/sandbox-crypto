@@ -92,7 +92,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W0: behavior specification and harness foundation
 
-- [ ] Behavior specs with acceptance fixtures: Conda provisioning, research artifacts and automatic review approved by the user (2026-10-11); tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, and PDF sources to review with the user; living documents and the ledger, board and frontier to specify
+- [ ] Behavior specs with acceptance fixtures: Conda provisioning, research artifacts and automatic review approved by the user (2026-10-11); tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, PDF sources, living documents ([drafted](../docs/specs/living-documents.md)) and the project ledger, board and frontier ([drafted](../docs/specs/ledger.md)) to review with the user
 - [x] Harness building-block decision with licenses recorded: D72, proposed, to confirm with the user
 
 ## W1: shared references and one worker adapter
@@ -117,9 +117,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] GUI stack (D80, confirmed by the user): Svelte 5 with TypeScript built by Vite (`web/workspace`), an aiohttp server (`packages/workspace`), markdown-it and KaTeX in the browser
 - [x] First slice ([workspace](../docs/WORKSPACE.md)): a read-only API v0 and views of projects, their sessions and environments, and each session's runs (messages, tool calls with arguments and results); Jupyter-like login, origin and host checks, a strict content policy; one Markdown component for all text; a `web` CI job and the npm lockfile check (licenses, registry, integrity, install scripts)
 - [x] The harness keeps each run's record with `--state-dir`, the same that `--transcript` writes
-- [ ] Living documents (D23, D65): parsing on the server with markdown-it-py and mdit-py-plugins, passing the shared math cases (`web/workspace/src/lib/dollarmath.fixtures.json`), with the 200-line limit on `$$` blocks added to the plugin's block rule; block and math IDs; revision-checked edits; comments and anchors
+- [ ] Living documents (D23, D65; [spec drafted](../docs/specs/living-documents.md)): parsing on the server with markdown-it-py and mdit-py-plugins, passing the shared math cases (`web/workspace/src/lib/dollarmath.fixtures.json`), with the 200-line limit on `$$` blocks added to the plugin's block rule; block and math IDs; revision-checked edits; comments and anchors
 - [ ] Tables: markdown-it 15 and markdown-it-py 4.2 split a table differently when rare Unicode whitespace starts its rows (4 of 120,000 random texts); pin both parsers' versions and check again when the server parses Markdown
-- [ ] Ledger and board (D24), which need a spec, and review findings (the consistency review spec)
+- [ ] Ledger and board (D24; [spec drafted](../docs/specs/ledger.md)), and review findings (the consistency review spec)
 - [ ] Approvals in the GUI, with re-authentication for high-risk ones (D54); policy revisions from the GUI
 - [ ] Previews of rich artifacts (HTML, SVG, notebook output, PDFs) on a separate origin in sandboxed frames (D54); the PDF viewer
 - [ ] Live updates while a run is in progress; the environments' live state from the worker
