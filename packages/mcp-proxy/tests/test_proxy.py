@@ -686,6 +686,21 @@ def _response(request_id: object, **fields: object) -> bytes:
     return json.dumps({"jsonrpc": "2.0", "id": request_id, **fields}).encode()
 
 
+FENCE_REFUSAL = json.dumps(
+    {
+        "error": "policy_denied",
+        "policy": "mcp-lab-echo",
+        "rule": "POST /mcp",
+        "detail": "MCP tool call has no matching allow rule; ask the policy owner to review "
+        "rules and tool selectors",
+        "layer": "l7",
+        "protocol": "rest",
+        "method": "POST",
+        "path": "/mcp",
+        "next_steps": [],
+    }
+).encode()
+
 MALFORMED: dict[str, tuple[Callable[[object], bytes], dict[str, Any], str]] = {
     "not json": (lambda _: b"{oops", {}, "upstream_error"),
     "another id": (lambda _: _response(999_999, result={}), {}, "upstream_error"),
@@ -723,6 +738,14 @@ MALFORMED: dict[str, tuple[Callable[[object], bytes], dict[str, Any], str]] = {
     ),
     "a server error": (lambda _: b"", {"status": 500}, "upstream_error"),
     "unauthorized": (lambda _: b"", {"status": 401}, "upstream_unauthorized"),
+    # OpenShell's refusal at the proxy sandbox's fence, as lab 13 saw it.
+    "the sandbox's fence": (lambda _: FENCE_REFUSAL, {"status": 403}, "fence_denied"),
+    "a server's own 403": (lambda _: b'{"error": "forbidden"}', {"status": 403}, "upstream_error"),
+    "a 403 in text": (
+        lambda _: FENCE_REFUSAL,
+        {"status": 403, "content_type": "text/plain"},
+        "upstream_error",
+    ),
     "a redirect": (
         lambda _: b"",
         {"status": 307, "headers": {"Location": "/mcp"}},
