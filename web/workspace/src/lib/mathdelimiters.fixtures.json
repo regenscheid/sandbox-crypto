@@ -1,0 +1,33 @@
+{
+  "about": "Math spans for LaTeX's own delimiters (mathdelimiters.ts): each case's math tokens in document order, as [type, content, markup, close] (a dollar token closes with its markup), with the parser's dollar math rules alongside (dollarmath.fixtures.json). \\(...\\) is inline math, \\[...\\] and the display environments are displayed math, as dollar math's tokens. A parser on the server, or a conversion of saved Markdown to the dollar form, must give the same spans. The last case comes from the tests of cscience-crypto, contributed under the MIT License by its author.",
+  "cases": [
+    {"name": "inline", "markdown": "Let \\(x^2\\) be.", "math": [["math_inline", "x^2", "\\(", "\\)"]]},
+    {"name": "inline alone on its line", "markdown": "\\(x\\)\n\n\\(a\\) and \\(b\\)", "math": [["math_inline", "x", "\\(", "\\)"], ["math_inline", "a", "\\(", "\\)"], ["math_inline", "b", "\\(", "\\)"]]},
+    {"name": "inline with spaces inside","markdown": "Let \\( x^2 \\) be.", "math": [["math_inline", " x^2 ", "\\(", "\\)"]]},
+    {"name": "displayed within a paragraph", "markdown": "so \\[x = y\\] holds", "math": [["math_inline_double", "x = y", "\\[", "\\]"]]},
+    {"name": "displayed block", "markdown": "\\[\nx = y\n\\]", "math": [["math_block", "\nx = y\n", "\\[", "\\]"]]},
+    {"name": "displayed block on one line", "markdown": "\\[ x = y \\]", "math": [["math_block", " x = y ", "\\[", "\\]"]]},
+    {"name": "a block after a line of a paragraph", "markdown": "Text:\n\\[\nx\n\\]\nafter", "math": [["math_block", "\nx\n", "\\[", "\\]"]]},
+    {"name": "text after a closing delimiter keeps the formula in its paragraph", "markdown": "\\[\nx\n\\]. Then\n\\[\ny\n\\]", "math": [["math_inline_double", "\nx\n", "\\[", "\\]"], ["math_block", "\ny\n", "\\[", "\\]"]]},
+    {"name": "lines that would start a list or a heading stay in the block", "markdown": "We have\n\\[\na\n+ b\n=\nc\n\\]", "math": [["math_block", "\na\n+ b\n=\nc\n", "\\[", "\\]"]]},
+    {"name": "a blank line ends the search", "markdown": "\\[\na\n\nb\n\\]", "math": []},
+    {"name": "escaped delimiters", "markdown": "\\\\[x\\\\] and \\\\(y\\)", "math": []},
+    {"name": "only whitespace is not math", "markdown": "\\( \\) and \\[ \\]", "math": []},
+    {"name": "a display environment as a block", "markdown": "Result:\n\\begin{align}\na &= b \\\\\nc &= d\n\\end{align}\ndone", "math": [["math_block", "\\begin{align}\na &= b \\\\\nc &= d\n\\end{align}", "", ""]]},
+    {"name": "a display environment within a paragraph", "markdown": "so \\begin{align} a &= b \\end{align} holds", "math": [["math_inline_double", "\\begin{align} a &= b \\end{align}", "", ""]]},
+    {"name": "displaymath is a delimiter", "markdown": "\\begin{displaymath}\nx\n\\end{displaymath}", "math": [["math_block", "\nx\n", "\\begin{displaymath}", "\\end{displaymath}"]]},
+    {"name": "other environments are not math by themselves", "markdown": "\\begin{foo}\nx\n\\end{foo} and \\begin{pmatrix} 1 \\end{pmatrix}", "math": []},
+    {"name": "a block in a list item stays there", "markdown": "- Step one:\n  \\[\n  x = 1\n  \\]\n- Step two", "math": [["math_block", "\nx = 1\n", "\\[", "\\]"]]},
+    {"name": "a block in a quote, without the quote's markers", "markdown": "> \\[\n> x\n> \\]", "math": [["math_block", "\nx\n", "\\[", "\\]"]]},
+    {"name": "indented code", "markdown": "Code:\n\n    print(\"\\(x\\)\")\n", "math": []},
+    {"name": "a fence in a list item", "markdown": "1. Write it as\n\n    ~~~latex\n    \\[ x^2 \\]\n    ~~~\n\n2. Then.", "math": []},
+    {"name": "a fence in a quote", "markdown": "> ```python\n> re.compile(r\"\\(\\d+\\)\")\n> ```", "math": []},
+    {"name": "a code span", "markdown": "Use `\\(x\\)` and \\(y\\)", "math": [["math_inline", "y", "\\(", "\\)"]]},
+    {"name": "a stray dollar sign", "markdown": "It costs $5\\(x\\) here", "math": [["math_inline", "x", "\\(", "\\)"]]},
+    {"name": "dollar signs inside", "markdown": "\\(a \\$ b\\) and \\(c $ d\\)", "math": [["math_inline", "a \\$ b", "\\(", "\\)"], ["math_inline", "c $ d", "\\(", "\\)"]]},
+    {"name": "inside dollar math", "markdown": "$a \\(b\\) c$", "math": [["math_inline", "a \\(b\\) c", "$", "$"]]},
+    {"name": "table cells", "markdown": "| a | b |\n| - | - |\n| \\(x\\) | \\(y|z\\) |", "math": [["math_inline", "x", "\\(", "\\)"]]},
+    {"name": "within a link's text", "markdown": "[see \\(x]\\)](https://example.org)", "math": [["math_inline", "x]", "\\(", "\\)"]]},
+    {"name": "both forms", "markdown": "Key: \\(h = gf^{-1}\\).\n\\[\nfG - gF = q\n\\]\n", "math": [["math_inline", "h = gf^{-1}", "\\(", "\\)"], ["math_block", "\nfG - gF = q\n", "\\[", "\\]"]]}
+  ]
+}
