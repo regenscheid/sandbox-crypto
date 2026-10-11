@@ -29,8 +29,11 @@
  * instead. A block's content leaves out the markers of the quotes and the indentation of
  * the list items it is in.
  *
- * Markdown writers escape brackets (`\[1\]`, `- \[x\] done`), so within a paragraph,
- * `\[…\]` holding only a number or only letters stays text, as the escapes make it.
+ * Markdown writers escape brackets (`\[1\]`, `\[sic\]`, `- \[x\] done`, Pandoc's
+ * `\[@smith2020\]` and `\[^1\]`), so within a paragraph, `\[…\]` is displayed math only
+ * when its content holds a character that math uses and bracketed prose seldom does
+ * (`TEX_CHARACTERS`), and is not a footnote's reference; otherwise it stays text, as the
+ * escapes make it.
  *
  * The tokens carry the delimiters as written: `markup` opens and `meta.close` closes.
  * A display environment is its own delimiter, so its content is the whole environment.
@@ -51,8 +54,24 @@ export interface MathMeta {
 
 const BACKSLASH = 0x5c;
 const ENVIRONMENT = /\\begin\{([A-Za-z*]+)\}/y;
-/** What Markdown writers put between escaped brackets: a number, or a word. */
-const ESCAPED_BRACKETS = /^(?:[0-9]+|[A-Za-z]+)$/;
+/**
+ * Characters that math uses and prose between brackets seldom does: within a paragraph,
+ * `\[…\]` is math only when its content holds one. Found anywhere in it (Python's
+ * `re.search`).
+ */
+const TEX_CHARACTERS = /[\\^_={}+<>]/;
+/**
+ * A footnote's reference as Pandoc writes it with its brackets escaped, `\[^1\]`: text.
+ * Matched against the whole content, as JavaScript's `^…$` matches without the `m` flag. A
+ * port to Python must use `re.fullmatch` (or `\A…\Z`): Python's `$` also matches before a
+ * final line feed, so `re.match` with `^…$` would take `^1` and a line break for one too.
+ */
+const FOOTNOTE = /^\^[A-Za-z0-9-]+$/;
+
+/** Whether `\[…\]` around `content`, within a paragraph, is escaped brackets: text. */
+function escapedBrackets(content: string): boolean {
+  return !TEX_CHARACTERS.test(content) || FOOTNOTE.test(content);
+}
 
 interface Opener {
   /** The opening delimiter as the token keeps it; empty for an environment. */
@@ -137,7 +156,7 @@ function mathInline(state: StateInline, silent: boolean): boolean {
   if (end > state.posMax) return false;
   const content = opener.kept ? src.slice(start, end) : src.slice(opener.body, close);
   if (isBlank(content, 0, content.length)) return false;
-  if (opener.markup === '\\[' && ESCAPED_BRACKETS.test(content)) return false;
+  if (opener.markup === '\\[' && escapedBrackets(content)) return false;
   if (!silent) {
     const token = state.push(opener.display ? 'math_inline_double' : 'math_inline', 'math', 0);
     token.content = content;

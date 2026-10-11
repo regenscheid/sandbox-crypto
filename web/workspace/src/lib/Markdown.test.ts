@@ -2,7 +2,7 @@
 // The Markdown component, rendered as the server would: what it lets through, and its math.
 import katex from 'katex';
 import { render } from 'svelte/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Markdown from './Markdown.svelte';
 import {
   forgetResults,
@@ -12,8 +12,14 @@ import {
   MAX_RENDERED,
   MAX_REPAIR_MATH,
   renderMarkdown,
+  whenMathTime,
+  type Rendered,
+  type TextResults,
 } from './markdown';
 import { ModelRepairs, repairKey } from './mathrepair';
+
+// Each test starts with KaTeX's results forgotten and a go of its own.
+beforeEach(() => forgetResults());
 
 function html(source: string): string {
   return render(Markdown, { props: { source } }).body;
@@ -21,6 +27,33 @@ function html(source: string): string {
 
 function count(text: string, pattern: RegExp): number {
   return (text.match(pattern) ?? []).length;
+}
+
+/** The next go: a later task, with KaTeX's time renewed. */
+function nextGo(): Promise<void> {
+  return new Promise((resolve) => whenMathTime(resolve));
+}
+
+/** Texts rendered as their components render them: again in later goes, until done. */
+async function renderAll(
+  sources: string[],
+  repairs: ModelRepairs | null = null,
+): Promise<{ rendered: Rendered[]; goes: number[] }> {
+  const earlier: TextResults[] = sources.map(() => new Map());
+  const goes: number[] = [];
+  let started = performance.now();
+  let rendered = sources.map((source, index) => renderMarkdown(source, repairs, earlier[index]));
+  goes.push(performance.now() - started);
+  while (rendered.some((text) => text.unfinished)) {
+    if (goes.length > 1_000) throw new Error('the texts never finished');
+    await nextGo();
+    started = performance.now();
+    rendered = rendered.map((text, index) =>
+      text.unfinished ? renderMarkdown(sources[index]!, repairs, earlier[index]) : text,
+    );
+    goes.push(performance.now() - started);
+  }
+  return { rendered, goes };
 }
 
 describe('raw HTML', () => {
@@ -166,10 +199,27 @@ describe('math', () => {
     expect(out).toContain('<code class="math-source">$\\secret$</code>');
   });
 
+  it('reads no definition in a \\verb body or a comment, as KaTeX reads none there', () => {
+    const out = html('$\\verb|\\def\\a{x}|$ and $x % \\def\\a{x}\\a$');
+    expect(out).not.toContain('may not define macros');
+    expect(count(out, /<annotation /g)).toBe(2);
+    // After the comment's line, and after \verb's closing delimiter, a definition is one.
+    expect(html('$x % note\n\\def\\a{x}\\a$')).toContain('may not define macros (\\def)');
+    expect(html('$\\verb|x|\\def\\a{x}\\a$')).toContain('may not define macros (\\def)');
+  });
+
   it('shows bidirectional controls in a formula shown as written as code points', () => {
     const out = html(`$\\gdef\\a{x}\\text{‮evil}$`);
     expect(out).not.toContain('‮');
     expect(out).toContain('\\text{⟦U+202E⟧evil}');
+  });
+
+  it("shows bidirectional controls in KaTeX's error, in a mark's message and title, as code points", () => {
+    // KaTeX's error quotes the formula.
+    const out = html('$x^^‮abc$');
+    expect(out).not.toContain('‮');
+    expect(out).toMatch(/<button [^>]*title="[^"]*⟦U\+202E⟧/);
+    expect(out).toMatch(/<span class="math-message">[^<]*⟦U\+202E⟧/);
   });
 
   it('leaves currency as text', () => {
@@ -218,25 +268,28 @@ describe('repairs', () => {
     expect(second.waiting.size).toBe(0);
   });
 
-  it('sends KaTeX a bounded amount of repaired math', () => {
+  it('sends KaTeX a bounded amount of repaired math', async () => {
     // Every formula fails, and each repair is tried in turn until the budget is spent.
     const started = performance.now();
-    const out = html('$\\frac{1$ '.repeat(MAX_FORMULAS));
+    const {
+      rendered: [out],
+    } = await renderAll(['$\\frac{1$ '.repeat(MAX_FORMULAS)]);
     expect(performance.now() - started).toBeLessThan(3_000);
-    expect(count(out, /class="math-mark"/g)).toBe(MAX_FORMULAS);
-    expect(count(out, />auto-repaired</g)).toBe(0);
+    expect(count(out!.html, /class="math-mark"/g)).toBe(MAX_FORMULAS);
+    expect(count(out!.html, />auto-repaired</g)).toBe(0);
     expect(MAX_REPAIR_MATH).toBe(20_000);
   });
 
   it('renders a text again without sending KaTeX what it already did', async () => {
     // The review's case: many failing formulas, then the server says it has no model.
-    forgetResults();
     const repairs = new ModelRepairs(async () => ({ enabled: false, reason: 'no model' }));
     const source = Array.from({ length: 300 }, (_, i) => `$x^{${i}}^{\\rule{1q}{1q}}$`).join(' ');
     const calls = vi.spyOn(katex, 'renderToString');
     try {
-      const first = renderMarkdown(source, repairs);
-      expect(first.waiting.size).toBe(300);
+      const {
+        rendered: [first],
+      } = await renderAll([source], repairs);
+      expect(first!.waiting.size).toBe(300);
       const firstCalls = calls.mock.calls.length;
       expect(firstCalls).toBeGreaterThanOrEqual(300);
       await repairs.settled();
@@ -251,21 +304,100 @@ describe('repairs', () => {
       calls.mockRestore();
     }
   });
+});
 
-  it("stops sending KaTeX a text's math once it has worked on it for a while", () => {
-    forgetResults();
+describe("KaTeX's time", () => {
+  /** Every reading of the clock 100 ms after the last: each formula takes KaTeX 100 ms. */
+  function slowClock() {
+    let now = 0;
+    return vi.spyOn(performance, 'now').mockImplementation(() => (now += 100));
+  }
+
+  it('is shared by the texts rendered in one go, and the rest renders in later goes', async () => {
+    expect(MAX_MATH_TIME).toBe(250);
+    const calls = vi.spyOn(katex, 'renderToString');
+    const clock = slowClock();
+    try {
+      const earlier: TextResults[] = [new Map(), new Map(), new Map()];
+      const sources = ['$a$ $b$', '$c$ $d$', '$e$ $f$'];
+      // One go: a and b, then c, and the time is spent.
+      const first = sources.map((source, index) => renderMarkdown(source, null, earlier[index]));
+      expect(first.map((text) => text.unfinished)).toEqual([false, true, true]);
+      expect(first.map((text) => count(text.html, /<annotation /g))).toEqual([2, 1, 0]);
+      expect(first[1]!.html).toContain(
+        '<span class="math math-skipped"><code class="math-source">$d$</code>' +
+          '<span class="math-message">not rendered yet: KaTeX renders a page’s math a part at a time',
+      );
+      expect(calls.mock.calls.map(([tex]) => tex)).toEqual(['a', 'b', 'c']);
+      expect(earlier.map((results) => results.size)).toEqual([0, 1, 0]);
+      // The next go starts where this one stopped.
+      await nextGo();
+      const second = [1, 2].map((index) => renderMarkdown(sources[index]!, null, earlier[index]));
+      expect(second.map((text) => text.unfinished)).toEqual([false, false]);
+      expect(second.map((text) => count(text.html, /<annotation /g))).toEqual([2, 2]);
+      expect(calls.mock.calls.map(([tex]) => tex)).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+      expect(earlier.map((results) => results.size)).toEqual([0, 0, 0]);
+    } finally {
+      clock.mockRestore();
+      calls.mockRestore();
+    }
+  });
+
+  it('keeps a text’s own results for its next go, whatever the page’s cache drops', async () => {
+    const calls = vi.spyOn(katex, 'renderToString');
+    const clock = slowClock();
+    try {
+      const earlier: TextResults = new Map();
+      expect(renderMarkdown('$a$ $b$ $c$ $d$', null, earlier).unfinished).toBe(true);
+      forgetResults(); // the page's cache dropped all, and a go began
+      expect(renderMarkdown('$a$ $b$ $c$ $d$', null, earlier).unfinished).toBe(false);
+      expect(calls.mock.calls.map(([tex]) => tex)).toEqual(['a', 'b', 'c', 'd']);
+    } finally {
+      clock.mockRestore();
+      calls.mockRestore();
+    }
+  });
+
+  it('does not ask the model for a formula whose rules had no time, and tries them next go', async () => {
+    let asked = 0;
+    const repairs = new ModelRepairs(async () => {
+      asked += 1;
+      return { enabled: true, tex: 'x', model: 'reviewer' };
+    });
     const clock = vi.spyOn(performance, 'now');
     let now = 0;
-    clock.mockImplementation(() => (now += 400));
+    clock.mockImplementation(() => (now += 300)); // one formula spends the go
     try {
-      const out = html('$a$ $b$ $c$ $d$ $e$');
-      expect(count(out, /<annotation /g)).toBeLessThan(5);
-      expect(out).toContain("not rendered: this text's math took too long");
-      expect(MAX_MATH_TIME).toBe(1_000);
+      const earlier: TextResults = new Map();
+      const first = renderMarkdown('$\\Tr x$', repairs, earlier);
+      expect(first.unfinished).toBe(true);
+      expect(first.waiting.size).toBe(0);
+      expect(first.html).toContain('not rendered yet');
+      await repairs.settled();
+      expect(asked).toBe(0);
+      await nextGo();
+      const second = renderMarkdown('$\\Tr x$', repairs, earlier);
+      expect(second.unfinished).toBe(false);
+      expect(second.html).toContain('data-repair="heuristic"');
+      await repairs.settled();
+      expect(asked).toBe(0);
     } finally {
       clock.mockRestore();
     }
   });
+
+  it("holds the page's thread a bounded time on its first view, and renders it all in later goes", async () => {
+    // The review's page: texts of the slowest formulas found, broken so the repairs run.
+    const formula = (n: number) => `$$${'\\Huge xy\\tiny xy'.repeat(300)}${n}\\notdefined$$`;
+    const sources = Array.from({ length: 8 }, (_, text) =>
+      [0, 1].map((n) => formula(text * 10 + n)).join('\n\n'),
+    );
+    const { rendered, goes } = await renderAll(sources);
+    expect(goes[0]).toBeLessThan(1_000);
+    expect(goes.length).toBeGreaterThan(1);
+    expect(Math.max(...goes)).toBeLessThan(1_000);
+    for (const text of rendered) expect(count(text.html, />auto-repaired</g)).toBe(2);
+  }, 30_000);
 });
 
 describe('long text', () => {

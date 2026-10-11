@@ -151,7 +151,7 @@ describe('with dollar math', () => {
   });
 
   it('ends a block within the same number of lines as a $$ block', () => {
-    const inside = (count: number) => 'x\n'.repeat(count);
+    const inside = (count: number) => 'x^2\n'.repeat(count);
     for (const count of [MAX_BLOCK_LINES - 1, MAX_BLOCK_LINES]) {
       const backslash = tokens(`\\[\n${inside(count)}\\]`).map((token) => token.type);
       const dollars = tokens(`$$\n${inside(count)}$$`).map((token) => token.type);

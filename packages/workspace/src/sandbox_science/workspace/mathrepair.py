@@ -76,6 +76,8 @@ DISABLED: Final = frozenset({"0", "off", "none", "false", "disabled"})
 
 _UNFIXABLE = re.compile(r"UNFIXABLE\b", re.IGNORECASE)
 _DELIMITERS: Final = (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$"))
+_FENCE_TAGS: Final = frozenset({"latex", "tex", "math", "katex"})
+"""Info strings a model may put before the expression on a fence of one line."""
 _KEY = re.compile(r"[\x21-\x7e]+")
 """A key: one line of visible ASCII, as an Authorization header can carry it."""
 
@@ -140,15 +142,25 @@ def parse_request(payload: object) -> RepairRequest:
 
 def _unfenced(value: str) -> str:
     """``value`` out of its code fence, if it is one: the original's pattern, without a
-    regular expression, whose backtracking took a second on a fence and 12,000 spaces."""
+    regular expression, whose backtracking took a second on a fence and 12,000 spaces.
+
+    An info string such as ``latex`` is dropped: a word on the opening fence's own line,
+    and on a fence of one line (```` ```latex x^2``` ````) a known one before the
+    expression. The original's pattern dropped any letters there, so ```` ```x^2``` ````
+    lost its ``x``.
+    """
     if len(value) < 6 or not value.startswith("```") or not value.endswith("```"):
         return value
     inner = value[3:-3]
-    # An info string, such as "latex", on the opening fence's line.
     first, newline, rest = inner.partition("\n")
-    tag = first.strip()
-    if newline and (not tag or (tag.isascii() and tag.isalpha())):
-        inner = rest
+    if newline:
+        tag = first.strip()
+        if not tag or (tag.isascii() and tag.isalpha()):
+            inner = rest
+    else:
+        words = inner.split(None, 1)
+        if words and words[0].lower() in _FENCE_TAGS:
+            inner = words[1] if len(words) == 2 else ""
     return inner.strip()
 
 

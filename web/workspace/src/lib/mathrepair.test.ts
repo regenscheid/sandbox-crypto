@@ -7,8 +7,10 @@ import { ApiError, type MathRepairAnswer, type MathRepairRequest } from './api';
 import {
   definesMacros,
   describeError,
+  Kept,
   MAX_MODEL_TEX,
   ModelRepairs,
+  OutOfTime,
   recoveredHtml,
   recoverMath,
   repairKey,
@@ -16,11 +18,19 @@ import {
   safeRepair,
   texToUnicode,
   type MathRenderer,
+  type Recovery,
+  type ShownRecovery,
 } from './mathrepair';
 
 interface Call {
   tex: string;
   options: Record<string, unknown>;
+}
+
+/** A recovery the test expects to be shown. */
+function shown(recovery: Recovery): ShownRecovery {
+  if (recovery.status === 'unfinished') throw new Error('the recovery is unfinished');
+  return recovery;
 }
 
 function fakeKatex(rejects: (tex: string) => boolean): MathRenderer & { calls: Call[] } {
@@ -135,6 +145,40 @@ describe('commands the repairs never make', () => {
     expect(definesMacros('\\gdef\\a{x}')).toBe('gdef');
     expect(definesMacros('a \\\\def b')).toBeNull();
     expect(definesMacros('\\newcommand*{\\R}{\\mathbb{R}}')).toBe('newcommand');
+    // Escaping a comment's % brings in what it commented out.
+    expect(safeRepair('x % \\def\\a{x}', 'x \\% \\def\\a{x}')).toBe(false);
+  });
+
+  it('read commands as KaTeX does: none in a \\verb body or a comment', () => {
+    expect(definesMacros('\\verb|\\def\\a{x}| shows TeX')).toBeNull();
+    expect(definesMacros('\\verb*@\\gdef\\a{x}@ and \\verb@\\let\\a@')).toBeNull();
+    expect(definesMacros('x % \\def is a comment')).toBeNull();
+    expect(definesMacros('\\\\% \\def: a line break, then a comment')).toBeNull();
+    // Only a line feed ends a comment.
+    expect(definesMacros('x % note\r\\def\\a{x}')).toBeNull();
+    // What KaTeX does read as commands.
+    expect(definesMacros('x % note\n\\def\\a{x}')).toBe('def');
+    expect(definesMacros('x \\% \\def\\a{x}')).toBe('def');
+    expect(definesMacros('\\verb|x|\\def\\a{x}')).toBe('def');
+    expect(definesMacros('\\verb|\\def\\a{x}')).toBe('def'); // no closing delimiter
+    expect(definesMacros('\\verb|\\def\n|')).toBe('def'); // nor one on its line
+    expect(definesMacros('\\verbatim \\def')).toBe('def');
+    // KaTeX reads % in a link as a character, so in a formula with one, nothing is a comment.
+    expect(definesMacros('\\url{%}\\def\\a{x}\\a')).toBe('def');
+    expect(definesMacros('\\href{%}{x}\\gdef\\a{x}')).toBe('gdef');
+    expect(definesMacros('\\includegraphics{%}\\let\\a=x')).toBe('let');
+    // A \verb whose delimiter ends the line, as KaTeX's lexer allows.
+    expect(definesMacros('\\verb\n\\def\\a{x}\n\\a')).toBeNull();
+    expect(definesMacros('\\verb\n\\def\\a{x}\r\n')).toBe('def');
+  });
+
+  it('read \\verb openers that never close in linear time', () => {
+    // Each with a delimiter of its own: looking for each one's to the end of the line
+    // took time quadratic in their number.
+    const openers = Array.from({ length: 20_000 }, (_, i) => `\\verb${String.fromCharCode(0x4e00 + i)}`);
+    const started = performance.now();
+    expect(definesMacros(`${openers.join('')}\\def`)).toBe('def');
+    expect(performance.now() - started).toBeLessThan(200);
   });
 
   it('refuse a model answer that brings in a gated command', async () => {
@@ -210,7 +254,7 @@ describe('recovery ladder', () => {
       settings: { output: 'htmlAndMathml' },
     });
     expect(result).toMatchObject({ status: 'repaired', how: 'heuristic', tex: '\\boldsymbol{x}' });
-    const html = recoveredHtml(result, 'span', false, '$\\bm{x}$');
+    const html = recoveredHtml(shown(result), 'span', false, '$\\bm{x}$');
     expect(html).toMatch(/^<span class="math math-inline math-repaired" data-repair="heuristic">/);
     expect(html).toContain('<code class="math-source">$\\bm{x}$</code>');
     expect(katex.calls[0]!.options.output).toBe('htmlAndMathml');
@@ -231,7 +275,7 @@ describe('recovery ladder', () => {
       repairs,
     });
     expect(first.status).toBe('fallback');
-    const html = recoveredHtml(first, 'div', true, '$$\\alpha + \\undefinedmacro$$');
+    const html = recoveredHtml(shown(first), 'div', true, '$$\\alpha + \\undefinedmacro$$');
     expect(html).toMatch(/^<div class="math math-display math-approximated"/);
     expect(html).toContain('<code class="math-source">$$\\alpha + \\undefinedmacro$$</code>');
     expect(html).toContain('<span class="math-unicode">α + undefinedmacro</span>');
@@ -265,7 +309,7 @@ describe('recovery ladder', () => {
       repairs,
     });
     expect(result).toMatchObject({ status: 'repaired', how: 'model', tex: 'x^2', model: 'test' });
-    const html = recoveredHtml(result, 'span', false, '$\\broken$');
+    const html = recoveredHtml(shown(result), 'span', false, '$\\broken$');
     expect(html).toContain('data-repair="model"');
     expect(html).toContain('Repaired by the reviewer model (test).');
   });
@@ -284,9 +328,31 @@ describe('recovery ladder', () => {
     await repairs.settled();
     expect(calls).toBe(1);
     const result = recoverMath(katex, '\\three', options);
-    const html = recoveredHtml(result, 'span', false, '$\\three$');
+    const html = recoveredHtml(shown(result), 'span', false, '$\\three$');
     expect(html).toContain('data-state="unrepairable"');
     expect(html).toContain('No repair: no reviewer model configured.');
+  });
+
+  it('leaves an expression unfinished when the rules had no time, and asks no model', async () => {
+    let asked = 0;
+    const repairs = new ModelRepairs(async () => {
+      asked += 1;
+      return { enabled: true, tex: 'x', model: 'rev' };
+    });
+    const outOfTime: MathRenderer = {
+      renderToString(tex) {
+        if (tex === 'x') return '<span class="katex">x</span>';
+        throw new OutOfTime();
+      },
+    };
+    const options = { displayMode: false, error: 'Undefined control sequence: \\Tr', settings: {}, repairs };
+    expect(recoverMath(outOfTime, '\\Tr x', options)).toEqual({ status: 'unfinished' });
+    await repairs.settled();
+    expect(asked).toBe(0);
+    expect(repairs.isPending(repairKey('\\Tr x', false))).toBe(false);
+    // A model's repair the page already has still shows.
+    repairs.set(repairKey('\\Tr x', false), { tex: 'x', model: 'rev' });
+    expect(recoverMath(outOfTime, '\\Tr x', options)).toMatchObject({ status: 'repaired', how: 'model' });
   });
 
   it('describes errors compactly', () => {
@@ -467,6 +533,111 @@ describe('model repairs', () => {
     expect(calls).toBe(0);
     expect(repairs.get(tex)?.tex).toBeNull();
   });
+
+  it('drops a "busy" that arrives after another answer turned repairs off', async () => {
+    // The review's race: two requests in flight, one answered 429, then the other `busy`.
+    const answers: (() => Promise<MathRepairAnswer>)[] = [
+      async () => ({ enabled: true, tex: 'x', model: 'rev' }), // the server has a model: two at once
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        throw new ApiError(429, 'rate_limited', 'this session has asked for 60 repairs');
+      },
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { enabled: true, tex: null, model: 'rev', reason: 'busy' };
+      },
+    ];
+    let asked = 0;
+    const waits: number[] = [];
+    const repairs = new ModelRepairs(() => answers[asked++]!(), {
+      later: (callback, ms) => {
+        waits.push(ms);
+        setTimeout(callback, 0);
+        return () => undefined;
+      },
+    });
+    const heard: string[] = [];
+    repairs.subscribe((keys) => heard.push(...keys));
+    for (const tex of ['a', 'b', 'c']) {
+      repairs.request(tex, { tex, display: false, error: 'e' }, () => undefined);
+    }
+    const settled = await Promise.race([
+      repairs.settled().then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1_000)),
+    ]);
+    expect(['a', 'b', 'c'].map((key) => repairs.isPending(key))).toEqual([false, false, false]);
+    expect(settled).toBe(true);
+    expect(asked).toBe(3);
+    expect(waits).toEqual([]);
+    expect(heard.sort()).toEqual(['a', 'b', 'c']);
+    expect(repairs.unavailable).toBe('this session has asked for 60 repairs');
+  });
+
+  it('sends nothing for a try that comes due after repairs went off', async () => {
+    const due: (() => void)[] = [];
+    let asked = 0;
+    const repairs = new ModelRepairs(
+      async (request) => {
+        asked += 1;
+        if (request.tex === 'a') return { enabled: true, tex: 'a2', model: 'rev' };
+        if (request.tex === 'b') return { enabled: true, tex: null, model: 'rev', reason: 'busy' };
+        throw new ApiError(429, 'rate_limited', 'limit reached');
+      },
+      {
+        // A wait that cannot be cancelled: its callback still comes due.
+        later: (callback) => {
+          due.push(callback);
+          return () => undefined;
+        },
+      },
+    );
+    const heard: string[] = [];
+    repairs.subscribe((keys) => heard.push(...keys));
+    for (const tex of ['a', 'b', 'c']) {
+      repairs.request(tex, { tex, display: false, error: 'e' }, () => undefined);
+    }
+    await repairs.settled();
+    expect(repairs.unavailable).toBe('limit reached');
+    expect(due).toHaveLength(1);
+    due[0]!();
+    await repairs.settled();
+    expect(asked).toBe(3);
+    expect(repairs.isPending('b')).toBe(false);
+    expect(heard.filter((key) => key === 'b')).toHaveLength(1);
+  });
+
+  it('keeps at most so many repairs for the page, the least recently used dropped first', () => {
+    const repairs = new ModelRepairs(null);
+    for (let index = 0; index <= 2_000; index += 1) {
+      repairs.set(`k${index}`, { tex: `x${index}`, model: null });
+    }
+    expect(repairs.get('k0')).toBeUndefined();
+    expect(repairs.get('k2000')).toEqual({ tex: 'x2000', model: null });
+    // And within 2,000,000 characters.
+    const long = 'x'.repeat(600_000);
+    for (const key of ['a', 'b', 'c', 'd']) repairs.set(key, { tex: long, model: null });
+    expect(repairs.get('a')).toBeUndefined();
+    expect(repairs.get('d')?.tex).toBe(long);
+  });
+});
+
+describe('the caches', () => {
+  it('keep no entry heavier than their whole limit, and drop no other for it', () => {
+    const kept = new Kept<string>(10, 100, (key, value) => key.length + value.length);
+    kept.set('a', 'x'.repeat(10));
+    kept.set('big', 'y'.repeat(1_000));
+    expect(kept.get('big')).toBeUndefined();
+    expect(kept.get('a')).toBe('x'.repeat(10));
+    expect(kept.weight).toBe(11);
+  });
+
+  it('weigh what they keep: the oldest go once the total passes the limit', () => {
+    const kept = new Kept<string>(10, 100, (key, value) => key.length + value.length);
+    for (const key of ['a', 'b', 'c']) kept.set(key, 'x'.repeat(39));
+    expect(kept.size).toBe(2);
+    expect(kept.has('a')).toBe(false);
+    expect(kept.weight).toBe(80);
+  });
 });
 
 describe('the marks', () => {
@@ -526,6 +697,26 @@ describe('the marks', () => {
     expect(html).not.toContain('\u202e');
     expect(html).toContain('<code class="math-source">$x \\text{⟦U+202E⟧evil}$</code>');
     expect(html).toContain('<span class="math-unicode">a⟦U+202E⟧b</span>');
+  });
+
+  it("show bidirectional controls in KaTeX's error and the reason as code points", () => {
+    // KaTeX's error quotes the expression; the message is also the mark's title.
+    const html = recoveredHtml(
+      {
+        status: 'fallback',
+        unicode: 'x',
+        error: 'Double superscript at position 3: x^^‮abc',
+        state: 'unrepairable',
+        reason: 'no ⁦repair',
+      },
+      'span',
+      false,
+      '$x$',
+    );
+    expect(html).not.toMatch(/[‮⁦]/);
+    expect(html.match(/⟦U\+202E⟧/g)).toHaveLength(2);
+    expect(html.match(/⟦U\+2066⟧/g)).toHaveLength(2);
+    expect(html).toContain('<span class="math-message">KaTeX could not render this: Double superscript');
   });
 
   it('lay out displayed math within a paragraph as displayed', () => {
