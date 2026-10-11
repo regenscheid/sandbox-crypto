@@ -3,10 +3,10 @@
 
 When a revision is saved, its new and changed blocks are checked for:
 
-- ``unbalanced_dollar``: outside formulas, code and automatic links, a ``$`` that does
-  not escape anything and opens no formula, when a letter, a backslash or another symbol
-  follows it (``$x`` with no closing dollar; a ``$`` before a digit or a space is left
-  alone, as amounts are written), or a ``$$`` that opens or closes nothing;
+- ``unbalanced_dollar``: outside formulas, code, images and the addresses of links, a
+  ``$`` that does not escape anything and opens no formula, when a letter, a backslash or
+  another symbol follows it (``$x`` with no closing dollar; a ``$`` before a digit or a
+  space is left alone, as amounts are written), or a ``$$`` that opens or closes nothing;
 - ``definition_in_math``: ``\\def``, ``\\gdef``, ``\\newcommand`` and the like inside a
   formula. The GUI applies such a definition to that formula alone, while TeX can make it
   apply to the rest of an exported document;
@@ -28,7 +28,7 @@ from typing import Final
 
 from pydantic import JsonValue
 
-from .blocks import Block, InlineText, Span
+from .blocks import Block, InlineText, Span, merged, overlaps
 from .identity import Mapped
 
 _DEFINITION: Final = re.compile(
@@ -54,9 +54,10 @@ def _stray_dollars(inline: InlineText) -> list[str]:
     """Dollar signs in a text that open no formula and look as if they meant to."""
     found: list[str] = []
     content = inline.content
+    ranges = merged(inline.excluded)
     position = content.find("$")
     while position != -1:
-        inside = any(low <= position < high for low, high, _ in inline.excluded)
+        inside = overlaps(ranges, position, position + 1)
         if not inside and not _escaped(content, position):
             following = content[position + 1 : position + 2]
             if following == "$":

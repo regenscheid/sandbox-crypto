@@ -11,12 +11,17 @@ formulas use dollars, which other Markdown tools read too:
   within a paragraph stays there;
 - a display environment written outside math is put inside ``$$`` lines, or between
   ``$$`` within its paragraph;
-- an empty ``\\( \\)`` or ``\\[ \\]`` is removed.
+- an empty ``\\( \\)`` is removed, outside links and images. An empty ``\\[ \\]`` stays:
+  Markdown writers escape brackets that way (``- \\[ \\] to do``), and neither parser
+  reads it as math.
 
 A conversion is made only where it leaves the text's blocks and formulas as they were:
 the converted text is parsed again and compared with the text as written, and a
-conversion that changes either is left out. Code, escaped delimiters and dollar math are
-never touched, since the parser does not read them as these delimiters.
+conversion that changes either is left out. All are tried together first; when that
+changes the parse, the first half and the second half are tried in turn, each halved
+again until the conversions that change it are found, within ``MAX_TRIALS`` parses and
+the change's parse budget. Code, escaped delimiters and dollar math are never touched,
+since the parser does not read them as these delimiters.
 
 Some ``\\(…\\)`` would read differently with single dollars elsewhere: one holding a
 dollar sign or a line break, or followed by a digit (Pandoc, for one, then reads no
@@ -32,17 +37,19 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
-from .blocks import Block, InlineText, Parsed, Span, parse
+from .blocks import Block, Budget, InlineText, Parsed, Span, merged, overlaps, parse
 
 AMBIGUOUS_INLINE: Literal["keep", "double"] = "keep"
 """What becomes of an ``\\(…\\)`` that single dollars would make ambiguous: ``keep`` it as
 written (recommended, pending the user's decision), or make it ``double``, ``$$…$$``, as
 LD-41 drafts."""
 
-MAX_SINGLY: Final = 32
-"""Conversions tried one at a time when converting them all together changes the parse."""
+MAX_TRIALS: Final = 32
+"""Parses that check conversions, at most, as long as the change's parse budget lasts
+(``blocks.MAX_PARSED``)."""
+_UNCHECKED: Final = "too many formulas to check one by one"
 
-_EMPTY: Final = re.compile(r"\\\(\s*\\\)|\\\[\s*\\\]")
+_EMPTY: Final = re.compile(r"\\\([ \t]*\\\)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,13 +182,21 @@ def _inline_candidate(parsed: Parsed, span: Span) -> _Candidate | str | None:
     )
 
 
+def _escaped(text: str, position: int) -> bool:
+    """Whether an odd number of backslashes precede ``position``."""
+    at = position
+    while at > 0 and text[at - 1] == "\\":
+        at -= 1
+    return (position - at) % 2 == 1
+
+
 def _empty_candidates(inline: InlineText, region: tuple[int, int]) -> Iterable[_Candidate]:
     if inline.provenance is None:
         return
+    ranges = merged(inline.excluded)
     for match in _EMPTY.finditer(inline.content):
         start, end = match.span()
-        backslashes = len(inline.content[:start]) - len(inline.content[:start].rstrip("\\"))
-        if backslashes % 2 or any(low < end and start < high for low, high, _ in inline.excluded):
+        if _escaped(inline.content, start) or overlaps(ranges, start, end):
             continue
         source_start = inline.provenance.source(start)
         source_end = inline.provenance.source_end(end)
@@ -243,29 +258,38 @@ def signature(parsed: Parsed) -> tuple[object, ...]:
     )
 
 
-def normalize(parsed: Parsed, region: tuple[int, int] | None = None) -> Normalized:
-    """Convert the delimiters of the formulas that lie within ``region`` of the text."""
+def normalize(
+    parsed: Parsed, region: tuple[int, int] | None = None, budget: Budget | None = None
+) -> Normalized:
+    """Convert the delimiters of the formulas that lie within ``region`` of the text.
+
+    Each parse that checks conversions takes from ``budget``; those it leaves no room to
+    check are kept as written.
+    """
+    budget = budget or Budget()
     found, kept = _candidates(parsed, region or (0, len(parsed.text)))
     if not found:
         return Normalized(parsed.text, parsed, kept=tuple(kept))
     expected = signature(parsed)
-    together = _apply(parsed.text, found)
-    reparsed = parse(together)
-    accepted: list[_Candidate] = found
-    if signature(reparsed) != expected:
-        accepted = []
-        reparsed = parsed
-        for candidate in found[:MAX_SINGLY]:
-            trial = parse(_apply(parsed.text, [*accepted, candidate]))
-            if signature(trial) == expected:
-                accepted.append(candidate)
-                reparsed = trial
-            else:
-                kept.append({"tex": candidate.tex, "why": "the dollar form would read differently"})
-        kept.extend(
-            {"tex": candidate.tex, "why": "too many formulas to check one at a time"}
-            for candidate in found[MAX_SINGLY:]
-        )
+    accepted: list[_Candidate] = []
+    reparsed = parsed
+    groups = [found]
+    tried = 0
+    while groups:
+        group = groups.pop(0)
+        if tried == MAX_TRIALS or not budget.spend(len(parsed.text)):
+            kept.extend({"tex": candidate.tex, "why": _UNCHECKED} for candidate in group)
+            continue
+        tried += 1
+        trial = parse(_apply(parsed.text, [*accepted, *group]))
+        if signature(trial) == expected:
+            accepted.extend(group)
+            reparsed = trial
+        elif len(group) == 1:
+            kept.append({"tex": group[0].tex, "why": "the dollar form would read differently"})
+        else:
+            middle = len(group) // 2
+            groups[0:0] = [group[:middle], group[middle:]]
     converted: dict[str, int] = {}
     for candidate in accepted:
         converted[candidate.kind] = converted.get(candidate.kind, 0) + 1

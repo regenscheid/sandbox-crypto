@@ -210,6 +210,44 @@ def test_front_matter_that_is_not_a_title_and_macros_is_reported(yaml: str, prob
     assert found.macros == {}
 
 
+def test_front_matter_only_at_the_start_of_the_text() -> None:
+    # The plugin also took a first list item's line, counting its dashes after the marker.
+    for text in ("- 1--2 range $x$\n- next $y$\n---\n", "> ---\n> title: q\n> ---\n"):
+        parsed = parse(text)
+        assert parsed.front_matter is None
+        assert "front_matter" not in [block.kind for block in parsed.blocks]
+
+
+def test_code_spans_are_markdown_it_15s() -> None:
+    def code(text: str) -> list[str]:
+        return [
+            child.content
+            for token in tokens(text)
+            for child in token.children or []
+            if child.type == "code_inline"
+        ]
+
+    # A link label that does not close no longer hides the code span before it.
+    assert code("See [the note `$p$` and the `stray tick") == ["$p$"]
+    assert code("a `` b ` c `` d and ``` e") == ["b ` c"]
+    assert code("[a `b](c` d)") == ["b](c"]
+    assert code("`  `") == ["  "]
+
+
+def test_link_addresses_and_images_are_not_text() -> None:
+    text = 'A [link $x$](https://example.org/$a "t $b") and ![i $c$](https://example.org/i.png).'
+    parsed = parse(text)
+    (inline,) = parsed.blocks[0].inlines
+    found = [(inline.content[low:high], kind) for low, high, kind in inline.excluded]
+    assert found == [
+        ("[", "link"),
+        ("$x$", "math_inline"),
+        ('](https://example.org/$a "t $b")', "link"),
+        ("![i $c$](https://example.org/i.png)", "image"),
+    ]
+    assert [span.tex for span in parsed.spans] == ["x"]
+
+
 def test_front_matter_is_limited_in_size() -> None:
     found = read_front_matter("title: " + "x" * MAX_FRONT_MATTER)
     assert found.title is None
@@ -252,3 +290,28 @@ def test_texts_that_took_long_before_parse_quickly() -> None:
     parse("$$ x\n" * 5000)
     parse("\\[ x\n" * 5000)
     assert time.monotonic() - started < 10
+
+
+def test_texts_that_took_long_to_check_and_to_carry_over_are_quick() -> None:
+    # Found by review: each took from seconds to minutes.
+    import time
+
+    from sandbox_science.orchestrator.documents.checks import warnings
+    from sandbox_science.orchestrator.documents.engine import written
+    from sandbox_science.orchestrator.documents.identity import Allocator, carry, compare, fresh
+    from sandbox_science.orchestrator.documents.normalize import normalize
+
+    started = time.monotonic()
+    stray = fresh(parse("`a`$ " * 40000), Allocator(0, 0))
+    assert warnings(stray, [0]) == []
+    equal = fresh(parse("$x$ " * 15000), Allocator(0, 0))
+    again = carry(equal, parse("$y$ " + "$x$ " * 15000), Allocator(1, 15000))
+    assert compare(equal, again).spans["m1"] == "kept"
+    paragraphs = fresh(parse("Same.\n\n" * 5000), Allocator(0, 0))
+    carried = carry(paragraphs, parse("Other.\n\n" + "Same.\n\n" * 5000), Allocator(5000, 0))
+    assert carried.block_ids[1:] == paragraphs.block_ids
+    long = fresh(parse("ab" * 5000 + "\n"), Allocator(0, 0))
+    changed = carry(long, parse("ab" * 2500 + "c" + "ab" * 2500 + "\n"), Allocator(1, 0))
+    assert written(long, changed, compare(long, changed)) == 1
+    assert normalize(parse("a \\(\\) " * 50000)).text == "a  " * 50000
+    assert time.monotonic() - started < 20

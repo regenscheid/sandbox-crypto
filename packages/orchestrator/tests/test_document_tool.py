@@ -492,3 +492,49 @@ async def test_the_toolbox_offers_document_tools_only_with_a_store(
         "document_patch",
         "document_delete",
     } <= with_documents
+
+
+async def test_math_in_a_quoted_equation_reads_and_patches_without_the_markers(
+    store: DocumentStore,
+) -> None:
+    store.create("p1", name="q", title="Q", text="> $$\n> q = 1\n> $$\n", author=USER)
+    tool = DocumentTool(store, CONTEXT, run_id="r")
+    view = json.loads((await tool.call("document_read", {"document": "q"}, operation="o"))[0])
+    (math,) = view["blocks"][1]["math"]
+    assert math["tex"] == "\nq = 1\n"
+    patch = {
+        "document": "q",
+        "base_revision": 1,
+        "reason": "r",
+        "operations": [{"op": "replace_math", "math": math["id"], "tex": "\nq = 2\n"}],
+    }
+    text, _ = await tool.call("document_patch", patch, operation="p")
+    assert json.loads(text)["outcome"] == "applied"
+    assert store.revision("p1", "q").text == "> $$\n> q = 2\n> $$\n"
+
+
+async def test_a_notice_covers_the_revisions_it_read(
+    store: DocumentStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _ids(store)
+    tool = DocumentTool(store, CONTEXT, run_id="r")
+    await tool.call("document_read", {"document": "ff"}, operation="o")
+    for number, block in ((1, ids["S"]), (2, ids["P"])):
+        store.patch(
+            "p1",
+            "ff",
+            base=number,
+            author=USER,
+            reason="u",
+            operation_id=f"u{number}",
+            operations=[{"op": "replace", "block": block, "markdown": f"User {number}."}],
+        )
+    # The heads read first lag behind the revisions read after them.
+    heads = store.heads
+    monkeypatch.setattr(store, "heads", lambda found: dict.fromkeys(heads(found), 2))
+    (notice,) = await tool.notices()
+    assert "revision 2 by the user" in notice
+    assert "revision 3 by the user" in notice
+    assert notice.endswith("Read revision 3 before you patch it.")
+    monkeypatch.undo()
+    assert await tool.notices() == []

@@ -48,7 +48,9 @@ def test_import_list_show_and_history(
     assert first.info.author.kind == "import"
     assert first.info.author.user == "user"
     source.write_text("# Fermat\n\nLet $p = 17$ be prime.\n", encoding="utf-8")
-    status, out, _ = _run(capsys, "document", "import", *where, "--name", "ff", str(source))
+    status, out, _ = _run(
+        capsys, "document", "import", *where, "--name", "ff", "--base", "1", str(source)
+    )
     assert json.loads(out)["revision"] == 2
     status, out, _ = _run(capsys, "document", "list", *where)
     assert status == 0
@@ -108,3 +110,49 @@ def test_document_commands_report_their_errors(
     )
     assert status == 1
     assert "no session s9" in err
+
+
+def test_an_import_never_undoes_later_revisions(
+    state: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    where = ("--state-dir", str(state), "--project", "p1")
+    source = tmp_path / "ff.md"
+    source.write_text("\ufeff# Fermat\n\nText.\n", encoding="utf-8")
+    assert _run(capsys, "document", "import", *where, "--name", "ff", str(source))[0] == 0
+    store = DocumentStore(store_path(state))
+    # A byte-order mark is not text: the heading stays a heading.
+    assert store.revision("p1", "ff").text == "# Fermat\n\nText.\n"
+    store.patch(
+        "p1",
+        "ff",
+        base=1,
+        author=AGENT,
+        reason="r",
+        operation_id="o",
+        operations=[{"op": "replace", "block": "b2", "markdown": "The agent's text."}],
+    )
+    # Without the revision the file was made from, an import is refused.
+    status, _, err = _run(capsys, "document", "import", *where, "--name", "ff", str(source))
+    assert status == 1
+    assert "give --base" in err
+    status, _, err = _run(
+        capsys, "document", "import", *where, "--name", "ff", "--base", "1", str(source)
+    )
+    assert status == 1
+    assert "revision 2 is current, not 1" in err
+    # Exported, edited and imported again from the revision it was exported from.
+    exported = tmp_path / "out.md"
+    status, _, err = _run(capsys, "document", "export", *where, "ff", "--output", str(exported))
+    assert (status, err.strip()) == (
+        0,
+        "revision 2 of document ff: import the file again with --base 2",
+    )
+    exported.write_text(exported.read_text(encoding="utf-8") + "\nMore.\n", encoding="utf-8")
+    status, out, _ = _run(
+        capsys, "document", "import", *where, "--name", "ff", "--base", "2", str(exported)
+    )
+    assert json.loads(out)["revision"] == 3
+    assert store.revision("p1", "ff").text == "# Fermat\n\nThe agent's text.\n\nMore.\n"
+    status, out, _ = _run(capsys, "document", "export", *where, "ff", "--revision", "1")
+    assert out == "# Fermat\n\nText.\n"
+    store.close()

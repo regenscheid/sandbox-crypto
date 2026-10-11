@@ -26,7 +26,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, cast
@@ -35,7 +35,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import new_id
 
-from .blocks import check_text, normalize_newlines, parse
+from .blocks import BYTE_ORDER_MARK, check_text, normalize_newlines, parse
 from .checks import math_check, warnings
 from .engine import (
     Applied,
@@ -50,7 +50,15 @@ from .engine import (
     unnamed_changes,
     written,
 )
-from .errors import CONFLICT, INTERNAL, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED, DocumentError
+from .errors import (
+    BUSY,
+    CONFLICT,
+    INTERNAL,
+    INVALID_REQUEST,
+    NOT_FOUND,
+    POLICY_DENIED,
+    DocumentError,
+)
 from .identity import Allocator, Changes, Mapped, carry, compare, fresh
 from .models import (
     MAX_REASON,
@@ -66,7 +74,7 @@ from .models import (
     Revision,
     RevisionInfo,
 )
-from .normalize import normalize
+from .normalize import Normalized, normalize
 from .operations import MAX_OPERATIONS, Operation, touches
 from .parser import parser_versions
 
@@ -222,6 +230,60 @@ class _Submission:
         if self.accepted_by is not None:
             found["accepted_by"] = self.accepted_by.model_dump(mode="json", exclude_none=True)
         return found
+
+
+def _key(row: _Row) -> tuple[object, ...]:
+    """What a change computed from a document's row depends on: the same key, the same
+    result."""
+    info = row.info
+    return (info.document_id, info.head, row.next_block, row.next_span, info.deleted)
+
+
+@dataclass(frozen=True)
+class _Inputs:
+    """What a patch is checked against, read from one state of its document."""
+
+    key: tuple[object, ...]
+    base: Revision
+    head: Revision
+    since: list[tuple[int, str, str]]
+    """The later revisions' numbers, authors and block maps, as stored."""
+
+
+@dataclass
+class _Assessed:
+    """A patch checked against one state of its document, before anything is written."""
+
+    key: tuple[object, ...]
+    error: DocumentError | None = None
+    deleted: bool = False
+    conflicts: list[Json] = field(default_factory=list[Json])
+    unnamed: list[str] = field(default_factory=list[str])
+    head: Mapped | None = None
+    applied: Applied | None = None
+    allocate: Allocator | None = None
+
+
+@dataclass(frozen=True)
+class _Carried:
+    """A saved text's IDs, carried from one state of its document."""
+
+    key: tuple[object, ...]
+    head: Mapped
+    mapped: Mapped
+    allocate: Allocator
+
+
+def _attempt[T](compute: Callable[[], T]) -> T | DocumentError:
+    """What ``compute`` returns, or the error it refuses with, to raise in its turn."""
+    try:
+        return compute()
+    except DocumentError as error:
+        return error
+
+
+def _busy(error: sqlite3.OperationalError) -> bool:
+    return any(word in str(error).lower() for word in ("locked", "busy"))
 
 
 def _document(row: Sequence[Any]) -> _Row:
@@ -412,9 +474,18 @@ class DocumentStore:
         if self.readonly:
             raise DocumentError(INTERNAL, "this document store is read-only")
         with self._lock:
-            db = self._connection()
-            assert db is not None  # noqa: S101 - a writer always has a database
-            db.execute("BEGIN IMMEDIATE")
+            try:
+                db = self._connection()
+                assert db is not None  # noqa: S101 - a writer always has a database
+                db.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as error:
+                if not _busy(error):
+                    raise
+                raise DocumentError(
+                    BUSY,
+                    f"another change held the document store for over {self._timeout:g} "
+                    "seconds: try again (with the same operation ID, a retry is safe)",
+                ) from error
             try:
                 yield db
                 db.execute("COMMIT")
@@ -687,10 +758,12 @@ class DocumentStore:
         title = _SPACE.sub(" ", title).strip()
         if not 0 < len(title) <= MAX_TITLE:
             raise DocumentError(INVALID_REQUEST, f"a title has 1 to {MAX_TITLE} characters")
-        text = normalize_newlines(text)
+        text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
         check_text(text)
         why = _reason(reason)
         request = {"create": stem, "title": title, "session": session_id, "text": text}
+        # Parsed before the write lock is taken, so other changes do not wait for it.
+        made = _attempt(lambda: normalize(parse(text)))
         with self._write() as db:
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
@@ -703,7 +776,9 @@ class DocumentStore:
             if taken is not None:
                 where = f"session {session_id}'s workbook" if session_id else "the project"
                 raise DocumentError(CONFLICT, f"{where} has a document named {stem!r} already")
-            normalized = normalize(parse(text))
+            if isinstance(made, DocumentError):
+                raise made
+            normalized = made
             allocate = Allocator(0, 0)
             mapped = fresh(normalized.parsed, allocate)
             now = self._clock()
@@ -787,10 +862,16 @@ class DocumentStore:
         """
         if author.kind == "agent":
             raise DocumentError(POLICY_DENIED, "agents change documents with patches")
-        text = normalize_newlines(text)
+        text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
         check_text(text)
         why = _reason(reason)
         request = {"save": reference, "base": base, "text": text}
+        # Parsed, and its IDs carried from the current revision, before the write lock is
+        # taken; under it, they are used if the document is still as it was.
+        made = _attempt(lambda: normalize(parse(text)))
+        carried = None
+        if isinstance(made, Normalized):
+            carried = self._prepare_save(project_id, reference, base, made)
         with self._write() as db:
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
@@ -803,10 +884,15 @@ class DocumentStore:
                     f"revision {row.info.head} is current, not {base}: save from it",
                     {"current": row.info.head},
                 )
-            head = self._mapped(self._revision(db, row.info.document_id, base))
-            normalized = normalize(parse(text))
-            allocate = Allocator(row.next_block, row.next_span)
-            mapped = carry(head, normalized.parsed, allocate)
+            if isinstance(made, DocumentError):
+                raise made
+            normalized = made
+            if carried is not None and carried.key == _key(row):
+                head, mapped, allocate = carried.head, carried.mapped, carried.allocate
+            else:
+                head = self._mapped(self._revision(db, row.info.document_id, base))
+                allocate = Allocator(row.next_block, row.next_span)
+                mapped = carry(head, normalized.parsed, allocate)
             result = self._commit(
                 db,
                 row,
@@ -850,28 +936,140 @@ class DocumentStore:
         raw = [operation.model_dump(mode="json", by_alias=True) for operation in parsed]
         why = _reason(reason)
         request = {"patch": reference, "base": base, "operations": raw, "reason": why}
+        submission = _Submission(new_id("patch"), base, parsed, raw, why, author)
+        # Checked before the write lock is taken, so other changes do not wait for it.
+        prepared = self._prepare_patch(project_id, reference, submission)
         with self._write() as db:
             replay = self._replay(db, project_id, author, operation_id, request)
             if replay is not None:
                 return replay
             row = self._find(db, project_id, reference)
-            submission = _Submission(new_id("patch"), base, parsed, raw, why, author)
             suggest = author.kind == "agent" and row.info.takes_suggestions
-            result = self._patch(db, row, submission, suggest=suggest)
+            assessed = self._assessed(db, row, submission, prepared)
+            result = self._act(db, row, submission, assessed, suggest=suggest)
             self._remember(db, project_id, author, operation_id, request, result)
             return result
 
-    def _patch(
-        self, db: sqlite3.Connection, row: _Row, submission: _Submission, *, suggest: bool = False
-    ) -> ChangeResult:
+    def _prepare_save(
+        self, project_id: str, reference: str, base: int, normalized: Normalized
+    ) -> _Carried | None:
+        """A saved text's IDs, from the document as it is now, outside the write lock."""
+        if self.readonly:
+            return None
+        try:
+            with self._read() as db:
+                if db is None:
+                    return None
+                row = self._find(db, project_id, reference)
+                if row.info.deleted or base != row.info.head:
+                    return None
+                revision = self._revision(db, row.info.document_id, base)
+            head = self._mapped(revision)
+            allocate = Allocator(row.next_block, row.next_span)
+            mapped = carry(head, normalized.parsed, allocate)
+        except (DocumentError, sqlite3.Error):
+            return None
+        return _Carried(_key(row), head, mapped, allocate)
+
+    def _prepare_patch(
+        self, project_id: str, reference: str, submission: _Submission
+    ) -> _Assessed | None:
+        """A patch checked against the document as it is now, outside the write lock."""
+        if self.readonly:
+            return None
+        try:
+            with self._read() as db:
+                if db is None:
+                    return None
+                row = self._find(db, project_id, reference)
+                inputs = self._inputs(db, row, submission.base)
+        except (DocumentError, sqlite3.Error):
+            # The change finds the same error under the lock, in its turn.
+            return None
+        return self._assess(row, inputs, submission)
+
+    def _assessed(
+        self,
+        db: sqlite3.Connection,
+        row: _Row,
+        submission: _Submission,
+        prepared: _Assessed | None,
+    ) -> _Assessed:
+        """The patch checked against the document as it is under the write lock: as it
+        was checked before, if the document is unchanged since."""
+        if prepared is not None and prepared.key == _key(row):
+            return prepared
+        return self._assess(row, self._inputs(db, row, submission.base), submission)
+
+    def _inputs(self, db: sqlite3.Connection, row: _Row, base: int) -> _Inputs:
         info = row.info
-        base = submission.base
         if not 1 <= base <= info.head:
             raise DocumentError(
                 INVALID_REQUEST, f"document {info.name!r} has revisions 1 to {info.head}"
             )
-        base_mapped = self._mapped(self._revision(db, info.document_id, base))
-        check_names(base_mapped, submission.operations)
+        # The block maps and authors of the later revisions; their texts are not needed.
+        since = [
+            (int(number), str(author), str(stored))
+            for number, author, stored in db.execute(
+                "SELECT number, author, block_map FROM revisions WHERE document_id = ? "
+                "AND number > ? ORDER BY number",
+                (info.document_id, base),
+            )
+        ]
+        return _Inputs(
+            _key(row),
+            self._revision(db, info.document_id, base),
+            self._revision(db, info.document_id, info.head),
+            since,
+        )
+
+    def _assess(self, row: _Row, inputs: _Inputs, submission: _Submission) -> _Assessed:
+        """The patch checked against the inputs, without the database: refused, in
+        conflict, or applied, with the revision it makes (LD-17, LD-18)."""
+        assessed = _Assessed(inputs.key)
+        operations = submission.operations
+        try:
+            base_mapped = self._mapped(inputs.base)
+            check_names(base_mapped, operations)
+            if row.info.deleted or inputs.head.info.tombstone:
+                assessed.deleted = True
+                return assessed
+            head = self._mapped(inputs.head)
+            if inputs.since:
+                since = Since()
+                for number, author, stored in inputs.since:
+                    who = Author.model_validate_json(author).model_dump(
+                        mode="json", exclude_none=True
+                    )
+                    since.note(number, who, json.loads(stored))
+                assessed.conflicts = conflicts(base_mapped, head, operations, since)
+                if assessed.conflicts:
+                    return assessed
+            allocate = Allocator(row.next_block, row.next_span)
+            applied = apply_operations(head, operations, allocate)
+            named = [touches(operation, base_mapped) for operation in operations]
+            assessed.unnamed = unnamed_changes(head, applied.mapped, named)
+            if not assessed.unnamed:
+                assessed.head, assessed.applied, assessed.allocate = head, applied, allocate
+        except DocumentError as error:
+            assessed.error = error
+        return assessed
+
+    def _act(
+        self,
+        db: sqlite3.Connection,
+        row: _Row,
+        submission: _Submission,
+        assessed: _Assessed,
+        *,
+        suggest: bool = False,
+    ) -> ChangeResult:
+        """What a checked patch writes: the revision, or the patch kept as rejected,
+        refused or suggested, with its event."""
+        if assessed.error is not None:
+            raise assessed.error
+        info = row.info
+        base = submission.base
         result = ChangeResult(
             outcome="conflict",
             document_id=info.document_id,
@@ -879,8 +1077,7 @@ class DocumentStore:
             base=base,
             patch_id=submission.patch_id,
         )
-        head_revision = self._revision(db, info.document_id, info.head)
-        if info.deleted or head_revision.info.tombstone:
+        if assessed.deleted:
             message = f"document {info.name!r} was deleted in revision {info.head}"
             return self._reject(
                 db,
@@ -890,41 +1087,29 @@ class DocumentStore:
                 {"deleted": True},
                 result.model_copy(update={"message": message}),
             )
-        head = self._mapped(head_revision)
-        if base < info.head:
-            since = Since()
-            # The block maps and authors of the later revisions; their texts are not needed.
-            for number, author, stored in db.execute(
-                "SELECT number, author, block_map FROM revisions WHERE document_id = ? "
-                "AND number > ? ORDER BY number",
-                (info.document_id, base),
-            ):
-                who = Author.model_validate_json(author).model_dump(mode="json", exclude_none=True)
-                since.note(number, who, json.loads(stored))
-            found = conflicts(base_mapped, head, submission.operations, since)
-            if found:
-                message = (
-                    f"revision {info.head} changed what this patch touches since revision "
-                    f"{base}: nothing was written, and the patch is kept as rejected patch "
-                    f"{submission.patch_id}. Read revision {info.head} and patch it"
-                )
-                return self._reject(
-                    db,
-                    row,
-                    submission,
-                    "conflicted",
-                    {"conflicts": found},
-                    result.model_copy(update={"conflicts": found, "message": message}),
-                )
-        allocate = Allocator(row.next_block, row.next_span)
-        applied: Applied = apply_operations(head, submission.operations, allocate)
-        named = [touches(operation, base_mapped) for operation in submission.operations]
-        unnamed = unnamed_changes(head, applied.mapped, named)
+        if assessed.conflicts:
+            found = assessed.conflicts
+            message = (
+                f"revision {info.head} changed what this patch touches since revision "
+                f"{base}: nothing was written, and the patch is kept as rejected patch "
+                f"{submission.patch_id}. Read revision {info.head} and patch it"
+            )
+            return self._reject(
+                db,
+                row,
+                submission,
+                "conflicted",
+                {"conflicts": found},
+                result.model_copy(update={"conflicts": found, "message": message}),
+            )
+        unnamed = assessed.unnamed
         if unnamed:
             message = (
                 "patch_changes_unnamed_blocks: the new text would also change "
-                f"{', '.join(unnamed)}, which the patch does not name (an unclosed fence, "
-                "container or formula can take the blocks after it). Nothing was written"
+                f"{', '.join(unnamed)}, which the patch does not name: an unclosed fence, "
+                "container or formula can take in the blocks after it, a closing marker can "
+                "leave them outside their container, and a link reference definition changes "
+                "the links that use it. Nothing was written"
             )
             return self._reject(
                 db,
@@ -936,6 +1121,9 @@ class DocumentStore:
                     update={"outcome": "refused", "unnamed": unnamed, "message": message}
                 ),
             )
+        applied, head, allocate = assessed.applied, assessed.head, assessed.allocate
+        if applied is None or head is None or allocate is None:
+            raise DocumentError(INTERNAL, "the patch was not checked")
         if suggest:
             self._keep(db, info, submission, "suggested", {"current": info.head})
             self._event(
@@ -1109,21 +1297,12 @@ class DocumentStore:
         """
         if author.kind != "user":
             raise DocumentError(POLICY_DENIED, "only the user decides on suggestions")
+        prepared = None
+        if accept:
+            prepared = self._prepare_decision(project_id, reference, patch_id, author)
         with self._write() as db:
             row = self._find(db, project_id, reference)
-            found = db.execute(
-                _PATCH + " WHERE patch_id = ? AND document_id = ?",
-                (patch_id, row.info.document_id),
-            ).fetchone()
-            if found is None:
-                raise DocumentError(
-                    NOT_FOUND, f"document {row.info.name!r} has no patch {patch_id}"
-                )
-            suggestion = _patch(found)
-            if suggestion.state != "suggested":
-                raise DocumentError(
-                    CONFLICT, f"patch {patch_id} is {suggestion.state}, not a waiting suggestion"
-                )
+            suggestion = self._suggestion(db, row, patch_id)
             now = self._clock()
             if not accept:
                 db.execute(
@@ -1145,17 +1324,9 @@ class DocumentStore:
                     patch_id=patch_id,
                     message=f"suggestion {patch_id} was rejected",
                 )
-            raw = cast(list[Json], suggestion.operations)
-            submission = _Submission(
-                patch_id,
-                suggestion.base,
-                _operations(raw),
-                raw,
-                suggestion.reason,
-                suggestion.author,
-                accepted_by=author,
-            )
-            result = self._patch(db, row, submission)
+            submission = _accepted(suggestion, author)
+            assessed = self._assessed(db, row, submission, prepared)
+            result = self._act(db, row, submission, assessed)
             self._event(
                 db,
                 "document.suggestion_decided",
@@ -1170,6 +1341,37 @@ class DocumentStore:
                 },
             )
             return result
+
+    def _suggestion(self, db: sqlite3.Connection, row: _Row, patch_id: str) -> PatchInfo:
+        found = db.execute(
+            _PATCH + " WHERE patch_id = ? AND document_id = ?",
+            (patch_id, row.info.document_id),
+        ).fetchone()
+        if found is None:
+            raise DocumentError(NOT_FOUND, f"document {row.info.name!r} has no patch {patch_id}")
+        suggestion = _patch(found)
+        if suggestion.state != "suggested":
+            raise DocumentError(
+                CONFLICT, f"patch {patch_id} is {suggestion.state}, not a waiting suggestion"
+            )
+        return suggestion
+
+    def _prepare_decision(
+        self, project_id: str, reference: str, patch_id: str, author: Author
+    ) -> _Assessed | None:
+        """An accepted suggestion checked as a patch, outside the write lock."""
+        if self.readonly:
+            return None
+        try:
+            with self._read() as db:
+                if db is None:
+                    return None
+                row = self._find(db, project_id, reference)
+                submission = _accepted(self._suggestion(db, row, patch_id), author)
+                inputs = self._inputs(db, row, submission.base)
+        except (DocumentError, sqlite3.Error):
+            return None
+        return self._assess(row, inputs, submission)
 
     # Inside a change.
 
@@ -1371,6 +1573,20 @@ class DocumentStore:
                 _time(self._clock()),
             ),
         )
+
+
+def _accepted(suggestion: PatchInfo, user: Author) -> _Submission:
+    """A suggestion, as the patch the user accepts."""
+    raw = cast(list[Json], suggestion.operations)
+    return _Submission(
+        suggestion.patch_id,
+        suggestion.base,
+        _operations(raw),
+        raw,
+        suggestion.reason,
+        suggestion.author,
+        accepted_by=user,
+    )
 
 
 def _fingerprint(request: Json) -> str:

@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.model import ToolSpec
 from .errors import INVALID_REQUEST, DocumentError
 from .identity import Mapped
 from .models import Author, ChangeResult, DocumentInfo, RevisionInfo
+from .operations import unlay
 from .store import DocumentStore
 
 Json = dict[str, Any]
@@ -202,7 +203,10 @@ def view_blocks(mapped: Mapped, start: int = 0) -> list[Json]:
                 entry["figure"] = True
         if block.spans:
             entry["math"] = [
-                {"id": mapped.span_ids[index], "tex": parsed.spans[index].tex}
+                {
+                    "id": mapped.span_ids[index],
+                    "tex": unlay(parsed.spans[index].tex, block.continuation),
+                }
                 | ({"display": True} if parsed.spans[index].kind == "display" else {})
                 for index in block.spans
             ]
@@ -285,22 +289,25 @@ class DocumentTool:
         found: list[str] = []
         heads = self.store.heads(list(self._seen))
         for document_id, seen in list(self._seen.items()):
-            head = heads.get(document_id, seen)
-            if head <= seen:
+            if heads.get(document_id, seen) <= seen:
                 continue
-            parts: list[str] = []
-            for info, stored in self.store.changes(self.context.project_id, document_id, seen):
-                author = info.author
-                if author.kind == "agent" and author.run_id == self.run_id:
-                    continue
-                parts.append(_describe(info, stored))
-            self._seen[document_id] = head
+            # The revisions read here may go past the heads read above: they say how far.
+            later = self.store.changes(self.context.project_id, document_id, seen)
+            if not later:
+                continue
+            latest = max(info.number for info, _ in later)
+            parts = [
+                _describe(info, stored)
+                for info, stored in later
+                if not (info.author.kind == "agent" and info.author.run_id == self.run_id)
+            ]
+            self._seen[document_id] = max(latest, self._seen.get(document_id, 0))
             if parts:
                 name = self._names.get(document_id, document_id)
                 found.append(
                     f"document {name} ({document_id}) changed after you read it: "
                     + "; ".join(parts)
-                    + f". Read revision {head} before you patch it."
+                    + f". Read revision {latest} before you patch it."
                 )
         return found
 

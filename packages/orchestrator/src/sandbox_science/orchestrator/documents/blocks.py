@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterator
+from bisect import bisect_right
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Final, Literal
 
@@ -35,6 +36,9 @@ MAX_DEPTH: Final = 32
 """Blocks inside blocks: lists, list items, quotes and containers."""
 MAX_BLOCKS: Final = 10_000
 MAX_SPANS: Final = 20_000
+MAX_PARSED: Final = 16 * 1024 * 1024
+"""Characters one change may parse in all: a patch parses the text again after each
+operation, and normalization parses it again to check its conversions."""
 
 STRUCTURAL: Final = frozenset({"heading", "table", "figure", "container"})
 """The kinds of structural blocks (LD-40); a figure is a paragraph holding one image."""
@@ -100,7 +104,8 @@ class InlineText:
     content: str
     provenance: Provenance | None
     excluded: tuple[tuple[int, int, str], ...]
-    """Content ranges of formulas, code spans and automatic links, with their token types."""
+    """Content ranges of formulas, code spans, automatic links, images, and the brackets,
+    address and title of links, with their token types (``link`` for a link's), in order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +166,49 @@ class Parsed:
             parent = self.blocks[parent].parent
 
 
+def merged(excluded: Iterable[tuple[int, int, str]]) -> tuple[list[int], list[int]]:
+    """Ranges in order merged where they overlap, as their starts and their ends."""
+    starts: list[int] = []
+    ends: list[int] = []
+    for low, high, _ in sorted(excluded):
+        if starts and low <= ends[-1]:
+            ends[-1] = max(ends[-1], high)
+        else:
+            starts.append(low)
+            ends.append(high)
+    return starts, ends
+
+
+def overlaps(ranges: tuple[list[int], list[int]], start: int, end: int) -> bool:
+    """Whether ``[start, end)``, which is not empty, meets one of the merged ranges."""
+    starts, ends = ranges
+    index = bisect_right(starts, end - 1) - 1
+    return index >= 0 and start < ends[index]
+
+
+@dataclass
+class Budget:
+    """What one change may still parse, in characters (``MAX_PARSED``)."""
+
+    left: int = MAX_PARSED
+
+    def spend(self, characters: int) -> bool:
+        """Take ``characters`` from what is left, if that much is left."""
+        if characters > self.left:
+            return False
+        self.left -= characters
+        return True
+
+    def charge(self, characters: int) -> None:
+        """Take ``characters``, or refuse the change as too large to check."""
+        if not self.spend(characters):
+            raise DocumentError(
+                INVALID_REQUEST,
+                f"checking this change would parse more than {MAX_PARSED} characters of "
+                "text: send fewer operations in each patch",
+            )
+
+
 def check_text(text: str) -> None:
     """Refuse text a revision cannot hold: not UTF-8, a NUL, or over the size limit."""
     try:
@@ -175,6 +223,11 @@ def check_text(text: str) -> None:
         raise DocumentError(
             INVALID_REQUEST, f"the text has {size} bytes; a document holds at most {MAX_TEXT_BYTES}"
         )
+
+
+BYTE_ORDER_MARK: Final = "\ufeff"
+"""Dropped from the start of a document's text when it is saved: an encoding's mark, not
+text, which would keep a first line from reading as a heading or a table."""
 
 
 def normalize_newlines(text: str) -> str:
@@ -275,6 +328,12 @@ class _Builder:
             start, end = child.meta.get("_start"), child.meta.get("_end")
             if not isinstance(start, int) or not isinstance(end, int):
                 continue
+            label_end = child.meta.get("_label_end")
+            if child.type == "link_open" and isinstance(label_end, int) and label_end > start:
+                # A link's text is text; its brackets, address and title are not.
+                excluded.append((start, start + 1, "link"))
+                excluded.append((label_end, end, "link"))
+                continue
             excluded.append((start, end, child.type))
             kind = _INLINE_MATH.get(child.type)
             if kind is None:
@@ -291,7 +350,9 @@ class _Builder:
                 tex_end=_source_end(provenance, end - len(close)),
                 close_end=_source_end(provenance, end),
             )
-        self._list(block, "inlines").append(InlineText(token.content, provenance, tuple(excluded)))
+        self._list(block, "inlines").append(
+            InlineText(token.content, provenance, tuple(sorted(excluded)))
+        )
 
     def equation(self, block: int, token: Token) -> None:
         close = str(token.meta.get("close", token.markup))
@@ -417,7 +478,7 @@ def parse(text: str) -> Parsed:
             index = builder.add(token, kind, stack[-1] if stack else None, len(stack))
             if kind == "equation":
                 builder.equation(index, token)
-            elif kind == "front_matter":
+            elif kind == "front_matter" and not stack:
                 builder.front_matter = read_front_matter(token.content)
     return Parsed(
         text=text,
