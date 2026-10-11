@@ -140,12 +140,12 @@ The checks start the worker's executor as the OpenShell backend does (`python -I
 | Check | What it shows |
 | --- | --- |
 | `identity`, `filesystem`, `record` | uid 1000 is `sandbox` with home `/sandbox`; only the declared paths are writable; the image record names the profile, and there is no OpenShell image policy |
-| `executor` | The executor's `hello` lists `python`, and `sage` in crypto-base |
+| `executor` | The executor's `hello` lists `python`, and in crypto-base `sage` and the `pdf` feature |
 | `python-kernel`, `tools-on-path`, `multiprocessing` | A Python cell runs with the prefix's interpreter; the environment's programs are on `PATH`; `multiprocessing` locks, pools and process pools work |
 | `sage-kernel`, `sage-interfaces` | A Sage cell computes in GF(17) and preparses `2^10`; gp and Singular start through pseudo-terminals, and libgap works |
 | `fpylll`, `g6k`, `lattice-estimator` | LLL on a 60-dimensional q-ary lattice; a G6K sieve in dimension 50; the primal uSVP estimate for Kyber512 |
 | `latexmk`, `pdftotext`, `pdf-oxide` | `latexmk -pdf` builds an llncs document with T1 fonts, amsmath, cryptocode, algorithmicx, TikZ and cleveref, with no bitmap fonts in the PDF; `pdftotext`, `qpdf --check` and pdf_oxide read the result |
-| `pdf-helper` | The worker's in-sandbox PDF helper (`pdfhelper.py`, [PDF sources](specs/pdf-sources.md)), copied beside the executor, reports the document's page facts and line anchors and renders its page, with the image's pdf_oxide |
+| `pdf-tools` | The worker's PDF operations ([PDF sources](specs/pdf-sources.md)) through the executor and its helper, copied beside it: page facts, line anchors, search and a page render, with the image's pdf_oxide |
 | `runtime-install` | micromamba and pip install a package into the prefix (needs conda-forge and PyPI; `NETWORK=0` skips it) |
 
 `images/tests/test_images.py` runs the same checks from pytest, one test per check and mode. It runs only when `SS_IMAGE_TESTS` names images Docker can see, such as `SS_IMAGE_TESTS="sandbox-science/minimal:abc1234 sandbox-science/crypto-base:abc1234" uv run pytest images`; CI skips it. `images/tests/test_recipes.py` runs in CI: it checks the pins, the lockfiles, the declared filesystem section against the compiler's model, and the license helpers.
