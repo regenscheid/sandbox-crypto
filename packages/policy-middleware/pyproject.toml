@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+[project]
+name = "sandbox-science-policy-middleware"
+version = "0.1.0"
+description = "OpenShell supervisor middleware that decides sandbox requests with the Sandbox Science policy library"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "sandbox-science-policy",
+    "cryptography>=43",
+    "grpcio>=1.66",
+    "protobuf>=7.35.1",
+    "pyjwt>=2.9",
+]
+
+[project.scripts]
+sandbox-science-policy-middleware = "sandbox_science.policy_middleware.cli:main"
+
+[tool.uv.sources]
+sandbox-science-policy = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_science"]

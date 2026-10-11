@@ -1,0 +1,8 @@
+0014command=ls-refs
+001aagent=git/2.53.0-Linux0018object-format=sha25600010009peel
+000csymrefs
+000bunborn
+001bref-prefix refs/heads/
+001aref-prefix refs/tags/
+0014ref-prefix HEAD
+0000

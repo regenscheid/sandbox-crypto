@@ -17,7 +17,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Validate the compiled policies against a real OpenShell v0.1.3 gateway on babbage (`openshell policy set --wait`, the prover's boundary check); so far they are checked only against the documented schema
 - [x] Credential handling: OpenShell providers inject credentials after the policy middleware decides (D57, D69)
 - [ ] Escalation grants: record approvals as scoped grants that the policy middleware and MCP proxy honour, and compile them into the MCP proxy's fence
-- [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint and `upstreamProxy` only chains TLS tunnels, so generic HTTP goes through the project egress proxy
+- [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint, so the compiler admits public address ranges with a host-less endpoint and the policy middleware decides each request (D69)
 - [ ] Policy revisions: GUI and file edits, re-authentication for widening (D54)
 - [ ] `defaults.log`: decide whether allowed operations may go unlogged
 
@@ -25,7 +25,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 - [ ] Worker API schema and worker service
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48)
-- [ ] Policy middleware service (`packages/policy-middleware`): an OpenShell supervisor middleware (gRPC, `EvaluateHttpRequest`) that maps the sandbox to its project policy, checks the policy digest from its config, classifies requests with the library (Content-Type, body presence, pkt-line bodies for git), returns allow or deny with `approval_required` for escalations, and records findings (D69)
+- [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
+- [ ] Orchestrator: write the middleware's policy store and sandbox bindings when it creates sandboxes and revises policies (the `bind` command stands in until then)
 - [ ] Package mirror (D44), the only route to package indexes
 - [ ] On babbage: verify the middleware path (host-less public endpoint and DNS, bodies over the payload limit, WebSocket upgrades, provider-admitted traffic passing the middleware, latency)
 - [ ] MCP proxy: forward only tool names the server advertises, exactly as advertised; bound argument sizes
@@ -47,7 +48,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## babbage
 
-- [ ] Install OpenShell v0.1.3 and run its kernel qualification outside agent shells
+- [x] Install OpenShell v0.1.3: release binaries in `~/.local/opt/openshell-0.1.3/bin`, checked against the published SHA-256 checksums, GitHub's digests and the release workflow's build attestations
+- [ ] Run OpenShell's kernel qualification outside agent shells
 - [ ] Exercise the VM driver (experimental at v0.1.3) on KVM
 
 ## Repository

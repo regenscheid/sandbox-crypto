@@ -1,0 +1,3 @@
+00c6want 75641245606f6dc032f9b56925e35b3249d7a90d multi_ack_detailed no-done side-band-64k deepen-relative thin-pack no-progress include-tag ofs-delta deepen-since deepen-not agent=git/2.53.0-Linux
+0034shallow 75641245606f6dc032f9b56925e35b3249d7a90d000cdeepen 200000032have 75641245606f6dc032f9b56925e35b3249d7a90d
+0009done

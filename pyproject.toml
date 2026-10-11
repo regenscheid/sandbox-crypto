@@ -5,13 +5,16 @@ version = "0.0.0"
 description = "Workspace root for the Sandbox Science research workbench"
 requires-python = ">=3.12"
 license = "MIT"
-dependencies = ["sandbox-science-policy"]
+dependencies = ["sandbox-science-policy", "sandbox-science-policy-middleware"]
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
     "pyright>=1.1.390",
     "ruff>=0.8",
+    "grpcio-tools>=1.66",
+    "types-grpcio>=1.0",
+    "types-protobuf>=6.30",
     "types-pyyaml>=6.0",
 ]
 
@@ -23,10 +26,13 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 sandbox-science-policy = { workspace = true }
+sandbox-science-policy-middleware = { workspace = true }
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# Generated protobuf code (scripts/generate_protos.py).
+extend-exclude = ["packages/policy-middleware/src/sandbox_science/policy_middleware/_proto"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "S", "PT", "N", "C4", "PIE", "RET", "TID"]
@@ -40,6 +46,7 @@ known-first-party = ["sandbox_science"]
 
 [tool.pyright]
 include = ["packages", "scripts"]
+exclude = ["**/_proto", "**/__pycache__"]
 typeCheckingMode = "standard"
 strict = ["packages/*/src"]
 pythonVersion = "3.12"
