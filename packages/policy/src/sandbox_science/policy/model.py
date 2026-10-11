@@ -463,10 +463,17 @@ class McpServer(StrictModel):
 
 
 class McpProxy(StrictModel):
-    """MCP proxy settings (D67)."""
+    """MCP proxy settings (D67).
+
+    ``max_argument_bytes`` bounds the ``params`` of each request the proxy
+    forwards, as compact JSON (for ``tools/call``, the tool name and its
+    arguments): tool arguments can carry data out, as URLs can.
+    ``max_response_bytes`` bounds each answer the proxy reads from a server.
+    """
 
     worker_access: StrictBool = False
     worker_tools: Literal["inherit"] | tuple[ToolPattern, ...] = "inherit"
+    max_argument_bytes: Annotated[ByteSize, Field(gt=0)] = 64 * 1024
     max_response_bytes: ByteSize = 2 * 1024 * 1024
     binary_results: Literal["artifact"] = "artifact"
 
