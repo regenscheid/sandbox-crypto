@@ -225,7 +225,7 @@ def _opam(rest: str) -> PackageOperation | None:
     match = _OPAM_ARCHIVE_RE.fullmatch(rest)
     if match and len(match[3]) == _OPAM_DIGEST_LENGTHS[match[1]] and match[3][:2] == match[2]:
         # Content-addressed: the path names a digest, not a package.
-        return PackageOperation("opam", None, kind="artifact")
+        return PackageOperation("opam", None, kind="artifact", digest=f"{match[1]}:{match[3]}")
     return None
 
 

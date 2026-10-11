@@ -135,9 +135,15 @@ WHEEL = f"{PYPI_FILE}/numpy-2.1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
         ("/npm/files/-/@types/node/-/node-20.0.0.tgz", PackageOperation("npm", "@types/node")),
         # opam: the repository index, and archives by digest (the path names no package)
         ("/opam/index.tar.gz", PackageOperation("opam", None, kind="index")),
-        (f"/opam/cache/md5/cc/{MD5}", PackageOperation("opam", None, kind="artifact")),
-        (f"/opam/cache/sha256/aa/{SHA256}", PackageOperation("opam", None, kind="artifact")),
-        (f"/opam/cache/sha512/bb/{SHA512}", PackageOperation("opam", None, kind="artifact")),
+        (f"/opam/cache/md5/cc/{MD5}", PackageOperation("opam", None, digest=f"md5:{MD5}")),
+        (
+            f"/opam/cache/sha256/aa/{SHA256}",
+            PackageOperation("opam", None, digest=f"sha256:{SHA256}"),
+        ),
+        (
+            f"/opam/cache/sha512/bb/{SHA512}",
+            PackageOperation("opam", None, digest=f"sha512:{SHA512}"),
+        ),
         # Hackage: signed metadata, the index and source distributions
         *[
             (f"/hackage/{name}", PackageOperation("hackage", None, kind="index"))
@@ -314,11 +320,37 @@ def test_names_are_normalized_where_the_registry_folds_spellings() -> None:
 
 def test_opam_archives_are_the_only_package_files_without_a_name() -> None:
     # opam fetches archives by digest, so the path names no package; the policy
-    # decides them by ecosystem.
-    assert PackageOperation("opam", None, kind="artifact").name is None
-    for ecosystem in ("pypi", "cargo", "go", "npm", "hackage"):
+    # decides them by ecosystem, and the operation carries the digest instead.
+    archive = PackageOperation("opam", None, kind="artifact", digest=f"md5:{MD5}")
+    assert (archive.name, archive.digest) == (None, f"md5:{MD5}")
+    for ecosystem in ("pypi", "cargo", "go", "npm", "hackage", "opam"):
         with pytest.raises(ClassificationError, match="named package"):
             PackageOperation(ecosystem, None, kind="artifact")  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize(
+    ("ecosystem", "name", "kind", "digest"),
+    [
+        # Only an opam archive names a digest, and only instead of a name.
+        ("hackage", None, "artifact", f"sha256:{SHA256}"),
+        ("npm", "lodash", "artifact", f"sha512:{SHA512}"),
+        ("opam", None, "index", f"md5:{MD5}"),
+        ("opam", "ocamlfind", "artifact", f"md5:{MD5}"),
+        # The algorithms opam names archives by, as lowercase hex of their length.
+        ("opam", None, "artifact", f"sha1:{'c' * 40}"),
+        ("opam", None, "artifact", f"md5:{'C' * 32}"),
+        ("opam", None, "artifact", f"md5:{MD5}0"),
+        ("opam", None, "artifact", f"sha256:{SHA256[:-1]}"),
+        ("opam", None, "artifact", MD5),
+        ("opam", None, "artifact", f"md5={MD5}"),
+        ("opam", None, "artifact", ""),
+    ],
+)
+def test_digests_are_only_for_opam_archives(
+    ecosystem: str, name: str | None, kind: str, digest: str
+) -> None:
+    with pytest.raises(ClassificationError, match="digest"):
+        PackageOperation(ecosystem, name, kind=kind, digest=digest)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize(
