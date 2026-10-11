@@ -41,6 +41,7 @@ from .errors import WorkerError
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
 from .settings import MIN_TOKEN, Settings, SettingsError, load_settings, token_digest
+from .shared_sync import SharedRecords, SharedSync
 from .store import Store
 from .suspend import Suspender
 
@@ -94,18 +95,30 @@ async def serve(settings: Settings) -> None:
     token = settings.token()
     environments = _environments(settings)
     store = Store(settings.state_dir / "worker.sqlite3")
+    blobs = Blobs(settings.state_dir / "artifacts")
+    # The shared files' blobs are kept apart from published artifacts, by project (D79).
+    shared = (
+        SharedSync(
+            SharedRecords(settings.state_dir / "shared.sqlite3"), settings.state_dir / "shared"
+        )
+        if settings.shared_sync
+        else None
+    )
     manager = ExecutionManager(
         store,
         _backend(settings, environments),
-        Blobs(settings.state_dir / "artifacts"),
+        blobs,
         pool_id=settings.pool_id,
         max_artifact_size=settings.max_artifact_size,
         state_dir=settings.state_dir,
+        shared=shared,
     )
     if environments is not None:
         environments.release = manager.release
         environments.release_idle = manager.release_if_idle
         manager.notices = environments.notices
+        if shared is not None:
+            environments.deleted = shared.forget
     # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
     # attempts still running are stored as lost.
     stopping = asyncio.Event()
@@ -117,6 +130,10 @@ async def serve(settings: Settings) -> None:
     )
     background: list[asyncio.Task[None]] = []
     try:
+        if shared is not None:
+            removed = await shared.sweep()
+            if removed:
+                _log.info("deleted %d blobs no shared file uses", removed)
         await manager.start()
         await runner.setup()
         site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
@@ -142,6 +159,8 @@ async def serve(settings: Settings) -> None:
         await runner.cleanup()
         await manager.close()
         store.close()
+        if shared is not None:
+            shared.records.close()
         if environments is not None:
             environments.close()
 
