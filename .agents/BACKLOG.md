@@ -28,7 +28,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ### Other track P items
 
-- [ ] Worker API schema and worker service
+- [x] Worker API schema and worker service, first version ([worker](../docs/WORKER.md)): idempotent executions with numbered, replayable events, cancellation, watchdogs, kernels through the Jupyter protocol, files and publication; local (tier 0, tests only) and OpenShell backends
+- [ ] Worker service: an executor daemon in the sandbox that survives worker restarts; spilling large rich outputs to files; data grants and session containers
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48)
 - [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
 - [ ] Orchestrator: write the middleware's policy store and sandbox bindings when it creates sandboxes and revises policies (the `bind` command stands in until then)
@@ -39,6 +40,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Package cache: opam and Hackage adapters (EasyCrypt, Jasmin, ProVerif, Cryptol, Tamarin)
 - [ ] Package cache: a cooling-off period for new releases, keeping lockfile files from eviction, TLS between OpenShell and the cache
 - [ ] Package cache: per-sandbox rate limits. The policy middleware writes a sandbox header on cache requests (overwriting anything the sandbox sent), which the cache uses to give each sandbox its own budget; the cooling-off period needs the same mechanism
+- [x] Describe OpenShell v0.1.3's seccomp restrictions on thread scheduling and process-group signals, and libzmq's abort on EPERM, in `.agents/upstream/` (lab 4; filing is the user's call)
 - [x] Describe the OpenShell v0.1.3 bugs we found, in `.agents/upstream/`: credentials substituted into plain HTTP and sent unencrypted; a host with two trailing dots selects no middleware. The user chose to keep the descriptions here; filing them upstream remains the user's call
 - [ ] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox
 - [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic checked in lab 2: the middleware decides it, and the floor holds
@@ -51,13 +53,21 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W0: behavior specification and harness foundation
 
-- [ ] Behavior specs with acceptance fixtures: tools, skills, plans and delegation, automatic review, Conda provisioning, artifacts
-- [ ] Harness building-block decision with licenses recorded
+- [ ] Behavior specs with acceptance fixtures: tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, automatic review, Conda provisioning, artifacts; all to review with the user
+- [x] Harness building-block decision with licenses recorded: D72, proposed, to confirm with the user
 
 ## W1: shared references and one worker adapter
 
-- [ ] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, ...)
-- [ ] First slice: one shell command and two stateful Python cells through the worker API
+- [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
+- [x] First slice: one shell command and two stateful Python cells through the worker API, driven by the harness's tool loop with a scripted model. Done locally and on babbage in an OpenShell VM sandbox ([lab 4](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)), after working around two OpenShell seccomp restrictions (scheduler shim, process-group signals)
+- [ ] The first slice with a real model through LiteLLM (needs the user's model gateway and a virtual key)
+
+## W2: certify babbage execution with math and source capabilities
+
+- [x] Sage through SageMath's own Jupyter kernel (`sagemath` kernelspec): the worker offers it when the environment has it, and the harness gives the agent a `sage` tool. Tested with a stand-in kernelspec
+- [ ] Real SageMath from conda-forge in an OpenShell sandbox: preparsing, finite fields, polynomial rings, exact matrices, LaTeX results, interrupt and restart; first-install time (lab)
+- [ ] `crypto-base` profile with Sage present at session start (D46)
+- [ ] PDF extraction and rendering in the worker (pdf_oxide, D59)
 
 ## babbage
 
