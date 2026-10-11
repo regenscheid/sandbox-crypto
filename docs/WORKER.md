@@ -15,7 +15,7 @@ flowchart LR
 ```
 
 - **Worker service** (`app.py`, `manager.py`): the HTTP API, idempotent submission, event numbering and persistence, cancellation, watchdogs, file operations and publication.
-- **Executor** (`executor.py`): one file that depends only on the standard library and, for kernels, `jupyter_client` and `ipykernel`, so the worker can copy it into any sandbox that has Python. It runs shell commands in their own process groups and Python kernels through the Jupyter protocol (D41), and handles the file operations.
+- **Executor** (`executor.py`): one file that depends only on the standard library and, for kernels, `jupyter_client` and `ipykernel`, so the worker can copy it into any sandbox that has Python. It runs shell commands in their own process groups and kernels through the Jupyter protocol (D41), and handles the file operations. It offers each language whose kernelspec its interpreter's Jupyter installation finds: `python3` for Python and `sagemath`, SageMath's own kernel, for Sage. Platform code never imports Sage; Sage's kernel preparses Sage syntax itself.
 - **Backends** (`backends.py`) start executors:
   - **`openshell`** copies the executor into a configured sandbox with `openshell sandbox upload`, and runs it with `openshell sandbox exec --no-tty --no-login-shell`. The VM driver on babbage gives isolation tier 3 (D43).
   - **`local`** runs the executor as a plain subprocess of the worker. It has **no isolation** and reports tier 0. It exists for development and tests, and the harness refuses it unless told otherwise (`--allow-unisolated`).
@@ -59,7 +59,7 @@ Lab 4 ran the worker against a real gateway ([report](../.agents/docs/agent-repo
 
 Other things to know:
 - **Providers.** A sandbox compiled from a policy that names providers needs those providers attached; OpenShell refuses the policy otherwise.
-- **Kernel environment.** The sandbox's Python environment needs `ipykernel` and `jupyter_client`. In the lab they came from conda-forge through the package cache, in 16 s.
+- **Kernel environment.** The sandbox's Python environment needs `ipykernel` and `jupyter_client`. In the lab they came from conda-forge through the package cache, in 16 s. For Sage, the same environment needs SageMath, which installs the `sagemath` kernelspec; a kernel gets 120 s to start, since Sage starts slowly.
 - **Latency.** Median round trips through the worker API were 14 ms for a shell call and 20 ms for a cell.
 
 Both restrictions are described for upstream in `.agents/upstream/`.

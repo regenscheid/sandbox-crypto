@@ -56,7 +56,7 @@ def test_requests_are_told_apart_by_kind() -> None:
                 "operation_id": "op",
                 "context": CONTEXT,
                 "code": "1",
-                "language": "sage",
+                "language": "fortran",
             }
         )
 

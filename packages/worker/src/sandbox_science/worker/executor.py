@@ -47,7 +47,9 @@ MAX_SNAPSHOT = 20000
 MAX_WRITTEN = 1000
 TERM_GRACE = 2.0
 INTERRUPT_GRACE = 5.0
-KERNEL_START_TIMEOUT = 60.0
+KERNEL_START_TIMEOUT = 120.0
+KERNEL_NAMES = {"python": "python3", "sage": "sagemath"}
+"""Each language's Jupyter kernelspec; SageMath installs ``sagemath`` beside its Python."""
 SHARED = "shared"
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -177,7 +179,7 @@ class Kernel:
             from jupyter_client.manager import AsyncKernelManager
         except ImportError as exc:
             raise ToolError("unsupported", "jupyter_client is not installed here") from exc
-        manager: Any = AsyncKernelManager(kernel_name="python3")
+        manager: Any = AsyncKernelManager(kernel_name=KERNEL_NAMES[self.language])
         try:
             await manager.start_kernel(cwd=str(self.cwd), env=self.env)
             client = manager.client()
@@ -352,8 +354,7 @@ class Executor:
     # Operations.
 
     async def op_hello(self, request: Message) -> None:
-        kernels = ("jupyter_client", "ipykernel")
-        languages = ["python"] if all(importlib.util.find_spec(name) for name in kernels) else []
+        languages = available_languages()
         await self.reply(
             request,
             protocol=PROTOCOL,
@@ -501,7 +502,7 @@ class Executor:
             await process.wait()
 
     def kernel(self, session: str, language: str) -> Kernel:
-        if language != "python":
+        if language not in KERNEL_NAMES:
             raise ToolError("unsupported", f"no {language!r} kernel here")
         key = (session, language)
         if key not in self.kernels:
@@ -785,6 +786,19 @@ class Executor:
                 {"name": entry.name, "type": kind, "size": info.st_size, "modified": info.st_mtime}
             )
         await self.reply(request, entries=entries, truncated=len(items) > limit)
+
+
+def available_languages() -> list[str]:
+    """The languages whose kernelspecs this interpreter's Jupyter installation finds."""
+    if not all(importlib.util.find_spec(name) for name in ("jupyter_client", "ipykernel")):
+        return []
+    try:
+        from jupyter_client.kernelspec import KernelSpecManager
+
+        specs: dict[str, str] = KernelSpecManager().find_kernel_specs()
+    except Exception:  # a broken Jupyter installation offers no kernels
+        return []
+    return [language for language, name in KERNEL_NAMES.items() if name in specs]
 
 
 def group_members(pgid: int) -> list[int]:
