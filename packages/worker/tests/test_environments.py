@@ -27,7 +27,12 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
-from sandbox_science.contracts import EnvironmentRequest, EnvironmentState, ErrorKind
+from sandbox_science.contracts import (
+    EnvironmentRequest,
+    EnvironmentState,
+    ErrorKind,
+    PackageCommand,
+)
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
 from sandbox_science.worker import environments as environments_module
@@ -1481,6 +1486,53 @@ async def test_sandboxes_made_by_hand_are_the_pools_alone(
         assert status == 201, execution
         nowhere = {**shell, "context": {**context, "environment_id": "env-nowhere"}}
         assert await api.refused("POST", "/v1/executions", TOKEN, nowhere) == (404, "not_found")
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_a_new_environment_starts_a_history_of_its_own(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    # Review of package commands (2026-10-11), M3: the pool's own token ran package
+    # commands for p1 in a sandbox made by hand, "lab"; once the operator retired it, a
+    # client of p2 created "lab" and read p1's commands, attempts and lockfiles (D78).
+    setup = Setup(tmp_path, sandboxes={"lab": "research-1"})
+    api, manager = await start_api(setup, aiohttp_client, tmp_path / "worker-api")
+    credential = "test-secret-p1-index-password"
+    index = f"--index-url=https://p1user:{credential}@private.p1.example/simple"
+    command = PackageCommand(argv=("pip", "install", index, "p1-tool"), via="wrapper")
+    lockfile = manager.revisions.prepare({"pip": [{"name": "p1-tool", "version": "4.2"}]})
+    assert lockfile is not None
+    manager.revisions.observe("lab", "a" * 32)
+    manager.revisions.observe(
+        "lab",
+        "b" * 32,
+        "att-0123456789abcdef01234567",
+        managed=True,
+        commands=(command,),
+        lockfile=lockfile,
+    )
+    await manager.close()
+    manager.store.close()
+    setup = Setup(tmp_path)  # the sandbox made by hand is retired
+    api, manager = await start_api(setup, aiohttp_client, tmp_path / "worker-api")
+    try:
+        setup.environments.records.grant("p2", setup.policy)
+        status, created = await api.call(
+            "POST", "/v1/environments", B_TOKEN, api.environment("lab", project_id="p2")
+        )
+        assert status == 201, created
+        for token in (B_TOKEN, TOKEN):
+            status, history = await api.call("GET", "/v1/environments/lab/revisions", token)
+            assert (status, history["revisions"]) == (200, []), token
+            path = "/v1/environments/lab/revisions/1/lockfile"
+            assert await api.refused("GET", path, token) == (404, "not_found"), token
+        assert not manager.revisions.blobs.path(lockfile.ref.sha256).exists()
+        # What it records from now on is its own.
+        manager.revisions.observe("lab", "c" * 32)
+        status, history = await api.call("GET", "/v1/environments/lab/revisions", B_TOKEN)
+        assert [entry["fingerprint"] for entry in history["revisions"]] == ["c" * 32]
     finally:
         await manager.close()
         manager.store.close()

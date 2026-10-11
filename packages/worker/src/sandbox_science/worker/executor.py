@@ -24,6 +24,7 @@ import base64
 import codecs
 import contextlib
 import errno
+import functools
 import hashlib
 import importlib
 import importlib.util
@@ -103,6 +104,10 @@ MAX_LOCKFILE_EVENT = MAX_LINE // 2
 MAX_OWNERS = 4096
 MAX_RUNS = 64
 """Attempts remembered per call or kernel, to tell which one ran a package command."""
+MAX_COMMANDS = 8
+"""Package commands a ``revision`` event names: the last of its change."""
+MAX_LOOKS = 8
+"""Rounds of journal records one look reads; any left wait for the next look."""
 PROBE_TEXT = 256
 """The longest value the isolation probe reports."""
 MAX_SENTINELS = 8
@@ -138,6 +143,20 @@ class ToolError(Exception):
 
 class _NotStartedError(Exception):
     """An attempt cancelled before it started: a cell before it reached its kernel."""
+
+
+@dataclass
+class _Change:
+    """A change to the environment's packages, as one ``revision`` event reports it."""
+
+    fingerprint: str
+    managed: bool
+    cause: str | None
+    """The execution that ran its package commands, or after which it was seen."""
+    commands: list[Message] = field(default_factory=list[Message])
+    lockfile: object = None
+    names: list[str] = field(default_factory=list[str])
+    """The journal records it accounts for, which leave the journal once it is sent."""
 
 
 class _BusyError(Exception):
@@ -862,6 +881,12 @@ def process_owner(pid: int) -> str | None:
     Unreadable are zombies, other users' processes, and children of this executor
     between fork and exec, since the executor is not dumpable.
     """
+    return _started_with(pid, OWNER)
+
+
+def _started_with(pid: int, name: str) -> str | None:
+    """A variable of the environment a process started with: ``""`` without it, None
+    when unreadable."""
     try:
         with open(f"/proc/{pid}/environ", "rb") as handle:
             environ = handle.read()
@@ -869,11 +894,28 @@ def process_owner(pid: int) -> str | None:
         return None
     if not environ:
         return None
-    prefix = OWNER.encode() + b"="
+    prefix = name.encode() + b"="
     for item in environ.split(b"\0"):
         if item.startswith(prefix):
             return item[len(prefix) :].decode("utf-8", "replace")
     return ""
+
+
+def without_wrapped(processes: Sequence[Process]) -> list[Process]:
+    """``processes`` less each package command whose wrapper is among them.
+
+    A wrapper passes the signals it gets on to its command (provisioning.run): signalled
+    both directly and through its wrapper, the command would get each signal twice, and
+    the second can cut short the clean-up the first began, such as conda's rollback.
+    """
+    pids = {info.pid for info in processes}
+    kept: list[Process] = []
+    for info in processes:
+        holder = provisioning.holder_pid(_started_with(info.pid, provisioning.HOLDER) or "")
+        if holder is not None and holder == info.ppid and holder in pids:
+            continue
+        kept.append(info)
+    return kept
 
 
 def owned_processes(owner: str, leader: Leader | None) -> list[Process]:
@@ -1202,8 +1244,6 @@ class Executor:
         self.reported = ""
         """The packages' fingerprint as the worker knows it, from ``hello`` and the
         ``revision`` events since."""
-        self.pending: list[Message] = []
-        """``revision`` events not sent yet, oldest first."""
         try:
             config = provisioning.Config(sys.executable, str(PROVISIONING), sys.prefix, self.places)
             self.wrapped = provisioning.refresh(self.packages, config, self.tool_path())
@@ -1413,11 +1453,16 @@ class Executor:
             os.close(held)
             raise
         try:
-            # observe closes the descriptor, in its thread, however this task ends.
-            observed = await asyncio.to_thread(
-                provisioning.observe, self.packages, self.places, self.reported, held
-            )
-            await self.report(running.execution, observed, None)
+            descriptor: int | None = held
+            for _ in range(MAX_LOOKS):
+                # observe closes the descriptor, in its thread, however this task ends.
+                observed = await asyncio.to_thread(
+                    provisioning.observe, self.packages, self.places, self.reported, descriptor
+                )
+                descriptor = None
+                await self.report(running.execution, observed, None)
+                if observed.complete:
+                    break
         except OSError as exc:
             print(f"executor: cannot read the package journal: {exc}", file=sys.stderr)
             return None
@@ -1441,14 +1486,24 @@ class Executor:
         if self.provisioning is None:
             return {"environment": await asyncio.to_thread(environment_fingerprint)}
         async with self.observing:
+            observed = provisioning.Observation()
             try:
-                observed = await asyncio.to_thread(
-                    provisioning.observe, self.packages, self.places, self.reported
-                )
+                for _ in range(MAX_LOOKS):
+                    observed = await asyncio.to_thread(
+                        functools.partial(
+                            provisioning.observe,
+                            self.packages,
+                            self.places,
+                            self.reported,
+                            lockfile_wanted=True,
+                        )
+                    )
+                    await self.report(running.execution, observed, running.execution)
+                    if observed.complete:
+                        break
             except OSError as exc:  # research code can break the state directory
                 print(f"executor: cannot read the package lock: {exc}", file=sys.stderr)
                 return {"environment": await asyncio.to_thread(environment_fingerprint)}
-            await self.report(running.execution, observed, running.execution)
             return {"environment": self.reported, "environment_changing": observed.busy is not None}
 
     async def report(
@@ -1456,33 +1511,79 @@ class Executor:
     ) -> None:
         """Send a ``revision`` event, as part of ``execution``, for each change, in order.
 
-        A package command's record makes its change managed, set against the attempt that
-        ran it. A change before a record, or one no record accounts for, is unmanaged
-        (CP-4), set against ``cause``: the attempt after which it was seen, if any. The
-        events queue before any is sent, so those a cancelled attempt did not send go with
-        the next attempt's. Hold ``observing``.
+        The records of one attempt's package commands, one after another, make one
+        managed change, set against that attempt, with its last commands. A change before
+        a record, or one no record accounts for, is unmanaged (CP-4), set against
+        ``cause``: the attempt after which it was seen, if any. The last change of each
+        attempt carries a lockfile, the packages as that attempt left them; the worker
+        keeps one for each attempt. A record leaves the journal once its event is sent,
+        so that one a cancelled attempt did not send is read again by the next. Hold
+        ``observing``.
         """
+        changes, spare = self.changes(observed, cause)
+        self.packages.remove_records(spare)  # records that changed nothing
+        last = {change.cause: index for index, change in enumerate(changes)}
+        for index, change in enumerate(changes):
+            raw = (
+                change.lockfile
+                if change.cause is not None and last[change.cause] == index
+                else None
+            )
+            lockfile = cast(Message, raw) if isinstance(raw, dict) else None
+            if lockfile is not None:
+                size = len(json.dumps(lockfile, separators=(",", ":")))
+                if size > MAX_LOCKFILE_EVENT:
+                    print(f"executor: a lockfile of {size} bytes is too large", file=sys.stderr)
+                    lockfile = None
+            await self.event(
+                execution,
+                "revision",
+                fingerprint=change.fingerprint,
+                managed=change.managed,
+                cause=change.cause,
+                commands=change.commands[-MAX_COMMANDS:],
+                omitted_commands=max(0, len(change.commands) - MAX_COMMANDS),
+                lockfile=lockfile,
+            )
+            self.reported = change.fingerprint
+            self.packages.remove_records(change.names)
+
+    def changes(
+        self, observed: provisioning.Observation, cause: str | None
+    ) -> tuple[list[_Change], list[str]]:
+        """The changes an observation shows, in order, and the records that changed nothing."""
+        changes: list[_Change] = []
+        spare: list[str] = []
         reported = self.reported
-        for record in observed.records:
+        for name, record in observed.records:
+            if not provisioning.usable(record):
+                spare.append(name)
+                continue
             before, after = str(record["before"]), str(record["after"])
-            if before != reported:
-                self.pending.append(_revision(before, record.get("before_lockfile"), False, None))
+            if before != reported:  # changed meanwhile by something no record accounts for
+                changes.append(_Change(before, False, cause))
                 reported = before
-            if after != reported:
-                command = {
-                    key: record.get(key)
-                    for key in ("command", "via", "exit_code", "signal", "started", "ended")
-                }
-                lockfile = record.get("lockfile")
-                self.pending.append(_revision(after, lockfile, True, self.cause(record), command))
-                reported = after
+            if after == reported:
+                spare.append(name)
+                continue
+            command = {
+                key: record.get(key)
+                for key in ("command", "via", "exit_code", "signal", "started", "ended")
+            }
+            who = self.cause(record)
+            if changes and changes[-1].managed and changes[-1].cause == who:
+                change = changes[-1]
+                change.fingerprint = after
+                change.lockfile = record.get("lockfile")
+            else:
+                change = _Change(after, True, who, lockfile=record.get("lockfile"))
+                changes.append(change)
+            change.commands.append(command)
+            change.names.append(name)
+            reported = after
         if observed.fingerprint is not None and observed.fingerprint != reported:
-            self.pending.append(_revision(observed.fingerprint, observed.lockfile, False, cause))
-            reported = observed.fingerprint
-        self.reported = reported
-        while self.pending:
-            await self.event(execution, "revision", **self.pending[0])
-            self.pending.pop(0)
+            changes.append(_Change(observed.fingerprint, False, cause, lockfile=observed.lockfile))
+        return changes, spare
 
     def own(self, owner: str, execution: str) -> None:
         """Remember that ``execution`` runs under ``owner``, a call's or a kernel's mark."""
@@ -1733,13 +1834,18 @@ class Executor:
                 await self.stream(execution, capture.name, text)
 
     async def terminate(self, running: Running) -> None:
-        """SIGTERM to the command and what it started, then SIGKILL after a grace period."""
+        """SIGTERM to the command and what it started, then SIGKILL after a grace period.
+
+        A package command's wrapper passes its SIGTERM on, so the command gets one only.
+        """
         process = running.process
         if process is None:
             return
         owner, leader = running.owner, running.leader
         await asyncio.to_thread(
-            lambda: signal_processes(owned_processes(owner, leader), signal.SIGTERM)
+            lambda: signal_processes(
+                without_wrapped(owned_processes(owner, leader)), signal.SIGTERM
+            )
         )
         try:
             await asyncio.wait_for(process.wait(), TERM_GRACE)
@@ -2540,30 +2646,6 @@ def _running(environment: str | None) -> Message:
     if environment is None:
         return {"state": "running"}
     return {"state": "running", "environment": environment}
-
-
-def _revision(
-    fingerprint: str,
-    lockfile: object,
-    managed: bool,
-    cause: str | None,
-    command: Message | None = None,
-) -> Message:
-    """A ``revision`` event's fields; a lockfile too large for one line stays behind."""
-    if isinstance(lockfile, dict):
-        size = len(json.dumps(lockfile, separators=(",", ":")))
-        if size > MAX_LOCKFILE_EVENT:
-            print(f"executor: a lockfile of {size} bytes is too large to send", file=sys.stderr)
-            lockfile = None
-    else:
-        lockfile = None
-    return {
-        "fingerprint": fingerprint,
-        "managed": managed,
-        "cause": cause,
-        "command": command,
-        "lockfile": lockfile,
-    }
 
 
 def _mime_bundle(data: object) -> dict[str, str]:

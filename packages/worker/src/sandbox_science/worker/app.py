@@ -17,6 +17,7 @@ import hmac
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Final, cast
 
 from aiohttp import web
@@ -27,6 +28,7 @@ from sandbox_science.contracts import (
     AdmissionRequest,
     AdmissionResult,
     ArtifactRef,
+    EnvironmentInfo,
     EnvironmentRequest,
     EnvironmentState,
     ErrorInfo,
@@ -46,6 +48,7 @@ from sandbox_science.contracts import (
     WorkerErrorResponse,
     WriteFileRequest,
 )
+from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
 
 from .environments import Environments
@@ -291,7 +294,7 @@ async def create_environment(request: web.Request) -> web.Response:
     client = _client(request)
     if client.projects is None or client.max_environments is None:
         # An environment of another project is a conflict that does not name the project.
-        info, created = await environments.create(body)
+        info, created = await _create(request, environments, body)
         return _json(info, 201 if created else 200)
     # Counted and reserved with no await between, so concurrent requests cannot both pass.
     # A reservation is the ID itself, so one being created is not counted twice.
@@ -308,13 +311,27 @@ async def create_environment(request: web.Request) -> web.Response:
             )
         pending.add(body.environment_id)
     try:
-        info, created = await environments.create(body)
+        info, created = await _create(request, environments, body)
     finally:
         if reserve:
             pending.discard(body.environment_id)
         if not pending and creating.get(client.name) is pending:
             del creating[client.name]
     return _json(info, 201 if created else 200)
+
+
+async def _create(
+    request: web.Request, environments: Environments, body: EnvironmentRequest
+) -> tuple[EnvironmentInfo, bool]:
+    """Create the environment; a new one starts a history of its own (D78).
+
+    Revisions recorded under its ID before, by a sandbox made by hand, a worker that did
+    not manage environments yet, or an earlier sandbox of the ID, are forgotten.
+    """
+    info, created = await environments.create(body)
+    if created:
+        request.app[MANAGER].revisions.forget(body.environment_id)
+    return info, created
 
 
 def _environment(request: web.Request, environments: Environments) -> str:
@@ -368,12 +385,14 @@ async def admit_hosts(request: web.Request) -> web.Response:
     )
 
 
-def _revisions_of(request: web.Request) -> str:
-    """The route's environment, once the client may see its revisions (Conda provisioning).
+def _revisions_of(request: web.Request) -> tuple[str, datetime | None]:
+    """The route's environment, once the client may see its revisions (Conda provisioning),
+    and since when.
 
     The worker records revisions for every environment that ran something. Those it
-    created belong to their project; only the pool's own token sees the others, as with
-    executions.
+    created belong to their project, and their history starts with their record (D78):
+    revisions recorded under the ID before are not theirs. Only the pool's own token sees
+    the others, as with executions.
     """
     environment_id = _identifier(request.match_info["environment_id"], "environment_id")
     environments = request.app.get(ENVIRONMENTS)
@@ -382,25 +401,46 @@ def _revisions_of(request: web.Request) -> str:
     if info is None:
         if limited:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
-        return environment_id
+        return environment_id, None
     _visible(request, info.project_id, f"environment {environment_id!r}")
     if limited and info.state is EnvironmentState.DELETED:
         raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
-    return environment_id
+    return environment_id, info.created_at
+
+
+def _number(request: web.Request, name: str, default: int, low: int, high: int) -> int:
+    text = request.query.get(name)
+    if text is None:
+        return default
+    try:
+        value = int(text)
+    except ValueError:
+        value = low - 1
+    if not low <= value <= high:
+        raise WorkerError(
+            ErrorKind.INVALID_REQUEST, f"{name} must be a number from {low} to {high}"
+        )
+    return value
 
 
 async def environment_revisions(request: web.Request) -> web.Response:
-    environment_id = _revisions_of(request)
-    return _json(request.app[MANAGER].revisions.history(environment_id))
+    """A page of the environment's revisions: ``after`` a revision, at most ``limit``."""
+    environment_id, since = _revisions_of(request)
+    after = _number(request, "after", -1, -1, 2**62)
+    limit = _number(request, "limit", MAX_REVISION_PAGE, 1, MAX_REVISION_PAGE)
+    history = request.app[MANAGER].revisions.history(
+        environment_id, after=after, limit=limit, since=since
+    )
+    return _json(history)
 
 
 async def revision_lockfile(request: web.Request) -> web.StreamResponse:
     """A revision's lockfile, as the JSON of a ``Lockfile``, with ``X-Content-SHA256``."""
-    environment_id = _revisions_of(request)
+    environment_id, since = _revisions_of(request)
     text = request.match_info["revision"]
     if not text.isascii() or not text.isdigit() or len(text) > 18:
         raise WorkerError(ErrorKind.INVALID_REQUEST, "the revision must be a number")
-    path, lockfile = request.app[MANAGER].revisions.lockfile(environment_id, int(text))
+    path, lockfile = request.app[MANAGER].revisions.lockfile(environment_id, int(text), since=since)
     return web.FileResponse(
         path,
         headers={

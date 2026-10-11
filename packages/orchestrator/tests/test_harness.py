@@ -175,6 +175,38 @@ async def test_the_client_reads_revisions_and_their_lockfiles(client: WorkerClie
     assert missing.value.kind is ErrorKind.NOT_FOUND
 
 
+async def test_the_client_pages_revisions_and_bounds_what_it_reads() -> None:
+    # Review of package commands (2026-10-11), H1: the client read a whole history, of
+    # any size, into memory.
+    asked: list[dict[str, str]] = []
+
+    async def page(request: web.Request) -> web.Response:
+        asked.append(dict(request.query))
+        return web.json_response({"environment_id": "env1", "revisions": [], "next_after": 7})
+
+    async def huge(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "application/json"})
+        await response.prepare(request)
+        for _ in range(9):  # over both bounds, a MiB at a time
+            await response.write(b" " * (1024 * 1024))
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/v1/environments/env1/revisions", page)
+    app.router.add_get("/v1/environments/env2/revisions", huge)
+    app.router.add_get("/v1/environments/env1/revisions/3/lockfile", huge)
+    async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
+        history = await client.revisions("env1", after=41, limit=10)
+        assert (history.revisions, history.next_after) == ((), 7)
+        assert asked == [{"after": "41", "limit": "10"}]
+        for call in (client.revisions("env2"), client.lockfile("env1", 3)):
+            with pytest.raises(WorkerAPIError) as raised:
+                await call
+            assert raised.value.kind is ErrorKind.INTERNAL
+            assert "over" in raised.value.message
+
+
 async def test_a_repeated_tool_call_is_one_execution(client: WorkerClient) -> None:
     toolbox = Toolbox(client, CONTEXT)
     (call,) = (

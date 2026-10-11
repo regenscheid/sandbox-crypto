@@ -4,9 +4,9 @@
 The worker copies this file beside the executor, which loads it; it depends only on
 the standard library. The executor writes, in its state directory, a wrapper for each
 package manager on ``PATH`` (pip, uv, conda, mamba, micromamba) and puts the wrappers
-first on ``PATH``. It also writes a ``sitecustomize`` hook that the environment's
-Python loads, for the same managers run as modules: ``python -m pip``, which IPython's
-``%pip`` runs, and ``python -m uv``.
+first on ``PATH``, in a directory laid out like the prefix's ``bin``. It also writes a
+``sitecustomize`` hook that the environment's Python loads, for the same managers run as
+modules: ``python -m pip``, which IPython's ``%pip`` runs, and ``python -m uv``.
 
 A command that may change the environment takes the environment's lock, waiting its
 turn, runs as a child of the wrapper, and leaves a record in a journal: who ran it,
@@ -32,12 +32,13 @@ import platform
 import re
 import shlex
 import signal
+import stat
 import sys
 import tempfile
 import time
 import urllib.parse
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, NoReturn, cast
 
@@ -47,24 +48,23 @@ HOLDER: Final = "SANDBOX_SCIENCE_PACKAGE_LOCK"
 """Set for what a package command starts: the process holding the lock, ``pid:start``."""
 LOCKFILE_FORMAT: Final = "sandbox-science-lockfile"
 LOCKFILE_VERSION: Final = 1
-RECORD_VERSION: Final = 1
-MAX_ARGUMENTS: Final = 64
-MAX_ARGUMENT: Final = 1024
-MAX_FIELD: Final = 256
-"""Characters in a lockfile's names, versions, builds, subdirs and licenses."""
-MAX_TEXT: Final = 2048
-"""Characters in a lockfile's channels, file names and URLs."""
+RECORD_VERSION: Final = 2
+MAX_ARGUMENTS: Final = 32
+MAX_ARGUMENT: Final = 512
+MAX_COMMAND: Final = 4096
+"""Characters of a command line a record keeps, all arguments together."""
 MAX_PACKAGES: Final = 20_000
 """Entries in each section of a lockfile."""
 MAX_META_BYTES: Final = 64 * 1024 * 1024
 """The largest ``conda-meta`` record read; their file lists make some large."""
 MAX_RECORD_BYTES: Final = 32 * 1024 * 1024
 MAX_RECORDS: Final = 256
-"""Journal records the executor reads at a time; the rest wait for its next look."""
+"""Journal records the executor reads at a time."""
 MAX_ANCESTORS: Final = 64
 SI_KERNEL: Final = 0x80
 """``si_code`` of a signal the kernel sent, such as a terminal's: the whole process group
 gets it, the command too, so the wrapper does not pass it on again."""
+PR_SET_PDEATHSIG: Final = 1
 
 CHANGING: Final[Mapping[str, frozenset[str]]] = {
     "pip": frozenset({"install", "uninstall"}),
@@ -96,12 +96,47 @@ SUBDIRS: Final = {
 }
 UPSTREAM_CONDA: Final = "conda.anaconda.org"
 UPSTREAM_FILES: Final = "https://files.pythonhosted.org/"
+CHANNEL_SCHEMES: Final = frozenset({"http", "https", "file"})
+SOURCE_SCHEMES: Final = frozenset(
+    {"http", "https", "file"}
+    | {f"{vcs}+{scheme}" for vcs in ("git", "hg", "svn", "bzr") for scheme in ("http", "https")}
+    | {f"{vcs}+{scheme}" for vcs in ("git", "hg", "svn", "bzr") for scheme in ("ssh", "file")}
+)
+PYTHONS: Final = ("python", "python3", f"python{sys.version_info[0]}.{sys.version_info[1]}")
+"""What gets a stand-in beside the wrappers, for scripts that run the Python next to pip."""
 
+# The lockfile's fields, as packages/contracts says them (sandbox_science.contracts.revisions).
+_NAME: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._+-]{0,255}")
+_VERSION: Final = re.compile(r"[A-Za-z0-9_.+!-]{1,256}")
+_BUILD: Final = re.compile(r"[A-Za-z0-9_.+]{1,256}")
+_SUBDIR: Final = re.compile(r"[a-z0-9]+(?:-[a-z0-9_]+)?")
+_FILE: Final = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._+!-]{0,250}\.(?:conda|tar\.bz2)")
+_CHANNEL_NAME: Final = re.compile(
+    r"[A-Za-z0-9_][A-Za-z0-9._-]{0,255}(?:/label/[A-Za-z0-9._-]{1,255})?"
+)
+_URL_TEXT: Final = re.compile(r"[a-z0-9+]+://[!-~]{1,2030}")
+_INSTALLER: Final = re.compile(r"[A-Za-z0-9_.+-]{1,64}")
+_LICENSE: Final = re.compile(r"[ -~]{1,256}")
 _PIP: Final = re.compile(r"pip(?:[0-9]+(?:\.[0-9]+)?)?")
-_CHANNEL: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:/label/[A-Za-z0-9._-]+)?")
-_SHA256: Final = re.compile(r"[0-9a-f]{64}")
 _FINGERPRINT: Final = re.compile(r"[0-9a-f]{32}")
+_SHA256: Final = re.compile(r"[0-9a-f]{64}")
 _TOKEN: Final = re.compile(r"^/t/[^/]+")
+# What a command line must not keep: credentials in URLs, and the values of token options.
+# Each pattern takes time linear in what it reads, and options are short.
+_AUTHORITY_END: Final = re.compile(r"[/?#\s]")
+_SECRET_PARAMETER: Final = re.compile(
+    r"([?&;][A-Za-z0-9_.-]*(?:token|key|secret|password|passwd|auth|sig|signature)=)[^&;#\s]*",
+    re.IGNORECASE,
+)
+_SECRET_OPTION: Final = re.compile(
+    r"--?[A-Za-z0-9_-]*(?:token|password|passwd|secret|api-key|apikey)[A-Za-z0-9_-]*",
+    re.IGNORECASE,
+)
+_MAX_OPTION: Final = 64
+_NOTE: Final = re.compile(r"\[… [0-9]{1,10} more arguments\]")
+_CONTROL: Final = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_UNSAFE: Final = re.compile(r"[\x00-\x20\x7f]")
+"""What no URL a lockfile keeps may hold: spaces, line breaks and other controls."""
 
 Message = dict[str, Any]
 
@@ -193,6 +228,13 @@ exec @REAL@ "$@"
 """
 """uv's wrapper: only its pip interface changes the environment."""
 
+STAND_IN: Final = """\
+#!/bin/sh
+# Written by the Sandbox Science executor: the environment's own @NAME@, for scripts
+# that run the Python beside the package managers (docs/WORKER.md).
+exec @REAL@ "$@"
+"""
+
 
 # Commands.
 
@@ -231,11 +273,76 @@ def tool_names() -> tuple[str, ...]:
     return ("pip", f"pip{major}", f"pip{major}.{minor}", "uv", "conda", "mamba", "micromamba")
 
 
-def bounded_command(argv: Sequence[str]) -> list[str]:
-    """A command line as records keep it: at most 64 arguments of 1,024 characters."""
-    kept = [argument[:MAX_ARGUMENT] for argument in argv[:MAX_ARGUMENTS]]
-    if len(argv) > MAX_ARGUMENTS:
-        kept.append(f"[… {len(argv) - MAX_ARGUMENTS} more arguments]")
+def redact(argument: str) -> str:
+    """An argument without credentials: a URL's user information and the values of
+    parameters that name a token, key, secret or password become ``***``."""
+    argument = _without_userinfo(argument)
+    argument = _SECRET_PARAMETER.sub(r"\1***", argument)
+    option, equals, _ = argument.partition("=")
+    if equals and _secret_option(option):
+        return f"{option}=***"
+    return argument
+
+
+def _without_userinfo(text: str) -> str:
+    """``text`` with the user information of each URL in it, all that comes between ``://``
+    and the last ``@`` before the URL's path, replaced by ``***``."""
+    kept: list[str] = []
+    start = 0
+    while (index := text.find("://", start)) != -1:
+        begin = index + 3
+        end = _AUTHORITY_END.search(text, begin)
+        at = text.rfind("@", begin, end.start() if end else len(text))
+        kept.append(text[start:begin])
+        if at != -1:
+            kept.append("***")
+            start = at
+        else:
+            start = begin
+    kept.append(text[start:])
+    return "".join(kept)
+
+
+def _secret_option(option: str) -> bool:
+    return len(option) <= _MAX_OPTION and _SECRET_OPTION.fullmatch(option) is not None
+
+
+def _cut(text: str, limit: int) -> str:
+    """``text`` cut to ``limit`` characters. A URL whose user information the cut may have
+    parted from its ``@`` keeps only its scheme."""
+    text = text[:limit]
+    index = text.rfind("://")
+    if index != -1 and _AUTHORITY_END.search(text, index + 3) is None:
+        text = text[: min(index + 3, limit - 3)] + "***"
+    return text
+
+
+def bounded_command(argv: Sequence[str], length: int | None = None) -> list[str]:
+    """A command line as records keep it: control characters replaced by ``?``,
+    credentials redacted, at most 32 arguments of 512 characters and 4,096 in all, and a
+    note for what is left out. What it returns, it returns unchanged. ``length`` is the
+    command line's, when ``argv`` is only its start."""
+    whole = len(argv) if length is None else max(length, len(argv))
+    kept: list[str] = []
+    total = 0
+    secret_next = False
+    for index, argument in enumerate(argv):
+        if index >= MAX_ARGUMENTS or total >= MAX_COMMAND:
+            rest = whole - index
+            kept.append(
+                argument
+                if rest == 1 and _NOTE.fullmatch(argument)
+                else f"[… {rest} more arguments]"
+            )
+            break
+        head = _CONTROL.sub("?", argument[:MAX_COMMAND])  # no pattern reads more than this
+        shown = "***" if secret_next else redact(head)
+        secret_next = _secret_option(head)
+        limit = min(MAX_ARGUMENT, MAX_COMMAND - total)
+        if len(shown) > limit or len(head) < len(argument):
+            shown = _cut(shown, limit)
+        total += len(shown)
+        kept.append(shown)
     return kept
 
 
@@ -315,17 +422,24 @@ def fingerprint(places: Places) -> str:
 def lockfile(places: Places) -> Message:
     """The packages installed in an environment, as the platform's lockfile (CP-18).
 
-    Conda packages are named by channel, subdir, file name and SHA-256, never by the
-    package cache's address. Distributions pip or uv installed follow, by name and
+    Conda packages are named by channel, subdir, file name and SHA-256; a channel on
+    conda.anaconda.org by its name. Distributions pip or uv installed follow, by name and
     version, with the URL and hash of a direct-URL install; those a Conda package
-    installed are left out, since the Conda entry stands for them.
+    installed are left out, since the Conda entry stands for them. Every value matches
+    the lockfile's patterns: one that does not is left out, and a record whose name,
+    version or build cannot be held counts as skipped. The worker names the package
+    cache's URLs by their channels and upstream URLs.
     """
-    conda, owned = _conda_packages(places.conda_meta)
+    conda, owned, skipped = _conda_packages(places.conda_meta)
     pip: list[Message] = []
     for directory in places.site:
-        pip += _distributions(directory, "prefix", owned)
+        found, left = _distributions(directory, "prefix", owned)
+        pip += found
+        skipped += left
     if places.user and places.user not in places.site:
-        pip += _distributions(places.user, "user", owned)
+        found, left = _distributions(places.user, "user", owned)
+        pip += found
+        skipped += left
     conda.sort(
         key=lambda item: (item["name"], item["version"], item["build"], item["subdir"] or "")
     )
@@ -333,40 +447,45 @@ def lockfile(places: Places) -> Message:
     return {
         "format": LOCKFILE_FORMAT,
         "version": LOCKFILE_VERSION,
-        "python": platform.python_version(),
+        "python": _matching(platform.python_version(), _VERSION),
         "platform": SUBDIRS.get(platform.machine().lower()),
         "conda": conda[:MAX_PACKAGES],
         "pip": pip[:MAX_PACKAGES],
+        "skipped": skipped + max(0, len(conda) - MAX_PACKAGES) + max(0, len(pip) - MAX_PACKAGES),
     }
 
 
-def _conda_packages(directory: str) -> tuple[list[Message], set[str]]:
-    """The lockfile's Conda entries, and the pip metadata directories their packages own."""
+def _conda_packages(directory: str) -> tuple[list[Message], set[str], int]:
+    """The lockfile's Conda entries, the pip metadata directories their packages own, and
+    how many records were skipped."""
     try:
         with os.scandir(directory) as scan:
             names = sorted(entry.name for entry in scan if entry.name.endswith(".json"))
     except OSError:
-        return [], set()
+        return [], set(), 0
     packages: list[Message] = []
     owned: set[str] = set()
+    skipped = 0
     for name in names[:MAX_PACKAGES]:
+        data = read_regular(os.path.join(directory, name), MAX_META_BYTES)
         try:
-            with open(os.path.join(directory, name), "rb") as handle:
-                data = handle.read(MAX_META_BYTES + 1)
-            record: object = json.loads(data) if len(data) <= MAX_META_BYTES else None
-        except (OSError, ValueError, RecursionError):
-            continue
+            record: object = json.loads(data) if data is not None else None
+        except (ValueError, RecursionError):
+            record = None
         if not isinstance(record, dict):
+            skipped += 1
             continue
         fields = cast(Message, record)
         package = conda_package(fields)
-        if package is not None:
+        if package is None:
+            skipped += 1
+        else:
             packages.append(package)
         files = fields.get("files")
         for path in cast(list[object], files) if isinstance(files, list) else []:
             if isinstance(path, str) and (entry := _site_entry(path)) is not None:
                 owned.add(entry)
-    return packages, owned
+    return packages, owned, skipped
 
 
 def _site_entry(path: str) -> str | None:
@@ -381,119 +500,165 @@ def _site_entry(path: str) -> str | None:
 
 
 def conda_package(record: Mapping[str, object]) -> Message | None:
-    """A ``conda-meta`` record as a lockfile entry; None if it names no package."""
-    name, version = _text(record.get("name")), _text(record.get("version"))
-    build = _text(record.get("build")) or _text(record.get("build_string"))
+    """A ``conda-meta`` record as a lockfile entry; None if its name, version or build
+    cannot be held."""
+    name, version = _matching(record.get("name"), _NAME), _matching(record.get("version"), _VERSION)
+    build = _matching(record.get("build"), _BUILD) or _matching(record.get("build_string"), _BUILD)
     if name is None or version is None or build is None:
         return None
-    url = _text(record.get("url"), MAX_TEXT)
-    file = _text(record.get("fn"), MAX_TEXT)
-    channel: str | None = None
-    subdir: str | None = None
-    if url is not None and url.count("/") >= 3:
-        base, _, last = url.rpartition("/")
+    url = record.get("url")
+    file = record.get("fn")
+    channel: object = None
+    subdir: object = None
+    if isinstance(url, str) and url.count("/") >= 3:
+        base, _, last = url.strip().rpartition("/")
         channel, _, subdir = base.rpartition("/")
         file = file or last
     if not channel or not subdir:
-        channel, subdir = _text(record.get("channel"), MAX_TEXT), _text(record.get("subdir"))
-        if channel is not None and subdir is not None:
+        channel, subdir = record.get("channel"), record.get("subdir")
+        if isinstance(channel, str) and isinstance(subdir, str) and subdir:
             # conda writes the channel with its subdir: …/conda-forge/linux-64.
-            trimmed = channel.rstrip("/")
+            trimmed = channel.strip().rstrip("/")
             if trimmed.endswith("/" + subdir):
                 channel = trimmed[: -len(subdir) - 1]
     return {
         "name": name,
         "version": version,
         "build": build,
-        "channel": canonical_channel(channel) if channel else None,
-        "subdir": _text(subdir),
-        "file": file,
+        "channel": canonical_channel(channel) if isinstance(channel, str) and channel else None,
+        "subdir": _matching(subdir, _SUBDIR),
+        "file": _matching(file, _FILE),
         "sha256": _hex(record.get("sha256"), 64),
         "md5": _hex(record.get("md5"), 32),
-        "license": _text(record.get("license")),
+        "license": _matching(record.get("license"), _LICENSE),
     }
 
 
-def canonical_channel(channel: str) -> str:
-    """A Conda channel as a lockfile names it: by name, never by the package cache's address.
+def canonical_channel(channel: str, cache: str | None = None) -> str | None:
+    """A Conda channel as a lockfile names it; None if it cannot be named safely.
 
-    ``https://conda.anaconda.org/conda-forge`` and the package cache's
-    ``<cache>/conda/conda-forge`` (docs/PACKAGE-CACHE.md, "URL layout"), on whatever
-    host the cache had, are both ``conda-forge``. Any other channel keeps its URL,
-    without user information or an anaconda.org token.
+    A channel name stays as it is. ``https://conda.anaconda.org/<channel>`` is
+    ``<channel>``, and so is ``<cache>/conda/<channel>`` when ``cache`` is the package
+    cache's URL (docs/PACKAGE-CACHE.md, "URL layout"); a channel on any other host keeps
+    its URL, without user information, an anaconda.org token, query or fragment, and
+    with its host in ASCII (IDNA). A URL that does not parse, or has another scheme,
+    gives None.
     """
     value = channel.strip().rstrip("/")
-    if "://" not in value:
+    if _CHANNEL_NAME.fullmatch(value):
         return value
+    parsed = _parse(value, CHANNEL_SCHEMES)
+    if parsed is None:
+        return None
+    scheme, netloc, path = parsed
+    path = _TOKEN.sub("", path).rstrip("/")
+    if scheme == "https" and netloc == UPSTREAM_CONDA and _CHANNEL_NAME.fullmatch(path[1:]):
+        return path[1:]
+    if cache is not None and (base := _cache_base(cache)) is not None:
+        prefix = f"{base}/conda/"
+        whole = f"{scheme}://{netloc}{path}"
+        if whole.startswith(prefix) and _CHANNEL_NAME.fullmatch(whole[len(prefix) :]):
+            return whole[len(prefix) :]
+    return _url_text(urllib.parse.urlunsplit((scheme, netloc, path, "", "")))
+
+
+def canonical_url(url: str, cache: str | None = None) -> tuple[str, str | None] | None:
+    """A direct-URL install's source as a lockfile keeps it, with the SHA-256 its URL
+    names; None if it cannot be kept safely.
+
+    The URL loses its user information, query and fragment, and its host is in ASCII
+    (IDNA). When ``cache`` is the package cache's URL, the cache's PyPI files
+    (``<cache>/pypi/files/<project>/<sha256>/<path>``) become their files.pythonhosted.org
+    URL, with that SHA-256.
+    """
+    parsed = _parse(url.strip(), SOURCE_SCHEMES)
+    if parsed is None:
+        return None
+    scheme, netloc, path = parsed
+    if cache is not None and (base := _cache_base(cache)) is not None:
+        prefix = f"{base}/pypi/files/"
+        whole = f"{scheme}://{netloc}{path}"
+        if whole.startswith(prefix):
+            project, _, rest = whole[len(prefix) :].partition("/")
+            sha256, _, file = rest.partition("/")
+            if project and _SHA256.fullmatch(sha256) and file:
+                upstream = _url_text(UPSTREAM_FILES + file)
+                return (upstream, sha256) if upstream is not None else None
+    text = _url_text(urllib.parse.urlunsplit((scheme, netloc, path, "", "")))
+    return None if text is None else (text, None)
+
+
+def _parse(value: str, schemes: frozenset[str]) -> tuple[str, str, str] | None:
+    """A URL's scheme, ``host[:port]`` without a default port, and path; None if it does
+    not parse, has another scheme, or names a host that has no ASCII form."""
+    if _UNSAFE.search(value):
+        return None  # spaces, line breaks and other controls
     try:
         parts = urllib.parse.urlsplit(value)
         port = parts.port
     except ValueError:
-        return value
-    path = _TOKEN.sub("", parts.path)
-    host = (parts.hostname or "").lower()
-    if parts.scheme in ("http", "https"):
-        if host == UPSTREAM_CONDA and _CHANNEL.fullmatch(path.strip("/")):
-            return path.strip("/")
-        segments = path.strip("/").split("/")
-        for index in range(len(segments) - 2, -1, -1):
-            name = "/".join(segments[index + 1 :])
-            if segments[index] == "conda" and _CHANNEL.fullmatch(name):
-                return name
-    return urllib.parse.urlunsplit(
-        (parts.scheme, _netloc(host, port), path.rstrip("/"), "", "")
-    ).rstrip("/")
-
-
-def canonical_url(url: str) -> str:
-    """A download URL as a lockfile keeps it: without user information, query or fragment,
-    and the package cache's PyPI files (``<cache>/pypi/files/<project>/<sha256>/<path>``)
-    named by their URL on files.pythonhosted.org."""
+        return None
+    scheme = parts.scheme.lower()
+    if scheme not in schemes:
+        return None
+    host = parts.hostname or ""
+    if scheme == "file" or scheme.endswith("+file"):
+        if host not in ("", "localhost"):
+            return None
+        return scheme, "", parts.path
+    if not host:
+        return None
     try:
-        parts = urllib.parse.urlsplit(url.strip())
-        port = parts.port
-    except ValueError:
-        return url
-    segments = parts.path.split("/")
-    if parts.scheme in ("http", "https"):
-        for index in range(len(segments) - 4):
-            if (
-                segments[index] == "pypi"
-                and segments[index + 1] == "files"
-                and _SHA256.fullmatch(segments[index + 3])
-            ):
-                return UPSTREAM_FILES + "/".join(segments[index + 4 :])
-    if not parts.netloc:
-        return urllib.parse.urlunsplit((parts.scheme, "", parts.path, "", ""))
-    host = (parts.hostname or "").lower()
-    return urllib.parse.urlunsplit((parts.scheme, _netloc(host, port), parts.path, "", ""))
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    return scheme, _netloc(host.lower(), port, scheme), parts.path
 
 
-def _netloc(host: str, port: int | None) -> str:
+def _cache_base(cache: str) -> str | None:
+    """The package cache's URL as canonical_channel compares URLs: no default port, no
+    trailing slash."""
+    parsed = _parse(cache.strip(), frozenset({"http", "https"}))
+    if parsed is None:
+        return None
+    scheme, netloc, path = parsed
+    return f"{scheme}://{netloc}{path.rstrip('/')}"
+
+
+def _netloc(host: str, port: int | None, scheme: str = "") -> str:
     named = f"[{host}]" if ":" in host else host
-    return named if port is None else f"{named}:{port}"
+    if port is None or (scheme, port) in (("http", 80), ("https", 443)):
+        return named
+    return f"{named}:{port}"
 
 
-def _distributions(directory: str, location: str, owned: set[str]) -> list[Message]:
-    """The lockfile's pip entries for one site-packages directory."""
+def _url_text(value: str) -> str | None:
+    return value if len(value) <= 2048 and _URL_TEXT.fullmatch(value) else None
+
+
+def _distributions(directory: str, location: str, owned: set[str]) -> tuple[list[Message], int]:
+    """The lockfile's pip entries for one site-packages directory, and how many were
+    skipped."""
     try:
         with os.scandir(directory) as scan:
             names = sorted(
                 entry.name for entry in scan if entry.name.endswith((".dist-info", ".egg-info"))
             )
     except OSError:
-        return []
+        return [], 0
     found: list[Message] = []
+    skipped = 0
     for name in names[:MAX_PACKAGES]:
         if name in owned:
             continue
         path = os.path.join(directory, name)
-        directory_entry = os.path.isdir(path)
+        directory_entry = os.path.isdir(path) and not os.path.islink(path)
         installer = _first_line(os.path.join(path, "INSTALLER")) if directory_entry else None
         if installer is not None and installer.lower() == "conda":
             continue
         described = _metadata(path, name, directory_entry)
         if described is None:
+            skipped += 1
             continue
         project, version = described
         url, sha256 = _direct_url(path) if directory_entry else (None, None)
@@ -501,13 +666,13 @@ def _distributions(directory: str, location: str, owned: set[str]) -> list[Messa
             {
                 "name": project,
                 "version": version,
-                "installer": _text(installer),
+                "installer": _matching(installer, _INSTALLER),
                 "location": location,
                 "url": url,
                 "sha256": sha256,
             }
         )
-    return found
+    return found, skipped
 
 
 def _metadata(path: str, name: str, directory: bool) -> tuple[str, str] | None:
@@ -516,35 +681,33 @@ def _metadata(path: str, name: str, directory: bool) -> tuple[str, str] | None:
     if directory:
         source = os.path.join(path, "METADATA" if name.endswith(".dist-info") else "PKG-INFO")
     project = version = None
-    with contextlib.suppress(OSError):
-        with open(source, "rb") as handle:
-            head = handle.read(64 * 1024).decode("utf-8", "replace")
-        for line in head.splitlines():
-            if not line.strip():
-                break
-            key, _, value = line.partition(":")
-            if key.lower() == "name" and project is None:
-                project = _text(value.strip())
-            elif key.lower() == "version" and version is None:
-                version = _text(value.strip())
+    data = read_regular(source, 64 * 1024)
+    for line in data.decode("utf-8", "replace").splitlines() if data is not None else []:
+        if not line.strip():
+            break
+        key, _, value = line.partition(":")
+        if key.lower() == "name" and project is None:
+            project = _matching(value, _NAME)
+        elif key.lower() == "version" and version is None:
+            version = _matching(value, _VERSION)
     if project is None or version is None:
         stem = name.rsplit(".", 1)[0]
         guessed, _, rest = stem.partition("-")
-        project = project or _text(guessed)
-        version = version or _text(rest.split("-py", 1)[0])
+        project = project or _matching(guessed, _NAME)
+        version = version or _matching(rest.split("-py", 1)[0], _VERSION)
     return (project, version) if project and version else None
 
 
 def _direct_url(path: str) -> tuple[str | None, str | None]:
     """The URL and SHA-256 of a direct-URL install (PEP 610), canonical."""
+    data = read_regular(os.path.join(path, "direct_url.json"), 1024 * 1024)
     try:
-        with open(os.path.join(path, "direct_url.json"), "rb") as handle:
-            data: object = json.loads(handle.read(1024 * 1024))
-    except (OSError, ValueError, RecursionError):
-        return None, None
-    fields = cast(Message, data) if isinstance(data, dict) else {}
+        decoded: object = json.loads(data) if data is not None else None
+    except (ValueError, RecursionError):
+        decoded = None
+    fields = cast(Message, decoded) if isinstance(decoded, dict) else {}
     raw = fields.get("url")
-    url = _text(canonical_url(raw), MAX_TEXT) if isinstance(raw, str) else None
+    kept = canonical_url(raw) if isinstance(raw, str) else None
     archive = fields.get("archive_info")
     info = cast(Message, archive) if isinstance(archive, dict) else {}
     hashes = info.get("hashes")
@@ -552,19 +715,15 @@ def _direct_url(path: str) -> tuple[str | None, str | None]:
     legacy = info.get("hash")
     if sha256 is None and isinstance(legacy, str) and legacy.startswith("sha256="):
         sha256 = _hex(legacy[len("sha256=") :], 64)
-    if sha256 is None and url is not None:
-        # The cache's PyPI files carry their SHA-256 in the path, which canonical_url drops.
-        for segment in str(raw).split("/"):
-            if _SHA256.fullmatch(segment):
-                sha256 = segment
-    return url, sha256
+    return (kept[0] if kept is not None else None), sha256
 
 
-def _text(value: object, limit: int = MAX_FIELD) -> str | None:
+def _matching(value: object, pattern: re.Pattern[str]) -> str | None:
+    """``value``, stripped, if the whole of it matches ``pattern``."""
     if not isinstance(value, str):
         return None
     value = value.strip()
-    return value if value and len(value) <= limit and value.isprintable() else None
+    return value if pattern.fullmatch(value) else None
 
 
 def _hex(value: object, length: int) -> str | None:
@@ -575,11 +734,38 @@ def _hex(value: object, length: int) -> str | None:
 
 
 def _first_line(path: str) -> str | None:
+    data = read_regular(path, 256)
+    if data is None:
+        return None
+    return data.decode("utf-8", "replace").strip().split("\n", 1)[0] or None
+
+
+def read_regular(path: str | Path, limit: int) -> bytes | None:
+    """Up to ``limit`` bytes of a regular file; None for anything else, or more.
+
+    The file is opened without following a symlink and without waiting, so research
+    code cannot stall a read with a FIFO in its place, as the executor's own reads do.
+    """
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     try:
-        with open(path, "rb") as handle:
-            return handle.read(256).decode("utf-8", "replace").strip().split("\n", 1)[0] or None
+        descriptor = os.open(path, flags)
     except OSError:
         return None
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            return None
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(descriptor, min(1 << 20, limit + 1 - size)):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > limit:
+                return None
+        return b"".join(chunks)
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
 
 
 # Processes.
@@ -623,6 +809,12 @@ def _marker() -> str:
     return f"{os.getpid()}:{process_start(os.getpid()) or 0}"
 
 
+def holder_pid(marker: str) -> int | None:
+    """The pid in a HOLDER mark (``pid:start``); None if it is not one."""
+    pid, _, start = marker.partition(":")
+    return int(pid) if pid.isdigit() and start.isdigit() else None
+
+
 def inside_turn() -> bool:
     """Whether this process descends from a package command that holds the lock.
 
@@ -644,9 +836,9 @@ class State:
 
     ``lock`` is the environment's lock: a command that may change the environment holds
     it exclusively, and the executor checks it shared. ``journal/`` holds a record of
-    each such command. ``fingerprint`` is the packages' fingerprint as last recorded,
-    ``holder.json`` names the command holding the lock, and ``config.json`` says where
-    the environment records its packages.
+    each such command, ``holder.json`` names the command holding the lock, and
+    ``config.json`` says where the environment records its packages. ``prefix/`` is laid
+    out like the environment's prefix, with the wrappers in its ``bin``.
     """
 
     def __init__(self, directory: Path) -> None:
@@ -654,9 +846,9 @@ class State:
         self.lock = directory / "lock"
         self.journal = directory / "journal"
         self.holder = directory / "holder.json"
-        self.known = directory / "fingerprint"
         self.config = directory / "config.json"
-        self.bin = directory / "bin"
+        self.mirror = directory / "prefix"
+        self.bin = self.mirror / "bin"
         self.hook = directory / "python"
 
     # The lock.
@@ -695,23 +887,12 @@ class State:
 
     def holding(self) -> Message | None:
         """What holds the lock, as its holder wrote it; None if it says nothing."""
+        data = read_regular(self.holder, 65536)
         try:
-            data: object = json.loads(self.holder.read_bytes()[:65536])
-        except (OSError, ValueError, RecursionError):
+            decoded: object = json.loads(data) if data is not None else None
+        except (ValueError, RecursionError):
             return None
-        return cast(Message, data) if isinstance(data, dict) else None
-
-    # The last recorded fingerprint.
-
-    def read_known(self) -> str | None:
-        try:
-            value = self.known.read_text().strip()
-        except OSError:
-            return None
-        return value if _FINGERPRINT.fullmatch(value) else None
-
-    def write_known(self, value: str) -> None:
-        _replace(self.known, value.encode())
+        return cast(Message, decoded) if isinstance(decoded, dict) else None
 
     # The journal.
 
@@ -720,26 +901,29 @@ class State:
         name = f"{time.time_ns():020d}-{os.getpid()}.json"
         _replace(self.journal / name, json.dumps(entry, separators=(",", ":")).encode())
 
-    def take_records(self) -> list[Message]:
-        """The records in the order the commands ended, removed from the journal."""
+    def read_records(self, limit: int = MAX_RECORDS) -> tuple[list[tuple[str, Message]], bool]:
+        """Up to ``limit`` records, in the order their commands ended, with their file names,
+        and whether that is all of them. They stay in the journal until removed."""
         try:
             with os.scandir(self.journal) as scan:
                 names = sorted(entry.name for entry in scan if entry.name.endswith(".json"))
         except OSError:
-            return []
-        records: list[Message] = []
-        for name in names[:MAX_RECORDS]:
-            path = self.journal / name
+            return [], True
+        records: list[tuple[str, Message]] = []
+        for name in names[:limit]:
+            data = read_regular(self.journal / name, MAX_RECORD_BYTES)
             try:
-                with open(path, "rb") as handle:
-                    data = handle.read(MAX_RECORD_BYTES + 1)
-                path.unlink()
-                decoded: object = json.loads(data) if len(data) <= MAX_RECORD_BYTES else None
-            except (OSError, ValueError, RecursionError):
-                continue
-            if isinstance(decoded, dict):
-                records.append(cast(Message, decoded))
-        return records
+                decoded: object = json.loads(data) if data is not None else None
+            except (ValueError, RecursionError):
+                decoded = None
+            # One that is not a record is still taken, so that it cannot stop the rest.
+            records.append((name, cast(Message, decoded) if isinstance(decoded, dict) else {}))
+        return records, len(names) <= limit
+
+    def remove_records(self, names: Iterable[str]) -> None:
+        for name in names:
+            with contextlib.suppress(OSError):
+                (self.journal / name).unlink()
 
     def clear_journal(self) -> None:
         with contextlib.suppress(OSError), os.scandir(self.journal) as scan:
@@ -750,8 +934,11 @@ class State:
     # Configuration.
 
     def read_config(self) -> Config:
-        data: object = json.loads(self.config.read_bytes())
-        fields = cast(Message, data) if isinstance(data, dict) else {}
+        data = read_regular(self.config, 1 << 20)
+        if data is None:
+            raise ValueError(f"no readable {self.config}")
+        decoded: object = json.loads(data)
+        fields = cast(Message, decoded) if isinstance(decoded, dict) else {}
         python, script, prefix = fields.get("python"), fields.get("script"), fields.get("prefix")
         if not (isinstance(python, str) and isinstance(script, str) and isinstance(prefix, str)):
             raise ValueError(f"malformed {self.config}")
@@ -814,6 +1001,7 @@ def refresh(state: State, config: Config, path: str) -> list[str]:
     gone, so that ``command -v`` tells the truth; return the wrapped names. The rest of
     the state directory is put back too, should research code have removed it."""
     prepare(state, config)
+    _mirror(state, Path(config.prefix))
     wrapped: list[str] = []
     for name in tool_names():
         target = state.bin / name
@@ -837,12 +1025,61 @@ def refresh(state: State, config: Config, path: str) -> list[str]:
     return wrapped
 
 
+def _mirror(state: State, prefix: Path) -> None:
+    """Lay the prefix out around the wrappers, so that what scripts look for beside a
+    package manager is there: ``$(dirname "$(command -v conda)")/../etc/profile.d/conda.sh``
+    and ``$(dirname "$(command -v pip)")/python``. Every entry of the prefix but ``bin`` is a
+    link; in ``bin``, the Pythons are stand-ins that run the prefix's own, and ``activate``
+    and ``deactivate`` links."""
+    entries: set[str] = set()
+    with contextlib.suppress(OSError), os.scandir(prefix) as scan:
+        entries = {entry.name for entry in scan if entry.name != "bin"}
+    with contextlib.suppress(OSError), os.scandir(state.mirror) as scan:
+        for entry in list(scan):
+            if entry.name != "bin" and entry.name not in entries and entry.is_symlink():
+                with contextlib.suppress(OSError):
+                    os.unlink(entry.path)
+    for name in entries:
+        _link(state.mirror / name, prefix / name)
+    for name in ("activate", "deactivate"):
+        if (prefix / "bin" / name).is_file():
+            _link(state.bin / name, prefix / "bin" / name)
+        elif (state.bin / name).is_symlink():
+            with contextlib.suppress(OSError):
+                (state.bin / name).unlink()
+    for name in PYTHONS:
+        real = prefix / "bin" / name
+        if real.is_file() and os.access(real, os.X_OK):
+            source = STAND_IN.replace("@NAME@", name).replace("@REAL@", shlex.quote(str(real)))
+            _update(state.bin / name, source.encode(), 0o755)
+        else:
+            with contextlib.suppress(FileNotFoundError):
+                (state.bin / name).unlink()
+
+
+def _link(link: Path, target: Path) -> None:
+    """Make ``link`` a symlink to ``target``, unless it is one already."""
+    with contextlib.suppress(OSError):
+        if os.readlink(link) == str(target):
+            return
+    temporary = link.with_name(f".tmp-{os.getpid()}-{link.name}")
+    with contextlib.suppress(OSError):
+        temporary.unlink()
+    try:
+        os.symlink(target, temporary)
+        os.replace(temporary, link)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+
+
 def _update(target: Path, data: bytes, mode: int = 0o644) -> None:
     """Write a file unless it already has this content: a shell reading a wrapper as it
     runs keeps the file it opened."""
-    with contextlib.suppress(OSError):
-        if target.read_bytes() == data and (target.stat().st_mode & 0o777) == mode:
-            return
+    if read_regular(target, len(data)) == data:
+        with contextlib.suppress(OSError):
+            if (target.stat().st_mode & 0o777) == mode:
+                return
     _replace(target, data, mode)
 
 
@@ -884,47 +1121,63 @@ def baseline(state: State, places: Places) -> str:
     """The fingerprint as an executor starts: records left from before it are dropped,
     since the worker may have seen their changes another way."""
     state.clear_journal()
-    now = fingerprint(places)
-    state.write_known(now)
-    return now
+    return fingerprint(places)
 
 
 @dataclass(slots=True)
 class Observation:
     """What changed since the executor last looked."""
 
-    records: list[Message]
-    """The journal's records, in the order their commands ended."""
-    fingerprint: str | None
-    """The packages' fingerprint now; None while a package command holds the lock."""
-    lockfile: Message | None
-    """The lockfile for ``fingerprint``, when no record accounts for it."""
-    busy: Message | None
+    records: list[tuple[str, Message]] = field(default_factory=list[tuple[str, Message]])
+    """The journal's records with their file names, in the order their commands ended."""
+    fingerprint: str | None = None
+    """The packages' fingerprint now; None while a package command holds the lock, or
+    records remain to read."""
+    lockfile: Message | None = None
+    """The lockfile for ``fingerprint``, when asked for and no record accounts for it."""
+    busy: Message | None = None
     """What held the lock, when a package command did."""
+    complete: bool = True
+    """Whether every record was read; the rest wait for another look."""
 
 
-def observe(state: State, places: Places, known: str, held: int | None = None) -> Observation:
+def observe(
+    state: State,
+    places: Places,
+    known: str,
+    held: int | None = None,
+    *,
+    lockfile_wanted: bool = False,
+) -> Observation:
     """Read the journal and the packages, unless a package command is changing them.
 
     ``held`` is a descriptor on which the caller holds the lock shared, and which this
     closes; otherwise this tries to take it. Under the lock no record can appear between
     reading the journal and reading the packages, so a change no record accounts for is
-    one no package command made.
+    one no package command made. The packages are read only once every record has been,
+    so that a change is never reported before the records that come before it. The
+    records stay in the journal: the caller removes each once the worker has it.
     """
     descriptor = held if held is not None else state.try_lock(exclusive=False)
     try:
-        records = [record for record in state.take_records() if _usable(record)]
+        records, complete = state.read_records()
         if descriptor is None:
-            return Observation(records, None, None, state.holding() or {})
+            return Observation(records, busy=state.holding() or {}, complete=complete)
+        if not complete:
+            return Observation(records, complete=False)
         now = fingerprint(places)
-        last = str(records[-1]["after"]) if records else known
-        made = lockfile(places) if now != last else None
-        if state.read_known() != now:
-            state.write_known(now)
-        return Observation(records, now, made, None)
+        usable = [record for _, record in records if _usable(record)]
+        last = str(usable[-1]["after"]) if usable else known
+        made = lockfile(places) if lockfile_wanted and now != last else None
+        return Observation(records, now, made)
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def usable(record: Message) -> bool:
+    """Whether a journal record names the fingerprints before and after its command."""
+    return _usable(record)
 
 
 def _usable(record: Message) -> bool:
@@ -979,7 +1232,6 @@ class Turn:
         self.descriptor: int | None = None
         self.started = self.invoked
         self.before = ""
-        self.before_lockfile: Message | None = None
 
     def begin(self) -> bool:
         """Take the lock, waiting for it; False if the holder is an ancestor, whose turn
@@ -1011,10 +1263,6 @@ class Turn:
         with contextlib.suppress(OSError):
             _replace(self.state.holder, json.dumps(holder).encode())
         self.before = fingerprint(self.config.places)
-        known = self.state.read_known()
-        if known is not None and known != self.before:
-            # Changed since the last record or look, by something else: keep that state too.
-            self.before_lockfile = lockfile(self.config.places)
         return True
 
     def end(self, code: int | None) -> None:
@@ -1026,7 +1274,7 @@ class Turn:
                 "version": RECORD_VERSION,
                 "command": self.command,
                 "via": self.via,
-                "owner": os.environ.get(OWNER, "")[:MAX_FIELD],
+                "owner": os.environ.get(OWNER, "")[:256],
                 "pid": os.getpid(),
                 "invoked": self.invoked,
                 "started": self.started,
@@ -1035,11 +1283,9 @@ class Turn:
                 "signal": -code if code is not None and code < 0 else None,
                 "before": self.before,
                 "after": after,
-                "before_lockfile": self.before_lockfile,
                 "lockfile": lockfile(self.config.places) if after != self.before else None,
             }
             self.state.record(entry)
-            self.state.write_known(after)
         except (OSError, ValueError) as exc:
             sys.stderr.write(f"sandbox-science: the package command was not recorded: {exc}\n")
         finally:
@@ -1050,12 +1296,26 @@ class Turn:
                 self.descriptor = None
 
 
+def _death_signal() -> Any:
+    """``prctl``, to have a command killed when its wrapper dies; None without libc."""
+    try:
+        import ctypes
+
+        return ctypes.CDLL(None, use_errno=True).prctl
+    except (ImportError, OSError, AttributeError):
+        return None
+
+
 def run(path: str, argv: Sequence[str], env: Mapping[str, str]) -> int:
     """Run a command to its end, passing on the signals this process gets; return its exit
     code, negative for the signal that ended it.
 
     The command gets this process's standard streams and other inheritable descriptors,
-    signal mask and signal dispositions, apart from those Python itself ignores. A signal
+    signal mask and signal dispositions, apart from those Python itself ignores. It is
+    killed if this process dies first (``PR_SET_PDEATHSIG``), as it would have been
+    without a wrapper, so a wrapper killed with SIGKILL leaves no command running outside
+    its turn. The lock's descriptor is not passed on: a process the command left running
+    in the background would hold the environment's lock for as long as it ran. A signal
     the kernel sent, as a terminal sends one to its whole foreground process group,
     reached the command already. The child is forked, as multiprocessing forks, rather
     than spawned through ``clone3``, which a sandbox's seccomp filter may refuse.
@@ -1065,14 +1325,20 @@ def run(path: str, argv: Sequence[str], env: Mapping[str, str]) -> int:
     signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     waited = {*FORWARDED, signal.SIGCHLD}
     original = signal.pthread_sigmask(signal.SIG_BLOCK, waited)
+    prctl = _death_signal()
+    parent = os.getpid()
 
-    def unblock() -> None:  # in the child, just before it runs the command
+    def prepare_child() -> None:  # in the child, just before it runs the command
         signal.pthread_sigmask(signal.SIG_SETMASK, original)
+        if prctl is not None:
+            prctl(PR_SET_PDEATHSIG, signal.SIGKILL, 0, 0, 0)
+        if os.getppid() != parent:  # the wrapper died before the death signal was set
+            os.kill(os.getpid(), signal.SIGKILL)
 
     try:
         # restore_signals (the default) resets the dispositions Python ignores.
         child = subprocess.Popen(  # noqa: S603 - the command as it was invoked
-            list(argv), executable=path, env=dict(env), close_fds=False, preexec_fn=unblock
+            list(argv), executable=path, env=dict(env), close_fds=False, preexec_fn=prepare_child
         )
     except BaseException:
         signal.pthread_sigmask(signal.SIG_SETMASK, original)
@@ -1104,8 +1370,10 @@ def exit_as(code: int) -> NoReturn:
         import resource
 
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))  # the command dumped core already
+    if number not in (signal.SIGKILL, signal.SIGSTOP):  # these keep their default action
+        with contextlib.suppress(Exception):
+            signal.signal(number, signal.SIG_DFL)
     with contextlib.suppress(Exception):
-        signal.signal(number, signal.SIG_DFL)
         signal.pthread_sigmask(signal.SIG_UNBLOCK, {number})
         os.kill(os.getpid(), number)
     os._exit(128 + number)
