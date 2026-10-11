@@ -10,7 +10,9 @@ the API alone, are in test_conformance.py.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import shutil
 import signal
 import subprocess
 import sys
@@ -32,6 +34,7 @@ from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import Activity, ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
+from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
 
 TOKEN = "t" * 40
@@ -103,15 +106,31 @@ async def start_worker(
     root: Path,
     python: str = sys.executable,
     backend: Backend | None = None,
+    *,
+    shared_bytes: int | None = None,
+    shared_total: int = 1 << 30,
 ) -> tuple[Worker, Store]:
+    """A worker on the local backend; with ``shared_bytes``, it syncs shared/ (D79)."""
     store = Store(root / "worker.sqlite3")
+    blobs = Blobs(root / "artifacts")
+    shared = (
+        None
+        if shared_bytes is None
+        else SharedSync(
+            SharedRecords(root / "shared.sqlite3"),
+            root / "shared",
+            max_file_bytes=shared_bytes,
+            max_project_bytes=shared_total,
+        )
+    )
     manager = ExecutionManager(
         store,
         backend or LocalBackend(LocalBackendSettings(python=python), root),
-        Blobs(root / "artifacts"),
+        blobs,
         pool_id="test-pool",
         max_artifact_size=1 << 20,
         state_dir=root,
+        shared=shared,
     )
     await manager.start()
     client = await aiohttp_client(create_app(manager, TOKEN))
@@ -523,3 +542,316 @@ async def test_operation_ids_are_kept_per_project(worker: Worker) -> None:
     status, execution = await worker.post("/v1/executions", {**request, "context": third})
     assert status == 201, execution
     assert execution["execution_id"] not in (first["execution_id"], second["execution_id"])
+
+
+# Shared project data across a project's environments (D79). On the local backend each
+# environment has a directory of its own, as each OpenShell environment has a sandbox.
+
+
+@pytest_asyncio.fixture
+async def synced(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Worker]:
+    started, store = await start_worker(aiohttp_client, tmp_path, shared_bytes=64)
+    yield started
+    await started.manager.close()
+    store.close()
+    if started.manager.shared is not None:
+        started.manager.shared.records.close()
+
+
+def _in(environment: str, session: str) -> dict[str, str]:
+    return {"project_id": "p1", "session_id": session, "environment_id": environment}
+
+
+async def _shell(
+    worker: Worker, operation: str, where: dict[str, str], script: str
+) -> dict[str, Any]:
+    status, execution = await worker.post(
+        "/v1/executions",
+        {"operation_id": operation, "context": where, "kind": "shell", "script": script},
+    )
+    assert status == 201, execution
+    return await worker.finish(execution["execution_id"])
+
+
+async def test_shared_files_reach_the_projects_other_environments(synced: Worker) -> None:
+    a, c = _in("env1", "s1"), _in("env2", "s3")
+    await _shell(synced, "op-w", a, 'printf "1,2\\n" > "$PROJECT_SHARED/results.csv"')
+    seen = await _shell(synced, "op-r", c, 'cat "$PROJECT_SHARED/results.csv"')
+    assert seen["result"]["stdout"]["text"] == "1,2\n"
+    # A deletion goes the same way.
+    await _shell(synced, "op-d", a, 'rm "$PROJECT_SHARED/results.csv"')
+    gone = await _shell(synced, "op-g", c, 'ls "$PROJECT_SHARED"; echo end')
+    assert gone["result"]["stdout"]["text"] == "end\n"
+    # The files API sees the project's copy too: a write in one environment, a read in another.
+    status, written = await synced.post(
+        "/v1/files/write",
+        {"context": a, "path": "shared/notes.md", "content_b64": "bm90ZXMK", "create_only": True},
+    )
+    assert status == 200, written
+    status, read = await synced.post("/v1/files/read", {"context": c, "path": "shared/notes.md"})
+    assert (status, read["content_b64"]) == (200, "bm90ZXMK")
+
+
+async def test_concurrent_changes_keep_a_conflict_copy(synced: Worker) -> None:
+    a, c = _in("env1", "s1"), _in("env2", "s3")
+    await _shell(synced, "op-1", a, 'echo a > "$PROJECT_SHARED/notes.md"')
+    await _shell(synced, "op-2", c, 'cat "$PROJECT_SHARED/notes.md"')
+    # env2 changes the file while env1 changes it and finishes first.
+    status, slow = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-3",
+            "context": c,
+            "kind": "shell",
+            "script": 'sleep 2; echo c > "$PROJECT_SHARED/notes.md"',
+        },
+    )
+    assert status == 201
+    await _shell(synced, "op-4", a, 'echo b > "$PROJECT_SHARED/notes.md"')
+    late = await synced.finish(slow["execution_id"])
+    [notice] = [n for n in late["result"]["notices"] if "conflict" in n]
+    assert "shared/notes.conflict-env2.md" in notice
+    after = await _shell(
+        synced,
+        "op-5",
+        c,
+        'cat "$PROJECT_SHARED/notes.md" "$PROJECT_SHARED/notes.conflict-env2.md"',
+    )
+    assert after["result"]["stdout"]["text"] == "b\nc\n"
+    elsewhere = await _shell(synced, "op-6", a, 'cat "$PROJECT_SHARED/notes.conflict-env2.md"')
+    assert elsewhere["result"]["stdout"]["text"] == "c\n"
+
+
+async def test_files_over_the_limit_stay_where_they_are(synced: Worker) -> None:
+    a, c = _in("env1", "s1"), _in("env2", "s3")
+    wrote = await _shell(synced, "op-1", a, 'head -c 100 /dev/zero > "$PROJECT_SHARED/big.bin"')
+    [notice] = wrote["result"]["notices"]
+    assert "shared/big.bin" in notice
+    assert "publish it as an artifact" in notice
+    absent = await _shell(synced, "op-2", c, 'ls "$PROJECT_SHARED"; echo end')
+    assert absent["result"]["stdout"]["text"] == "end\n"
+    again = await _shell(synced, "op-3", a, "true")
+    assert again["result"]["notices"] == []  # told once
+
+
+async def test_the_projects_shared_files_have_a_total_limit(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    capped, store = await start_worker(aiohttp_client, tmp_path, shared_bytes=100, shared_total=150)
+    try:
+        a, c = _in("env1", "s1"), _in("env2", "s3")
+        first = await _shell(capped, "op-1", a, 'head -c 100 /dev/zero > "$PROJECT_SHARED/a.bin"')
+        assert first["result"]["notices"] == []
+        second = await _shell(capped, "op-2", a, 'head -c 90 /dev/zero > "$PROJECT_SHARED/b.bin"')
+        [notice] = second["result"]["notices"]
+        assert "their limit" in notice
+        listing = await _shell(capped, "op-3", c, 'cd "$PROJECT_SHARED" && ls')
+        assert listing["result"]["stdout"]["text"] == "a.bin\n"
+    finally:
+        await capped.manager.close()
+        store.close()
+        if capped.manager.shared is not None:
+            capped.manager.shared.records.close()
+
+
+async def test_file_writes_in_shared_expect_the_projects_version(synced: Worker) -> None:
+    a, c = _in("env1", "s1"), _in("env2", "s3")
+    status, first = await synced.post(
+        "/v1/files/write",
+        {"context": a, "path": "shared/x.txt", "content_b64": "djAK", "create_only": True},
+    )
+    assert status == 200
+    await _shell(synced, "op-1", c, "true")  # env2 has v0
+
+    def body(where: dict[str, str], text: bytes) -> dict[str, Any]:
+        return {
+            "context": where,
+            "path": "shared/x.txt",
+            "content_b64": base64.b64encode(text).decode(),
+            "expected_sha256": first["sha256"],
+        }
+
+    status, _ = await synced.post("/v1/files/write", body(a, b"from env1\n"))
+    assert status == 200
+    status, refused = await synced.post("/v1/files/write", body(c, b"from env2\n"))
+    assert (status, refused["error"]["kind"]) == (409, "conflict")
+
+
+async def test_a_sandbox_made_again_under_its_id_deletes_nothing(synced: Worker) -> None:
+    a, c = _in("env1", "s1"), _in("env2", "s3")
+    await _shell(synced, "op-1", a, 'echo a > "$PROJECT_SHARED/a.txt"')
+    await _shell(synced, "op-2", c, "true")
+    await synced.manager.release("env2")
+    shutil.rmtree(synced.root / "environments" / "env2")
+    again = await _shell(synced, "op-3", c, 'cat "$PROJECT_SHARED/a.txt"')
+    assert again["result"]["stdout"]["text"] == "a\n"
+    kept = await _shell(synced, "op-4", a, 'cat "$PROJECT_SHARED/a.txt"')
+    assert kept["result"]["stdout"]["text"] == "a\n"
+
+
+async def test_a_call_cancelled_while_shared_files_sync_never_runs(
+    synced: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sync = synced.manager.shared
+    assert sync is not None
+    gate = asyncio.Event()
+    down = sync.down
+
+    async def held(*args: Any) -> list[str]:
+        await gate.wait()
+        return await down(*args)
+
+    monkeypatch.setattr(sync, "down", held)
+    status, execution = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-c",
+            "context": _in("env1", "s1"),
+            "kind": "shell",
+            "script": 'echo ran > "$PROJECT_SHARED/ran"',
+        },
+    )
+    assert status == 201
+    await asyncio.sleep(0.2)
+    status, _ = await synced.post(f"/v1/executions/{execution['execution_id']}/cancel", {})
+    assert status == 200
+    gate.set()
+    done = await synced.finish(execution["execution_id"])
+    assert done["state"] == "cancelled"
+    assert not (synced.root / "environments" / "env1" / "project" / "shared" / "ran").exists()
+
+
+async def test_an_attempts_result_outlives_a_sync_cut_short(
+    synced: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sync = synced.manager.shared
+    assert sync is not None
+    syncing = asyncio.Event()
+
+    async def stuck(*args: Any) -> list[str]:
+        syncing.set()
+        await asyncio.Event().wait()
+        return []
+
+    monkeypatch.setattr(sync, "up", stuck)
+    status, execution = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-1",
+            "context": _in("env1", "s1"),
+            "kind": "shell",
+            "script": "echo hi",
+        },
+    )
+    assert status == 201
+    execution_id = execution["execution_id"]
+    await asyncio.wait_for(syncing.wait(), 60)
+    manager = synced.manager
+    # A second end from the executor is ignored.
+    await manager._on_event(  # pyright: ignore[reportPrivateUsage]
+        "env1", {"execution": execution_id, "event": "end", "state": "failed", "result": {}}
+    )
+    # The executor goes away during the sync: the attempt keeps the result it reported.
+    environment = manager._environments["env1"]  # pyright: ignore[reportPrivateUsage]
+    process = environment.channel._process  # pyright: ignore[reportOptionalMemberAccess,reportPrivateUsage]
+    assert process is not None
+    process.send_signal(signal.SIGKILL)
+    done = await synced.finish(execution_id)
+    assert done["state"] == "succeeded"
+    assert done["result"]["stdout"]["text"] == "hi\n"
+    assert any("could not be synced" in notice for notice in done["result"]["notices"])
+
+
+async def test_files_the_sync_brings_are_not_a_calls_own(synced: Worker) -> None:
+    status, long = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-l",
+            "context": _in("env2", "s2"),
+            "kind": "shell",
+            "script": "sleep 2",
+        },
+    )
+    assert status == 201
+    await synced.wait_running(long["execution_id"])
+    await _shell(synced, "op-1", _in("env1", "s1"), 'echo r > "$PROJECT_SHARED/r.txt"')
+    await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
+    done = await synced.finish(long["execution_id"])
+    assert done["result"]["written_files"] == []
+
+
+async def test_a_conflict_found_for_a_file_request_reaches_the_running_call(
+    synced: Worker,
+) -> None:
+    a, b = _in("env1", "s1"), _in("env2", "s2")
+    await _shell(synced, "op-1", a, 'echo a > "$PROJECT_SHARED/notes.md"')
+    await _shell(synced, "op-2", b, "true")  # env2 has it
+    status, long = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-3",
+            "context": b,
+            "kind": "shell",
+            "script": 'echo b > "$PROJECT_SHARED/notes.md"; until [ -f go ]; do sleep 0.05; done',
+        },
+    )
+    assert status == 201
+    await synced.wait_running(long["execution_id"])
+    await _shell(synced, "op-4", a, 'echo a2 > "$PROJECT_SHARED/notes.md"')
+    # Another session lists shared/ in env2 while the call runs: the sync finds the conflict.
+    status, _ = await synced.post(
+        "/v1/files/list", {"context": _in("env2", "s3"), "path": "shared"}
+    )
+    assert status == 200
+    status, _ = await synced.post(
+        "/v1/files/write", {"context": b, "path": "go", "content_b64": "", "create_only": True}
+    )
+    assert status == 200
+    done = await synced.finish(long["execution_id"])
+    [notice] = [n for n in done["result"]["notices"] if "conflict" in n]
+    assert "shared/notes.conflict-env2.md" in notice
+
+
+async def test_a_calls_own_write_after_the_sync_wrote_the_file_is_its_own(synced: Worker) -> None:
+    b = _in("env2", "s2")
+    status, long = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-l",
+            "context": b,
+            "kind": "shell",
+            "script": 'until [ -f go ]; do sleep 0.05; done; echo mine > "$PROJECT_SHARED/r.txt"',
+        },
+    )
+    assert status == 201
+    await synced.wait_running(long["execution_id"])
+    await _shell(synced, "op-1", _in("env1", "s1"), 'echo r > "$PROJECT_SHARED/r.txt"')
+    await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
+    status, _ = await synced.post(
+        "/v1/files/write", {"context": b, "path": "go", "content_b64": "", "create_only": True}
+    )
+    assert status == 200
+    done = await synced.finish(long["execution_id"])
+    assert "shared/r.txt" in done["result"]["written_files"]
+
+
+async def test_a_result_that_cannot_be_stored_still_ends_the_attempt(
+    synced: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: Any) -> None:
+        raise RuntimeError("test: the store is full")
+
+    monkeypatch.setattr(synced.manager, "_complete", broken)
+    done = await _shell(synced, "op-1", _in("env1", "s1"), "echo hi")
+    assert done["state"] == "failed"
+    assert done["result"]["error"]["message"] == "the attempt's result could not be stored"
+
+
+async def test_held_notices_are_bounded_by_size() -> None:
+    from sandbox_science.worker.manager import MAX_HELD_BYTES, MAX_HELD_NOTICES, _held
+
+    many = [f"notice {n}" for n in range(MAX_HELD_NOTICES * 2)]
+    assert _held(many) == many[-MAX_HELD_NOTICES:]
+    large = ["x" * (MAX_HELD_BYTES // 3)] * 5
+    assert sum(len(notice) for notice in _held(large)) <= MAX_HELD_BYTES
+    assert _held(large) == large[-3:]

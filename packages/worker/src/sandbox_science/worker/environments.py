@@ -375,6 +375,8 @@ class Environments:
         """Stops the environment's executor; the execution manager sets it."""
         self.release_idle: ReleaseIdle | None = None
         """Stops the executor unless the environment was used since a time; the manager sets it."""
+        self.deleted: Release | None = None
+        """Told of each environment deleted, so the shared files' sync forgets it (D79)."""
         self._locks: dict[str, asyncio.Lock] = {}
         self._users: dict[str, int] = {}
         """Callers holding or waiting for each environment's lock."""
@@ -614,6 +616,11 @@ class Environments:
             )
             self.records.save(deleted)
             _log.info("deleted sandbox %s of environment %s", info.sandbox, environment_id)
+            if self.deleted is not None:
+                try:
+                    await self.deleted(environment_id)
+                except Exception:
+                    _log.exception("forgetting environment %s failed", environment_id)
             return deleted
 
     def notices(self, environment_id: str, since: datetime) -> list[tuple[datetime, str]]:

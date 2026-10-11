@@ -18,9 +18,11 @@ import hashlib
 import logging
 import math
 import mimetypes
+import posixpath
 import re
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections import OrderedDict
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
@@ -38,6 +40,7 @@ from sandbox_science.contracts import (
     ErrorKind,
     Event,
     Execution,
+    ExecutionContext,
     ExecutionRequest,
     ExecutionState,
     FileContent,
@@ -79,11 +82,22 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import WorkerError
 from .isolation import probe
+from .shared_sync import SharedSync
 from .store import KernelRecord, RevisionRecord, Store
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
 
+SHARED_TIMEOUT = 120.0
+"""The longest one step of the shared files' sync may take around a call (D79)."""
+MAX_HELD_NOTICES = 20
+"""Sync notices held for one call's or one session's next result."""
+MAX_HELD_BYTES = 16 * 1024
+MAX_HELD_SESSIONS = 256
+_UNSYNCED = (
+    "shared/ could not be synced with the project's other environments just now; "
+    "it is synced again at the next call"
+)
 WATCHDOG_GRACE = 30.0
 """Seconds past an execution's own limit before the worker cancels it itself."""
 LOST_GRACE = 60.0
@@ -155,6 +169,14 @@ class _Live:
     overflowed: bool = False
     channel: ExecutorChannel | None = None
     """The executor the execution was sent to: only it may cancel or lose it."""
+    notices: list[str] = field(default_factory=list[str])
+    """What syncing the project's shared files told before the execution ran (D79)."""
+    dispatched_at: float = 0.0
+    """When the request went to the executor, by the monotonic clock."""
+    final: tuple[ExecutionState, Result] | None = None
+    """The executor's outcome, held while the shared files sync after it (D79)."""
+    ended_at: float = 0.0
+    """When the executor reported the outcome, by the monotonic clock."""
 
 
 @dataclass
@@ -214,15 +236,21 @@ class ExecutionManager:
         pool_id: str,
         max_artifact_size: int,
         state_dir: Path,
+        shared: SharedSync | None = None,
     ) -> None:
         self.store = store
         self.backend = backend
         self.blobs = blobs
+        self.shared = shared
+        """Keeps the project's shared files in step across its environments (D79)."""
         self.pool_id = pool_id
         self.max_artifact_size = max_artifact_size
         # The isolation probe's sentinel goes here, among the worker's own files.
         self.state_dir = state_dir
         self._live: dict[str, _Live] = {}
+        self._held_notices: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
+        """Notices from syncing shared files for file requests, by environment and session,
+        for the session's next result there (D79)."""
         self._environments: dict[str, _Environment] = {}
         self._channels: set[ExecutorChannel] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -340,6 +368,10 @@ class ExecutionManager:
         """End an attempt whose outcome is unknown, because ``what`` stopped during it."""
         message = f"{what} stopped during this attempt; its outcome is unknown"
         try:
+            if live.final is not None:
+                # The outcome is known; only the shared files' sync after it was cut short.
+                self._complete(live, [*live.notices, _UNSYNCED])
+                return
             self._finish(
                 live,
                 ExecutionState.LOST,
@@ -675,7 +707,22 @@ class ExecutionManager:
         if channel is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         environment.running.add(execution_id)
+        if self.shared is not None:
+            live.notices += await self._sync(self.shared.down, request.context, channel)
+            if live.cancel_requested:  # while the shared files synced
+                self._finish(
+                    live,
+                    ExecutionState.CANCELLED,
+                    Result(
+                        error=ErrorInfo(
+                            kind=ErrorKind.CANCELLED, message="cancelled before it started"
+                        ),
+                        notices=tuple(live.notices),
+                    ),
+                )
+                return
         live.dispatched = True
+        live.dispatched_at = time.monotonic()
         live.channel = channel
         await channel.request(request.kind, **fields)
         live.watchdog = self._spawn(self._watch(live, request.timeout_seconds))
@@ -706,6 +753,7 @@ class ExecutionManager:
             live is None
             or live.environment_id != environment_id
             or not live.dispatched
+            or live.final is not None  # it ended; only its sync is left
             or live.execution.state in TERMINAL_STATES
         ):
             return
@@ -785,7 +833,120 @@ class ExecutionManager:
                         )
                     }
                 )
-            self._finish(live, state, result)
+            live.final = (state, result)
+            live.ended_at = time.monotonic()
+            if self.shared is None or live.channel is None:
+                self._complete(live, live.notices)
+            else:
+                if live.watchdog is not None:
+                    live.watchdog.cancel()  # the attempt is over; only the sync is left
+                    live.watchdog = None
+                self._spawn(self._end(live, live.channel))
+
+    async def _end(self, live: _Live, channel: ExecutorChannel) -> None:
+        """Copy the shared files the attempt changed into the project's copy, then end it (D79).
+
+        A later call in another environment of the project then finds them there.
+        """
+        notices = list(live.notices)
+        if self.shared is not None:
+            notices += await self._sync(self.shared.up, live.execution.context, channel)
+        try:
+            self._complete(live, notices)
+        except Exception:
+            # The attempt must end all the same; the watchdog no longer watches it.
+            _log.exception(
+                "execution %s: its result could not be stored", live.execution.execution_id
+            )
+            with contextlib.suppress(Exception):
+                self._finish(
+                    live,
+                    ExecutionState.FAILED,
+                    Result(
+                        error=ErrorInfo(
+                            kind=ErrorKind.INTERNAL,
+                            message="the attempt's result could not be stored",
+                        )
+                    ),
+                )
+
+    def _complete(self, live: _Live, notices: list[str]) -> None:
+        """End the attempt with the outcome the executor reported, and the sync's notices."""
+        if live.final is None:
+            return
+        state, result = live.final
+        context = live.execution.context
+        held = self._held_notices.pop((context.environment_id, context.session_id), [])
+        changes: dict[str, Any] = {}
+        if held or notices:
+            changes["notices"] = (*result.notices, *held, *notices)
+        if self.shared is not None and result.written_files:
+            # Files the sync wrote during the call, unchanged since, are not the call's own.
+            synced = self.shared.unchanged_writes(
+                live.environment_id, result.written_files, live.dispatched_at, live.ended_at
+            )
+            if synced:
+                changes["written_files"] = tuple(
+                    path for path in result.written_files if path not in synced
+                )
+        self._finish(live, state, result.model_copy(update=changes) if changes else result)
+
+    async def _sync_shared(
+        self, context: ExecutionContext, path: str, channel: ExecutorChannel
+    ) -> None:
+        """Bring the shared files up to date before a file request that reads them (D79)."""
+        if self.shared is None or not _in_shared(path):
+            return
+        self._tell(context, await self._sync(self.shared.down, context, channel))
+
+    def _tell(self, context: ExecutionContext, notices: list[str]) -> None:
+        """Pass on what syncing for a file request found (D79).
+
+        The calls running in the environment get it with their results, since a change of
+        theirs may be what it is about; the requesting session gets it with its next
+        result there, unless one of those calls is its own.
+        """
+        if not notices:
+            return
+        told = False
+        for live in self._live.values():
+            running = live.execution.context
+            if (
+                live.environment_id == context.environment_id
+                and running.project_id == context.project_id  # never another project's
+                and live.dispatched
+                and live.final is None
+                and live.execution.state not in TERMINAL_STATES
+            ):
+                live.notices = _held([*live.notices, *notices])
+                told = told or running.session_id == context.session_id
+        if not told:
+            key = (context.environment_id, context.session_id)
+            held = self._held_notices.pop(key, [])
+            self._held_notices[key] = _held([*held, *notices])
+            while len(self._held_notices) > MAX_HELD_SESSIONS:
+                self._held_notices.popitem(last=False)
+
+    async def _sync(
+        self,
+        step: Callable[[str, str, str, ExecutorChannel], Awaitable[list[str]]],
+        context: ExecutionContext,
+        channel: ExecutorChannel,
+    ) -> list[str]:
+        """Run one step of the shared files' sync; its failure never fails the call (D79)."""
+        try:
+            return await asyncio.wait_for(
+                step(context.project_id, context.environment_id, context.session_id, channel),
+                SHARED_TIMEOUT,
+            )
+        except Exception as exc:  # the call goes on with shared/ as it is
+            _log.warning(
+                "syncing the shared files of %s in %s failed: %s",
+                context.project_id,
+                context.environment_id,
+                exc,
+            )
+            return [_UNSYNCED]
 
     def _admit(self, live: _Live, size: int) -> bool:
         """Charge one stream or output event to the execution's budget; False once spent.
@@ -1121,6 +1282,7 @@ class ExecutionManager:
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:
         async with self._using(request.context.environment_id) as channel:
+            await self._sync_shared(request.context, request.path, channel)
             found = await self._read_range(
                 channel, request, request.offset, request.length, hashed=True
             )
@@ -1138,19 +1300,35 @@ class ExecutionManager:
     async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
         context = request.context
         async with self._using(context.environment_id) as channel:
-            reply = await channel.request(
-                "write",
-                session=context.session_id,
-                path=request.path,
-                content_b64=request.content_b64,
-                expected_sha256=request.expected_sha256,
-                create_only=request.create_only,
-            )
+            fields: dict[str, Any] = {
+                "path": request.path,
+                "content_b64": request.content_b64,
+                "expected_sha256": request.expected_sha256,
+                "create_only": request.create_only,
+            }
+            if self.shared is not None and _in_shared(request.path):
+                # The expected SHA-256 is checked against the project's version (D79).
+                notices: list[str] = []
+                try:
+                    reply = await self.shared.write(
+                        context.project_id,
+                        context.environment_id,
+                        context.session_id,
+                        channel,
+                        fields,
+                        SHARED_TIMEOUT,
+                        notices,
+                    )
+                finally:  # what the sync found is told even when the write is refused
+                    self._tell(context, notices)
+            else:
+                reply = await channel.request("write", session=context.session_id, **fields)
             return _checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         context = request.context
         async with self._using(context.environment_id) as channel:
+            await self._sync_shared(context, request.path, channel)
             reply = await channel.request("list", session=context.session_id, path=request.path)
             raw = reply.get("entries")
             every = cast(list[object], raw) if isinstance(raw, list) else []
@@ -1273,6 +1451,24 @@ class ExecutionManager:
 
 def _size(text: str) -> int:
     return len(text.encode("utf-8", "replace"))
+
+
+def _held(notices: list[str]) -> list[str]:
+    """The latest notices, within ``MAX_HELD_NOTICES`` and ``MAX_HELD_BYTES``."""
+    kept: list[str] = []
+    size = 0
+    for notice in reversed(notices[-MAX_HELD_NOTICES:]):
+        size += len(notice)
+        if size > MAX_HELD_BYTES:
+            break
+        kept.append(notice)
+    return kept[::-1]
+
+
+def _in_shared(path: str) -> bool:
+    """Whether a file request's path is in the project's shared area (D79)."""
+    normal = posixpath.normpath(path)
+    return normal == "shared" or normal.startswith("shared/")
 
 
 def _checked[Model: BaseModel](model: type[Model], **fields: Any) -> Model:
