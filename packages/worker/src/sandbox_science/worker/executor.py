@@ -32,9 +32,11 @@ import platform
 import re
 import secrets
 import signal
+import site
 import socket
 import stat
 import sys
+import sysconfig
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -431,6 +433,69 @@ def process_table() -> dict[int, Process]:
     return table
 
 
+def environment_fingerprint() -> str:
+    """A digest of the packages installed for this interpreter (W3).
+
+    Conda records each package of the prefix in ``conda-meta``, and pip each
+    distribution in a ``.dist-info`` or ``.egg-info`` directory of the prefix's or the
+    user's site-packages. Installing, removing or upgrading one changes the digest.
+    The files the packages own do not count, which keeps the scan cheap.
+    """
+    paths = sysconfig.get_paths()
+    places = [os.path.join(sys.prefix, "conda-meta"), paths["purelib"], paths["platlib"]]
+    with contextlib.suppress(Exception):
+        places.append(site.getusersitepackages())
+    digest = hashlib.sha256()
+    for place in dict.fromkeys(places):
+        try:
+            with os.scandir(place) as scan:
+                entries = sorted((entry.name, entry) for entry in scan)
+        except OSError:
+            continue
+        for name, entry in entries:
+            if not (name.endswith((".json", ".dist-info", ".egg-info")) or name == "history"):
+                continue
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            line = f"{place}\0{name}\0{info.st_size}\0{info.st_mtime_ns}\n"
+            digest.update(line.encode("utf-8", "surrogateescape"))
+    return digest.hexdigest()[:32]
+
+
+def cpu_seconds_below(root: int) -> float:
+    """CPU time of every process below ``root``, and of the children ``root`` reaped.
+
+    A process's ``cutime`` and ``cstime`` hold what its reaped children used, so the
+    sum stays put when a process ends, wherever below ``root`` it is reaped.
+    """
+    ticks: dict[int, tuple[int, int, int]] = {}  # pid -> (ppid, own, reaped children)
+    with contextlib.suppress(OSError):
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/stat", "rb") as handle:
+                    data = handle.read()
+                fields = data[data.rfind(b")") + 2 :].split()
+                ppid, own = int(fields[1]), int(fields[11]) + int(fields[12])
+                ticks[int(entry)] = (ppid, own, int(fields[13]) + int(fields[14]))
+            except (OSError, IndexError, ValueError):
+                continue
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _, _) in ticks.items():
+        children.setdefault(ppid, []).append(pid)
+    total = ticks[root][2] if root in ticks else 0
+    stack = list(children.get(root, []))
+    while stack:
+        pid = stack.pop()
+        _, own, reaped = ticks[pid]
+        total += own + reaped
+        stack.extend(children.get(pid, []))
+    return total / os.sysconf("SC_CLK_TCK")
+
+
 def process_owner(pid: int) -> str | None:
     """The OWNER a process started with: ``""`` without one, None when unreadable.
 
@@ -803,6 +868,7 @@ class Executor:
             "cancel": self.op_cancel,
             "restart": self.op_restart,
             "close_session": self.op_close_session,
+            "usage": self.op_usage,
             "read": self.op_read,
             "write": self.op_write,
             "list": self.op_list,
@@ -895,6 +961,8 @@ class Executor:
         return {
             "written_files": [name for name in names if len(name.encode()) <= MAX_PATH_BYTES],
             "written_files_truncated": before[1] or after[1] or len(changed) > MAX_WRITTEN,
+            # Installed packages, after the attempt: the worker counts their changes.
+            "environment": await asyncio.to_thread(environment_fingerprint),
         }
 
     def environment(self, session: str) -> dict[str, str]:
@@ -923,6 +991,7 @@ class Executor:
             subreaper=self.subreaper,
             not_dumpable=self.protected,
             features=available_features(),
+            environment=await asyncio.to_thread(environment_fingerprint),
         )
 
     async def op_probe(self, request: Message) -> None:
@@ -1465,6 +1534,16 @@ class Executor:
                     await kernel.stop()
                     kernel.state_lost = True
         await self.reply(request, kernels=stopped)
+
+    async def op_usage(self, request: Message) -> None:
+        """The CPU time used below this executor, and its running kernels and calls.
+
+        The worker samples it to tell an environment whose kernels still compute,
+        say in a background thread, from an idle one.
+        """
+        cpu = await asyncio.to_thread(cpu_seconds_below, os.getpid())
+        kernels = sum(1 for kernel in self.kernels.values() if kernel.manager is not None)
+        await self.reply(request, cpu_seconds=cpu, kernels=kernels, running=len(self.running))
 
     async def op_read(self, request: Message) -> None:
         path = request.get("path")

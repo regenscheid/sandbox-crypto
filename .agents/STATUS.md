@@ -6,6 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Idle suspension** (W3; [lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md)). The worker can stop the sandbox of an environment nobody is using, and start it again on the next use, which then takes about 7 s. Files, installed tools and the policy survive; kernels are reported lost. A computation in a kernel keeps its environment up.
 - **Admission on demand** (D69, amended; [lab 10](docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md)).
   - A sandbox now reaches hosts its policy allows but does not name. The first connection fails. The worker then reads OpenShell's draft for it, checks the host against the policy, and names it in a new compilation. On a real gateway the host was reachable 9 to 20 s later.
   - The compiled policy no longer has a host-less endpoint, which had kept OpenShell from drafting anything.
