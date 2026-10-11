@@ -38,7 +38,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Feature plan](docs/FEATURE-PLAN.md) | What to incorporate from the three research investigations and how to verify it |
 | [Source study](docs/SOURCE-STUDY.md) | Pinned evidence from Claude Science, Claude Code/Desktop, and OpenScience Desktop |
 | [Research workspace](docs/RESEARCH-WORKSPACE.md) | Living documents, shared ledger, LaTeX, native Sage, and navigable PDFs |
-| [Workspace GUI](docs/WORKSPACE.md) | The GUI as built (D80): building and running it, login, what the browser may do, math repairs, the API and views |
+| [Workspace GUI](docs/WORKSPACE.md) | The GUI as built (D80): building and running it, login, what the browser may do, math repairs, living documents, the API and views |
 | [Living documents](docs/LIVING-DOCUMENTS.md) | Documents as built: the parser shared with the browser, block IDs, revisions and patches in the control store, the agents' document tool |
 | [External skills](docs/EXTERNAL-SKILLS.md) | Platform requirements inferred from the existing crypto-analysis-skills pack; no embedded catalog |
 | [Execution plan](docs/EXECUTION-PLAN.md) | Requirements, proposed topology, and the first decisions to discuss |
