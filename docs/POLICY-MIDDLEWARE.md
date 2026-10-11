@@ -24,7 +24,7 @@ The middleware runs before OpenShell injects credentials and cannot tell which r
 | --- | --- | --- | --- |
 | `allow` | allow | | |
 | `alert` | allow, with a finding | | `alert` (if it cannot be recorded, the request is denied with `audit_unavailable`) |
-| `escalate` | deny | `approval_required` | `escalation`: a pending permission request; the agent retries after approval |
+| `escalate` | deny | `approval_required` | `escalation`: a pending permission request; the agent retries after approval. If it cannot be recorded, there is no request to approve, so the request is denied with `audit_unavailable` instead |
 | `deny` by a rule or the default | deny | `policy_denied` | |
 | `deny` by the pool ceiling | deny | `pool_ceiling_denied` | |
 | `deny` by the hard floor | deny | `destination_forbidden` | |

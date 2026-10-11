@@ -353,7 +353,11 @@ class PolicyMiddleware:
                 try:
                     self._record("escalation", facts, loaded, decision)
                 except Exception:
+                    # No permission request exists, so the agent must not wait for an approval.
                     _log.exception("could not record escalation of request %s", facts.request_id)
+                    return _deny(
+                        AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
+                    )
                 return _deny(APPROVAL_REQUIRED, decision.reason, decision)
             case Action.ALERT:
                 try:
