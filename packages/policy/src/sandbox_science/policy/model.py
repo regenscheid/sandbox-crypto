@@ -30,7 +30,7 @@ from pydantic import (
 )
 
 from .decision import Action
-from .hosts import HostPattern, normalize_host
+from .hosts import HostPattern, normalize_host, parse_ip
 from .units import ByteSize, Duration
 
 API_VERSION: Final = "sandbox-science/v0alpha1"
@@ -152,7 +152,7 @@ class RuleEscalation(StrictModel):
     timeout: Duration | None = None
     on_timeout: OnTimeout | None = None
     allow_credentialed: StrictBool = False
-    """With ``on_timeout: allow``, also let a request that may carry a credential proceed."""
+    """With ``on_timeout: allow``, also let a request to a credentialed host proceed."""
 
 
 class Resources(StrictModel):
@@ -478,12 +478,43 @@ class Mcp(StrictModel):
     servers: dict[Name, McpServer] = Field(default_factory=dict[str, McpServer])
 
 
+def _parse_credential_host(value: object) -> str:
+    if not isinstance(value, str):
+        raise ValueError("credential hosts must be strings")
+    if "*" in value:
+        raise ValueError(
+            f"credential host {value!r}: name each host exactly; a wildcard would send the "
+            "credential to every matching host"
+        )
+    host = normalize_host(value)
+    if parse_ip(host) is not None:
+        raise ValueError(f"credential host {value!r}: name the host, not an address")
+    return host
+
+
+CredentialHost = Annotated[
+    str, PlainValidator(_parse_credential_host), WithJsonSchema({"type": "string"})
+]
+
+
 class ProviderRef(StrictModel):
-    """A worker-visible OpenShell provider (placeholders only)."""
+    """A worker-visible OpenShell provider (placeholders only).
+
+    ``hosts`` are the only destinations its credential may reach, on port 443:
+    the compiled sandbox policy binds the credential to each of them, and
+    OpenShell substitutes it nowhere else.
+    """
 
     name: Name
     profile: Annotated[str, StringConstraints(min_length=1)]
+    hosts: Annotated[tuple[CredentialHost, ...], Field(min_length=1)]
     scope_note: str = ""
+
+    @model_validator(mode="after")
+    def _unique_hosts(self) -> Self:
+        if len(self.hosts) != len(set(self.hosts)):
+            raise ValueError(f"provider {self.name!r} lists a host twice")
+        return self
 
 
 class Credentials(StrictModel):
@@ -496,7 +527,17 @@ class Credentials(StrictModel):
         names = [provider.name for provider in self.providers]
         if len(names) != len(set(names)):
             raise ValueError("provider names must be unique")
+        hosts = [host for provider in self.providers for host in provider.hosts]
+        shared = sorted({host for host in hosts if hosts.count(host) > 1})
+        if shared:
+            # OpenShell binds one credential per endpoint.
+            raise ValueError(f"hosts bound to more than one provider: {', '.join(shared)}")
         return self
+
+    @property
+    def hosts(self) -> frozenset[str]:
+        """Every host a provider credential is bound to: requests there may carry one."""
+        return frozenset(host for provider in self.providers for host in provider.hosts)
 
 
 class SharedData(StrictModel):

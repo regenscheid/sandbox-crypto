@@ -17,8 +17,8 @@ defaults:
 
 # Permission requests that nobody answers are denied. A read-only rule can set
 # its own `escalation: {on_timeout: allow}`, which then proceeds as an alert;
-# add `allow_credentialed: true` to extend that to requests that may carry a
-# provider credential.
+# add `allow_credentialed: true` to extend that to requests to the hosts a
+# provider credential is bound to (`credentials.providers[].hosts`).
 escalation:
   timeout: 30m              # per-request wait
   on_timeout: deny          # must be deny policy-wide
@@ -219,10 +219,14 @@ mcp:
     #   tools: { allow: [search_documents, get_document] }   # exact names; patterns only escalate or deny
 
 credentials:
-  # Worker-visible credentials are OpenShell providers (placeholders only).
+  # Worker-visible credentials are OpenShell providers (placeholders only). The
+  # compiler binds each provider's credential to its `hosts`, on port 443 only;
+  # OpenShell substitutes it nowhere else. Its profile must have no endpoints
+  # (examples/openshell/profiles/github-token.yaml).
   providers:
     - name: github-readonly
-      profile: github
+      profile: github-token
+      hosts: [api.github.com, github.com]
       scope_note: fine-grained token, contents:read only
 
 shared_data:

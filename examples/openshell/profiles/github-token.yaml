@@ -1,0 +1,29 @@
+# OpenShell v0.1.3 provider profile for a GitHub token in research sandboxes.
+#
+# It has no endpoints: the project policy's credentials.providers entry names the
+# hosts the token may reach, and the compiled sandbox policy binds it there with
+# credential_binding. OpenShell refuses a binding to a provider whose profile has
+# endpoints, and a profile endpoint beside the compiled policy's host-less
+# endpoint would need its exact address ranges (docs/POLICY.md, "Provider
+# credentials"). Import it, then create the provider from the token in $GITHUB_TOKEN:
+#
+#   openshell provider profile import -f examples/openshell/profiles/github-token.yaml
+#   openshell provider create --name github-readonly --type github-token --credential GITHUB_TOKEN
+#
+# The sandbox sees only a placeholder, under the key the provider stores
+# (GITHUB_TOKEN with the command above; env_vars lists the names it may be
+# created from). Clients send it as usual (gh: "Authorization: token
+# $GITHUB_TOKEN"), and OpenShell substitutes the token at the bound hosts after
+# the policy middleware allows the request.
+
+id: github-token
+display_name: GitHub token
+description: GitHub token, bound to hosts by the compiled sandbox policy
+category: source_control
+credentials:
+  - name: api_token
+    description: Fine-grained GitHub token
+    env_vars: [GITHUB_TOKEN, GH_TOKEN]
+    required: true
+    auth_style: bearer
+    header_name: authorization

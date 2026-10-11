@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ipaddress
+import itertools
 import json
 import random
 import re
@@ -28,6 +29,7 @@ from sandbox_science.policy.openshell import (
     AnyOf,
     Compiled,
     CompileError,
+    Endpoint,
     McpProxyTarget,
     OpenShellPolicy,
     SandboxTarget,
@@ -183,6 +185,7 @@ def test_example_sandbox_policy() -> None:
         "sandbox-science-egress",
         "sandbox-science-package-cache",
         "sandbox-science-mcp-proxy",
+        "sandbox-science-credentials",
     ]
     public, *named = entries["sandbox-science-egress"].endpoints
     assert public.host is None
@@ -200,7 +203,20 @@ def test_example_sandbox_policy() -> None:
         "release-assets.githubusercontent.com",
     ]
     for endpoint in named:
-        assert endpoint.model_dump(exclude={"host"}) == public.model_dump(exclude={"host"})
+        assert endpoint.model_dump(exclude={"host", "ports"}) == public.model_dump(
+            exclude={"host", "ports"}
+        )
+        # github.com's HTTPS traffic belongs to its credential endpoint.
+        assert endpoint.ports == ((80,) if endpoint.host == "github.com" else (80, 443))
+    credentials = entries["sandbox-science-credentials"]
+    assert credentials.binaries == entries["sandbox-science-egress"].binaries
+    assert [endpoint.host for endpoint in credentials.endpoints] == ["api.github.com", "github.com"]
+    for endpoint in credentials.endpoints:
+        assert (endpoint.ports, endpoint.path, endpoint.protocol) == ((443,), "/**", "rest")
+        assert (endpoint.enforcement, endpoint.access) == ("enforce", "full")
+        assert endpoint.allowed_ips == public.allowed_ips
+        assert endpoint.credential_binding is not None
+        assert endpoint.credential_binding.provider == "github-readonly"
     (cache,) = entries["sandbox-science-package-cache"].endpoints
     assert (cache.host, cache.ports) == ("package-cache.sandbox-science.internal", (8090,))
     assert (cache.protocol, cache.enforcement, cache.access) == ("rest", "enforce", "read-only")
@@ -694,6 +710,359 @@ def test_output_uses_only_known_openshell_fields_and_no_nulls(which: str) -> Non
             assert "tls" not in endpoint
             if endpoint["protocol"] == "mcp":
                 assert endpoint["enforcement"] == "enforce"
+
+
+# Provider credentials.
+
+PROVIDERS = (
+    "credentials:\n  providers:\n"
+    "    - {name: api-token, profile: token, hosts: [api.example.org, files.example.org]}\n"
+)
+
+
+def endpoints_for(compiled: Compiled, host: str) -> list[tuple[str, Endpoint]]:
+    return [
+        (name, endpoint)
+        for name, entry in compiled.policy.network_policies.items()
+        for endpoint in entry.endpoints
+        if endpoint.host == host
+    ]
+
+
+def test_credentials_are_bound_to_their_hosts_on_https_only() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: web, operation: http, match: {hosts: ['*'], methods: [GET]}, action: allow}\n"
+        "    - {name: api, operation: http, match: {hosts: [api.example.org], ports: [8443]}, "
+        "action: allow}\n" + PROVIDERS
+    )
+    compiled = compile_research(policy)
+    public = compiled.policy.network_policies["sandbox-science-egress"].endpoints[0]
+    # The rule names api.example.org: its other ports stay with the egress endpoints.
+    assert [(name, e.ports, e.path) for name, e in endpoints_for(compiled, "api.example.org")] == [
+        ("sandbox-science-egress", (80, 8443), None),
+        ("sandbox-science-credentials", (443,), "/**"),
+    ]
+    # files.example.org is named only for its credential.
+    ((name, files),) = endpoints_for(compiled, "files.example.org")
+    assert name == "sandbox-science-credentials"
+    for _, endpoint in [*endpoints_for(compiled, "api.example.org"), (name, files)]:
+        assert endpoint.allowed_ips == public.allowed_ips
+    bindings = {
+        endpoint.host: endpoint.credential_binding
+        for endpoint in compiled.policy.network_policies["sandbox-science-credentials"].endpoints
+    }
+    assert {host: binding and binding.provider for host, binding in bindings.items()} == {
+        "api.example.org": "api-token",
+        "files.example.org": "api-token",
+    }
+    info = [f for f in compiled.findings if f.subject == "credentials.providers"]
+    assert len(info) == 1
+    assert "profiles without endpoints" in info[0].message
+
+
+def test_a_closed_policy_binds_credentials_without_address_ranges() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: api, operation: http, match: {hosts: [api.example.org], ports: [8443]}, "
+        "action: allow}\n" + PROVIDERS,
+        default="deny",
+    )
+    compiled = compile_research(policy)
+    assert [(e.ports, e.allowed_ips) for _, e in endpoints_for(compiled, "api.example.org")] == [
+        ((80, 8443), None),
+        ((443,), None),
+    ]
+    # No rule names files.example.org, and a closed policy admits nothing else.
+    assert endpoints_for(compiled, "files.example.org") == []
+    (refused,) = [f for f in compiled.findings if f.subject == "credentials.providers.api-token"]
+    assert "no rule that could allow a request names files.example.org" in refused.message
+
+
+def test_a_closed_policy_does_not_bind_hosts_its_rules_deny() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: blocked, operation: http, match: {hosts: [api.example.org]}, action: deny}\n"
+        + PROVIDERS,
+        default="deny",
+    )
+    compiled = compile_research(policy)
+    assert "sandbox-science-credentials" not in compiled.policy.network_policies
+    assert endpoints_for(compiled, "api.example.org") == []
+
+
+def test_a_policy_without_providers_binds_nothing() -> None:
+    compiled = compile_research(network_policy(""))
+    assert "sandbox-science-credentials" not in compiled.policy.network_policies
+    assert not any(
+        endpoint.credential_binding
+        for entry in compiled.policy.network_policies.values()
+        for endpoint in entry.endpoints
+    )
+
+
+def test_credentials_are_not_bound_where_the_library_forbids() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: web, operation: http, match: {hosts: ['*'], methods: [GET]}, action: allow}\n"
+        "mcp:\n  servers:\n    srv:\n      url: https://mcp.example.org/mcp\n"
+        "      revision: '1'\n      auth: {mode: none}\n"
+        "credentials:\n  providers:\n"
+        "    - name: everywhere\n      profile: token\n"
+        "      hosts: [api.example.org, metadata.goog, pypi.org, mcp.example.org, "
+        "blocked.example.org, gitlab.corp.internal, package-cache.sandbox-science.internal]\n"
+    )
+    compiled = compile_research(policy, network={"deny_hosts": ["blocked.example.org"]})
+    endpoints = compiled.policy.network_policies["sandbox-science-credentials"].endpoints
+    assert [endpoint.host for endpoint in endpoints] == ["api.example.org"]
+    refused = {
+        f.message.split(":")[0].removeprefix("credential not bound to ")
+        for f in compiled.findings
+        if f.subject == "credentials.providers.everywhere"
+    }
+    assert refused == {
+        "metadata.goog",
+        "pypi.org",
+        "mcp.example.org",
+        "blocked.example.org",
+        "gitlab.corp.internal",
+        "package-cache.sandbox-science.internal",
+    }
+    assert all(
+        f.severity is Severity.WARNING and f.message.endswith("(stricter)")
+        for f in compiled.findings
+        if f.subject == "credentials.providers.everywhere"
+    )
+
+
+# OpenShell v0.1.3 refuses a policy whose endpoints are ambiguous
+# (openshell-policy/src/ambiguity.rs): endpoints that overlap on host and port
+# must agree on their connection settings, and where neither has the more
+# specific path, on how requests are handled, including the credential binding.
+# This is a port of that check for the fields the compiler emits.
+
+
+def _host_tokens(pattern: str) -> list[str | bool]:
+    """A host pattern's tokens: a character, or a star (True when it crosses '.')."""
+    tokens: list[str | bool] = []
+    index = 0
+    while index < len(pattern):
+        if pattern[index] != "*":
+            tokens.append(pattern[index])
+            index += 1
+            continue
+        start = index
+        while index < len(pattern) and pattern[index] == "*":
+            index += 1
+        tokens.append(index - start >= 2)
+    return tokens
+
+
+def _shares_character(left: str | bool, right: str | bool) -> bool:
+    if isinstance(left, str) and isinstance(right, str):
+        return left == right
+    if isinstance(left, bool) and isinstance(right, bool):
+        return True
+    character = left if isinstance(left, str) else right
+    crosses = right if isinstance(left, str) else left
+    return bool(crosses) or character != "."
+
+
+def openshell_hosts_overlap(left: str | None, right: str | None) -> bool:
+    """Whether some host name matches both patterns; no host matches every name."""
+    if not left or not right:
+        return True
+    a, b = _host_tokens(left.lower()), _host_tokens(right.lower())
+    queue = [(0, 0)]
+    seen: set[tuple[int, int]] = set()
+    while queue:
+        i, j = queue.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if i == len(a) and j == len(b):
+            return True
+        if i < len(a) and isinstance(a[i], bool):
+            queue.append((i + 1, j))
+        if j < len(b) and isinstance(b[j], bool):
+            queue.append((i, j + 1))
+        if i < len(a) and j < len(b) and _shares_character(a[i], b[j]):
+            queue.append(
+                (i if isinstance(a[i], bool) else i + 1, j if isinstance(b[j], bool) else j + 1)
+            )
+    return False
+
+
+def _path_specificity(path: str | None) -> int:
+    return len(path.replace("*", "")) if path else 0
+
+
+def _paths_overlap(left: str | None, right: str | None) -> bool:
+    if not left or not right or left in ("**", "/**") or right in ("**", "/**"):
+        return True
+    assert not set("*?[") & set(left + right), "the port handles literal paths only"
+    return left == right
+
+
+def _contributes_metadata(endpoint: Endpoint) -> bool:
+    return (
+        endpoint.protocol != "tcp"
+        or bool(endpoint.allowed_ips)
+        or endpoint.credential_binding is not None
+    )
+
+
+def openshell_ambiguities(policy: OpenShellPolicy) -> list[str]:
+    """The conflicts OpenShell would report for this policy, as readable strings."""
+    endpoints = [
+        (f"{name}[{index}]", endpoint)
+        for name, entry in policy.network_policies.items()
+        for index, endpoint in enumerate(entry.endpoints)
+    ]
+    found: list[str] = []
+    for (left_name, left), (right_name, right) in itertools.combinations(endpoints, 2):
+        if not set(left.ports) & set(right.ports) or not openshell_hosts_overlap(
+            left.host, right.host
+        ):
+            continue
+        pairs: dict[str, tuple[object, object]] = {
+            "transparent_tcp_eligible": (left.protocol == "tcp", right.protocol == "tcp"),
+            "allowed_ips": (
+                sorted({ip.strip().lower() for ip in left.allowed_ips or ()}),
+                sorted({ip.strip().lower() for ip in right.allowed_ips or ()}),
+            ),
+        }
+        if (
+            _contributes_metadata(left)
+            and _contributes_metadata(right)
+            and _paths_overlap(left.path, right.path)
+            and _path_specificity(left.path) == _path_specificity(right.path)
+        ):
+            pairs |= {
+                "protocol": (left.protocol, right.protocol),
+                "enforcement": (left.enforcement or "audit", right.enforcement or "audit"),
+                "allow_encoded_slash": (
+                    bool(left.allow_encoded_slash),
+                    bool(right.allow_encoded_slash),
+                ),
+                "credential_binding.provider": (
+                    left.credential_binding.provider if left.credential_binding else "",
+                    right.credential_binding.provider if right.credential_binding else "",
+                ),
+            }
+            if left.protocol == right.protocol == "mcp":
+                pairs |= {
+                    "json_rpc_max_body_bytes": (
+                        (left.mcp and left.mcp.max_body_bytes) or 65536,
+                        (right.mcp and right.mcp.max_body_bytes) or 65536,
+                    ),
+                    "mcp.strict_tool_names": (
+                        left.mcp.strict_tool_names if left.mcp else True,
+                        right.mcp.strict_tool_names if right.mcp else True,
+                    ),
+                }
+        conflicts = sorted(field for field, (a, b) in pairs.items() if a != b)
+        if conflicts:
+            found.append(f"{left_name} {left.host} vs {right_name} {right.host}: {conflicts}")
+    return found
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "overlap"),
+    [
+        (None, "github.com", True),
+        ("github.com", "github.com", True),
+        ("api.github.com", "github.com", False),
+        ("**.github.com", "api.github.com", True),
+        ("**.github.com", "github.com", False),
+        ("**.github.com", "**.api.github.com", True),
+        ("**.arxiv.org", "**.github.com", False),
+    ],
+)
+def test_the_host_overlap_port_matches_openshell(
+    left: str | None, right: str | None, overlap: bool
+) -> None:
+    assert openshell_hosts_overlap(left, right) is overlap
+    assert openshell_hosts_overlap(right, left) is overlap
+
+
+def test_the_ambiguity_port_reproduces_the_lab_refusal() -> None:
+    # Lab 2, variant A1: a provider profile's endpoint beside the host-less one.
+    compiled = compile_research(EXAMPLE)
+    rules = dict(compiled.policy.network_policies)
+    rules["_provider_gh"] = rules["sandbox-science-egress"].model_copy(
+        update={
+            "endpoints": (
+                Endpoint(
+                    host="api.github.com", ports=(443,), protocol="rest", enforcement="enforce"
+                ),
+            )
+        }
+    )
+    composed = compiled.policy.model_copy(update={"network_policies": rules})
+    assert any("allowed_ips" in conflict for conflict in openshell_ambiguities(composed))
+    # Without its path selector, a credential endpoint would compete with the host-less one.
+    credentials = rules["sandbox-science-credentials"]
+    unpathed = tuple(e.model_copy(update={"path": None}) for e in credentials.endpoints)
+    rules = dict(compiled.policy.network_policies)
+    rules["sandbox-science-credentials"] = credentials.model_copy(update={"endpoints": unpathed})
+    composed = compiled.policy.model_copy(update={"network_policies": rules})
+    assert any(
+        "credential_binding.provider" in conflict for conflict in openshell_ambiguities(composed)
+    )
+
+
+def test_compiled_policies_are_not_ambiguous() -> None:
+    assert openshell_ambiguities(compile_research(EXAMPLE).policy) == []
+    assert openshell_ambiguities(compile_mcp(EXAMPLE).policy) == []
+
+
+def test_random_policies_compile_unambiguously_and_bind_each_host_once() -> None:
+    rng = random.Random(20261010)  # noqa: S311 - test data, not secrets
+    names = ["api.example.org", "example.org", "files.example.org", "github.com", "a.b.example.org"]
+    patterns = [*names, "*.example.org", "*.b.example.org", "*", "93.184.215.14", "10.0.0.5"]
+    for _ in range(300):
+        rules = [
+            (
+                rng.sample(patterns, rng.randint(1, 3)),
+                rng.random() < 0.3,
+                rng.choice(["allow", "escalate", "deny"]),
+            )
+            for _ in range(rng.randint(0, 4))
+        ]
+        default = rng.choice(["deny", "escalate"])
+        bound = rng.sample(names, rng.randint(0, 3))
+        text = "".join(
+            f"    - {{name: r{index}, operation: http, match: {{hosts: "
+            f"[{', '.join(repr(host) for host in hosts)}]{', ports: [8443]' if ports else ''}}}, "
+            f"action: {action}}}\n"
+            for index, (hosts, ports, action) in enumerate(rules)
+        )
+        text = "network:\n  rules:\n" + text if text else ""
+        if bound:
+            text += "credentials:\n  providers:\n" + "".join(
+                f"    - {{name: p{index}, profile: token, hosts: [{host}]}}\n"
+                for index, host in enumerate(bound)
+            )
+        compiled = compile_research(network_policy(text, default=default))
+        assert openshell_ambiguities(compiled.policy) == [], text
+        # A closed policy binds only hosts that a rule which could allow a request names.
+        reachable = [hosts for hosts, _, action in rules if action != "deny"]
+        open_internet = default != "deny" or any("*" in h for hosts in reachable for h in hosts)
+        named = {host for hosts in reachable for host in hosts if "*" not in host}
+        for host in bound:
+            on_https = [
+                (name, endpoint)
+                for name, endpoint in endpoints_for(compiled, host)
+                if 443 in endpoint.ports
+            ]
+            if open_internet or host in named:
+                assert len(on_https) == 1, text
+                ((name, endpoint),) = on_https
+                assert name == "sandbox-science-credentials"
+                assert endpoint.credential_binding is not None
+            else:
+                assert endpoints_for(compiled, host) == [], text
 
 
 def test_output_is_deterministic() -> None:

@@ -37,6 +37,7 @@ from sandbox_science.policy import (
     evaluate_monitors,
     normalize_host,
 )
+from sandbox_science.policy.openshell import CREDENTIAL_PORT
 
 from .errors import MiddlewareError, StoreError
 from .events import EventSink
@@ -70,6 +71,8 @@ POLICY_UNAVAILABLE: Final = "policy_unavailable"
 """The bound policy revision cannot be loaded."""
 CONFIG_INVALID: Final = "config_invalid"
 """The middleware entry's config is malformed or names another policy."""
+CREDENTIAL_UNENCRYPTED: Final = "credential_unencrypted"
+"""Plain HTTP to the port a credential is bound to, which would carry it unencrypted; use HTTPS."""
 
 REASON_CODE_RE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """OpenShell's format for reason codes; anything else is a middleware failure."""
@@ -294,15 +297,24 @@ class PolicyMiddleware:
             return _deny(POLICY_UNAVAILABLE, str(exc))
         if loaded.policy.metadata.name != ref.name:
             return _deny(CONFIG_INVALID, f"revision {ref.digest} is not policy {ref.name!r}")
-        # The middleware runs before OpenShell injects provider credentials and
-        # cannot see which requests will get one, so every request of a project
-        # that has providers counts as credentialed: escalations then never
-        # time out into an alert ("Escalation timeout").
-        credentialed = bool(loaded.policy.credentials.providers)
         try:
             destination = (normalize_host(facts.host), facts.port)
         except ValueError as exc:
             return _deny(REQUEST_UNCLASSIFIABLE, f"malformed destination host: {exc}")
+        # The middleware runs before OpenShell injects provider credentials and
+        # cannot see whether a request will get one. OpenShell substitutes a
+        # credential only at the hosts the policy binds it to, so a request to
+        # one of them counts as credentialed, on any port: its escalations time
+        # out into an alert only with allow_credentialed ("Escalation timeout").
+        credentialed = destination[0] in loaded.policy.credentials.hosts
+        if credentialed and facts.port == CREDENTIAL_PORT and facts.scheme.lower() == "http":
+            # OpenShell substitutes a bound credential on its port whatever the
+            # transport, and forwards plain HTTP unencrypted. It reports "http"
+            # only for requests it knows are plain (its forward proxy): through a
+            # tunnel everything reads "https", so that route remains a residual
+            # risk (docs/POLICY.md).
+            reason = f"plain HTTP to {facts.host}:{facts.port}, where a credential is bound"
+            return _deny(CREDENTIAL_UNENCRYPTED, reason)
         if destination == ref.mcp_proxy:
             return self._verdict(facts, loaded, _mcp_proxy_decision(loaded))
         if destination[0] in ref.service_hosts() and destination != ref.package_cache:
