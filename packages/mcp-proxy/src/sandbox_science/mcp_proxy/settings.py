@@ -10,6 +10,7 @@ ceiling = "pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal"]   # added to the hard floor
 max_body_bytes = "1Mi"           # the largest request a caller may send
 max_sessions = 256
+max_sessions_per_caller = 16     # a caller's next session ends its least recently used one
 session_idle = "1h"              # a session unused this long ends
 upstream_timeout = "5m"          # one call to a server, from start to end
 
@@ -140,6 +141,7 @@ class Settings(_Model):
     admin_hosts: tuple[str, ...] = ()
     max_body_bytes: Size = 1024 * 1024
     max_sessions: Annotated[int, Field(ge=1, le=100_000)] = 256
+    max_sessions_per_caller: Annotated[int, Field(ge=1, le=100_000)] = 16
     session_idle: Duration = timedelta(hours=1)
     upstream_timeout: Duration = timedelta(minutes=5)
     credentials: dict[CredentialKey, EnvironmentName] = Field(default_factory=dict[str, str])
@@ -153,6 +155,9 @@ class Settings(_Model):
         hashes = [caller.token_sha256 for caller in self.callers]
         if len(hashes) != len(set(hashes)):
             raise ValueError("each caller needs its own token")
+        if self.max_sessions_per_caller >= self.max_sessions:
+            # Otherwise one caller could take every session.
+            raise ValueError("max_sessions_per_caller must be smaller than max_sessions")
         return self
 
     @property

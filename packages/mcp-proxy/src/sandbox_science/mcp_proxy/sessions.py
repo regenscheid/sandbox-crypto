@@ -5,6 +5,9 @@ A caller's ``initialize`` creates a session at the proxy, whose id is the
 proxy's own, and an upstream session that the proxy opens itself. The id is
 honoured only for the caller that created the session, so a session id that
 leaks to another sandbox or project is useless there.
+
+Each caller may hold a few sessions; a new one ends the caller's least
+recently used session, so that one caller cannot take every place.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Final
+
+from sandbox_science.policy.operations import MAX_MCP_NAME_LENGTH
 
 from .callers import Caller
 from .jsonrpc import RequestId
@@ -47,13 +52,15 @@ class AdvertisedTools:
 
     def page(self, cursor: str | None, names: Iterable[str], next_cursor: str | None) -> None:
         """Take one page of a listing: the cursor it was asked with, its names and the next."""
+        # The policy refuses longer names, so they could never be called.
+        page = frozenset(name for name in names if len(name) <= MAX_MCP_NAME_LENGTH)
         if cursor is None:
-            collected = frozenset(names)
+            collected = page
         else:
             earlier = self._partial.pop(cursor, None)
             if earlier is None:
                 return  # without the earlier pages, this page cannot complete a listing
-            collected = earlier | frozenset(names)
+            collected = earlier | page
         if len(collected) > MAX_TOOLS:
             raise ValueError(f"the server lists more than {MAX_TOOLS} tools")
         if next_cursor is None:
@@ -95,12 +102,21 @@ class Session:
 
 
 class Sessions:
-    """Active sessions; a session unused for ``idle`` seconds ends."""
+    """Active sessions; a session unused for ``idle`` seconds ends.
+
+    At most ``limit`` sessions in all, and ``per_caller`` for each caller.
+    """
 
     def __init__(
-        self, *, limit: int, idle: float, clock: Callable[[], float] = time.monotonic
+        self,
+        *,
+        limit: int,
+        idle: float,
+        per_caller: int = 16,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._limit = limit
+        self._per_caller = per_caller
         self._idle = idle
         self._clock = clock
         self._sessions: dict[str, Session] = {}
@@ -108,16 +124,28 @@ class Sessions:
     def __len__(self) -> int:
         return len(self._sessions)
 
-    def full(self) -> bool:
-        """Whether a new session would exceed the limit, after ending idle ones."""
+    def has_room(self, caller: Caller) -> bool:
+        """Whether ``add`` would succeed for this caller, after ending idle sessions."""
         self._sweep()
-        return len(self._sessions) >= self._limit
+        return len(self._sessions) < self._limit or any(
+            session.caller == caller for session in self._sessions.values()
+        )
 
     def add(
         self, caller: Caller, server: str, url: str, version: str, upstream_id: str | None
     ) -> Session:
-        """Start a session. Raises SessionsFullError at the limit."""
-        if self.full():
+        """Start a session, ending the caller's least recently used one when it must.
+
+        Raises SessionsFullError when the proxy is full and the caller holds no session.
+        """
+        self._sweep()
+        own = sorted(
+            (session for session in self._sessions.values() if session.caller == caller),
+            key=lambda session: session.last_used,
+        )
+        while own and (len(own) >= self._per_caller or len(self._sessions) >= self._limit):
+            del self._sessions[own.pop(0).id]
+        if len(self._sessions) >= self._limit:
             raise SessionsFullError(f"{self._limit} sessions are active")
         session = Session(
             id=secrets.token_urlsafe(32),

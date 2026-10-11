@@ -75,7 +75,7 @@ Checked by hand on 2026-10-11 with the MCP Python SDK 2.2.0 on both sides, its c
 - It completes the handshake with `notifications/initialized`. Every later request carries `MCP-Protocol-Version`, and the server's `Mcp-Session-Id` if it issued one.
 - The caller gets the server's result without the `tasks` capability, since the policy denies the task methods. Its session id is the proxy's own, valid only with the same token and server.
 
-A session ends after `session_idle` without use, on `DELETE`, when the server ends it (404), or when a new policy revision changes the server's URL or pinned revision. The caller then gets 404 and initializes again. The proxy never sends `DELETE` upstream, because OpenShell's MCP inspection refuses it.
+A caller holds at most `max_sessions_per_caller` sessions; its next one ends its least recently used, so that no caller can take every place. A session ends after `session_idle` without use, on `DELETE`, when the server ends it (404), or when a new policy revision changes the server's URL or pinned revision. The caller then gets 404 and initializes again. The proxy never sends `DELETE` upstream, because OpenShell's MCP inspection refuses it.
 
 **How a call is decided.** In this order, for every message:
 
@@ -87,7 +87,7 @@ A session ends after `session_idle` without use, on `DELETE`, when the server en
 | One JSON-RPC request or notification, parsed strictly: no batches, duplicate keys, unknown members or responses | 400 `request_unclassifiable` |
 | The caller's own session; a revision the caller names must be the session's | 400 `session_required`, 404 `session_unknown`, 400 `protocol_unsupported` |
 | The policy library, with the caller's kind as origin: protocol methods, tool rules, `worker_access`, `worker_tools`, the hard floor and the pool ceiling | the library's code, as for the middleware (`policy_denied`, `pool_ceiling_denied`, `destination_forbidden`, `request_unclassifiable`) |
-| Parameters, as forwarded, within `mcp.proxy.max_argument_bytes`; no task-augmented requests | `arguments_too_large`, `request_unclassifiable` |
+| Only the parameters MCP defines for the method, besides `_meta`, which is dropped; no task-augmented requests; the parameters, as forwarded, within `mcp.proxy.max_argument_bytes` | `request_unclassifiable`, `arguments_too_large` |
 | Nothing in the parameters that reads as an OpenShell placeholder | `credential_in_body` |
 | A placeholder for the server's credentials in the proxy's environment | `credential_unavailable` |
 | For `tools/call`, a name in the server's latest complete `tools/list`, compared exactly. The proxy lists the tools itself when it has no complete listing, and again after the server reports a change; the caller's own listings count once their last page arrives | `tool_not_advertised` |
@@ -95,17 +95,17 @@ A session ends after `session_idle` without use, on `DELETE`, when the server en
 | An alert proceeds only once its record is stored | `audit_unavailable` |
 | The server's resolved addresses pass the hard floor and the pool ceiling, checked before each new connection | `destination_forbidden`, `pool_ceiling_denied` |
 
-A refusal is a JSON-RPC error with code -31001, meaning nothing was sent, and the reason code in `data.reason`. Its message is fixed text for the code; the rule that matched stays in the proxy's log and the event store, as for the middleware. A refused notification gets an HTTP error status instead. A call that was sent but brought no usable answer gets code -31002 and `upstream_error` (a malformed answer, an error status, a timeout, a redirect), `upstream_unauthorized` (401), `upstream_unavailable` or `result_too_large`. The server's own JSON-RPC errors are passed on.
+A refusal is a JSON-RPC error with code -31001, meaning nothing was sent, and the reason code in `data.reason`. Its message is fixed text for the code; the rule that matched stays in the proxy's log and the event store, as for the middleware. A refused notification gets an HTTP error status instead. A call that was sent but brought no usable answer gets code -31002 and `upstream_error` (a malformed answer, an error status, a timeout, a redirect), `upstream_unauthorized` (401), `upstream_unavailable` or `result_too_large`. The server's own JSON-RPC errors are passed on, except ones that use the proxy's codes, which become `upstream_error`: a server may not speak with the proxy's voice.
 
 **What goes upstream.** Only what the proxy builds:
 - Its own headers: `Content-Type`, `Accept`, `Accept-Encoding: identity`, `MCP-Protocol-Version`, `Mcp-Session-Id` and the credential headers. Nothing a caller sends in headers reaches a server.
-- The caller's parameters, serialized again by the proxy, without `_meta`.
+- The parameters MCP defines for the method, serialized again by the proxy, and nothing else. A server whose JSON decoder ignores the case of keys, as Go's does, would otherwise read a `NAME` member as the tool name the policy never saw.
 - Credentials only as headers that hold OpenShell placeholders, read from the proxy's environment: `Authorization: Bearer <placeholder>` for `bearer` and `oauth` servers, and the entry's headers for `headers` servers. A variable that holds anything but a placeholder is refused, so the proxy never sends a credential it holds itself.
 - No cookies and no redirects.
 
 Of a caller's notifications, only `notifications/cancelled` for a call in flight goes upstream, under the proxy's id for that call and without the caller's reason text. The others have nothing upstream to refer to.
 
-**What comes back.** Answers are read within `mcp.proxy.max_response_bytes` as they arrive, as JSON or as an event stream that ends with the response. Compressed answers are refused. In a stream, the proxy answers `ping` and refuses other server requests with error -32601, at most 16 per answer. It notes `notifications/tools/list_changed` and drops the other notifications. Image and audio blocks and blob resources are replaced by a text note naming their type and size, until binary results become artifact references.
+**What comes back.** Answers are read within `mcp.proxy.max_response_bytes`, and never more than 32 MiB, as they arrive, as JSON or as an event stream that ends with the response (2025-03-26 servers may batch messages in one event). Compressed answers are refused. The session id a server issues must be visible ASCII with nothing that reads as a placeholder, since the proxy sends it back in a header. In a stream, the proxy answers `ping` and refuses other server requests with error -32601, at most 16 per answer. It notes `notifications/tools/list_changed` and drops the other notifications. Image and audio blocks and blob resources are replaced by a text note naming their type and size, until binary results become artifact references.
 
 **Callers and attribution.** Each caller in the settings has a token (the settings hold its SHA-256), a kind and a project. A worker token is issued to one sandbox (`container`). A token for a sandbox dedicated to one session also names that `session`. Records carry the attribution level:
 - `orchestrator`: the harness, which names the session in a `Sandbox-Science-Session` header;
@@ -132,6 +132,7 @@ ceiling = "pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal"]   # added to the hard floor
 max_body_bytes = "1Mi"             # the largest request a caller may send
 max_sessions = 256
+max_sessions_per_caller = 16       # a caller's next session ends its least recently used one
 session_idle = "1h"
 upstream_timeout = "5m"            # one call to a server, from start to end
 

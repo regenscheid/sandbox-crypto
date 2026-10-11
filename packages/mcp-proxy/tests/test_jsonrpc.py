@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Strict JSON-RPC parsing and the event-stream parser."""
 
+import time
+
 import pytest
 
 from sandbox_science.mcp_proxy import jsonrpc
@@ -34,6 +36,8 @@ def test_loads_reads_json() -> None:
         b"",
         b"{",
         b"[" + b"9" * 5000 + b"]",
+        b'{"a":1e400}',
+        b'{"a":-1e400}',
     ],
 )
 def test_loads_refuses_what_a_strict_parser_would(data: bytes) -> None:
@@ -186,3 +190,16 @@ def test_a_cr_at_the_end_of_the_stream_ends_its_line() -> None:
 def test_streams_must_be_utf8() -> None:
     with pytest.raises(MessageError):
         EventStreamParser().feed(b"data: \xff\n\n")
+
+
+def test_a_long_line_in_small_chunks_is_scanned_once() -> None:
+    # A server that sends a long line a few bytes at a time must not make the
+    # parser rescan it for every chunk (quadratic time on the event loop).
+    parser = EventStreamParser()
+    line = b"data: " + b"x" * (1024 * 1024)
+    started = time.perf_counter()
+    for start in range(0, len(line), 64):
+        assert parser.feed(line[start : start + 64]) == []
+    [event] = parser.feed(b"\r") + parser.feed(b"\r") + parser.finish()
+    assert len(event.data) == 1024 * 1024
+    assert time.perf_counter() - started < 5

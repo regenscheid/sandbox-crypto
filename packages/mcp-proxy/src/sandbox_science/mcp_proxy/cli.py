@@ -109,7 +109,9 @@ def _serve(settings: Settings) -> int:
             events=StoreSink(events),
             upstream=upstream,
             sessions=Sessions(
-                limit=settings.max_sessions, idle=settings.session_idle.total_seconds()
+                limit=settings.max_sessions,
+                per_caller=settings.max_sessions_per_caller,
+                idle=settings.session_idle.total_seconds(),
             ),
             credentials=settings.credentials,
             environ=os.environ,

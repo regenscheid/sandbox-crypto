@@ -62,3 +62,15 @@ async def test_calls_and_findings_are_chained_in_the_event_store(
     escalation = records[3].data()
     assert escalation["tool"] == "crawl"
     assert escalation["rule"] == "mcp.servers.papers.tools.escalate[crawl]"
+
+
+async def test_names_without_a_utf8_encoding_are_still_recorded(
+    harness: Harness, events_path: Path
+) -> None:
+    session = await harness.initialize()
+    answer = await harness.tool(session, "bad\ud800")  # a lone surrogate, from a JSON escape
+    assert "error" in answer.body
+    with StoreReader(events_path) as reader:
+        last = list(reader.records())[-1]
+    assert last.kind == "mcp-call"
+    assert last.data()["tool"] == "bad\\ud800"

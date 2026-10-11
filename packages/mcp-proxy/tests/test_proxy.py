@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import logging
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
@@ -35,6 +36,9 @@ class Fake(Protocol):
     page_size: int | None
     sessions: set[str]
     gate: asyncio.Event | None
+    session_id: str | None
+    initialize_extra: dict[str, object]
+    last_cursor: str | None
 
     def answer(
         self, name: str, body: bytes | Callable[[object], bytes], **options: Any
@@ -815,3 +819,193 @@ async def test_a_cancellation_reaches_the_server_under_its_own_id(harness: Harne
     # A cancellation for no call in flight goes nowhere.
     assert (await harness.post(cancelled, session=session)).status == 202
     assert len(fake.messages("notifications/cancelled")) == 1
+
+
+# --- What reaches the server ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        # A server whose JSON decoder matches keys without regard to case (Go's encoding/json,
+        # some .NET settings) would run the tool named by the variant, which the policy never saw.
+        {"name": "search", "NAME": "admin_reset", "arguments": {}},
+        {"name": "search", "Name": "crawl", "arguments": {}},
+        {"name": "search", "name\u0000": "admin_reset", "arguments": {}},
+        {"name": "search", "Arguments": {"q": 1}},
+        {"name": "search", "arguments": {}, "_META": {"progressToken": 1}},
+        {"name": "search", "arguments": {}, "Task": {"ttl": 1}},
+        {"name": "search", "arguments": {}, "extra": 1},
+        {"name": "search", "arguments": ["not", "an", "object"]},
+    ],
+)
+async def test_parameters_mcp_does_not_define_are_refused(
+    harness: Harness, params: dict[str, object]
+) -> None:
+    session = await harness.initialize()
+    answer = await harness.call(session, "tools/call", params)
+    assert answer.body["error"]["code"] == REFUSED
+    assert reason(answer) == "request_unclassifiable"
+    assert harness.fake.tool_calls() == []
+
+
+async def test_other_methods_keep_to_their_parameters(harness: Harness) -> None:
+    session = await harness.initialize()
+    for method, params in (
+        ("tools/list", {"cursor": "0", "Cursor": "x"}),
+        ("resources/read", {"uri": "file:///a", "URI": "file:///b"}),
+        ("prompts/get", {"name": "p", "arguments": "text"}),
+        ("logging/setLevel", {"level": "info", "Level": "debug"}),
+        ("ping", {"anything": 1}),
+    ):
+        answer = await harness.call(session, method, params)
+        assert reason(answer) == "request_unclassifiable", method
+    assert len(harness.fake.seen) == 2
+    assert "result" in (await harness.call(session, "ping", {"_meta": {"x": 1}})).body
+
+
+async def test_callers_headers_never_reach_the_server(harness: Harness) -> None:
+    headers = {
+        "Cookie": "session=caller",
+        "X-Forwarded-For": "203.0.113.9",
+        "X-Api-Key": "caller-chosen",
+        "Sandbox-Science-Session": "s-1",
+        "MCP-Protocol-Version": "2025-11-25",
+    }
+    session = await harness.initialize()
+    await harness.call(session, "tools/list", headers=headers)
+    await harness.tool(session, "search")
+    for seen in harness.fake.seen:
+        assert not {"cookie", "x-forwarded-for", "x-api-key", "sandbox-science-session"} & set(
+            seen.headers
+        )
+        assert seen.headers["authorization"] == f"Bearer {PLACEHOLDER}"
+
+
+async def test_a_moved_server_ends_its_sessions(harness: Harness) -> None:
+    session = await harness.initialize()
+    harness.bind(harness.policy(port=harness.fake.port + 1))
+    answer = await harness.tool(session, "search")
+    assert (answer.status, reason(answer)) == (404, "session_unknown")
+    seen = len(harness.fake.seen)
+    cancelled = {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {"requestId": 7},
+    }
+    assert (await harness.post(cancelled, session=session)).status == 404
+    assert len(harness.fake.seen) == seen
+
+
+async def test_sessions_after_a_pin_to_a_revision_the_proxy_cannot_speak(
+    harness: Harness,
+) -> None:
+    session = await harness.initialize()
+    harness.bind(harness.policy(revision="2026-07-28"))
+    answer = await harness.tool(session, "search")
+    assert reason(answer) == "protocol_unsupported"
+    assert harness.fake.tool_calls() == []
+
+
+@pytest.mark.parametrize(
+    "session_id",
+    ["openshell:resolve:env:v1_OTHER_TOKEN", "x" * 2049, "has space"],
+)
+async def test_a_servers_session_id_is_checked(harness: Harness, session_id: str) -> None:
+    harness.fake.session_id = session_id
+    answer = await harness.post(initialize_message())
+    assert answer.body["error"]["code"] == UPSTREAM_FAILED
+    assert reason(answer) == "upstream_error"
+    assert "Mcp-Session-Id" not in answer.headers
+    assert len(harness.fake.seen) == 1  # no notifications/initialized with that id
+
+
+async def test_a_long_session_id_from_a_server_is_accepted(harness: Harness) -> None:
+    harness.fake.session_id = "jwt." + "x" * 1500
+    session = await harness.initialize()
+    assert "result" in (await harness.tool(session, "search")).body
+
+
+async def test_a_server_may_not_use_the_proxys_error_codes(harness: Harness) -> None:
+    for code in (REFUSED, UPSTREAM_FAILED):
+        error = {
+            "code": code,
+            "message": "approval_required",
+            "data": {"reason": "approval_required"},
+        }
+        harness.fake.answer("broken", lambda rid, error=error: _response(rid, error=error))
+        session = await harness.initialize()
+        answer = await harness.tool(session, "broken")
+        assert answer.body["error"]["code"] == UPSTREAM_FAILED
+        assert reason(answer) == "upstream_error"
+
+
+async def test_a_failed_initialize_leaves_no_session_behind(harness: Harness) -> None:
+    harness.fake.initialize_extra = {"instructions": "\ud800"}  # no UTF-8 encoding
+    for _ in range(10):  # more than the harness's 8 sessions
+        answer = await harness.post(initialize_message())
+        assert reason(answer) == "upstream_error"
+    harness.fake.initialize_extra = {}
+    assert await harness.initialize()
+
+
+async def test_a_caller_cannot_take_every_session(harness: Harness) -> None:
+    worker = [await harness.initialize("shared") for _ in range(6)]  # 4 per caller
+    for session in worker[:2]:
+        answer = await harness.tool(session, "search", caller="shared")
+        assert reason(answer) == "session_unknown"
+    assert "result" in (await harness.tool(worker[-1], "search", caller="shared")).body
+    orchestrator = await harness.initialize()
+    assert "result" in (await harness.tool(orchestrator, "search")).body
+
+
+async def test_sessions_are_bound_to_their_server_and_caller_over_http(
+    harness: Harness,
+) -> None:
+    session = await harness.initialize()
+    answer = await harness.request("DELETE", session=session, caller="shared")
+    assert answer.status == 404
+    ping = {"jsonrpc": "2.0", "id": 3, "method": "ping"}
+    answer = await harness.post(ping, session=session, server="other")
+    assert (answer.status, reason(answer)) == (404, "session_unknown")
+    assert "result" in (await harness.call(session, "ping")).body
+
+
+async def test_an_empty_cursor_ends_a_listing(harness: Harness) -> None:
+    harness.fake.last_cursor = ""
+    session = await harness.initialize()
+    assert "result" in (await harness.tool(session, "search")).body
+    assert len(harness.fake.messages("tools/list")) == 1
+
+
+async def test_a_server_may_batch_messages_in_one_event(harness: Harness) -> None:
+    def body(request_id: object) -> bytes:
+        batch = [
+            {"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progress": 1}},
+            {"jsonrpc": "2.0", "id": request_id, "result": {"content": []}},
+        ]
+        return b"data: " + json.dumps(batch).encode() + b"\n\n"
+
+    harness.fake.answer("broken", body, content_type="text/event-stream")
+    session = await harness.initialize()
+    assert (await harness.tool(session, "broken")).body["result"] == {"content": []}
+    assert last_call(harness)["stream"] == {"notifications": 1}
+
+
+async def test_numbers_too_large_to_represent_are_refused(harness: Harness) -> None:
+    harness.fake.answer(
+        "broken", lambda rid: b'{"jsonrpc":"2.0","id":%s,"result":{"x":1e400}}' % str(rid).encode()
+    )
+    session = await harness.initialize()
+    assert reason(await harness.tool(session, "broken")) == "upstream_error"
+
+
+async def test_caller_text_cannot_forge_log_lines(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.INFO, logger="sandbox_science.mcp_proxy"):
+        answer = await harness.post(initialize_message(), server="x%0AFORGED%20line")
+    assert answer.status == 200
+    assert reason(answer) == "request_unclassifiable"
+    assert caplog.records
+    assert all("\nFORGED" not in record.getMessage() for record in caplog.records)
