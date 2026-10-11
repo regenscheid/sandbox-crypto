@@ -7,6 +7,7 @@ import os
 import signal
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -64,3 +65,22 @@ def test_capture_keeps_head_and_tail() -> None:
     assert summary["total_bytes"] == 20
     assert summary["text"].startswith("abcde\n[… 10 bytes omitted …]\n")
     assert summary["text"].endswith("56789")
+
+
+def test_the_environments_tools_come_first_on_path(tmp_path: Path) -> None:
+    # Lab 5: Sage's gp and GAP interfaces look their programs up on PATH.
+    prefix = tmp_path / "envs" / "sage"
+    (prefix / "conda-meta").mkdir(parents=True)
+    tools = str(prefix / "bin")
+    env = executor.tool_environment(
+        {"PATH": f"/usr/bin:{tools}:/bin", "HOME": "/sandbox"}, f"{tools}/python", str(prefix)
+    )
+    assert env["PATH"] == f"{tools}:/usr/bin:/bin"
+    assert env["CONDA_PREFIX"] == str(prefix)
+    assert env["HOME"] == "/sandbox"
+
+
+def test_a_plain_interpreter_gets_no_conda_prefix(tmp_path: Path) -> None:
+    env = executor.tool_environment({}, str(tmp_path / "bin" / "python3"), str(tmp_path))
+    assert env["PATH"] == str(tmp_path / "bin")
+    assert "CONDA_PREFIX" not in env

@@ -6,7 +6,8 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
-- Event store (`packages/event-store`, D72 proposed, [docs](../docs/EVENT-STORE.md)): hash-chained SQLite records, checkpoints and the `sandbox-science-events` command. The policy middleware records its escalations, alerts and monitor findings there instead of `events.jsonl`.
+- Event store (`packages/event-store`, D73 proposed, [docs](../docs/EVENT-STORE.md)): hash-chained SQLite records, checkpoints and the `sandbox-science-events` command. The policy middleware records its escalations, alerts and monitor findings there instead of `events.jsonl`.
+- Sage (W2): the worker offers SageMath's own Jupyter kernel when an environment has it, and the harness gives the agent a `sage` tool (PR #20). Lab 5 on babbage ([report](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)) ran a real SageMath 10.9 from conda-forge in OpenShell VM sandboxes. Preparsing, finite fields, polynomial rings, Gröbner bases, exact matrices, LaTeX, GAP, Maxima, PARI and fpylll all worked, as did interrupt, timeout, restart and kernel death. Two fixes came out of it: the compiled policy now allows pseudo-terminals and `/dev/shm`, and the executor puts the environment's tools on `PATH`. The VM costs 0–7% on single-threaded mathematics.
 - Lab 4 on babbage ([report](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)): the W1 first slice ran in an OpenShell VM sandbox. The harness drove the worker service, which drove the in-sandbox executor and Jupyter kernels. Every execution-tools fixture passed after working around two seccomp restrictions: a scheduler shim for libzmq, and per-process signals for process groups. Publication now names the attempt that wrote a file, from observed file lists.
 - W1 first slice, locally: `packages/contracts`, the [worker service](../docs/WORKER.md) with its in-sandbox executor (`packages/worker`), and the harness's tool loop with a provider-neutral model interface (`packages/orchestrator`). The [execution tools spec](../docs/specs/tools.md) and its acceptance fixtures pass on the local backend.
 - Lab 3 on babbage ([report](docs/agent-reports/babbage-openshell-lab-3-2026-10-11.md)): the compiled credential bindings load and work with an endpointless provider. OpenShell's substitution into plain HTTP on port 443 was seen at runtime (residual risk, [bug description](upstream/openshell-credential-substitution-over-plain-http.md)).
@@ -35,7 +36,7 @@ Updated: 2026-10-11.
 ## Blockers and open questions
 
 - Confirm D68 (policy evaluation details), the details of D69 (its direction, OpenShell plus a policy middleware, is confirmed), D70 (the middleware service) and PSF-2.0 and MIT-0 in tier 1.
-- Confirm D72 (event store), and decide where its checkpoints are kept.
+- Confirm D73 (event store), and decide where its checkpoints are kept.
 - OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's planned tier 3 isolation depends on it (D43). It worked throughout the lab.
 - babbage enforces Ubuntu's AppArmor restriction on unprivileged user namespaces. Shells started from Claude Desktop run under its `claude-desktop` profile and are exempt, so qualification checks must run from a plain terminal or `systemd-run --user`.
 - crypto-analysis-skills: confirm the copyright holder before merging its MIT LICENSE pull request.

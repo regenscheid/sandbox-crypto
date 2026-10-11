@@ -45,7 +45,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox
 - [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic checked in lab 2: the middleware decides it, and the floor holds
 - [ ] MCP proxy: forward only tool names the server advertises, exactly as advertised; bound argument sizes; send `MCP-Protocol-Version` on every request after `initialize`, with credential placeholders only in headers (lab 2)
-- [x] Event store with an append-only hash chain (`packages/event-store`, D72): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
+- [x] Event store with an append-only hash chain (`packages/event-store`, D73): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
 - [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer)
 - [ ] Adversarial fixture suite
 - [ ] Isolation-tier probes (D43)
@@ -55,13 +55,20 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## W0: behavior specification and harness foundation
 
 - [ ] Behavior specs with acceptance fixtures: tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, automatic review, Conda provisioning, artifacts; all to review with the user
-- [ ] Harness building-block decision with licenses recorded
+- [x] Harness building-block decision with licenses recorded: D72, proposed, to confirm with the user
 
 ## W1: shared references and one worker adapter
 
 - [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
 - [x] First slice: one shell command and two stateful Python cells through the worker API, driven by the harness's tool loop with a scripted model. Done locally and on babbage in an OpenShell VM sandbox ([lab 4](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)), after working around two OpenShell seccomp restrictions (scheduler shim, process-group signals)
 - [ ] The first slice with a real model through LiteLLM (needs the user's model gateway and a virtual key)
+
+## W2: certify babbage execution with math and source capabilities
+
+- [x] Sage through SageMath's own Jupyter kernel (`sagemath` kernelspec): the worker offers it when the environment has it, and the harness gives the agent a `sage` tool. Tested with a stand-in kernelspec
+- [x] Real SageMath from conda-forge in an OpenShell sandbox ([lab 5](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)): preparsing, finite fields, polynomial rings, Gröbner bases, exact matrices, LaTeX, GAP, Maxima, PARI and fpylll, interrupt, timeout, restart and kernel death. SageMath 10.9 installs in about 30 s through the cache; the VM costs 0–7% on single-threaded mathematics. Needed two fixes: the compiled policy now allows pseudo-terminals and `/dev/shm`, and the executor puts the environment's tools on `PATH`
+- [ ] `crypto-base` profile with Sage present at session start (D46)
+- [ ] PDF extraction and rendering in the worker (pdf_oxide, D59)
 
 ## babbage
 

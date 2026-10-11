@@ -6,7 +6,7 @@
 
 This spec covers the agent's execution tools and the worker API operations behind them:
 - shell commands;
-- persistent kernels: Python first, then R and Sage through the same Jupyter protocol (D41);
+- persistent kernels: Python and Sage now, R later, all through the Jupyter protocol (D41);
 - file handoff between the session workspace and the agent;
 - errors, cancellation and reconnection.
 
@@ -48,6 +48,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 7. **Kernel death.** A kernel that dies (a crash, running out of memory, `os._exit`) ends its running cell with `kernel_died`. The next cell starts a new generation and reports that earlier state was lost. The worker never hides a restart.
 8. **Limits.** A cell has a wall-time limit, like a shell call, after which it is interrupted. Its outputs have size limits; a large rich output is written to a file and referenced instead of being returned inline.
 9. **Working directory.** A kernel starts in the session workspace.
+10. **Languages.** The agent gets a tool for each language the environment offers (`python`, `sage`), and none for the others. Sage runs in SageMath's own Jupyter kernel, so Sage syntax applies (`^` is exponentiation); the platform never emulates it in Python.
 
 ## Files
 
