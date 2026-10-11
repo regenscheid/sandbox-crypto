@@ -43,7 +43,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Package cache: per-sandbox rate limits. The policy middleware writes a sandbox header on cache requests (overwriting anything the sandbox sent), which the cache uses to give each sandbox its own budget; the cooling-off period needs the same mechanism
 - [x] Describe OpenShell v0.1.3's seccomp restrictions on thread scheduling and process-group signals, and libzmq's abort on EPERM, in `.agents/upstream/` (lab 4; filing is the user's call)
 - [x] Describe the OpenShell v0.1.3 bugs we found, in `.agents/upstream/`: credentials substituted into plain HTTP and sent unencrypted; a host with two trailing dots selects no middleware. The user chose to keep the descriptions here; filing them upstream remains the user's call
-- [ ] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox
+- [x] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox. The OpenShell backend's `package_cache` setting; the executor writes the files and sets the variables, keeping files someone changed ([client configuration](../docs/PACKAGE-CACHE.md#client-configuration)). Real pip, uv, conda, mamba, cargo, go and npm ran with it against a loopback cache (`test_package_clients_integration.py`)
+- [ ] On babbage: the worker's package client configuration in an OpenShell sandbox, with clients run without registry options through the middleware and the cache; opam and cabal once the cache serves them
 - [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic checked in lab 2: the middleware decides it, and the floor holds
 - [ ] MCP proxy: forward only tool names the server advertises, exactly as advertised; bound argument sizes; send `MCP-Protocol-Version` on every request after `initialize`, with credential placeholders only in headers (lab 2)
 - [x] Event store with an append-only hash chain (`packages/event-store`, D74): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
@@ -64,6 +65,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 - [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
 - [x] First slice: one shell command and two stateful Python cells through the worker API, driven by the harness's tool loop with a scripted model. Done locally and on babbage in an OpenShell VM sandbox ([lab 4](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)), after working around two OpenShell seccomp restrictions (scheduler shim, process-group signals)
+- [x] The control application in one container and execution in another: the harness in its own OpenShell sandbox under the compiled orchestrator policy (worker API only), the tools in a sandbox the worker created; location, state, the boundary in both directions and reconnection checked ([lab 7](docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md))
+- [ ] An orchestrator image, so the harness's sandbox needs no uploaded wheelhouse (D46)
 - [ ] The first slice with a real model through LiteLLM (needs the user's model gateway and a virtual key)
 
 ## W2: certify babbage execution with math and source capabilities

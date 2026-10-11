@@ -7,6 +7,7 @@ from sandbox_science.policy import ClassificationError, PackageOperation, classi
 
 SHA256 = "a" * 64
 SHA512 = "b" * 128
+MD5 = "c" * 32
 PYPI_FILE = "packages/3f/6d/" + "c" * 60
 WHEEL = f"{PYPI_FILE}/numpy-2.1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
 
@@ -132,6 +133,43 @@ WHEEL = f"{PYPI_FILE}/numpy-2.1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
             PackageOperation("npm", "lodash"),
         ),
         ("/npm/files/-/@types/node/-/node-20.0.0.tgz", PackageOperation("npm", "@types/node")),
+        # opam: the repository index, and archives by digest (the path names no package)
+        ("/opam/index.tar.gz", PackageOperation("opam", None, kind="index")),
+        (f"/opam/cache/md5/cc/{MD5}", PackageOperation("opam", None, digest=f"md5:{MD5}")),
+        (
+            f"/opam/cache/sha256/aa/{SHA256}",
+            PackageOperation("opam", None, digest=f"sha256:{SHA256}"),
+        ),
+        (
+            f"/opam/cache/sha512/bb/{SHA512}",
+            PackageOperation("opam", None, digest=f"sha512:{SHA512}"),
+        ),
+        # Hackage: signed metadata, the index and source distributions
+        *[
+            (f"/hackage/{name}", PackageOperation("hackage", None, kind="index"))
+            for name in (
+                "root.json",
+                "timestamp.json",
+                "snapshot.json",
+                "mirrors.json",
+                "01-index.tar.gz",
+            )
+        ],
+        ("/hackage/package/split-0.2.5.tar.gz", PackageOperation("hackage", "split")),
+        (
+            "/hackage/package/split-0.2.5/split-0.2.5.tar.gz",
+            PackageOperation("hackage", "split"),
+        ),
+        ("/hackage/package/cryptol-3.6.0.tar.gz", PackageOperation("hackage", "cryptol")),
+        (
+            "/hackage/package/x86-64bit-0.4.6.2.tar.gz",
+            PackageOperation("hackage", "x86-64bit"),
+        ),
+        ("/hackage/package/4Blocks-0.2.tar.gz", PackageOperation("hackage", "4Blocks")),
+        (
+            "/hackage/package/cctools-workqueue-3.6.1.0.1.0.0.1.tar.gz",
+            PackageOperation("hackage", "cctools-workqueue"),
+        ),
     ],
 )
 def test_cache_paths_are_classified(path: str, expected: PackageOperation) -> None:
@@ -219,6 +257,45 @@ def test_only_get_and_head_reach_the_cache(method: str) -> None:
         "/npm/lodash/-/evil-1.0.0.tgz",
         "/npm/-/lodash-1.0.0.tgz",
         "/go/sumdb/sum.golang.org/lookup/github.com/Azure/x@v1.0.0",
+        # opam: other repository files, opam 1's layout and malformed archive paths
+        "/opam/repo",
+        "/opam/version",
+        "/opam/urls.txt",
+        "/opam/index.tar",
+        "/opam/packages/ocamlfind/ocamlfind.1.9.8/opam",
+        "/opam/archives/ocamlfind.1.9.8+opam.tar.gz",
+        f"/opam/cache/sha256/{SHA256}",
+        f"/opam/cache/sha256/ab/{SHA256}",  # not the digest's first two digits
+        f"/opam/cache/sha256/aa/{SHA256[:-1]}",
+        f"/opam/cache/sha256/aa/{SHA512}",
+        f"/opam/cache/md5/aa/{SHA256}",
+        f"/opam/cache/sha256/AA/{SHA256.upper()}",
+        f"/opam/cache/sha1/aa/{'a' * 40}",
+        f"/opam/cache/sha256/aa/{SHA256}/",
+        f"/opam/cache/sha256/aa/{SHA256}/x",
+        f"/opam/cache/sha256/aa/../aa/{SHA256}",
+        f"/opam/cache/sha256/aa%2F{SHA256}",
+        # Hackage: other index forms, web pages and API, and files of another package
+        "/hackage/01-index.tar",
+        "/hackage/00-index.tar.gz",
+        "/hackage/targets.json",
+        "/hackage/package/split",
+        "/hackage/package/split-0.2.5",
+        "/hackage/package/split-0.2.5/split.cabal",
+        "/hackage/package/split-0.2.5/revision/1.cabal",
+        "/hackage/package/split-0.2.5/split-0.2.6.tar.gz",
+        "/hackage/package/split-0.2.5/evil-0.2.5.tar.gz",
+        "/hackage/package/split/split-0.2.5.tar.gz",
+        "/hackage/package/split-01.tar.gz",
+        "/hackage/package/split-0.2.5a.tar.gz",
+        "/hackage/package/1-0.2.5.tar.gz",
+        "/hackage/package/-split-0.2.5.tar.gz",
+        "/hackage/package/split--x-0.2.5.tar.gz",
+        "/hackage/package/split_x-0.2.5.tar.gz",
+        "/hackage/package/split-0.2.5.tgz",
+        "/hackage/package/split%2D0.2.5.tar.gz",
+        "/hackage/packages/archive/split/0.2.5/split-0.2.5.tar.gz",
+        "/hackage/api/v1/packages",
         # characters outside the URL-safe set, which OpenShell would have escaped
         "/npm/lodash?x=1",
         "/npm/lodash#x",
@@ -237,6 +314,43 @@ def test_names_are_normalized_where_the_registry_folds_spellings() -> None:
     assert PackageOperation("cargo", "Serde_JSON").name == "serde-json"
     assert PackageOperation("npm", "JSONStream").name == "JSONStream"
     assert PackageOperation("go", "github.com/Azure/x").name == "github.com/Azure/x"
+    assert PackageOperation("hackage", "HTTP").name == "HTTP"
+    assert PackageOperation("opam", "ocaml-base-compiler").name == "ocaml-base-compiler"
+
+
+def test_opam_archives_are_the_only_package_files_without_a_name() -> None:
+    # opam fetches archives by digest, so the path names no package; the policy
+    # decides them by ecosystem, and the operation carries the digest instead.
+    archive = PackageOperation("opam", None, kind="artifact", digest=f"md5:{MD5}")
+    assert (archive.name, archive.digest) == (None, f"md5:{MD5}")
+    for ecosystem in ("pypi", "cargo", "go", "npm", "hackage", "opam"):
+        with pytest.raises(ClassificationError, match="named package"):
+            PackageOperation(ecosystem, None, kind="artifact")  # pyright: ignore[reportArgumentType]
+
+
+@pytest.mark.parametrize(
+    ("ecosystem", "name", "kind", "digest"),
+    [
+        # Only an opam archive names a digest, and only instead of a name.
+        ("hackage", None, "artifact", f"sha256:{SHA256}"),
+        ("npm", "lodash", "artifact", f"sha512:{SHA512}"),
+        ("opam", None, "index", f"md5:{MD5}"),
+        ("opam", "ocamlfind", "artifact", f"md5:{MD5}"),
+        # The algorithms opam names archives by, as lowercase hex of their length.
+        ("opam", None, "artifact", f"sha1:{'c' * 40}"),
+        ("opam", None, "artifact", f"md5:{'C' * 32}"),
+        ("opam", None, "artifact", f"md5:{MD5}0"),
+        ("opam", None, "artifact", f"sha256:{SHA256[:-1]}"),
+        ("opam", None, "artifact", MD5),
+        ("opam", None, "artifact", f"md5={MD5}"),
+        ("opam", None, "artifact", ""),
+    ],
+)
+def test_digests_are_only_for_opam_archives(
+    ecosystem: str, name: str | None, kind: str, digest: str
+) -> None:
+    with pytest.raises(ClassificationError, match="digest"):
+        PackageOperation(ecosystem, name, kind=kind, digest=digest)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parametrize(
@@ -251,6 +365,14 @@ def test_names_are_normalized_where_the_registry_folds_spellings() -> None:
         ("go", "example/x", None, "index"),
         ("go", "example.com/../x", None, "index"),
         ("cargo", "1x", None, "index"),
+        # Only opam's content-addressed archives have no name.
+        ("hackage", None, None, "artifact"),
+        ("hackage", "1", None, "artifact"),
+        ("hackage", "split-", None, "artifact"),
+        ("hackage", "split_x", None, "artifact"),
+        ("opam", "1", None, "index"),
+        ("opam", "ocaml.findlib", None, "index"),
+        ("opam", None, "conda-forge", "artifact"),
     ],
 )
 def test_invalid_operations_are_rejected(

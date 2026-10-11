@@ -13,7 +13,12 @@ import sys
 from pathlib import Path
 
 from sandbox_science.policy import PoolCeiling, load_policy
-from sandbox_science.policy.openshell import compile_mcp_proxy, compile_sandbox, load_targets
+from sandbox_science.policy.openshell import (
+    compile_mcp_proxy,
+    compile_orchestrator,
+    compile_sandbox,
+    load_targets,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "examples" / "openshell"
@@ -30,10 +35,13 @@ def render() -> dict[str, str]:
     ceiling = PoolCeiling.unrestricted()
     sandbox = compile_sandbox(policy, targets.sandbox, ceiling=ceiling)
     mcp = compile_mcp_proxy(policy, targets.mcp_proxy, ceiling=ceiling)
-    return {
+    files = {
         "research-sandbox.yaml": HEADER + sandbox.policy.to_yaml(),
         "mcp-proxy.yaml": HEADER + mcp.policy.to_yaml(),
     }
+    if targets.orchestrator is not None:
+        files["orchestrator.yaml"] = HEADER + compile_orchestrator(targets.orchestrator).to_yaml()
+    return files
 
 
 def main(argv: list[str]) -> int:

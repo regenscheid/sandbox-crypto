@@ -22,7 +22,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from multidict import CIMultiDictProxy
 from pytest_aiohttp import AiohttpClient
 
-from sandbox_science.package_cache.adapter import Digest, Fetch, Kind, Route, Static
+from sandbox_science.package_cache.adapter import GZIP_MAGIC, Digest, Fetch, Kind, Route, Static
 from sandbox_science.package_cache.app import (
     CACHE,
     MAX_REWRITES,
@@ -197,7 +197,7 @@ async def until(condition: Callable[[], bool], timeout: float = 5.0) -> None:
             await asyncio.sleep(0.01)
 
 
-def digest(algorithm: Literal["sha256", "sha512"], body: bytes) -> Digest:
+def digest(algorithm: Literal["md5", "sha256", "sha512"], body: bytes) -> Digest:
     return Digest(algorithm, hashlib.new(algorithm, body).hexdigest())
 
 
@@ -368,9 +368,9 @@ async def test_artifact_not_found_is_not_cached(harness: Harness) -> None:
 # Verification, limits and rewriting.
 
 
-@pytest.mark.parametrize("algorithm", ["sha256", "sha512"])
+@pytest.mark.parametrize("algorithm", ["md5", "sha256", "sha512"])
 async def test_artifacts_are_verified_against_their_digest(
-    harness: Harness, algorithm: Literal["sha256", "sha512"]
+    harness: Harness, algorithm: Literal["md5", "sha256", "sha512"]
 ) -> None:
     body = b"artifact bytes"
     expected = digest(algorithm, body)
@@ -382,9 +382,9 @@ async def test_artifacts_are_verified_against_their_digest(
     assert entry.digest == f"{algorithm}:{expected.hex}"
 
 
-@pytest.mark.parametrize("algorithm", ["sha256", "sha512"])
+@pytest.mark.parametrize("algorithm", ["md5", "sha256", "sha512"])
 async def test_a_digest_mismatch_is_502_and_nothing_is_stored(
-    harness: Harness, algorithm: Literal["sha256", "sha512"]
+    harness: Harness, algorithm: Literal["md5", "sha256", "sha512"]
 ) -> None:
     harness.upstream.set("/a.tgz", b"tampered bytes")
     harness.route("a.tgz", kind=Kind.ARTIFACT, digest=digest(algorithm, b"published bytes"))
@@ -593,6 +593,239 @@ async def test_static_answers_are_served_as_given(harness: Harness) -> None:
     assert (await harness.get("teapot"))[:2] == (418, b"no")
     assert harness.upstream.requests == []
     assert (await harness.stats())["entries"] == 0
+
+
+# Byte ranges and shorter lifetimes (Hackage's index and signed metadata).
+
+
+async def test_one_byte_range_of_a_stored_body_is_answered_206(harness: Harness) -> None:
+    harness.upstream.set("/file.tgz", b"0123456789", headers={"Content-Type": "application/x-test"})
+    harness.route("file.tgz", kind=Kind.ARTIFACT)
+    for header, part, content_range in (
+        ("bytes=2-5", b"2345", "bytes 2-5/10"),  # a miss: fetched, stored, then cut
+        ("bytes=-3", b"789", "bytes 7-9/10"),
+        ("bytes=8-", b"89", "bytes 8-9/10"),
+        ("bytes=6-100", b"6789", "bytes 6-9/10"),
+    ):
+        status, body, headers = await harness.get("file.tgz", headers={"Range": header})
+        assert (status, body) == (206, part)
+        assert headers["Content-Range"] == content_range
+        assert headers["Content-Length"] == str(len(part))
+        assert headers["Content-Type"] == "application/x-test"
+    status, body, headers = await harness.get("file.tgz")
+    assert (status, body) == (200, b"0123456789")
+    assert "Content-Range" not in headers
+    assert harness.upstream.count("/file.tgz") == 1
+    # Client headers never reach upstream, Range included.
+    assert "range" not in harness.upstream.requests[0].headers
+
+
+async def test_a_range_beyond_the_body_is_answered_416(harness: Harness) -> None:
+    harness.upstream.set("/index", b"0123456789")
+    harness.route("index")
+    for header in ("bytes=10-", "bytes=-0"):
+        status, _, headers = await harness.get("index", headers={"Range": header})
+        assert status == 416
+        assert headers["Content-Range"] == "bytes */10"
+    # The body was stored all the same, and is served whole without a range.
+    assert (await harness.get("index"))[:2] == (200, b"0123456789")
+    assert harness.upstream.count("/index") == 1
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Range": "bytes=0-1,4-5"},
+        {"Range": "bytes=5-2"},
+        {"Range": "items=0-1"},
+        {"Range": "bytes=0-1", "If-Range": '"v1"'},
+        {"Range": "bytes=0-1", "If-Range": "Sat, 10 Oct 2026 00:00:00 GMT"},
+    ],
+)
+async def test_other_range_requests_get_the_whole_body(
+    harness: Harness, headers: dict[str, str]
+) -> None:
+    harness.upstream.set("/index", b"0123456789", headers={"ETag": '"v1"'})
+    harness.route("index")
+    status, body, answer = await harness.get("index", headers=headers)
+    assert (status, body) == (200, b"0123456789")
+    assert "Content-Range" not in answer
+
+
+async def test_head_and_not_found_answers_ignore_ranges(harness: Harness) -> None:
+    harness.upstream.set("/index", b"0123456789")
+    harness.route("index")
+    status, body, headers = await harness.get(
+        "index", method="HEAD", headers={"Range": "bytes=0-1"}
+    )
+    assert (status, body, headers["Content-Length"]) == (200, b"", "10")
+    assert "Content-Range" not in headers
+    harness.upstream.set("/missing", b"no such file", status=404)
+    harness.route("missing")
+    status, body, _ = await harness.get("missing", headers={"Range": "bytes=0-1"})
+    assert (status, body) == (404, b"no such file")
+
+
+async def test_a_range_is_logged_with_the_bytes_sent(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sandbox_science.package_cache.requests")
+    harness.upstream.set("/index", b"0123456789")
+    harness.route("index")
+    await harness.get("index")
+    await harness.get("index", headers={"Range": "bytes=0-3"})
+    await harness.get("index", headers={"Range": "bytes=20-"})
+    lines = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "sandbox_science.package_cache.requests"
+    ]
+    assert lines[1:] == [
+        "ecosystem=pkg method=GET path=/pkg/index result=hit status=206 bytes=4 upstream_ms=-",
+        "ecosystem=pkg method=GET path=/pkg/index result=hit status=416 bytes=0 upstream_ms=-",
+    ]
+
+
+async def test_index_data_without_a_lifetime_is_revalidated_on_every_request(
+    harness: Harness,
+) -> None:
+    harness.upstream.set("/timestamp.json", b"v1", headers={"ETag": '"v1"'})
+    harness.route("timestamp.json", max_age=0)
+    assert (await harness.get("timestamp.json"))[:2] == (200, b"v1")
+    harness.upstream.set("/timestamp.json", status=304, headers={"ETag": '"v1"'})
+    for _ in range(2):
+        assert (await harness.get("timestamp.json"))[:2] == (200, b"v1")
+        assert harness.upstream.requests[-1].headers["if-none-match"] == '"v1"'
+    harness.upstream.set("/timestamp.json", b"v2", headers={"ETag": '"v2"'})
+    assert (await harness.get("timestamp.json"))[:2] == (200, b"v2")
+    assert harness.upstream.count("/timestamp.json") == 4
+    stats = await harness.stats()
+    assert (stats["misses"], stats["revalidated"], stats["hits"]) == (2, 2, 0)
+
+
+async def test_a_range_comes_from_the_revalidated_copy(harness: Harness) -> None:
+    # hackage-security asks for the end of 01-index.tar.gz as the snapshot it just
+    # fetched describes it: the cache must not answer from an older copy.
+    harness.upstream.set("/01-index.tar.gz", b"0123456789", headers={"ETag": '"v1"'})
+    harness.route("01-index.tar.gz", max_age=0)
+    assert (await harness.get("01-index.tar.gz"))[0] == 200
+    harness.upstream.set("/01-index.tar.gz", b"01234567XYZ", headers={"ETag": '"v2"'})
+    status, body, headers = await harness.get("01-index.tar.gz", headers={"Range": "bytes=8-10"})
+    assert (status, body, headers["Content-Range"]) == (206, b"XYZ", "bytes 8-10/11")
+
+
+async def test_a_lifetime_shortens_the_ttl_but_never_extends_it(harness: Harness) -> None:
+    harness.upstream.set("/short", b"short", headers={"ETag": '"s"'})
+    harness.route("short", max_age=60)
+    harness.upstream.set("/long", b"long", headers={"ETag": '"l"'})
+    harness.route("long", max_age=3600)
+    await harness.get("short")
+    await harness.get("long")
+    harness.clock.now += 59
+    await harness.get("short")
+    assert harness.upstream.count("/short") == 1
+    harness.clock.now += 2
+    await harness.get("short")
+    assert harness.upstream.count("/short") == 2
+    harness.clock.now += 240  # 301 seconds after the first fetch: past the 300-second TTL
+    await harness.get("long")
+    assert harness.upstream.count("/long") == 2
+
+
+# Byte-exact index data and artifacts the cache cannot verify (Hackage, opam's index).
+
+TARBALL = gzip.compress(b"a source distribution")
+
+
+async def test_byte_exact_index_data_is_requested_and_stored_unencoded(harness: Harness) -> None:
+    # A gzip file sent without a content coding is the file itself.
+    harness.upstream.set("/index.tar.gz", TARBALL, headers={"Content-Encoding": "identity"})
+    harness.route("index.tar.gz", exact=True, magic=GZIP_MAGIC)
+    assert (await harness.get("index.tar.gz"))[:2] == (200, TARBALL)
+    assert harness.upstream.requests[-1].headers["accept-encoding"] == "identity"
+
+
+@pytest.mark.parametrize("coding", ["gzip", "br", "identity, gzip", "x-gzip"])
+async def test_byte_exact_index_data_with_a_content_coding_is_refused(
+    harness: Harness, coding: str
+) -> None:
+    # Decoding would store the unpacked tar as the .tar.gz; keeping the bytes would
+    # store a second gzip layer if the server really applied one. Neither is the file.
+    harness.upstream.set(
+        "/index.tar.gz", gzip.compress(TARBALL), headers={"Content-Encoding": coding}
+    )
+    harness.route("index.tar.gz", exact=True)
+    assert (await harness.get("index.tar.gz"))[:2] == (502, b"unexpected upstream content\n")
+    assert (await harness.stats())["entries"] == 0
+    assert harness.files("blobs") == harness.files("tmp") == []
+
+
+async def test_a_stale_copy_is_served_when_byte_exact_data_comes_encoded(harness: Harness) -> None:
+    harness.upstream.set("/index.tar.gz", TARBALL, headers={"ETag": '"v1"'})
+    harness.route("index.tar.gz", exact=True)
+    await harness.get("index.tar.gz")
+    harness.clock.now += 301
+    harness.upstream.set(
+        "/index.tar.gz", gzip.compress(TARBALL), headers={"Content-Encoding": "gzip"}
+    )
+    assert (await harness.get("index.tar.gz"))[:2] == (200, TARBALL)
+    assert (await harness.stats())["stale"] == 1
+
+
+@pytest.mark.parametrize("body", [b"<html>Service Unavailable</html>", b"", b"\x1f"])
+async def test_a_body_without_its_magic_number_is_refused(harness: Harness, body: bytes) -> None:
+    # One bad 200 from upstream or a CDN would otherwise be stored and served to all.
+    harness.upstream.set("/split-0.2.5.tar.gz", body)
+    harness.route("split-0.2.5.tar.gz", kind=Kind.ARTIFACT, magic=GZIP_MAGIC)
+    status, answer, _ = await harness.get("split-0.2.5.tar.gz")
+    assert (status, answer) == (502, b"unexpected upstream content\n")
+    assert (await harness.stats())["entries"] == 0
+    assert harness.files("blobs") == harness.files("tmp") == []
+    harness.upstream.set("/split-0.2.5.tar.gz", TARBALL)
+    assert (await harness.get("split-0.2.5.tar.gz"))[:2] == (200, TARBALL)
+
+
+async def test_an_unverified_artifact_is_revalidated_after_its_interval(harness: Harness) -> None:
+    harness.upstream.set("/s.tar.gz", TARBALL, headers={"ETag": '"v1"'})
+    harness.route("s.tar.gz", kind=Kind.ARTIFACT, magic=GZIP_MAGIC, revalidate_after=86400)
+    await harness.get("s.tar.gz")
+    harness.clock.now += 86399
+    assert (await harness.get("s.tar.gz"))[:2] == (200, TARBALL)
+    assert harness.upstream.count("/s.tar.gz") == 1
+    # A day on: a conditional request, which confirms the copy.
+    harness.clock.now += 2
+    harness.upstream.set("/s.tar.gz", status=304, headers={"ETag": '"v1"'})
+    assert (await harness.get("s.tar.gz"))[:2] == (200, TARBALL)
+    seen = harness.upstream.requests[-1].headers
+    assert (seen["if-none-match"], seen["accept-encoding"]) == ('"v1"', "identity")
+    assert (await harness.get("s.tar.gz"))[:2] == (200, TARBALL)
+    assert harness.upstream.count("/s.tar.gz") == 2
+    # Another day on, upstream has other bytes (the stored copy was bad): replaced.
+    harness.clock.now += 86401
+    fixed = gzip.compress(b"the right source distribution")
+    harness.upstream.set("/s.tar.gz", fixed, headers={"ETag": '"v2"'})
+    assert (await harness.get("s.tar.gz"))[:2] == (200, fixed)
+    stats = await harness.stats()
+    assert (stats["entries"], stats["misses"], stats["revalidated"]) == (1, 2, 1)
+    assert len(harness.files("blobs")) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "body"), [(500, b"broken"), (404, b"gone"), (200, b"<html>maintenance</html>")]
+)
+async def test_a_stored_artifact_outlives_a_failed_revalidation(
+    harness: Harness, status: int, body: bytes
+) -> None:
+    # However old the copy, a failure to confirm it (an error, a 404 or a body that is
+    # no gzip file) serves it rather than nothing.
+    harness.upstream.set("/s.tar.gz", TARBALL, headers={"ETag": '"v1"'})
+    harness.route("s.tar.gz", kind=Kind.ARTIFACT, magic=GZIP_MAGIC, revalidate_after=86400)
+    await harness.get("s.tar.gz")
+    harness.clock.now += 30 * 86400
+    harness.upstream.set("/s.tar.gz", body, status=status)
+    assert (await harness.get("s.tar.gz"))[:2] == (200, TARBALL)
+    assert (await harness.stats())["stale"] == 1
+    assert harness.cache.store.get("pkg:s.tar.gz") is not None
 
 
 # What reaches adapters and upstreams.

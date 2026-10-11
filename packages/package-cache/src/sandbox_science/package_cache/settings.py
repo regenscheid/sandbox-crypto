@@ -36,6 +36,12 @@ sumdb = "https://sum.golang.org"
 
 [npm]
 registry = "https://registry.npmjs.org"
+
+[opam]
+repository = "https://opam.ocaml.org"
+
+[hackage]
+repository = "https://hackage.haskell.org"
 ```
 
 ``public_url`` and ``cache_dir`` are required; every other key has the default
@@ -75,6 +81,7 @@ from pydantic import (
 
 from sandbox_science.policy.units import parse_duration, parse_size
 
+from .adapter import check_base_url
 from .errors import SettingsError
 
 _MIB: Final = 1024**2
@@ -119,6 +126,12 @@ def _public_url(value: str) -> str:
     return _check_url(value, schemes=("http", "https"))
 
 
+def _repository_url(value: str) -> str:
+    # The adapter's own check, so that the service never fails to start on a URL
+    # these settings accepted (such as one with percent-escapes).
+    return check_base_url(_https_url(value), "a repository")
+
+
 def _split_listen(value: str) -> tuple[str, int]:
     host, separator, port = value.rpartition(":")
     if not separator or not host or not _PORT_RE.fullmatch(port) or not 1 <= int(port) <= 65535:
@@ -152,6 +165,9 @@ HttpsUrl = Annotated[str, AfterValidator(_https_url)]
 
 PublicUrl = Annotated[str, AfterValidator(_public_url)]
 """An absolute ``http(s)://`` URL without query, fragment or trailing slash."""
+
+RepositoryUrl = Annotated[str, AfterValidator(_repository_url)]
+"""An ``HttpsUrl`` that the opam and Hackage adapters accept: no percent-escapes either."""
 
 Size = Annotated[int, BeforeValidator(parse_size), Field(gt=0)]
 """A positive byte count such as ``100Gi``."""
@@ -206,6 +222,18 @@ class NpmSettings(_Model):
     registry: HttpsUrl = "https://registry.npmjs.org"
 
 
+class OpamSettings(_Model):
+    """opam: an HTTP repository, which serves its index and its archive cache."""
+
+    repository: RepositoryUrl = "https://opam.ocaml.org"
+
+
+class HackageSettings(_Model):
+    """Hackage: a hackage-security repository (signed metadata, index and packages)."""
+
+    repository: RepositoryUrl = "https://hackage.haskell.org"
+
+
 class Settings(_Model):
     """Settings for one package cache."""
 
@@ -234,6 +262,8 @@ class Settings(_Model):
     cargo: CargoSettings | None = None
     go: GoSettings | None = None
     npm: NpmSettings | None = None
+    opam: OpamSettings | None = None
+    hackage: HackageSettings | None = None
 
     @model_validator(mode="after")
     def _limits(self) -> Self:
@@ -291,6 +321,10 @@ class Settings(_Model):
             urls += [self.go.proxy, self.go.sumdb]
         if self.npm is not None:
             urls.append(self.npm.registry)
+        if self.opam is not None:
+            urls.append(self.opam.repository)
+        if self.hackage is not None:
+            urls.append(self.hackage.repository)
         return tuple(dict.fromkeys(urls))
 
 

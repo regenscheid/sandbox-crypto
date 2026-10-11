@@ -21,6 +21,7 @@ import pytest
 from sandbox_science.policy import (
     Action,
     Decision,
+    Ecosystem,
     EgressUsage,
     HardFloor,
     HttpRequest,
@@ -135,13 +136,14 @@ def call_tool(
 
 def decide_package(
     policy: LoadedPolicy,
-    ecosystem: Literal["conda", "pypi", "cargo", "go", "npm"],
+    ecosystem: Ecosystem,
     name: str | None,
     channel: str | None = None,
     kind: Literal["index", "artifact"] = "artifact",
+    digest: str | None = None,
 ) -> Decision:
     return evaluate(
-        PackageOperation(ecosystem=ecosystem, name=name, channel=channel, kind=kind),
+        PackageOperation(ecosystem=ecosystem, name=name, channel=channel, kind=kind, digest=digest),
         policy,
         ceiling=PoolCeiling.unrestricted(),
     )
@@ -2289,6 +2291,11 @@ def test_unconfigured_ecosystems_are_closed_under_a_deny_default() -> None:
         "https://proxy.golang.org/golang.org/x/mod/@v/list",
         "https://sum.golang.org/latest",
         "https://files.pythonhosted.org/packages/x/y.whl",
+        "https://opam.ocaml.org/index.tar.gz",
+        "https://opam.ocaml.org/cache/sha256/aa/" + "a" * 64,
+        "https://hackage.haskell.org/timestamp.json",
+        "https://hackage.haskell.org/01-index.tar.gz",
+        "https://hackage.haskell.org/package/split-0.2.5.tar.gz",
     ],
 )
 def test_package_registries_are_reachable_only_through_the_cache(url: str) -> None:
@@ -2374,6 +2381,15 @@ def test_unconfigured_conda_reaches_only_conda_forge() -> None:
         "anything.crates.io",
         "goproxy.io",
         "sum.golang.google.cn",
+        "opam-4.ocaml.org",
+        "opam-5.ocaml.org",
+        "staging.opam.ocaml.org",
+        "hackage-origin.haskell.org",
+        "hackage-content.haskell.org",
+        "hackage.fpcomplete.com",
+        "hackage-mirror.objects-us-east-1.dream.io",
+        "hackage-mirror.objects-website-us-east-1.dream.io",
+        "casa.stackage.org",
     ],
 )
 def test_registry_aliases_and_mirrors_are_on_the_floor(host: str) -> None:
@@ -2386,6 +2402,120 @@ def test_registry_aliases_and_mirrors_are_on_the_floor(host: str) -> None:
     )
     decision = decide_http(policy, "GET", f"https://{host}/x")
     assert (decision.action, decision.layer) == (Action.DENY, "floor")
+
+
+OPAM_HACKAGE = """
+defaults: {action: deny}
+packages:
+  opam: {action: escalate}
+  hackage: {action: allow}
+"""
+OPAM_ARCHIVE = "md5:ca770e5806032a96131b670f6e07f146"  # ocamlfind 1.9.8
+
+
+@pytest.mark.parametrize(
+    ("ecosystem", "name", "digest", "artifact", "index"),
+    [
+        pytest.param("opam", None, OPAM_ARCHIVE, Action.ESCALATE, Action.ALLOW, id="opam-archive"),
+        pytest.param("hackage", "cryptol", None, Action.ALLOW, Action.ALLOW, id="hackage"),
+    ],
+)
+def test_opam_and_hackage_take_their_actions(
+    ecosystem: Ecosystem, name: str | None, digest: str | None, artifact: Action, index: Action
+) -> None:
+    policy = load(OPAM_HACKAGE)
+    file = decide_package(policy, ecosystem, name, digest=digest)
+    assert (file.action, file.rule) == (artifact, f"packages.{ecosystem}")
+    assert decide_package(policy, ecosystem, None, kind="index").action == index
+
+
+def test_an_opam_archive_is_decided_by_ecosystem_and_says_so() -> None:
+    # opam fetches archives by digest, so the decision names the digest, not a package.
+    policy = load(OPAM_HACKAGE)
+    decision = decide_package(policy, "opam", None, digest=OPAM_ARCHIVE)
+    assert decision.reason == (
+        f"opam archive {OPAM_ARCHIVE} (fetched by digest, so it names no package)"
+    )
+    assert decide_package(policy, "hackage", "cryptol").reason == "Hackage package cryptol"
+    assert decide_package(policy, "hackage", None, kind="index").reason == (
+        "Hackage index (index lookup)"
+    )
+
+
+@pytest.mark.parametrize("ecosystem", ["opam", "hackage"])
+def test_unconfigured_opam_and_hackage_take_the_default(ecosystem: Ecosystem) -> None:
+    name, digest = (None, OPAM_ARCHIVE) if ecosystem == "opam" else ("split", None)
+    denied = load("defaults: {action: deny}\n")
+    assert decide_package(denied, ecosystem, name, digest=digest).action == Action.DENY
+    assert decide_package(denied, ecosystem, None, kind="index").action == Action.DENY
+    asking = load("defaults: {action: escalate}\n")
+    assert decide_package(asking, ecosystem, name, digest=digest).action == Action.ESCALATE
+    assert decide_package(asking, ecosystem, None, kind="index").action == Action.ALLOW
+
+
+def test_the_pool_ceiling_applies_to_opam_and_hackage() -> None:
+    policy = load(OPAM_HACKAGE)
+    no_opam = PoolCeiling.model_validate({"network": {"deny_hosts": ["opam.ocaml.org"]}})
+    archive = evaluate(PackageOperation("opam", None, digest=OPAM_ARCHIVE), policy, ceiling=no_opam)
+    assert (archive.action, archive.layer) == (Action.DENY, "ceiling")
+    sdist = evaluate(PackageOperation("hackage", "split"), policy, ceiling=no_opam)
+    assert sdist.action == Action.ALLOW
+    only_hackage = PoolCeiling.model_validate({"network": {"allow_hosts": ["hackage.haskell.org"]}})
+    allowed = evaluate(PackageOperation("hackage", "split"), policy, ceiling=only_hackage)
+    assert allowed.action == Action.ALLOW
+    index = evaluate(PackageOperation("opam", None, kind="index"), policy, ceiling=only_hackage)
+    assert index.layer == "ceiling"
+
+
+READS_EVERYWHERE = """
+network:
+  rules:
+    - {name: reads, operation: http, match: {hosts: ["*"], methods: [GET]}, action: allow}
+    - name: fetch
+      operation: git
+      match: {hosts: ["*"], git_service: upload-pack}
+      action: allow
+"""
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://objects-us-east-1.dream.io/hackage-mirror/timestamp.json",
+        "http://objects-us-east-1.dream.io/hackage-mirror/package/split-0.2.5.tar.gz",
+        "https://objects-us-east-1.dream.io/hackage-mirror",
+        "https://objects-us-east-1.dream.io/hackage-mirror/",
+        "http://OBJECTS-US-EAST-1.dream.io/hackage-mirror/root.json",
+        "http://objects-us-east-1.dream.io:80/hackage-mirror/root.json",
+    ],
+)
+def test_a_mirror_on_a_shared_host_is_on_the_floor(url: str) -> None:
+    # Hackage's signed mirror list names a bucket on a shared object store, which
+    # cabal falls back to when the cache fails.
+    decision = decide_http(load(READS_EVERYWHERE), "GET", url)
+    assert (decision.action, decision.layer) == (Action.DENY, "floor")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://objects-us-east-1.dream.io/other-bucket/data.csv",
+        "http://objects-us-east-1.dream.io/hackage-mirrors/x",
+        "http://objects-us-east-1.dream.io/",
+    ],
+)
+def test_the_rest_of_a_shared_host_stays_with_the_rules(url: str) -> None:
+    assert decide_http(load(READS_EVERYWHERE), "GET", url).action == Action.ALLOW
+
+
+def test_a_mirror_path_is_on_the_floor_for_git_fetches_too() -> None:
+    base = "https://objects-us-east-1.dream.io/hackage-mirror/repo"
+    for method, url in (
+        ("GET", f"{base}/info/refs?service=git-upload-pack"),
+        ("POST", f"{base}/git-upload-pack"),
+    ):
+        decision = decide_http(load(READS_EVERYWHERE), method, url)
+        assert (decision.action, decision.layer) == (Action.DENY, "floor")
 
 
 # --- Escalation timeout --------------------------------------------------------------------------

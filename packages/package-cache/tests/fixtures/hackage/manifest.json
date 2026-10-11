@@ -1,0 +1,96 @@
+{
+  "about": "Files from hackage.haskell.org captured on 2026-10-11 (UTC), byte for byte: hackage-security's signed metadata, and the package.json targets of a few package versions, taken from 01-index.tar.gz (names with digits, many version components, Cryptol). test_adapter_hackage.py derives request paths from them the way cabal does; the cache does not parse them.",
+  "fixtures": [
+    {
+      "file": "root.json",
+      "path": "root.json",
+      "url": "https://hackage.haskell.org/root.json",
+      "content_type": "application/json",
+      "date": "Sun, 11 Oct 2026 05:02:00 GMT"
+    },
+    {
+      "file": "timestamp.json",
+      "path": "timestamp.json",
+      "url": "https://hackage.haskell.org/timestamp.json",
+      "content_type": "application/json",
+      "date": "Sun, 11 Oct 2026 05:02:01 GMT"
+    },
+    {
+      "file": "snapshot.json",
+      "path": "snapshot.json",
+      "url": "https://hackage.haskell.org/snapshot.json",
+      "content_type": "application/json",
+      "date": "Sun, 11 Oct 2026 05:02:01 GMT"
+    },
+    {
+      "file": "mirrors.json",
+      "path": "mirrors.json",
+      "url": "https://hackage.haskell.org/mirrors.json",
+      "content_type": "application/json",
+      "date": "Sun, 11 Oct 2026 05:02:01 GMT"
+    },
+    {
+      "file": "split-0.2.5.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, split/0.2.5/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "split",
+      "version": "0.2.5"
+    },
+    {
+      "file": "base64-bytestring-1.2.1.0.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, base64-bytestring/1.2.1.0/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "base64-bytestring",
+      "version": "1.2.1.0"
+    },
+    {
+      "file": "4Blocks-0.2.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, 4Blocks/0.2/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "4Blocks",
+      "version": "0.2"
+    },
+    {
+      "file": "2captcha-0.1.0.0.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, 2captcha/0.1.0.0/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "2captcha",
+      "version": "0.1.0.0"
+    },
+    {
+      "file": "3d-graphics-examples-0.0.0.2.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, 3d-graphics-examples/0.0.0.2/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "3d-graphics-examples",
+      "version": "0.0.0.2"
+    },
+    {
+      "file": "x86-64bit-0.4.6.2.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, x86-64bit/0.4.6.2/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "x86-64bit",
+      "version": "0.4.6.2"
+    },
+    {
+      "file": "cctools-workqueue-3.6.1.0.1.0.0.1.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, cctools-workqueue/3.6.1.0.1.0.0.1/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "cctools-workqueue",
+      "version": "3.6.1.0.1.0.0.1"
+    },
+    {
+      "file": "mit-3qvpPyAi6mH-10.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, mit-3qvpPyAi6mH/10/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "mit-3qvpPyAi6mH",
+      "version": "10"
+    },
+    {
+      "file": "cryptol-3.6.0.package.json",
+      "source": "https://hackage.haskell.org/01-index.tar.gz, cryptol/3.6.0/package.json",
+      "date": "Sun, 11 Oct 2026 05:00:12 GMT",
+      "package": "cryptol",
+      "version": "3.6.0"
+    }
+  ]
+}
