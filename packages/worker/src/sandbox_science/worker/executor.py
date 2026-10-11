@@ -33,7 +33,7 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -346,7 +346,7 @@ class Executor:
         }
 
     def environment(self, session: str) -> dict[str, str]:
-        env = dict(os.environ)
+        env = tool_environment(os.environ, sys.executable, sys.prefix)
         env["SESSION_WORKSPACE"] = str(self.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
         return env
@@ -786,6 +786,22 @@ class Executor:
                 {"name": entry.name, "type": kind, "size": info.st_size, "modified": info.st_mtime}
             )
         await self.reply(request, entries=entries, truncated=len(items) > limit)
+
+
+def tool_environment(base: Mapping[str, str], python: str, prefix: str) -> dict[str, str]:
+    """``base`` with the environment's tools first on PATH, as the tools spec requires.
+
+    The executor runs with the environment's interpreter, so its directory holds the
+    environment's commands; without it, Sage's interfaces could not find ``gp`` or ``gap``
+    (lab 5). A Conda environment is also named in ``CONDA_PREFIX``.
+    """
+    env = dict(base)
+    tools = os.path.dirname(python)
+    rest = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry and entry != tools]
+    env["PATH"] = os.pathsep.join([tools, *rest])
+    if os.path.isdir(os.path.join(prefix, "conda-meta")):
+        env["CONDA_PREFIX"] = prefix
+    return env
 
 
 def available_languages() -> list[str]:

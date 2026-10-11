@@ -26,12 +26,15 @@ from sandbox_science.policy import (
 )
 from sandbox_science.policy.hosts import floor_reason, is_public
 from sandbox_science.policy.openshell import (
+    SANDBOX_DEVICES_READ_ONLY,
+    SANDBOX_DEVICES_READ_WRITE,
     AnyOf,
     Compiled,
     CompileError,
     Endpoint,
     McpProxyTarget,
     OpenShellPolicy,
+    SandboxFilesystem,
     SandboxTarget,
     ServiceEndpoint,
     Severity,
@@ -53,6 +56,10 @@ HEADER = "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\nmetadata: {
 # rejects unknown fields, so a typo here would break policy loads.
 ALLOWED_KEYS = {
     "version",
+    "filesystem_policy",
+    "include_workdir",
+    "read_only",
+    "read_write",
     "network_policies",
     "name",
     "endpoints",
@@ -1123,6 +1130,80 @@ def test_sandbox_target_defaults_to_all_binaries() -> None:
         }
     )
     assert target.binaries == ("/**",)
+
+
+# Filesystem section.
+
+
+def test_a_research_sandbox_may_open_the_devices_research_code_needs() -> None:
+    # Lab 5: without these, Landlock refused pseudo-terminals (Sage's pexpect interfaces)
+    # and /dev/shm (every multiprocessing lock).
+    filesystem = compile_research(EXAMPLE).policy.filesystem_policy
+    assert filesystem is not None
+    assert filesystem.include_workdir
+    assert {"/dev/ptmx", "/dev/pts", "/dev/shm"} <= set(filesystem.read_write)  # noqa: S108 - a device path
+    assert filesystem.read_write == SANDBOX_DEVICES_READ_WRITE
+    assert filesystem.read_only == SANDBOX_DEVICES_READ_ONLY
+
+
+def test_the_filesystem_section_comes_first_and_revisions_leave_it_out() -> None:
+    policy = compile_research(EXAMPLE).policy
+    assert list(yaml.safe_load(policy.to_yaml())) == [
+        "version",
+        "filesystem_policy",
+        "network_policies",
+        "network_middlewares",
+    ]
+    revision = policy.network_only()
+    assert revision.filesystem_policy is None
+    assert "filesystem_policy" not in yaml.safe_load(revision.to_yaml())
+    assert revision.network_policies == policy.network_policies
+    assert policy.filesystem_policy is not None  # the original is unchanged
+
+
+def test_the_image_paths_are_added_and_writable_wins() -> None:
+    target = TARGETS.sandbox.model_copy(
+        update={
+            "filesystem": SandboxFilesystem(
+                read_only=("/opt/conda", "/dev/random", "/data"),
+                read_write=("/data", "/dev/shm"),  # noqa: S108 - a device path
+            )
+        }
+    )
+    filesystem = compile_sandbox(EXAMPLE, target, ceiling=OPEN).policy.filesystem_policy
+    assert filesystem is not None
+    assert filesystem.read_only == ("/dev/random", "/opt/conda")
+    assert filesystem.read_write == (*SANDBOX_DEVICES_READ_WRITE, "/data")
+
+
+@pytest.mark.parametrize(
+    "filesystem",
+    [
+        {"read_only": ["opt/conda"]},
+        {"read_only": ["/opt/../etc"]},
+        {"read_only": ["/opt//conda"]},
+        {"read_only": ["/opt/conda/"]},
+        {"read_only": ["/opt/con da"]},
+        {"read_write": ["/"]},
+        {"read_write": ["/" + "a" * 4096]},
+        {"writable": ["/data"]},
+    ],
+)
+def test_invalid_image_paths_are_rejected(filesystem: dict[str, list[str]]) -> None:
+    with pytest.raises(ValidationError):
+        SandboxFilesystem.model_validate(filesystem)
+
+
+def test_too_many_paths_are_a_compile_error() -> None:
+    target = TARGETS.sandbox.model_copy(
+        update={"filesystem": SandboxFilesystem(read_only=tuple(f"/opt/p{i}" for i in range(250)))}
+    )
+    with pytest.raises(CompileError, match="256 filesystem paths"):
+        compile_sandbox(EXAMPLE, target, ceiling=OPEN)
+
+
+def test_example_targets_name_no_image_paths() -> None:
+    assert TARGETS.sandbox.filesystem == SandboxFilesystem()
 
 
 def test_tcp_service_hosts_must_be_names() -> None:
