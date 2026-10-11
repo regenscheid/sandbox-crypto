@@ -482,3 +482,28 @@ def test_a_refused_prctl_leaves_the_executor_unprotected(monkeypatch: pytest.Mon
 
 def test_loopback_sockets_work_here() -> None:
     assert executor._sockets_work()  # pyright: ignore[reportPrivateUsage]
+
+
+def test_pdf_requests_become_the_helpers_command_line() -> None:
+    argv = executor.pdf_argv(
+        {
+            "operation": "render",
+            "path": "paper.pdf",
+            "page": 3,
+            "dpi": 100,
+            "region": [72, 650.5, 300, 720],
+        }
+    )
+    assert argv[:4] == [sys.executable, "-I", str(executor.PDF_HELPER), "render"]
+    assert argv[4:] == ["paper.pdf", "--page", "3", "--dpi", "100", "--region", "72,650.5,300,720"]
+    pages = executor.pdf_argv(
+        {"operation": "pages", "path": "p.pdf", "pages": "1-3", "include_artifacts": True}
+    )
+    assert pages[3:] == ["pages", "p.pdf", "--pages", "1-3", "--include-artifacts"]
+    with pytest.raises(executor.ToolError, match="no PDF operation"):
+        executor.pdf_argv({"operation": "delete", "path": "p.pdf"})
+
+
+def test_pdf_is_offered_with_the_helper_and_pdf_oxide() -> None:
+    pytest.importorskip("pdf_oxide")
+    assert executor.available_features() == ["pdf"]

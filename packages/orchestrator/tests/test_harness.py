@@ -40,6 +40,7 @@ from sandbox_science.contracts import (
     ShellRequest,
     StreamEvent,
     StreamOutput,
+    WriteFileRequest,
 )
 from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.loop import run_task
@@ -606,3 +607,49 @@ async def test_worker_errors_keep_their_kind(client: WorkerClient) -> None:
     assert conflict.value.kind is ErrorKind.CONFLICT
     content = base64.b64encode(b"x").decode()
     assert content == "eA=="
+
+
+async def test_the_pdf_tools_read_cite_and_render_in_the_sandbox(client: WorkerClient) -> None:
+    pdf_oxide = pytest.importorskip("pdf_oxide")
+    capabilities = await client.capabilities(CONTEXT.environment_id)
+    assert capabilities.features == ("pdf",)
+    toolbox = Toolbox(client, CONTEXT, features=capabilities.features)
+    assert {"pdf_info", "pdf_pages", "pdf_search", "pdf_render"} <= {s.name for s in toolbox.specs}
+    note = "# A Note on GF(17)\n\nFor every a in GF(17), a^17 = a.\n"
+    data = bytes(pdf_oxide.Pdf.from_markdown(note).to_bytes())
+    await client.write_file(
+        WriteFileRequest(
+            context=CONTEXT, path="note.pdf", content_b64=base64.b64encode(data).decode()
+        )
+    )
+    digest = hashlib.sha256(data).hexdigest()
+
+    async def tool(name: str, operation: str, **arguments: Any) -> str:
+        return (await toolbox.call(_call(name, arguments), operation)).text
+
+    info = await tool("pdf_info", "op-pdf-info", path="note.pdf")
+    assert info.startswith(f"note.pdf (sha256 {digest[:16]}…): 1 pages")
+    assert "pages (physical: printed label): 1: 1" in info
+    pages = await tool("pdf_pages", "op-pdf-pages", path="note.pdf", pages="1")
+    assert "--- page 1 (printed 1) ---" in pages
+    assert "[p1:1] A Note on GF(17)" in pages
+    hits = await tool("pdf_search", "op-pdf-search", path="note.pdf", query="gf(17)")
+    assert hits.startswith("2 hits for 'gf(17)'")
+    assert "[p1:1] (printed 1) A Note on GF(17)" in hits
+    rendered = await tool(
+        "pdf_render", "op-pdf-render", path="note.pdf", page=1, region=[72, 640, 288, 720], dpi=100
+    )
+    assert "rendered region [72.0, 640.0, 288.0, 720.0] of page 1" in rendered
+    assert "300x112 px" in rendered
+    png = rendered.split(" to ", 1)[1].split(":", 1)[0]
+    published = json.loads(await tool("publish", "op-pdf-publish", path=png))
+    assert published["published"]["media_type"] == "image/png"
+    missing = json.loads(await tool("pdf_pages", "op-pdf-missing", path="gone.pdf", pages="1"))
+    assert missing["error"]["kind"] == "invalid_request"
+    assert "does not exist" in missing["error"]["message"]
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_the_pdf_tools_need_the_feature() -> None:
+    client = WorkerClient("http://127.0.0.1:9", TOKEN)
+    assert not {"pdf_pages", "pdf_render"} & {s.name for s in Toolbox(client, CONTEXT).specs}

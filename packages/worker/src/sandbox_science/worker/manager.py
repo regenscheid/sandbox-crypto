@@ -36,6 +36,7 @@ from sandbox_science.contracts import (
     ErrorKind,
     Event,
     Execution,
+    ExecutionRequest,
     ExecutionState,
     FileContent,
     FileEntry,
@@ -45,6 +46,7 @@ from sandbox_science.contracts import (
     ListFilesRequest,
     Location,
     OutputEvent,
+    PdfRequest,
     PublishRequest,
     ReadFileRequest,
     Result,
@@ -60,6 +62,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import (
     DEFAULT_OUTPUT_LIMIT,
+    FEATURES,
     LANGUAGES,
     MAX_EVENT_BYTES,
     MAX_PATH_BYTES,
@@ -153,6 +156,7 @@ class _Environment:
     channel: ExecutorChannel | None = None
     location: Location | None = None
     languages: tuple[str, ...] = ()
+    features: tuple[str, ...] = ()
     running: set[str] = field(default_factory=set[str])
 
 
@@ -381,7 +385,7 @@ class ExecutionManager:
                 )
                 self._channels.add(channel)
                 try:
-                    hostname, languages = self._describe(environment_id, channel.hello)
+                    hostname, languages, features = self._describe(environment_id, channel.hello)
                     declared = self.backend.isolation_tier
                     isolation = await probe(channel, declared, self.state_dir)
                 except Exception:
@@ -405,11 +409,14 @@ class ExecutionManager:
                     isolation_evidence=isolation.evidence,
                 )
                 environment.languages = languages
+                environment.features = features
                 environment.channel = channel
         return environment
 
-    def _describe(self, environment_id: str, hello: Message) -> tuple[str, tuple[str, ...]]:
-        """The host name and kernel languages from an executor's ``hello``, checked."""
+    def _describe(
+        self, environment_id: str, hello: Message
+    ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        """The host name, kernel languages and features from an executor's ``hello``, checked."""
         where, languages = hello.get("location"), hello.get("languages", [])
         if not isinstance(where, dict) or not isinstance(languages, list):
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor sent a malformed hello")
@@ -431,7 +438,14 @@ class ExecutionManager:
                 environment_id,
             )
         names = (name for name in cast(list[object], languages) if isinstance(name, str))
-        return hostname or "unknown", tuple(dict.fromkeys(n for n in names if n in LANGUAGES))
+        raw: object = hello.get("features", [])
+        offered = cast(list[object], raw) if isinstance(raw, list) else []
+        features = tuple(dict.fromkeys(f for f in offered if isinstance(f, str) and f in FEATURES))
+        return (
+            hostname or "unknown",
+            tuple(dict.fromkeys(n for n in names if n in LANGUAGES)),
+            features,
+        )
 
     async def _channel(self, environment_id: str) -> ExecutorChannel:
         channel = (await self._environment(environment_id)).channel
@@ -454,7 +468,7 @@ class ExecutionManager:
 
     # Submission and dispatch.
 
-    async def submit(self, request: ShellRequest | CellRequest) -> tuple[Execution, bool]:
+    async def submit(self, request: ExecutionRequest) -> tuple[Execution, bool]:
         """Return the execution for ``request.operation_id``, creating it if it is new."""
         digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
         found = self.store.find_operation(request.operation_id)
@@ -482,7 +496,7 @@ class ExecutionManager:
         self._spawn(self._dispatch(live, request))
         return live.execution, True
 
-    async def _dispatch(self, live: _Live, request: ShellRequest | CellRequest) -> None:
+    async def _dispatch(self, live: _Live, request: ExecutionRequest) -> None:
         """Send the request to its executor; whatever goes wrong, the execution ends."""
         try:
             await self._send(live, request)
@@ -504,7 +518,7 @@ class ExecutionManager:
             environment.running.discard(live.execution.execution_id)
         self._finish(live, ExecutionState.FAILED, Result(error=error))
 
-    async def _send(self, live: _Live, request: ShellRequest | CellRequest) -> None:
+    async def _send(self, live: _Live, request: ExecutionRequest) -> None:
         execution_id = live.execution.execution_id
         environment = await self._environment(request.context.environment_id)
         if live.cancel_requested:
@@ -516,6 +530,10 @@ class ExecutionManager:
                 ),
             )
             return
+        if isinstance(request, PdfRequest) and "pdf" not in environment.features:
+            raise WorkerError(
+                ErrorKind.UNSUPPORTED, "this environment cannot read PDFs (it lacks pdf_oxide)"
+            )
         if isinstance(request, CellRequest) and request.language not in environment.languages:
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, f"no {request.language} kernel in this environment"
@@ -533,6 +551,15 @@ class ExecutionManager:
                 fields["argv"] = list(request.argv)
             else:
                 fields["script"] = request.script
+        elif isinstance(request, PdfRequest):
+            fields.update(
+                request.model_dump(
+                    mode="json",
+                    include={"operation", "path", "pages", "query", "page", "region", "dpi"}
+                    | {"include_artifacts", "out"},
+                    exclude_none=True,
+                )
+            )
         else:
             fields.update(language=request.language, code=request.code)
         channel = environment.channel
@@ -851,6 +878,7 @@ class ExecutionManager:
             protocol=PROTOCOL_VERSION,
             languages=tuple(name for name in environment.languages if name in LANGUAGES),
             location=environment.location,
+            features=tuple(name for name in environment.features if name in FEATURES),
         )
 
     # Files. Replies are checked like events: a malformed one is an internal error.

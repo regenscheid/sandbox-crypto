@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -15,6 +16,7 @@ from sandbox_science.contracts import (
     ExecutionContext,
     ExecutionRequest,
     ExecutionState,
+    PdfRequest,
     ReadFileRequest,
     ShellRequest,
     WriteFileRequest,
@@ -137,3 +139,37 @@ def test_events_round_trip() -> None:
     ):
         parsed = EVENT.validate_python(event)
         assert EVENT.validate_json(EVENT.dump_json(parsed)) == parsed
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"operation": "pages"}, "pages needs pages"),
+        ({"operation": "search"}, "search needs query"),
+        ({"operation": "render"}, "render needs page"),
+        ({"operation": "pages", "pages": "1-3,x"}, "pattern"),
+        ({"operation": "render", "page": 1, "region": [5, 5, 1, 1]}, "x0 < x1"),
+        ({"operation": "render", "page": 1, "region": [0, 0, float("inf"), 1]}, "finite"),
+        ({"operation": "render", "page": 1, "dpi": 1000}, "less than or equal"),
+        ({"operation": "info", "path": "/etc/passwd"}, "relative"),
+    ],
+)
+def test_pdf_requests_need_their_arguments(fields: dict[str, Any], message: str) -> None:
+    request = {"operation_id": "op", "context": CONTEXT, "path": "paper.pdf", **fields}
+    with pytest.raises(ValidationError, match=message):
+        PdfRequest.model_validate(request)
+
+
+def test_pdf_requests_are_execution_requests() -> None:
+    request = TypeAdapter(ExecutionRequest).validate_python(
+        {
+            "kind": "pdf",
+            "operation_id": "op",
+            "context": CONTEXT,
+            "operation": "pages",
+            "path": "shared/paper.pdf",
+            "pages": "3-5,9",
+        }
+    )
+    assert isinstance(request, PdfRequest)
+    assert (request.dpi, request.include_artifacts) == (150, False)

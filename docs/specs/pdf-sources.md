@@ -1,6 +1,6 @@
 # PDF sources: pages, search, renders and anchors
 
-**Status.** Draft (W0/W2), to review with the user. It is written from the [research workspace](../RESEARCH-WORKSPACE.md) requirements and D59.
+**Status.** Draft (W0/W2), to review with the user. It is written from the [research workspace](../RESEARCH-WORKSPACE.md) requirements and D59. The worker implements it (`PdfRequest`, [worker](../WORKER.md#pdfs)), and the harness offers it as the tools `pdf_info`, `pdf_pages`, `pdf_search` and `pdf_render`.
 
 ## Scope
 
