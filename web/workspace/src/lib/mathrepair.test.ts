@@ -167,6 +167,8 @@ describe('commands the repairs never make', () => {
     expect(definesMacros('\\url{%}\\def\\a{x}\\a')).toBe('def');
     expect(definesMacros('\\href{%}{x}\\gdef\\a{x}')).toBe('gdef');
     expect(definesMacros('\\includegraphics{%}\\let\\a=x')).toBe('let');
+    // KaTeX comments out the \verb, then reads the link's % as a character, and defines.
+    expect(definesMacros('x % \\verb\n\\url{%}\\def\\a{x}\\a\n')).toBe('def');
     // A \verb whose delimiter ends the line, as KaTeX's lexer allows.
     expect(definesMacros('\\verb\n\\def\\a{x}\n\\a')).toBeNull();
     expect(definesMacros('\\verb\n\\def\\a{x}\r\n')).toBe('def');
