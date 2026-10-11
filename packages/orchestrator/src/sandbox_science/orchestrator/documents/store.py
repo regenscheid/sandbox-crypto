@@ -889,10 +889,14 @@ class DocumentStore:
         head = self._mapped(head_revision)
         if base < info.head:
             since = Since()
-            for number in range(base + 1, info.head + 1):
-                later = self._revision(db, info.document_id, number)
-                author = later.info.author.model_dump(mode="json", exclude_none=True)
-                since.note(number, author, later.block_map)
+            # The block maps and authors of the later revisions; their texts are not needed.
+            for number, author, stored in db.execute(
+                "SELECT number, author, block_map FROM revisions WHERE document_id = ? "
+                "AND number > ? ORDER BY number",
+                (info.document_id, base),
+            ):
+                who = Author.model_validate_json(author).model_dump(mode="json", exclude_none=True)
+                since.note(number, who, json.loads(stored))
             found = conflicts(base_mapped, head, submission.operations, since)
             if found:
                 message = (
