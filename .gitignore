@@ -10,3 +10,6 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
+
+# Git worktrees that Claude Code creates for background agents
+.claude/worktrees/

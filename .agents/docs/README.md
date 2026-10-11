@@ -14,6 +14,7 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 - [OpenShell v0.1.3 lab on babbage, 2026-10-10](agent-reports/babbage-openshell-lab-2026-10-10.md): the policy middleware against a real gateway with the VM driver, and what the lab changed (D69, D70).
 - [OpenShell v0.1.3 lab 2 on babbage, 2026-10-10](agent-reports/babbage-openshell-lab-2-2026-10-10.md): the package cache with real clients in a sandbox, provider credentials, and the MCP proxy's compiled policy (D57, D69, D71).
 - [OpenShell v0.1.3 lab 3 on babbage, 2026-10-11](agent-reports/babbage-openshell-lab-3-2026-10-11.md): the compiled credential bindings (D57, amended), and plain-HTTP credential substitution seen at runtime.
+- [OpenShell v0.1.3 lab 4 on babbage, 2026-10-11](agent-reports/babbage-openshell-lab-4-2026-10-11.md): the W1 first slice in an OpenShell VM sandbox, and the seccomp restrictions it had to work around.
 
 These are dated investigation reports. Recommendations inside them are not confirmed requirements; the [decision register](../../docs/DECISIONS.md) resolves later choices, and the [critical review](../critical-review.md) and [proposed changes](../proposed-changes.md) record the 2026-10-10 review.
 

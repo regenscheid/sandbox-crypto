@@ -6,9 +6,12 @@ description = "Workspace root for the Sandbox Science research workbench"
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
+    "sandbox-science-contracts",
+    "sandbox-science-orchestrator",
     "sandbox-science-package-cache",
     "sandbox-science-policy",
     "sandbox-science-policy-middleware",
+    "sandbox-science-worker[kernels]",
 ]
 
 [dependency-groups]
@@ -30,9 +33,12 @@ package = false
 members = ["packages/*"]
 
 [tool.uv.sources]
+sandbox-science-contracts = { workspace = true }
+sandbox-science-orchestrator = { workspace = true }
 sandbox-science-policy = { workspace = true }
 sandbox-science-policy-middleware = { workspace = true }
 sandbox-science-package-cache = { workspace = true }
+sandbox-science-worker = { workspace = true }
 
 [tool.ruff]
 line-length = 100

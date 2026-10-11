@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MIT
+[project]
+name = "sandbox-science-worker"
+version = "0.1.0"
+description = "Trusted worker service and in-sandbox executor for Sandbox Science"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "sandbox-science-contracts",
+    "aiohttp>=3.10",
+]
+
+[project.optional-dependencies]
+# The executor runs kernels with these inside the sandbox; the local backend
+# needs them beside the worker service.
+kernels = [
+    "jupyter_client>=8.6",
+    "ipykernel>=6.29",
+]
+
+[project.scripts]
+sandbox-science-worker = "sandbox_science.worker.cli:main"
+
+[tool.uv.sources]
+sandbox-science-contracts = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_science"]

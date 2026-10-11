@@ -6,6 +6,8 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- Lab 4 on babbage ([report](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)): the W1 first slice ran in an OpenShell VM sandbox. The harness drove the worker service, which drove the in-sandbox executor and Jupyter kernels. Every execution-tools fixture passed after working around two seccomp restrictions: a scheduler shim for libzmq, and per-process signals for process groups. Publication now names the attempt that wrote a file, from observed file lists.
+- W1 first slice, locally: `packages/contracts`, the [worker service](../docs/WORKER.md) with its in-sandbox executor (`packages/worker`), and the harness's tool loop with a provider-neutral model interface (`packages/orchestrator`). The [execution tools spec](../docs/specs/tools.md) and its acceptance fixtures pass on the local backend.
 - Lab 3 on babbage ([report](docs/agent-reports/babbage-openshell-lab-3-2026-10-11.md)): the compiled credential bindings load and work with an endpointless provider. OpenShell's substitution into plain HTTP on port 443 was seen at runtime (residual risk, [bug description](upstream/openshell-credential-substitution-over-plain-http.md)).
 - Provider credentials (D57 amended, the user's choice after lab 2): the policy names each provider's hosts, and the compiler binds the credential there on HTTPS. Providers use profiles without endpoints, and the middleware treats only those hosts as credentialed.
 - Lab 2 on babbage ([report](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)).
