@@ -89,7 +89,8 @@ class OpenShellBackendSettings(_Model):
     cc: str = "cc"
     """The C compiler that builds the shim on the worker host."""
     package_cache: Annotated[str, AfterValidator(check_cache_url)] | None = None
-    """The package cache's URL as sandboxes reach it; the package clients are pointed at it."""
+    """The package cache's URL as sandboxes reach it; the package clients are pointed at it.
+    With ``environments``, it must name the host and port the targets file gives the cache."""
     env: dict[str, str] = Field(default_factory=dict[str, str])
     """Extra environment for the CLI, such as XDG overrides naming the gateway."""
     sandboxes: dict[Identifier, str] = Field(default_factory=dict[str, str])
