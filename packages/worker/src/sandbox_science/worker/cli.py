@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import os
 import secrets
@@ -27,6 +28,7 @@ from aiohttp import web
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy_middleware.errors import StoreError
 
+from .admission import DraftWatcher
 from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
@@ -100,15 +102,23 @@ async def serve(settings: Settings) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
     runner = web.AppRunner(create_app(manager, token, environments), access_log=None)
+    watcher: asyncio.Task[None] | None = None
     try:
         await manager.start()
         await runner.setup()
         site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
         await site.start()
         _log.info("worker API on %s (%s backend)", settings.listen, manager.backend.name)
+        if environments is not None and environments.settings.admission:
+            interval = environments.settings.admission_interval
+            watcher = asyncio.create_task(DraftWatcher(environments, interval).run())
         await stopping.wait()
         _log.info("stopping")
     finally:
+        if watcher is not None:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
         await runner.cleanup()
         await manager.close()
         store.close()

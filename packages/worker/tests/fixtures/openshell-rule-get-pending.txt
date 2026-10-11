@@ -1,0 +1,12 @@
+Network Rules:  (version 1, 1 chunk)
+
+  Chunk: e348ea1c-ad84-4f8f-967b-fc3321f7e7b5
+  Status: pending
+  Rule: allow_www_iana_org_443
+  Binary: /opt/sandbox-science/bin/python3.14
+  Confidence: 65%
+  Rationale: Allow python3.14 to connect to www.iana.org:443 (HTTPS).
+  Prover: prover: no new findings
+  Candidate: 1ed7c9c101a6
+  Endpoints: www.iana.org:443 [L4]
+  Binaries: /opt/sandbox-science/bin/python3.14

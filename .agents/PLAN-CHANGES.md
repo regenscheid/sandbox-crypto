@@ -4,6 +4,18 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **Admission on demand, and no host-less endpoint (D69 amended, details proposed;** [lab 10](docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md)**).**
+  - The worker admits hosts that the policy reaches but does not name. It reads the proposals OpenShell drafts for refused connections, and decides each host with the library (`host_reach`, `admission_refusal`). It names admitted hosts in a new compilation of the same revision, with the public address ranges, then rejects the draft with its decision. It never approves a draft, records every decision, and decides recorded hosts again under each new revision.
+  - D69 had the orchestrator approving drafts. The worker does it, because it holds the gateway's credentials (D73).
+  - The lab showed that OpenShell drafts proposals only for connections its own rules refuse. The host-less endpoint made them allowed, so no drafts came.
+  - The compiler therefore no longer emits it:
+    - every host a rule names gets an endpoint;
+    - every other host and address waits for admission;
+    - LAN hosts that a rule names exactly are now admitted, as the library allows.
+  - In the lab, a new host was reachable 9 to 20 s after the first refused connection.
+  - Each admission reloads the sandbox's policy, and OpenShell then closes the sandbox's open connections, cutting transfers in progress. The docs say so.
+  - The harness's instructions tell the agent to retry after `Permission denied`.
+  - Two OpenShell behaviours are described for upstream: refused connections to unapproved names are not proposed when an endpoint allows the host, and a reload closes even connections whose decision did not change.
 - **M1's exit run passed on babbage** ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). Container A (the harness, under the orchestrator policy) drove container B (a worker-created crypto-base sandbox at tier 3) through the research tools: PDF evidence from a real paper, Sage with LaTeX, useful errors, and egress only through the cache and the policy. `compile_orchestrator()` now takes the image's filesystem paths.
 - **D77 (proposed): the base profile image contract** ([images](../docs/IMAGES.md)). Recipes for `minimal` and `crypto-base` (D46) are in `images/`, with Conda lockfiles for linux-64 and linux-aarch64. Both images keep one Conda prefix, `/opt/sandbox-science`, whose Python runs the executor and holds the kernelspecs, and which takes runtime installs (D48). The OpenShell targets file must list `/opt/sandbox-science` read-write and `/var/lib/texmf` read-only. Both images were built for linux/amd64 on babbage and passed their checks as plain containers, including under a Landlock ruleset like OpenShell's. `minimal` is permissive apart from the runtime libraries conda-forge's Python needs (the GCC runtime, readline, GNU ld, keyutils), which LICENSING.md's tier 2 now names. arm64 images remain to build.
 - **MCP proxy, first version (D75, proposed;** [MCP connectors](../docs/MCP-CONNECTORS.md#the-mcp-proxy-as-built)**).** New member `packages/mcp-proxy` (conventions: planned member). It decides every MCP message with the policy library before anything goes upstream, refuses escalations as pending requests, records alerts before they proceed, and writes one record per call to the event store.
