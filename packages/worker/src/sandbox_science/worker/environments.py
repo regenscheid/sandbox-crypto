@@ -236,6 +236,18 @@ class EnvironmentRecords:
                 (info.environment_id, info.sandbox, info.model_dump_json()),
             )
 
+    def live(self, projects: Iterable[str]) -> list[str]:
+        """The IDs of the projects' environments that are not deleted."""
+        wanted = set(projects)
+        with self._lock:
+            rows = self._db.execute("SELECT document FROM environments").fetchall()
+        infos = [EnvironmentInfo.model_validate_json(row[0]) for row in rows]
+        return [
+            info.environment_id
+            for info in infos
+            if info.project_id in wanted and info.state is not EnvironmentState.DELETED
+        ]
+
     def sandbox_taken(self, sandbox: str) -> bool:
         with self._lock:
             row = self._db.execute(
