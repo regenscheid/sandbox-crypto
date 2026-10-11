@@ -2,10 +2,19 @@
 
 Updated: 2026-10-11.
 
-**Phase:** 1 (babbage), milestone M0. **Focus:** infrastructure track P: the policy library, its OpenShell compiler and the policy middleware.
+**Phase:** 1 (babbage), milestone M1: its exit run passed on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M0's specs and decisions still await the user's review. **Focus:** toward M2: project and session state, shared data across environments, and the MCP connectors.
 
 ## Recent progress
 
+- **The M1 exit run** ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)).
+  - The harness ran in its own sandbox (A), which can reach only the worker API, and drove a research sandbox (B) that the worker had created from the `crypto-base` image, at tier 3 with the probe's evidence.
+  - In B the agent:
+    - fetched Regev's LWE paper;
+    - read it with the PDF tools (37 pages and the outline; hits cited as `p15:23`);
+    - published a page render and a crop of two equations, located from the line boxes;
+    - ran Sage with LaTeX results;
+    - got a useful Python error;
+    - installed through the package cache, with `pypi.org` refused.
 - MCP proxy, first version (`packages/mcp-proxy`, D75 proposed, [docs](../docs/MCP-CONNECTORS.md#the-mcp-proxy-as-built)). It decides every MCP message with the policy library under the project's revision, refuses escalations as pending requests, records alerts before they proceed and keeps one record per call. It applies lab 2's findings: exact advertised tool names, `MCP-Protocol-Version` after `initialize`, and placeholders only in headers. Tested against a fake Streamable HTTP server; not yet run in its OpenShell sandbox.
 - W1 boundary end to end ([lab 7](docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md)). The harness ran in its own OpenShell sandbox, whose compiled policy admits only the worker API, and drove tools in a research sandbox the worker created. Every tool ran there at tier 3, with the probe's evidence and Python state kept. Neither sandbox could reach what it shouldn't. A harness killed mid-cell reattached to the same execution.
 - Package clients in sandboxes: with its `package_cache` setting, the worker has the executor write pip, uv, conda (mamba, micromamba), Cargo, Go and npm configuration that reaches the cache only, keeping files someone changed ([client configuration](../docs/PACKAGE-CACHE.md#client-configuration)). Real clients installed through a loopback cache with it; an OpenShell lab is still to come.

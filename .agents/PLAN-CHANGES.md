@@ -4,6 +4,7 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **M1's exit run passed on babbage** ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). Container A (the harness, under the orchestrator policy) drove container B (a worker-created crypto-base sandbox at tier 3) through the research tools: PDF evidence from a real paper, Sage with LaTeX, useful errors, and egress only through the cache and the policy. `compile_orchestrator()` now takes the image's filesystem paths.
 - **MCP proxy, first version (D75, proposed;** [MCP connectors](../docs/MCP-CONNECTORS.md#the-mcp-proxy-as-built)**).** New member `packages/mcp-proxy` (conventions: planned member). It decides every MCP message with the policy library before anything goes upstream, refuses escalations as pending requests, records alerts before they proceed, and writes one record per call to the event store.
   - D67 planned the proxy on the MCP Python SDK. It has its own JSON-RPC layer on aiohttp instead, so that it bounds sizes while bytes arrive and builds every header and body it sends (D75).
   - The policy gains `mcp.proxy.max_argument_bytes` (default 64 KiB) beside `max_response_bytes`: tool arguments can carry data out, as URLs can.

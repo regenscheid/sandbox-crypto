@@ -88,7 +88,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Real SageMath from conda-forge in an OpenShell sandbox ([lab 5](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)): preparsing, finite fields, polynomial rings, Gröbner bases, exact matrices, LaTeX, GAP, Maxima, PARI and fpylll, interrupt, timeout, restart and kernel death. SageMath 10.9 installs in about 30 s through the cache; the VM costs 0–7% on single-threaded mathematics. Needed two fixes: the compiled policy now allows pseudo-terminals and `/dev/shm`, and the executor puts the environment's tools on `PATH`
 - [ ] `crypto-base` profile with Sage present at session start (D46)
 - [x] PDF extraction and rendering in the worker (pdf_oxide, D59): the in-sandbox helper, the [spec](../docs/specs/pdf-sources.md), the worker's `PdfRequest` and the harness's `pdf_*` tools
-- [ ] PDF evidence on babbage: a real cryptography paper through the PDF tools in an OpenShell sandbox; check page labels, line anchors and equation crops against the printed paper
+- [x] PDF evidence on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)): Regev's LWE paper through the PDF tools in a crypto-base sandbox; page labels, outline, line anchors, and page and equation crops published as artifacts. Text extraction garbles mathematics, and the renders do not
 
 ## babbage
 

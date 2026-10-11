@@ -3,7 +3,8 @@
 version: 1
 filesystem_policy:
   include_workdir: true
-  read_only: []
+  read_only:
+  - /opt/sandbox-science
   read_write: []
 network_policies:
   sandbox-science-worker-api:
