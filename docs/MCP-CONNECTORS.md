@@ -188,11 +188,14 @@ openshell forward service --target-port 8080 --local 127.0.0.1:8080 mcp-proxy
 
 - Commands in the sandbox take full paths, since OpenShell's VM driver does not apply the image's `PATH`. `pending`, `approve` and `deny` run the same way, with `--settings /sandbox/mcp-proxy/proxy.toml`, and `/opt/sandbox-science/bin/sandbox-science-events export /sandbox/mcp-proxy/state/events.db` copies the records out.
 - Until a project is bound, its calls get 503 `project_unbound`. A binding, or a new revision bound later, applies from the next call, without a restart.
-- The state directory, with the policy store and the event store, is on the sandbox's disk, which survives `sandbox stop` and `start` (lab 13). As the sandbox's command, the launcher should start the proxy again with the sandbox; no lab has shown that yet.
+- The state directory, with the policy store and the event store, is on the sandbox's disk, which survives `sandbox stop` and `start` (lab 13). [Lab 15](../.agents/docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md) showed the rest:
+  - The providers' placeholders reach the sandbox's command.
+  - The launcher and the proxy come back a few seconds after the sandbox is `Ready` again.
+  - The launcher restarts a proxy that exits.
+  - The forward ends when the sandbox stops, so whatever runs `openshell forward service` must start it again afterwards, for example a unit that retries.
 
 ### Not built yet
 
-- The `mcp-proxy` image in an OpenShell sandbox (a lab): the providers' placeholders in the environment of the sandbox's command, and the proxy coming back after `sandbox stop` and `start`. Lab 13 ran the proxy through `openshell sandbox exec` from the orchestrator image.
 - Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
 - The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand.
 - Binary results as artifact references; they are withheld for now.

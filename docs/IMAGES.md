@@ -290,17 +290,17 @@ What arm64 still needs:
 - **A multi-platform image.** It needs a registry or an OCI layout to hold both architectures under one tag; `build.sh` loads one platform into the local store.
 - **The tests**, run on an arm64 host.
 
+## In OpenShell
+
+Labs on babbage ran every image in OpenShell VM sandboxes, under the compiled policies:
+- crypto-base for the M1 exit run ([lab 9](../.agents/docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)), so the VM driver handles its root filesystem;
+- minimal in labs 10 to 12 and 14, where runtime installs into the prefix worked ([lab 11](../.agents/docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md));
+- the orchestrator image, running the harness ([lab 12](../.agents/docs/agent-reports/babbage-openshell-lab-12-2026-10-11.md));
+- the mcp-proxy image, with its launcher as the sandbox's command ([lab 15](../.agents/docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md)).
+
 ## Not yet done
 
 - **arm64 images** (above).
 - **A private registry** for crypto-base, and for multi-platform images. OpenShell's VM driver can create sandboxes from images in the local Docker store, so babbage needs none yet.
 - **An SBOM** in a standard format (SPDX or CycloneDX) before `minimal` is published. The image record lists every package and license, but in its own format.
-- **The images in an OpenShell sandbox.** The tests emulate OpenShell's Landlock ruleset and a read-only root. A lab should run the worker with these images (`python = "/opt/sandbox-science/bin/python"`, the profiles in `[openshell.environments]`), the targets file above and the conformance suite, and check:
-  - that the prefix is still owned by uid 1000 once the VM driver has unpacked the image, so runtime installs work;
-  - the VM driver's limits for images from the local Docker store: it exports the root filesystem as a tar archive, by default of at most 10 GiB (`rootfs_tar_max_bytes`), and crypto-base's is about 6.2 GB. The first sandbox's overlay disk holds the archive and the unpacked tree while the image is prepared.
-- **The orchestrator image in an OpenShell sandbox.** The tests run the harness under the emulated ruleset and a read-only root, against a stub of the worker API. A lab should create the orchestrator's sandbox from the image, under the policy `compile_orchestrator()` gives for the targets file above, and run the harness by its full path against a real worker, as labs 7 and 9 did with a wheelhouse.
-- **The MCP proxy image in an OpenShell sandbox.** The tests run the launcher and the proxy under the emulated ruleset and a read-only root, with no server behind the proxy. A lab should create the proxy's sandbox from the image with the launcher as its command, under the policy `compile_mcp_proxy()` gives for the targets file above, and check:
-  - that the providers' placeholders reach the sandbox's command, as they reached a process started through `exec` in lab 13;
-  - that the proxy comes back after `sandbox stop` and `start`, with its bindings and records;
-  - whether `openshell forward service` has to be started again after a restart.
 - **Restore and rebuild.** The record and lockfile are there; capturing an environment's changes and rebuilding it from the lockfile belong to the environment manager (W3, D48).
