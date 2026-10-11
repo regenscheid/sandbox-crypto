@@ -41,11 +41,28 @@ Every route needs `Authorization: Bearer <token>`. Bodies are the JSON forms of 
 - **Durability.** An execution is stored before it is dispatched, and each event before it is delivered. A client that loses its stream asks again with `after`, and receives each event once. When the worker starts, it reports attempts a previous run left unfinished as `lost`. It never runs them again.
 - **Kernel generations.** Kernels die with their executor. When the worker starts a new executor for an environment, the next result reports `state_lost`, and the generation keeps counting up from the last one the worker reported. A restart is never hidden.
 - **Watchdog.** An execution still running 30 seconds past its own limit is cancelled by the worker. If no result follows within another 60 seconds, it is reported `lost`.
-- **Publication** reads the file through the executor in ranges, then checks that its hash and size did not change between ranges and that the stored bytes hash as reported. `produced_by` names the attempt that was running when the file last changed, if exactly one was. Both times come from the sandbox's clock.
+- **Written files.** The executor lists the regular files in the session workspace and the shared area before and after each attempt. The result names those the attempt created or changed (`written_files`, at most 1,000). An attempt running at the same time in the session may contribute some of them.
+- **Publication** reads the file through the executor in ranges, then checks that its hash and size did not change between ranges and that the stored bytes hash as reported. `produced_by` names the last finished attempt that wrote the file. Session files count only that session's attempts, shared files any session's. A file written through the file API has no producer. (Modification times could not do this: in lab 4, the guest kernel's coarse clock gave a cell and the next shell call the same time.)
 - **Paths.**
   - Session workspaces are `<project root>/sessions/<session>`; the shared area is `<project root>/shared`.
   - The file tools refuse absolute paths, `..` and paths through symlinks.
   - Writes to the shared area need `expected_sha256` or `create_only`.
+
+## Running under OpenShell
+
+Lab 4 ran the worker against a real gateway ([report](../.agents/docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)). OpenShell v0.1.3's seccomp filter refuses two kinds of call that ordinary software makes. The worker works around both:
+- **Scheduler calls on a thread.** libzmq aborts when `pthread_setschedparam` fails, so no Jupyter kernel or client could start.
+  - The worker builds a small shim (`shim/sched_self.c`) with the host's C compiler (`cc`), uploads it beside the executor and preloads it with `LD_PRELOAD`. Every process the executor starts inherits it.
+  - For the calling thread, the shim makes the equivalent `sched_setscheduler(0, …)`, which the filter allows. It needs only glibc 2.2.5 symbols.
+  - The `sched_shim` setting turns it off.
+- **Signals to process groups.** `kill(-pgid)` is refused. When it is, the executor signals each member of the group, found through `/proc`.
+
+Other things to know:
+- **Providers.** A sandbox compiled from a policy that names providers needs those providers attached; OpenShell refuses the policy otherwise.
+- **Kernel environment.** The sandbox's Python environment needs `ipykernel` and `jupyter_client`. In the lab they came from conda-forge through the package cache, in 16 s.
+- **Latency.** Median round trips through the worker API were 14 ms for a shell call and 20 ms for a cell.
+
+Both restrictions are described for upstream in `.agents/upstream/`.
 
 ## Executor protocol
 
@@ -68,6 +85,7 @@ cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
 python = "/sandbox/mamba/envs/tools/bin/python"   # an interpreter with ipykernel and jupyter_client
 project_root = "/sandbox/project"
 isolation_tier = 3
+sched_shim = true                    # build and preload the scheduler shim (needs cc on this host)
 env = {XDG_CONFIG_HOME = "~/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}
 ```
