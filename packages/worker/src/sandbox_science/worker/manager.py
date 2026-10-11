@@ -50,6 +50,8 @@ from sandbox_science.contracts import (
     Result,
     ResultEvent,
     RichOutput,
+    SessionClosed,
+    SessionCloseRequest,
     ShellRequest,
     StateEvent,
     StreamEvent,
@@ -840,6 +842,24 @@ class ExecutionManager:
         if kernel is None:
             raise WorkerError(ErrorKind.INTERNAL, "the executor did not describe the kernel")
         return kernel
+
+    async def close_session(self, request: SessionCloseRequest) -> SessionClosed:
+        """Stop a session's kernels where its environment has an executor; start nothing."""
+        context = request.context
+        environment = self._environments.get(context.environment_id)
+        channel = environment.channel if environment is not None else None
+        if channel is None or channel.closed:
+            return SessionClosed()
+        reply = await channel.request(
+            "close_session", session=context.session_id, reply_timeout=180
+        )
+        raw: object = reply.get("kernels")
+        stopped: list[KernelInfo] = []
+        for item in cast(list[object], raw) if isinstance(raw, list) else []:
+            kernel, _ = self._kernel(context.environment_id, context.session_id, item, False)
+            if kernel is not None:
+                stopped.append(kernel)
+        return SessionClosed(kernels=tuple(stopped))
 
     async def capabilities(self, environment_id: str) -> Capabilities:
         environment = await self._environment(environment_id)
