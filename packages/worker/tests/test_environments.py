@@ -1065,3 +1065,24 @@ async def test_admission_notices_say_what_was_admitted_and_refused(setup: Setup)
     setup.fake.draft(info.sandbox, "eprint.iacr.org:443", "/usr/bin/wget")
     await watcher.check("env-1", info.sandbox)
     assert setup.environments.notices("env-1", seen) == []
+
+
+async def test_operators_can_list_an_environments_admissions(
+    setup: Setup, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "pypi.org:443")
+    await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
+    settings = tmp_path / "worker.toml"
+    settings.write_text(
+        f'token_file = "worker.token"\nstate_dir = "{setup.state_dir}"\n\n'
+        "[openshell]\nisolation_tier = 3\n\n[openshell.environments]\n"
+        f'policy_store = "{tmp_path / "middleware"}"\ntargets = "{TARGETS}"\n'
+        f'ceiling = "{tmp_path / "pool-ceiling.yaml"}"\nprofiles = {{minimal = "{IMAGE}"}}\n'
+    )
+    assert main(["admissions", "--settings", str(settings), "--environment", "env-1"]) == 0
+    out = capsys.readouterr().out
+    assert "admitted eprint.iacr.org" in out
+    assert "pypi.org:443 refused: " in out
+    assert main(["admissions", "--settings", str(settings), "--environment", "nope"]) == 1
