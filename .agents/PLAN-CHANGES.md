@@ -2,6 +2,12 @@
 
 Dated log of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)). Newest first.
 
+## 2026-10-11
+
+- **Upstream bug descriptions** ([conventions](CONVENTIONS.md)). `.agents/upstream/` holds descriptions of bugs found in upstream projects. The user chose to keep the two OpenShell v0.1.3 bugs there rather than file them:
+  - provider credentials substituted into plain HTTP and sent unencrypted;
+  - a host with two trailing dots selecting no middleware.
+
 ## 2026-10-10
 
 - **Provider credentials bound by the compiled policy (D57 amended, chosen by the user).** Lab 2 showed that a provider whose profile names a host cannot sit beside the compiled policy's host-less endpoint. The user chose the arrangement where the project policy names the hosts each provider's credential may reach (`credentials.providers[].hosts`, required, exact names only), over profiles that repeat the compiler's address ranges.
