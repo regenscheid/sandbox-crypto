@@ -11,6 +11,7 @@
   --link: #0b5cad;
   --ok: #1d6b35;
   --failed: #a31b1b;
+  --approximate: #8a5300;
   --code: #eef0f3;
   font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   line-height: 1.5;
@@ -26,6 +27,7 @@
     --link: #79b8ff;
     --ok: #6fcf8a;
     --failed: #ff8a8a;
+    --approximate: #e2b45c;
     --code: #252a31;
   }
 }
@@ -281,6 +283,8 @@ details.record > summary {
   position: relative;
   overflow-x: auto;
   overflow-y: hidden;
+  /* KaTeX sets an equation's number flush right, with a strut 2px wider than it. */
+  padding-right: 2px;
 }
 
 /* An equation's label, on the equation's line at the right, as LaTeX sets it. */
@@ -323,6 +327,71 @@ div.math-skipped {
 }
 
 .math-skipped .math-message {
+  color: var(--muted);
+}
+
+/* Math the repairs changed or approximated (lib/mathrepair.ts). A mark says how; pressing
+   it shows why, and the LaTeX as written, to read and copy. */
+.math-mark {
+  font: inherit;
+  font-size: 0.7rem;
+  line-height: 1.3;
+  margin: 0 0.15rem 0 0.3rem;
+  padding: 0 0.4rem;
+  border-radius: 0.6rem;
+  vertical-align: 0.15em;
+  white-space: nowrap;
+  color: var(--ok);
+  border: 1px solid currentColor;
+  background: var(--background);
+}
+
+.math-approximated .math-mark {
+  color: var(--approximate);
+}
+
+.math-approximated[data-state='pending'] .math-mark {
+  border-style: dashed;
+}
+
+.math-display > .math-mark {
+  position: absolute;
+  top: 0.2rem;
+  left: 0;
+  margin: 0;
+}
+
+.math-unicode {
+  font-family: 'Times New Roman', Times, serif;
+  font-size: 1.1em;
+  border-bottom: 1px dotted var(--approximate);
+}
+
+.math-display.math-approximated .math-unicode {
+  display: block;
+  width: fit-content;
+  margin: 1em auto;
+}
+
+.math-details {
+  display: inline-block;
+  max-width: 100%;
+  margin: 0.2rem 0;
+  padding: 0.2rem 0.5rem;
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  font-size: 0.85rem;
+}
+
+.math-display > .math-details {
+  display: block;
+}
+
+.math .math-details[hidden] {
+  display: none;
+}
+
+.math-details .math-message {
   color: var(--muted);
 }
 

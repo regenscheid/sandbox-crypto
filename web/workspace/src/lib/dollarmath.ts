@@ -98,6 +98,13 @@ function pyTrim(text: string, from: number, to: number): [number, number] {
   return [start, end];
 }
 
+/** Whether `text[from, to)` is only whitespace, as a `$$` block judges a blank line. */
+export function isBlank(text: string, from: number, to: number): boolean {
+  let start = from;
+  while (start < to && isPySpace(text.charCodeAt(start))) start += 1;
+  return start >= to;
+}
+
 function codePoints(text: string): number {
   return Array.from(text).length;
 }

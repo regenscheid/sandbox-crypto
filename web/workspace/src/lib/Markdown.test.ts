@@ -3,7 +3,14 @@
 import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
 import Markdown from './Markdown.svelte';
-import { MAX_FORMULA, MAX_FORMULAS, MAX_RENDERED } from './markdown';
+import {
+  MAX_FORMULA,
+  MAX_FORMULAS,
+  MAX_RENDERED,
+  MAX_REPAIR_MATH,
+  renderMarkdown,
+} from './markdown';
+import { ModelRepairs, repairKey } from './mathrepair';
 
 function html(source: string): string {
   return render(Markdown, { props: { source } }).body;
@@ -99,20 +106,23 @@ describe('math', () => {
     expect(html('$$E = mc^2$$ (eq:energy)')).toContain('<span class="math-label">(eq:energy)</span>');
   });
 
-  it('shows a math error visibly, beside its source as written', () => {
+  it('approximates math nothing repairs, and keeps it as written behind a mark', () => {
     const out = html('A broken formula $\\frac{1$ and a good one, $y$.');
     expect(out).toContain(
-      '<span class="math math-error"><code class="math-source">$\\frac{1$</code>' +
-        '<span class="math-message">KaTeX parse error: ',
+      '<span class="math math-inline math-approximated" data-repair="approximation" ' +
+        'data-state="unrepairable"><span class="math-unicode">1/()</span>',
     );
+    expect(out).toContain('>approximated</button>');
+    expect(out).toContain('<code class="math-source">$\\frac{1$</code>');
+    expect(out).toContain('KaTeX could not render this: Unexpected end of input');
     expect(out).not.toContain('katex-error');
     expect(out).toContain('<annotation encoding="application/x-tex">y</annotation>');
   });
 
-  it('shows a displayed math error as a block', () => {
+  it('approximates displayed math as a block', () => {
     const out = html('$$\n\\begin{pmatrix} 1 & 2\n$$');
-    expect(out).toContain('<div class="math math-error"><code class="math-source">$$');
-    expect(out).toContain('math-message');
+    expect(out).toContain('<div class="math math-display math-approximated"');
+    expect(out).toContain('<code class="math-source">$$\n\\begin{pmatrix} 1 &amp; 2\n$$</code>');
   });
 
   it.each([
@@ -134,15 +144,18 @@ describe('math', () => {
   it('limits sizes and macro expansion', () => {
     expect(html('$\\rule{1000em}{1000em}$')).toContain('width="20em" height="20em"');
     const loop = html('$\\def\\a{\\a\\a}\\a$');
-    expect(loop).toContain('math-error');
+    expect(loop).toContain('math-approximated');
     expect(loop).toContain('Too many expansions');
   });
 
   it('shares no macros between formulas', () => {
-    // A formula's \gdef does not reach the next one, where \secret is unknown, and red.
+    // A formula's \gdef does not reach the next one, where \secret is unknown: the repairs
+    // read it as an operator's name, and say so.
     const out = html('$\\gdef\\secret{42}\\secret$ and $\\secret$');
     expect(count(out, /<mn>42<\/mn>/g)).toBe(1);
-    expect(out).toContain('<mstyle mathcolor="#cc0000"><mtext>\\secret</mtext></mstyle>');
+    expect(out).toContain('<annotation encoding="application/x-tex">\\operatorname{secret}');
+    expect(out).toContain('data-repair="heuristic"');
+    expect(out).toContain('<code class="math-source">$\\secret$</code>');
   });
 
   it('leaves currency as text', () => {
@@ -153,6 +166,52 @@ describe('math', () => {
     expect(html('$a < b \\land c > d$')).toContain(
       '<annotation encoding="application/x-tex">a &lt; b \\land c &gt; d</annotation>',
     );
+  });
+
+  it('renders LaTeX’s own delimiters, and shows them as written', () => {
+    const out = html('Let \\(x^2\\) and\n\\[\ny < 1\n\\]\nand \\(\\frac{1\\).');
+    expect(out).toContain('<span class="math math-inline"><span class="katex">');
+    expect(out).toContain('<div class="math math-display"><span class="katex-display">');
+    expect(out).toContain('<code class="math-source">\\(\\frac{1\\)</code>');
+  });
+});
+
+describe('repairs', () => {
+  it('repairs what KaTeX rejects when a rule fits, and marks it', () => {
+    const out = html('The trace $\\Tr(A)$ and $x_i_j$.');
+    expect(out).toContain('<annotation encoding="application/x-tex">\\operatorname{Tr}(A)');
+    expect(out).toContain('<annotation encoding="application/x-tex">x_{i_j}');
+    expect(count(out, />auto-repaired<\/button>/g)).toBe(2);
+    expect(out).toContain('<code class="math-source">$x_i_j$</code>');
+  });
+
+  it('shows the reviewer model’s repair the page has, and asks for the others', async () => {
+    const asked: string[] = [];
+    const repairs = new ModelRepairs(async (request) => {
+      asked.push(request.tex);
+      return { enabled: true, tex: '\\frac{1}{2}', model: 'reviewer' };
+    });
+    repairs.set(repairKey('\\frac{1', false), { tex: '\\frac{1}{x}', model: 'reviewer' });
+    const first = renderMarkdown('$\\frac{1$ and $\\frac{2$', repairs);
+    expect(first.html).toContain('>model-repaired</button>');
+    expect(first.html).toContain('<annotation encoding="application/x-tex">\\frac{1}{x}');
+    expect(first.html).toContain('data-state="pending"');
+    expect([...first.waiting]).toEqual([repairKey('\\frac{2', false)]);
+    await repairs.settled();
+    expect(asked).toEqual(['\\frac{2']);
+    const second = renderMarkdown('$\\frac{1$ and $\\frac{2$', repairs);
+    expect(count(second.html, />model-repaired<\/button>/g)).toBe(2);
+    expect(second.waiting.size).toBe(0);
+  });
+
+  it('sends KaTeX a bounded amount of repaired math', () => {
+    // Every formula fails, and each repair is tried in turn until the budget is spent.
+    const started = performance.now();
+    const out = html('$\\frac{1$ '.repeat(MAX_FORMULAS));
+    expect(performance.now() - started).toBeLessThan(3_000);
+    expect(count(out, /class="math-mark"/g)).toBe(MAX_FORMULAS);
+    expect(count(out, />auto-repaired</g)).toBe(0);
+    expect(MAX_REPAIR_MATH).toBe(20_000);
   });
 });
 
@@ -180,6 +239,12 @@ describe('long text', () => {
     ['an unclosed $$ in every list item', '- $$a\n'.repeat(20_000)],
     ['an unclosed $$ on every line', '$$a\n'.repeat(30_000)],
     ['unclosed $$ with blank lines between halves', '- $$a\n'.repeat(15_000) + '\n- $$a'],
+    ['an unclosed \\( in every word', '\\(a '.repeat(45_000)],
+    ['an unclosed \\[ on every line', '\\[\n'.repeat(60_000)],
+    ['an unclosed environment on every line', '\\begin{align}\n'.repeat(14_000)],
+    ['an unclosed \\[ in every list item', '- \\[\n'.repeat(40_000)],
+    ['a closing \\] too far from every \\[', '\\[\nx\n'.repeat(39_000) + '\\]'],
+    ['a closing \\] after text on every line', '\\[ x \\] y\n'.repeat(19_000)],
   ])('renders %s quickly', (_name, source) => {
     const started = performance.now();
     html(source);
