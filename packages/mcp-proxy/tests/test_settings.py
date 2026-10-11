@@ -19,6 +19,7 @@ ceiling = "pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal"]
 max_body_bytes = "512Ki"
 max_sessions = 32
+max_sessions_per_caller = 4
 session_idle = "30m"
 upstream_timeout = "2m"
 
@@ -55,6 +56,7 @@ def test_settings_are_read_and_paths_resolved(tmp_path: Path) -> None:
     assert settings.event_store_path == tmp_path / "state" / "events.db"
     assert settings.max_body_bytes == 512 * 1024
     assert (settings.max_sessions, settings.session_idle) == (32, timedelta(minutes=30))
+    assert settings.max_sessions_per_caller == 4
     assert settings.upstream_timeout == timedelta(minutes=2)
     assert settings.credentials == {
         "crypto-research-mcp": "CRYPTO_RESEARCH_MCP_TOKEN",
@@ -102,6 +104,7 @@ project = "crypto"
         (('listen = "127.0.0.1:8180"', 'listen = "::1:8180"'), "listen"),
         (('max_body_bytes = "512Ki"', 'max_body_bytes = "64Mi"'), "max_body_bytes"),
         (("max_sessions = 32", "max_sessions = 0"), "max_sessions"),
+        (("max_sessions_per_caller = 4", "max_sessions_per_caller = 32"), "smaller than"),
         (('session_idle = "30m"', 'session_idle = "0s"'), "session_idle"),
         (('upstream_timeout = "2m"', 'unknown = 1\nupstream_timeout = "2m"'), "unknown"),
     ],

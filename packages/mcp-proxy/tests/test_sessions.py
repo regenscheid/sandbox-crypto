@@ -85,19 +85,58 @@ def test_request_ids_are_new_for_each_request() -> None:
     assert [session.request_id() for _ in range(3)] == [1, 2, 3]
 
 
+URL = "https://x.test/mcp"
+OTHER = Caller("other", "orchestrator", "other-project")
+
+
 def test_idle_sessions_end_and_free_their_place() -> None:
     now = [0.0]
     sessions = Sessions(limit=2, idle=60, clock=lambda: now[0])
-    first = sessions.add(ORCHESTRATOR, "papers", "https://x.test/mcp", "2025-11-25", None)
-    sessions.add(ORCHESTRATOR, "papers", "https://x.test/mcp", "2025-11-25", None)
-    assert sessions.full()
+    first = sessions.add(ORCHESTRATOR, "papers", URL, "2025-11-25", None)
+    sessions.add(WORKER, "papers", URL, "2025-11-25", None)
+    assert not sessions.has_room(OTHER)
     with pytest.raises(SessionsFullError):
-        sessions.add(ORCHESTRATOR, "papers", "https://x.test/mcp", "2025-11-25", None)
+        sessions.add(OTHER, "papers", URL, "2025-11-25", None)
     now[0] = 30.0
     assert sessions.get(first.id, ORCHESTRATOR, "papers") is first  # use keeps it alive
     now[0] = 61.0
-    assert not sessions.full()  # the other one ended
+    assert sessions.has_room(OTHER)  # the worker's session ended
     assert len(sessions) == 1
     now[0] = 200.0
     assert sessions.get(first.id, ORCHESTRATOR, "papers") is None
     assert len(sessions) == 0
+
+
+def test_a_callers_new_session_ends_its_least_recently_used_one() -> None:
+    now = [0.0]
+    sessions = Sessions(limit=10, per_caller=2, idle=600, clock=lambda: now[0])
+    first = sessions.add(WORKER, "papers", URL, "2025-11-25", None)
+    now[0] = 1.0
+    second = sessions.add(WORKER, "papers", URL, "2025-11-25", None)
+    now[0] = 2.0
+    assert sessions.get(first.id, WORKER, "papers") is first  # now the second is older
+    other = sessions.add(ORCHESTRATOR, "papers", URL, "2025-11-25", None)
+    third = sessions.add(WORKER, "papers", URL, "2025-11-25", None)
+    assert sessions.get(second.id, WORKER, "papers") is None
+    assert sessions.get(first.id, WORKER, "papers") is first
+    assert sessions.get(third.id, WORKER, "papers") is third
+    assert sessions.get(other.id, ORCHESTRATOR, "papers") is other
+
+
+def test_a_full_proxy_takes_a_callers_place_from_its_own_sessions() -> None:
+    sessions = Sessions(limit=2, per_caller=5, idle=600)
+    worker = sessions.add(WORKER, "papers", URL, "2025-11-25", None)
+    sessions.add(ORCHESTRATOR, "papers", URL, "2025-11-25", None)
+    # The worker holds a session, so it has room: its new session ends its old one.
+    assert sessions.has_room(WORKER)
+    sessions.add(WORKER, "papers", URL, "2025-11-25", None)
+    assert sessions.get(worker.id, WORKER, "papers") is None
+    assert len(sessions) == 2
+    with pytest.raises(SessionsFullError):
+        sessions.add(OTHER, "papers", URL, "2025-11-25", None)
+
+
+def test_names_too_long_to_call_are_not_kept() -> None:
+    tools = AdvertisedTools()
+    tools.page(None, ["a", "b" * 257], None)
+    assert tools.names == {"a"}

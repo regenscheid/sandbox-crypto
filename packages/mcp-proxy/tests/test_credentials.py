@@ -72,3 +72,9 @@ def test_headers_the_proxy_sets_cannot_be_credentials(name: str) -> None:
 )
 def test_contains_placeholder(body: bytes, expected: bool) -> None:
     assert contains_placeholder(body) is expected
+
+
+def test_a_literal_placeholder_in_a_policys_headers_is_refused() -> None:
+    auth = HeadersAuth(mode="headers", headers={"X-Account": "openshell:resolve:env:v1_OTHER"})
+    with pytest.raises(RefusalError, match="literal placeholder"):
+        credential_headers(auth, VARIABLES, ENVIRON)

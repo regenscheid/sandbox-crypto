@@ -37,7 +37,7 @@ import socket
 import ssl
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, cast
 
 import aiohttp
 from aiohttp.abc import AbstractResolver, ResolveResult
@@ -63,7 +63,8 @@ ACCEPT: Final = "application/json, text/event-stream"
 CONNECT_TIMEOUT: Final = 10.0
 MAX_SERVER_REQUESTS: Final = 16
 """Server requests one answer may carry before the proxy gives up on it."""
-MAX_SESSION_ID: Final = 256
+MAX_SESSION_ID: Final = 2048
+"""The longest session id the proxy accepts from a server (some issue JWTs)."""
 _CHUNK: Final = 64 * 1024
 _MAX_ACK_BYTES: Final = 64 * 1024
 
@@ -249,6 +250,9 @@ class Upstream:
         session_id: str | None,
     ) -> Exchange:
         _check_encoding(response)
+        if target.session_id is None and session_id is not None:
+            # Replies to requests in an initialize answer belong to the new session.
+            target = Target(target.url, target.credentials, session_id, target.version)
         parser = jsonrpc.EventStreamParser()
         stream = _Stream()
         received = 0
@@ -281,26 +285,30 @@ class Upstream:
         for event in events:
             if event.type != "message" or not event.data:
                 continue  # other event types, and priming events without data
-            try:
-                message = jsonrpc.parse_message(
-                    jsonrpc.loads(event.data.encode("utf-8")), strict=False
-                )
-            except MessageError as exc:
-                raise UpstreamError(UPSTREAM_ERROR, f"malformed event: {exc}") from exc
-            match message:
-                case Response():
-                    return message
-                case Request():
-                    stream.requests += 1
-                    if stream.requests > MAX_SERVER_REQUESTS:
-                        raise UpstreamError(UPSTREAM_ERROR, "too many server requests")
-                    if message.method != "ping":
-                        stream.refused += 1
-                    self._reply(target, message)
-                case Notification():
-                    stream.notifications += 1
-                    if message.method == "notifications/tools/list_changed":
-                        stream.tools_changed = True
+            for message in _messages(event):
+                final = self._handle_message(target, stream, message)
+                if final is not None:
+                    return final
+        return None
+
+    def _handle_message(
+        self, target: Target, stream: _Stream, message: jsonrpc.Message
+    ) -> Response | None:
+        """Note or answer one message from a stream; return it if it is the response."""
+        match message:
+            case Response():
+                return message
+            case Request():
+                stream.requests += 1
+                if stream.requests > MAX_SERVER_REQUESTS:
+                    raise UpstreamError(UPSTREAM_ERROR, "too many server requests")
+                if message.method != "ping":
+                    stream.refused += 1
+                self._reply(target, message)
+            case Notification():
+                stream.notifications += 1
+                if message.method == "notifications/tools/list_changed":
+                    stream.tools_changed = True
         return None
 
     def _reply(self, target: Target, message: Request) -> None:
@@ -330,6 +338,16 @@ class _Stream:
     requests: int = 0
     refused: int = 0
     tools_changed: bool = False
+
+
+def _messages(event: jsonrpc.Event) -> list[jsonrpc.Message]:
+    """The messages in one event; MCP 2025-03-26 lets a server batch several in one."""
+    try:
+        value = jsonrpc.loads(event.data.encode("utf-8"))
+        items = cast("list[object]", value) if isinstance(value, list) else [value]
+        return [jsonrpc.parse_message(item, strict=False) for item in items]
+    except MessageError as exc:
+        raise UpstreamError(UPSTREAM_ERROR, f"malformed event: {exc}") from exc
 
 
 def _events(parse: Callable[[], list[jsonrpc.Event]]) -> list[jsonrpc.Event]:
@@ -365,6 +383,9 @@ def _session_id(response: aiohttp.ClientResponse) -> str | None:
     visible = all(0x21 <= ord(char) <= 0x7E for char in value)
     if len(values) > 1 or not 0 < len(value) <= MAX_SESSION_ID or not visible:
         raise UpstreamError(UPSTREAM_ERROR, "a malformed Mcp-Session-Id")
+    if contains_placeholder(value.encode("ascii")):
+        # The proxy sends the id back in a header, where OpenShell would substitute it.
+        raise UpstreamError(UPSTREAM_ERROR, "an Mcp-Session-Id that reads as a placeholder")
     return value
 
 

@@ -91,6 +91,26 @@ PROTOCOL_VERSION: Final = "MCP-Protocol-Version"
 MAX_LIST_PAGES: Final = 32
 """Pages of ``tools/list`` the proxy reads to learn a server's tools."""
 MAX_RECORDED_TEXT: Final = 256
+MAX_RESPONSE_BYTES: Final = 32 * 1024 * 1024
+"""The most of one answer the proxy reads, whatever ``max_response_bytes`` the policy sets."""
+
+PARAMS: Final[Mapping[str, frozenset[str]]] = {
+    "ping": frozenset(),
+    "tools/list": frozenset({"cursor"}),
+    "tools/call": frozenset({"name", "arguments"}),
+    "resources/list": frozenset({"cursor"}),
+    "resources/templates/list": frozenset({"cursor"}),
+    "resources/read": frozenset({"uri"}),
+    "resources/subscribe": frozenset({"uri"}),
+    "resources/unsubscribe": frozenset({"uri"}),
+    "prompts/list": frozenset({"cursor"}),
+    "prompts/get": frozenset({"name", "arguments"}),
+    "completion/complete": frozenset({"ref", "argument", "context"}),
+    "logging/setLevel": frozenset({"level"}),
+}
+"""The parameters MCP (2025-03-26 to 2025-11-25) defines for each request the proxy forwards,
+besides ``_meta``. Anything else is refused: a server whose JSON decoder matches keys without
+regard to case would read ``NAME`` as the tool name the policy never saw."""
 
 PARSE_ERROR: Final = -32700
 INVALID_REQUEST: Final = -32600
@@ -182,10 +202,17 @@ class Call:
 
 
 def _bounded(text: str | None) -> str | None:
-    # Methods and tool names come from callers, and refused ones were never length-checked.
-    if text is None or len(text) <= MAX_RECORDED_TEXT:
-        return text
-    return text[:MAX_RECORDED_TEXT] + "…"
+    """Caller-controlled text, shortened and made encodable for records and logs.
+
+    Methods and tool names come from callers, and refused ones were never
+    checked. A lone surrogate (from a JSON escape) has no UTF-8 encoding,
+    and the event store would refuse the record.
+    """
+    if text is None:
+        return None
+    if len(text) > MAX_RECORDED_TEXT:
+        text = text[:MAX_RECORDED_TEXT] + "…"
+    return text.encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 class McpProxy:
@@ -232,7 +259,7 @@ class McpProxy:
         try:
             return await self._handle(request, call)
         except Exception:
-            _log.exception("failed on a call to %s", call.server)
+            _log.exception("failed on a call to %r", _bounded(call.server))
             call.reason_code = None
             call.outcome = "failed"
             return _answer(500, jsonrpc.error(None, INTERNAL_ERROR, "the MCP proxy failed"))
@@ -299,6 +326,11 @@ class McpProxy:
             if decision.action is Action.DENY:
                 raise RefusalError(LAYER_CODES[decision.layer], decision.reason)
             server = loaded.policy.mcp.servers[call.server]
+            if session is not None and (
+                session.url != server.url or _pinned_revision(server) not in (None, session.version)
+            ):
+                # The project's policy changed the server's entry since initialize.
+                raise SessionGoneError(SESSION_UNKNOWN, "the server's entry in the policy changed")
             if isinstance(message, Request) and session is not None:
                 return await self._forward(call, loaded, server, session, message, decision)
             # Protocol methods only: the library allows them or denies them.
@@ -310,10 +342,10 @@ class McpProxy:
                 raise _TransportError(400, SESSION_REQUIRED, "a notification needs a session")
             return await self._notify(call, server, session, message)
         except _TransportError as stop:
-            _log.info("refused a call to %s: %s", call.server, stop)
+            _log.info("refused a call to %r: %s", _bounded(call.server), stop)
             return self._refused(call, request_id, stop.reason_code, stop.status, stop.code)
         except RefusalError as refusal:
-            _log.info("refused a call to %s: %s", call.server, refusal)
+            _log.info("refused a call to %r: %s", _bounded(call.server), refusal)
             status = 200 if request_id is not None else 403
             return self._refused(call, request_id, refusal.reason_code, status, REFUSED)
         except SessionGoneError:
@@ -321,7 +353,7 @@ class McpProxy:
                 self._sessions.remove(call.session)
             return self._refused(call, request_id, SESSION_UNKNOWN, 404, REFUSED)
         except UpstreamError as failure:
-            _log.warning("a call to %s failed: %s", call.server, failure)
+            _log.warning("a call to %r failed: %s", _bounded(call.server), failure)
             call.outcome = "failed"
             status = 200 if request_id is not None else 502
             return self._refused(call, request_id, failure.reason_code, status, UPSTREAM_FAILED)
@@ -414,7 +446,7 @@ class McpProxy:
         offer = pinned or (
             requested if requested in SUPPORTED_REVISIONS else SUPPORTED_REVISIONS[0]
         )
-        if self._sessions.full():
+        if not self._sessions.has_room(call.caller):
             raise _TransportError(503, PROXY_BUSY, "the session limit is reached")
         # The proxy's own handshake: no client capabilities, so the server has
         # no grounds for sampling, elicitation or roots requests.
@@ -440,6 +472,11 @@ class McpProxy:
         capabilities = result.get("capabilities")
         if not isinstance(capabilities, dict) or not isinstance(result.get("serverInfo"), dict):
             raise UpstreamError(UPSTREAM_ERROR, "initialize needs capabilities and serverInfo")
+        # The policy denies the task methods, so the proxy does not offer tasks.
+        offered = {
+            key: entry for key, entry in cast("JsonObject", capabilities).items() if key != "tasks"
+        }
+        body = _server_body(jsonrpc.result(message.id, {**result, "capabilities": offered}))
         try:
             session = self._sessions.add(
                 call.caller, call.server, server.url, version, exchange.session_id
@@ -451,15 +488,10 @@ class McpProxy:
             await self._upstream.send(
                 self._target(server, session), jsonrpc.notification("notifications/initialized")
             )
-        except (RefusalError, UpstreamError):
+        except BaseException:
             self._sessions.remove(session)
             raise
-        # The policy denies the task methods, so the proxy does not offer tasks.
-        offered = {
-            key: entry for key, entry in cast("JsonObject", capabilities).items() if key != "tasks"
-        }
-        answer = jsonrpc.result(message.id, {**result, "capabilities": offered})
-        return _server_answer(answer, {SESSION_ID: session.id})
+        return _json_response(200, body, {SESSION_ID: session.id})
 
     async def _forward(
         self,
@@ -471,10 +503,7 @@ class McpProxy:
         decision: Decision,
     ) -> web.Response:
         """Check, hold or forward one request in an established session."""
-        if session.url != server.url or _pinned_revision(server) not in (None, session.version):
-            # The project's policy changed the server's entry since initialize.
-            raise SessionGoneError(SESSION_UNKNOWN, "the server's entry in the policy changed")
-        params = _forwarded_params(message.params)
+        params = _forwarded_params(message.method, message.params)
         encoded = _dumps(params) if params is not None else b""
         call.sizes["params"] = len(encoded)
         limit = loaded.policy.mcp.proxy.max_argument_bytes
@@ -500,6 +529,8 @@ class McpProxy:
                 # An alert lets a call through only with a recorded finding.
                 _log.exception("could not record an alert")
                 raise RefusalError(AUDIT_UNAVAILABLE, "the alert could not be recorded") from exc
+        elif decision.action is not Action.ALLOW:
+            raise RefusalError(POLICY_DENIED, f"unexpected decision {decision.action}")
         upstream_id = session.request_id()
         session.in_flight[message.id] = upstream_id
         try:
@@ -565,8 +596,9 @@ class McpProxy:
     ) -> Exchange:
         """Send a caller's request upstream and note what came back."""
         body = _dumps(jsonrpc.request(upstream_id, method, params))
-        limit = loaded.policy.mcp.proxy.max_response_bytes
-        exchange = await self._upstream.request(target, body, request_id=upstream_id, limit=limit)
+        exchange = await self._upstream.request(
+            target, body, request_id=upstream_id, limit=_answer_limit(loaded)
+        )
         call.outcome = "forwarded" if exchange.response.result is not None else "server_error"
         call.sizes["response"] = exchange.received_bytes
         if exchange.notifications:
@@ -589,7 +621,7 @@ class McpProxy:
 
     async def _list_tools(self, loaded: LoadedPolicy, session: Session, target: Target) -> None:
         """Read every page of the server's tool list into the session."""
-        limit = loaded.policy.mcp.proxy.max_response_bytes
+        limit = _answer_limit(loaded)
         cursor: str | None = None
         for _ in range(MAX_LIST_PAGES):
             upstream_id = session.request_id()
@@ -630,9 +662,16 @@ class McpProxy:
         return _refusal(status, request_id, reason_code, code)
 
     def _relay_error(self, call: Call, request_id: RequestId, response: Response) -> web.Response:
-        """Pass a server's JSON-RPC error to the caller, under the caller's id."""
+        """Pass a server's JSON-RPC error to the caller, under the caller's id.
+
+        The proxy's own codes say what the proxy did, such as refusing a call
+        for approval, so a server may not use them.
+        """
+        error = response.error or {}
+        if error.get("code") in (REFUSED, UPSTREAM_FAILED):
+            raise UpstreamError(UPSTREAM_ERROR, "the server's error uses a code the proxy reserves")
         call.outcome = "server_error"
-        return _server_answer({"jsonrpc": "2.0", "id": request_id, "error": response.error})
+        return _server_answer({"jsonrpc": "2.0", "id": request_id, "error": error})
 
     async def _record_finding(self, kind: str, call: Call, decision: Decision) -> None:
         try:
@@ -662,18 +701,27 @@ def _pinned_revision(server: McpServer) -> str | None:
     return None
 
 
-def _forwarded_params(params: JsonObject | None) -> JsonObject | None:
-    """The parameters as forwarded: ``_meta`` is dropped, and task requests are refused.
+def _forwarded_params(method: str, params: JsonObject | None) -> JsonObject | None:
+    """The parameters as forwarded: those MCP defines for the method, and nothing else.
 
-    ``_meta`` carries progress tokens and other caller metadata the proxy does
-    not relay. A task-augmented request would start work whose result only the
-    task methods return, and the policy denies those.
+    ``_meta`` is dropped: it carries progress tokens and other caller metadata
+    the proxy does not relay. A task-augmented request is refused, since it
+    would start work whose result only the task methods return, and the policy
+    denies those. Any other member is refused (see ``PARAMS``).
     """
+    known = PARAMS.get(method)
+    if known is None:
+        raise RefusalError(REQUEST_UNCLASSIFIABLE, f"the proxy does not forward {method!r}")
     if params is None:
         return None
     if "task" in params:
         raise RefusalError(REQUEST_UNCLASSIFIABLE, "task-augmented requests are not supported")
-    return {key: value for key, value in params.items() if key != "_meta"}
+    if not params.keys() - {"_meta"} <= known:
+        raise RefusalError(REQUEST_UNCLASSIFIABLE, f"{method} has parameters MCP does not define")
+    arguments = params.get("arguments")
+    if arguments is not None and not isinstance(arguments, dict):
+        raise RefusalError(REQUEST_UNCLASSIFIABLE, f"{method} arguments must be an object")
+    return {key: params[key] for key in sorted(known) if key in params}
 
 
 def _dumps(value: object) -> bytes:
@@ -707,11 +755,26 @@ def _answer(
 
 
 def _server_answer(payload: JsonObject, headers: Mapping[str, str] | None = None) -> web.Response:
-    """A JSON answer built from a server's response, which may hold what JSON cannot carry."""
+    """A JSON answer built from a server's response."""
+    return _json_response(200, _server_body(payload), headers)
+
+
+def _server_body(payload: JsonObject) -> bytes:
+    """Serialize an answer built from a server's response, which may hold what JSON cannot carry."""
     try:
-        return _answer(200, payload, headers)
+        return jsonrpc.dumps(payload)
     except MessageError as exc:
         raise UpstreamError(UPSTREAM_ERROR, f"the answer cannot be passed on: {exc}") from exc
+
+
+def _json_response(
+    status: int, body: bytes, headers: Mapping[str, str] | None = None
+) -> web.Response:
+    return web.Response(status=status, body=body, content_type="application/json", headers=headers)
+
+
+def _answer_limit(loaded: LoadedPolicy) -> int:
+    return min(loaded.policy.mcp.proxy.max_response_bytes, MAX_RESPONSE_BYTES)
 
 
 def _refusal(

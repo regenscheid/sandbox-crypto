@@ -10,6 +10,7 @@ serialization of what it decided on, never the bytes it received.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Final, cast
@@ -38,11 +39,21 @@ def _no_constant(name: str) -> object:
     raise MessageError(f"{name} is not JSON")
 
 
+def _finite(text: str) -> float:
+    value = float(text)
+    if math.isinf(value):
+        raise MessageError("a number is too large to represent")
+    return value
+
+
 def loads(data: bytes) -> object:
     """Parse UTF-8 JSON; raise MessageError for anything a strict parser would refuse."""
     try:
         return json.loads(
-            data.decode("utf-8"), object_pairs_hook=_unique_keys, parse_constant=_no_constant
+            data.decode("utf-8"),
+            object_pairs_hook=_unique_keys,
+            parse_constant=_no_constant,
+            parse_float=_finite,
         )
     except (ValueError, RecursionError) as exc:
         # ValueError covers JSONDecodeError, UnicodeDecodeError and integers
@@ -207,11 +218,13 @@ class EventStreamParser:
     Lines end with CRLF, LF or CR, and a blank line ends an event. Lines that
     start with a colon are comments. An event left without its blank line at
     the end of the stream is discarded, as the standard says. The caller
-    bounds the bytes it feeds.
+    bounds the bytes it feeds; each byte is scanned once, however small the
+    chunks it arrives in.
     """
 
     def __init__(self) -> None:
         self._buffer = bytearray()
+        self._scanned = 0  # the buffer holds no line end before here
         self._data: list[str] = []
         self._type = ""
         self._last_id: str | None = None
@@ -228,7 +241,7 @@ class EventStreamParser:
             self._started = True
         events: list[Event] = []
         position = 0
-        while (match := _EOL.search(self._buffer, position)) is not None:
+        while (match := _EOL.search(self._buffer, max(position, self._scanned))) is not None:
             if match.group() == b"\r" and match.end() == len(self._buffer):
                 break  # the CR may be the first half of a CRLF
             event = self._line(bytes(self._buffer[position : match.start()]))
@@ -236,6 +249,8 @@ class EventStreamParser:
             if event is not None:
                 events.append(event)
         del self._buffer[:position]
+        # Only a CR at the very end can still start a line end.
+        self._scanned = max(len(self._buffer) - 1, 0)
         return events
 
     def finish(self) -> list[Event]:
@@ -244,6 +259,7 @@ class EventStreamParser:
             return []
         event = self._line(bytes(self._buffer[:-1]))
         self._buffer.clear()
+        self._scanned = 0
         return [] if event is None else [event]
 
     def _line(self, raw: bytes) -> Event | None:

@@ -73,6 +73,11 @@ def credential_headers(
             for name, value in auth.headers.items():
                 if name.lower() in RESERVED_HEADERS:
                     raise RefusalError(CREDENTIAL_UNAVAILABLE, f"header {name} is set by the proxy")
+                if contains_placeholder(value.encode()):
+                    # Placeholders come from the environment, never from the policy's text.
+                    raise RefusalError(
+                        CREDENTIAL_UNAVAILABLE, f"header {name} holds a literal placeholder"
+                    )
                 rendered = _REFERENCE_RE.sub(
                     lambda match: _placeholder(match[1], variables, environ), value
                 )

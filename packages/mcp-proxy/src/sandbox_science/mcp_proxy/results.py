@@ -28,6 +28,8 @@ def tool_names(result: JsonObject) -> tuple[list[str], str | None]:
     cursor = result.get("nextCursor")
     if not isinstance(tools, list) or (cursor is not None and not isinstance(cursor, str)):
         raise MessageError("a tools/list result needs a tools list and a string nextCursor")
+    if cursor == "":
+        cursor = None  # an empty cursor leads nowhere; some servers send it on the last page
     names: list[str] = []
     for tool in cast("list[object]", tools):
         name = cast("JsonObject", tool).get("name") if isinstance(tool, dict) else None

@@ -236,6 +236,12 @@ class FakeServer:
         }
         self.gate: asyncio.Event | None = None
         """When set, tools/call waits for this event before answering."""
+        self.session_id: str | None = None
+        """The Mcp-Session-Id the next initialize answers with, instead of a fresh one."""
+        self.initialize_extra: dict[str, object] = {}
+        """Fields added to the initialize result."""
+        self.last_cursor: str | None = None
+        """A nextCursor to send on the last page of tools/list."""
 
     def answer(
         self,
@@ -281,13 +287,14 @@ class FakeServer:
         method = message.get("method")
         if method == "initialize":
             version = self.version or message["params"]["protocolVersion"]
-            session_id = f"upstream-session-{len(self.sessions) + 1}"
+            session_id = self.session_id or f"upstream-session-{len(self.sessions) + 1}"
             self.sessions.add(session_id)
             result = {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": True}, "tasks": {"list": {}}},
                 "serverInfo": {"name": "fake", "version": "1.0"},
                 "instructions": "Use search first.",
+                **self.initialize_extra,
             }
             # A cookie, which the proxy must not send back to any server.
             return web.json_response(
@@ -340,6 +347,8 @@ class FakeServer:
         }
         if start + size < len(self.tools):
             listing["nextCursor"] = str(start + size)
+        elif self.last_cursor is not None:
+            listing["nextCursor"] = self.last_cursor
         return listing
 
 
@@ -468,7 +477,7 @@ class Harness:
             floor=HardFloor(),
             events=self.sink,
             upstream=upstream,
-            sessions=Sessions(limit=8, idle=3600),
+            sessions=Sessions(limit=8, per_caller=4, idle=3600),
             credentials={"papers-token": "PAPERS_TOKEN", "papers-key.API_KEY": "PAPERS_API_KEY"},
             environ=self.environ,
         )

@@ -13,6 +13,8 @@ def test_tool_names_reads_names_and_the_next_cursor() -> None:
     result = {"tools": [{"name": "a", "inputSchema": {}}, {"name": "b"}], "nextCursor": "2"}
     assert tool_names(result) == (["a", "b"], "2")
     assert tool_names({"tools": []}) == ([], None)
+    # Some servers send an empty cursor on the last page.
+    assert tool_names({"tools": [], "nextCursor": ""}) == ([], None)
 
 
 @pytest.mark.parametrize(
