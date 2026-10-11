@@ -1,0 +1,124 @@
+# SPDX-License-Identifier: MIT
+#
+# The capability catalog (docs/specs/conda-provisioning.md, CP-3): capabilities an agent
+# can ask for by name, the conda-forge packages that provide each, and the probes that
+# show it works. A probe passes only on its expected output; an import or version check
+# is weaker and says so (kind = "import_check", CP-22).
+#
+# Reviewed like code. Only the platform extends it for now: skill packs and project
+# profiles cannot (open question 6 of the spec). Raise `version` with every change;
+# operations record it with the file's SHA-256.
+#
+# Each probe runs as an ordinary shell execution in the target environment, under its
+# policy: `argv` runs without a shell unless it names one, `stdout` is compared after
+# trailing whitespace is removed from each line and from the end, and `pattern` (a
+# regular expression for the whole of that text) can stand in for it.
+
+version = 1
+
+[capabilities.gp]
+description = "PARI/GP's gp calculator"
+conda = ["pari"]
+
+[[capabilities.gp.probes]]
+id = "gp-factor"
+version = 1
+argv = ["sh", "-c", "printf 'print(factor(2^64+1))\\n' | gp -q -f"]
+stdout = "[274177, 1; 67280421310721, 1]"
+timeout_seconds = 120
+
+[capabilities.gap]
+description = "GAP, with its default packages"
+conda = ["gap-defaults"]
+
+[[capabilities.gap.probes]]
+id = "gap-factors"
+version = 1
+argv = ["sh", "-c", "printf 'Print(Factors(2^64+1), \"\\\\n\");\\n' | gap -q -A"]
+stdout = "[ 274177, 67280421310721 ]"
+timeout_seconds = 300
+
+[capabilities.sage]
+description = "SageMath, with its own kernel"
+conda = ["sage"]
+
+[[capabilities.sage.probes]]
+id = "sage-factor"
+version = 1
+argv = ["sage", "-c", "print(factor(2^64+1))"]
+stdout = "274177 * 67280421310721"
+timeout_seconds = 600
+
+[capabilities.sympy]
+description = "SymPy"
+conda = ["sympy"]
+
+[[capabilities.sympy.probes]]
+id = "sympy-factorint"
+version = 1
+argv = ["python", "-c", "import sympy; print(sympy.factorint(2**64 + 1))"]
+stdout = "{274177: 1, 67280421310721: 1}"
+timeout_seconds = 120
+
+[capabilities.fpylll]
+description = "fpylll, Python bindings for fplll's lattice reduction"
+conda = ["fpylll"]
+
+[[capabilities.fpylll.probes]]
+id = "fpylll-lll"
+version = 1
+argv = [
+    "python",
+    "-c",
+    "from fpylll import IntegerMatrix, LLL; A = IntegerMatrix.from_matrix([[1, 2, 3], [4, 5, 6], [7, 8, 10]]); LLL.reduction(A); print(LLL.is_reduced(A))",
+]
+stdout = "True"
+timeout_seconds = 120
+
+[capabilities.python-flint]
+description = "python-flint, Python bindings for FLINT"
+conda = ["python-flint"]
+
+[[capabilities.python-flint.probes]]
+id = "flint-factor"
+version = 1
+argv = [
+    "python",
+    "-c",
+    "import flint; print([(int(p), int(e)) for p, e in flint.fmpz(2**64 + 1).factor()])",
+]
+stdout = "[(274177, 1), (67280421310721, 1)]"
+timeout_seconds = 120
+
+[capabilities.networkx]
+description = "NetworkX"
+conda = ["networkx"]
+
+[[capabilities.networkx.probes]]
+id = "networkx-path"
+version = 1
+argv = ["python", "-c", "import networkx as nx; print(nx.shortest_path_length(nx.cycle_graph(10), 0, 5))"]
+stdout = "5"
+timeout_seconds = 120
+
+[capabilities.numpy]
+description = "NumPy"
+conda = ["numpy"]
+
+[[capabilities.numpy.probes]]
+id = "numpy-det"
+version = 1
+argv = ["python", "-c", "import numpy; print(round(float(numpy.linalg.det(numpy.array([[2.0, 1.0], [1.0, 1.0]]))), 6))"]
+stdout = "1.0"
+timeout_seconds = 120
+
+[capabilities.pandoc]
+description = "Pandoc, for document conversion (GPL; run as a program of its own)"
+conda = ["pandoc"]
+
+[[capabilities.pandoc.probes]]
+id = "pandoc-html"
+version = 1
+argv = ["sh", "-c", "printf '# Hi\\n' | pandoc -f markdown -t html"]
+stdout = "<h1 id=\"hi\">Hi</h1>"
+timeout_seconds = 120

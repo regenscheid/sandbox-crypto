@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
     "sandbox-science-contracts",
+    "sandbox-science-event-store",
     "sandbox-science-policy",
     "aiohttp>=3.10",
 ]
@@ -28,6 +29,7 @@ sandbox-science-worker = "sandbox_science.worker.cli:main"
 
 [tool.uv.sources]
 sandbox-science-contracts = { workspace = true }
+sandbox-science-event-store = { workspace = true }
 sandbox-science-policy = { workspace = true }
 
 [build-system]
