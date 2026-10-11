@@ -1,6 +1,6 @@
 # Automatic Conda provisioning
 
-Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Approved for implementation as drafted (2026-10-11, by the user).** Shell installs go through wrappers (open question 1), and new executions wait while packages link (7); the other open questions are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md).
 
 ## Scope
 
