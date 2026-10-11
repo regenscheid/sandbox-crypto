@@ -7,6 +7,7 @@ members = [
     "sandbox-science",
     "sandbox-science-contracts",
     "sandbox-science-event-store",
+    "sandbox-science-mcp-proxy",
     "sandbox-science-orchestrator",
     "sandbox-science-package-cache",
     "sandbox-science-policy",
@@ -1465,6 +1466,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "sandbox-science-contracts" },
     { name = "sandbox-science-event-store" },
+    { name = "sandbox-science-mcp-proxy" },
     { name = "sandbox-science-orchestrator" },
     { name = "sandbox-science-package-cache" },
     { name = "sandbox-science-policy" },
@@ -1488,6 +1490,7 @@ dev = [
 requires-dist = [
     { name = "sandbox-science-contracts", editable = "packages/contracts" },
     { name = "sandbox-science-event-store", editable = "packages/event-store" },
+    { name = "sandbox-science-mcp-proxy", editable = "packages/mcp-proxy" },
     { name = "sandbox-science-orchestrator", editable = "packages/orchestrator" },
     { name = "sandbox-science-package-cache", editable = "packages/package-cache" },
     { name = "sandbox-science-policy", editable = "packages/policy" },
@@ -1522,6 +1525,27 @@ requires-dist = [{ name = "pydantic", specifier = ">=2.9" }]
 name = "sandbox-science-event-store"
 version = "0.1.0"
 source = { editable = "packages/event-store" }
+
+[[package]]
+name = "sandbox-science-mcp-proxy"
+version = "0.1.0"
+source = { editable = "packages/mcp-proxy" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "pydantic" },
+    { name = "sandbox-science-contracts" },
+    { name = "sandbox-science-event-store" },
+    { name = "sandbox-science-policy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiohttp", specifier = ">=3.10" },
+    { name = "pydantic", specifier = ">=2.9" },
+    { name = "sandbox-science-contracts", editable = "packages/contracts" },
+    { name = "sandbox-science-event-store", editable = "packages/event-store" },
+    { name = "sandbox-science-policy", editable = "packages/policy" },
+]
 
 [[package]]
 name = "sandbox-science-orchestrator"
