@@ -9,8 +9,9 @@
  * dollars (dollarmath.ts) or LaTeX's own delimiters (mathdelimiters.ts), and goes to
  * KaTeX in its untrusted mode (`trust: false`: no `\href`, `\url`, `\includegraphics`
  * or `\html…`), with limits on sizes and macro expansion. A formula that defines a macro
- * is shown as written: macros come from the project (living documents, LD-28), and a
- * definition can multiply KaTeX's work far beyond the formula's length. A formula KaTeX
+ * is shown as written: macros come from a document's front matter (macros.ts) and the
+ * project (living documents, LD-28), and a definition can multiply KaTeX's work far
+ * beyond the formula's length. A formula KaTeX
  * cannot parse goes to the repairs (mathrepair.ts): what is shown then is marked with how
  * it was repaired, beside the formula as written.
  *

@@ -265,7 +265,8 @@ export function repairTex(tex: string, errorText: string, displayMode = false): 
 }
 
 /**
- * Commands that define macros. A formula with one is not rendered: macros come from the
+ * Commands that define macros. A formula with one is not rendered, nor is a document's
+ * macro that has one (macros.ts): macros come from a document's front matter and the
  * project (living documents, LD-28), and a definition can make KaTeX's work grow far
  * beyond the formula's length within its limit on expansions.
  */
