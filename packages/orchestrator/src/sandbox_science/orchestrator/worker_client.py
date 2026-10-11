@@ -37,6 +37,7 @@ from sandbox_science.contracts import (
     WriteFileRequest,
     WriteFileResult,
 )
+from sandbox_science.contracts.worker import Language
 
 _log = logging.getLogger(__name__)
 _EVENT: Final = TypeAdapter[Event](Event)
@@ -169,10 +170,11 @@ class WorkerClient:
             "GET", f"/v1/capabilities?environment_id={environment_id}", Capabilities
         )
 
-    async def restart_kernel(self, context: ExecutionContext) -> KernelInfo:
-        return await self._call(
-            "POST", "/v1/kernels/restart", KernelInfo, KernelRestartRequest(context=context)
-        )
+    async def restart_kernel(
+        self, context: ExecutionContext, language: Language = "python"
+    ) -> KernelInfo:
+        request = KernelRestartRequest(context=context, language=language)
+        return await self._call("POST", "/v1/kernels/restart", KernelInfo, request)
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:
         return await self._call("POST", "/v1/files/read", FileContent, request)
