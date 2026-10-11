@@ -8,13 +8,19 @@
  * without a referrer; images become links and are never loaded. Math is written with
  * dollars (dollarmath.ts) or LaTeX's own delimiters (mathdelimiters.ts), and goes to
  * KaTeX in its untrusted mode (`trust: false`: no `\href`, `\url`, `\includegraphics`
- * or `\html…`), with limits on sizes and macro expansion, and no macros shared between
- * formulas. A formula KaTeX cannot parse goes to the repairs (mathrepair.ts): what is
- * shown then is marked with how it was repaired, beside the formula as written. A text
- * sends at most `MAX_FORMULAS` formulas and `MAX_MATH` characters of math to KaTeX, and
- * a formula at most `MAX_FORMULA`; beyond that, math is shown as written. Its repairs
- * send at most `MAX_REPAIR_MATH` characters more. Rendering is a view: the text is never
- * changed.
+ * or `\html…`), with limits on sizes and macro expansion. A formula that defines a macro
+ * is shown as written: macros come from the project (living documents, LD-28), and a
+ * definition can multiply KaTeX's work far beyond the formula's length. A formula KaTeX
+ * cannot parse goes to the repairs (mathrepair.ts): what is shown then is marked with how
+ * it was repaired, beside the formula as written.
+ *
+ * A text sends at most `MAX_FORMULAS` formulas and `MAX_MATH` characters of math to
+ * KaTeX, and a formula at most `MAX_FORMULA`; its repairs send at most `MAX_REPAIR_MATH`
+ * characters more; and once KaTeX has worked `MAX_MATH_TIME` milliseconds on it, the rest
+ * of its math is shown as written. Without definitions, the worst formula within these
+ * sizes takes KaTeX about 60 ms. The page keeps KaTeX's result for each formula, so a
+ * text rendered again, as when a model repair arrives, sends KaTeX only what is new.
+ * Rendering is a view: the text is never changed.
  *
  * KaTeX caps only positive sizes, so a formula can still draw outside its own box (with
  * `\smash` or a negative `\raisebox`); the stylesheet clips each rendered text to its
@@ -27,6 +33,8 @@ import type { KatexOptions } from 'katex';
 import { dollarMath, type DollarMathOptions } from './dollarmath';
 import { backslashMath, type MathMeta } from './mathdelimiters';
 import {
+  definesMacros,
+  Kept,
   recoveredHtml,
   recoverMath,
   repairKey,
@@ -62,6 +70,8 @@ export const MAX_MATH = 20_000;
 export const MAX_FORMULA = 5_000;
 /** The characters of repaired math one text may send to KaTeX besides. */
 export const MAX_REPAIR_MATH = 20_000;
+/** The milliseconds KaTeX may work on one text's math; the rest is shown as written. */
+export const MAX_MATH_TIME = 1_000;
 
 const LINK = /^(?:https?:\/\/|mailto:)/i;
 const OPENS_APART = 'target="_blank" rel="noopener noreferrer nofollow"';
@@ -72,6 +82,45 @@ interface MathBudget {
   characters: number;
   /** Characters of repaired math. */
   repairs: number;
+  /** Milliseconds KaTeX has worked. */
+  time: number;
+}
+
+/** KaTeX's result for one formula: its HTML, or what it threw. */
+type Result = { html: string } | { error: unknown };
+
+/**
+ * KaTeX's results, for the page, by formula and display mode: KaTeX's settings are the
+ * renderer's own, so a formula always renders alike. Within a count and a size.
+ */
+const results = new Kept<Result>(4_000, 8_000_000, (key, result) =>
+  key.length + ('html' in result ? result.html.length : 200),
+);
+
+/** Forget KaTeX's results; for tests. */
+export function forgetResults(): void {
+  results.clear();
+}
+
+/** A marker: the text's time for KaTeX is spent. */
+const OUT_OF_TIME = Symbol('out of time');
+
+/** KaTeX's result for `tex`, kept or worked out within the text's time. */
+function resultFor(tex: string, display: boolean, budget: MathBudget): Result | typeof OUT_OF_TIME {
+  const key = repairKey(tex, display);
+  const kept = results.get(key);
+  if (kept !== undefined) return kept;
+  if (budget.time >= MAX_MATH_TIME) return OUT_OF_TIME;
+  const started = performance.now();
+  let result: Result;
+  try {
+    result = { html: katex.renderToString(tex, { ...KATEX_OPTIONS, displayMode: display }) };
+  } catch (error) {
+    result = { error };
+  }
+  budget.time += performance.now() - started;
+  results.set(key, result);
+  return result;
 }
 
 /** One text's rendering, kept in its environment: its budget, and the repairs it uses. */
@@ -85,7 +134,11 @@ interface Rendering {
 const RENDERING = Symbol('rendering');
 
 function newRendering(repairs: ModelRepairs | null): Rendering {
-  return { budget: { formulas: 0, characters: 0, repairs: 0 }, repairs, waiting: new Set() };
+  return {
+    budget: { formulas: 0, characters: 0, repairs: 0, time: 0 },
+    repairs,
+    waiting: new Set(),
+  };
 }
 
 function renderingOf(env: Env | undefined): Rendering {
@@ -136,7 +189,10 @@ md.renderer.rules.math_block = (tokens, index, _options, env) =>
 md.renderer.rules.math_block_label = (tokens, index, _options, env) =>
   renderMath(tokens[index]!, 'div', true, renderingOf(env));
 
-/** KaTeX for the repairs, within the text's budget for them. */
+/**
+ * KaTeX for the repairs, with the renderer's settings, within the text's budgets: the
+ * characters of repaired math, and KaTeX's time.
+ */
 function budgeted(budget: MathBudget): MathRenderer {
   return {
     renderToString(tex, options) {
@@ -144,7 +200,10 @@ function budgeted(budget: MathBudget): MathRenderer {
         throw new Error('beyond the budget for repairs');
       }
       budget.repairs += tex.length;
-      return katex.renderToString(tex, options as KatexOptions);
+      const result = resultFor(tex, options.displayMode === true, budget);
+      if (result === OUT_OF_TIME) throw new Error("beyond this text's time for math");
+      if ('html' in result) return result.html;
+      throw result.error;
     },
   };
 }
@@ -153,7 +212,16 @@ function budgeted(budget: MathBudget): MathRenderer {
 const checker: MathRenderer = {
   renderToString(tex, options) {
     if (tex.length > MAX_FORMULA) throw new Error('the repair is too long to render');
-    return katex.renderToString(tex, options as KatexOptions);
+    const result = resultFor(tex, options.displayMode === true, {
+      formulas: 0,
+      characters: 0,
+      repairs: 0,
+      time: 0,
+    });
+    if (result === OUT_OF_TIME || !('html' in result)) {
+      throw result === OUT_OF_TIME ? new Error('out of time') : result.error;
+    }
+    return result.html;
   },
 };
 
@@ -174,35 +242,42 @@ function renderMath(
   if (budget.formulas > MAX_FORMULAS || budget.characters > MAX_MATH) {
     return asWritten(tag, written, 'math-skipped', 'not rendered: this text has too much math');
   }
-  const label = token.info ? `<span class="math-label">(${escapeHtml(token.info)})</span>` : '';
   const tex = token.content.trim();
-  let html: string;
-  try {
-    html = katex.renderToString(tex, { ...KATEX_OPTIONS, displayMode: display });
-  } catch (error) {
-    if (!(error instanceof katex.ParseError)) {
-      return asWritten(tag, written, 'math-error', escapeHtml(String(error)));
-    }
-    const recovery = recoverMath(budgeted(budget), tex, {
-      displayMode: display,
-      error,
-      settings: KATEX_OPTIONS,
-      repairs: rendering.repairs,
-      check: checker,
-    });
-    if (recovery.status === 'fallback' && recovery.state === 'pending') {
-      rendering.waiting.add(repairKey(tex, display));
-    }
-    return recoveredHtml(recovery, tag, display, written, label);
+  const definition = definesMacros(tex);
+  if (definition !== null) {
+    const message = `not rendered: a formula may not define macros (\\${definition})`;
+    return asWritten(tag, written, 'math-skipped', escapeHtml(message));
   }
-  const kind = display ? 'math-display' : 'math-inline';
-  return `<${tag} class="math ${kind}">${html}${label}</${tag}>`;
+  const result = resultFor(tex, display, budget);
+  if (result === OUT_OF_TIME) {
+    return asWritten(tag, written, 'math-skipped', "not rendered: this text's math took too long");
+  }
+  const label = token.info ? `<span class="math-label">(${escapeHtml(token.info)})</span>` : '';
+  if ('html' in result) {
+    const kind = display ? 'math-display' : 'math-inline';
+    return `<${tag} class="math ${kind}">${result.html}${label}</${tag}>`;
+  }
+  const error = result.error;
+  if (!(error instanceof katex.ParseError)) {
+    return asWritten(tag, written, 'math-error', escapeHtml(String(error)));
+  }
+  const recovery = recoverMath(budgeted(budget), tex, {
+    displayMode: display,
+    error,
+    settings: KATEX_OPTIONS,
+    repairs: rendering.repairs,
+    check: checker,
+  });
+  if (recovery.status === 'fallback' && recovery.state === 'pending') {
+    rendering.waiting.add(repairKey(tex, display));
+  }
+  return recoveredHtml(recovery, tag, display, written, label);
 }
 
 /** Math shown as written, with why it is not rendered, side by side; `message` is HTML. */
 function asWritten(tag: 'span' | 'div', written: string, kind: string, message: string): string {
   return (
-    `<${tag} class="math ${kind}"><code class="math-source">${escapeHtml(written)}</code>` +
+    `<${tag} class="math ${kind}"><code class="math-source">${escapeHtml(visible(written))}</code>` +
     `<span class="math-message">${message}</span></${tag}>`
   );
 }

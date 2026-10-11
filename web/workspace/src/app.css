@@ -331,7 +331,14 @@ div.math-skipped {
 }
 
 /* Math the repairs changed or approximated (lib/mathrepair.ts). A mark says how; pressing
-   it shows why, and the LaTeX as written, to read and copy. */
+   it shows why, and the LaTeX as written, to read and copy. The mark and what it shows
+   sit above anything a formula draws (\rlap{\colorbox{white}{…}} could cover them). */
+.math-mark,
+.math-details {
+  position: relative;
+  z-index: 1;
+}
+
 .math-mark {
   font: inherit;
   font-size: 0.7rem;

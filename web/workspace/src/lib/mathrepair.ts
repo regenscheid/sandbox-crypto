@@ -21,6 +21,7 @@
  * kept beside it, to read and copy. The text itself never changes.
  */
 import { api, type MathRepairAnswer, type MathRepairRequest } from './api';
+import { visible } from './text';
 
 /** The longest error message kept, from KaTeX or the server. */
 const MAX_ERROR_LENGTH = 300;
@@ -31,7 +32,8 @@ export const MAX_MODEL_TEX = 4_000;
 // 1. Deterministic repairs
 // ---------------------------------------------------------------------------------------
 
-type Replacement = string | ((match: string) => string);
+/** A replacement: a template with `$1`, or a function of the match and its groups. */
+type Replacement = string | ((match: string, groups: (string | undefined)[]) => string);
 
 const MACRO_REPLACEMENTS: [RegExp, Replacement][] = [
   [/\\bm\{/g, '\\boldsymbol{'],
@@ -81,26 +83,60 @@ const SCRIPT_TOKEN = String.raw`(\{[^{}]*\}|\\[A-Za-z]+|[^\s{}_^\\])`;
 const DOUBLE_SUBSCRIPT = new RegExp(`_${SCRIPT_TOKEN}_${SCRIPT_TOKEN}`, 'g');
 const DOUBLE_SUPERSCRIPT = new RegExp(`\\^${SCRIPT_TOKEN}\\^${SCRIPT_TOKEN}`, 'g');
 
-function replaceAll(tex: string, pattern: RegExp, replacement: Replacement): string {
-  return typeof replacement === 'string'
-    ? tex.replace(pattern, replacement)
-    : tex.replace(pattern, replacement);
+/** A letter of a command's name, as KaTeX's tokenizer reads them. */
+const LETTER = /[A-Za-z@]/;
+
+/** Whether the backslash at `offset` is escaped: an odd number of backslashes precede it. */
+function escapedAt(source: string, offset: number): boolean {
+  let count = 0;
+  for (let at = offset - 1; at >= 0 && source.charCodeAt(at) === 0x5c; at -= 1) count += 1;
+  return count % 2 === 1;
+}
+
+/**
+ * `pattern`, which matches a command from its backslash, replaced only where that
+ * backslash starts a command: `\\R` is a line break and an R, and stays. A removal never
+ * joins a command to the letters after it: `\d\label{x}ef` becomes `\d ef`, not `\def`.
+ */
+function replaceCommands(tex: string, pattern: RegExp, replacement: Replacement): string {
+  return tex.replace(pattern, (...args: unknown[]) => {
+    const match = args[0] as string;
+    const offset = args[args.length - 2] as number;
+    const source = args[args.length - 1] as string;
+    if (escapedAt(source, offset)) return match;
+    const groups = args.slice(1, -2) as (string | undefined)[];
+    const out =
+      typeof replacement === 'string'
+        ? replacement.replace(/\$(\d)/g, (_all, digit: string) => groups[Number(digit) - 1] ?? '')
+        : replacement(match, groups);
+    const before = source[offset - 1] ?? '';
+    const after = source[offset + match.length] ?? '';
+    return out === '' && LETTER.test(before) && LETTER.test(after) ? ' ' : out;
+  });
+}
+
+/** How many times `pattern` matches a command from its backslash, escaped ones left out. */
+function countCommands(tex: string, pattern: RegExp): number {
+  let count = 0;
+  for (const match of tex.matchAll(pattern)) if (!escapedAt(tex, match.index)) count += 1;
+  return count;
 }
 
 function applyMacroReplacements(tex: string): string {
   let out = tex;
   for (const [pattern, replacement] of MACRO_REPLACEMENTS) {
-    out = replaceAll(out, pattern, replacement);
+    out = replaceCommands(out, pattern, replacement);
   }
   return out;
 }
 
 /** `_ ^ % # $ &` inside `\text{…}` are characters there, so they are escaped. */
 function escapeTextArguments(tex: string): string {
-  return tex.replace(
+  return replaceCommands(
+    tex,
     /(\\text(?:it|bf|sf|tt)?)\{([^{}]*)\}/g,
-    (_match, command: string, body: string) =>
-      `${command}{${body.replace(/(^|[^\\])([_^%#$&])/g, '$1\\$2')}}`,
+    (_match, [command, body]) =>
+      `${command ?? ''}{${(body ?? '').replace(/(^|[^\\])([_^%#$&])/g, '$1\\$2')}}`,
   );
 }
 
@@ -125,18 +161,18 @@ function balanceBraces(tex: string): string {
 }
 
 function balanceDelimiters(tex: string): string {
-  const lefts = (tex.match(/\\left(?![A-Za-z])/g) ?? []).length;
-  const rights = (tex.match(/\\right(?![A-Za-z])/g) ?? []).length;
+  const lefts = countCommands(tex, /\\left(?![A-Za-z])/g);
+  const rights = countCommands(tex, /\\right(?![A-Za-z])/g);
   if (lefts > rights) return tex + ' \\right.'.repeat(lefts - rights);
   if (rights > lefts) return '\\left. '.repeat(rights - lefts) + tex;
   return tex;
 }
 
 function escapeBareCharacters(tex: string): string {
-  const definesMacros = /\\(?:newcommand|renewcommand|providecommand|def)(?![A-Za-z])/.test(tex);
+  const defines = /\\(?:newcommand|renewcommand|providecommand|def)(?![A-Za-z])/.test(tex);
   return tex
     .replace(/(^|[^\\])%/g, '$1\\%')
-    .replace(/(^|[^\\])#/g, definesMacros ? '$1#' : '$1\\#')
+    .replace(/(^|[^\\])#/g, defines ? '$1#' : '$1\\#')
     .replace(/(^|[^\\])\$/g, '$1');
 }
 
@@ -161,7 +197,7 @@ function inlineEnvironments(tex: string, displayMode: boolean): string {
   if (displayMode) return tex;
   let out = tex;
   for (const [pattern, replacement] of INLINE_ONLY_ENVIRONMENTS) {
-    out = out.replace(pattern, replacement);
+    out = replaceCommands(out, pattern, replacement);
   }
   return out;
 }
@@ -170,7 +206,8 @@ function operatorForUnknownMacro(tex: string, errorText: string): string {
   const match = /Undefined control sequence: \\([A-Za-z]+)/.exec(errorText);
   if (!match) return tex;
   const name = match[1]!;
-  return tex.replace(new RegExp(`\\\\${name}(?![A-Za-z])`, 'g'), `\\operatorname{${name}}`);
+  const pattern = new RegExp(`\\\\${name}(?![A-Za-z])`, 'g');
+  return replaceCommands(tex, pattern, `\\operatorname{${name}}`);
 }
 
 function basicRepairs(tex: string, displayMode: boolean): string {
@@ -204,7 +241,9 @@ function targetedRepairs(tex: string, errorText: string, displayMode: boolean): 
 
 /**
  * Repaired versions of `tex` to try, best first: the repairs KaTeX's error points to, the
- * substitutions alone, then every structural repair. Each differs from `tex`.
+ * substitutions alone, then every structural repair. Each differs from `tex`, and none
+ * brings in a command the renderer refuses or that KaTeX's trust setting gates
+ * (`safeRepair`).
  */
 export function repairTex(tex: string, errorText: string, displayMode = false): string[] {
   if (typeof tex !== 'string') return [];
@@ -219,9 +258,128 @@ export function repairTex(tex: string, errorText: string, displayMode = false): 
   for (const candidate of candidates) {
     const value = candidate.trim();
     if (!value || value === trimmed || unique.includes(value)) continue;
+    if (!safeRepair(trimmed, value)) continue;
     unique.push(value);
   }
   return unique;
+}
+
+/**
+ * Commands that define macros. A formula with one is not rendered: macros come from the
+ * project (living documents, LD-28), and a definition can make KaTeX's work grow far
+ * beyond the formula's length within its limit on expansions.
+ */
+const DEFINITIONS: ReadonlySet<string> = new Set([
+  'def', 'gdef', 'edef', 'xdef', 'let', 'futurelet', 'global', 'long', 'outer',
+  'newcommand', 'renewcommand', 'providecommand', 'DeclareRobustCommand', 'DeclareMathOperator',
+  'newenvironment', 'renewenvironment',
+]);
+
+/** Commands that KaTeX runs only when trusted; the renderer never trusts. */
+const TRUSTED_ONLY: ReadonlySet<string> = new Set([
+  'href', 'url', 'includegraphics', 'htmlClass', 'htmlId', 'htmlStyle', 'htmlData',
+]);
+
+/** The names of the commands in `tex`, as KaTeX's tokenizer reads them (`\\` is none). */
+function commandNames(tex: string): Set<string> {
+  const names = new Set<string>();
+  for (let index = 0; index < tex.length; index += 1) {
+    if (tex.charCodeAt(index) !== 0x5c) continue;
+    let end = index + 1;
+    while (end < tex.length && LETTER.test(tex[end]!)) end += 1;
+    if (end > index + 1) names.add(tex.slice(index + 1, end));
+    // A command with a name ends where its letters do; any other takes one character.
+    index = end > index + 1 ? end - 1 : index + 1;
+  }
+  return names;
+}
+
+/** The first command in `tex` that defines a macro, or null. */
+export function definesMacros(tex: string): string | null {
+  for (const name of commandNames(tex)) if (DEFINITIONS.has(name)) return name;
+  return null;
+}
+
+/**
+ * Whether a repair of `original` is one to show: it defines no macro, and it brings in no
+ * command that KaTeX gates by trust that the original did not have. Removals can join the
+ * pieces of one (`\hr\label{a}ef` would become `\href`), and a model can be steered.
+ */
+export function safeRepair(original: string, repair: string): boolean {
+  const before = commandNames(original);
+  for (const name of commandNames(repair)) {
+    if (DEFINITIONS.has(name)) return false;
+    if (TRUSTED_ONLY.has(name) && !before.has(name)) return false;
+  }
+  return true;
+}
+
+/** A map that keeps its most recently used entries, within a count and a total weight. */
+export class Kept<V> {
+  readonly #map = new Map<string, V>();
+  #weight = 0;
+
+  constructor(
+    private readonly maxEntries: number,
+    private readonly maxWeight = Number.POSITIVE_INFINITY,
+    private readonly weigh: (key: string, value: V) => number = () => 0,
+  ) {}
+
+  get size(): number {
+    return this.#map.size;
+  }
+
+  get(key: string): V | undefined {
+    const value = this.#map.get(key);
+    if (value !== undefined) {
+      this.#map.delete(key);
+      this.#map.set(key, value);
+    }
+    return value;
+  }
+
+  set(key: string, value: V): void {
+    const old = this.#map.get(key);
+    if (old !== undefined) {
+      this.#map.delete(key);
+      this.#weight -= this.weigh(key, old);
+    }
+    this.#map.set(key, value);
+    this.#weight += this.weigh(key, value);
+    while (this.#map.size > this.maxEntries || this.#weight > this.maxWeight) {
+      const [oldestKey, oldestValue] = this.#map.entries().next().value!;
+      this.#map.delete(oldestKey);
+      this.#weight -= this.weigh(oldestKey, oldestValue);
+    }
+  }
+
+  clear(): void {
+    this.#map.clear();
+    this.#weight = 0;
+  }
+}
+
+/** The candidates and approximations already worked out, for the page's re-renders. */
+const keptCandidates = new Kept<string[]>(2_000);
+const keptApproximations = new Kept<string>(2_000);
+
+function candidatesFor(tex: string, error: string, displayMode: boolean): string[] {
+  const key = `${displayMode ? 'display' : 'inline'}\u0000${error}\u0000${tex}`;
+  let candidates = keptCandidates.get(key);
+  if (candidates === undefined) {
+    candidates = repairTex(tex, error, displayMode);
+    keptCandidates.set(key, candidates);
+  }
+  return candidates;
+}
+
+function approximationOf(tex: string): string {
+  let unicode = keptApproximations.get(tex);
+  if (unicode === undefined) {
+    unicode = texToUnicode(tex) || tex;
+    keptApproximations.set(tex, unicode);
+  }
+  return unicode;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -683,8 +841,11 @@ export interface RecoverOptions {
   displayMode: boolean;
   /** KaTeX's error for the expression as written. */
   error: unknown;
-  /** KaTeX's settings; the ladder adds `displayMode` and `throwOnError: true`. */
-  settings?: Record<string, unknown>;
+  /**
+   * KaTeX's settings, with the renderer's limits on sizes and expansions; the ladder adds
+   * `displayMode` and `throwOnError: true`, and always sets `trust: false`.
+   */
+  settings: Record<string, unknown>;
   /** The page's model repairs; without them, none are asked for. */
   repairs?: ModelRepairs | null;
   /** Renders a model's repair to check it; by default the renderer the ladder uses. */
@@ -718,11 +879,11 @@ export function repairKey(tex: string, displayMode: boolean): string {
 export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOptions): Recovery {
   const displayMode = options.displayMode;
   const error = describeError(options.error);
-  const settings = options.settings ?? {};
+  const settings = { ...options.settings, displayMode, throwOnError: true, trust: false };
   const render = (renderer: MathRenderer, candidate: string): string =>
-    renderer.renderToString(candidate, { ...settings, displayMode, throwOnError: true });
+    renderer.renderToString(candidate, settings);
 
-  for (const candidate of repairTex(tex, error, displayMode)) {
+  for (const candidate of candidatesFor(tex, error, displayMode)) {
     try {
       const html = render(katex, candidate);
       return { status: 'repaired', how: 'heuristic', html, tex: candidate, model: null, error };
@@ -734,7 +895,7 @@ export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOp
   const repairs = options.repairs ?? null;
   const key = repairKey(tex, displayMode);
   const known = repairs?.get(key);
-  if (known?.tex) {
+  if (known?.tex && safeRepair(tex, known.tex)) {
     try {
       const html = render(katex, known.tex);
       return { status: 'repaired', how: 'model', html, tex: known.tex, model: known.model, error };
@@ -746,33 +907,103 @@ export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOp
   if (repairs !== null && known === undefined) {
     const check = options.check ?? katex;
     repairs.request(key, { tex, display: displayMode, error }, (candidate) => {
+      if (!safeRepair(tex, candidate)) throw new Error('it brings in a command that is off here');
       render(check, candidate);
     });
     if (repairs.isPending(key)) state = 'pending';
   }
   const settled = repairs?.get(key);
   const reason = settled && settled.tex === null ? settled.reason : (repairs?.unavailable ?? null);
-  return { status: 'fallback', unicode: texToUnicode(tex) || tex, error, state, reason };
+  return { status: 'fallback', unicode: approximationOf(tex), error, state, reason };
+}
+
+/** How a page asks for model repairs; the defaults suit a browser. */
+export interface ModelRepairsOptions {
+  /** Requests at once, once the server has said it has a model; one until then. */
+  maxActive?: number;
+  /** Runs `callback` before the next frame: listeners hear of answers once a frame. */
+  nextFrame?: (callback: () => void) => void;
+  /** Runs `callback` after `ms` milliseconds; returns a function that cancels it. */
+  later?: (callback: () => void, ms: number) => () => void;
+  /** The waits before each new try of a request the server was too busy for. */
+  busyRetries?: readonly number[];
 }
 
 /**
- * The reviewer model's repairs for one page: asked for in the background, two at a time,
- * once per expression, and remembered until the page reloads. Listeners hear of each
- * expression whose answer arrives, so that the texts showing it render again.
+ * Before the next frame; within a second where frames do not come, as in a hidden tab,
+ * which runs none (the text is then rendered again at most once a second).
+ */
+function nextFrame(callback: () => void): void {
+  if (typeof requestAnimationFrame !== 'function') {
+    setTimeout(callback, 0);
+    return;
+  }
+  let done = false;
+  const run = (): void => {
+    if (done) return;
+    done = true;
+    callback();
+  };
+  const timer = setTimeout(run, 1_000);
+  requestAnimationFrame(() => {
+    clearTimeout(timer);
+    run();
+  });
+}
+
+function later(callback: () => void, ms: number): () => void {
+  const timer = setTimeout(callback, ms);
+  return () => clearTimeout(timer);
+}
+
+interface Job {
+  key: string;
+  request: MathRepairRequest;
+  check: (tex: string) => void;
+  /** Tries the server was too busy for. */
+  busy: number;
+}
+
+/**
+ * The reviewer model's repairs for one page: asked for in the background, once per
+ * expression, and remembered until the page reloads.
+ *
+ * Until the server first says it has a model, one request is in flight at a time; then
+ * two. When it says it has none, or the session ends or reaches its limit, the requests
+ * still waiting are dropped at once. A request the server was too busy for is tried again
+ * later, a few times. Listeners hear of the expressions whose answers arrived once a
+ * frame, so that the texts showing them render again at most once a frame.
  */
 export class ModelRepairs {
   readonly #cache = new Map<string, ModelRepair>();
-  readonly #pending = new Map<string, Promise<void>>();
-  readonly #waiting: (() => void)[] = [];
-  readonly #listeners = new Set<(key: string) => void>();
+  /** Expressions asked for and not answered: waiting, in flight, or waiting to try again. */
+  readonly #pending = new Set<string>();
+  readonly #queue: Job[] = [];
+  readonly #retries = new Map<string, () => void>();
+  readonly #listeners = new Set<(keys: ReadonlySet<string>) => void>();
+  readonly #arrived = new Set<string>();
+  readonly #idle: (() => void)[] = [];
+  readonly #maxActive: number;
+  readonly #nextFrame: (callback: () => void) => void;
+  readonly #later: (callback: () => void, ms: number) => () => void;
+  readonly #busyRetries: readonly number[];
   #active = 0;
+  #pumping = false;
+  #telling = false;
+  /** Whether the server has said it has a model. */
+  #enabled = false;
   /** Why the page asks no more: the server has no model, the session ended, or its limit. */
   #off: string | null = null;
 
   constructor(
     private readonly transport: Transport | null,
-    private readonly maxActive = 2,
-  ) {}
+    options: ModelRepairsOptions = {},
+  ) {
+    this.#maxActive = options.maxActive ?? 2;
+    this.#nextFrame = options.nextFrame ?? nextFrame;
+    this.#later = options.later ?? later;
+    this.#busyRetries = options.busyRetries ?? [2_000, 4_000, 8_000];
+  }
 
   /** Why no repairs are asked for, or null while they are. */
   get unavailable(): string | null {
@@ -795,40 +1026,59 @@ export class ModelRepairs {
 
   /** Ask for a repair of the expression under `key`, unless it is known or asked for. */
   request(key: string, request: MathRepairRequest, check: (tex: string) => void): void {
-    const transport = this.transport;
-    if (transport === null || this.#off !== null) return;
+    if (this.transport === null || this.#off !== null) return;
     if (this.#cache.has(key) || this.#pending.has(key)) return;
     if (request.tex.length > MAX_MODEL_TEX) {
       this.#cache.set(key, { tex: null, reason: 'too long to ask the model for a repair' });
       return;
     }
-    const work = this.#slot()
-      .then(async () => {
-        try {
-          if (this.#off !== null) {
-            this.#cache.set(key, { tex: null, reason: this.#off });
-            return;
-          }
-          this.#cache.set(key, this.#accept(await transport(request), check));
-        } catch (error) {
-          this.#cache.set(key, { tex: null, reason: this.#failed(error) });
-        } finally {
-          this.#release();
-        }
-      })
-      .finally(() => {
-        this.#pending.delete(key);
-        for (const listener of [...this.#listeners]) listener(key);
+    this.#pending.add(key);
+    this.#queue.push({ key, request, check, busy: 0 });
+    // Requests start after the rendering that asks for them.
+    if (!this.#pumping) {
+      this.#pumping = true;
+      queueMicrotask(() => {
+        this.#pumping = false;
+        this.#pump();
       });
-    this.#pending.set(key, work);
+    }
   }
 
-  #accept(answer: MathRepairAnswer, check: (tex: string) => void): ModelRepair {
-    if (!answer.enabled) {
-      this.#off = answer.reason || 'model repairs are off';
-      return { tex: null, reason: this.#off };
+  #pump(): void {
+    const transport = this.transport;
+    if (transport === null) return;
+    // One at a time until the server says it has a model: with none, its first answer
+    // turns repairs off, and the rest are never sent.
+    const limit = this.#enabled ? this.#maxActive : 1;
+    while (this.#off === null && this.#active < limit) {
+      const job = this.#queue.shift();
+      if (job === undefined) break;
+      this.#active += 1;
+      void this.#ask(transport, job);
     }
+  }
+
+  async #ask(transport: Transport, job: Job): Promise<void> {
+    let outcome: ModelRepair | 'busy' | 'off';
+    try {
+      outcome = this.#accept(await transport(job.request), job.check);
+    } catch (error) {
+      outcome = this.#failed(error);
+    }
+    this.#active -= 1;
+    if (outcome === 'busy') this.#tryLater(job);
+    else this.#settle(job.key, outcome === 'off' ? null : outcome);
+    this.#pump();
+  }
+
+  #accept(answer: MathRepairAnswer, check: (tex: string) => void): ModelRepair | 'busy' | 'off' {
+    if (!answer.enabled) {
+      this.#turnOff(answer.reason || 'model repairs are off');
+      return 'off';
+    }
+    this.#enabled = true;
     const candidate = typeof answer.tex === 'string' ? answer.tex.trim() : '';
+    if (!candidate && answer.reason === 'busy') return 'busy';
     if (!candidate) return { tex: null, reason: answer.reason || 'no repair' };
     try {
       check(candidate);
@@ -838,36 +1088,75 @@ export class ModelRepairs {
     return { tex: candidate, model: answer.model ?? null };
   }
 
-  #failed(error: unknown): string {
+  #failed(error: unknown): ModelRepair | 'off' {
     const status = (error as { status?: unknown } | null)?.status;
     // Logged out, or this session's limit reached: asking again would fail the same way.
-    if (status === 401 || status === 429) this.#off = describeError(error);
-    return describeError(error);
-  }
-
-  #slot(): Promise<void> {
-    if (this.#active < this.maxActive) {
-      this.#active += 1;
-      return Promise.resolve();
+    if (status === 401 || status === 429) {
+      this.#turnOff(describeError(error));
+      return 'off';
     }
-    return new Promise((resolve) => this.#waiting.push(resolve));
+    return { tex: null, reason: describeError(error) };
   }
 
-  #release(): void {
-    const next = this.#waiting.shift();
-    if (next) next();
-    else this.#active -= 1;
+  /** Ask again after a wait, while the server is busy; after the last, give up. */
+  #tryLater(job: Job): void {
+    const wait = this.#busyRetries[job.busy];
+    if (wait === undefined) {
+      this.#settle(job.key, { tex: null, reason: 'the server stayed busy' });
+      return;
+    }
+    job.busy += 1;
+    const cancel = this.#later(() => {
+      this.#retries.delete(job.key);
+      this.#queue.push(job);
+      this.#pump();
+    }, wait);
+    this.#retries.set(job.key, cancel);
   }
 
-  /** Call `listener` with the key of each expression whose answer arrives. */
-  subscribe(listener: (key: string) => void): () => void {
+  /** Repairs are off for this page: drop what waits, at once, and tell the listeners once. */
+  #turnOff(reason: string): void {
+    if (this.#off !== null) return;
+    this.#off = reason;
+    for (const job of this.#queue.splice(0)) this.#settle(job.key, null);
+    for (const [key, cancel] of this.#retries) {
+      cancel();
+      this.#settle(key, null);
+    }
+    this.#retries.clear();
+  }
+
+  /** `key` answered (`repair`, or nothing to keep); the listeners hear of it next frame. */
+  #settle(key: string, repair: ModelRepair | null): void {
+    if (repair !== null) this.#cache.set(key, repair);
+    this.#pending.delete(key);
+    this.#arrived.add(key);
+    if (!this.#telling) {
+      this.#telling = true;
+      this.#nextFrame(() => this.#tell());
+    }
+  }
+
+  #tell(): void {
+    this.#telling = false;
+    const keys: ReadonlySet<string> = new Set(this.#arrived);
+    this.#arrived.clear();
+    for (const listener of [...this.#listeners]) listener(keys);
+    if (this.#pending.size === 0 && !this.#telling) {
+      for (const resolve of this.#idle.splice(0)) resolve();
+    }
+  }
+
+  /** Call `listener`, at most once a frame, with the expressions whose answers arrived. */
+  subscribe(listener: (keys: ReadonlySet<string>) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
 
-  /** Every request asked for so far, settled. */
-  async settled(): Promise<void> {
-    while (this.#pending.size > 0) await Promise.all([...this.#pending.values()]);
+  /** Every request asked for so far answered, and the listeners told. */
+  settled(): Promise<void> {
+    if (this.#pending.size === 0 && !this.#telling) return Promise.resolve();
+    return new Promise((resolve) => this.#idle.push(resolve));
   }
 }
 
@@ -928,7 +1217,7 @@ export function recoveredHtml(
   } else {
     classes = `math ${layout} math-approximated`;
     data = `data-repair="approximation" data-state="${recovery.state}"`;
-    shown = `<span class="math-unicode">${escapeHtml(recovery.unicode)}</span>`;
+    shown = `<span class="math-unicode">${escapeHtml(visible(recovery.unicode))}</span>`;
     mark = 'approximated';
     message =
       `KaTeX could not render this: ${sentence(recovery.error)} ` +
@@ -942,6 +1231,6 @@ export function recoveredHtml(
     `<button type="button" class="math-mark" aria-expanded="false" title="${escapeHtml(title)}">` +
     `${mark}</button>` +
     `<span class="math-details" hidden><span class="math-message">${escapeHtml(message)}</span> ` +
-    `<code class="math-source">${escapeHtml(written)}</code></span></${tag}>`
+    `<code class="math-source">${escapeHtml(visible(written))}</code></span></${tag}>`
   );
 }

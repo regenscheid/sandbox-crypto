@@ -69,12 +69,15 @@ MAX_ACTIVE: Final = 2
 MAX_WAITING: Final = 8
 SESSION_LIMIT: Final = 60
 SESSION_WINDOW: Final = 3600.0
+MAX_ANSWER_BYTES: Final = 1024 * 1024
+"""The largest answer read from the gateway; 512 tokens need a few kilobytes."""
 DISABLED: Final = frozenset({"0", "off", "none", "false", "disabled"})
 """Values of the reviewer setting that turn model repairs off."""
 
-_FENCE = re.compile(r"```[A-Za-z]*\s*\n?(.*?)\n?```", re.DOTALL)
 _UNFIXABLE = re.compile(r"UNFIXABLE\b", re.IGNORECASE)
 _DELIMITERS: Final = (("$$", "$$"), ("\\[", "\\]"), ("\\(", "\\)"), ("$", "$"))
+_KEY = re.compile(r"[\x21-\x7e]+")
+"""A key: one line of visible ASCII, as an Authorization header can carry it."""
 
 
 class RepairRequestError(ValueError):
@@ -135,6 +138,20 @@ def parse_request(payload: object) -> RepairRequest:
     )
 
 
+def _unfenced(value: str) -> str:
+    """``value`` out of its code fence, if it is one: the original's pattern, without a
+    regular expression, whose backtracking took a second on a fence and 12,000 spaces."""
+    if len(value) < 6 or not value.startswith("```") or not value.endswith("```"):
+        return value
+    inner = value[3:-3]
+    # An info string, such as "latex", on the opening fence's line.
+    first, newline, rest = inner.partition("\n")
+    tag = first.strip()
+    if newline and (not tag or (tag.isascii() and tag.isalpha())):
+        inner = rest
+    return inner.strip()
+
+
 def sanitize(text: str | None, original: str) -> str | None:
     """The model's answer as one expression, or None when it offers no usable repair."""
     if not isinstance(text, str):
@@ -142,9 +159,7 @@ def sanitize(text: str | None, original: str) -> str | None:
     value = text.strip()
     if len(value) > len(original) * 3 + 300:  # beyond any repair, fences and delimiters
         return None
-    fence = _FENCE.fullmatch(value)
-    if fence:
-        value = fence.group(1).strip()
+    value = _unfenced(value)
     if _UNFIXABLE.match(value):
         return None
     for opening, closing in _DELIMITERS:
@@ -289,14 +304,16 @@ class MathRepairService:
         return answer
 
     async def _call(self, request: RepairRequest, model: ChatModel) -> RepairAnswer:
+        """The model's answer; any failure is an answer too, kept for ``FAILURE_KEPT``."""
         try:
             async with asyncio.timeout(self._timeout):
                 turn = await model.complete(_messages(request), ())
         except TimeoutError:
             reason = f"the reviewer model did not answer within {self._timeout:g} s"
-        except ModelError as error:
-            _log.warning("a math repair failed: %s", self._scrub(str(error)))
-            if error.status is not None:
+        except Exception as error:  # a gateway error, or anything else: never a 500 to retry
+            # Only the status or the kind of failure: the gateway's text can echo the key.
+            _log.warning("a math repair failed: %s", self._scrub(_brief(error)))
+            if isinstance(error, ModelError) and error.status is not None:
                 reason = f"the model gateway answered HTTP {error.status}"
             else:
                 reason = "the model gateway failed (the server's log says how)"
@@ -314,7 +331,7 @@ class MathRepairService:
         if self._in_flight.get(key) is task:
             del self._in_flight[key]
         if not task.cancelled() and (error := task.exception()) is not None:
-            _log.error("a math repair failed: %s", self._scrub(repr(error)))
+            _log.error("a math repair failed: %s", self._scrub(_brief(error)))
 
     def _scrub(self, text: str) -> str:
         for secret in self._secrets:
@@ -331,12 +348,34 @@ class MathRepairService:
             await self._close()
 
 
+def _brief(error: BaseException) -> str:
+    """A failure in a few words, without the gateway's text: its status, or its kind."""
+    if isinstance(error, ModelError):
+        if error.status is not None:
+            return f"the model gateway answered HTTP {error.status}"
+        cause = error.__cause__
+        kind = str(error).split(":", 1)[0]
+        return f"{kind} ({type(cause).__name__})" if cause is not None else kind
+    return type(error).__name__
+
+
 def gateway_service(base_url: str, reviewer: str, api_key: str) -> MathRepairService:
-    """Repairs by the model the alias ``reviewer`` names at the model gateway."""
+    """Repairs by the model the alias ``reviewer`` names at the model gateway.
+
+    ValueError when ``api_key`` is not one line of visible ASCII, which every request's
+    Authorization header would then refuse.
+    """
     alias = reviewer_alias(reviewer)
     if alias is None:
         return MathRepairService(reviewer=reviewer)
+    if not _KEY.fullmatch(api_key):
+        raise ValueError("the gateway key must be one line of visible ASCII characters")
     model = OpenAICompatibleModel(
-        base_url, alias, api_key, timeout=TIMEOUT, max_tokens=MAX_OUTPUT_TOKENS
+        base_url,
+        alias,
+        api_key,
+        timeout=TIMEOUT,
+        max_tokens=MAX_OUTPUT_TOKENS,
+        max_response_bytes=MAX_ANSWER_BYTES,
     )
     return MathRepairService(model, reviewer=alias, secrets=(api_key,), close=model.close)

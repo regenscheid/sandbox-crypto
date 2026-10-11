@@ -8,29 +8,35 @@
  * Adapted from cscience-crypto's src/web/cscience-math.js (its `normalizeMathDelimiters`),
  * contributed under the MIT License by its author. The original rewrote the text into
  * dollar math before parsing it. Here markdown-it reads these delimiters as it reads the
- * rest of the text, which a rewrite cannot match: code stays as written wherever it is
- * (indented, or fenced inside a list or a quote), a displayed formula stays in its list
- * item or quote, and no delimiter pairs with a stray dollar sign. The rules follow dollar
- * math's:
+ * rest of the text, which a rewrite cannot match: code blocks stay as written wherever
+ * they are (indented, or fenced inside a list or a quote), a displayed formula stays in
+ * its list item or quote, and no delimiter pairs with a stray dollar sign. The rules
+ * follow dollar math's:
  *
  * - a delimiter preceded by an odd number of backslashes is escaped (`\\[` is a line
- *   break and a bracket);
+ *   break and a bracket), counted as dollar math counts them, quirks included;
  * - inline, a formula ends at the first closing delimiter in its paragraph, and a formula
- *   of only whitespace is not math;
+ *   of only whitespace, Python's as for dollar math, is not math. Like `$…$`, a formula
+ *   that opens before a code span runs over the span's opening backtick;
  * - a block begins a line and its closing delimiter ends one, within `MAX_BLOCK_LINES`
  *   lines and without a blank line between.
  *
  * Unlike `$$`, which follows mdit-py-plugins, a `\[` or `\begin{…}` line may begin a block
  * after a line of a paragraph, as a code fence may: it can only be math, and agents seldom
- * leave a blank line before it. A block whose closing delimiter is followed by more text
- * on its line is read within its paragraph instead. A block's content leaves out the
- * markers of the quotes and the indentation of the list items it is in.
+ * leave a blank line before it. As a fence does, a block stops at a line outside its list
+ * item or quote (a line less indented, a lazy line), where `$$` reads on. A block whose
+ * closing delimiter is followed by more text on its line is read within its paragraph
+ * instead. A block's content leaves out the markers of the quotes and the indentation of
+ * the list items it is in.
+ *
+ * Markdown writers escape brackets (`\[1\]`, `- \[x\] done`), so within a paragraph,
+ * `\[…\]` holding only a number or only letters stays text, as the escapes make it.
  *
  * The tokens carry the delimiters as written: `markup` opens and `meta.close` closes.
  * A display environment is its own delimiter, so its content is the whole environment.
  */
 import type { MarkdownIt, StateBlock, StateInline } from 'markdown-it';
-import { isBlank, MAX_BLOCK_LINES } from './dollarmath';
+import { isBlank, isEscaped as isEscapedLikeDollars, MAX_BLOCK_LINES } from './dollarmath';
 
 /** Display environments that are math by themselves (the original's list). */
 export const DISPLAY_ENVIRONMENTS: ReadonlySet<string> = new Set([
@@ -45,6 +51,8 @@ export interface MathMeta {
 
 const BACKSLASH = 0x5c;
 const ENVIRONMENT = /\\begin\{([A-Za-z*]+)\}/y;
+/** What Markdown writers put between escaped brackets: a number, or a word. */
+const ESCAPED_BRACKETS = /^(?:[0-9]+|[A-Za-z]+)$/;
 
 interface Opener {
   /** The opening delimiter as the token keeps it; empty for an environment. */
@@ -77,7 +85,10 @@ function openerAt(src: string, start: number): Opener | null {
   return { markup: '', close, body, display: true, kept: true };
 }
 
-/** Whether an odd number of backslashes precede `position`. */
+/**
+ * Whether an odd number of backslashes precede `position`. For closing delimiters, whose
+ * backslashes never reach the start of the text, this is the dollar rules' count.
+ */
 function isEscaped(src: string, position: number): boolean {
   let count = 0;
   for (let at = position - 1; at >= 0 && src.charCodeAt(at) === BACKSLASH; at -= 1) count += 1;
@@ -115,15 +126,18 @@ function firstFrom(positions: number[], from: number): number | undefined {
 function mathInline(state: StateInline, silent: boolean): boolean {
   const src = state.src;
   const start = state.pos;
-  if (src.charCodeAt(start) !== BACKSLASH || isEscaped(src, start)) return false;
+  if (src.charCodeAt(start) !== BACKSLASH) return false;
+  // The opener first: counting the backslashes before every backslash of a long run of
+  // them would take time quadratic in its length.
   const opener = openerAt(src, start);
-  if (opener === null) return false;
+  if (opener === null || isEscapedLikeDollars(src, start)) return false;
   const close = firstFrom(closers(src, opener.close), opener.body);
   if (close === undefined) return false;
   const end = close + opener.close.length;
   if (end > state.posMax) return false;
   const content = opener.kept ? src.slice(start, end) : src.slice(opener.body, close);
-  if (!content.trim()) return false;
+  if (isBlank(content, 0, content.length)) return false;
+  if (opener.markup === '\\[' && ESCAPED_BRACKETS.test(content)) return false;
   if (!silent) {
     const token = state.push(opener.display ? 'math_inline_double' : 'math_inline', 'math', 0);
     token.content = content;
@@ -153,11 +167,13 @@ function mathBlock(
   const end = close + opener.close.length;
   if (end > state.eMarks[Math.min(endLine - 1, startLine + MAX_BLOCK_LINES)]!) return false;
 
-  // The closing delimiter's line: within the limit, after no blank line.
+  // The closing delimiter's line: within the limit, after no blank line, and inside the
+  // list item or quote, as a fence's lines are (a lazy line's indent is negative).
   let line = startLine;
   while (end > state.eMarks[line]!) {
     line += 1;
     if (line >= endLine || line - startLine > MAX_BLOCK_LINES) return false;
+    if (state.sCount[line]! < state.blkIndent) return false;
     if (isBlank(src, state.bMarks[line]! + state.tShift[line]!, state.eMarks[line]!)) return false;
   }
   // The line must end with it; more text after it is read within a paragraph.
@@ -173,7 +189,7 @@ function mathBlock(
     const last = src.slice(state.bMarks[line]! + state.tShift[line]!, to);
     content = `${first}\n${middle}${last}`;
   }
-  if (!content.trim()) return false;
+  if (isBlank(content, 0, content.length)) return false;
   if (silent) return true;
 
   state.line = line + 1;

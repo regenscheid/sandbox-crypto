@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: MIT
 // The Markdown component, rendered as the server would: what it lets through, and its math.
+import katex from 'katex';
 import { render } from 'svelte/server';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import Markdown from './Markdown.svelte';
 import {
+  forgetResults,
   MAX_FORMULA,
   MAX_FORMULAS,
+  MAX_MATH_TIME,
   MAX_RENDERED,
   MAX_REPAIR_MATH,
   renderMarkdown,
@@ -143,19 +146,30 @@ describe('math', () => {
 
   it('limits sizes and macro expansion', () => {
     expect(html('$\\rule{1000em}{1000em}$')).toContain('width="20em" height="20em"');
-    const loop = html('$\\def\\a{\\a\\a}\\a$');
+    const loop = html('$\\mathrm{' + 'a~'.repeat(1_100) + '}$');
     expect(loop).toContain('math-approximated');
     expect(loop).toContain('Too many expansions');
   });
 
-  it('shares no macros between formulas', () => {
-    // A formula's \gdef does not reach the next one, where \secret is unknown: the repairs
-    // read it as an operator's name, and say so.
-    const out = html('$\\gdef\\secret{42}\\secret$ and $\\secret$');
-    expect(count(out, /<mn>42<\/mn>/g)).toBe(1);
+  it('shows a formula that defines a macro as written, and shares no macros', () => {
+    // Macros come from the project; a definition could multiply KaTeX's work. The next
+    // formula's \secret is unknown: the repairs read it as an operator's name, and say so.
+    const out = html('$\\gdef\\secret{42}\\secret$ and $\\secret$ and $\\def\\a{\\a\\a}\\a$');
+    expect(out).not.toContain('<mn>42</mn>');
+    expect(out).toContain(
+      '<span class="math math-skipped"><code class="math-source">$\\gdef\\secret{42}\\secret$</code>' +
+        '<span class="math-message">not rendered: a formula may not define macros (\\gdef)</span>',
+    );
+    expect(out).toContain('a formula may not define macros (\\def)');
     expect(out).toContain('<annotation encoding="application/x-tex">\\operatorname{secret}');
     expect(out).toContain('data-repair="heuristic"');
     expect(out).toContain('<code class="math-source">$\\secret$</code>');
+  });
+
+  it('shows bidirectional controls in a formula shown as written as code points', () => {
+    const out = html(`$\\gdef\\a{x}\\text{‮evil}$`);
+    expect(out).not.toContain('‮');
+    expect(out).toContain('\\text{⟦U+202E⟧evil}');
   });
 
   it('leaves currency as text', () => {
@@ -213,6 +227,45 @@ describe('repairs', () => {
     expect(count(out, />auto-repaired</g)).toBe(0);
     expect(MAX_REPAIR_MATH).toBe(20_000);
   });
+
+  it('renders a text again without sending KaTeX what it already did', async () => {
+    // The review's case: many failing formulas, then the server says it has no model.
+    forgetResults();
+    const repairs = new ModelRepairs(async () => ({ enabled: false, reason: 'no model' }));
+    const source = Array.from({ length: 300 }, (_, i) => `$x^{${i}}^{\\rule{1q}{1q}}$`).join(' ');
+    const calls = vi.spyOn(katex, 'renderToString');
+    try {
+      const first = renderMarkdown(source, repairs);
+      expect(first.waiting.size).toBe(300);
+      const firstCalls = calls.mock.calls.length;
+      expect(firstCalls).toBeGreaterThanOrEqual(300);
+      await repairs.settled();
+      const started = performance.now();
+      const second = renderMarkdown(source, repairs);
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(calls.mock.calls.length).toBe(firstCalls);
+      expect(second.waiting.size).toBe(0);
+      expect(count(second.html, /data-state="unrepairable"/g)).toBe(300);
+      expect(second.html).toContain('No repair: no model.');
+    } finally {
+      calls.mockRestore();
+    }
+  });
+
+  it("stops sending KaTeX a text's math once it has worked on it for a while", () => {
+    forgetResults();
+    const clock = vi.spyOn(performance, 'now');
+    let now = 0;
+    clock.mockImplementation(() => (now += 400));
+    try {
+      const out = html('$a$ $b$ $c$ $d$ $e$');
+      expect(count(out, /<annotation /g)).toBeLessThan(5);
+      expect(out).toContain("not rendered: this text's math took too long");
+      expect(MAX_MATH_TIME).toBe(1_000);
+    } finally {
+      clock.mockRestore();
+    }
+  });
 });
 
 describe('long text', () => {
@@ -245,6 +298,17 @@ describe('long text', () => {
     ['an unclosed \\[ in every list item', '- \\[\n'.repeat(40_000)],
     ['a closing \\] too far from every \\[', '\\[\nx\n'.repeat(39_000) + '\\]'],
     ['a closing \\] after text on every line', '\\[ x \\] y\n'.repeat(19_000)],
+    // The review of 2026-10-11 (PR #61): a long run of backslashes, and macro bombs.
+    ['a run of backslashes', '\\'.repeat(199_000)],
+    ['a run of backslashes in every table cell', `| a |\n| - |\n${`| ${'\\'.repeat(1_000)} |\n`.repeat(190)}`],
+    [
+      'nested definitions',
+      `$$\\def\\a{${'x'.repeat(400)}}\\def\\b{\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a}` +
+        `\\def\\c{\\b\\b\\b\\b\\b\\b\\b\\b\\b\\b}${'\\c'.repeat(8)}$$`,
+    ],
+    ['a definition used 20 times', `$$\\def\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(20)}$$`],
+    ['a definition joined by the repairs', `$\\d\\label{x}ef\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(20)}\\foo$`],
+    ['the heaviest formulas without definitions', '$\\Huge x\\tiny y$'.repeat(1).concat(`$$${'\\Huge x\\tiny y'.repeat(357)}$$\n\n`.repeat(4))],
   ])('renders %s quickly', (_name, source) => {
     const started = performance.now();
     html(source);

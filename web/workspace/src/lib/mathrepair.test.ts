@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError, type MathRepairAnswer, type MathRepairRequest } from './api';
 import {
+  definesMacros,
   describeError,
   MAX_MODEL_TEX,
   ModelRepairs,
@@ -12,6 +13,7 @@ import {
   recoverMath,
   repairKey,
   repairTex,
+  safeRepair,
   texToUnicode,
   type MathRenderer,
 } from './mathrepair';
@@ -104,6 +106,59 @@ describe('deterministic LaTeX repairs', () => {
   });
 });
 
+describe('commands the repairs never make', () => {
+  it('leave an escaped backslash alone: \\\\R is a line break and an R', () => {
+    const candidates = repairTex('a \\\\R b \\\\label{x} c \\R', 'Undefined control sequence: \\foo');
+    expect(candidates[0]).toBe('a \\\\R b \\\\label{x} c \\mathbb{R}');
+  });
+
+  it('never join pieces into a command by removing what lies between them', () => {
+    for (const [tex, gated] of [
+      ['\\hr\\label{a}ef{javascript:alert(1)}{x}\\foo', 'href'],
+      ['\\inc\\vspace{2pt}ludegraphics{https://evil.example/x.png}\\foo', 'includegraphics'],
+      ['\\ur\\footnote{z}l{javascript:alert(1)}\\foo', 'url'],
+      ['\\htm\\label{}lClass{math-mark}{x}\\foo', 'htmlClass'],
+      ['\\d\\nonumber ef\\a{x}\\a\\foo', 'def'],
+    ] as const) {
+      for (const candidate of repairTex(tex, 'Undefined control sequence: \\foo')) {
+        expect(candidate, tex).not.toContain(`\\${gated}`);
+      }
+    }
+    expect(repairTex('\\d\\label{x}ef', "Expected 'EOF'")).toContain('\\d ef');
+  });
+
+  it('refuse a repair that brings in a gated command or a definition', () => {
+    expect(safeRepair('x^', 'x^{2}')).toBe(true);
+    expect(safeRepair('\\href{a}{b}', '\\href{a}{b}')).toBe(true);
+    expect(safeRepair('x^', '\\href{javascript:alert(1)}{x}')).toBe(false);
+    expect(safeRepair('x^', '\\def\\a{x}\\a')).toBe(false);
+    expect(definesMacros('\\gdef\\a{x}')).toBe('gdef');
+    expect(definesMacros('a \\\\def b')).toBeNull();
+    expect(definesMacros('\\newcommand*{\\R}{\\mathbb{R}}')).toBe('newcommand');
+  });
+
+  it('refuse a model answer that brings in a gated command', async () => {
+    const katex = fakeKatex((tex) => tex.includes('broken'));
+    const repairs = new ModelRepairs(async () => ({
+      enabled: true,
+      tex: '\\href{javascript:alert(1)}{x}',
+      model: 'rev',
+    }));
+    const options = { displayMode: false, error: 'e', settings: {}, repairs };
+    recoverMath(katex, '\\broken', options);
+    await repairs.settled();
+    expect(repairs.get(repairKey('\\broken', false))).toMatchObject({ tex: null });
+    repairs.set(repairKey('\\broken2', false), { tex: '\\url{javascript:x}', model: 'rev' });
+    expect(recoverMath(katex, '\\broken2', options).status).toBe('fallback');
+  });
+
+  it('always render with trust off', () => {
+    const katex = fakeKatex((tex) => tex.includes('\\bm'));
+    recoverMath(katex, '\\bm{x}', { displayMode: false, error: 'e', settings: { trust: true } });
+    expect(katex.calls.every((call) => call.options.trust === false)).toBe(true);
+  });
+});
+
 describe('Unicode transliteration', () => {
   it('handles Greek letters, operators, scripts, and alphabets', () => {
     expect(texToUnicode('\\alpha_i^2 + \\beta \\le \\infty')).toBe('αᵢ² + β ≤ ∞');
@@ -172,6 +227,7 @@ describe('recovery ladder', () => {
     const first = recoverMath(katex, '\\alpha + \\undefinedmacro', {
       displayMode: true,
       error: new Error('KaTeX parse error: Undefined control sequence: \\undefinedmacro'),
+      settings: {},
       repairs,
     });
     expect(first.status).toBe('fallback');
@@ -180,7 +236,12 @@ describe('recovery ladder', () => {
     expect(html).toContain('<code class="math-source">$$\\alpha + \\undefinedmacro$$</code>');
     expect(html).toContain('<span class="math-unicode">α + undefinedmacro</span>');
     expect(html).toContain('data-state="pending"');
-    recoverMath(katex, '\\alpha + \\undefinedmacro', { displayMode: true, error: 'x', repairs });
+    recoverMath(katex, '\\alpha + \\undefinedmacro', {
+      displayMode: true,
+      error: 'x',
+      settings: {},
+      repairs,
+    });
     await repairs.settled();
     expect(requests).toEqual([
       {
@@ -197,7 +258,12 @@ describe('recovery ladder', () => {
     const katex = fakeKatex((tex) => tex.includes('\\broken'));
     const repairs = new ModelRepairs(null);
     repairs.set(repairKey('\\broken', false), { tex: 'x^2', model: 'test' });
-    const result = recoverMath(katex, '\\broken', { displayMode: false, error: 'unsupported', repairs });
+    const result = recoverMath(katex, '\\broken', {
+      displayMode: false,
+      error: 'unsupported',
+      settings: {},
+      repairs,
+    });
     expect(result).toMatchObject({ status: 'repaired', how: 'model', tex: 'x^2', model: 'test' });
     const html = recoveredHtml(result, 'span', false, '$\\broken$');
     expect(html).toContain('data-repair="model"');
@@ -211,12 +277,13 @@ describe('recovery ladder', () => {
       calls += 1;
       return { enabled: false, reason: 'no reviewer model configured' };
     });
-    recoverMath(katex, '\\one', { displayMode: false, error: 'e', repairs });
+    const options = { displayMode: false, error: 'e', settings: {}, repairs };
+    recoverMath(katex, '\\one', options);
     await repairs.settled();
-    recoverMath(katex, '\\two', { displayMode: false, error: 'e', repairs });
+    recoverMath(katex, '\\two', options);
     await repairs.settled();
     expect(calls).toBe(1);
-    const result = recoverMath(katex, '\\three', { displayMode: false, error: 'e', repairs });
+    const result = recoverMath(katex, '\\three', options);
     const html = recoveredHtml(result, 'span', false, '$\\three$');
     expect(html).toContain('data-state="unrepairable"');
     expect(html).toContain('No repair: no reviewer model configured.');
@@ -237,8 +304,13 @@ describe('model repairs', () => {
     const held = heldTransport();
     const repairs = new ModelRepairs(held.transport);
     const heard: string[] = [];
-    repairs.subscribe((key) => heard.push(key));
-    const options = { displayMode: false, error: 'Undefined control sequence: \\broken', repairs };
+    repairs.subscribe((keys) => heard.push(...keys));
+    const options = {
+      displayMode: false,
+      error: 'Undefined control sequence: \\broken',
+      settings: {},
+      repairs,
+    };
     expect(recoverMath(katex, '\\broken', options)).toMatchObject({ status: 'fallback', state: 'pending' });
     await Promise.resolve();
     held.answers[0]!({ enabled: true, tex: ' x^2 ', model: 'reviewer' });
@@ -252,23 +324,105 @@ describe('model repairs', () => {
     });
   });
 
-  it('asks for two repairs at a time', async () => {
+  it('asks for one repair until the server says it has a model, then two at a time', async () => {
     const held = heldTransport();
     const repairs = new ModelRepairs(held.transport);
     const check = () => undefined;
-    for (const tex of ['a', 'b', 'c', 'd']) repairs.request(tex, { tex, display: false, error: 'e' }, check);
+    for (const tex of ['a', 'b', 'c', 'd', 'e']) {
+      repairs.request(tex, { tex, display: false, error: 'e' }, check);
+    }
     await Promise.resolve();
-    expect(held.requests.map((request) => request.tex)).toEqual(['a', 'b']);
+    expect(held.requests.map((request) => request.tex)).toEqual(['a']);
     held.answers[0]!({ enabled: true, tex: null, reason: 'no usable repair' });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(held.requests.map((request) => request.tex)).toEqual(['a', 'b', 'c']);
     held.answers[1]!({ enabled: true, tex: 'b2' });
     held.answers[2]!({ enabled: true, tex: 'c2' });
     await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(held.requests.map((request) => request.tex)).toEqual(['a', 'b', 'c', 'd', 'e']);
     held.answers[3]!({ enabled: true, tex: 'd2' });
+    held.answers[4]!({ enabled: true, tex: 'e2' });
     await repairs.settled();
     expect(repairs.get('a')).toEqual({ tex: null, reason: 'no usable repair' });
-    expect(repairs.get('d')).toEqual({ tex: 'd2', model: null });
+    expect(repairs.get('e')).toEqual({ tex: 'e2', model: null });
+  });
+
+  it('with no model on the server, sends one request, drops the rest, and tells once', async () => {
+    // The review's case: 300 failing formulas, then the first answer turns repairs off.
+    let calls = 0;
+    const repairs = new ModelRepairs(async () => {
+      calls += 1;
+      return { enabled: false, reason: 'no reviewer model configured' };
+    });
+    const told: number[] = [];
+    repairs.subscribe((keys) => told.push(keys.size));
+    for (let index = 0; index < 300; index += 1) {
+      repairs.request(`k${index}`, { tex: `x${index}`, display: false, error: 'e' }, () => undefined);
+    }
+    expect(repairs.isPending('k299')).toBe(true);
+    await repairs.settled();
+    expect(calls).toBe(1);
+    expect(told).toEqual([300]);
+    expect(repairs.isPending('k299')).toBe(false);
+    expect(repairs.unavailable).toBe('no reviewer model configured');
+  });
+
+  it('tells its listeners once a frame, however many answers arrive in it', async () => {
+    const frames: (() => void)[] = [];
+    const repairs = new ModelRepairs(async (request) => ({ enabled: true, tex: `${request.tex}2` }), {
+      maxActive: 8,
+      nextFrame: (callback) => frames.push(callback),
+    });
+    const told: number[] = [];
+    repairs.subscribe((keys) => told.push(keys.size));
+    repairs.request('first', { tex: 'first', display: false, error: 'e' }, () => undefined);
+    for (let turn = 0; turn < 10 && frames.length === 0; turn += 1) await Promise.resolve();
+    frames.splice(0).forEach((callback) => callback());
+    for (const tex of ['a', 'b', 'c', 'd', 'e']) {
+      repairs.request(tex, { tex, display: false, error: 'e' }, () => undefined);
+    }
+    for (let turn = 0; turn < 20; turn += 1) await Promise.resolve();
+    expect(frames).toHaveLength(1);
+    frames.splice(0).forEach((callback) => callback());
+    expect(told).toEqual([1, 5]);
+  });
+
+  it('asks again later when the server is busy, and keeps no "busy"', async () => {
+    let calls = 0;
+    const waits: number[] = [];
+    const repairs = new ModelRepairs(
+      async () => {
+        calls += 1;
+        return calls < 3
+          ? { enabled: true, tex: null, model: 'rev', reason: 'busy' }
+          : { enabled: true, tex: 'x^{2}', model: 'rev' };
+      },
+      {
+        later: (callback, ms) => {
+          waits.push(ms);
+          setTimeout(callback, 0);
+          return () => undefined;
+        },
+      },
+    );
+    repairs.request('k', { tex: 'x^^2', display: false, error: 'e' }, () => undefined);
+    await repairs.settled();
+    expect(calls).toBe(3);
+    expect(waits).toEqual([2_000, 4_000]);
+    expect(repairs.get('k')).toEqual({ tex: 'x^{2}', model: 'rev' });
+  });
+
+  it('gives up for the page after the server stays busy', async () => {
+    const repairs = new ModelRepairs(async () => ({ enabled: true, tex: null, reason: 'busy' }), {
+      busyRetries: [1, 1],
+      later: (callback) => {
+        setTimeout(callback, 0);
+        return () => undefined;
+      },
+    });
+    repairs.request('k', { tex: 'x^^2', display: false, error: 'e' }, () => undefined);
+    await repairs.settled();
+    expect(repairs.get('k')).toEqual({ tex: null, reason: 'the server stayed busy' });
   });
 
   it("stops asking when the session ends or reaches the server's limit", async () => {
@@ -360,6 +514,18 @@ describe('the marks', () => {
     expect(html).toContain('<span class="math-details" hidden>');
     expect(html).toContain('<code class="math-source">\\(\\x\\)</code>');
     expect(html).toContain('The reviewer model has been asked for a repair.');
+  });
+
+  it('show bidirectional controls in the formula as written as code points', () => {
+    const html = recoveredHtml(
+      { status: 'fallback', unicode: 'a\u202eb', error: 'e', state: 'unrepairable', reason: null },
+      'span',
+      false,
+      '$x \\text{\u202eevil}$',
+    );
+    expect(html).not.toContain('\u202e');
+    expect(html).toContain('<code class="math-source">$x \\text{⟦U+202E⟧evil}$</code>');
+    expect(html).toContain('<span class="math-unicode">a⟦U+202E⟧b</span>');
   });
 
   it('lay out displayed math within a paragraph as displayed', () => {
