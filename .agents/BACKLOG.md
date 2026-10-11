@@ -45,7 +45,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox
 - [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic checked in lab 2: the middleware decides it, and the floor holds
 - [ ] MCP proxy: forward only tool names the server advertises, exactly as advertised; bound argument sizes; send `MCP-Protocol-Version` on every request after `initialize`, with credential placeholders only in headers (lab 2)
-- [ ] Event store with an append-only hash chain
+- [x] Event store with an append-only hash chain (`packages/event-store`, D72): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
+- [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer)
 - [ ] Adversarial fixture suite
 - [ ] Isolation-tier probes (D43)
 - [ ] Multi-arch base images: `minimal` and the `crypto-base` recipe (D46); babbage MicroVM gateway configuration (D63)

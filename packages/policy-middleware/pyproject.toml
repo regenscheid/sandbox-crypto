@@ -6,6 +6,7 @@ description = "OpenShell supervisor middleware that decides sandbox requests wit
 requires-python = ">=3.12"
 license = "MIT"
 dependencies = [
+    "sandbox-science-event-store",
     "sandbox-science-policy",
     "cryptography>=43",
     "grpcio>=1.66",
@@ -17,6 +18,7 @@ dependencies = [
 sandbox-science-policy-middleware = "sandbox_science.policy_middleware.cli:main"
 
 [tool.uv.sources]
+sandbox-science-event-store = { workspace = true }
 sandbox-science-policy = { workspace = true }
 
 [build-system]
