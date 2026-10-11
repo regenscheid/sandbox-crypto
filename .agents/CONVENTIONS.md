@@ -13,6 +13,7 @@ Applies to all code and documentation in this repository. Change this file throu
 | `.agents/CONVENTIONS.md` | This file |
 | `.agents/critical-review.md`, `.agents/proposed-changes.md` | The 2026-10-10 plan review (historical) |
 | `.agents/docs/` | Agent source investigations (historical evidence) |
+| `.agents/upstream/` | Descriptions of bugs found in upstream projects, one file each, ready to file. Filing is the user's call |
 | `packages/<component>/` | One uv workspace member per deployable or shared component |
 | `examples/` | Illustrative configuration (policy, deployment profiles); tests load these to keep them valid |
 | `scripts/` | Repository tooling, such as the license check |
