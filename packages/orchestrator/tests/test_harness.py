@@ -18,7 +18,8 @@ import re
 import socket
 import subprocess
 import sys
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Iterator, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +29,15 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import (
+    AdmissionDecision,
+    AdmissionResult,
+    EnvironmentInfo,
+    EnvironmentState,
     ErrorInfo,
     ErrorKind,
     Execution,
     ExecutionContext,
+    HostPort,
     IsolationEvidence,
     Location,
     Result,
@@ -250,6 +256,74 @@ def test_the_toolbox_offers_the_kernels_the_environment_has() -> None:
     assert restart.parameters["properties"]["language"]["enum"] == ["python", "sage"]
     none = {spec.name for spec in Toolbox(client, CONTEXT, languages=()).specs}
     assert not none & {"python", "sage", "restart_kernel"}
+
+
+class AdmittingClient(WorkerClient):
+    """A worker client whose admissions come from a rule, for the admit_hosts tool."""
+
+    def __init__(self) -> None:
+        super().__init__("http://127.0.0.1:9", TOKEN)
+        self.asked: list[tuple[str, list[HostPort]]] = []
+
+    async def admit_hosts(self, environment_id: str, hosts: Sequence[HostPort]) -> AdmissionResult:
+        self.asked.append((environment_id, list(hosts)))
+        now = datetime.now(UTC)
+        decisions = tuple(
+            AdmissionDecision(
+                host=host.host.lower(),
+                port=host.port,
+                admitted=not host.host.endswith(".local"),
+                reason="admitted" if not host.host.endswith(".local") else "not a public host",
+            )
+            for host in hosts
+        )
+        environment = EnvironmentInfo(
+            environment_id=environment_id,
+            project_id="p1",
+            profile="minimal",
+            image="sandbox-science/minimal:test",
+            sandbox="ss-env1-00000000",
+            policy="sha256:" + "a" * 64,
+            state=EnvironmentState.READY,
+            created_at=now,
+            updated_at=now,
+        )
+        return AdmissionResult(decisions=decisions, environment=environment)
+
+
+async def test_the_agent_admits_hosts_before_its_code_contacts_them() -> None:
+    client = AdmittingClient()
+    try:
+        assert "admit_hosts" not in {spec.name for spec in Toolbox(client, CONTEXT).specs}
+        toolbox = Toolbox(client, CONTEXT, features=("admission",))
+        assert "admit_hosts" in {spec.name for spec in toolbox.specs}
+        hosts = ["EPrint.iacr.org", "printer.local:8080", "[2001:db8::1]:8443"]
+        call = ToolCall("c1", "admit_hosts", json.dumps({"hosts": hosts}))
+        outcome = await toolbox.call(call, "op-1")
+        assert outcome.text.splitlines() == [
+            "eprint.iacr.org:443 reachable",
+            "printer.local:8080 refused: not a public host",
+            "2001:db8::1:8443 reachable",
+        ]
+        assert client.asked == [
+            (
+                "env1",
+                [
+                    HostPort(host="EPrint.iacr.org"),
+                    HostPort(host="printer.local", port=8080),
+                    HostPort(host="2001:db8::1", port=8443),
+                ],
+            )
+        ]
+        assert outcome.record["admissions"][1]["admitted"] is False
+        for wrong in ([], ["a"] * 33, [1], "eprint.iacr.org"):
+            refused = await toolbox.call(
+                ToolCall("c2", "admit_hosts", json.dumps({"hosts": wrong})), "op-2"
+            )
+            assert json.loads(refused.text)["error"]["kind"] == "invalid_request", wrong
+        assert len(client.asked) == 1
+    finally:
+        await client.close()
 
 
 async def test_a_tool_the_environment_lacks_is_refused() -> None:
