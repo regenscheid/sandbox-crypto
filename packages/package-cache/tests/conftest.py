@@ -119,6 +119,9 @@ class CannedResponse:
     """Stream the body without a Content-Length."""
     gate: asyncio.Event | None = None
     """Wait for this event before answering."""
+    pause: asyncio.Event | None = None
+    """Send the headers and the first ``pause_after`` bytes, then wait for this event."""
+    pause_after: int = 0
 
 
 @dataclass(frozen=True)
@@ -158,13 +161,21 @@ class CoreUpstream:
             return web.Response(status=404, text="no canned response")
         if canned.gate is not None:
             await canned.gate.wait()
-        if not canned.chunked:
+        if not canned.chunked and canned.pause is None:
             return web.Response(status=canned.status, body=canned.body, headers=canned.headers)
         response = web.StreamResponse(status=canned.status, headers=canned.headers)
-        response.enable_chunked_encoding()
+        if canned.chunked:
+            response.enable_chunked_encoding()
+        else:
+            response.content_length = len(canned.body)
         await response.prepare(request)
-        for start in range(0, len(canned.body), 4096):
-            await response.write(canned.body[start : start + 4096])
+        start = 0
+        if canned.pause is not None:
+            await response.write(canned.body[: canned.pause_after])
+            await canned.pause.wait()
+            start = canned.pause_after
+        for offset in range(start, len(canned.body), 4096):
+            await response.write(canned.body[offset : offset + 4096])
         await response.write_eof()
         return response
 

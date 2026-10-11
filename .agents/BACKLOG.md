@@ -34,6 +34,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] On babbage: the package cache through OpenShell, with the compiled policy and real clients in a sandbox
 - [ ] Package cache: opam and Hackage adapters (EasyCrypt, Jasmin, ProVerif, Cryptol, Tamarin)
 - [ ] Package cache: a cooling-off period for new releases, keeping lockfile files from eviction, TLS between OpenShell and the cache
+- [ ] Package cache: per-sandbox rate limits. The policy middleware writes a sandbox header on cache requests (overwriting anything the sandbox sent), which the cache uses to give each sandbox its own budget; the cooling-off period needs the same mechanism
 - [ ] Report upstream (user's call): OpenShell v0.1.3 selects no middleware for a host ending in two dots through its explicit proxy ([policy](../docs/POLICY.md), "Residual risks")
 - [ ] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox
 - [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic is still to check

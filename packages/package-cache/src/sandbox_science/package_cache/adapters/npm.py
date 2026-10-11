@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The npm registry adapter (docs/PACKAGE-CACHE.md, "URL layout").
 
-Two request shapes below ``/npm/`` are served; everything else (search, audit, logins,
+Three request shapes below ``/npm/`` are served; everything else (search, audit, logins,
 dist-tag and publish endpoints, the registry root) is refused:
 
 * ``<name>``, ``@<scope>%2F<name>`` (or ``%2f``) and ``@<scope>/<name>``: the package's
@@ -11,16 +11,25 @@ dist-tag and publish endpoints, the registry root) is refused:
   ``<sha512>`` is the lowercase hex SHA-512 the cache verifies, copied from the version's
   ``dist.integrity`` when the metadata was rewritten, or ``-`` when it had none. A scoped
   ``<name>`` keeps its literal slash here, as in the registry's own tarball URLs.
+* ``<name>/-/<file>``, ``@<scope>/<name>/-/<file>`` and ``@<scope>%2F<name>/-/<file>`` (or
+  ``%2f``): a tarball as a lockfile names it, fetched from ``<registry>/<name>/-/<file>``
+  with the scope's slash literal. npm rewrites a lockfile's tarball URLs on the default
+  registry to this path below the configured one, pnpm builds it from the name and
+  version, and yarn 2 and later build it with the scope's slash written ``%2f``. It
+  carries no digest, so the cache verifies nothing: the client checks the tarball against
+  the lockfile's integrity. It is the ``files/-/<name>/-/<file>`` route spelled
+  differently, and shares that route's cache entry, never one verified against a digest.
 
 Names follow npm's rules for existing packages (``validate-npm-package-name``): legacy
 names may contain capital letters and ``~'!()*``. They are never folded: the registry is
 case-sensitive, and ``JSONStream`` and ``jsonstream`` are different packages.
 
-A tarball ``<file>`` must be a name npm gave that package's tarballs: the unscoped name,
-``-`` and a SemVer version, then ``.tgz``. Two legacy forms that the registry still serves
-are accepted: a prerelease that starts with a letter may lack its hyphen, as early npm
-wrote it (``express-1.0.0rc2.tgz`` holds version ``1.0.0-rc2``), and ``@`` may stand
-instead of ``-`` (``thirty-two@0.0.1.tgz``).
+A tarball ``<file>``, on either tarball route, must be a name npm gave that package's
+tarballs: the unscoped name, ``-`` and a SemVer version, then ``.tgz``. Two legacy forms
+that the registry still serves are accepted: a prerelease that starts with a letter may
+lack its hyphen, as early npm wrote it (``express-1.0.0rc2.tgz`` holds version
+``1.0.0-rc2``), and ``@`` may stand instead of ``-`` (``thirty-two@0.0.1.tgz``). The
+policy decides by ``<name>``, so a tarball of another package is refused.
 
 Metadata has two variants, chosen from the client's ``Accept`` header: the abbreviated
 install document (``application/vnd.npm.install-v1+json``), which npm, pnpm and yarn 1 ask
@@ -95,6 +104,13 @@ _TARBALL_PATH: Final = re.compile(
     r"files/(?P<digest>[0-9a-f]{128}|-)/"
     rf"(?P<name>(?:@{_URL_SAFE}+/)?{_URL_SAFE}+)/-/(?P<file>[^/]+)"
 )
+# The registry's own tarball path, as lockfiles lead clients to it. No path matches both
+# this and _TARBALL_PATH: a name has a slash only after an "@scope", so a match here that
+# does not start with "@" has two slashes, and a files/ path has at least four.
+_LOCKFILE_TARBALL_PATH: Final = re.compile(
+    rf"(?P<name>(?:@{_URL_SAFE}+(?:/|%2[Ff]))?{_URL_SAFE}+)/-/(?P<file>[^/]+)"
+)
+_ENCODED_SLASH: Final = re.compile(r"%2[Ff]")
 
 # SemVer 2.0, except that a prerelease starting with a letter may lack its hyphen
 # (1.0.0rc2), the one relaxation the registry's tarball names need. Requiring the letter
@@ -149,8 +165,17 @@ class NpmAdapter:
         ``path`` is still percent-encoded and ``headers`` have lowercased names. Only the
         ``Accept`` header is read; nothing the client sends is forwarded upstream.
         """
+        if match := _TARBALL_PATH.fullmatch(path):
+            digest = match.group("digest")
+            return self._tarball(
+                match.group("name"), match.group("file"), None if digest == "-" else digest
+            )
+        if match := _LOCKFILE_TARBALL_PATH.fullmatch(path):
+            # The registry's tarball URLs keep the scope's slash literal.
+            name = _ENCODED_SLASH.sub("/", match.group("name"))
+            return self._tarball(name, match.group("file"), None)
         if path.startswith("files/"):
-            return self._tarball(path)
+            return None  # the cache's own namespace: never a package's metadata
         return self._metadata(path, headers.get("accept"))
 
     def _metadata(self, path: str, accept: str | None) -> Route:
@@ -179,24 +204,20 @@ class NpmAdapter:
             content_type=variant,
         )
 
-    def _tarball(self, path: str) -> Route:
-        match = _TARBALL_PATH.fullmatch(path)
-        if match is None:
-            return None
-        digest = match.group("digest")
-        name = match.group("name")
-        file = match.group("file")
+    def _tarball(self, name: str, file: str, digest: str | None) -> Route:
+        """Fetch ``name``'s tarball ``file``, verified against the SHA-512 ``digest`` if any."""
         if not _is_valid_name(name) or _tarball_version(name, file) is None:
             return None
         url = f"{self._registry}/{name}/-/{file}"
         return Fetch(
             # The digest is part of the key: a body verified against one digest is never
-            # served for a path that names another digest, or none.
-            key=f"npm tarball {digest} {url}",
+            # served for a path that names another digest, or none, and requests naming
+            # different digests never share a fetch. Lockfile paths name none.
+            key=f"npm tarball {digest or '-'} {url}",
             url=url,
             kind=Kind.ARTIFACT,
             immutable=True,
-            digest=None if digest == "-" else Digest("sha512", digest),
+            digest=None if digest is None else Digest("sha512", digest),
             content_type=TARBALL_CONTENT_TYPE,
         )
 

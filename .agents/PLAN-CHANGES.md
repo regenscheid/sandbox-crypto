@@ -4,6 +4,14 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-10
 
+- **Package cache review.** An independent review of the cache found no way to poison it, get a file past its digest check, or make it fetch from anything but its configured registries. Across about 300,000 generated paths, the cache and the policy classifier never disagreed about a path's ecosystem, kind or package. It did find availability problems that let one sandbox degrade the shared cache for every project:
+  - downloads repeated for wrong digests;
+  - a shared connection pool with no wait limit;
+  - unbounded rewrites of very large index documents;
+  - slow readers holding connections;
+  - "not found" entries growing without limit;
+  - redirects to internal hosts.
+  It also found two bugs: the npm lockfile route was missing from the adapter, and PyPI keys ignored the digest. These are fixed in the cache PR. Per-sandbox rate limits need the middleware to identify the sandbox to the cache, and are on the backlog with the cooling-off period.
 - **Package cache service built** ([package cache](../docs/PACKAGE-CACHE.md), D71). It has a core (aiohttp server, content-addressed store with LRU eviction, verified streaming fetches, revalidation, a rate limit) and an adapter for each of PyPI, conda, Cargo, Go and npm. Four agents built it in parallel against a written contract. Along the way they found two gaps, now fixed: lockfile installs (npm, pnpm and yarn fetch `<name>/-/<file>.tgz`) and the real conda shard path. Real pip, uv, mamba, cargo, go and npm clients install through it.
 - **Package policy review.** An adversarial review of the package policy found one critical problem, now fixed. OpenShell selects middleware by host alone, so excluding the raw MCP proxy's host also took the package cache out of the middleware whenever both ran on `host.openshell.internal`, the single-host setup the docs recommended. The services are now inspected endpoints, and nothing is excluded. Also fixed:
   - the pool ceiling applies to package registries;

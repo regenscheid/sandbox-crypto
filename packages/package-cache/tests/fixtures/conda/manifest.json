@@ -1,5 +1,5 @@
 {
-  "about": "conda-forge on https://conda.anaconda.org, observed on 2026-10-10. The cache does not parse conda bodies, so these fixtures record request paths, not response bodies. test_adapter_conda.py routes every path below /conda/conda-forge/.",
+  "about": "conda-forge on https://conda.anaconda.org, observed on 2026-10-10. The cache does not parse conda bodies, so these fixtures record request paths, not response bodies, except one shard, kept to show that a shard's name is the SHA-256 of the file as served. test_adapter_conda.py routes every path below /conda/conda-forge/.",
   "fixtures": [
     {
       "file": "conda-forge-layout.json",
@@ -8,6 +8,10 @@
     {
       "file": "filenames.txt",
       "about": "Real package file names as <subdir>/<file name>, taken from the 'packages' and 'packages.conda' keys of noarch, linux-64 and linux-aarch64 repodata.json.zst (1,536,350 names in all). The sample covers every name led by an underscore, versions with !, + and upper case letters, build strings with upper case letters, names with dots and digits, the longest name, and both archive formats. Every name in the three subdirs matches the adapter's grammar except 11 whose build strings contain '* *' (code-aster 17.3.16 and groundingdino-py-cuda 0.4.1/0.4.2), which the adapter refuses."
+    },
+    {
+      "file": "eb66076ab6428bdb9093fd1524266c6f6da0933bcabc1719b668eb5aa254a848.msgpack.zst",
+      "about": "The repodata shard of 'requests' in noarch, saved unmodified from one GET of https://conda.anaconda.org/conda-forge/noarch/eb66076ab6428bdb9093fd1524266c6f6da0933bcabc1719b668eb5aa254a848.msgpack.zst at 2026-10-11T02:20Z, sent with 'Accept-Encoding: gzip, deflate' as the cache's upstream client sends it. It came as binary/octet-stream without Content-Encoding (2,631 bytes, Last-Modified 2026-06-15): a zstd frame whose SHA-256 is its name, so the name hashes the compressed file as served, which the cache can verify."
     }
   ]
 }

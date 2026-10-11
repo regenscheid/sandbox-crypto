@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""Upstream fetches: TLS, headers, limits, digests, validators, redirects and the rate limit."""
+"""Upstream fetches: TLS, headers, limits, digests, validators, redirects and the rate limit,
+and the capacity limits: download slots, temp space, the connection pool and deadlines."""
 
 import asyncio
 import gzip
 import hashlib
+import logging
 import os
 import ssl
 from collections.abc import AsyncIterator, Callable
@@ -14,9 +16,11 @@ import aiohttp
 import pytest
 import pytest_asyncio
 from aiohttp.test_utils import unused_port
+from yarl import URL
 
 from sandbox_science.package_cache.adapter import Digest, Fetch, Kind
 from sandbox_science.package_cache.errors import (
+    BusyError,
     DigestMismatchError,
     RateLimitedError,
     RedirectError,
@@ -27,16 +31,22 @@ from sandbox_science.package_cache.errors import (
 )
 from sandbox_science.package_cache.upstream import (
     DEFAULT_TIMEOUT,
+    INDEX_CONNECTIONS,
     NEGATIVE_BODY_LIMIT,
     USER_AGENT,
+    DigestMemory,
     Downloaded,
     NotModified,
     SingleFlight,
+    TempSpace,
     TokenBucket,
     UpstreamClient,
+    UpstreamResult,
     Validators,
+    check_redirect,
     check_url,
     create_session,
+    pool_size,
 )
 
 
@@ -87,21 +97,27 @@ async def make_client(
         *,
         rate: float = 1000.0,
         burst: int = 100,
-        max_wait: float = 10.0,
+        rate_wait: float = 10.0,
         allowed: tuple[str, ...] | None = None,
         trusted: bool = True,
         timeout: aiohttp.ClientTimeout = DEFAULT_TIMEOUT,
+        pool: int = 100,
+        temp_space: TempSpace | None = None,
+        **options: object,
     ) -> UpstreamClient:
         session = create_session(
             ssl_context=core_tls.client if trusted else None,
             timeout=timeout,
+            limit=pool,
         )
         sessions.append(session)
         return UpstreamClient(
             session,
             temp_dir=temp_dir,
-            limiter=TokenBucket(rate, burst, max_wait=max_wait),
+            limiter=TokenBucket(rate, burst, max_wait=rate_wait),
             allowed=allowed if allowed is not None else (core_upstream.origin,),
+            temp_space=temp_space if temp_space is not None else TempSpace(10**9),
+            **options,  # pyright: ignore[reportArgumentType]
         )
 
     yield make
@@ -125,6 +141,18 @@ async def download(client: UpstreamClient, fetch: Fetch, max_size: int = 1_000_0
     result = await client.fetch(fetch, max_size=max_size)
     assert isinstance(result, Downloaded)
     return result
+
+
+def close(result: UpstreamResult) -> None:
+    assert isinstance(result, Downloaded)
+    result.close()
+
+
+async def until(condition: Callable[[], bool], timeout: float = 5.0) -> None:
+    """Wait until ``condition()`` holds."""
+    async with asyncio.timeout(timeout):
+        while not condition():
+            await asyncio.sleep(0.01)
 
 
 # The token bucket and single flights.
@@ -564,15 +592,74 @@ async def test_redirects_must_lead_to_https(
 
 
 @pytest.mark.asyncio
-async def test_redirects_may_lead_away_from_the_configured_upstreams(
-    core_upstream: Upstream, make_client: ClientFactory
+@pytest.mark.parametrize(
+    "location",
+    [
+        pytest.param("https://localhost:{port}/cdn/file", id="localhost"),
+        pytest.param("https://LOCALHOST.:{port}/cdn/file", id="localhost-dot"),
+        pytest.param("https://127.0.0.1:{other}/cdn/file", id="loopback-other-port"),
+        pytest.param("https://[::1]:{port}/cdn/file", id="ipv6-loopback"),
+        pytest.param("https://[::ffff:127.0.0.1]:{port}/cdn/file", id="ipv4-mapped"),
+        pytest.param("https://10.1.2.3/cdn/file", id="private"),
+        pytest.param("https://100.64.0.1/cdn/file", id="shared-address-space"),
+        pytest.param("https://169.254.169.254/latest/meta-data/", id="metadata-address"),
+        pytest.param("https://168.63.129.16/machine", id="public-address-on-the-floor"),
+        pytest.param("https://metadata.google.internal/x", id="metadata-name"),
+        pytest.param("https://host.openshell.internal:8090/x", id="gateway-alias"),
+        pytest.param("https://intranet/x", id="single-label"),
+        pytest.param("https://mirror.corp/x", id="private-suffix"),
+        pytest.param("https://2130706433/x", id="numeric-address"),
+        pytest.param("https://127.1/x", id="short-address"),
+    ],
+)
+async def test_redirects_to_hosts_that_are_not_public_are_refused(
+    core_upstream: Upstream, make_client: ClientFactory, location: str
 ) -> None:
     port = core_upstream.origin.rsplit(":", 1)[1]
-    location = f"https://localhost:{port}/cdn/file"
-    core_upstream.set("/r", status=307, headers={"Location": location})
+    target = location.format(port=port, other=unused_port())
+    core_upstream.set("/r", status=307, headers={"Location": target})
     core_upstream.set("/cdn/file", b"from the CDN")
-    result = await download(make_client(), artifact(core_upstream.url("/r")))
-    assert result.blob.path.read_bytes() == b"from the CDN"
+    with pytest.raises(RedirectError, match="refused"):
+        await make_client().fetch(artifact(core_upstream.url("/r")), max_size=100)
+    assert [request.path for request in core_upstream.requests] == ["/r"]
+
+
+def test_redirects_may_lead_to_public_hosts_or_a_configured_upstream() -> None:
+    source = URL("https://registry.test/pkg/-/pkg-1.0.0.tgz", encoded=True)
+    allowed = ("https://registry.test", "https://127.0.0.1:8443/npm")
+    followed = {
+        "https://cdn.example.org/blob?sig=x": "https://cdn.example.org/blob?sig=x",
+        "https://93.184.216.34/blob": "https://93.184.216.34/blob",
+        "https://[2606:2800:220:1:248:1893:25c8:1946]/blob": (
+            "https://[2606:2800:220:1:248:1893:25c8:1946]/blob"
+        ),
+        # registry.test and 127.0.0.1 are not public, but configured.
+        "/elsewhere": "https://registry.test/elsewhere",
+        "https://REGISTRY.test:443/x": "https://registry.test/x",
+        "https://127.0.0.1:8443/other/path": "https://127.0.0.1:8443/other/path",
+    }
+    for location, expected in followed.items():
+        assert str(check_redirect(source, location, allowed=allowed)) == expected
+    for location in ("https://127.0.0.1:8444/x", "https://registry.test:8443/x"):
+        with pytest.raises(RedirectError, match=r"not a public host|loopback"):
+            check_redirect(source, location, allowed=allowed)
+
+
+@pytest.mark.asyncio
+async def test_followed_redirects_log_the_target_host(
+    core_upstream: Upstream, make_client: ClientFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sandbox_science.package_cache.upstream")
+    core_upstream.set("/r0", status=302, headers={"Location": "/r1?sig=test-secret"})
+    core_upstream.set("/r1?sig=test-secret", status=302, headers={"Location": "/x"})
+    core_upstream.set("/x", b"arrived")
+    close(await make_client().fetch(metadata(core_upstream.url("/r0")), max_size=100))
+    host = core_upstream.origin.removeprefix("https://")
+    lines = [record.getMessage() for record in caplog.records]
+    assert lines == [
+        f"{core_upstream.origin}/r0 redirected to host {host}",
+        f"{core_upstream.origin}/r1 redirected to host {host}",
+    ]
 
 
 # Transport failures and the rate limit.
@@ -612,8 +699,336 @@ async def test_every_upstream_request_takes_a_token(
 ) -> None:
     core_upstream.set("/r", status=302, headers={"Location": "/x"})
     core_upstream.set("/x", b"x")
-    client = make_client(rate=0.001, burst=1, max_wait=0)
+    client = make_client(rate=0.001, burst=1, rate_wait=0)
     with pytest.raises(RateLimitedError):
         await client.fetch(metadata(core_upstream.url("/r")), max_size=10)
     assert core_upstream.count("/r") == 1
     assert core_upstream.count("/x") == 0
+
+
+# Remembered digests.
+
+
+def test_the_digest_memory_is_an_expiring_lru() -> None:
+    now = [0.0]
+    memory = DigestMemory(size=2, ttl=10, clock=lambda: now[0])
+    memory.remember("https://r.test/a", {"sha256": "1"})
+    memory.remember("https://r.test/b", {"sha256": "2", "sha512": "3"})
+    assert memory.actual("https://r.test/a", "sha256") == "1"
+    memory.remember("https://r.test/c", {"sha256": "4"})  # b was used least recently
+    assert memory.actual("https://r.test/b", "sha512") is None
+    assert memory.actual("https://r.test/a", "sha512") is None
+    assert len(memory) == 2
+    now[0] = 10
+    assert memory.actual("https://r.test/a", "sha256") is None
+    assert len(memory) == 1
+    with pytest.raises(ValueError, match="size"):
+        DigestMemory(size=0)
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_digest_is_not_downloaded_again(
+    core_upstream: Upstream, make_client: ClientFactory, temp_dir: Path
+) -> None:
+    body = b"the real bytes"
+    core_upstream.set("/f.tgz", body)
+    client = make_client()
+    url = core_upstream.url("/f.tgz")
+    wrong = artifact(url, digest=Digest("sha256", sha256(b"other bytes")))
+    with pytest.raises(DigestMismatchError, match="index published"):
+        await client.fetch(wrong, max_size=100)
+    with pytest.raises(DigestMismatchError, match="when it was last downloaded"):
+        await client.fetch(wrong, max_size=100)
+    assert core_upstream.count("/f.tgz") == 1
+    close(await client.fetch(artifact(url, digest=Digest("sha256", sha256(body))), max_size=100))
+    assert core_upstream.count("/f.tgz") == 2
+    another = artifact(url, digest=Digest("sha256", sha256(b"a third body")))
+    with pytest.raises(DigestMismatchError, match="when it was last downloaded"):
+        await client.fetch(another, max_size=100)
+    assert core_upstream.count("/f.tgz") == 2
+    assert list(temp_dir.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_the_memory_answers_only_for_algorithms_it_computed(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    body = b"tarball bytes"
+    core_upstream.set("/f.tgz", body)
+    client = make_client()
+    url = core_upstream.url("/f.tgz")
+    close(await client.fetch(artifact(url, digest=Digest("sha256", sha256(body))), max_size=100))
+    wrong = artifact(url, digest=Digest("sha512", hashlib.sha512(b"other").hexdigest()))
+    with pytest.raises(DigestMismatchError, match="index published"):
+        await client.fetch(wrong, max_size=100)  # no SHA-512 known yet: downloaded
+    with pytest.raises(DigestMismatchError, match="when it was last downloaded"):
+        await client.fetch(wrong, max_size=100)
+    assert core_upstream.count("/f.tgz") == 2
+
+
+@pytest.mark.asyncio
+async def test_immutable_index_data_with_a_digest_is_remembered_too(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    core_upstream.set("/shard.msgpack.zst", b"shard bytes")
+    client = make_client()
+    shard = metadata(
+        core_upstream.url("/shard.msgpack.zst"),
+        immutable=True,
+        digest=Digest("sha256", sha256(b"another shard")),
+    )
+    for message in ("index published", "when it was last downloaded"):
+        with pytest.raises(DigestMismatchError, match=message):
+            await client.fetch(shard, max_size=100)
+    assert core_upstream.count("/shard.msgpack.zst") == 1
+
+
+@pytest.mark.asyncio
+async def test_a_remembered_digest_expires(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    now = [0.0]
+    core_upstream.set("/f.tgz", b"bytes")
+    client = make_client(digests=DigestMemory(ttl=60, clock=lambda: now[0]))
+    wrong = artifact(core_upstream.url("/f.tgz"), digest=Digest("sha256", sha256(b"x")))
+    for _ in range(2):
+        with pytest.raises(DigestMismatchError):
+            await client.fetch(wrong, max_size=100)
+    assert core_upstream.count("/f.tgz") == 1
+    now[0] = 60
+    with pytest.raises(DigestMismatchError, match="index published"):
+        await client.fetch(wrong, max_size=100)
+    assert core_upstream.count("/f.tgz") == 2
+
+
+@pytest.mark.asyncio
+async def test_downloads_of_one_url_for_different_digests_take_turns(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    gate = asyncio.Event()
+    core_upstream.set("/f.tgz", b"x" * 1000, gate=gate)
+    client = make_client()
+    url = core_upstream.url("/f.tgz")
+    wrong = [artifact(url, digest=Digest("sha256", sha256(bytes([n])))) for n in range(5)]
+    tasks = [asyncio.create_task(client.fetch(fetch, max_size=10_000)) for fetch in wrong]
+    await until(lambda: core_upstream.count("/f.tgz") == 1)
+    await asyncio.sleep(0.1)  # the others are waiting for their turn, not downloading
+    assert core_upstream.count("/f.tgz") == 1
+    gate.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert [type(result) for result in results] == [DigestMismatchError] * 5
+    assert core_upstream.count("/f.tgz") == 1
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_another_digests_download_is_bounded(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    gate = asyncio.Event()
+    core_upstream.set("/f.tgz", b"x" * 1000, gate=gate)
+    client = make_client(max_wait=0.2)
+    url = core_upstream.url("/f.tgz")
+    first = asyncio.create_task(
+        client.fetch(artifact(url, digest=Digest("sha256", sha256(b"a"))), max_size=10_000)
+    )
+    await until(lambda: core_upstream.count("/f.tgz") == 1)
+    with pytest.raises(BusyError, match="another digest"):
+        await client.fetch(artifact(url, digest=Digest("sha256", sha256(b"b"))), max_size=10_000)
+    gate.set()
+    with pytest.raises(DigestMismatchError):
+        await first
+    assert core_upstream.count("/f.tgz") == 1
+
+
+# Download slots, temp space, connections and deadlines.
+
+
+@pytest.mark.asyncio
+async def test_artifact_downloads_wait_briefly_for_a_free_slot(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    gate = asyncio.Event()
+    core_upstream.set("/a.tgz", b"a", gate=gate)
+    core_upstream.set("/b.tgz", b"b")
+    core_upstream.set("/index", b"i")
+    client = make_client(max_artifact_downloads=1, max_wait=0.2)
+    first = asyncio.create_task(client.fetch(artifact(core_upstream.url("/a.tgz")), max_size=10))
+    await until(lambda: core_upstream.count("/a.tgz") == 1)
+    with pytest.raises(BusyError, match="download slots"):
+        await client.fetch(artifact(core_upstream.url("/b.tgz")), max_size=10)
+    assert core_upstream.count("/b.tgz") == 0
+    close(await client.fetch(metadata(core_upstream.url("/index")), max_size=10))
+    gate.set()
+    close(await first)
+    close(await client.fetch(artifact(core_upstream.url("/b.tgz")), max_size=10))
+
+
+@pytest.mark.asyncio
+async def test_a_freed_slot_goes_to_a_waiting_download(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    gate = asyncio.Event()
+    core_upstream.set("/a.tgz", b"a", gate=gate)
+    core_upstream.set("/b.tgz", b"b")
+    client = make_client(max_artifact_downloads=1, max_wait=5)
+    first = asyncio.create_task(client.fetch(artifact(core_upstream.url("/a.tgz")), max_size=10))
+    await until(lambda: core_upstream.count("/a.tgz") == 1)
+    second = asyncio.create_task(client.fetch(artifact(core_upstream.url("/b.tgz")), max_size=10))
+    await asyncio.sleep(0.1)
+    assert not second.done()
+    assert core_upstream.count("/b.tgz") == 0
+    gate.set()
+    close(await first)
+    close(await second)
+
+
+def test_the_pool_keeps_connections_for_index_data() -> None:
+    assert INDEX_CONNECTIONS > 0
+    assert pool_size(16) == 16 + INDEX_CONNECTIONS
+    with pytest.raises(ValueError, match="max_artifact_downloads"):
+        UpstreamClient(
+            None,  # pyright: ignore[reportArgumentType]
+            temp_dir=Path(),
+            limiter=TokenBucket(1, 1),
+            allowed=(),
+            temp_space=TempSpace(1),
+            max_artifact_downloads=0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_waiting_for_an_upstream_connection_is_bounded(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    gate = asyncio.Event()
+    core_upstream.set("/slow", b"s", gate=gate)
+    core_upstream.set("/other", b"o")
+    client = make_client(pool=1, timeout=aiohttp.ClientTimeout(connect=0.3, sock_read=10))
+    first = asyncio.create_task(client.fetch(metadata(core_upstream.url("/slow")), max_size=10))
+    await until(lambda: core_upstream.count("/slow") == 1)
+    with pytest.raises(BusyError, match="no connection"):
+        await client.fetch(metadata(core_upstream.url("/other")), max_size=10)
+    assert core_upstream.count("/other") == 0
+    gate.set()
+    close(await first)
+    close(await client.fetch(metadata(core_upstream.url("/other")), max_size=10))
+
+
+def test_temp_space_reservations() -> None:
+    space = TempSpace(100)
+    first = space.reserve(60)
+    with pytest.raises(BusyError, match="do not fit"):
+        space.reserve(41)
+    second = space.reserve(40)
+    assert space.used == 100
+    with pytest.raises(BusyError):
+        second.grow(1)
+    first.release()
+    first.release()
+    assert space.used == 40
+    second.grow(10)
+    assert (second.size, space.used) == (50, 50)
+    second.release()
+    assert space.used == 0
+    with pytest.raises(RuntimeError, match="released"):
+        second.grow(1)
+    with pytest.raises(ValueError, match="positive"):
+        TempSpace(0)
+
+
+@pytest.mark.asyncio
+async def test_a_download_that_would_overflow_the_temp_space_fails_at_once(
+    core_upstream: Upstream, make_client: ClientFactory, temp_dir: Path
+) -> None:
+    pause = asyncio.Event()
+    core_upstream.set("/a.tgz", b"a" * 600, pause=pause, pause_after=100)
+    core_upstream.set("/b.tgz", b"b" * 600)
+    space = TempSpace(1000)
+    client = make_client(temp_space=space)
+    first = asyncio.create_task(
+        client.fetch(artifact(core_upstream.url("/a.tgz")), max_size=10_000)
+    )
+    await until(lambda: space.used == 600)  # reserved from its Content-Length
+    with pytest.raises(BusyError, match="do not fit"):
+        await client.fetch(artifact(core_upstream.url("/b.tgz")), max_size=10_000)
+    assert space.used == 600
+    pause.set()
+    result = await first
+    assert isinstance(result, Downloaded)
+    assert result.reservation.size == 600
+    result.close()
+    result.close()
+    assert space.used == 0
+    assert list(temp_dir.iterdir()) == []
+    close(await client.fetch(artifact(core_upstream.url("/b.tgz")), max_size=10_000))
+    assert space.used == 0
+
+
+@pytest.mark.asyncio
+async def test_bodies_without_a_length_reserve_space_as_they_arrive(
+    core_upstream: Upstream, make_client: ClientFactory, temp_dir: Path
+) -> None:
+    core_upstream.set("/big", b"x" * 20_000, chunked=True)
+    core_upstream.set("/small", b"y" * 5_000, chunked=True)
+    space = TempSpace(10_000)
+    client = make_client(temp_space=space)
+    with pytest.raises(BusyError, match="do not fit"):
+        await client.fetch(artifact(core_upstream.url("/big")), max_size=100_000)
+    assert space.used == 0
+    assert list(temp_dir.iterdir()) == []
+    result = await download(client, artifact(core_upstream.url("/small")), 100_000)
+    assert 5_000 <= result.reservation.size <= space.limit
+    result.close()
+    assert space.used == 0
+
+
+@pytest.mark.asyncio
+async def test_decoded_index_data_reserves_beyond_its_length(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    plain = b"{" + b" " * 100_000 + b"}"
+    core_upstream.set("/index.json", gzip.compress(plain), headers={"Content-Encoding": "gzip"})
+    small = TempSpace(50_000)
+    with pytest.raises(BusyError):
+        await make_client(temp_space=small).fetch(
+            metadata(core_upstream.url("/index.json")), max_size=1_000_000
+        )
+    assert small.used == 0
+    large = TempSpace(1_000_000)
+    result = await download(
+        make_client(temp_space=large), metadata(core_upstream.url("/index.json"))
+    )
+    assert result.reservation.size >= len(plain)
+    result.close()
+    assert large.used == 0
+
+
+@pytest.mark.asyncio
+async def test_index_fetches_have_a_deadline(
+    core_upstream: Upstream, make_client: ClientFactory, temp_dir: Path
+) -> None:
+    pause = asyncio.Event()
+    core_upstream.set("/index", b"{" + b" " * 10_000 + b"}", pause=pause, pause_after=100)
+    space = TempSpace(10**6)
+    client = make_client(metadata_deadline=0.3, temp_space=space)
+    try:
+        with pytest.raises(UpstreamError, match=r"took longer than 0\.3s"):
+            await client.fetch(metadata(core_upstream.url("/index")), max_size=100_000)
+        assert list(temp_dir.iterdir()) == []
+        assert space.used == 0
+    finally:
+        pause.set()
+
+
+@pytest.mark.asyncio
+async def test_artifact_downloads_have_no_deadline(
+    core_upstream: Upstream, make_client: ClientFactory
+) -> None:
+    gate = asyncio.Event()
+    core_upstream.set("/a.tgz", b"a", gate=gate)
+    client = make_client(metadata_deadline=0.2)
+    task = asyncio.create_task(client.fetch(artifact(core_upstream.url("/a.tgz")), max_size=10))
+    await asyncio.sleep(0.4)
+    assert not task.done()
+    gate.set()
+    close(await task)

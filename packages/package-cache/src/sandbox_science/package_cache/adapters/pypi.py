@@ -17,12 +17,15 @@ pip and uv use the cache as their index, ``<cache>/pypi/simple/``
     A distribution file at ``<files>/<path>``, where ``<path>`` has the layout of
     files.pythonhosted.org, ``packages/<2 hex>/<2 hex>/<60 hex>/<file name>``. It
     is an immutable artifact, verified against the SHA-256 the index published
-    (``-`` when it published none). The policy decides by ``<project>``, so the
-    file must be a wheel or sdist of that project (:func:`is_distribution_of`).
+    (``-`` when it published none). The digest is part of the cache key, so
+    requests naming different digests, or none, never share a fetch or a stored
+    file. The policy decides by ``<project>``, so the file must be a wheel or
+    sdist of that project (:func:`is_distribution_of`).
 ``files/<project>/<sha256 or ->/<path>.metadata``
     The distribution's core metadata (PEP 658): immutable index data. The digest
     in the path is the distribution's, so the client checks the metadata against
-    the hash the page gives for it.
+    the hash the page gives for it. The cache verifies nothing here, so every
+    digest in the path shares the one stored copy of the upstream file.
 
 Everything else is refused, including the project list ``simple/``.
 """
@@ -740,6 +743,18 @@ class PypiAdapter:
             return None
         url = f"{self._files}/{target.path}"
         if target.metadata:
+            # No digest of its own: the one in the path is the distribution's, and the
+            # cache verifies nothing against it, so the upstream URL alone is the key.
             return Fetch(key=url, url=url, kind=Kind.METADATA, immutable=True)
         digest = None if target.digest == "-" else Digest("sha256", target.digest)
-        return Fetch(key=url, url=url, kind=Kind.ARTIFACT, immutable=True, digest=digest)
+        return Fetch(
+            # The digest is part of the key, as for npm and Cargo: a body verified against
+            # one digest is never served for a path that names another digest, or none,
+            # and a request naming a wrong digest fails alone instead of sharing its fetch
+            # (and its 502) with a concurrent request naming the right one.
+            key=f"{url} sha256={target.digest}",
+            url=url,
+            kind=Kind.ARTIFACT,
+            immutable=True,
+            digest=digest,
+        )

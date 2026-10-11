@@ -15,8 +15,9 @@ channels and subdirs only:
     TTL. These are the variants conda-forge publishes; it has no ``.gz``,
     ``.jlap`` or ``.zck`` files.
 ``<channel>/<subdir>/<sha256>.msgpack.zst``
-    One package name's repodata shard, named by its SHA-256: immutable index
-    data. conda-forge's shard index leaves ``shards_base_url`` empty, so clients
+    One package name's repodata shard, named by the SHA-256 of the compressed
+    file as served: immutable index data, which the cache verifies against that
+    name. conda-forge's shard index leaves ``shards_base_url`` empty, so clients
     fetch shards from the subdir itself. ``<channel>/<subdir>/shards/<sha256>.msgpack.zst``,
     the layout docs/PACKAGE-CACHE.md describes, is accepted as well.
 ``<channel>/<subdir>/<name>-<version>-<build>.conda`` or ``.tar.bz2``
@@ -40,6 +41,7 @@ from typing import Final
 # The ignore is needed until package_cache ships a py.typed marker; strict pyright
 # otherwise treats the contract module as an untyped library.
 from sandbox_science.package_cache.adapter import (  # pyright: ignore[reportMissingTypeStubs]
+    Digest,
     Fetch,
     Kind,
     Route,
@@ -64,7 +66,7 @@ INDEX_FILES: Final = frozenset(
 
 _CHANNEL_RE: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", re.ASCII)
 _SUBDIR_RE: Final = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*", re.ASCII)
-_SHARD_RE: Final = re.compile(r"[0-9a-f]{64}\.msgpack\.zst", re.ASCII)
+_SHARD_RE: Final = re.compile(r"(?P<sha256>[0-9a-f]{64})\.msgpack\.zst", re.ASCII)
 # Names are lower case and may start with "_" (_libgcc_mutex); versions and build
 # strings cannot contain "-", which is how the three parts are told apart.
 _PACKAGE_RE: Final = re.compile(
@@ -147,17 +149,20 @@ class CondaAdapter:
                 return None
             case [_, name] if name in INDEX_FILES:
                 return self._index(path, immutable=False)
-            case [_, name] | [_, "shards", name] if _SHARD_RE.fullmatch(name):
-                # Content-addressed, so it never changes.
-                return self._index(path, immutable=True)
+            case [_, name] | [_, "shards", name] if shard := _SHARD_RE.fullmatch(name):
+                # Content-addressed, so it never changes, and the cache checks that it
+                # is what its name says. The digest follows from the URL, so the key
+                # needs nothing more.
+                digest = Digest("sha256", shard.group("sha256"))
+                return self._index(path, immutable=True, digest=digest)
             case [subdir, name]:
                 return self._package(channel, subdir, name)
             case _:
                 return None
 
-    def _index(self, path: str, *, immutable: bool) -> Fetch:
+    def _index(self, path: str, *, immutable: bool, digest: Digest | None = None) -> Fetch:
         url = f"{self._base}/{path}"
-        return Fetch(key=url, url=url, kind=Kind.METADATA, immutable=immutable)
+        return Fetch(key=url, url=url, kind=Kind.METADATA, immutable=immutable, digest=digest)
 
     def _package(self, channel: str, subdir: str, name: str) -> Route:
         if parse_package_filename(name) is None:

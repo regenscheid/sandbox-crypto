@@ -8,9 +8,14 @@ sandbox-science-package-cache prune --settings cache.toml
 ```
 
 ``stats`` and ``prune`` print JSON and work on the store directly, so they may
-run while the cache serves. ``prune`` evicts down to the size cap now, as the
-cache does after storing a file, and deletes blobs no entry refers to that are
-over an hour old (younger ones may be about to get their entry).
+run while the cache serves. ``prune`` purges expired negative entries and
+evicts down to the size cap now, as the cache does after storing a file, and
+deletes blobs no entry refers to that are over an hour old (younger ones may be
+about to get their entry).
+
+``serve`` warns when the open file limit is below ``wanted_open_files``: each
+request being served may hold several descriptors, and idle connections one
+each (docs/PACKAGE-CACHE.md recommends ``LimitNOFILE=65536``).
 """
 
 from __future__ import annotations
@@ -18,13 +23,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import resource
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 from aiohttp import web
 
-from .app import create_app
+from .app import KEEPALIVE_TIMEOUT, create_app, negative_expiry
 from .errors import PackageCacheError, StoreError
 from .settings import Settings, load_settings
 from .store import ORPHAN_GRACE, Store
@@ -32,6 +38,16 @@ from .wiring import build_adapters
 
 _log = logging.getLogger("sandbox_science.package_cache")
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+
+
+def wanted_open_files(settings: Settings) -> int:
+    """File descriptors the cache may need under full load, idle connections aside.
+
+    Each request being served holds its connection, a stored or downloading
+    file and possibly an upstream connection; the rest covers the upstream
+    pool, the index and the listener.
+    """
+    return 4 * settings.max_requests + 1024
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -72,6 +88,7 @@ def _serve(settings: Settings) -> int:
         return 1
     if not adapters:
         _log.warning("no ecosystem is enabled: every package path answers 404")
+    _check_open_files(settings)
     app = create_app(settings, adapters)
     _log.info(
         "serving %s on %s for %s",
@@ -86,14 +103,30 @@ def _serve(settings: Settings) -> int:
         access_log=None,
         print=None,
         shutdown_timeout=10.0,
+        keepalive_timeout=KEEPALIVE_TIMEOUT,
     )
     return 0
+
+
+def _check_open_files(settings: Settings) -> None:
+    soft, _ = resource.getrlimit(resource.RLIMIT_NOFILE)
+    wanted = wanted_open_files(settings)
+    if soft != resource.RLIM_INFINITY and soft < wanted:
+        _log.warning(
+            "the open file limit is %d, but max_requests = %d may need %d or more; "
+            "raise it (LimitNOFILE=65536 in a systemd unit)",
+            soft,
+            settings.max_requests,
+            wanted,
+        )
 
 
 def _open(settings: Settings) -> Store:
     if not settings.cache_dir.is_dir():
         raise StoreError(f"there is no package cache in {settings.cache_dir}")
-    return Store(settings.cache_dir, max_size=settings.max_size)
+    return Store(
+        settings.cache_dir, max_size=settings.max_size, negative_expiry=negative_expiry(settings)
+    )
 
 
 def _stats(settings: Settings) -> int:

@@ -14,6 +14,7 @@ from sandbox_science.package_cache.adapter import Kind
 from sandbox_science.package_cache.errors import StoreError
 from sandbox_science.package_cache.store import (
     ACCESS_INTERVAL,
+    ENTRY_OVERHEAD,
     Entry,
     Removal,
     Store,
@@ -66,7 +67,8 @@ def root(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def store(root: Path, clock: Clock) -> Iterator[Store]:
-    with Store(root, max_size=1000, clock=clock) as store:
+    """A store whose cap counts blob bytes only, to keep the arithmetic of these tests plain."""
+    with Store(root, max_size=1000, clock=clock, entry_overhead=0) as store:
         yield store
 
 
@@ -182,6 +184,77 @@ def test_eviction_does_nothing_under_the_cap(store: Store) -> None:
     assert not store.over_capacity()
     assert store.evict() == Removal()
     assert store.keys() == ["a"]
+
+
+def test_each_entry_counts_a_fixed_overhead_toward_the_cap(root: Path, clock: Clock) -> None:
+    # Negative answers share one small blob, so only the overhead bounds their number.
+    with Store(root, max_size=10_000, clock=clock) as store:
+        for number in range(9):
+            put(store, f"missing-{number}", b"not found", kind=Kind.METADATA, status=404)
+            clock.now += ACCESS_INTERVAL + 1
+        assert store.stats() == StoreStats(entries=9, bytes=9)
+        assert store.charged_size == 9 + 9 * ENTRY_OVERHEAD
+        assert not store.over_capacity()
+        put(store, "missing-9", b"not found", kind=Kind.METADATA, status=404)
+        assert store.over_capacity()
+        assert store.evict() == Removal(entries=2)
+        assert store.keys() == [f"missing-{number}" for number in range(2, 10)]
+        assert store.charged_size == 9 + 8 * ENTRY_OVERHEAD <= 9000
+        assert store.blob_path(sha(b"not found")).exists()
+
+
+def test_eviction_purges_expired_negative_entries_first(root: Path, clock: Clock) -> None:
+    with Store(root, max_size=10**6, clock=clock, negative_expiry=100) as store:
+        put(store, "positive-old", b"package", kind=Kind.METADATA)
+        for number in range(300):  # more than one batch
+            put(store, f"gone-{number}", b"gone", kind=Kind.METADATA, status=410)
+        clock.now += 50
+        put(store, "missing-fresh", b"missing", kind=Kind.METADATA, status=404)
+        clock.now += 51
+        lookup(store, "gone-0")  # recently used, but expired all the same
+        # Under the cap, so only the purge removes anything.
+        assert store.evict() == Removal(entries=300, blobs=1, bytes=4)
+        assert store.keys() == ["positive-old", "missing-fresh"]
+        assert not store.blob_path(sha(b"gone")).exists()
+        clock.now += 50
+        assert store.evict() == Removal(entries=1, blobs=1, bytes=7)
+        assert store.keys() == ["positive-old"]
+
+
+def test_without_an_expiry_negative_entries_wait_for_the_cap(store: Store, clock: Clock) -> None:
+    put(store, "missing", b"not found", kind=Kind.METADATA, status=404)
+    clock.now += 10 * 86400
+    assert store.evict() == Removal()
+    assert store.keys() == ["missing"]
+
+
+@pytest.mark.parametrize(
+    ("options", "message"),
+    [
+        ({"entry_overhead": -1}, "entry_overhead"),
+        ({"negative_expiry": 0}, "negative_expiry"),
+        ({"max_size": 0}, "max_size"),
+    ],
+)
+def test_store_options_are_checked(root: Path, options: dict[str, int], message: str) -> None:
+    arguments: dict[str, int] = {"max_size": 10, **options}
+    with pytest.raises(ValueError, match=message):
+        Store(root, **arguments)  # pyright: ignore[reportArgumentType]
+
+
+def test_eviction_skips_blob_names_from_malformed_rows(store: Store, root: Path) -> None:
+    db = sqlite3.connect(root / "index.sqlite3")
+    try:
+        db.execute(
+            "INSERT INTO entries VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("bad", "../../escape", 1, "artifact", "x", 0.0, 0.0, None, None, 200, 0, None),
+        )
+        db.commit()
+    finally:
+        db.close()
+    put(store, "big", b"x" * 1200)
+    assert store.evict() == Removal(entries=2, blobs=2, bytes=1201)
+    assert store.keys() == []
 
 
 def test_blobs_without_entries_are_removed(store: Store, root: Path) -> None:
