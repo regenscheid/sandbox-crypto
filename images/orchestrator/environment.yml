@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# The orchestrator profile's Conda environment, installed at /opt/sandbox-science (docs/IMAGES.md):
+# Python and the harness's third-party dependencies, in the minor versions uv.lock pins. The
+# harness and its contracts are installed from wheels that build.sh builds from this checkout.
+# Permissive packages only, as for minimal: the build fails on any other license outside the
+# base distribution's runtime libraries (images/common/image_report.py). Lock with
+# images/lock.sh; the build installs conda-lock.yml.
+name: orchestrator
+channels:
+  - conda-forge
+  - nodefaults
+platforms:
+  - linux-64
+  - linux-aarch64
+dependencies:
+  - python 3.14.*
+  - aiohttp 3.14.*
+  - pydantic 2.14.*
+  - pip

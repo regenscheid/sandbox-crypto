@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: MIT
+# The orchestrator.filesystem section an OpenShell targets file needs for the orchestrator image
+# (docs/IMAGES.md):
+#   /opt/sandbox-science  the Conda prefix: the harness's interpreter, its packages and its command
+# Read-only: the harness installs nothing at runtime. images/test.sh applies it under a Landlock
+# ruleset like OpenShell's, with no devices, as compile_orchestrator() adds none.
+read_only: [/opt/sandbox-science]
