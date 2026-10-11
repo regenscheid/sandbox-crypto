@@ -22,15 +22,16 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any, Final, cast
 
-from .blocks import Parsed, parse
+from .blocks import Budget, Parsed, parse
 from .errors import INTERNAL, INVALID_REQUEST, DocumentError
 from .identity import Allocator, BlockHint, Changes, Mapped, carry
 from .normalize import normalize
-from .operations import Operation, Touches, apply, touches
+from .operations import Operation, Touches, apply, touches, unlay
 from .parser import PROFILE
 
-MAX_COMPARED: Final = 20_000
-"""Characters of a block compared exactly when counting the text a revision wrote."""
+MAX_COMPARED: Final = 250_000
+"""Pairs of characters compared at most to count what a revision wrote in a changed block;
+beyond it, all the block's changed part counts."""
 
 Json = dict[str, Any]
 
@@ -57,16 +58,35 @@ def _widened(hints: Iterable[BlockHint], grown: int) -> tuple[BlockHint, ...]:
     )
 
 
-def apply_operations(head: Mapped, operations: Sequence[Operation], allocate: Allocator) -> Applied:
-    """The operations applied in turn to ``head``, normalizing the text they bring in."""
+def apply_operations(
+    head: Mapped,
+    operations: Sequence[Operation],
+    allocate: Allocator,
+    budget: Budget | None = None,
+) -> Applied:
+    """The operations applied in turn to ``head``, normalizing the text they bring in.
+
+    Each parse takes from ``budget``, so a patch of many operations on a long text is
+    refused before it takes long to check.
+    """
+    budget = budget or Budget()
+    length = max(1, len(head.parsed.text))
+    if length * len(operations) > budget.left:
+        most = max(1, budget.left // length)
+        raise DocumentError(
+            INVALID_REQUEST,
+            f"the text has {len(head.parsed.text)} characters, and a patch to it has at most "
+            f"{most} operation{'' if most == 1 else 's'}: split this one",
+        )
     applied = Applied(head)
     current = head
     for operation in operations:
-        step = apply(current, operation)
+        step = apply(current, operation, budget)
+        budget.charge(len(step.text))
         parsed = parse(step.text)
         hints = step.block_hints
         if step.region is not None:
-            normalized = normalize(parsed, step.region)
+            normalized = normalize(parsed, step.region, budget)
             applied.converted.update(normalized.converted)
             applied.kept.extend(normalized.kept)
             hints = _widened(hints, len(normalized.text) - len(step.text))
@@ -84,7 +104,10 @@ def apply_operations(head: Mapped, operations: Sequence[Operation], allocate: Al
             # some lines of a formula and not in others.
             span_id, tex = step.expect
             index = current.span_index(span_id)
-            found = "" if index is None else current.parsed.spans[index].tex
+            found = ""
+            if index is not None:
+                span = current.parsed.spans[index]
+                found = unlay(span.tex, current.parsed.blocks[span.block].continuation)
             if index is None or found.split() != tex.split():
                 raise DocumentError(
                     INVALID_REQUEST,
@@ -110,29 +133,72 @@ def _descendants(mapped: Mapped, block_id: str) -> set[str]:
     return {mapped.block_ids[child] for child in mapped.parsed.descendants(index)}
 
 
+def _reading(mapped: Mapped, index: int) -> tuple[object, ...]:
+    """What a block a patch does not name must keep: its kind, text and attributes, its
+    formulas, and where its text has code, links and images, which a link reference
+    definition elsewhere can change."""
+    block = mapped.parsed.blocks[index]
+    spans = mapped.parsed.spans
+    return (
+        block.kind,
+        block.hash,
+        block.attrs,
+        [(spans[span].kind, unlay(spans[span].tex, block.continuation)) for span in block.spans],
+        [inline.excluded for inline in block.inlines],
+    )
+
+
 def unnamed_changes(head: Mapped, final: Mapped, named: Iterable[Touches]) -> list[str]:
-    """Blocks of ``head`` that ``final`` changed or lost without the patch naming them.
+    """Blocks of ``head`` that ``final`` changed, moved or lost without the patch naming them.
 
     A patch may change the blocks it rewrites, remove those it replaces or deletes with
-    everything inside them, and change the blocks that contain any block it names.
+    everything inside them, move the blocks it moves, and change the blocks that contain
+    any block it names. Every other block must read as before (``_reading``) inside the
+    same block: one that an unclosed container takes in, or that a closing marker leaves
+    outside its container, is changed. A container of a named block may still lose its
+    ID by the identity rules (LD-7, rule 4): the blocks in it then have a new parent of
+    the same kind, which is not a change of theirs.
     """
     exempt: set[str] = set()
+    moved: set[str] = set()
     for touched in named:
         for block_id in touched.blocks:
             exempt |= _ancestors(head, block_id)
         exempt.update(touched.changes)
         exempt.update(touched.holds)
+        moved.update(touched.moves)
         for block_id in touched.removes:
             exempt.add(block_id)
             exempt |= _descendants(head, block_id)
-    final_hashes = {
-        block_id: final.parsed.blocks[index].hash for index, block_id in enumerate(final.block_ids)
-    }
-    return [
-        block_id
-        for index, block_id in enumerate(head.block_ids)
-        if block_id not in exempt and final_hashes.get(block_id) != head.parsed.blocks[index].hash
-    ]
+    head_index = {block_id: index for index, block_id in enumerate(head.block_ids)}
+    final_index = {block_id: index for index, block_id in enumerate(final.block_ids)}
+
+    def same_parent(index: int, found: int) -> bool:
+        before, after = head.parent_id(index), final.parent_id(found)
+        if before == after:
+            return True
+        return (
+            before is not None
+            and after is not None
+            and before in exempt
+            and before not in final_index
+            and after not in head_index
+            and head.parsed.blocks[head_index[before]].kind
+            == final.parsed.blocks[final_index[after]].kind
+        )
+
+    changed: list[str] = []
+    for index, block_id in enumerate(head.block_ids):
+        if block_id in exempt:
+            continue
+        found = final_index.get(block_id)
+        if (
+            found is None
+            or _reading(head, index) != _reading(final, found)
+            or (block_id not in moved and not same_parent(index, found))
+        ):
+            changed.append(block_id)
+    return changed
 
 
 @dataclass
@@ -340,6 +406,26 @@ def attach(parsed: Parsed, stored: Json) -> Mapped:
     return Mapped(parsed, tuple(str(entry["id"]) for entry in entries), tuple(span_ids))
 
 
+def _changed_characters(old: str, new: str) -> int:
+    """Characters ``new`` adds or changes in ``old``."""
+    shorter = min(len(old), len(new))
+    low = 0
+    while low < shorter and old[low] == new[low]:
+        low += 1
+    high = 0
+    while high < shorter - low and old[-1 - high] == new[-1 - high]:
+        high += 1
+    old_middle, new_middle = old[low : len(old) - high], new[low : len(new) - high]
+    if not new_middle or len(old_middle) * len(new_middle) > MAX_COMPARED:
+        return len(new_middle)
+    matcher = SequenceMatcher(None, old_middle, new_middle, autojunk=False)
+    return sum(
+        end - start
+        for tag, _, _, start, end in matcher.get_opcodes()
+        if tag in ("insert", "replace")
+    )
+
+
 def written(parent: Mapped | None, child: Mapped, changes: Changes) -> int:
     """Characters of text a revision added or changed, in blocks without blocks inside."""
     total = 0
@@ -354,14 +440,7 @@ def written(parent: Mapped | None, child: Mapped, changes: Changes) -> int:
             total += len(block.text)
         elif status == "changed":
             found = before.get(child.block_ids[index])
-            old = found.text if found is not None else ""
-            junk = len(old) + len(block.text) > MAX_COMPARED
-            matcher = SequenceMatcher(None, old, block.text, autojunk=junk)
-            total += sum(
-                high - low
-                for tag, _, _, low, high in matcher.get_opcodes()
-                if tag in ("insert", "replace")
-            )
+            total += _changed_characters(found.text if found is not None else "", block.text)
     return total
 
 

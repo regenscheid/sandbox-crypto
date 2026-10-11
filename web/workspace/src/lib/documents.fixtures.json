@@ -3,6 +3,8 @@
   "cases": [
     {"name": "front matter, a heading and a paragraph", "markdown": "---\ntitle: Notes\nmacros:\n  \\F: \\mathbb{F}\n---\n# Notes\n\nLet $p$ be prime.\n", "blocks": [["front_matter", 0, 0, 5], ["heading", 0, 5, 6], ["paragraph", 0, 7, 8]], "math": [[2, "inline", "p"]]},
     {"name": "front matter only at the very start", "markdown": "Text.\n\n---\ntitle: no\n---\n", "blocks": [["paragraph", 0, 0, 1], ["thematic_break", 0, 2, 3], ["heading", 0, 3, 5]], "math": []},
+    {"name": "front matter never in a list item", "markdown": "- 1--2 range $x$\n- next $y$\n---\n", "blocks": [["list", 0, 0, 2], ["list_item", 1, 0, 1], ["paragraph", 2, 0, 1], ["list_item", 1, 1, 2], ["paragraph", 2, 1, 2], ["thematic_break", 0, 2, 3]], "math": [[2, "inline", "x"], [4, "inline", "y"]]},
+    {"name": "front matter never in a quote", "markdown": "> ---\n> title: q $z$\n> ---\n", "blocks": [["quote", 0, 0, 3], ["thematic_break", 1, 0, 1], ["heading", 1, 1, 3]], "math": [[2, "inline", "z"]]},
     {"name": "front matter that never closes is a thematic break and a paragraph", "markdown": "---\ntitle: open\n", "blocks": [["thematic_break", 0, 0, 1], ["paragraph", 0, 1, 2]], "math": []},
     {"name": "dollar signs that are not math", "markdown": "It costs $5 and $10, or $ x$ and $x $.\n", "blocks": [["paragraph", 0, 0, 1]], "math": []},
     {"name": "escaped dollars", "markdown": "A \\$ sign, \\$x\\$, and $y \\$ z$.\n", "blocks": [["paragraph", 0, 0, 1]], "math": [[0, "inline", "y \\$ z"]]},

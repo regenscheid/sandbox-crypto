@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter
 
-from sandbox_science.orchestrator.documents.blocks import parse
+from sandbox_science.orchestrator.documents.blocks import Budget, parse
 from sandbox_science.orchestrator.documents.engine import apply_operations, unnamed_changes
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.documents.identity import Allocator, Mapped, compare, fresh
@@ -22,12 +22,14 @@ def _mapped(text: str) -> Mapped:
     return fresh(parse(text), Allocator(0, 0))
 
 
-def _apply(text: str, *operations: dict[str, Any]) -> tuple[Mapped, Mapped, list[str]]:
+def _apply(
+    text: str, *operations: dict[str, Any], budget: Budget | None = None
+) -> tuple[Mapped, Mapped, list[str]]:
     """The revision, the patched one, and the blocks the patch changed without naming."""
     head = _mapped(text)
     parsed = OPERATIONS.validate_python(list(operations))
     allocate = Allocator(len(head.block_ids), len(head.span_ids))
-    final = apply_operations(head, parsed, allocate).mapped
+    final = apply_operations(head, parsed, allocate, budget).mapped
     unnamed = unnamed_changes(head, final, [touches(operation, head) for operation in parsed])
     return head, final, unnamed
 
@@ -307,3 +309,96 @@ def test_a_move_brings_in_no_text_to_normalize() -> None:
     _, final, unnamed = _apply("A \\(x\\).\n\nB.\n", {"op": "move", "block": "b1", "after": "b2"})
     assert final.parsed.text == "B.\n\nA \\(x\\).\n"
     assert not unnamed
+
+
+# Found by review.
+
+
+def test_ld_18_an_unclosed_container_takes_in_the_blocks_after_it() -> None:
+    # Their texts stay the same, but they are now inside the lemma.
+    text = "Para A.\n\nPara B $b$.\n\n# Section\n\nPara C.\n"
+    operation = {"op": "replace", "block": "b1", "markdown": "::: lemma\nThe new statement."}
+    _, _, unnamed = _apply(text, operation)
+    assert unnamed == ["b2", "b3", "b4"]
+
+
+def test_ld_18_a_closing_marker_leaves_blocks_outside_their_container() -> None:
+    text = "::: lemma\nOne.\n\nTwo $t$.\n\n:::\n\nAfter.\n"
+    _, _, unnamed = _apply(text, {"op": "insert", "after": "b2", "markdown": ":::"})
+    assert unnamed == ["b3"]
+
+
+def test_ld_18_a_link_reference_definition_changes_the_links_that_use_it() -> None:
+    # The image's description is no longer a formula; the reference becomes a link.
+    definition = {"op": "insert", "at": "end", "markdown": "[r]: https://example.org/i.png"}
+    _, _, unnamed = _apply("Text with ![alt $y$][r] in it.\n\nOther.\n", definition)
+    assert unnamed == ["b1"]
+    _, _, unnamed = _apply("See [the note][r].\n\nOther.\n", definition)
+    assert unnamed == ["b1"]
+
+
+def test_a_block_a_patch_moves_may_change_its_container() -> None:
+    _, final, unnamed = _apply("> a\n\nb\n", {"op": "move", "block": "b3", "after": "b2"})
+    assert final.parsed.text == "> a\n>\n> b\n"
+    assert not unnamed
+    # A display equation's TeX keeps the quote's markers, which do not count.
+    text = "> $$\n> x = 1\n> $$\n>\n> Stays.\n\nEnd.\n"
+    _, final, unnamed = _apply(text, {"op": "move", "block": "b2", "after": "b4"})
+    assert final.parsed.text == "> Stays.\n\nEnd.\n\n$$\nx = 1\n$$\n"
+    assert not unnamed
+
+
+def test_blocks_keep_their_place_when_their_container_loses_its_id() -> None:
+    # Rule 4 gives both quotes new IDs, as the words they share are few; the paragraph
+    # the patch does not name is in the new inner quote, which is the old one's place.
+    text = "> > alpha beta gamma delta epsilon\n> >\n> > z\n"
+    replace = {"op": "replace", "block": "b3", "markdown": "omega psi chi phi upsilon"}
+    head, final, unnamed = _apply(text, replace)
+    assert not unnamed
+    assert compare(head, final).blocks["b4"] == "moved"
+
+
+def test_replace_keeps_new_text_apart_from_lines_around_it() -> None:
+    for text, block, markdown, expected in (
+        ("# Intro\nSome text $x$.\n", "b1", "A paragraph.", "A paragraph.\n\nSome text $x$.\n"),
+        ("$$\nx\n$$\nText after.\n", "b1", "Para.", "Para.\n\nText after.\n"),
+        ("Text before\n```\ncode\n```\n", "b2", "New.", "Text before\n\nNew.\n"),
+        ("> # H\nnext\n", "b2", "para", "> para\n>\nnext\n"),
+        # A list item ends the block before it: the list stays tight.
+        ("- para\n  - sub\n", "b3", "uno", "- uno\n  - sub\n"),
+    ):
+        _, final, unnamed = _apply(text, {"op": "replace", "block": block, "markdown": markdown})
+        assert final.parsed.text == expected
+        assert not unnamed
+
+
+def test_replace_math_in_a_display_equation_in_a_quote() -> None:
+    # The parser keeps the quote's markers in the TeX; the agent writes it without them.
+    text = "> $$\n> q\n> $$\n"
+    _, final, unnamed = _apply(text, {"op": "replace_math", "math": "m1", "tex": "\nr\n"})
+    assert final.parsed.text == "> $$\n> r\n> $$\n"
+    assert not unnamed
+
+
+def test_a_line_of_other_white_space_is_not_blank() -> None:
+    # Markdown reads only spaces and tabs as blank: the paragraph has three lines.
+    _, final, _ = _apply("A.\n", {"op": "insert", "at": "end", "markdown": "one\n\u00a0\ntwo"})
+    assert final.parsed.text == "A.\n\none\n\u00a0\ntwo\n"
+    assert [block.kind for block in final.parsed.blocks] == ["paragraph", "paragraph"]
+
+
+def test_a_quote_that_overlaps_itself_occurs_twice() -> None:
+    with pytest.raises(DocumentError, match="occurs 2 times"):
+        _apply("aaa\n", {"op": "replace_text", "block": "b1", "quote": "aa", "with": "b"})
+
+
+def test_a_patch_too_large_to_check_is_refused() -> None:
+    text = "x" * 60 + "\n"
+    delete = {"op": "delete", "block": "b1"}
+    insert = {"op": "insert", "at": "end", "markdown": "y"}
+    with pytest.raises(DocumentError, match="at most 1 operation: split"):
+        _apply(text, delete, insert, budget=Budget(100))
+    # Text an operation brings in counts as it is parsed.
+    longer = {"op": "insert", "at": "end", "markdown": "z" * 200}
+    with pytest.raises(DocumentError, match="would parse more than"):
+        _apply(text, longer, insert, budget=Budget(200))

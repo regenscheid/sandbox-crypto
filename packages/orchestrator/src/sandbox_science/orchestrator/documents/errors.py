@@ -10,6 +10,8 @@ NOT_FOUND: Final = "not_found"
 CONFLICT: Final = "conflict"
 POLICY_DENIED: Final = "policy_denied"
 UNCHANGED_BLOCKS: Final = "patch_changes_unnamed_blocks"
+BUSY: Final = "busy"
+"""Another change held the store for longer than a change waits: try again."""
 INTERNAL: Final = "internal"
 
 

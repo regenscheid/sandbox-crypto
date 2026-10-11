@@ -3,10 +3,12 @@
 
 The profile is markdown-it's default dialect (markdown-it-py's ``js-default``: CommonMark,
 tables and strikethrough) with raw HTML off and links only for http, https and mailto
-addresses, as the workspace's browser parser has it (``web/workspace/src/lib/markdown.ts``),
-with these rules added, in this order on both sides:
+addresses, as the workspace's browser parser has it (``web/workspace/src/lib/markdown.ts``).
+The browser runs markdown-it 15, whose code spans markdown-it-py 4.2 does not find quite
+alike, so the server runs a port of markdown-it 15's code span rule. These rules are
+added, in this order on both sides:
 
-- YAML front matter, mdit-py-plugins' ``front_matter``;
+- YAML front matter, mdit-py-plugins' ``front_matter``, at the start of the text alone;
 - dollar math, mdit-py-plugins' ``dollarmath`` with the workspace's settings, and this
   project's limit: a ``$$`` block ends within ``MAX_BLOCK_LINES`` lines of its opening line;
 - LaTeX's own delimiters, ``\\(…\\)``, ``\\[…\\]`` and bare display environments, read while
@@ -23,8 +25,8 @@ Anchors and patches need to know where each block and formula sits in the source
 markdown-it does not record below the line. The parser therefore wraps its rules: each
 block rule records, for every line of each block it makes, where that block's own text
 begins on the line (after the markers and indentation of the blocks around it), and each
-inline token's content is mapped back to the source it was cut from. The math and code
-span rules record where their tokens begin and end in that content. The mapping is checked
+inline token's content is mapped back to the source it was cut from. The math, code span,
+link and image rules record where their tokens begin and end in that content. The mapping is checked
 against the content markdown-it produced, and left out when they differ, so a wrong
 position is never used.
 """
@@ -329,6 +331,108 @@ def _limited_dollar_block(rule: BlockRule) -> BlockRule:
     return limited
 
 
+def _front_matter_at_start(rule: BlockRule) -> BlockRule:
+    """The plugin's front matter rule, at the start of the text alone.
+
+    The plugin also takes the first line of a list item or quote that begins the text,
+    and counts its dashes from the item's second character (``- 1--2 range``).
+    """
+
+    def at_start(state: StateBlock, start_line: int, end_line: int, silent: bool) -> bool:
+        if start_line != 0 or state.bMarks[0] + state.tShift[0] != 0 or state.blkIndent != 0:
+            return False
+        return rule(state, start_line, end_line, silent)
+
+    return at_start
+
+
+# Code spans: a port of markdown-it 15.0.2's rule (src/rules_inline/backticks.ts), which
+# the browser runs. The original's license:
+#
+# Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin.
+#
+# Permission is hereby granted, free of charge, to any person
+# obtaining a copy of this software and associated documentation
+# files (the "Software"), to deal in the Software without
+# restriction, including without limitation the rights to use,
+# copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the
+# Software is furnished to do so, subject to the following
+# conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+# OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+# NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+# WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+# OTHER DEALINGS IN THE SOFTWARE.
+
+
+def _last_runs(src: str) -> dict[int, int]:
+    """Where the last run of each length of backticks in ``src`` begins."""
+    runs: dict[int, int] = {}
+    position = src.find("`")
+    while position != -1:
+        start = position
+        position += 1
+        while position < len(src) and src[position] == "`":
+            position += 1
+        runs[position - start] = start
+        position = src.find("`", position)
+    return runs
+
+
+def _backticks(state: StateInline, silent: bool) -> bool:
+    """Code spans as markdown-it 15 finds them.
+
+    markdown-it-py 4.2 keeps markdown-it 14's rule, whose cache of the backticks it has
+    seen misses a code span before an unclosed backtick once a link label that does not
+    close has been scanned up to it (``See [the note `$p$` and the `stray``).
+    """
+    src = state.src
+    start = state.pos
+    if src[start] != "`":
+        return False
+    maximum = state.posMax
+    pos = start + 1
+    while pos < maximum and src[pos] == "`":
+        pos += 1
+    marker = src[start:pos]
+    if not state.backticksScanned:
+        state.backticks = _last_runs(src)
+        state.backticksScanned = True
+    if state.backticks.get(len(marker), -1) >= pos:
+        match_end = pos
+        while True:
+            match_start = src.find("`", match_end)
+            if match_start == -1 or match_start >= maximum:
+                break
+            match_end = match_start + 1
+            while match_end < len(src) and src[match_end] == "`":
+                match_end += 1
+            if match_end > maximum:
+                break
+            if match_end - match_start == len(marker):
+                if not silent:
+                    token = state.push("code_inline", "code", 0)
+                    token.markup = marker
+                    content = src[pos:match_start].replace("\n", " ")
+                    if content.startswith(" ") and content.endswith(" ") and content.strip(" "):
+                        content = content[1:-1]
+                    token.content = content
+                state.pos = match_end
+                return True
+    if not silent:
+        state.pending += marker
+    state.pos = pos
+    return True
+
+
 def _container_kind(params: str, *_: object) -> bool:
     """A theorem-like container names its kind first: ``::: lemma (fermat)``."""
     return params.strip().split(" ", 2)[0] in THEOREM_KINDS
@@ -537,12 +641,15 @@ _POSITIONED: Final = {
     "math_inline": ("math_inline", "math_inline_double"),
     "backticks": ("code_inline",),
     "autolink": ("link_open",),
+    "link": ("link_open",),
+    "image": ("image",),
 }
 """Inline rules whose tokens record their place in the content, and those tokens' types."""
 
 
 def _positioned(rule: InlineRule, types: tuple[str, ...]) -> InlineRule:
-    """An inline rule whose token records where it begins and ends in the content."""
+    """An inline rule whose token records where it begins and ends in the content; a
+    link's also records where its text ends, before its address or reference."""
 
     def recording(state: StateInline, silent: bool) -> bool:
         start = state.pos
@@ -554,6 +661,10 @@ def _positioned(rule: InlineRule, types: tuple[str, ...]) -> InlineRule:
                 if token.type in types:
                     token.meta.setdefault("_start", start)
                     token.meta.setdefault("_end", state.pos)
+                    if token.type == "link_open" and state.src[start] == "[":
+                        # Found again from the parse's cache; the position is restored.
+                        label_end = state.md.helpers.parseLinkLabel(state, start, True)
+                        token.meta.setdefault("_label_end", label_end)
                     break
         return found
 
@@ -577,7 +688,12 @@ def _make() -> MarkdownIt:
         {"html": False, "linkify": False, "typographer": False, "maxNesting": MAX_NESTING},
     )
     md.validateLink = _validate_link  # type: ignore[method-assign]
+    md.inline.ruler.at("backticks", _backticks)
     front_matter_plugin(md)
+    plugin_front_matter = next(
+        rule.fn for rule in md.block.ruler.__rules__ if rule.name == "front_matter"
+    )
+    md.block.ruler.at("front_matter", _front_matter_at_start(plugin_front_matter))
     dollarmath_plugin(
         md,
         allow_labels=True,

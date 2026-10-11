@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from bisect import bisect_left
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -45,6 +45,9 @@ MAX_PAIRS: Final = 40_000
 """Pairs of blocks compared in one gap; beyond it, each block is compared only with the
 parent blocks near its own place in the gap."""
 BAND: Final = 100
+MAX_ORDERED: Final = 250_000
+"""Pairs of blocks, or of spans in a block, compared at most to find the longest common
+order of the equal ones (rule 2)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,25 +153,47 @@ def _pair_equal(
     old_key: Callable[[int], object],
     new_key: Callable[[int], object],
 ) -> list[tuple[int, int]]:
-    """Pair items with equal keys: along their longest common order, then in order."""
+    """Pair items with equal keys: along their longest common order, then in order.
+
+    The equal items at the start and at the end pair first, which a longest common order
+    always does. Between them, it is looked for only when they make at most
+    ``MAX_ORDERED`` pairs of items to compare, since that takes time growing with their
+    product; beyond it, they pair in order.
+    """
     old_keys = [old_key(item) for item in old_items]
     new_keys = [new_key(item) for item in new_items]
-    matcher = SequenceMatcher(None, old_keys, new_keys, autojunk=False)
     pairs: list[tuple[int, int]] = []
     taken_old: set[int] = set()
     taken_new: set[int] = set()
-    for a, b, size in matcher.get_matching_blocks():
-        for step in range(size):
-            pairs.append((old_items[a + step], new_items[b + step]))
-            taken_old.add(a + step)
-            taken_new.add(b + step)
-    waiting: defaultdict[object, list[int]] = defaultdict(list)
+
+    def take(a: int, b: int) -> None:
+        pairs.append((old_items[a], new_items[b]))
+        taken_old.add(a)
+        taken_new.add(b)
+
+    shorter = min(len(old_keys), len(new_keys))
+    low = 0
+    while low < shorter and old_keys[low] == new_keys[low]:
+        take(low, low)
+        low += 1
+    high = 0
+    while high < shorter - low and old_keys[-1 - high] == new_keys[-1 - high]:
+        take(len(old_keys) - 1 - high, len(new_keys) - 1 - high)
+        high += 1
+    old_middle = old_keys[low : len(old_keys) - high]
+    new_middle = new_keys[low : len(new_keys) - high]
+    if len(old_middle) * len(new_middle) <= MAX_ORDERED:
+        matcher = SequenceMatcher(None, old_middle, new_middle, autojunk=False)
+        for a, b, size in matcher.get_matching_blocks():
+            for step in range(size):
+                take(low + a + step, low + b + step)
+    waiting: defaultdict[object, deque[int]] = defaultdict(deque)
     for position, key in enumerate(old_keys):
         if position not in taken_old:
             waiting[key].append(old_items[position])
     for position, key in enumerate(new_keys):
         if position not in taken_new and waiting.get(key):
-            pairs.append((waiting[key].pop(0), new_items[position]))
+            pairs.append((waiting[key].popleft(), new_items[position]))
     return pairs
 
 

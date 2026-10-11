@@ -14,7 +14,9 @@ sandbox-science-harness project revise --state-dir state --project p1 --policy s
 sandbox-science-harness session close --state-dir state --project p1 --session s1 \\
     --worker URL --token-file worker.token
 sandbox-science-harness document import --state-dir state --project p1 [--session s1] \\
-    --name ff [--title "…"] [--reason "…"] ff.md
+    --name ff [--title "…"] [--reason "…"] [--base N] ff.md
+sandbox-science-harness document export DOC [--revision N] [--output ff.md] \\
+    --state-dir state --project p1
 sandbox-science-harness document (list | show DOC [--revision N] | history DOC) \\
     --state-dir state --project p1
 sandbox-science-harness document suggestions DOC (on | off) --state-dir state --project p1
@@ -33,7 +35,9 @@ harness refuses a worker whose isolation tier in effect is below the minimum, so
 misconfigured deployment cannot quietly run research code without a sandbox.
 
 The ``document`` commands act as the user: an import is attributed to an import the
-user started, and the other changes to the user.
+user started, and the other changes to the user. An import into an existing document
+names the revision its file was made from (``--base``), which must be the current one,
+so that it never undoes revisions made since.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
+from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
 from .loop import run_task
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
@@ -269,10 +274,19 @@ def _document(args: argparse.Namespace) -> int:
                     and info.session_id == args.session
                 ]
                 if existing:
+                    if args.base is None:
+                        # Saving over the current revision would undo what others wrote
+                        # after the file was made.
+                        raise DocumentError(
+                            CONFLICT,
+                            f"document {existing[0].name} exists, at revision "
+                            f"{existing[0].head}: give --base, the revision the file was "
+                            "made from (document export writes one to a file)",
+                        )
                     result = store.save_text(
                         args.project,
                         existing[0].document_id,
-                        base=existing[0].head,
+                        base=args.base,
                         text=text,
                         author=author,
                         reason=reason,
@@ -299,6 +313,17 @@ def _document(args: argparse.Namespace) -> int:
             case "show":
                 mapped = store.mapped(args.project, args.document, args.revision)
                 print(json.dumps(view_blocks(mapped), indent=2, ensure_ascii=False))
+            case "export":
+                revision = store.revision(args.project, args.document, args.revision)
+                if args.output is None:
+                    sys.stdout.write(revision.text)
+                else:
+                    args.output.write_text(revision.text, encoding="utf-8")
+                print(
+                    f"revision {revision.info.number} of document {args.document}: import "
+                    f"the file again with --base {revision.info.number}",
+                    file=sys.stderr,
+                )
             case "history":
                 print(
                     json.dumps(
@@ -344,7 +369,16 @@ def _document_commands(commands: Any) -> None:
     imported.add_argument("--title", help="a new document's title (default: its name)")
     imported.add_argument("--session", help="a workbook document of this session")
     imported.add_argument("--reason")
+    imported.add_argument(
+        "--base", type=int, help="the revision the file was made from, to save it over"
+    )
     imported.add_argument("file", type=Path)
+    exported = actions.add_parser(
+        "export", parents=[common], help="write a revision's text, to edit and import again"
+    )
+    exported.add_argument("document")
+    exported.add_argument("--revision", type=int)
+    exported.add_argument("--output", type=Path, help="the file (default: standard output)")
     listed = actions.add_parser("list", parents=[common], help="the project's documents")
     listed.add_argument("--deleted", action="store_true", help="include deleted documents")
     shown = actions.add_parser("show", parents=[common], help="a revision's blocks with IDs")

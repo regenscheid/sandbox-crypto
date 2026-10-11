@@ -885,3 +885,77 @@ def test_the_platform_and_imports_are_authors_of_their_own(store: DocumentStore)
     assert (importer.actor, repair.actor) == ("user:user", "platform:math-repair")
     with pytest.raises(ValueError, match="needs service"):
         Author(kind="platform")
+
+
+def test_a_patch_is_checked_before_the_write_lock_and_again_if_the_document_changed(
+    store: DocumentStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _ff(store)
+    checked: list[int] = []
+    assess = store._assess  # pyright: ignore[reportPrivateUsage]
+
+    def counting(*args: Any) -> Any:
+        checked.append(1)
+        return assess(*args)
+
+    monkeypatch.setattr(store, "_assess", counting)
+    mine = [{"op": "replace", "block": ids["S"], "markdown": "Mine."}]
+    applied = store.patch(
+        "p1", "ff", base=1, author=AGENT, reason="r", operation_id="one", operations=mine
+    )
+    # Checked once, before the lock; under it, the document was as it had been.
+    assert (applied.outcome, len(checked)) == ("applied", 1)
+    other = DocumentStore(store.path)
+    prepare = store._prepare_patch  # pyright: ignore[reportPrivateUsage]
+
+    def then_another_writer(*args: Any) -> Any:
+        prepared = prepare(*args)
+        theirs = [{"op": "replace", "block": ids["P"], "markdown": "Theirs."}]
+        other.patch(
+            "p1", "ff", base=2, author=USER, reason="u", operation_id="u", operations=theirs
+        )
+        return prepared
+
+    monkeypatch.setattr(store, "_prepare_patch", then_another_writer)
+    again = [{"op": "replace", "block": ids["P"], "markdown": "Mine again."}]
+    result = store.patch(
+        "p1", "ff", base=2, author=AGENT, reason="r", operation_id="two", operations=again
+    )
+    # Checked again under the lock, against the revision the other writer made.
+    assert (result.outcome, len(checked)) == ("conflict", 3)
+    assert "Theirs." in store.revision("p1", "ff").text
+    other.close()
+
+
+def test_a_busy_store_says_so(store: DocumentStore) -> None:
+    ids = _ff(store)
+    blocker = sqlite3.connect(store.path, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+    waiting = DocumentStore(store.path, timeout=0.1)
+    try:
+        with pytest.raises(DocumentError) as raised:
+            waiting.patch(
+                "p1",
+                "ff",
+                base=1,
+                author=AGENT,
+                reason="r",
+                operation_id="o",
+                operations=[{"op": "delete", "block": ids["S"]}],
+            )
+        assert raised.value.kind == "busy"
+        assert "a retry is safe" in raised.value.message
+    finally:
+        blocker.execute("ROLLBACK")
+        blocker.close()
+        waiting.close()
+
+
+def test_empty_delimiters_go_but_not_from_links_or_task_boxes(store: DocumentStore) -> None:
+    text = (
+        "An empty \\(\\) goes.\n\n- \\[ \\] to do\n\n"
+        '[the paper](https://example.org/f\\(\\)g "t \\(\\)")\n'
+    )
+    created = store.create("p1", name="e", title="E", text=text, author=USER)
+    assert created.normalized["converted"] == {"empty": 1}
+    assert store.revision("p1", "e").text == text.replace("An empty \\(\\) goes", "An empty  goes")

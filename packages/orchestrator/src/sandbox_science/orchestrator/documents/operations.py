@@ -26,7 +26,7 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .blocks import Block, normalize_newlines, parse
+from .blocks import Block, Budget, Parsed, normalize_newlines, parse
 from .errors import INVALID_REQUEST, DocumentError
 from .identity import BlockHint, Mapped, SpanHint
 
@@ -203,12 +203,17 @@ def _block(mapped: Mapped, block_id: str) -> Block:
     return mapped.parsed.blocks[index]
 
 
+def _blank(line: str) -> bool:
+    """Whether a line is blank as Markdown reads it: only spaces and tabs."""
+    return not line.strip(" \t")
+
+
 def _markdown(markdown: str, what: str) -> str:
     """New Markdown without the blank lines around it."""
     lines = normalize_newlines(markdown).split("\n")
-    while lines and not lines[0].strip():
+    while lines and _blank(lines[0]):
         lines.pop(0)
-    while lines and not lines[-1].strip():
+    while lines and _blank(lines[-1]):
         lines.pop()
     if not lines:
         raise DocumentError(INVALID_REQUEST, f"{what} has no text; use delete to remove a block")
@@ -222,8 +227,27 @@ def _lay(text: str, continuation: str) -> str:
     laid = [lines[0]]
     for number, line in enumerate(lines[1:], start=1):
         last = number == len(lines) - 1
-        laid.append(continuation + line if line.strip() or last else continuation.rstrip())
+        laid.append(continuation + line if not _blank(line) or last else continuation.rstrip())
     return "\n".join(laid)
+
+
+def unlay(text: str, continuation: str) -> str:
+    """Text as ``_lay`` takes it: without the prefix the lines after the first have.
+
+    A ``$$`` block's TeX is the text between its delimiters, so in a quote its lines keep
+    the quote's markers (``> ``); the agents read and write it without them.
+    """
+    if not continuation:
+        return text
+    bare = continuation.rstrip()
+    lines = text.split("\n")
+    for number in range(1, len(lines)):
+        line = lines[number]
+        if line.startswith(continuation):
+            lines[number] = line[len(continuation) :]
+        elif line.startswith(bare) and _blank(line[len(bare) :]):
+            lines[number] = line[len(bare) :]
+    return "\n".join(lines)
 
 
 def _line_start(text: str, offset: int) -> int:
@@ -273,6 +297,27 @@ def _insert_after(text: str, block: Block, laid: str) -> _Placed:
     separator = "\n" + block.continuation.rstrip() + "\n" + block.continuation
     closing = "" if _line_after_blank(text, block.end) else "\n" + block.continuation.rstrip()
     return _Placed([_Edit(block.end, block.end, separator + laid + closing)], 0, len(separator))
+
+
+def _replace(parsed: Parsed, block: Block, laid: str) -> _Placed:
+    """Edits putting ``laid`` in the place of ``block``, kept apart from the lines of
+    text beside it as an insertion is. A list item that follows ends any block before
+    it, and a blank line before it would make its list loose, so none is added there."""
+    text = parsed.text
+    item_follows = any(
+        other.kind == "list_item" and other.lines[0] == block.lines[1] for other in parsed.blocks
+    )
+    after = block.kind == "list_item" or item_follows or _line_after_blank(text, block.end)
+    closing = "" if after else "\n" + block.continuation.rstrip()
+    edits = [_Edit(block.start, block.end, laid + closing)]
+    if (
+        block.kind != "list_item"
+        and block.prefix == block.continuation
+        and not _line_before_blank(text, block.start)
+    ):
+        at = _line_start(text, block.start)
+        edits.insert(0, _Edit(at, at, block.continuation.rstrip() + "\n"))
+    return _Placed(edits, len(edits) - 1, 0)
 
 
 def _place(text: str, placed: _Placed, removal: list[_Edit]) -> tuple[str, int]:
@@ -342,14 +387,25 @@ def _top_level(mapped: Mapped) -> list[Block]:
     return [block for block in mapped.parsed.blocks if block.parent is None]
 
 
-def apply(mapped: Mapped, operation: Operation) -> Step:
-    """``operation`` applied to the revision ``mapped``."""
+def _occurrences(text: str, quote: str) -> int:
+    """How many times ``quote`` occurs in ``text``, overlapping ones too."""
+    found = 0
+    at = text.find(quote)
+    while at != -1:
+        found += 1
+        at = text.find(quote, at + 1)
+    return found
+
+
+def apply(mapped: Mapped, operation: Operation, budget: Budget | None = None) -> Step:
+    """``operation`` applied to the revision ``mapped``; a move's parse takes from
+    ``budget``."""
     text = mapped.parsed.text
     match operation:
         case Replace():
             block = _block(mapped, operation.block)
             laid = _lay(_markdown(operation.markdown, "the replacement"), block.continuation)
-            new, (start,) = _apply(text, [_Edit(block.start, block.end, laid)])
+            new, start = _place(text, _replace(mapped.parsed, block, laid), [])
             region = (start, start + len(laid))
             hint = BlockHint(operation.block, block.kind, *region)
             return Step(new, region, (hint,), removed=(operation.block,))
@@ -366,7 +422,7 @@ def apply(mapped: Mapped, operation: Operation) -> Step:
             new, start = _place(text, placed, [])
             return Step(new, (start, start + len(laid)))
         case Move():
-            return _move(mapped, operation)
+            return _move(mapped, operation, budget or Budget())
         case Delete():
             block = _block(mapped, operation.block)
             new, _ = _apply(text, _delete(mapped, block))
@@ -379,7 +435,7 @@ def apply(mapped: Mapped, operation: Operation) -> Step:
         case ReplaceText():
             block = _block(mapped, operation.block)
             quote = normalize_newlines(operation.quote)
-            found = block.text.count(quote)
+            found = _occurrences(block.text, quote)
             if found != 1:
                 where = "does not occur" if not found else f"occurs {found} times"
                 raise DocumentError(
@@ -422,7 +478,7 @@ def _shifted(offset: int, edits: list[_Edit]) -> int | None:
     return offset + delta
 
 
-def _move(mapped: Mapped, operation: Move) -> Step:
+def _move(mapped: Mapped, operation: Move, budget: Budget) -> Step:
     """The block taken out, then put next to its anchor as the text then stands, which
     lets a block move out of the block that holds it."""
     block = _block(mapped, operation.block)
@@ -432,6 +488,8 @@ def _move(mapped: Mapped, operation: Move) -> Step:
     removal = _delete(mapped, block)
     taken, _ = _apply(mapped.parsed.text, removal)
     start = _shifted(anchor.start, removal)
+    if start is not None:
+        budget.charge(len(taken))
     found = parse(taken).blocks if start is not None else ()
     target = next(
         (other for other in found if (other.start, other.kind) == (start, anchor.kind)), None
