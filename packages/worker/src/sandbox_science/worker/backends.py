@@ -64,6 +64,10 @@ class Backend(Protocol):
     @property
     def name(self) -> Literal["local", "openshell"]: ...
 
+    async def prepare(self, environment_id: str) -> None:
+        """Make the environment ready for an executor, such as starting its stopped sandbox."""
+        ...
+
     async def open(
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
     ) -> ExecutorChannel: ...
@@ -88,6 +92,9 @@ class LocalBackend:
         self.settings = settings
         self.executor_args = tuple(executor_args)
         self.root = state_dir / "environments"
+
+    async def prepare(self, environment_id: str) -> None:
+        return None
 
     async def open(
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
@@ -124,12 +131,15 @@ class OpenShellBackend:
         state_dir: Path,
         resolve: Callable[[str], str | None] | None = None,
         executor_args: Sequence[str] = (),
+        prepare: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.settings = settings
         self.state_dir = state_dir
         self.resolve = resolve
-        self.executor_args = tuple(executor_args)
         """Finds the sandboxes the worker created (environments.py) before the static map."""
+        self.executor_args = tuple(executor_args)
+        self._prepare = prepare
+        """Starts a stopped sandbox the worker created before an executor runs there."""
         self._shim_lock = asyncio.Lock()
         self._clients = None if settings.package_cache is None else render(settings.package_cache)
 
@@ -178,6 +188,10 @@ class OpenShellBackend:
                 )
             partial.replace(target)
         return target
+
+    async def prepare(self, environment_id: str) -> None:
+        if self._prepare is not None:
+            await self._prepare(environment_id)
 
     async def open(
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler

@@ -23,6 +23,9 @@ PolicyRevision = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}
 class EnvironmentState(StrEnum):
     CREATING = "creating"
     READY = "ready"
+    STOPPED = "stopped"
+    """Suspended while idle: the sandbox keeps its files and installed tools, and the worker
+    starts it again on the environment's next use. Kernels did not survive."""
     DELETED = "deleted"
 
 

@@ -61,7 +61,7 @@ A newly created dedicated session container starts from the project's recorded b
 
 Resuming an existing persistent session environment retains that environment's recorded state. Creating a new session container and resuming an existing one are distinct lifecycle operations. Environment snapshots remain useful for explicit reproduction and recovery, rather than the initialization source for new dedicated sessions.
 
-Confirmed idle behavior: preserve project and dedicated-session containers, or preserve enough state to recreate their environments. Retain project/session files, installed tools/dependencies, configuration, environment identity and durable research records. Keeping every container continuously running is not required. Idle timeout and resource-retention settings can be configurable.
+Confirmed idle behavior: preserve project and dedicated-session containers, or preserve enough state to recreate their environments. Retain project/session files, installed tools/dependencies, configuration, environment identity and durable research records. Keeping every container continuously running is not required. Idle timeout and resource-retention settings can be configurable. The worker implements the first option for OpenShell environments: with `suspend_after`, it stops an idle environment's sandbox, which keeps its writable disk, and starts it again on the next use ([worker](WORKER.md#idle-suspension)).
 
 A restoration record identifies the base-image digest, platform, changed filesystem/image state, durable volumes/data versions, environment configuration and installed-tool state. The proposed read-only root filesystem with declared writable volumes (D48, [architecture](ARCHITECTURE.md#storage-dependencies-and-relocation)) reduces "changed filesystem state" to those volumes. Capture changes outside managed Conda prefixes as well. A package list alone is insufficient when other files/configuration changed. Verify a restored environment before discarding its only complete source state; failed capture/restore leaves a visible preserved or recovery-needed environment.
 
@@ -91,9 +91,11 @@ sandbox-science-harness project revise --state-dir state --project p1 --policy s
 - **Concurrency.** Records are JSON files rewritten atomically under a lock, so concurrent harness processes keep each other's sessions.
 - **Shared files.** A write to the shared area names the version it replaces (`expected_sha256`, or `create_only` for a new file). So of two sessions that read the same version, the second writer gets `conflict`, rereads and tries again; nothing is silently overwritten. The conformance suite checks this with two sessions.
 
+- **Environment revisions.** The worker counts changes to an environment's installed packages, and every execution reports the revision it started and ended under ([worker](WORKER.md#behavior-worth-knowing)).
+
 Not yet built:
 - shared data across environments, which waits on the user's choice (worker-brokered copies with conflict copies, or explicit transfer);
-- environment revisions that count package changes;
+- serialized, recorded package installs (the Conda provisioning spec);
 - capture and restore.
 
 ## Backend feasibility checks

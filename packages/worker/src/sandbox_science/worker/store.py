@@ -43,11 +43,30 @@ CREATE TABLE IF NOT EXISTS kernels (
     last INTEGER NOT NULL,
     PRIMARY KEY (environment_id, session_id, language)
 );
+CREATE TABLE IF NOT EXISTS environment_revisions (
+    environment_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    changed_by TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
     record TEXT NOT NULL
 );
 """
+
+
+@dataclass(frozen=True, slots=True)
+class RevisionRecord:
+    """An environment's revision and the fingerprint of its installed packages (W3).
+
+    ``changed_by`` names the attempt whose result first showed the change, or says
+    that it happened between executors.
+    """
+
+    revision: int
+    fingerprint: str
+    changed_by: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +202,20 @@ class Store:
         return [_EVENT.validate_json(row[0]) for row in rows]
 
     # Kernels.
+
+    def revision(self, environment_id: str) -> RevisionRecord | None:
+        row = self._db.execute(
+            "SELECT revision, fingerprint, changed_by FROM environment_revisions"
+            " WHERE environment_id = ?",
+            (environment_id,),
+        ).fetchone()
+        return RevisionRecord(int(row[0]), str(row[1]), str(row[2])) if row else None
+
+    def save_revision(self, environment_id: str, record: RevisionRecord) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO environment_revisions VALUES (?, ?, ?, ?)",
+            (environment_id, record.revision, record.fingerprint, record.changed_by),
+        )
 
     def kernel(self, environment_id: str, session_id: str, language: str) -> KernelRecord | None:
         row = self._db.execute(

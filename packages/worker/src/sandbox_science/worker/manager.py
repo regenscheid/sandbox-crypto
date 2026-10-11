@@ -18,6 +18,8 @@ import hashlib
 import logging
 import math
 import mimetypes
+import re
+import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -77,7 +79,7 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import WorkerError
 from .isolation import probe
-from .store import KernelRecord, Store
+from .store import KernelRecord, RevisionRecord, Store
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -102,6 +104,7 @@ MAX_TRACEBACK_LINE = 8 * 1024
 MAX_WRITTEN = 1000
 MAX_LIST = 5000
 MAX_HOSTNAME = 255
+_FINGERPRINT = re.compile(r"[0-9a-f]{32}")
 
 
 def _now() -> datetime:
@@ -150,6 +153,8 @@ class _Live:
     """Bytes of stream text and rich output stored as events."""
     events: int = 0
     overflowed: bool = False
+    channel: ExecutorChannel | None = None
+    """The executor the execution was sent to: only it may cancel or lose it."""
 
 
 @dataclass
@@ -160,6 +165,30 @@ class _Environment:
     languages: tuple[str, ...] = ()
     features: tuple[str, ...] = ()
     running: set[str] = field(default_factory=set[str])
+    last_used: float = field(default_factory=time.monotonic)
+    """When the worker last asked anything of the environment, by the monotonic clock."""
+    requests: int = 0
+    """Requests other than executions in flight there: files, publication, kernels."""
+
+
+Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
+
+
+@dataclass(frozen=True)
+class Activity:
+    """What an environment is doing, as the worker sees it, for idle suspension (W3)."""
+
+    last_used: float | None
+    """When the worker last asked anything of it (monotonic clock); None if never since it
+    started."""
+    running: int
+    cpu_seconds: float | None
+    """CPU time used below its executor so far; None without an executor, when no research
+    code runs there."""
+    kernels: int
+    executor: str | None = None
+    """The executor's incarnation, so that CPU samples of different executors are not
+    compared."""
 
 
 @dataclass(frozen=True)
@@ -198,6 +227,9 @@ class ExecutionManager:
         self._channels: set[ExecutorChannel] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closing = False
+        self.notices: Notices | None = None
+        """Admission notices for an environment since a time; the environments set it."""
+        self._noticed: dict[tuple[str, str], datetime] = {}
 
     async def start(self) -> None:
         """Report attempts a previous run left unfinished as lost.
@@ -237,10 +269,62 @@ class ExecutionManager:
         if environment is None:
             return
         async with environment.lock:
-            if environment.channel is not None:
-                await environment.channel.close()
-                self._channels.discard(environment.channel)
-            self._environments.pop(environment_id, None)
+            await self._drop(environment_id, environment)
+
+    async def _drop(self, environment_id: str, environment: _Environment) -> None:
+        """Forget an environment's record, then close its executor. Hold its lock.
+
+        The record goes first, so that a request arriving meanwhile starts with a
+        new one instead of opening an executor nobody tracks.
+        """
+        if self._environments.get(environment_id) is environment:
+            self._environments.pop(environment_id)
+        channel = environment.channel
+        if channel is not None:
+            self._channels.discard(channel)
+            await channel.close()
+
+    async def activity(self, environment_id: str) -> Activity | None:
+        """What an environment is doing now; None when its executor cannot say."""
+        environment = self._environments.get(environment_id)
+        if environment is None:
+            return Activity(last_used=None, running=0, cpu_seconds=None, kernels=0)
+        busy = len(environment.running) + environment.requests
+        channel = environment.channel
+        if channel is None or channel.closed:
+            return Activity(environment.last_used, busy, None, 0)
+        try:
+            reply = await channel.request("usage", reply_timeout=10)
+        except WorkerError:
+            return None
+        raw, kernels = reply.get("cpu_seconds"), reply.get("kernels")
+        if (
+            isinstance(raw, bool)
+            or not isinstance(raw, int | float)
+            or not isinstance(kernels, int)
+        ):
+            return None
+        try:
+            cpu = float(raw)  # an executor research code took over may send 10**400
+        except OverflowError:
+            return None
+        if not math.isfinite(cpu) or cpu < 0:
+            return None
+        return Activity(environment.last_used, busy, cpu, kernels, channel.incarnation)
+
+    async def release_if_idle(self, environment_id: str, idle_since: float) -> bool:
+        """Stop an environment's executor if nothing ran in it or used it since ``idle_since``.
+
+        Returns whether it did (or there was none), so that its sandbox may stop.
+        """
+        environment = self._environments.get(environment_id)
+        if environment is None:
+            return True
+        async with environment.lock:
+            if environment.running or environment.requests or environment.last_used > idle_since:
+                return False
+            await self._drop(environment_id, environment)
+        return True
 
     async def close(self) -> None:
         """Stop every executor. Attempts still running are reported lost."""
@@ -318,6 +402,7 @@ class ExecutionManager:
         environment = self._environments.get(live.environment_id)
         if environment is not None:
             environment.running.discard(execution_id)
+            environment.last_used = time.monotonic()
         if live.watchdog is not None and live.watchdog is not asyncio.current_task():
             live.watchdog.cancel()
         asyncio.get_running_loop().call_later(RETAIN_LIVE, self._live.pop, execution_id, None)
@@ -377,43 +462,57 @@ class ExecutionManager:
     # Environments.
 
     async def _environment(self, environment_id: str) -> _Environment:
-        environment = self._environments.setdefault(environment_id, _Environment())
-        async with environment.lock:
+        while True:
+            environment = self._environments.setdefault(environment_id, _Environment())
+            # Marked used before anything waits, so that suspension leaves it alone.
+            environment.last_used = time.monotonic()
             if environment.channel is None or environment.channel.closed:
-                channel = await self.backend.open(
+                # Outside the lock: preparing may start a stopped sandbox under the
+                # environments' own lock, which suspension holds while it takes this one.
+                await self.backend.prepare(environment_id)
+            async with environment.lock:
+                if self._environments.get(environment_id) is not environment:
+                    continue  # released meanwhile, by a suspension or a deletion: start over
+                await self._open(environment_id, environment)
+            return environment
+
+    async def _open(self, environment_id: str, environment: _Environment) -> None:
+        """Start the environment's executor unless one runs. Hold its lock."""
+        if environment.channel is None or environment.channel.closed:
+            channel = await self.backend.open(
+                environment_id,
+                partial(self._on_event, environment_id),
+                partial(self._on_closed, environment_id),
+            )
+            self._channels.add(channel)
+            try:
+                hostname, languages, features = self._describe(environment_id, channel.hello)
+                self._observe(environment_id, channel.hello.get("environment"), "")
+                declared = self.backend.isolation_tier
+                isolation = await probe(channel, declared, self.state_dir)
+            except Exception:
+                await channel.close()  # never leave an executor running unused
+                raise
+            if isolation.tier < declared:
+                _log.warning(
+                    "environment %s: isolation tier %d declared, %d in effect: %s",
                     environment_id,
-                    partial(self._on_event, environment_id),
-                    partial(self._on_closed, environment_id),
+                    declared,
+                    isolation.tier,
+                    "; ".join(isolation.evidence.findings),
                 )
-                self._channels.add(channel)
-                try:
-                    hostname, languages, features = self._describe(environment_id, channel.hello)
-                    declared = self.backend.isolation_tier
-                    isolation = await probe(channel, declared, self.state_dir)
-                except Exception:
-                    await channel.close()  # never leave an executor running unused
-                    raise
-                if isolation.tier < declared:
-                    _log.warning(
-                        "environment %s: isolation tier %d declared, %d in effect: %s",
-                        environment_id,
-                        declared,
-                        isolation.tier,
-                        "; ".join(isolation.evidence.findings),
-                    )
-                environment.location = Location(
-                    pool_id=self.pool_id,
-                    backend=self.backend.name,
-                    sandbox_id=self.backend.sandbox_id(environment_id),
-                    hostname=hostname,
-                    isolation_tier=isolation.tier,
-                    declared_isolation_tier=declared,
-                    isolation_evidence=isolation.evidence,
-                )
-                environment.languages = languages
-                environment.features = features
-                environment.channel = channel
-        return environment
+            environment.location = Location(
+                pool_id=self.pool_id,
+                backend=self.backend.name,
+                sandbox_id=self.backend.sandbox_id(environment_id),
+                hostname=hostname,
+                isolation_tier=isolation.tier,
+                declared_isolation_tier=declared,
+                isolation_evidence=isolation.evidence,
+            )
+            environment.languages = languages
+            environment.features = features
+            environment.channel = channel
 
     def _describe(
         self, environment_id: str, hello: Message
@@ -449,24 +548,31 @@ class ExecutionManager:
             features,
         )
 
-    async def _channel(self, environment_id: str) -> ExecutorChannel:
-        channel = (await self._environment(environment_id)).channel
+    @contextlib.asynccontextmanager
+    async def _using(self, environment_id: str) -> AsyncGenerator[ExecutorChannel]:
+        """The environment's executor, counted as in use until the block ends."""
+        environment = await self._environment(environment_id)
+        channel = environment.channel
         if channel is None:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE, f"environment {environment_id} has no executor"
             )
-        return channel
+        environment.requests += 1
+        try:
+            yield channel
+        finally:
+            environment.requests -= 1
+            environment.last_used = time.monotonic()
 
     async def _on_closed(self, environment_id: str, channel: ExecutorChannel) -> None:
-        environment = self._environments.get(environment_id)
-        if environment is None or environment.channel is not channel:
-            return
-        environment.channel = None
-        for execution_id in list(environment.running):
-            live = self._live.get(execution_id)
-            if live is not None:
+        # The executions sent to this executor end with it, whether or not its
+        # environment's record still names it.
+        for live in list(self._live.values()):
+            if live.channel is channel and live.execution.state not in TERMINAL_STATES:
                 self._lose(live, "the worker" if self._closing else "the executor")
-        environment.running.clear()
+        environment = self._environments.get(environment_id)
+        if environment is not None and environment.channel is channel:
+            environment.channel = None
 
     # Submission and dispatch.
 
@@ -518,6 +624,7 @@ class ExecutionManager:
         environment = self._environments.get(live.environment_id)
         if environment is not None:
             environment.running.discard(live.execution.execution_id)
+            environment.last_used = time.monotonic()
         self._finish(live, ExecutionState.FAILED, Result(error=error))
 
     async def _send(self, live: _Live, request: ExecutionRequest) -> None:
@@ -540,7 +647,7 @@ class ExecutionManager:
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, f"no {request.language} kernel in this environment"
             )
-        self._save(live, location=environment.location)
+        self._save(live, location=self._located(request.context.environment_id, environment))
         fields: dict[str, Any] = {
             "execution": execution_id,
             "session": request.context.session_id,
@@ -569,6 +676,7 @@ class ExecutionManager:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         environment.running.add(execution_id)
         live.dispatched = True
+        live.channel = channel
         await channel.request(request.kind, **fields)
         live.watchdog = self._spawn(self._watch(live, request.timeout_seconds))
 
@@ -741,7 +849,65 @@ class ExecutionManager:
             written_files=tuple(paths[:MAX_WRITTEN]),
             written_files_truncated=raw.get("written_files_truncated") is True
             or len(paths) > MAX_WRITTEN,
+            environment_revision=self._revision_after(environment_id, live, raw),
+            notices=self._notices(environment_id, live),
         )
+
+    def _notices(self, environment_id: str, live: _Live) -> tuple[str, ...]:
+        """Admission notices the session has not seen, each once (D69).
+
+        A session's first result starts from its submission; later ones from the last
+        notice it received, since decisions are stamped when they are recorded.
+        """
+        if self.notices is None:
+            return ()
+        key = (environment_id, live.execution.context.session_id)
+        since = self._noticed.get(key, live.execution.submitted_at)
+        try:
+            fresh = self.notices(environment_id, since)
+        except Exception:
+            _log.exception("could not read the admission notices of %s", environment_id)
+            return ()
+        self._noticed[key] = max([since, *(at for at, _ in fresh)])
+        return tuple(text for _, text in fresh)
+
+    def _located(self, environment_id: str, environment: _Environment) -> Location | None:
+        """The environment's location, with its current revision."""
+        location, record = environment.location, self.store.revision(environment_id)
+        if location is None or record is None:
+            return location
+        return location.model_copy(update={"environment_revision": str(record.revision)})
+
+    def _revision_after(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> str | None:
+        """The environment's revision once the attempt's fingerprint is counted."""
+        revision = self._observe(environment_id, raw.get("environment"), live.execution.attempt_id)
+        return None if revision is None else str(revision)
+
+    def _observe(self, environment_id: str, fingerprint: object, changed_by: str) -> int | None:
+        """The environment's revision after the executor reported ``fingerprint`` (W3).
+
+        The first fingerprint is revision 0, and each different one counts one up,
+        recorded against the attempt that reported it (empty between executors). The
+        executor is untrusted: research code can only make its own environment's
+        revisions count up.
+        """
+        record = self.store.revision(environment_id)
+        if not isinstance(fingerprint, str) or not _FINGERPRINT.fullmatch(fingerprint):
+            return None if record is None else record.revision
+        if record is None:
+            self.store.save_revision(environment_id, RevisionRecord(0, fingerprint, changed_by))
+            return 0
+        if record.fingerprint == fingerprint:
+            return record.revision
+        changed = RevisionRecord(record.revision + 1, fingerprint, changed_by)
+        self.store.save_revision(environment_id, changed)
+        _log.info(
+            "environment %s is at revision %d: its installed packages changed (%s)",
+            environment_id,
+            changed.revision,
+            changed_by or "between executors",
+        )
+        return changed.revision
 
     def _kernel(
         self, environment_id: str, session_id: str, raw: object, state_lost: bool
@@ -854,32 +1020,40 @@ class ExecutionManager:
             live.execution = live.execution.model_copy(update={"state": ExecutionState.CANCELLING})
             self._state(live, ExecutionState.CANCELLING)
             self.store.update_execution(live.execution)
-        channel = await self._channel(live.environment_id)
+        # Only the executor it was sent to has it; never start another one to cancel.
+        channel = live.channel
+        if channel is None or channel.closed:
+            return
         await channel.request("cancel", execution=live.execution.execution_id)
 
     async def restart_kernel(self, request: KernelRestartRequest) -> KernelInfo:
         context = request.context
-        channel = await self._channel(context.environment_id)
-        reply = await channel.request(
-            "restart", session=context.session_id, language=request.language, reply_timeout=180
-        )
-        kernel, _ = self._kernel(
-            context.environment_id, context.session_id, reply.get("kernel"), True
-        )
-        if kernel is None:
-            raise WorkerError(ErrorKind.INTERNAL, "the executor did not describe the kernel")
-        return kernel
+        async with self._using(context.environment_id) as channel:
+            reply = await channel.request(
+                "restart", session=context.session_id, language=request.language, reply_timeout=180
+            )
+            kernel, _ = self._kernel(
+                context.environment_id, context.session_id, reply.get("kernel"), True
+            )
+            if kernel is None:
+                raise WorkerError(ErrorKind.INTERNAL, "the executor did not describe the kernel")
+            return kernel
 
     async def close_session(self, request: SessionCloseRequest) -> SessionClosed:
         """Stop a session's kernels where its environment has an executor; start nothing."""
         context = request.context
         environment = self._environments.get(context.environment_id)
         channel = environment.channel if environment is not None else None
-        if channel is None or channel.closed:
+        if environment is None or channel is None or channel.closed:
             return SessionClosed()
-        reply = await channel.request(
-            "close_session", session=context.session_id, reply_timeout=180
-        )
+        environment.requests += 1
+        try:
+            reply = await channel.request(
+                "close_session", session=context.session_id, reply_timeout=180
+            )
+        finally:
+            environment.requests -= 1
+            environment.last_used = time.monotonic()
         raw: object = reply.get("kernels")
         stopped: list[KernelInfo] = []
         for item in cast(list[object], raw) if isinstance(raw, list) else []:
@@ -897,7 +1071,7 @@ class ExecutionManager:
         return Capabilities(
             protocol=PROTOCOL_VERSION,
             languages=tuple(name for name in environment.languages if name in LANGUAGES),
-            location=environment.location,
+            location=self._located(environment_id, environment) or environment.location,
             features=tuple(name for name in environment.features if name in FEATURES),
         )
 
@@ -946,58 +1120,58 @@ class ExecutionManager:
         )
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:
-        channel = await self._channel(request.context.environment_id)
-        found = await self._read_range(
-            channel, request, request.offset, request.length, hashed=True
-        )
-        return _checked(
-            FileContent,
-            path=request.path,
-            sha256=found.sha256,
-            size=found.size,
-            modified_at=found.modified,
-            offset=found.offset,
-            content_b64=found.content_b64,
-            eof=found.eof,
-        )
+        async with self._using(request.context.environment_id) as channel:
+            found = await self._read_range(
+                channel, request, request.offset, request.length, hashed=True
+            )
+            return _checked(
+                FileContent,
+                path=request.path,
+                sha256=found.sha256,
+                size=found.size,
+                modified_at=found.modified,
+                offset=found.offset,
+                content_b64=found.content_b64,
+                eof=found.eof,
+            )
 
     async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
         context = request.context
-        channel = await self._channel(context.environment_id)
-        reply = await channel.request(
-            "write",
-            session=context.session_id,
-            path=request.path,
-            content_b64=request.content_b64,
-            expected_sha256=request.expected_sha256,
-            create_only=request.create_only,
-        )
-        return _checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
+        async with self._using(context.environment_id) as channel:
+            reply = await channel.request(
+                "write",
+                session=context.session_id,
+                path=request.path,
+                content_b64=request.content_b64,
+                expected_sha256=request.expected_sha256,
+                create_only=request.create_only,
+            )
+            return _checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         context = request.context
-        channel = await self._channel(context.environment_id)
-        reply = await channel.request("list", session=context.session_id, path=request.path)
-        raw = reply.get("entries")
-        every = cast(list[object], raw) if isinstance(raw, list) else []
-        entries = every[:MAX_LIST]
-        listed: list[FileEntry] = []
-        for entry in entries:
-            item = cast(dict[str, Any], entry) if isinstance(entry, dict) else {}
-            listed.append(
-                _checked(
-                    FileEntry,
-                    name=item.get("name"),
-                    type=item.get("type"),
-                    size=item.get("size"),
-                    modified_at=_epoch(item.get("modified")),
+        async with self._using(context.environment_id) as channel:
+            reply = await channel.request("list", session=context.session_id, path=request.path)
+            raw = reply.get("entries")
+            every = cast(list[object], raw) if isinstance(raw, list) else []
+            entries = every[:MAX_LIST]
+            listed: list[FileEntry] = []
+            for entry in entries:
+                item = cast(dict[str, Any], entry) if isinstance(entry, dict) else {}
+                listed.append(
+                    _checked(
+                        FileEntry,
+                        name=item.get("name"),
+                        type=item.get("type"),
+                        size=item.get("size"),
+                        modified_at=_epoch(item.get("modified")),
+                    )
                 )
+            return FileListing(
+                path=request.path,
+                entries=tuple(listed),
+                truncated=reply.get("truncated") is True or len(entries) < len(every),
             )
-        return FileListing(
-            path=request.path,
-            entries=tuple(listed),
-            truncated=reply.get("truncated") is True or len(entries) < len(every),
-        )
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         """Copy a workspace file into the artifact store, checking it did not change meanwhile.
@@ -1007,54 +1181,59 @@ class ExecutionManager:
         limit, and the stored bytes must have the hash it reported.
         """
         context = request.context
-        channel = await self._channel(context.environment_id)
-        reading = ReadFileRequest(context=context, path=request.path)
-        changed = WorkerError(ErrorKind.CONFLICT, f"{request.path} changed while it was published")
-        writer = self.blobs.writer()
-        try:
-            found = await self._read_range(channel, reading, 0, MAX_READ_BYTES, hashed=True)
-            size, sha256 = found.size, found.sha256
-            if size > self.max_artifact_size:
-                raise WorkerError(
-                    ErrorKind.INVALID_REQUEST,
-                    f"{request.path} is {size} bytes, over the {self.max_artifact_size}-byte limit",
-                )
-            offset = 0
-            while True:
-                writer.write(found.data)
-                offset += len(found.data)
-                if offset == size:
-                    break
-                # Short of the end, a range shorter than asked for means the file shrank.
-                if len(found.data) < MAX_READ_BYTES or found.eof:
+        async with self._using(context.environment_id) as channel:
+            reading = ReadFileRequest(context=context, path=request.path)
+            changed = WorkerError(
+                ErrorKind.CONFLICT, f"{request.path} changed while it was published"
+            )
+            writer = self.blobs.writer()
+            try:
+                found = await self._read_range(channel, reading, 0, MAX_READ_BYTES, hashed=True)
+                size, sha256 = found.size, found.sha256
+                if size > self.max_artifact_size:
+                    limit = self.max_artifact_size
+                    raise WorkerError(
+                        ErrorKind.INVALID_REQUEST,
+                        f"{request.path} is {size} bytes, over the {limit}-byte limit",
+                    )
+                offset = 0
+                while True:
+                    writer.write(found.data)
+                    offset += len(found.data)
+                    if offset == size:
+                        break
+                    # Short of the end, a range shorter than asked for means the file shrank.
+                    if len(found.data) < MAX_READ_BYTES or found.eof:
+                        raise changed
+                    found = await self._read_range(
+                        channel, reading, offset, MAX_READ_BYTES, hashed=False
+                    )
+                    if found.size != size:
+                        raise changed
+                if sha256 is None or writer.size != size or not writer.commit(sha256):
                     raise changed
-                found = await self._read_range(
-                    channel, reading, offset, MAX_READ_BYTES, hashed=False
-                )
-                if found.size != size:
-                    raise changed
-            if sha256 is None or writer.size != size or not writer.commit(sha256):
-                raise changed
-        except BaseException:
-            writer.discard()
-            raise
-        media_type = (
-            request.media_type
-            or mimetypes.guess_type(request.path)[0]
-            or "application/octet-stream"
-        )
-        artifact = ArtifactRef(
-            artifact_id=new_id("art"),
-            project_id=context.project_id,
-            sha256=sha256,
-            size=size,
-            media_type=media_type,
-            source_path=request.path,
-            produced_by=self._producer(context.environment_id, context.session_id, request.path),
-            created_at=_now(),
-        )
-        self.store.insert_artifact(artifact)
-        return artifact
+            except BaseException:
+                writer.discard()
+                raise
+            media_type = (
+                request.media_type
+                or mimetypes.guess_type(request.path)[0]
+                or "application/octet-stream"
+            )
+            artifact = ArtifactRef(
+                artifact_id=new_id("art"),
+                project_id=context.project_id,
+                sha256=sha256,
+                size=size,
+                media_type=media_type,
+                source_path=request.path,
+                produced_by=self._producer(
+                    context.environment_id, context.session_id, request.path
+                ),
+                created_at=_now(),
+            )
+            self.store.insert_artifact(artifact)
+            return artifact
 
     def _producer(self, environment_id: str, session_id: str, path: str) -> str | None:
         """The last finished attempt that wrote ``path``, as the executor observed it.

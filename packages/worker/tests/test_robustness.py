@@ -42,6 +42,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import MAX_EVENT_BYTES
 from sandbox_science.worker import app as app_module
+from sandbox_science.worker import channel as channel_module
 from sandbox_science.worker import manager as manager_module
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
@@ -137,6 +138,9 @@ class HostileBackend:
         self.mode = mode
         self.env = env
         self.channels: list[ExecutorChannel] = []
+
+    async def prepare(self, environment_id: str) -> None:
+        return None
 
     async def open(
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
@@ -832,3 +836,35 @@ async def test_low_requests_can_name_the_project(worker: Worker) -> None:
         assert response.status == 404
     status, _ = await worker.get(f"/v1/executions/{execution_id}?project_id=..%2Fx")
     assert status == 400
+
+
+async def test_an_executor_that_stops_reading_fails_its_requests_in_time(
+    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Research code can stop its executor; a request must not wait for it forever.
+    monkeypatch.setattr(channel_module, "WRITE_TIMEOUT", 0.5)
+    started, store = await start_worker(aiohttp_client, tmp_path, HostileBackend("deaf"))
+    try:
+        payload = base64.b64encode(b"x" * (4 << 20)).decode()
+        began = time.monotonic()
+        status, body = await started.post(
+            "/v1/files/write", {"context": CONTEXT, "path": "big.bin", "content_b64": payload}
+        )
+        assert (status, body["error"]["kind"]) == (503, "unavailable")
+        assert "stopped reading" in body["error"]["message"]
+        assert time.monotonic() - began < 10
+    finally:
+        await started.manager.close()
+        store.close()
+
+
+async def test_a_forged_cpu_time_is_no_activity(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    started, store = await start_worker(aiohttp_client, tmp_path, HostileBackend("huge_cpu"))
+    try:
+        await started.manager.capabilities("env1")
+        assert await started.manager.activity("env1") is None
+    finally:
+        await started.manager.close()
+        store.close()

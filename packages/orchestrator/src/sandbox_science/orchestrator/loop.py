@@ -18,7 +18,8 @@ SYSTEM_PROMPT: Final = (
     "Report only what the tools actually returned. Network access follows the project's "
     "policy: the first connection to a site the project has not used before can fail with "
     "'Permission denied' while the platform admits the site, which takes up to half a minute, "
-    "so wait and retry before concluding that a site is blocked. A request that needs "
+    "so wait and retry before concluding that a site is blocked; a later tool result's "
+    "platform_notices say when a site was admitted or refused. A request that needs "
     "approval fails with approval_required until someone approves it."
 )
 
