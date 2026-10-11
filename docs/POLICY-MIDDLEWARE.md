@@ -15,7 +15,7 @@ It targets OpenShell v0.1.3. The OpenShell contracts it implements are vendored 
 5. The library classifies and evaluates it under the bound policy, the pool ceiling and the hard floor.
 6. A git fetch (`POST …/git-upload-pack`) that the policy does not deny must carry a well-formed upload-pack request body, so a fetch rule cannot carry arbitrary payloads to a git host. The check (`gitproto.py`) follows git's protocol documents and what git, libgit2, dulwich and go-git actually send, in both protocol versions, and is tested against request bodies captured from git 2.53. It accepts only git's keywords and capabilities, lowercase object IDs and bounded values, and nothing after the end of the request. Gzip bodies are inflated with a bound and must be a single, plausibly sized gzip member. OpenShell never passes a truncated body: a body over the limit fails the middleware instead. The check does not bound volume, since object IDs and values such as `ref-prefix` can still carry most of a body ([policy](POLICY.md), "Residual risks").
 
-The middleware runs before OpenShell injects credentials and cannot tell which requests will receive one. Every request of a project that lists `credentials.providers` therefore counts as credentialed, so its escalations are denied on timeout rather than proceeding as alerts ([policy](POLICY.md), "Escalation timeout").
+The middleware runs before OpenShell injects credentials and cannot tell which requests will receive one. Every request of a project that lists `credentials.providers` therefore counts as credentialed, so its escalations are denied on timeout rather than proceeding as alerts. The exception is a rule that sets `allow_credentialed: true` ([policy](POLICY.md), "Escalation timeout").
 
 ## Results
 
