@@ -92,7 +92,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ## W0: behavior specification and harness foundation
 
-- [ ] Behavior specs with acceptance fixtures: Conda provisioning, research artifacts and automatic review approved by the user (2026-10-11); tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, PDF sources, living documents ([drafted](../docs/specs/living-documents.md)) and the project ledger, board and frontier ([drafted](../docs/specs/ledger.md)) to review with the user
+- [ ] Behavior specs with acceptance fixtures: Conda provisioning, research artifacts and automatic review approved by the user (2026-10-11); tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, PDF sources, living documents ([drafted](../docs/specs/living-documents.md)) and the project ledger, board and frontier ([drafted](../docs/specs/ledger.md)) to review with the user; the two drafts record the user's decisions of 2026-10-11 on their main questions
 - [x] Harness building-block decision with licenses recorded: D72, proposed, to confirm with the user
 
 ## W1: shared references and one worker adapter
@@ -118,6 +118,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] First slice ([workspace](../docs/WORKSPACE.md)): a read-only API v0 and views of projects, their sessions and environments, and each session's runs (messages, tool calls with arguments and results); Jupyter-like login, origin and host checks, a strict content policy; one Markdown component for all text; a `web` CI job and the npm lockfile check (licenses, registry, integrity, install scripts)
 - [x] The harness keeps each run's record with `--state-dir`, the same that `--transcript` writes
 - [ ] Living documents (D23, D65; [spec drafted](../docs/specs/living-documents.md)): parsing on the server with markdown-it-py and mdit-py-plugins, passing the shared math cases (`web/workspace/src/lib/dollarmath.fixtures.json`), with the 200-line limit on `$$` blocks added to the plugin's block rule; block and math IDs; revision-checked edits; comments and anchors
+- [ ] Document files, mirror and merge (D65 amended; [living documents](../docs/specs/living-documents.md), LD-49 to LD-52): the worker keeps each environment's `documents/` at the documents' current revisions at every sync point, outside the `shared/` sync; it reports direct edits of the files, which the control application merges into the current revision or keeps as rejected patches; and the `ss-doc` helper's calls travel from the executor through the worker in the running call's event stream
+- [ ] Math findings (D82; [living documents](../docs/specs/living-documents.md), LD-53 to LD-55; [consistency review](../docs/specs/consistency-review.md), CR-36 to CR-38), with the review machinery: KaTeX run on the server outside the orchestrator's process (Node or an embedded engine, to choose) on every save of durable text; `math` findings with the display's repair as their suggested fix, handed over in the turn's closing round; confirmation by the check itself
 - [ ] Tables: markdown-it 15 and markdown-it-py 4.2 split a table differently when rare Unicode whitespace starts its rows (4 of 120,000 random texts); pin both parsers' versions and check again when the server parses Markdown
 - [ ] Ledger and board (D24; [spec drafted](../docs/specs/ledger.md)), and review findings (the consistency review spec)
 - [ ] Approvals in the GUI, with re-authentication for high-risk ones (D54); policy revisions from the GUI

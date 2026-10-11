@@ -26,7 +26,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 
 1. A call takes either a `script`, run by `/bin/bash -c` without a login shell, or an `argv` list, run without a shell.
 2. **No state between calls.** Each call starts in the session workspace, unless it names another working directory under the session workspace or the shared project area. A `cd` or `export` lasts only for that call. Kernels are the stateful tool.
-3. **Environment.** The session environment's variables: the environment's tools first on `PATH`, `HOME`, `SESSION_WORKSPACE` and `PROJECT_SHARED`. There are no secrets; credentials appear only as provider placeholders (D57).
+3. **Environment.** The session environment's variables: the environment's tools first on `PATH`, `HOME`, `SESSION_WORKSPACE`, `PROJECT_SHARED` and `PROJECT_DOCUMENTS`, the living documents' files ([living documents](living-documents.md), LD-3). There are no secrets; credentials appear only as provider placeholders (D57).
 4. **stdin** is empty, so a command waiting for input reads end-of-file instead of hanging.
 5. **Output.** stdout and stderr are separate streams of ordered chunks, each numbered within the execution. A stream larger than its limit keeps its head and its tail, drops the middle with a marker, and reports the total byte count. Bytes that are not UTF-8 are decoded with replacement characters.
 6. **Ending.** The result carries the exit code or the terminating signal, the elapsed time, and whether the call timed out or was cancelled. Partial output is kept.
@@ -55,7 +55,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 
 ## Files
 
-1. **Paths.** Paths are relative to the session workspace, or start with `shared/` for the project's shared area ([projects and sessions](../PROJECTS-AND-SESSIONS.md)), which the worker keeps in step across the project's environments (D79). Absolute paths, `..` segments and paths through a symlink are refused. The shell can still use symlinks; the file tools do not follow them.
+1. **Paths.** Paths are relative to the session workspace, or start with `shared/` for the project's shared area ([projects and sessions](../PROJECTS-AND-SESSIONS.md)), which the worker keeps in step across the project's environments (D79), or with `documents/` for the living documents' files, whose writes are merged as direct edits ([living documents](living-documents.md), LD-50). Absolute paths, `..` segments and paths through a symlink are refused. The shell can still use symlinks; the file tools do not follow them.
 2. **Read** returns a file's bytes, up to a size limit (ranges for larger files), with its SHA-256. Directories, devices and FIFOs are refused.
 3. **Write** creates or atomically replaces a file in the session workspace. A write to the shared area must name the content hash it expects to replace (or none for a new file), and fails with `conflict` if the file has changed.
 4. **List** returns up to a bounded number of entries. Each gives its name, type, size and modification time; symlinks are reported as links and not followed.
