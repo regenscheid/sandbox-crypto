@@ -20,7 +20,9 @@ Keys come in three kinds, each with the scopes an answer can take:
   request's record lists by their paths at the package cache. ``files`` covers exactly
   those files: the middleware allows their downloads to that sandbox under that revision,
   and nothing else. When its operation ends, the worker withdraws the request (a denial
-  marked ``withdrawn``), and nothing can grant its files again.
+  marked ``withdrawn``), and nothing can grant its files again. The request also names
+  the time after which it grants nothing (``valid_until``), whatever its answers say, so
+  a withdrawal the worker failed to record still ends the grant.
 
 Records are read through a small protocol, so this module needs no event store.
 """
@@ -62,6 +64,10 @@ LISTED_FILES: Final = 20
 ``pending --request`` lists them all."""
 WITHDRAWN: Final = "withdrawn"
 """Marks the denial with which the worker closes a ``packages`` request for good."""
+VALID_UNTIL: Final = "valid_until"
+"""A ``packages`` request's own deadline: it grants nothing after it."""
+CONTEXT_TEXT: Final = 300
+"""Characters of a ``packages`` request's context (what was asked, and why) kept to show."""
 
 
 def files_digest(paths: Iterable[str]) -> str:
@@ -222,6 +228,28 @@ def answer_payload(
     }
 
 
+def withdrawal_payload(seq: int, key: RequestKey, reason: str) -> dict[str, object]:
+    """The payload of the denial with which the worker closes ``packages`` request ``seq``
+    for good, built from its key alone, so that no read of the store is needed."""
+    return {
+        "request_seq": seq,
+        "scope": DEFAULT_SCOPES[key.kind],
+        "target": key.payload(),
+        "expires": None,
+        "reason": reason[:500],
+        WITHDRAWN: True,
+    }
+
+
+def _shown(value: object) -> str | None:
+    """Text a request carries for people, safe to print: no control characters, bounded."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = "".join(char if char.isprintable() else " " for char in value[: CONTEXT_TEXT * 2])
+    text = " ".join(text.split())
+    return text if len(text) <= CONTEXT_TEXT else text[: CONTEXT_TEXT - 1] + "…"
+
+
 def describe(key: RequestKey) -> str:
     """A permission request's key on one line, for an operator."""
     fields = key.fields()
@@ -271,6 +299,13 @@ def request_lines(approvals: Approvals, seq: int) -> list[str] | None:
             state += f", until {answer.expires:%Y-%m-%d %H:%M:%S}"
     lines = [f"{request.seq}  {request.recorded:%Y-%m-%d %H:%M:%S}  {describe(request.key)}"]
     lines.append(f"      {state}")
+    asked, purpose, until = approvals.context(seq)
+    if asked is not None:
+        lines.append(f"      asked for: {asked}")
+    if purpose is not None:
+        lines.append(f"      purpose (the agent's words): {purpose}")
+    if until is not None:
+        lines.append(f"      grants nothing after {until:%Y-%m-%d %H:%M:%S}")
     files = approvals.files(seq)
     if files:
         lines.append(f"      {len(files)} package files:")
@@ -344,6 +379,10 @@ class Approvals:
         """The package cache paths each ``packages`` request lists."""
         self._withdrawn: set[int] = set()
         """The ``packages`` requests the worker withdrew: closed for good."""
+        self._until: dict[int, datetime] = {}
+        """Each ``packages`` request's own deadline."""
+        self._context: dict[int, tuple[str | None, str | None]] = {}
+        """What each ``packages`` request says was asked for, and why, to show."""
 
     @property
     def last_seq(self) -> int:
@@ -381,7 +420,12 @@ class Approvals:
                 paths = grant_paths(data.get("files"))
                 if paths is None or files_digest(paths) != key.fields()["files"]:
                     return
+                until = _time(data.get(VALID_UNTIL))
+                if until is None:
+                    return  # every file set is granted for a bounded time
                 self._files[record.seq] = frozenset(paths)
+                self._until[record.seq] = until
+                self._context[record.seq] = (_shown(data.get("asked")), _shown(data.get("purpose")))
             request = PendingRequest(
                 record.seq, key, recorded, timedelta(seconds=seconds), str(on_timeout)
             )
@@ -442,6 +486,13 @@ class Approvals:
         with self._lock:
             return seq in self._withdrawn
 
+    def context(self, seq: int) -> tuple[str | None, str | None, datetime | None]:
+        """What ``packages`` request ``seq`` says was asked for, the agent's purpose, and
+        the time after which it grants nothing."""
+        with self._lock:
+            asked, purpose = self._context.get(seq, (None, None))
+            return asked, purpose, self._until.get(seq)
+
     def packages_requests(self, operations: Iterable[str]) -> list[int]:
         """The ``packages`` requests of these provisioning operations not yet withdrawn."""
         wanted = set(operations)
@@ -476,8 +527,8 @@ class Approvals:
         A ``packages`` request's newest answer decides it, as for other requests: an
         approval grants the files the request lists, until it expires; a later denial
         withdraws them. A request the worker withdrew, as its operation ended, grants
-        nothing, whatever answers it later. Among the requests that list the file, the
-        newest live approval is returned.
+        nothing, whatever answers it later, and neither does one past its own deadline.
+        Among the requests that list the file, the newest live approval is returned.
         """
         with self._lock:
             newest: dict[int, Answer] = {}
@@ -488,6 +539,7 @@ class Approvals:
                     or request is None
                     or request.key != answer.key
                     or answer.request_seq in self._withdrawn
+                    or now >= self._until.get(answer.request_seq, now)
                     or path not in self._files.get(answer.request_seq, frozenset())
                 ):
                     continue
