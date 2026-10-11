@@ -249,13 +249,41 @@ async def test_requests_that_are_no_package_never_reach_the_worker(
     assert client.asked == []
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"environment": "../executions"},
+        {"environment": 7},
+        {"operation": "../../v1/executions/exe-1"},
+        {"operation": ["prv-1"]},
+    ],
+)
+async def test_only_identifiers_reach_the_workers_routes(arguments: dict[str, Any]) -> None:
+    client = ScriptedClient([])
+    toolbox = Toolbox(client, CONTEXT, features=("provisioning",))
+    try:
+        outcome = await toolbox.call(call("provision_status", arguments), "op-7")
+    finally:
+        await client.close()
+    assert json.loads(outcome.text)["error"]["kind"] == "invalid_request"
+    assert (client.polled, client.cancelled) == ([], [])
+
+
 async def test_a_long_result_is_bounded() -> None:
     files = tuple(
         FILE.model_copy(update={"name": f"package{index}", "file": f"package{index}-1-0.conda"})
         for index in range(500)
     )
     client = ScriptedClient(
-        [{"state": "awaiting_permission", "outcome": "awaiting_permission", "files": files}]
+        [
+            {
+                "state": "awaiting_permission",
+                "outcome": "awaiting_permission",
+                "files": files,
+                "notes": tuple("a long note " * 150 for _ in range(30)),
+                "next_step": "x" * 2000,
+            }
+        ]
     )
     toolbox = Toolbox(client, CONTEXT, features=("provisioning",), output_chars=4000)
     try:
@@ -268,6 +296,7 @@ async def test_a_long_result_is_bounded() -> None:
     shown = json.loads(outcome.text)
     assert shown["files"][-1].startswith("[… ")
     assert len(outcome.record["provision"]["files"]) == 500
+    assert len(outcome.record["provision"]["notes"]) == 30
 
 
 @pytest_asyncio.fixture

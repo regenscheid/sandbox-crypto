@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Final
 
@@ -46,6 +47,10 @@ POLL: Final = 30.0
 """Seconds of each wait the worker is asked for (it allows 60 at most)."""
 SHOWN: Final = 40
 """Files, changes and probes listed before a note counts the rest."""
+TEXT: Final = 2000
+"""Characters of an error message, a note or the next step shown, at most."""
+_IDENTIFIER: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+"""The contracts' identifiers: what may name an operation or environment in a route."""
 
 _SPECS = {"type": "array", "items": {"type": "string"}, "maxItems": 32}
 _WAIT = {
@@ -171,9 +176,11 @@ class ProvisionTools:
         provision_id = args.get("operation")
         project_id = self.context.project_id
         if provision_id is None:
-            environment = str(args.get("environment") or self.context.environment_id)
+            environment = args.get("environment", self.context.environment_id)
+            if not isinstance(environment, str) or not _IDENTIFIER.fullmatch(environment):
+                return _failure(ErrorKind.INVALID_REQUEST, "environment must be an environment ID")
             return self._queue(await self.client.provisioning_queue(environment))
-        if not isinstance(provision_id, str):
+        if not isinstance(provision_id, str) or not _IDENTIFIER.fullmatch(provision_id):
             return _failure(ErrorKind.INVALID_REQUEST, "operation must be an operation's ID")
         if args.get("cancel") is True:
             found = await self.client.cancel_provision(provision_id, project_id=project_id)
@@ -308,12 +315,15 @@ def describe(
         summary["stopped_at"] = operation.stage
     if operation.reason is not None:
         summary["reason"] = operation.reason
+    # Texts shrink with the lists, so that the whole result fits the tool's limit.
+    chars = max(100, TEXT * limit // SHOWN)
     if operation.error is not None:
-        summary["error"] = {"kind": operation.error.kind.value, "message": operation.error.message}
+        message = _clip(operation.error.message, chars)
+        summary["error"] = {"kind": operation.error.kind.value, "message": message}
     if operation.notes:
-        summary["notes"] = list(operation.notes)
+        summary["notes"] = [_clip(note, chars) for note in _bounded(list(operation.notes), limit)]
     if operation.next_step is not None:
-        summary["next"] = operation.next_step
+        summary["next"] = _clip(operation.next_step, chars)
     if operation.state is not ProvisionState.FINISHED:
         summary["follow"] = (
             f"call provision_status with operation {operation.provision_id} and wait_seconds "
@@ -335,6 +345,14 @@ def _bounded(items: list[str], limit: int) -> list[str]:
     if len(items) <= limit:
         return items
     return [*items[:limit], f"[… {len(items) - limit} more]"]
+
+
+def _clip(text: str, chars: int) -> str:
+    """``text`` within ``chars`` characters: its head and its tail, where errors end."""
+    if len(text) <= chars:
+        return text
+    half = chars // 2
+    return f"{text[:half]} […] {text[-half:]}"
 
 
 def _line(text: str) -> str:
