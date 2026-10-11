@@ -1588,6 +1588,8 @@ source = { editable = "packages/worker" }
 dependencies = [
     { name = "aiohttp" },
     { name = "sandbox-science-contracts" },
+    { name = "sandbox-science-policy" },
+    { name = "sandbox-science-policy-middleware" },
 ]
 
 [package.optional-dependencies]
@@ -1602,6 +1604,8 @@ requires-dist = [
     { name = "ipykernel", marker = "extra == 'kernels'", specifier = ">=6.29" },
     { name = "jupyter-client", marker = "extra == 'kernels'", specifier = ">=8.6" },
     { name = "sandbox-science-contracts", editable = "packages/contracts" },
+    { name = "sandbox-science-policy", editable = "packages/policy" },
+    { name = "sandbox-science-policy-middleware", editable = "packages/policy-middleware" },
 ]
 provides-extras = ["kernels"]
 

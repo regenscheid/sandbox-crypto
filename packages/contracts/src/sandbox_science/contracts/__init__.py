@@ -8,6 +8,13 @@ shared contracts ("Shared contracts to establish first").
 
 from .artifacts import ArtifactRef
 from .context import ExecutionContext
+from .environments import (
+    EnvironmentInfo,
+    EnvironmentRequest,
+    EnvironmentState,
+    PolicyRevision,
+    PolicyRevisionRequest,
+)
 from .events import Event, OutputEvent, ResultEvent, StateEvent, StreamEvent
 from .model import Contract, Identifier, new_id
 from .worker import (
@@ -22,10 +29,12 @@ from .worker import (
     FileContent,
     FileEntry,
     FileListing,
+    IsolationEvidence,
     KernelInfo,
     KernelRestartRequest,
     ListFilesRequest,
     Location,
+    ProbeFacts,
     PublishRequest,
     ReadFileRequest,
     Result,
@@ -44,6 +53,9 @@ __all__ = [
     "Capabilities",
     "CellRequest",
     "Contract",
+    "EnvironmentInfo",
+    "EnvironmentRequest",
+    "EnvironmentState",
     "ErrorInfo",
     "ErrorKind",
     "Event",
@@ -55,11 +67,15 @@ __all__ = [
     "FileEntry",
     "FileListing",
     "Identifier",
+    "IsolationEvidence",
     "KernelInfo",
     "KernelRestartRequest",
     "ListFilesRequest",
     "Location",
     "OutputEvent",
+    "PolicyRevision",
+    "PolicyRevisionRequest",
+    "ProbeFacts",
     "PublishRequest",
     "ReadFileRequest",
     "Result",

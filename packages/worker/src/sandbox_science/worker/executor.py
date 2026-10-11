@@ -33,7 +33,7 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -50,6 +50,9 @@ INTERRUPT_GRACE = 5.0
 KERNEL_START_TIMEOUT = 120.0
 KERNEL_NAMES = {"python": "python3", "sage": "sagemath"}
 """Each language's Jupyter kernelspec; SageMath installs ``sagemath`` beside its Python."""
+PROBE_TEXT = 256
+"""The longest value the isolation probe reports."""
+MAX_SENTINELS = 8
 SHARED = "shared"
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -245,6 +248,7 @@ class Executor:
     async def handle(self, request: Message) -> None:
         handlers: dict[str, Callable[[Message], Awaitable[None]]] = {
             "hello": self.op_hello,
+            "probe": self.op_probe,
             "shell": self.op_shell,
             "cell": self.op_cell,
             "cancel": self.op_cancel,
@@ -346,7 +350,7 @@ class Executor:
         }
 
     def environment(self, session: str) -> dict[str, str]:
-        env = dict(os.environ)
+        env = tool_environment(os.environ, sys.executable, sys.prefix)
         env["SESSION_WORKSPACE"] = str(self.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
         return env
@@ -368,6 +372,17 @@ class Executor:
                 "root": str(self.root),
             },
         )
+
+    async def op_probe(self, request: Message) -> None:
+        """Describe this sandbox, and say whether each of the worker's sentinel paths shows here."""
+        raw: object = request.get("sentinels", [])
+        items = cast(list[object], raw) if isinstance(raw, list) else []
+        paths = [item for item in items if isinstance(item, str)]
+        if not isinstance(raw, list) or len(paths) != len(items) or len(paths) > MAX_SENTINELS:
+            raise ToolError("invalid_request", "sentinels must be a short list of paths")
+        facts = await asyncio.to_thread(probe_facts)
+        seen = {path: await asyncio.to_thread(sentinel_state, path) for path in paths}
+        await self.reply(request, facts=facts, sentinels=seen)
 
     def accept(self, request: Message, kind: str) -> Running:
         execution = request.get("execution")
@@ -788,6 +803,22 @@ class Executor:
         await self.reply(request, entries=entries, truncated=len(items) > limit)
 
 
+def tool_environment(base: Mapping[str, str], python: str, prefix: str) -> dict[str, str]:
+    """``base`` with the environment's tools first on PATH, as the tools spec requires.
+
+    The executor runs with the environment's interpreter, so its directory holds the
+    environment's commands; without it, Sage's interfaces could not find ``gp`` or ``gap``
+    (lab 5). A Conda environment is also named in ``CONDA_PREFIX``.
+    """
+    env = dict(base)
+    tools = os.path.dirname(python)
+    rest = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry and entry != tools]
+    env["PATH"] = os.pathsep.join([tools, *rest])
+    if os.path.isdir(os.path.join(prefix, "conda-meta")):
+        env["CONDA_PREFIX"] = prefix
+    return env
+
+
 def available_languages() -> list[str]:
     """The languages whose kernelspecs this interpreter's Jupyter installation finds."""
     if not all(importlib.util.find_spec(name) for name in ("jupyter_client", "ipykernel")):
@@ -799,6 +830,80 @@ def available_languages() -> list[str]:
     except Exception:  # a broken Jupyter installation offers no kernels
         return []
     return [language for language, name in KERNEL_NAMES.items() if name in specs]
+
+
+def probe_facts() -> Message:
+    """Facts about the machine and this process, for the worker's isolation check (D43).
+
+    The worker reads the same facts on its own host and compares them. Only files
+    are read, no tools run; a value that cannot be read is ``None``.
+    """
+    status = _process_status()
+    return {
+        "kernel_release": _clip(platform.release()),
+        "boot_id": _first_line("/proc/sys/kernel/random/boot_id"),
+        "hostname": _clip(socket.gethostname()),
+        "machine_id": _first_line("/etc/machine-id"),
+        "seccomp": {"0": "disabled", "1": "strict", "2": "filter"}.get(status.get("Seccomp", "")),
+        "no_new_privs": {"0": False, "1": True}.get(status.get("NoNewPrivs", "")),
+        "capabilities": _clip(status.get("CapEff", "")),
+        "uid": os.getuid(),
+        "hypervisor": _cpu_flag("hypervisor"),
+        "sys_vendor": _first_line("/sys/class/dmi/id/sys_vendor"),
+        "product_name": _first_line("/sys/class/dmi/id/product_name"),
+    }
+
+
+def sentinel_state(path: str) -> str:
+    """``present`` or ``absent`` for ``path`` here, or ``unknown`` when that cannot be told.
+
+    The file need not be readable: seeing it at all means sharing the worker's files.
+    """
+    if not os.path.isabs(path):
+        return "unknown"
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return "absent"
+    except OSError:  # such as a directory on the way that this user cannot search
+        return "unknown"
+    return "present"
+
+
+def _clip(text: str) -> str | None:
+    return text.strip()[:PROBE_TEXT] or None
+
+
+def _first_line(path: str) -> str | None:
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(PROBE_TEXT)
+    except OSError:
+        return None
+    return _clip(data.decode("utf-8", "replace").split("\n", 1)[0])
+
+
+def _process_status() -> dict[str, str]:
+    """``/proc/self/status`` as name to value."""
+    try:
+        with open("/proc/self/status", encoding="utf-8", errors="replace") as handle:
+            lines = handle.read(65536).splitlines()
+    except OSError:
+        return {}
+    return {name: value.strip() for name, _, value in (line.partition(":") for line in lines)}
+
+
+def _cpu_flag(flag: str) -> bool | None:
+    """Whether the first CPU's flags include ``flag``; ``None`` if no flags are listed."""
+    try:
+        with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                name, _, value = line.partition(":")
+                if name.strip() == "flags":
+                    return flag in value.split()
+    except OSError:
+        return None
+    return None
 
 
 def group_members(pgid: int) -> list[int]:

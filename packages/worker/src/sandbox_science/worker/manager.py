@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
+from pathlib import Path
 from typing import Any, cast
 
 from pydantic import ValidationError
@@ -60,6 +61,7 @@ from .artifacts import Blobs
 from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import WorkerError
+from .isolation import probe
 from .store import KernelRecord, Store
 
 _log = logging.getLogger(__name__)
@@ -110,12 +112,15 @@ class ExecutionManager:
         *,
         pool_id: str,
         max_artifact_size: int,
+        state_dir: Path,
     ) -> None:
         self.store = store
         self.backend = backend
         self.blobs = blobs
         self.pool_id = pool_id
         self.max_artifact_size = max_artifact_size
+        # The isolation probe's sentinel goes here, among the worker's own files.
+        self.state_dir = state_dir
         self._live: dict[str, _Live] = {}
         self._environments: dict[str, _Environment] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -134,6 +139,19 @@ class ExecutionManager:
                     )
                 ),
             )
+
+    async def release(self, environment_id: str) -> None:
+        """Stop an environment's executor before its sandbox goes away.
+
+        Attempts still running there end as the executor's channel closes.
+        """
+        environment = self._environments.get(environment_id)
+        if environment is None:
+            return
+        async with environment.lock:
+            if environment.channel is not None:
+                await environment.channel.close()
+            self._environments.pop(environment_id, None)
 
     async def close(self) -> None:
         for task in list(self._tasks):
@@ -214,12 +232,24 @@ class ExecutionManager:
                 )
                 hello = channel.hello
                 where = cast(dict[str, Any], hello.get("location") or {})
+                declared = self.backend.isolation_tier
+                isolation = await probe(channel, declared, self.state_dir)
+                if isolation.tier < declared:
+                    _log.warning(
+                        "environment %s: isolation tier %d declared, %d in effect: %s",
+                        environment_id,
+                        declared,
+                        isolation.tier,
+                        "; ".join(isolation.evidence.findings),
+                    )
                 environment.location = Location(
                     pool_id=self.pool_id,
                     backend=self.backend.name,
                     sandbox_id=self.backend.sandbox_id(environment_id),
                     hostname=str(where.get("hostname", "unknown")),
-                    isolation_tier=self.backend.isolation_tier,
+                    isolation_tier=isolation.tier,
+                    declared_isolation_tier=declared,
+                    isolation_evidence=isolation.evidence,
                 )
                 environment.languages = tuple(str(name) for name in hello.get("languages", ()))
                 environment.channel = channel
@@ -488,7 +518,8 @@ class ExecutionManager:
                     return
             if changed is None:
                 return
-            await changed
+            # Every reader shares the future: one that goes away must not cancel it.
+            await asyncio.shield(changed)
 
     async def cancel(self, execution_id: str) -> Execution:
         live = self._live.get(execution_id)

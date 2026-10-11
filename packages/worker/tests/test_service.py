@@ -1,19 +1,17 @@
 # SPDX-License-Identifier: MIT
-"""The worker API against the acceptance fixtures of docs/specs/tools.md.
+"""The worker service on the local backend, where a test needs more than its API.
 
-A worker service on the local backend (a real executor and real kernels) runs
-behind an aiohttp test client.
+These tests reach into the service: they kill its executor, crash it, close it,
+give it a stand-in kernelspec or a backend that overstates its tier. The
+acceptance fixtures of docs/specs/tools.md, which any backend must pass through
+the API alone, are in test_conformance.py.
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import json
-import os
 import signal
-import socket
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
@@ -24,10 +22,12 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
-from sandbox_science.contracts import Execution, ExecutionContext, ExecutionState
+from sandbox_science.contracts import ErrorKind, Execution, ExecutionContext, ExecutionState
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
-from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.worker.backends import Backend, LocalBackend
+from sandbox_science.worker.channel import ExecutorChannel, Message
+from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
@@ -39,15 +39,6 @@ CONTEXT = {"project_id": "p1", "session_id": "s1", "environment_id": "env1"}
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 
 pytestmark = pytest.mark.asyncio
-
-
-@pytest.fixture(autouse=True)
-def isolated_jupyter(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Hide the host's own kernelspecs (a real SageMath, say) from the executor."""
-    monkeypatch.setenv("JUPYTER_DATA_DIR", str(tmp_path_factory.mktemp("jupyter-data")))
-    monkeypatch.delenv("JUPYTER_PATH", raising=False)
 
 
 class Worker:
@@ -106,15 +97,19 @@ class Worker:
 
 
 async def start_worker(
-    aiohttp_client: ClientFactory, root: Path, python: str = sys.executable
+    aiohttp_client: ClientFactory,
+    root: Path,
+    python: str = sys.executable,
+    backend: Backend | None = None,
 ) -> tuple[Worker, Store]:
     store = Store(root / "worker.sqlite3")
     manager = ExecutionManager(
         store,
-        LocalBackend(LocalBackendSettings(python=python), root),
+        backend or LocalBackend(LocalBackendSettings(python=python), root),
         Blobs(root / "artifacts"),
         pool_id="test-pool",
         max_artifact_size=1 << 20,
+        state_dir=root,
     )
     await manager.start()
     client = await aiohttp_client(create_app(manager, TOKEN))
@@ -127,293 +122,6 @@ async def worker(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator
     yield started
     await started.manager.close()
     store.close()
-
-
-async def test_shell_basics_and_location(worker: Worker) -> None:
-    execution = await worker.run(
-        "op-shell", kind="shell", script="echo hello; echo err >&2; exit 3"
-    )
-    Execution.model_validate(execution)
-    assert execution["state"] == "failed"
-    result = execution["result"]
-    assert result["exit_code"] == 3
-    assert result["stdout"]["text"] == "hello\n"
-    assert result["stderr"]["text"] == "err\n"
-    location = execution["location"]
-    assert location["backend"] == "local"
-    assert location["isolation_tier"] == 0
-    assert location["pool_id"] == "test-pool"
-    assert location["hostname"] == socket.gethostname()
-
-
-async def test_argv_runs_without_a_shell(worker: Worker) -> None:
-    execution = await worker.run("op-argv", kind="shell", argv=["printf", "%s|", "$HOME", "a b"])
-    assert execution["state"] == "succeeded"
-    assert execution["result"]["stdout"]["text"] == "$HOME|a b|"
-
-
-async def test_stateful_cells(worker: Worker) -> None:
-    first = await worker.run("op-c1", kind="cell", code="x = 41")
-    second = await worker.run("op-c2", kind="cell", code="x + 1")
-    assert first["state"] == second["state"] == "succeeded"
-    assert second["result"]["outputs"] == [
-        {"type": "result", "data": {"text/plain": "42"}, "execution_count": 2}
-    ]
-    assert first["result"]["kernel"] == second["result"]["kernel"]
-    assert second["result"]["kernel"]["generation"] == 1
-    assert second["result"]["state_lost"] is False
-
-
-async def test_cell_exceptions_and_latex_outputs(worker: Worker) -> None:
-    failed = await worker.run("op-err", kind="cell", code="1/0")
-    assert failed["state"] == "failed"
-    error = failed["result"]["error"]
-    assert (error["kind"], error["name"]) == ("exception", "ZeroDivisionError")
-    assert any("ZeroDivisionError" in line for line in error["traceback"])
-    latex = await worker.run(
-        "op-latex",
-        kind="cell",
-        code="from IPython.display import Math, display\ndisplay(Math(r'\\frac{1}{2}'))",
-    )
-    (output,) = latex["result"]["outputs"]
-    assert output["type"] == "display"
-    assert output["data"]["text/latex"] == "$\\displaystyle \\frac{1}{2}$"
-
-
-async def test_publication(worker: Worker) -> None:
-    shell = await worker.run("op-write", kind="shell", script="printf 'a,b\\n1,2\\n' > out.csv")
-    status, artifact = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "out.csv"})
-    assert status == 201, artifact
-    assert artifact["sha256"] == hashlib.sha256(b"a,b\n1,2\n").hexdigest()
-    assert artifact["media_type"] == "text/csv"
-    assert artifact["size"] == 8
-    assert artifact["produced_by"] == shell["attempt_id"]
-    response = await worker.client.get(
-        f"/v1/artifacts/{artifact['artifact_id']}/content", headers=AUTH
-    )
-    assert await response.read() == b"a,b\n1,2\n"
-    assert response.headers["X-Content-SHA256"] == artifact["sha256"]
-
-
-async def test_publication_names_the_last_attempt_that_wrote_the_file(worker: Worker) -> None:
-    cell = await worker.run("op-w1", kind="cell", code="open('a.txt', 'w').write('from the cell')")
-    shell = await worker.run("op-w2", kind="shell", script="echo from the shell > b.txt")
-    rewrite = await worker.run("op-w3", kind="shell", script="echo again > a.txt")
-    assert cell["result"]["written_files"] == ["a.txt"]
-    assert shell["result"]["written_files"] == ["b.txt"]
-    _, a = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "a.txt"})
-    _, b = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "b.txt"})
-    assert a["produced_by"] == rewrite["attempt_id"]
-    assert b["produced_by"] == shell["attempt_id"]
-    # The file API is not an execution: a file written through it has no known producer.
-    content = base64.b64encode(b"x").decode()
-    await worker.post(
-        "/v1/files/write", {"context": CONTEXT, "path": "c.txt", "content_b64": content}
-    )
-    _, c = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "c.txt"})
-    assert c["produced_by"] is None
-
-
-async def test_shared_files_count_writers_from_any_session(worker: Worker) -> None:
-    other = {**CONTEXT, "session_id": "s2"}
-    status, submitted = await worker.post(
-        "/v1/executions",
-        {
-            "operation_id": "op-s2",
-            "context": other,
-            "kind": "shell",
-            "script": "echo hi > $PROJECT_SHARED/x.txt",
-        },
-    )
-    assert status == 201, submitted
-    writer = await worker.finish(submitted["execution_id"])
-    assert writer["state"] == "succeeded", writer["result"]
-    assert writer["result"]["written_files"] == ["shared/x.txt"]
-    _, artifact = await worker.post("/v1/artifacts", {"context": CONTEXT, "path": "shared/x.txt"})
-    assert artifact["produced_by"] == writer["attempt_id"]
-
-
-async def test_interrupting_a_cell_keeps_its_state(worker: Worker) -> None:
-    await worker.run("op-x", kind="cell", code="x = 41")
-    sleeping = await worker.submit("op-sleep", kind="cell", code="import time\ntime.sleep(60)")
-    await worker.wait_running(sleeping["execution_id"])
-    await asyncio.sleep(0.5)
-    started = asyncio.get_running_loop().time()
-    status, _ = await worker.post(f"/v1/executions/{sleeping['execution_id']}/cancel", {})
-    assert status == 200
-    cancelled = await worker.finish(sleeping["execution_id"])
-    assert cancelled["state"] == "cancelled"
-    assert asyncio.get_running_loop().time() - started < 5
-    after = await worker.run("op-x-again", kind="cell", code="x")
-    assert after["result"]["outputs"][0]["data"]["text/plain"] == "41"
-    assert after["result"]["state_lost"] is False
-
-
-async def test_cancelling_a_shell_call_stops_its_processes(worker: Worker, tmp_path: Path) -> None:
-    pid_file = tmp_path / "pids"
-    execution = await worker.submit(
-        "op-cancel",
-        kind="shell",
-        script=f"sleep 60 & echo $! > {pid_file}; sleep 60",
-    )
-    await worker.wait_running(execution["execution_id"])
-    for _ in range(50):
-        if pid_file.exists() and pid_file.read_text().strip():
-            break
-        await asyncio.sleep(0.1)
-    await worker.post(f"/v1/executions/{execution['execution_id']}/cancel", {})
-    cancelled = await worker.finish(execution["execution_id"])
-    assert cancelled["state"] == "cancelled"
-    assert cancelled["result"]["error"]["kind"] == "cancelled"
-    background = int(pid_file.read_text())
-    try:
-        os.kill(background, 0)
-    except ProcessLookupError:
-        pass
-    else:
-        raise AssertionError("the background process survived")
-
-
-async def test_reconnecting_replays_each_event_once(worker: Worker) -> None:
-    code = "import time\nfor i in range(1, 11):\n    print(i, flush=True)\n    time.sleep(0.3)"
-    execution = await worker.submit("op-stream", kind="cell", code=code)
-    execution_id = execution["execution_id"]
-    seen: list[dict[str, Any]] = []
-    streams = 0
-    async for event in worker.events(execution_id):
-        seen.append(event)
-        if event["type"] == "stream":
-            streams += 1
-            if streams == 3:
-                break  # the client goes away
-    rest = [event async for event in worker.events(execution_id, after=seen[-1]["seq"])]
-    sequence = [event["seq"] for event in seen + rest]
-    assert sequence == list(range(1, len(sequence) + 1))
-    assert sum(event["type"] == "result" for event in seen + rest) == 1
-    printed = "".join(event["text"] for event in seen + rest if event["type"] == "stream")
-    assert printed.split() == [str(i) for i in range(1, 11)]
-    final = rest[-1]["execution"]
-    assert final["state"] == "succeeded"
-    assert final["last_seq"] == rest[-1]["seq"]
-
-
-async def test_idempotent_submission(worker: Worker) -> None:
-    first = await worker.submit("op-same", kind="shell", script="echo once")
-    again = await worker.submit("op-same", kind="shell", script="echo once")
-    assert again["execution_id"] == first["execution_id"]
-    status, body = await worker.post(
-        "/v1/executions",
-        {"operation_id": "op-same", "context": CONTEXT, "kind": "shell", "script": "echo twice"},
-    )
-    assert status == 409
-    assert body["error"]["kind"] == "conflict"
-    finished = await worker.finish(first["execution_id"])
-    assert finished["result"]["stdout"]["text"] == "once\n"
-
-
-async def test_restart_loses_state_and_says_so(worker: Worker) -> None:
-    await worker.run("op-r1", kind="cell", code="x = 41")
-    status, kernel = await worker.post(
-        "/v1/kernels/restart", {"context": CONTEXT, "language": "python"}
-    )
-    assert status == 200, kernel
-    assert kernel["generation"] == 2
-    after = await worker.run("op-r2", kind="cell", code="x")
-    assert after["result"]["error"]["name"] == "NameError"
-    assert after["result"]["kernel"]["generation"] == 2
-    assert after["result"]["state_lost"] is True
-
-
-async def test_kernel_death_is_reported(worker: Worker) -> None:
-    await worker.run("op-d1", kind="cell", code="x = 41")
-    died = await worker.run("op-d2", kind="cell", code="import os\nos._exit(1)")
-    assert died["state"] == "failed"
-    assert died["result"]["error"]["kind"] == "kernel_died"
-    after = await worker.run("op-d3", kind="cell", code="1 + 1")
-    assert after["result"]["kernel"]["generation"] == 2
-    assert after["result"]["state_lost"] is True
-
-
-async def test_output_bounds(worker: Worker) -> None:
-    execution = await worker.run(
-        "op-big",
-        kind="shell",
-        script="head -c 5242880 /dev/zero | tr '\\0' a",
-        output_limit_bytes=65536,
-    )
-    stdout = execution["result"]["stdout"]
-    assert stdout["truncated"] is True
-    assert stdout["total_bytes"] == 5242880
-    assert "bytes omitted" in stdout["text"]
-    assert len(stdout["text"]) < 70000
-
-
-async def test_timeouts(worker: Worker) -> None:
-    shell = await worker.run("op-t1", kind="shell", script="sleep 30", timeout_seconds=1)
-    assert shell["state"] == "timed_out", shell
-    cell = await worker.run(
-        "op-t2", kind="cell", code="import time\ntime.sleep(30)", timeout_seconds=1
-    )
-    assert cell["state"] == "timed_out"
-    assert cell["result"]["error"]["kind"] == "timed_out"
-
-
-async def test_queued_cells_can_be_cancelled(worker: Worker) -> None:
-    first = await worker.submit("op-q1", kind="cell", code="import time\ntime.sleep(30)")
-    await worker.wait_running(first["execution_id"])
-    second = await worker.submit("op-q2", kind="cell", code="'second'")
-    await asyncio.sleep(0.3)
-    await worker.post(f"/v1/executions/{second['execution_id']}/cancel", {})
-    cancelled = await worker.finish(second["execution_id"])
-    assert cancelled["state"] == "cancelled"
-    assert cancelled["started_at"] is None
-    await worker.post(f"/v1/executions/{first['execution_id']}/cancel", {})
-    assert (await worker.finish(first["execution_id"]))["state"] == "cancelled"
-
-
-async def test_file_round_trip_and_preconditions(worker: Worker) -> None:
-    content = base64.b64encode(b"hello").decode()
-    status, written = await worker.post(
-        "/v1/files/write", {"context": CONTEXT, "path": "notes/a.txt", "content_b64": content}
-    )
-    assert status == 200, written
-    status, read = await worker.post("/v1/files/read", {"context": CONTEXT, "path": "notes/a.txt"})
-    assert base64.b64decode(read["content_b64"]) == b"hello"
-    assert read["sha256"] == written["sha256"] == hashlib.sha256(b"hello").hexdigest()
-    status, listing = await worker.post("/v1/files/list", {"context": CONTEXT, "path": "notes"})
-    assert [entry["name"] for entry in listing["entries"]] == ["a.txt"]
-    shared = {"context": CONTEXT, "path": "shared/data.txt", "content_b64": content}
-    status, body = await worker.post("/v1/files/write", shared)
-    assert status == 400
-    assert "expected_sha256 or create_only" in body["error"]["message"]
-    status, _ = await worker.post("/v1/files/write", {**shared, "create_only": True})
-    assert status == 200
-    status, body = await worker.post("/v1/files/write", {**shared, "expected_sha256": "0" * 64})
-    assert status == 409
-    assert body["error"]["kind"] == "conflict"
-
-
-async def test_confinement(worker: Worker) -> None:
-    await worker.run("op-link", kind="shell", script="ln -s /etc/passwd link")
-    for path in ("../x", "/etc/passwd", "a/../b", "link"):
-        status, body = await worker.post("/v1/files/read", {"context": CONTEXT, "path": path})
-        assert status == 400, (path, body)
-        assert body["error"]["kind"] == "invalid_request"
-
-
-async def test_requests_need_the_token(worker: Worker) -> None:
-    response = await worker.client.get("/v1/executions/exe-1")
-    assert response.status == 401
-    response = await worker.client.get(
-        "/v1/executions/exe-1", headers={"Authorization": "Bearer wrong"}
-    )
-    assert response.status == 401
-
-
-async def test_unknown_executions_are_not_found(worker: Worker) -> None:
-    status, body = await worker.get("/v1/executions/exe-missing")
-    assert status == 404
-    assert body["error"]["kind"] == "not_found"
 
 
 async def test_an_executor_that_cannot_start_fails_the_attempt(
@@ -535,8 +243,72 @@ async def test_a_language_without_a_kernel_is_unsupported(worker: Worker) -> Non
     assert execution["result"]["error"]["kind"] == "unsupported"
 
 
-async def test_capabilities(worker: Worker) -> None:
-    status, body = await worker.get("/v1/capabilities?environment_id=env1")
-    assert status == 200
-    assert body["languages"] == ["python"]
-    assert body["location"]["backend"] == "local"
+async def test_a_reader_leaving_its_event_stream_does_not_stop_the_execution(
+    worker: Worker,
+) -> None:
+    # The test server cancels the handler of a closed connection, as any aiohttp
+    # server does when it shuts down. The execution and other readers carry on.
+    execution = await worker.submit("op-leave", kind="shell", script="sleep 0.5; echo done")
+    response = await worker.client.get(
+        f"/v1/executions/{execution['execution_id']}/events", headers=AUTH
+    )
+    assert json.loads(await response.content.readline())["type"] == "state"
+    response.close()
+    finished = await worker.finish(execution["execution_id"], timeout=30)
+    assert finished["state"] == "succeeded"
+    assert finished["result"]["stdout"]["text"] == "done\n"
+
+
+class OverstatedBackend(LocalBackend):
+    """The local backend, declaring a tier it does not give."""
+
+    @property
+    def isolation_tier(self) -> int:
+        return 3
+
+
+async def test_the_probe_lowers_an_overstated_tier(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    backend = OverstatedBackend(LocalBackendSettings(), tmp_path)
+    started, store = await start_worker(aiohttp_client, tmp_path, backend=backend)
+    try:
+        execution = await started.run("op-where", kind="shell", script="true")
+        location = execution["location"]
+        assert (location["isolation_tier"], location["declared_isolation_tier"]) == (0, 3)
+        evidence = location["isolation_evidence"]
+        assert (evidence["kernel"], evidence["sentinel"]) == ("shared", "visible")
+        assert "the sandbox runs on the worker host's kernel (same boot ID)" in evidence["findings"]
+        _, capabilities = await started.get("/v1/capabilities?environment_id=env1")
+        assert capabilities["location"] == location
+        # The sentinel is gone once the executor has looked for it.
+        assert list((tmp_path / "probe").iterdir()) == []
+    finally:
+        await started.manager.close()
+        store.close()
+
+
+async def test_a_failed_probe_means_tier_0(
+    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    request = ExecutorChannel.request
+
+    async def refuse_probe(self: ExecutorChannel, op: str, **fields: Any) -> Message:
+        if op == "probe":
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "unknown operation 'probe'")
+        return await request(self, op, **fields)
+
+    monkeypatch.setattr(ExecutorChannel, "request", refuse_probe)
+    backend = OverstatedBackend(LocalBackendSettings(), tmp_path)
+    started, store = await start_worker(aiohttp_client, tmp_path, backend=backend)
+    try:
+        execution = await started.run("op-where", kind="shell", script="echo still runs")
+        assert execution["result"]["stdout"]["text"] == "still runs\n"
+        location = execution["location"]
+        assert (location["isolation_tier"], location["declared_isolation_tier"]) == (0, 3)
+        evidence = location["isolation_evidence"]
+        assert evidence["error"] == "unknown operation 'probe'"
+        assert evidence["sandbox"] is None
+    finally:
+        await started.manager.close()
+        store.close()
