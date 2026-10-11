@@ -27,7 +27,7 @@ from sandbox_science.orchestrator.model import ToolSpec
 
 from .errors import INVALID_REQUEST, DocumentError
 from .identity import Mapped
-from .models import Author, ChangeResult, DocumentInfo, Revision
+from .models import Author, ChangeResult, DocumentInfo, RevisionInfo
 from .store import DocumentStore
 
 Json = dict[str, Any]
@@ -288,14 +288,12 @@ class DocumentTool:
             head = heads.get(document_id, seen)
             if head <= seen:
                 continue
-            project = self.context.project_id
             parts: list[str] = []
-            for number in range(seen + 1, head + 1):
-                revision = self.store.revision(project, document_id, number)
-                author = revision.info.author
+            for info, stored in self.store.changes(self.context.project_id, document_id, seen):
+                author = info.author
                 if author.kind == "agent" and author.run_id == self.run_id:
                     continue
-                parts.append(_describe(revision))
+                parts.append(_describe(info, stored))
             self._seen[document_id] = head
             if parts:
                 name = self._names.get(document_id, document_id)
@@ -453,21 +451,24 @@ def _text(args: dict[str, Any], name: str) -> str:
     return value
 
 
-def _describe(revision: Revision) -> str:
-    author = revision.info.author
-    who = "the user" if author.kind in ("user", "import") else f"{author.kind} run {author.run_id}"
+def _describe(info: RevisionInfo, block_map: Json) -> str:
+    author = info.author
     if author.kind == "agent":
         who = f"agent run {author.run_id} of session {author.session_id}"
-    if revision.info.tombstone:
-        return f"revision {revision.info.number} by {who} deleted it"
+    elif author.kind == "platform":
+        who = f"the platform's {author.service}"
+    else:
+        who = "the user"
+    if info.tombstone:
+        return f"revision {info.number} by {who} deleted it"
     touched: list[str] = []
-    for entry in cast(list[Json], revision.block_map.get("blocks", [])):
+    for entry in cast(list[Json], block_map.get("blocks", [])):
         if entry.get("status") in ("changed", "added", "moved"):
             touched.append(f"{entry['id']} {entry['status']}")
-    for entry in cast(list[Json], revision.block_map.get("removed", [])):
+    for entry in cast(list[Json], block_map.get("removed", [])):
         touched.append(f"{entry['id']} removed")
     what = ", ".join(touched) if touched else "no blocks"
-    return f"revision {revision.info.number} by {who}: {what}"
+    return f"revision {info.number} by {who}: {what}"
 
 
 def with_notices(text: str, notices: Sequence[str]) -> str:
