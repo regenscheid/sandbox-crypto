@@ -29,7 +29,7 @@ def _unique_keys(pairs: list[tuple[str, object]]) -> JsonObject:
     fields: JsonObject = {}
     for key, value in pairs:
         if key in fields:
-            raise MessageError(f"duplicate key {key!r} in a JSON object")
+            raise MessageError("a JSON object has a duplicate key")
         fields[key] = value
     return fields
 
@@ -44,7 +44,9 @@ def loads(data: bytes) -> object:
         return json.loads(
             data.decode("utf-8"), object_pairs_hook=_unique_keys, parse_constant=_no_constant
         )
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+    except (ValueError, RecursionError) as exc:
+        # ValueError covers JSONDecodeError, UnicodeDecodeError and integers
+        # longer than Python converts (sys.get_int_max_str_digits()).
         raise MessageError(f"not valid JSON: {exc}") from exc
 
 
