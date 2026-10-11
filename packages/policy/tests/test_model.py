@@ -34,6 +34,18 @@ def server_text(server: str) -> str:
     return HEADER + "mcp:\n  servers:\n    srv:\n" + indent(dedent(server), "      ")
 
 
+def test_opam_and_hackage_take_an_action() -> None:
+    text = policy_text("packages: {opam: {action: deny}, hackage: {action: escalate}}\n")
+    packages = parse_policy(text).policy.packages
+    assert packages.opam is not None
+    assert packages.hackage is not None
+    assert (packages.opam.action, packages.hackage.action) == (Action.DENY, Action.ESCALATE)
+    defaults = parse_policy(policy_text("packages: {opam: {}, hackage: {}}\n")).policy.packages
+    assert defaults.opam is not None
+    assert defaults.hackage is not None
+    assert (defaults.opam.action, defaults.hackage.action) == (Action.ALLOW, Action.ALLOW)
+
+
 def test_defaults() -> None:
     policy = parse_policy(HEADER).policy
     assert policy.defaults.action is Action.ESCALATE
@@ -58,6 +70,9 @@ def test_defaults() -> None:
         (policy_text("escalation: {notify: []}\n"), "notify"),
         (policy_text("packages: {system_packages: allow}\n"), "system_packages"),
         (policy_text("packages: {conda: {channels: []}}\n"), "channels"),
+        (policy_text("packages: {opam: {channels: [default]}}\n"), "channels"),
+        (policy_text("packages: {hackage: {action: permit}}\n"), "hackage.action"),
+        (policy_text("packages: {maven: {action: allow}}\n"), "maven"),
         (
             policy_text("packages: {conda: {channels: ['https://repo.example/x']}}\n"),
             "channels",

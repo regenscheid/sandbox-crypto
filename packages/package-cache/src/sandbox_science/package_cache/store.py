@@ -496,6 +496,20 @@ class Store:
                 return None
         return replace(entry, fetched=now, accessed=now, etag=etag, last_modified=last_modified)
 
+    def forget(self, key: str) -> Removal:
+        """Delete a key's entry, and its blob if no other entry refers to it.
+
+        The next request for the key fetches it again. Removes nothing when
+        there is no such entry.
+        """
+        with self._lock, self._errors("forget an entry"):
+            row = self._db.execute(
+                "SELECT key, sha256, size FROM entries WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                return Removal()
+            return self._delete_entries([(str(row[0]), str(row[1]), int(row[2]))])
+
     def over_capacity(self) -> bool:
         """Whether the store counts more than ``max_size`` bytes, as tracked by this process."""
         return self.charged_size > self._max_size

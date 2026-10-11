@@ -32,6 +32,7 @@ from .backends import Backend, LocalBackend, OpenShellBackend
 from .environments import Environments
 from .errors import WorkerError
 from .manager import ExecutionManager
+from .package_clients import cache_endpoint
 from .settings import Settings, SettingsError, load_settings
 from .store import Store
 
@@ -43,7 +44,19 @@ def _environments(settings: Settings) -> Environments | None:
     if openshell is None or openshell.environments is None:
         return None
     cli_env = OpenShellBackend(openshell, settings.state_dir).cli_env()
-    return Environments(openshell, openshell.environments, settings.state_dir, cli_env)
+    environments = Environments(openshell, openshell.environments, settings.state_dir, cli_env)
+    target = environments.targets.sandbox.package_cache
+    if openshell.package_cache is not None and cache_endpoint(openshell.package_cache) != (
+        target.host,
+        target.port,
+    ):
+        environments.close()
+        # The policies compiled for these sandboxes admit the cache only there.
+        raise SettingsError(
+            f"package_cache {openshell.package_cache} is not where the targets file puts "
+            f"the package cache ({target.host}:{target.port})"
+        )
+    return environments
 
 
 def _backend(settings: Settings, environments: Environments | None) -> Backend:
@@ -157,4 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(serve(settings))
     except KeyboardInterrupt:
         return 0
+    except SettingsError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
