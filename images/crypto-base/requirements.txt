@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Python packages in crypto-base that conda-forge does not have, installed from PyPI wheels with
+# pip --require-hashes --no-deps. One hash per architecture (manylinux_2_28 x86_64, aarch64).
+
+# pdf_oxide (MIT OR Apache-2.0): PDF extraction (D59).
+pdf_oxide==0.3.78 \
+    --hash=sha256:0b7e03008ca441e9183ef8f3c5d895424aca8119d5a860a205e1d16649f4f6a8 \
+    --hash=sha256:dda4a7fb93f3b68a4b9bf52d0d314891d777c417f41993a0c2d8937325a59f2b

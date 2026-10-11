@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+# The sandbox.filesystem section an OpenShell targets file needs for the base profile images
+# (docs/IMAGES.md). One section suits both images: OpenShell skips a path an image lacks.
+#   /opt/sandbox-science  the Conda prefix: the executor's interpreter, its tools, runtime installs
+#   /var/lib/texmf        TeX's generated formats and file databases (crypto-base)
+# images/test.sh applies it under a Landlock ruleset like OpenShell's.
+read_only: [/var/lib/texmf]
+read_write: [/opt/sandbox-science]
