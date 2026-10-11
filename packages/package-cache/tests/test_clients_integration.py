@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: MIT
 """Real package clients through a running cache (``SS_INTEGRATION=1``; needs the network).
 
-Starts ``sandbox-science-package-cache serve`` on 127.0.0.1 with all five
-ecosystems and installs a small package with pip, uv, mamba, cargo, go and npm.
-Each client works in a temporary directory with its own caches and
-configuration. A client that is not installed is skipped.
+Starts ``sandbox-science-package-cache serve`` on 127.0.0.1 with all seven
+ecosystems and installs a small package with pip, uv, mamba, cargo, go, npm,
+opam and cabal. Each client works in a temporary directory with its own caches
+and configuration. A client that is not installed is skipped. opam builds an
+OCaml compiler from source unless ``ocaml`` is on the PATH, and cabal builds
+its package only when ``ghc`` is (otherwise it stops after downloading it).
 """
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -16,6 +19,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -39,6 +43,8 @@ max_size = "10Gi"
 [cargo]
 [go]
 [npm]
+[opam]
+[hackage]
 """
 
 
@@ -53,8 +59,20 @@ def stats(url: str) -> dict[str, int]:
         return json.load(response)
 
 
+@dataclass(frozen=True)
+class CacheServer:
+    """A running cache: its URL, and the file its request log goes to."""
+
+    url: str
+    log: Path
+
+    def requests(self, path: str) -> list[str]:
+        """The request log lines for ``path`` (exactly), in order."""
+        return [line for line in self.log.read_text().splitlines() if f" path={path} " in line]
+
+
 @pytest.fixture(scope="module")
-def cache_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+def cache_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[CacheServer]:
     root = tmp_path_factory.mktemp("cache")
     port = free_port()
     settings = root / "cache.toml"
@@ -82,18 +100,30 @@ def cache_url(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
                 time.sleep(0.1)
         else:
             pytest.fail(f"the cache did not start: {(root / 'serve.log').read_text()}")
-        yield url
+        yield CacheServer(url, root / "serve.log")
     finally:
         server.terminate()
         server.wait(timeout=30)
         log.close()
 
 
-def run(command: list[str], *, cwd: Path, env: dict[str, str]) -> None:
+@pytest.fixture(scope="module")
+def cache_url(cache_server: CacheServer) -> str:
+    return cache_server.url
+
+
+def run(command: list[str], *, cwd: Path, env: dict[str, str], timeout: float = 600) -> str:
+    """Run a client command, which must succeed; return what it printed."""
     result = subprocess.run(  # noqa: S603 - fixed client commands
-        command, cwd=cwd, env={**os.environ, **env}, capture_output=True, text=True, timeout=600
+        command,
+        cwd=cwd,
+        env={**os.environ, **env},
+        capture_output=True,
+        text=True,
+        timeout=timeout,
     )
     assert result.returncode == 0, f"{command[0]} failed:\n{result.stdout}\n{result.stderr}"
+    return result.stdout + result.stderr
 
 
 def need(tool: str) -> str:
@@ -288,6 +318,112 @@ def test_npm_installs_from_a_lockfile_made_against_the_public_registry(
         env={"npm_config_userconfig": os.devnull},
     )
     assert (project / "node_modules" / "is-number" / "package.json").is_file()
+
+
+def test_opam(cache_server: CacheServer, tmp_path: Path) -> None:
+    opam = need("opam")
+    # Downloads around the cache (an archive's own URL, Software Heritage) go to a
+    # closed port, as they would fail in a sandbox whose rules do not allow them:
+    # everything must come through the cache. curl, which opam runs, skips the
+    # proxy for the cache itself.
+    closed = f"http://127.0.0.1:{free_port()}"
+    env = {
+        "OPAMROOT": str(tmp_path / "root"),
+        "OPAMYES": "1",
+        "OPAMCOLOR": "never",
+        "OPAMNOENVNOTICE": "1",
+        **dict.fromkeys(("http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"), closed),
+        "no_proxy": "127.0.0.1",
+        "NO_PROXY": "127.0.0.1",
+    }
+    run(
+        [
+            opam,
+            "init",
+            "--bare",
+            "--no-setup",
+            "--disable-sandboxing",
+            "default",
+            f"{cache_server.url}/opam",
+        ],
+        cwd=tmp_path,
+        env=env,
+    )
+    switch = tmp_path / "switch"
+    # A compiler on the PATH saves building one from source (a few minutes).
+    compiler = "ocaml-system" if shutil.which("ocaml") else "ocaml-base-compiler.5.2.1"
+    run([opam, "switch", "create", str(switch), compiler], cwd=tmp_path, env=env, timeout=1800)
+    # ocamlfind 1.9.8 lists MD5 first, so opam asks the cache for its MD5 path.
+    output = run(
+        [opam, "install", "--switch", str(switch), "ocamlfind.1.9.8"], cwd=tmp_path, env=env
+    )
+    assert (switch / "_opam" / "bin" / "ocamlfind").is_file()
+    assert re.search(
+        rf"retrieved ocamlfind\.1\.9\.8 +\({re.escape(cache_server.url)}/opam/cache\)", output
+    )
+    assert cache_server.requests("/opam/index.tar.gz")
+    archive = "/opam/cache/md5/ca/ca770e5806032a96131b670f6e07f146"
+    assert any(" status=200 " in line for line in cache_server.requests(archive))
+
+
+def test_cabal(cache_server: CacheServer, tmp_path: Path) -> None:
+    cabal = need("cabal")
+    home = tmp_path / "cabal"
+    config = tmp_path / "config"
+    # The name keeps hackage-security's built-in root keys; plain-http keeps cabal
+    # from upgrading the cache's URL to https, as it does for hackage.haskell.org.
+    config.write_text(
+        "repository hackage.haskell.org\n"
+        f"  url: {cache_server.url}/hackage/\n"
+        "  secure: True\n\n"
+        "http-transport: plain-http\n"
+        f"remote-repo-cache: {home / 'packages'}\n"
+    )
+    base = [cabal, f"--config-file={config}"]
+    env = {"CABAL_DIR": str(home)}
+    run([*base, "update"], cwd=tmp_path, env=env)
+    index = "/hackage/01-index.tar.gz"
+    assert any(" status=200 " in line for line in cache_server.requests(index))
+    # cabal updates its index with a range request for the part it lacks. Forget the
+    # metadata it has seen, so that the next update asks for one.
+    repository = home / "packages" / "hackage.haskell.org"
+    for name in ("timestamp.json", "snapshot.json"):
+        (repository / name).unlink()
+    run([*base, "update"], cwd=tmp_path, env=env)
+    assert any(" status=206 " in line for line in cache_server.requests(index))
+    # Downloaded through the cache and checked against the signed index by cabal.
+    run([*base, "get", "split-0.2.5"], cwd=tmp_path, env=env)
+    assert (tmp_path / "split-0.2.5" / "split.cabal").is_file()
+    assert cache_server.requests("/hackage/package/split-0.2.5.tar.gz")
+    ghc = shutil.which("ghc")
+    if ghc is None:
+        return
+    environment = tmp_path / "environment"
+    run(
+        [*base, "install", "--lib", "split-0.2.5", f"--package-env={environment}"],
+        cwd=tmp_path,
+        env=env,
+        timeout=1800,
+    )
+    program = tmp_path / "Main.hs"
+    program.write_text(
+        'import Data.List.Split (splitOn)\nmain :: IO ()\nmain = print (splitOn "," "a,b")\n'
+    )
+    executable = tmp_path / "main"
+    run(
+        [
+            ghc,
+            f"-package-env={environment}",
+            "-outputdir",
+            "build",
+            "-o",
+            str(executable),
+            "Main.hs",
+        ],
+        cwd=tmp_path,
+        env=env,
+    )
+    assert run([str(executable)], cwd=tmp_path, env=env).strip() == '["a","b"]'
 
 
 def test_the_cache_counted_the_traffic(cache_url: str) -> None:
