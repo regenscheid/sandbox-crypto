@@ -20,14 +20,18 @@ sandbox:
   # filesystem: {read_only: [/var/lib/texmf], read_write: [/opt/sandbox-science]}
 
 mcp_proxy:
-  # The MCP proxy's executable; for a Python entry point, the interpreter that runs it.
-  binaries: [/opt/sandbox-science/bin/mcp-proxy]
+  # The MCP proxy's executable. OpenShell sees a Python entry point's interpreter,
+  # which runs the proxy: lab 13 matched /opt/sandbox-science/bin/python3.14.
+  binaries: [/opt/sandbox-science/bin/python*]
   versions: ["2025-11-25"]
+  # The prefix the proxy's image provides, as for the orchestrator.
+  filesystem: {read_only: [/opt/sandbox-science]}
 
 orchestrator:
   # The harness's own sandbox (Z2) reaches only these platform services.
   worker_api: {host: worker.sandbox-science.internal, port: 8100}
   model_gateway: {host: litellm.sandbox-science.internal, port: 4000}
+  mcp_proxy: {host: mcp-proxy.sandbox-science.internal, port: 8080}
   # The interpreter that runs the harness, and the image prefix it lives in (docs/IMAGES.md).
   binaries: [/opt/sandbox-science/bin/python*]
   filesystem: {read_only: [/opt/sandbox-science]}

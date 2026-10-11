@@ -48,6 +48,7 @@ from sandbox_science.policy.openshell import (
     compile_orchestrator,
     compile_sandbox,
     load_targets,
+    mcp_server_ranges,
     parse_targets,
     public_address_ranges,
 )
@@ -814,7 +815,39 @@ def test_example_mcp_proxy_policy() -> None:
     assert isinstance(names, AnyOf)
     assert len(names.any) == 62
     assert all(name.startswith("crypto_research_mcp-") for name in names.any)
-    assert [binary.path for binary in entry.binaries] == ["/opt/sandbox-science/bin/mcp-proxy"]
+    assert [binary.path for binary in entry.binaries] == ["/opt/sandbox-science/bin/python*"]
+    # Inside OpenShell the proxy sees only synthetic addresses, so the fence applies the
+    # floor and the ceiling to where a name leads (lab 13).
+    assert endpoint.allowed_ips == mcp_server_ranges(OPEN)
+    assert compiled.policy.filesystem_policy == FilesystemPolicy(
+        include_workdir=True, read_only=("/opt/sandbox-science",)
+    )
+
+
+def test_mcp_server_names_reach_only_public_addresses_the_floor_and_ceiling_allow() -> None:
+    floor = HardFloor(frozenset({"10.0.0.2", "203.0.113.7", "gateway.lab.internal"}))
+    ceiling = PoolCeiling.model_validate({"network": {"deny_hosts": ["198.51.100.9"]}})
+    policy = parse_policy(
+        HEADER
+        + "mcp:\n  servers:\n"
+        + "    named: {url: 'https://mcp.example.org/x', revision: '1', auth: {mode: none}}\n"
+        + "    literal: {url: 'https://192.0.2.10/x', revision: '1', auth: {mode: none}}\n"
+    )
+    compiled = compile_mcp_proxy(policy, TARGETS.mcp_proxy, ceiling=ceiling, floor=floor)
+    ranges = compiled.policy.network_policies["mcp-named"].endpoints[0].allowed_ips
+    assert ranges == mcp_server_ranges(ceiling, floor)
+    networks = [ipaddress.ip_network(network) for network in ranges or ()]
+
+    def admitted(address: str) -> bool:
+        return any(ipaddress.ip_address(address) in network for network in networks)
+
+    assert admitted("8.8.8.8")
+    assert admitted("2606:4700::1111")
+    for denied in ("169.254.169.254", "10.0.0.2", "203.0.113.7", "198.51.100.9", "172.17.0.1"):
+        assert not admitted(denied), denied
+    # An address literal is its own limit.
+    literal = compiled.policy.network_policies["mcp-literal"].endpoints[0]
+    assert literal.allowed_ips is None
 
 
 def test_the_example_fence_matches_the_library_for_every_known_tool() -> None:
@@ -1391,7 +1424,7 @@ def test_example_targets_parse() -> None:
         ("middleware: sandbox-science-policy", "middleware: Not A Name"),
         ("binaries: [/**]", "binaries: [bin/sh]"),
         ('versions: ["2025-11-25"]', 'versions: ["2024-11-05"]'),
-        ("binaries: [/opt/sandbox-science/bin/mcp-proxy]", "binaries: []"),
+        ("binaries: [/opt/sandbox-science/bin/python*]", "binaries: []"),
     ],
 )
 def test_invalid_targets_are_rejected(change: str, message: str) -> None:
@@ -1490,12 +1523,13 @@ def test_example_targets_name_no_image_paths() -> None:
 # The orchestrator's sandbox.
 
 
-def test_the_orchestrator_reaches_only_the_worker_api_and_the_model_gateway() -> None:
+def test_the_orchestrator_reaches_only_the_platform_services() -> None:
     assert TARGETS.orchestrator is not None
     policy = compile_orchestrator(TARGETS.orchestrator)
     assert list(policy.network_policies) == [
         "sandbox-science-worker-api",
         "sandbox-science-model-gateway",
+        "sandbox-science-mcp-proxy",
     ]
     endpoints = [
         (endpoint.host, endpoint.ports, endpoint.protocol, endpoint.enforcement, endpoint.access)
@@ -1505,6 +1539,7 @@ def test_the_orchestrator_reaches_only_the_worker_api_and_the_model_gateway() ->
     assert endpoints == [
         ("worker.sandbox-science.internal", (8100,), "rest", "enforce", "full"),
         ("litellm.sandbox-science.internal", (4000,), "rest", "enforce", "full"),
+        ("mcp-proxy.sandbox-science.internal", (8080,), "rest", "enforce", "full"),
     ]
     for entry in policy.network_policies.values():
         assert entry.binaries == (Binary(path="/opt/sandbox-science/bin/python*"),)
@@ -1518,14 +1553,15 @@ def test_the_orchestrator_reaches_only_the_worker_api_and_the_model_gateway() ->
     assert None not in leaf_values(document)
 
 
-def test_the_model_gateway_is_optional_and_cannot_share_the_worker_api() -> None:
+def test_the_model_gateway_and_mcp_proxy_are_optional_and_cannot_share_the_worker_api() -> None:
     target = OrchestratorTarget(
         worker_api=ServiceEndpoint(host="host.openshell.internal", port=8100),
         binaries=("/usr/local/bin/python3*",),
     )
     assert list(compile_orchestrator(target).network_policies) == ["sandbox-science-worker-api"]
-    with pytest.raises(CompileError, match=r"share host\.openshell\.internal:8100"):
-        compile_orchestrator(target.model_copy(update={"model_gateway": target.worker_api}))
+    for service in ("model_gateway", "mcp_proxy"):
+        with pytest.raises(CompileError, match=r"share host\.openshell\.internal:8100"):
+            compile_orchestrator(target.model_copy(update={service: target.worker_api}))
 
 
 @pytest.mark.parametrize(
