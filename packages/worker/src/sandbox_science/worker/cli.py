@@ -40,6 +40,13 @@ from .store import Store
 _log = logging.getLogger("sandbox_science.worker")
 
 
+def _executor_args(settings: Settings) -> list[str]:
+    """Options for every executor, from the worker's settings."""
+    if settings.kernel_idle_timeout is None:
+        return []
+    return ["--kernel-idle", repr(settings.kernel_idle_timeout)]
+
+
 def _environments(settings: Settings) -> Environments | None:
     openshell = settings.openshell
     if openshell is None or openshell.environments is None:
@@ -63,11 +70,13 @@ def _environments(settings: Settings) -> Environments | None:
 def _backend(settings: Settings, environments: Environments | None) -> Backend:
     if settings.openshell is not None:
         resolve = environments.sandbox if environments is not None else None
-        return OpenShellBackend(settings.openshell, settings.state_dir, resolve)
+        return OpenShellBackend(
+            settings.openshell, settings.state_dir, resolve, executor_args=_executor_args(settings)
+        )
     if settings.local is None:
         raise SettingsError("no backend is configured")
     _log.warning("the local backend runs research code without any isolation (tier 0)")
-    return LocalBackend(settings.local, settings.state_dir)
+    return LocalBackend(settings.local, settings.state_dir, _executor_args(settings))
 
 
 async def serve(settings: Settings) -> None:
