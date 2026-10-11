@@ -87,8 +87,9 @@ Both restrictions are described for upstream in `.agents/upstream/`.
 
 ## Executor protocol
 
-The worker sends one JSON object per line; each carries an `id` and an `op`. The operations are `hello`, `probe` (the [isolation probe](#isolation-tiers)), `shell`, `cell`, `cancel`, `restart`, `read`, `write` and `list`.
+The worker sends one JSON object per line; each carries an `id` and an `op`. The operations are `hello`, `probe` (the [isolation probe](#isolation-tiers)), `configure`, `shell`, `cell`, `cancel`, `restart`, `read`, `write` and `list`.
 - **Replies.** Each request gets exactly one reply: `{"type": "reply", "id": …, "ok": true, …}`, or `ok: false` with `{"error": {"kind", "message"}}`.
+- **Configuration.** `configure` writes files into the executor's configuration directory (`<project root>/.executor/config`) or the home directory. It adds variables to the environment of every later shell command and kernel: its `env`, and for each file with a `variable`, that variable set to the file's path. It records what it wrote, keeps a file that changed since or that it did not write, and names each one it kept in its reply (`skipped`). The OpenShell backend sends the package clients' configuration this way, right after `hello`.
 - **Events.** `shell` and `cell` reply when they are accepted, then send events: `{"type": "event", "execution": …, "event": "state" | "stream" | "output" | "end", …}`. The `end` event carries the terminal state and the result fields of `Result`.
 - **Hygiene.** The executor keeps the protocol on its own file descriptor and sends anything else that writes to stdout to stderr.
 - **Shutdown.** When stdin closes, it stops every command and kernel and exits.
@@ -107,11 +108,14 @@ python = "/sandbox/mamba/envs/tools/bin/python"   # an interpreter with ipykerne
 project_root = "/sandbox/project"
 isolation_tier = 3                   # required: the tier the driver gives (D43); the probe can lower it
 sched_shim = true                    # build and preload the scheduler shim (needs cc on this host)
+package_cache = "http://host.openshell.internal:8090"   # the package cache, as sandboxes reach it
 env = {XDG_CONFIG_HOME = "/home/andy/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}
 ```
 
 Run it with `sandbox-science-worker serve --settings worker.toml`. The sandbox's environment needs Python with `ipykernel` and `jupyter_client`. On babbage they come from conda-forge through the [package cache](PACKAGE-CACHE.md), like any other tool.
+
+`package_cache` is optional. With it, the worker points pip, uv, conda, mamba, micromamba, Cargo, Go and npm in each sandbox at the cache whenever it starts an executor there ([client configuration](PACKAGE-CACHE.md#client-configuration)). Without it, nothing is written. The local backend has no such setting, since its executor shares the worker user's home.
 
 The harness's command line runs a task through the worker. A JSON script of model turns can stand in for the model:
 

@@ -132,15 +132,24 @@ An ecosystem whose table is absent is disabled. Its paths return 404.
 
 ## Client configuration
 
-The environment layer writes these into each sandbox, where `<cache>` is the cache's `public_url`:
+When the OpenShell backend's `package_cache` setting names the cache's `public_url` ([worker](WORKER.md#settings)), the worker points the package clients in each sandbox at the cache when it starts the executor there. `sandbox_science.worker.package_clients` renders the configuration, and the executor writes it (`configure`, [executor protocol](WORKER.md#executor-protocol)).
+
+- **Files and variables.** The files go in the executor's configuration directory, `<project root>/.executor/config`. A variable added to every shell command and kernel points each client at its file. uv reads neither pip's file nor its variables, so it gets a variable alone. Cargo reads configuration only from `$CARGO_HOME` and from `.cargo` directories above the working directory, and `CARGO_HOME` also holds Cargo's caches and installed programs, so Cargo's file goes in the home directory, `~/.cargo/config.toml`. Cargo does not look there if the image sets `CARGO_HOME`.
+- **Changes are kept.** The executor records what it wrote. It leaves alone a file that someone changed since, or that it did not write, and the worker logs a warning naming the file.
+- **The cache only.** The configuration names no public registry and no fallback: no extra index, no `defaults` channel, no `direct` in `GOPROXY`. Go still checks every module against the checksum database, through the cache.
+- **Not covered yet.** pixi and yarn 2+ read files of their own. pnpm and yarn 1 read `.npmrc` files, but were not tried with this one. opam and cabal come with their adapters.
+- **Real clients.** `SS_INTEGRATION=1 uv run pytest packages/worker/tests/test_package_clients_integration.py` has an executor write this configuration, then installs a small package with pip, uv, conda, mamba, micromamba, cargo, go and npm, without registry options, through a cache it starts on loopback. Every other request goes to a trap that fails the test. It needs access to the public registries.
+
+Where `<cache>` is the cache's `public_url`, the clients get:
 
 | Client | Setting |
 | --- | --- |
-| pip, uv | `index-url = <cache>/pypi/simple/` (and `trusted-host` while the cache is plain HTTP) |
-| conda, mamba, pixi | `channel_alias: <cache>/conda`, `channels: [conda-forge]` |
-| cargo | `[source.crates-io] replace-with = "cache"`, `[source.cache] registry = "sparse+<cache>/cargo/index/"`, and `[http] multiplexing = false` while the cache is plain HTTP: Cargo then asks to upgrade the connection to HTTP/2 (`Upgrade: h2c`), which OpenShell refuses on inspected endpoints (403 `unsupported_l7_protocol`) |
-| go | `GOPROXY=<cache>/go`, `GOSUMDB=sum.golang.org` (checksum lookups go through the proxy), `GOTOOLCHAIN=local` |
-| npm, pnpm, yarn 1 | `registry=<cache>/npm/`, `audit=false`, `fund=false` in `.npmrc` |
+| pip | `pip.conf`, named by `PIP_CONFIG_FILE`: `index-url = <cache>/pypi/simple/`, and `trusted-host` for the cache's host while the cache is plain HTTP |
+| uv | `UV_DEFAULT_INDEX=<cache>/pypi/simple/`. A `uv.toml` named by `UV_CONFIG_FILE` would replace the project's own uv settings |
+| conda, mamba, micromamba | `condarc`, named by `CONDARC`: `channel_alias: <cache>/conda`, `channels: [conda-forge]`, and `default_channels: []`, so `defaults` names nothing. mamba and micromamba then read only this file, which also hides `mirrored_channels` in Miniforge's own `.condarc`; conda reads its other `.condarc` files too, below this one |
+| cargo | `~/.cargo/config.toml`: `[source.crates-io] replace-with = "package-cache"`, `[source.package-cache] registry = "sparse+<cache>/cargo/index/"`, and `[http] multiplexing = false` while the cache is plain HTTP: Cargo then asks to upgrade the connection to HTTP/2 (`Upgrade: h2c`), which OpenShell refuses on inspected endpoints (403 `unsupported_l7_protocol`) |
+| go | `go.env`, named by `GOENV`: `GOPROXY=<cache>/go`, `GOSUMDB=sum.golang.org` (checksum lookups go through the proxy), `GOTOOLCHAIN=local` |
+| npm | `npmrc`, named by `NPM_CONFIG_USERCONFIG`: `registry=<cache>/npm/`, `audit=false`, `fund=false`, `update-notifier=false` |
 | yarn 2+ | `npmRegistryServer: <cache>/npm` and `unsafeHttpWhitelist` for the cache's host in `.yarnrc.yml` (yarn ignores `.npmrc`) |
 
 ## Running it
