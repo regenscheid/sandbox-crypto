@@ -454,7 +454,20 @@ def test_a_fence_full_of_spaces_takes_no_time() -> None:
         assert time.perf_counter() - started < 0.05
     assert sanitize("```\nx^2\n```", "x^") == "x^2"
     assert sanitize("```x^2```", "x^") == "x^2"  # one line: no info string to drop
-    assert sanitize("```latex x^2```", "x^") == "latex x^2"
+
+
+def test_a_fence_of_one_line_loses_its_info_string() -> None:
+    assert sanitize("```latex x^2```", "x^") == "x^2"
+    assert sanitize("```LaTeX\tx^2 ```", "x^") == "x^2"
+    assert sanitize("``` tex \\frac{1}{2}```", "\\frac{1") == "\\frac{1}{2}"
+    assert sanitize("```math $x^2$```", "x^") == "x^2"
+    # Only a known info string: a first word that is not one is the expression's.
+    assert sanitize("```x y^2```", "x y^") == "x y^2"
+    assert sanitize("```python x^2```", "x^") == "python x^2"
+    assert sanitize("```latex```", "x^") is None
+    started = time.perf_counter()
+    sanitize("```latex" + " " * 12_000 + "x^2```", "y" * 4000)
+    assert time.perf_counter() - started < 0.05
 
 
 # The endpoint.

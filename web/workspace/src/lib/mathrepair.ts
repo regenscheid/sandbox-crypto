@@ -280,18 +280,103 @@ const TRUSTED_ONLY: ReadonlySet<string> = new Set([
   'href', 'url', 'includegraphics', 'htmlClass', 'htmlId', 'htmlStyle', 'htmlData',
 ]);
 
-/** The names of the commands in `tex`, as KaTeX's tokenizer reads them (`\\` is none). */
-function commandNames(tex: string): Set<string> {
+/** Commands whose link KaTeX reads with `%` as a character rather than a comment. */
+const LINK_ARGUMENTS: readonly string[] = ['href', 'url', 'includegraphics'];
+
+/** Whether `code` ends a line as JavaScript's `.` reads lines, where a `\verb` body ends. */
+function endsLine(code: number): boolean {
+  return code === 0x0a || code === 0x0d || code === 0x2028 || code === 0x2029;
+}
+
+/**
+ * For each position of `tex`, where its character next occurs (`next`), and where the
+ * next line ends (`lineEnd`, one longer), or -1: so that each `\verb` finds its closing
+ * delimiter at once, and openers that never close take linear time, not quadratic.
+ */
+interface VerbIndex {
+  next: Int32Array;
+  lineEnd: Int32Array;
+}
+
+function verbIndex(tex: string): VerbIndex {
+  const next = new Int32Array(tex.length);
+  const lineEnd = new Int32Array(tex.length + 1);
+  const seen = new Map<number, number>();
+  lineEnd[tex.length] = -1;
+  for (let index = tex.length - 1; index >= 0; index -= 1) {
+    const code = tex.charCodeAt(index);
+    next[index] = seen.get(code) ?? -1;
+    seen.set(code, index);
+    lineEnd[index] = endsLine(code) ? index : lineEnd[index + 1]!;
+  }
+  return { next, lineEnd };
+}
+
+/**
+ * Where the `\verb|…|` or `\verb*|…|` that starts at `index` ends, or -1 when none starts
+ * there. KaTeX's lexer reads one as text: after `\verb`, any character but `*` and a
+ * letter is its delimiter (after `\verb*`, any at all), and the body runs to the same
+ * character on the same line. Without that, `\verb` is a command, which KaTeX rejects.
+ */
+function verbEnd(tex: string, index: number, verbs: VerbIndex): number {
+  if (!tex.startsWith('\\verb', index)) return -1;
+  let at = index + 5;
+  const starred = tex.charCodeAt(at) === 0x2a;
+  if (starred) at += 1;
+  if (at >= tex.length) return -1;
+  if (!starred && (tex.charCodeAt(at) === 0x2a || /[A-Za-z]/.test(tex[at]!))) return -1;
+  // The delimiter's next occurrence, if no line ends before it (it may end the line itself).
+  const close = verbs.next[at]!;
+  const lineEnd = verbs.lineEnd[at + 1]!;
+  return close !== -1 && (lineEnd === -1 || close <= lineEnd) ? close + 1 : -1;
+}
+
+/** The names of the commands in `tex`, reading what `%` comments out or not. */
+function scanCommands(tex: string, readComments: boolean): Set<string> {
   const names = new Set<string>();
-  for (let index = 0; index < tex.length; index += 1) {
-    if (tex.charCodeAt(index) !== 0x5c) continue;
+  const verbs = tex.includes('\\verb') ? verbIndex(tex) : null;
+  let index = 0;
+  while (index < tex.length) {
+    const code = tex.charCodeAt(index);
+    if (code === 0x25 && !readComments) {
+      // A comment runs to the next line feed, which alone ends it for KaTeX.
+      const newline = tex.indexOf('\n', index + 1);
+      if (newline === -1) break;
+      index = newline + 1;
+      continue;
+    }
+    if (code !== 0x5c) {
+      index += 1;
+      continue;
+    }
+    const verb = verbs === null ? -1 : verbEnd(tex, index, verbs);
+    if (verb !== -1) {
+      index = verb;
+      continue;
+    }
     let end = index + 1;
     while (end < tex.length && LETTER.test(tex[end]!)) end += 1;
-    if (end > index + 1) names.add(tex.slice(index + 1, end));
-    // A command with a name ends where its letters do; any other takes one character.
-    index = end > index + 1 ? end - 1 : index + 1;
+    if (end > index + 1) {
+      names.add(tex.slice(index + 1, end));
+      index = end;
+    } else {
+      // A backslash and one character: `\%` is no comment, and `\\` no command.
+      index += 2;
+    }
   }
   return names;
+}
+
+/**
+ * The names of the commands in `tex`, as KaTeX's lexer reads them: `\\` is none, and
+ * nothing in a `\verb|…|` body or a `%` comment is one. KaTeX reads a `%` in the link of
+ * `\href`, `\url` or `\includegraphics` as a character, so in a formula with one of them
+ * what follows a `%` is read as commands too: that finds more commands, never fewer.
+ */
+function commandNames(tex: string): Set<string> {
+  const all = scanCommands(tex, true);
+  if (LINK_ARGUMENTS.some((name) => all.has(name))) return all;
+  return scanCommands(tex, false);
 }
 
 /** The first command in `tex` that defines a macro, or null. */
@@ -329,6 +414,15 @@ export class Kept<V> {
     return this.#map.size;
   }
 
+  /** The sum of the entries' weights. */
+  get weight(): number {
+    return this.#weight;
+  }
+
+  has(key: string): boolean {
+    return this.#map.has(key);
+  }
+
   get(key: string): V | undefined {
     const value = this.#map.get(key);
     if (value !== undefined) {
@@ -344,8 +438,11 @@ export class Kept<V> {
       this.#map.delete(key);
       this.#weight -= this.weigh(key, old);
     }
+    const weight = this.weigh(key, value);
+    // An entry heavier than the whole limit is not kept, and leaves the others be.
+    if (weight > this.maxWeight) return;
     this.#map.set(key, value);
-    this.#weight += this.weigh(key, value);
+    this.#weight += weight;
     while (this.#map.size > this.maxEntries || this.#weight > this.maxWeight) {
       const [oldestKey, oldestValue] = this.#map.entries().next().value!;
       this.#map.delete(oldestKey);
@@ -359,9 +456,18 @@ export class Kept<V> {
   }
 }
 
-/** The candidates and approximations already worked out, for the page's re-renders. */
-const keptCandidates = new Kept<string[]>(2_000);
-const keptApproximations = new Kept<string>(2_000);
+/**
+ * The candidates and approximations already worked out, for the page's re-renders, within
+ * a count and a size in characters: a candidate can be five times its formula's length.
+ */
+const keptCandidates = new Kept<string[]>(2_000, 2_000_000, (key, candidates) =>
+  candidates.reduce((sum, candidate) => sum + candidate.length, key.length),
+);
+const keptApproximations = new Kept<string>(
+  2_000,
+  1_000_000,
+  (key, unicode) => key.length + unicode.length,
+);
 
 function candidatesFor(tex: string, error: string, displayMode: boolean): string[] {
   const key = `${displayMode ? 'display' : 'inline'}\u0000${error}\u0000${tex}`;
@@ -811,12 +917,24 @@ export interface MathRenderer {
   renderToString(tex: string, options: Record<string, unknown>): string;
 }
 
+/**
+ * What a renderer throws when KaTeX has no time left in this go (markdown.ts): the
+ * expression is not one that nothing repairs, only one to try again in a later go.
+ */
+export class OutOfTime extends Error {
+  constructor() {
+    super('KaTeX has no time left in this go');
+    this.name = 'OutOfTime';
+  }
+}
+
 /** What the page knows of one expression's model repair. */
 export type ModelRepair = { tex: string; model: string | null } | { tex: null; reason: string };
 
 export type Transport = (request: MathRepairRequest) => Promise<MathRepairAnswer>;
 
-export type Recovery =
+/** An expression recovered, as it is to be shown. */
+export type ShownRecovery =
   | {
       status: 'repaired';
       /** `heuristic` for the deterministic repairs, `model` for the reviewer model's. */
@@ -836,6 +954,13 @@ export type Recovery =
       /** Why the model's repair is missing, when it is known. */
       reason: string | null;
     };
+
+/**
+ * An expression recovered, or `unfinished`: KaTeX had no time in this go for the repairs
+ * that might render it, so it is to be recovered in a later go, and no model's repair is
+ * asked for until then.
+ */
+export type Recovery = ShownRecovery | { status: 'unfinished' };
 
 export interface RecoverOptions {
   displayMode: boolean;
@@ -874,7 +999,9 @@ export function repairKey(tex: string, displayMode: boolean): string {
 /**
  * An expression KaTeX rejected, recovered: the first deterministic repair KaTeX renders,
  * else the model's repair if the page has one, else the Unicode approximation, with the
- * model's repair asked for when it can be.
+ * model's repair asked for when it can be. When the renderer runs out of time before
+ * trying them all (`OutOfTime`), the expression is `unfinished`: a repair it did not try
+ * may render it in a later go, and the model is not asked for it meanwhile.
  */
 export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOptions): Recovery {
   const displayMode = options.displayMode;
@@ -882,13 +1009,21 @@ export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOp
   const settings = { ...options.settings, displayMode, throwOnError: true, trust: false };
   const render = (renderer: MathRenderer, candidate: string): string =>
     renderer.renderToString(candidate, settings);
+  let cutShort = false;
+  /** KaTeX's rendering of `candidate`, or null when it fails or there is no time for it. */
+  const attempt = (candidate: string): string | null => {
+    try {
+      return render(katex, candidate);
+    } catch (failure) {
+      if (failure instanceof OutOfTime) cutShort = true;
+      return null;
+    }
+  };
 
   for (const candidate of candidatesFor(tex, error, displayMode)) {
-    try {
-      const html = render(katex, candidate);
+    const html = attempt(candidate);
+    if (html !== null) {
       return { status: 'repaired', how: 'heuristic', html, tex: candidate, model: null, error };
-    } catch {
-      // The next candidate.
     }
   }
 
@@ -896,13 +1031,13 @@ export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOp
   const key = repairKey(tex, displayMode);
   const known = repairs?.get(key);
   if (known?.tex && safeRepair(tex, known.tex)) {
-    try {
-      const html = render(katex, known.tex);
+    // Not renderable here, or beyond this text's budget, it falls through.
+    const html = attempt(known.tex);
+    if (html !== null) {
       return { status: 'repaired', how: 'model', html, tex: known.tex, model: known.model, error };
-    } catch {
-      // Not renderable here (or beyond this text's budget): fall through.
     }
   }
+  if (cutShort) return { status: 'unfinished' };
   let state: 'pending' | 'unrepairable' = 'unrepairable';
   if (repairs !== null && known === undefined) {
     const check = options.check ?? katex;
@@ -964,22 +1099,38 @@ interface Job {
   busy: number;
 }
 
+/** A job's next try, while it waits for it. */
+interface Retry {
+  cancel: () => void;
+}
+
+/** The repairs one page keeps: within a count, and a size in characters. */
+const MAX_KEPT_REPAIRS = 2_000;
+const MAX_KEPT_REPAIR_WEIGHT = 2_000_000;
+
+function repairWeight(key: string, repair: ModelRepair): number {
+  return key.length + (repair.tex === null ? repair.reason.length : repair.tex.length);
+}
+
 /**
  * The reviewer model's repairs for one page: asked for in the background, once per
- * expression, and remembered until the page reloads.
+ * expression, and remembered until the page reloads, the least recently used dropped
+ * first beyond `MAX_KEPT_REPAIRS` (the server keeps its answers too, so asking again for
+ * one dropped costs no model call).
  *
  * Until the server first says it has a model, one request is in flight at a time; then
  * two. When it says it has none, or the session ends or reaches its limit, the requests
- * still waiting are dropped at once. A request the server was too busy for is tried again
- * later, a few times. Listeners hear of the expressions whose answers arrived once a
- * frame, so that the texts showing them render again at most once a frame.
+ * still waiting are dropped at once, and so is any answered later as `busy`. A request
+ * the server was too busy for is tried again later, a few times. Listeners hear of the
+ * expressions whose answers arrived once a frame, so that the texts showing them render
+ * again at most once a frame.
  */
 export class ModelRepairs {
-  readonly #cache = new Map<string, ModelRepair>();
+  readonly #cache = new Kept<ModelRepair>(MAX_KEPT_REPAIRS, MAX_KEPT_REPAIR_WEIGHT, repairWeight);
   /** Expressions asked for and not answered: waiting, in flight, or waiting to try again. */
   readonly #pending = new Set<string>();
   readonly #queue: Job[] = [];
-  readonly #retries = new Map<string, () => void>();
+  readonly #retries = new Map<string, Retry>();
   readonly #listeners = new Set<(keys: ReadonlySet<string>) => void>();
   readonly #arrived = new Set<string>();
   readonly #idle: (() => void)[] = [];
@@ -1066,8 +1217,9 @@ export class ModelRepairs {
       outcome = this.#failed(error);
     }
     this.#active -= 1;
-    if (outcome === 'busy') this.#tryLater(job);
-    else this.#settle(job.key, outcome === 'off' ? null : outcome);
+    // A `busy` that arrives after another answer turned repairs off is not tried again.
+    if (outcome === 'busy' && this.#off === null) this.#tryLater(job);
+    else this.#settle(job.key, outcome === 'off' || outcome === 'busy' ? null : outcome);
     this.#pump();
   }
 
@@ -1106,12 +1258,19 @@ export class ModelRepairs {
       return;
     }
     job.busy += 1;
-    const cancel = this.#later(() => {
+    const retry: Retry = { cancel: () => undefined };
+    this.#retries.set(job.key, retry);
+    retry.cancel = this.#later(() => {
+      // Cancelled, or settled since: as when repairs went off.
+      if (this.#retries.get(job.key) !== retry) return;
       this.#retries.delete(job.key);
+      if (this.#off !== null) {
+        this.#settle(job.key, null);
+        return;
+      }
       this.#queue.push(job);
       this.#pump();
     }, wait);
-    this.#retries.set(job.key, cancel);
   }
 
   /** Repairs are off for this page: drop what waits, at once, and tell the listeners once. */
@@ -1119,11 +1278,12 @@ export class ModelRepairs {
     if (this.#off !== null) return;
     this.#off = reason;
     for (const job of this.#queue.splice(0)) this.#settle(job.key, null);
-    for (const [key, cancel] of this.#retries) {
-      cancel();
+    const retries = [...this.#retries];
+    this.#retries.clear();
+    for (const [key, retry] of retries) {
+      retry.cancel();
       this.#settle(key, null);
     }
-    this.#retries.clear();
   }
 
   /** `key` answered (`repair`, or nothing to keep); the listeners hear of it next frame. */
@@ -1186,10 +1346,11 @@ function sentence(text: string): string {
  * A recovered expression as HTML: what renders, a button that says how it was repaired,
  * and, behind it, why and the expression as written (`written`, with its delimiters).
  * `tag` is `div` for a block; displayed math within a paragraph is a `span`. `label` is
- * an equation's label, as HTML. Everything from the text is escaped.
+ * an equation's label, as HTML. Everything from the text is escaped, and bidirectional
+ * controls in it show as their code points: KaTeX's error quotes the expression.
  */
 export function recoveredHtml(
-  recovery: Recovery,
+  recovery: ShownRecovery,
   tag: 'span' | 'div',
   display: boolean,
   written: string,
@@ -1225,6 +1386,7 @@ export function recoveredHtml(
     if (recovery.state === 'pending') message += ' The reviewer model has been asked for a repair.';
     else if (recovery.reason) message += ` No repair: ${sentence(recovery.reason)}`;
   }
+  message = visible(message);
   const title = `${message} Press to see the LaTeX as written.`;
   return (
     `<${tag} class="${classes}" ${data}>${shown}${label}` +

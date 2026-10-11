@@ -152,7 +152,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
     )
     repairs.add_argument(
-        "--model-url", help="the model gateway's OpenAI-compatible base URL (the LiteLLM proxy)"
+        "--model-url",
+        help="the model gateway's OpenAI-compatible base URL (the LiteLLM proxy), as the "
+        "gateway answers it: redirects are not followed",
     )
     repairs.add_argument(
         "--reviewer-model",
