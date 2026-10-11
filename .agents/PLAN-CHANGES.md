@@ -4,6 +4,9 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **Lab 4 on babbage** ([lab report](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)). The first slice ran in an OpenShell VM sandbox. OpenShell v0.1.3's seccomp filter refuses `pthread_setschedparam` on a thread, which aborts libzmq and hence every Jupyter kernel. It also refuses signals to process groups. The worker now preloads a scheduler shim, built on the worker host, and signals group members one at a time.
+  - Results list the files each attempt wrote, and publication names the last attempt that wrote the file. File modification times could not do this: the guest's coarse clock gave consecutive attempts the same time.
+  - Upstream descriptions for OpenShell and libzmq are in `.agents/upstream/`.
 - **W1 started** ([execution tools spec](../docs/specs/tools.md), [worker](../docs/WORKER.md)).
   - New workspace members: `contracts` (library), `worker` (the trusted worker service, plus an executor that runs inside sandboxes) and `orchestrator` (the harness).
   - Proposed in the spec, for the user to review: shell calls keep no state between calls, and a cell exception is its own error kind (`exception`).

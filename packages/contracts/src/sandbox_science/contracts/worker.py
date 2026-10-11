@@ -203,8 +203,12 @@ class Result(Contract):
     elapsed_seconds: Annotated[float, Field(ge=0)] = 0.0
     sandbox_started_at: datetime | None = None
     sandbox_ended_at: datetime | None = None
-    """When the attempt started and ended by the sandbox's own clock, which also
-    stamps the files it writes: publication uses them to name a file's producer."""
+    """When the attempt started and ended, by the sandbox's own clock."""
+    written_files: tuple[str, ...] = ()
+    """Files in the session workspace or the shared area (``shared/…``) created or changed
+    while the attempt ran. An attempt running at the same time in the session may have
+    written some of them."""
+    written_files_truncated: bool = False
 
 
 class Execution(Contract):

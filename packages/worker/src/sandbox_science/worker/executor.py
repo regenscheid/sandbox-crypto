@@ -42,6 +42,9 @@ PROTOCOL = 1
 MAX_LINE = 64 * 1024 * 1024
 MAX_READ = 8 * 1024 * 1024
 MAX_LIST = 5000
+MAX_SNAPSHOT = 20000
+"""Files scanned before and after an attempt to find the ones it wrote."""
+MAX_WRITTEN = 1000
 TERM_GRACE = 2.0
 INTERRUPT_GRACE = 5.0
 KERNEL_START_TIMEOUT = 60.0
@@ -297,6 +300,49 @@ class Executor:
                 raise ToolError("invalid_request", f"path {path!r} goes through a symlink")
         return target
 
+    def snapshot(self, session: str) -> tuple[dict[str, tuple[int, int, int]], bool]:
+        """The regular files of the session workspace and the shared area.
+
+        Maps each path to its modification time, size and inode number.
+        """
+        files: dict[str, tuple[int, int, int]] = {}
+        roots = [("", self.session_dir(session)), (SHARED + "/", self.root / SHARED)]
+        for prefix, root in roots:
+            stack = [(root, prefix)]
+            while stack:
+                directory, relative = stack.pop()
+                try:
+                    listing = os.scandir(directory)
+                except OSError:
+                    continue
+                with listing:
+                    for entry in listing:
+                        name = relative + entry.name
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                stack.append((Path(entry.path), name + "/"))
+                                continue
+                            if not entry.is_file(follow_symlinks=False):
+                                continue
+                            info = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            continue
+                        if len(files) >= MAX_SNAPSHOT:
+                            return files, True
+                        files[name] = (info.st_mtime_ns, info.st_size, info.st_ino)
+        return files, False
+
+    async def written(
+        self, session: str, before: tuple[dict[str, tuple[int, int, int]], bool]
+    ) -> Message:
+        """The files created or changed since ``before``, for the attempt's result."""
+        after = await asyncio.to_thread(self.snapshot, session)
+        changed = sorted(path for path, stamp in after[0].items() if before[0].get(path) != stamp)
+        return {
+            "written_files": changed[:MAX_WRITTEN],
+            "written_files_truncated": before[1] or after[1] or len(changed) > MAX_WRITTEN,
+        }
+
     def environment(self, session: str) -> dict[str, str]:
         env = dict(os.environ)
         env["SESSION_WORKSPACE"] = str(self.session_dir(session))
@@ -374,7 +420,10 @@ class Executor:
         wall_started = time.time()
         captures = {name: Capture(name, limit) for name in ("stdout", "stderr")}
         state, error, exit_code, signal_number = "failed", None, None, None
+        written: Message = {}
+        session = env["SESSION_WORKSPACE"].rsplit("/", 1)[-1]
         try:
+            before = await asyncio.to_thread(self.snapshot, session)
             try:
                 process = await asyncio.create_subprocess_exec(
                     *argv,
@@ -402,11 +451,11 @@ class Executor:
                 timed_out = True
                 await self.terminate(process)
             # Processes the command left behind would hold its pipes open.
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
+            signal_group(process.pid, signal.SIGKILL)
             _, pending = await asyncio.wait(readers, timeout=5)
             for reader in pending:
                 reader.cancel()
+            written = await self.written(session, before)
             code = process.returncode
             exit_code = code if code is not None and code >= 0 else None
             signal_number = -code if code is not None and code < 0 else None
@@ -429,6 +478,7 @@ class Executor:
                 "elapsed_seconds": time.monotonic() - started,
                 "sandbox_started": wall_started,
                 "sandbox_ended": time.time(),
+                **written,
             }
             await self.event(execution, "end", state=state, result=result)
 
@@ -443,13 +493,11 @@ class Executor:
 
     async def terminate(self, process: asyncio.subprocess.Process) -> None:
         """SIGTERM to the process group, then SIGKILL after a grace period."""
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGTERM)
+        signal_group(process.pid, signal.SIGTERM)
         try:
             await asyncio.wait_for(process.wait(), TERM_GRACE)
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
+            signal_group(process.pid, signal.SIGKILL)
             await process.wait()
 
     def kernel(self, session: str, language: str) -> Kernel:
@@ -495,11 +543,13 @@ class Executor:
                 running.started = True
                 await kernel.ensure_started()
                 state_lost, kernel.state_lost = kernel.state_lost, False
+                before = await asyncio.to_thread(self.snapshot, kernel.session)
                 await self.event(execution, "state", state="running")
                 state, result = await self.execute(
                     running, kernel, code, timeout, limit, captures, outputs
                 )
                 result["state_lost"] = state_lost or result.get("state_lost", False)
+                result.update(await self.written(kernel.session, before))
         except asyncio.CancelledError:
             state = "cancelled"
             result = {"error": {"kind": "cancelled", "message": "cancelled before it started"}}
@@ -737,6 +787,48 @@ class Executor:
         await self.reply(request, entries=entries, truncated=len(items) > limit)
 
 
+def group_members(pgid: int) -> list[int]:
+    """The processes in a process group, from /proc."""
+    members: list[int] = []
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        # The command name is in parentheses and may contain anything, so parse
+        # after the last ')': state, ppid, then pgrp.
+        fields = data[data.rfind(b")") + 2 :].split()
+        if len(fields) > 2 and fields[2].isdigit() and int(fields[2]) == pgid:
+            members.append(int(entry))
+    return members
+
+
+def signal_group(pgid: int, signum: int) -> None:
+    """Signal a process group, one process at a time where the sandbox refuses kill(-pgid).
+
+    OpenShell v0.1.3's seccomp filter refuses signals to process groups (lab 4)
+    but allows them to single processes. For SIGKILL, processes forked meanwhile
+    are caught in a few more rounds.
+    """
+    try:
+        os.killpg(pgid, signum)
+        return
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        pass
+    for _ in range(3 if signum == signal.SIGKILL else 1):
+        members = group_members(pgid)
+        if not members:
+            return
+        for pid in members:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(pid, signum)
+
+
 def _mime_bundle(data: object) -> dict[str, str]:
     if not isinstance(data, dict):
         return {}
@@ -799,6 +891,9 @@ def main(argv: list[str] | None = None) -> int:
     root: Path = args.root
     root.mkdir(parents=True, exist_ok=True)
     state = root / ".executor"
+    (state / "runtime").mkdir(parents=True, exist_ok=True)
+    (root / SHARED).mkdir(exist_ok=True)
+    (state / "ipython").mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("JUPYTER_RUNTIME_DIR", str(state / "runtime"))
     os.environ.setdefault("IPYTHONDIR", str(state / "ipython"))
     asyncio.run(serve_stdio(root.resolve()))

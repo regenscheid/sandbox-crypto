@@ -58,6 +58,10 @@ class OpenShellBackendSettings(_Model):
     project_root: str = "/sandbox/project"
     executor_dir: str = "/sandbox/.sandbox-science"
     isolation_tier: Annotated[int, Field(ge=1, le=3)] = 3
+    sched_shim: bool = True
+    """Preload a shim that lets libzmq (Jupyter) start under OpenShell's seccomp filter."""
+    cc: str = "cc"
+    """The C compiler that builds the shim on the worker host."""
     env: dict[str, str] = Field(default_factory=dict[str, str])
     """Extra environment for the CLI, such as XDG overrides naming the gateway."""
     sandboxes: dict[Identifier, str] = Field(default_factory=dict[str, str])

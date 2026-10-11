@@ -31,7 +31,7 @@ _log = logging.getLogger("sandbox_science.worker")
 
 def _backend(settings: Settings) -> Backend:
     if settings.openshell is not None:
-        return OpenShellBackend(settings.openshell)
+        return OpenShellBackend(settings.openshell, settings.state_dir)
     if settings.local is None:
         raise SettingsError("no backend is configured")
     _log.warning("the local backend runs research code without any isolation (tier 0)")
