@@ -4,6 +4,21 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **D80: the workspace GUI is a Svelte app served by aiohttp (confirmed by the user;** [workspace](../docs/WORKSPACE.md)**).** Svelte 5 with TypeScript, built by Vite into static files, served with its JSON API by an aiohttp server in the project's Python; markdown-it and KaTeX render Markdown with LaTeX in the browser (D65). It settles the framework D60 left open. The first slice of W4 is built on it:
+  - `packages/workspace` (new member, `sandbox-science-workspace serve`): Jupyter-like login with a token printed once and an HttpOnly, SameSite=Strict session; the server's own origin required for changes and its own names for a loopback listener; a content policy without inline script; a read-only API v0 over the harness's records.
+  - `web/workspace` (new): the app, with one Markdown component for all text. Its dollar math rules are a port of mdit-py-plugins 0.6.1 (MIT, credited in the file), so that the server's parser finds the same spans; shared cases pin them.
+  - The harness keeps each run's record with `--state-dir`, the same that `--transcript` writes. `--transcript` gains the run ID, the task, start and end times and the answer. With `--state-dir`, `--run-id` must be an identifier, since it names the record.
+  - Conventions: browser apps live in `web/<app>/`, outside the uv members; `workspace` is a member, and the one deployable member that imports another (the orchestrator's store) until W5; the web checks run before every push; web files carry SPDX lines in their own comment syntax.
+  - CI gains a `web` job, and `scripts/check_licenses.py --npm` checks the lockfile's licenses, sources, integrity hashes and install scripts.
+  - An adversarial review found no way to run script through the renderer or around the server's checks. It found eight other issues, all fixed:
+    - a formula could draw over the tool call below it, since KaTeX caps only positive sizes: each rendered text is now clipped to its box;
+    - some texts took seconds to minutes to render (a quadratic trim, and every unclosed `$$` looking to the end of the text): the trim is linear, a `$$` block now ends within 200 lines (a rule of this project's own, which the server's parser must apply too), and a text sends KaTeX a bounded amount of math;
+    - the npm check passed a lockfile without a `packages` section, which npm reads another way, and misread license expressions with parentheses (the Python check shared that bug): it now requires version 3 and parses SPDX expressions, and `--installed` checks the installed packages' own licenses;
+    - a record that failed validation could lose the transcript too: `--transcript` is now written first, and failures are reported;
+    - runs kept under `projects/` could collide with other projects' files, whose IDs may contain dots: runs have a tree of their own, and a record is never written over another;
+    - a server on another loopback address refused its own login link;
+    - the port differed from the plugin where markdown-it trims less whitespace than markdown-it-py, and stepped back by UTF-16 units instead of code points.
+  - Also from the review: the session cookie's name carries the port, links need `//` after `http:`, and code shows bidirectional controls as code points.
 - **Environment revisions (W3).** After every call, the executor reports a fingerprint of the installed packages. The worker counts each change as a new revision of the environment. Each execution reports the revision it started and ended under, and the harness tells the model when a call changed the packages. Installs are recorded, not yet serialized.
 - **Idle suspension (W3;** [lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md)**).** The confirmed idle behaviour says environments persist but need not keep running. With `suspend_after`, the worker now stops the sandbox of an idle environment and starts it again on the next use.
   - Idle means no executions, no requests and almost no CPU use by its kernels. The executor's new `usage` operation reports that CPU time, so a computation in a kernel thread keeps the environment up.

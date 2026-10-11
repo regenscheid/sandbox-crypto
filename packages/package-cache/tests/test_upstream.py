@@ -37,6 +37,7 @@ from sandbox_science.package_cache.upstream import (
     DigestMemory,
     Downloaded,
     NotModified,
+    SandboxBudgets,
     SingleFlight,
     TempSpace,
     TokenBucket,
@@ -1032,3 +1033,12 @@ async def test_artifact_downloads_have_no_deadline(
     assert not task.done()
     gate.set()
     close(await task)
+
+
+def test_sandbox_budgets_keep_the_sandboxes_seen_last() -> None:
+    budgets = SandboxBudgets(1.0, 1, capacity=2)
+    a, b = budgets.bucket("a"), budgets.bucket("b")
+    assert budgets.bucket("a") is a
+    budgets.bucket("c")  # b was seen longest ago
+    assert budgets.bucket("a") is a
+    assert budgets.bucket("b") is not b

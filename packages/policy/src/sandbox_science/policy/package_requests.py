@@ -21,6 +21,11 @@ from typing import Final
 from .errors import ClassificationError
 from .operations import PackageOperation
 
+SANDBOX_HEADER: Final = "X-Sandbox-Science-Sandbox"
+"""Names the sandbox a request to the cache came from. The policy middleware writes it on
+every such request it allows, replacing whatever the sandbox sent, and the cache gives each
+sandbox its own budget of upstream fetches by it."""
+
 _SAFE_PATH_RE: Final = re.compile(r"/[A-Za-z0-9._~!$&'()*+,;=:@/%-]*")
 _ENCODED_SLASH_RE: Final = re.compile(r"%2[Ff]")
 _CHANNEL: Final = r"[a-z0-9][a-z0-9._-]*"

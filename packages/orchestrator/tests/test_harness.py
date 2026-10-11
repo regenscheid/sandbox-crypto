@@ -8,6 +8,7 @@ orchestrator and the worker share in production.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import base64
 import contextlib
@@ -58,6 +59,7 @@ from sandbox_science.orchestrator.model import (
     ToolSpec,
     _parse_completion,  # pyright: ignore[reportPrivateUsage]
 )
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
@@ -217,6 +219,48 @@ async def test_the_cli_refuses_an_unisolated_worker(
     )
     assert allowed == 0
     assert json.loads((tmp_path / "t.json").read_text())["stopped"] == "answered"
+
+
+async def test_a_record_that_cannot_be_kept_still_reaches_the_transcript(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A tool's JSON nested deeper than pydantic follows: the transcript is written all
+    # the same, and the failure to keep the record is reported, not raised.
+    store = ProjectStore(tmp_path / "state")
+    store.create("p1", "minimal", "sha256:" + "c" * 64)
+    store.open_session("p1", "s1", dedicated=False)
+    deep: object = "bottom"
+    for _ in range(300):
+        deep = [deep]
+    now = datetime.now(UTC)
+    fields: dict[str, object] = {
+        "run_id": "run-1",
+        "context": {"project_id": "p1", "session_id": "s1", "environment_id": "env1"},
+        "task": "t",
+        "started_at": now,
+        "ended_at": now,
+        "stopped": "answered",
+        "final_text": "done",
+        "messages": [{"role": "user", "content": "t"}],
+        "tools": [{"tool": "pdf_info", "arguments": "{}", "pdf": deep}],
+    }
+    transcript = tmp_path / "t.json"
+    args = argparse.Namespace(transcript=transcript, state_dir=tmp_path / "state")
+    assert cli._keep(args, fields, 0) == 1  # pyright: ignore[reportPrivateUsage]
+    assert "the run's record could not be kept" in capsys.readouterr().err
+    assert json.loads(transcript.read_text())["final_text"] == "done"
+    assert store.runs("p1", "s1") == []
+
+
+async def test_with_a_state_dir_the_run_id_must_name_a_record(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as refused:
+        cli.main(
+            ["run", "--worker", "http://127.0.0.1:9", "--token-file", str(tmp_path / "token"),
+             "--project", "p1", "--session", "s1", "--state-dir", str(tmp_path / "state"),
+             "--script", str(tmp_path / "script.json"), "--run-id", "../a run", "task"],
+        )  # fmt: skip
+    assert refused.value.code == 2
+    assert not (tmp_path / "state").exists()
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
@@ -756,6 +800,10 @@ async def test_projects_give_sessions_their_environments(
         assert status == 0
         recorded = json.loads(transcript.read_text())
         assert recorded["context"]["policy_revision"] == policy
+        # The project's records keep the same record (W4).
+        store = ProjectStore(state)
+        (kept,) = store.runs("p1", session)
+        assert store.run("p1", session, kept.name).to_json() == transcript.read_text()
         return [m["content"] for m in recorded["messages"] if m["role"] == "tool"]
 
     def shell(script: str) -> dict[str, Any]:
