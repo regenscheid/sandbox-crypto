@@ -31,6 +31,7 @@ python = "/usr/bin/python3"      # default: the worker's own interpreter
 name = "orchestrator-p1"
 token_sha256 = "<64 hex digits>" # sandbox-science-worker token --out FILE prints it
 projects = ["p1"]
+max_environments = 8             # live environments across those projects
 ```
 
 Relative paths resolve against the settings file's directory.
@@ -146,6 +147,9 @@ class ClientSettings(_Model):
     token_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
     """The SHA-256 of the client's bearer token, as ``sandbox-science-worker token`` prints it."""
     projects: tuple[Identifier, ...] = Field(min_length=1)
+    max_environments: Annotated[int, Field(ge=1, le=1000)] = 8
+    """The most environments the client's projects may have at once, deleted ones aside.
+    Each is a sandbox, a VM with the VM driver, so a client cannot fill the pool's host."""
 
 
 class Settings(_Model):
