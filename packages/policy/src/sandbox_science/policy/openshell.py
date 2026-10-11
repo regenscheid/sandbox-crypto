@@ -16,6 +16,8 @@ Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
   substitutes them nowhere else.
 * The MCP proxy sandbox reaches the declared MCP servers. Its policy re-enforces
   the tool rules as OpenShell ``protocol: mcp`` endpoints.
+* The orchestrator's own sandbox (Z2 in the threat model) reaches the worker API
+  and the model gateway, and nothing else. No project policy applies to it.
 
 A research sandbox's document also carries its filesystem section, which
 OpenShell fixes when the sandbox is created: the devices that research code
@@ -386,6 +388,18 @@ class McpProxyTarget(StrictModel):
     max_body_bytes: Annotated[int, Field(gt=0)] | None = None
 
 
+class OrchestratorTarget(StrictModel):
+    """Settings for the orchestrator's own sandbox (Z2): the services it may reach.
+
+    ``binaries`` names the interpreter that runs the harness, so that nothing else in
+    that sandbox reaches the worker API.
+    """
+
+    worker_api: ServiceEndpoint
+    model_gateway: ServiceEndpoint | None = None
+    binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
+
+
 class OpenShellTargets(StrictModel):
     """A targets file: where platform services run for one deployment."""
 
@@ -395,6 +409,7 @@ class OpenShellTargets(StrictModel):
     kind: Literal["OpenShellTargets"] = "OpenShellTargets"
     sandbox: SandboxTarget
     mcp_proxy: McpProxyTarget
+    orchestrator: OrchestratorTarget | None = None
 
 
 def parse_targets(text: str | bytes, *, source: str | None = None) -> OpenShellTargets:
@@ -844,6 +859,46 @@ def _sandbox_filesystem(extra: SandboxFilesystem) -> FilesystemPolicy:
             f"the sandbox would have more than {MAX_FILESYSTEM_PATHS} filesystem paths"
         )
     return FilesystemPolicy(include_workdir=True, read_only=read_only, read_write=read_write)
+
+
+def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
+    """Compile the orchestrator sandbox's policy: the worker API and the model gateway only.
+
+    The orchestrator is semi-trusted (Z2 in the threat model): it chooses actions but
+    holds no engine credentials, and its egress goes only to platform services. Both
+    are inspected HTTP endpoints, with no policy middleware, since no project policy
+    governs the orchestrator itself. Raises CompileError when they share an endpoint.
+    """
+    binaries = tuple(Binary(path=path) for path in target.binaries)
+    services = {"worker-api": ("Sandbox Science worker API", target.worker_api)}
+    if target.model_gateway is not None:
+        services["model-gateway"] = ("Sandbox Science model gateway", target.model_gateway)
+    seen: dict[tuple[str, int], str] = {}
+    network_policies: dict[str, NetworkPolicy] = {}
+    for key, (name, service) in services.items():
+        where = (service.host, service.port)
+        if where in seen:
+            raise CompileError(
+                f"the {seen[where]} and the {key} share {service.host}:{service.port}"
+            )
+        seen[where] = key
+        network_policies[f"sandbox-science-{key}"] = NetworkPolicy(
+            name=name,
+            endpoints=(
+                Endpoint(
+                    host=service.host,
+                    ports=(service.port,),
+                    protocol="rest",
+                    enforcement="enforce",
+                    access="full",
+                ),
+            ),
+            binaries=binaries,
+        )
+    return OpenShellPolicy(
+        filesystem_policy=FilesystemPolicy(include_workdir=True),
+        network_policies=network_policies,
+    )
 
 
 def _bound_hosts(
