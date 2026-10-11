@@ -118,9 +118,26 @@ Packages come from five ecosystems through the package cache: `pypi`, `conda`, `
 - **Other routes.** Registries are reachable only through the cache. The floor denies their hosts for generic HTTP, including known aliases and mirrors (`registry.npmjs.com`, `unpkg.com`, `test.pypi.org`, `prefix.dev`, and every host under `pythonhosted.org`, `anaconda.org`, `prefix.dev` and `crates.io`). The list is a denylist, so a mirror nobody listed is a rule's to deny. Installs straight from version control (`pip install git+https://…`, Cargo and npm git dependencies, Go without a proxy) are ordinary git and HTTP requests: the network rules decide them, not `packages`.
 - **Other requests.** Any request to the cache that is not a GET or HEAD of a path in its layout is unclassifiable and denied. That covers search, audit, publishing and logins.
 
+### Credentials
+
+Worker-visible credentials are OpenShell providers: a sandbox holds only placeholders, and OpenShell substitutes the real value when a request leaves (D57). Each entry in `credentials.providers` names the provider, its OpenShell profile and the `hosts` its credential may reach:
+
+```yaml
+credentials:
+  providers:
+    - name: github-readonly
+      profile: github-token
+      hosts: [api.github.com, github.com]
+```
+
+- **Hosts.** Every provider needs at least one. Each is an exact host name: no wildcards, which would send the credential to every match, and no IP addresses. A host belongs to one provider at most, because OpenShell binds one credential per endpoint.
+- **HTTPS only.** The compiler binds the credential to each host on port 443, so it never crosses the network in clear text. OpenShell refuses a request that carries the placeholder anywhere else.
+- **Credentialed requests.** A request to one of these hosts, on any port, may carry the credential, and counts as credentialed under "Escalation timeout". Requests to other hosts cannot carry it.
+- **Profiles.** The provider's profile must have no endpoints of its own ([example](../examples/openshell/profiles/github-token.yaml)). The project policy, not the profile, says where the credential goes.
+
 ### Escalation timeout
 
-`escalation.timeout` sets how long a request waits for an answer (default `30m`). When it expires, the request is denied: the policy-wide `escalation.on_timeout` must be `deny`. A rule can override the timeout for itself. A rule that only reads, meaning an `http` rule whose `methods` are all `GET` or `HEAD`, or a `git` rule for `upload-pack`, may also set `on_timeout: allow`. A timed-out request under such a rule proceeds as an `alert`, with a recorded finding, never silently. A request whose URL exceeds a limit is denied on timeout regardless. So is a request that carries an injected credential, unless the rule also sets `allow_credentialed: true`: a credentialed read acts with the user's identity, so it proceeds unanswered only where the policy says so, endpoint by endpoint. When escalate rules tie, the request proceeds as an alert only if every one of them permits it, including `allow_credentialed` for a credentialed request. MCP tool escalations use the policy-wide setting.
+`escalation.timeout` sets how long a request waits for an answer (default `30m`). When it expires, the request is denied: the policy-wide `escalation.on_timeout` must be `deny`. A rule can override the timeout for itself. A rule that only reads, meaning an `http` rule whose `methods` are all `GET` or `HEAD`, or a `git` rule for `upload-pack`, may also set `on_timeout: allow`. A timed-out request under such a rule proceeds as an `alert`, with a recorded finding, never silently. A request whose URL exceeds a limit is denied on timeout regardless. So is a request to a host that a provider credential is bound to ("Credentials"), unless the rule also sets `allow_credentialed: true`: a credentialed read acts with the user's identity, so it proceeds unanswered only where the policy says so, endpoint by endpoint. When escalate rules tie, the request proceeds as an alert only if every one of them permits it, including `allow_credentialed` for a credentialed request. MCP tool escalations use the policy-wide setting.
 
 Other work continues while a request waits (`hold_scope: operation`). A denied or timed-out request is not retried automatically.
 
@@ -162,11 +179,11 @@ The compiler in `sandbox_science.policy.openshell` (D69) produces OpenShell v0.1
     - Nothing is excluded from the middleware, because OpenShell selects middleware by host alone: excluding a service host would take every port on it out of the middleware.
   - **Service hosts.** Platform services must have private addresses, so that the host-less endpoint never admits them. A single-host deployment (the VM driver) runs them at `host.openshell.internal` on different ports. The floor keeps project rules away from that name, which would otherwise reach every service on the gateway host.
   - **Reserved hosts.** The compiler does not admit hosts the library always denies (registries, declared MCP servers' hosts, platform service hosts), even when a rule names them, so that the middleware is never the only barrier.
-  - **Provider credentials (open).** OpenShell refuses endpoints that overlap on host and port unless their address ranges agree, and the host-less endpoint overlaps every host on ports 80 and 443. A provider whose profile names a host, as OpenShell's example profiles do, therefore cannot be attached as it stands. Two arrangements worked on babbage ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)):
-    - the profile's endpoints repeat the compiler's address ranges;
-    - the profile has no endpoints, and the compiled policy binds the credential with `credential_binding` on an endpoint for each host it may reach, with path `/**`.
-
-    Which one the compiler uses is pending a decision. Either way the middleware decides every request, including those a provider's rule admits, and OpenShell substitutes the credential afterwards, only at endpoints it is bound to.
+  - **Provider credentials.** Each host in `credentials.providers[].hosts` gets an endpoint on port 443 with `credential_binding` to its provider, and that endpoint alone carries the host's HTTPS traffic: other egress endpoints for the host keep only its other ports.
+    - The endpoint has the path selector `/**`. That makes it more specific than the host-less and wildcard endpoints that also admit the host, so OpenShell selects it for the host's requests and does not require them to agree on the binding. It repeats their address ranges, on which overlapping endpoints must agree.
+    - Profiles therefore carry no endpoints. A profile that names a host, as OpenShell's example profiles do, would be refused beside the host-less endpoint unless it repeated the compiler's address ranges exactly ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md), where the user chose this arrangement).
+    - The middleware decides each request to these hosts like any other. OpenShell substitutes the credential afterwards, only there.
+    - Hosts the floor, the pool ceiling or a platform route rules out, and non-public hosts, are not bound and are reported.
 - **The MCP proxy's sandbox** gets one inspected `protocol: mcp` endpoint per declared server, in `enforce` mode, with the server URL's path as an exact selector.
   - **Methods and tools.** The MCP protocol methods are allowed explicitly, as OpenShell requires. Allowed tools are listed by exact name or pattern, and deny entries are added only to carve exceptions out of allow patterns, since OpenShell denies everything else.
   - **Escalated tools** stay denied at this fence; approved grants are not compiled in yet.
@@ -189,7 +206,7 @@ The middleware path has these limits, checked against a real gateway on babbage 
 | `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The policy middleware, with this library, behind OpenShell's admission endpoints and address checks |
 | `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox; `worker_access` also decides whether research sandboxes can reach the MCP proxy |
 | `mcp.servers.*.auth` | The connector auth service and OpenShell providers bound with `credential_binding` ([MCP connectors](MCP-CONNECTORS.md), D66, D67) |
-| `credentials.providers` | OpenShell providers (D57), which inject credentials after the middleware has decided, only at the endpoints each credential is bound to. How research sandboxes bind them is open (see "Provider credentials" above) |
+| `credentials.providers` | OpenShell providers (D57) with profiles without endpoints; the compiled policy binds each credential to its `hosts` on port 443, and OpenShell injects it there after the middleware has decided |
 | `escalate` | A denial with `approval_required` and a durable permission request (MONITORING.md); the agent retries after approval |
 | `alert`, `monitors` | Middleware findings and request records |
 | `packages` | The policy middleware, with this library, for every request to the package cache; registries are reachable only through the cache ([package cache](PACKAGE-CACHE.md)) |
@@ -214,7 +231,7 @@ Five adversarial review rounds of the library (2026-10-10, pinned by `test_revie
 
 ## Open items
 
-- Compiling to OpenShell v0.1.3: the facts above come from the [OpenShell policy investigation](../.agents/docs/agent-reports/openshell-policy-v0.1.3.md). The compiled policies and the middleware path still need validating on a real gateway (babbage).
+- Compiling to OpenShell v0.1.3: the facts above come from the [OpenShell policy investigation](../.agents/docs/agent-reports/openshell-policy-v0.1.3.md) and two labs on babbage, which validated the compiled policies and the middleware path on a real gateway. The credential endpoints as compiled overlap the egress endpoints the way lab 2's accepted arrangement did, and the tests check them with a port of OpenShell's ambiguity check, but they have not yet run on a gateway themselves.
 - MCP tool-name patterns depend on the actual tool names the server exposes per revision; pin the server revision in the policy.
 - How GUI edits and file edits of the policy merge (proposed: the file is the source of truth, the GUI edits it, every change is a revision). Widening the policy is a re-authentication action (D54).
 - Data-class limits in the pool ceiling (D50) are not yet modeled.

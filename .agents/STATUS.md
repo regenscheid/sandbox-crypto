@@ -6,6 +6,7 @@ Updated: 2026-10-10.
 
 ## Recent progress
 
+- Provider credentials (D57 amended, the user's choice after lab 2): the policy names each provider's hosts, and the compiler binds the credential there on HTTPS. Providers use profiles without endpoints, and the middleware treats only those hosts as credentialed.
 - Lab 2 on babbage ([report](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)).
   - In a sandbox, real pip, uv, micromamba, npm, go and cargo installed through the policy middleware and the package cache, with toolchains from conda-forge.
   - Provider credentials and the MCP proxy's compiled policy were checked against the gateway.
@@ -24,13 +25,12 @@ Updated: 2026-10-10.
 
 ## Next
 
-- Decide how research sandboxes bind provider credentials, then compile it.
+- Run the compiled credential bindings on babbage at the next lab.
 - Orchestrator: the middleware's policy store and bindings, escalation grants, and on-demand admission of hosts.
 - W0 behavior specifications.
 
 ## Blockers and open questions
 
-- How research sandboxes bind provider credentials: profiles that repeat the compiler's address ranges, or profiles without endpoints bound by the compiled policy ([lab 2](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md), finding 3).
 - Confirm D68 (policy evaluation details), the details of D69 (its direction, OpenShell plus a policy middleware, is confirmed), D70 (the middleware service) and PSF-2.0 and MIT-0 in tier 1.
 - OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's planned tier 3 isolation depends on it (D43). It worked throughout the lab.
 - babbage enforces Ubuntu's AppArmor restriction on unprivileged user namespaces. Shells started from Claude Desktop run under its `claude-desktop` profile and are exempt, so qualification checks must run from a plain terminal or `systemd-run --user`.
