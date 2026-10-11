@@ -87,6 +87,7 @@ Performance-sensitive work (timing and side-channel measurements, `perf_event_op
 - A placeholder still lets an agent do whatever the token permits at its bound endpoint. Token scope and tool/method rules are the real limit.
 - OpenShell v0.1.3 resolves static placeholders per endpoint, not per binary, so any process in the sandbox can use an attached credential. In a shared project container this includes other workbooks' processes, so session attribution and session-scoped grants there are not trustworthy without a verified process-to-execution mapping ([MCP connectors](MCP-CONNECTORS.md#mcp-proxy)).
 - Low-bandwidth covert channels through allowed fetches cannot be eliminated, only bounded and logged.
+- The event store's hash chain is not keyed. Whoever can write the store can rewrite its records consistently or remove the newest; only checkpoints kept out of their reach show it ([event store](EVENT-STORE.md)).
 - Tier 1 local deployments share a kernel with trusted services.
 - Model providers receive project content. Data classes (D50) decide which classes may go to which endpoints.
 

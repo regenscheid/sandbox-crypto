@@ -1,6 +1,6 @@
 # Detailed implementation plan
 
-Date: 2026-10-10. Proposed engineering sequence. Track P has the policy library, its OpenShell compiler, the policy middleware and the package cache. W1 has a first slice: the shared contracts, the [worker service](WORKER.md) and the harness's tool loop. No work package has been validated end to end yet. Confirmed product requirements remain in [decisions](DECISIONS.md). This plan incorporates the [consistency review](CONSISTENCY-REVIEW.md) and provides detail beneath the milestone [roadmap](ROADMAP.md).
+Date: 2026-10-10. Proposed engineering sequence. Track P has the policy library, its OpenShell compiler, the policy middleware, the package cache and the event store. W1 has a first slice: the shared contracts, the [worker service](WORKER.md) and the harness's tool loop. No work package has been validated end to end yet. Confirmed product requirements remain in [decisions](DECISIONS.md). This plan incorporates the [consistency review](CONSISTENCY-REVIEW.md) and provides detail beneath the milestone [roadmap](ROADMAP.md).
 
 ## First implementation slice
 
@@ -71,7 +71,7 @@ Proposed by the plan review (D51). These components do not depend on harness det
 - Worker API schema and worker service, with the persistent-kernel, argv, file-staging, streaming, cancellation and attempt-reconciliation operations.
 - Read-only-rootfs environment layout with declared volumes, lockfile capture and rebuild (D48).
 - Policy middleware, which decides research sandboxes' requests inside OpenShell's proxy in place of a separate egress proxy (D69, D70, `packages/policy-middleware`), and the package mirror (D44).
-- Event store with an append-only hash chain, so monitor evidence is tamper-evident.
+- Event store with an append-only hash chain, so monitor evidence is tamper-evident ([event store](EVENT-STORE.md), D72, `packages/event-store`).
 - Adversarial fixture suite ([monitoring](MONITORING.md)).
 - Isolation-tier probes that report the tier actually provided (D43).
 - The policy compiler from the project policy file ([policy](POLICY.md), D62) to OpenShell network/MCP/filesystem policy, with the hard floor, pool ceiling, most-restrictive-wins precedence and escalation timeout. It reports rules it cannot enforce. The policy model, validation and evaluation are implemented in `packages/policy` (D68), and its OpenShell compiler (D69) produces the research sandboxes' admission endpoints and policy-middleware attachment, and the MCP proxy's policy.

@@ -34,10 +34,10 @@ metadata:
 class Sink(Protocol):
     """The recording sink from conftest."""
 
-    events: list[Mapping[str, object]]
+    events: list[tuple[str, Mapping[str, object]]]
     fail: bool
 
-    def record(self, event: Mapping[str, object]) -> None: ...
+    def record(self, kind: str, payload: Mapping[str, object]) -> None: ...
 
 
 def pkt(line: str) -> bytes:
@@ -96,8 +96,8 @@ def test_an_escalation_is_denied_as_approval_required_and_recorded(
     assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
     events = sink.events
     assert len(events) == 1
-    event = events[0]
-    assert event["type"] == "escalation"
+    kind, event = events[0]
+    assert kind == "escalation"
     assert event["sandbox_id"] == "sbx-0001"
     assert event["rule"] == "external-writes"
     assert event["policy"] == {"name": "permissive-default", "digest": example.digest}
@@ -470,7 +470,7 @@ def test_an_alert_allows_with_a_finding_and_a_record(
     )
     assert verdict.allowed
     assert [(f.type, f.label) for f in verdict.findings] == [("policy_alert", "watched")]
-    assert [event["type"] for event in sink.events] == ["alert"]
+    assert [kind for kind, _ in sink.events] == ["alert"]
 
 
 def test_an_alert_that_cannot_be_recorded_is_denied(
@@ -559,7 +559,7 @@ def test_requests_to_hosts_with_a_bound_credential_count_as_credentialed(
     facts = make_facts(config=policy_config(loaded), host=host, port=port)
     verdict = middleware.evaluate_http(facts)
     assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
-    assert sink.events[0]["escalation"] == {"timeout_seconds": 1800, "on_timeout": on_timeout}
+    assert sink.events[0][1]["escalation"] == {"timeout_seconds": 1800, "on_timeout": on_timeout}
 
 
 @pytest.mark.parametrize(
@@ -634,7 +634,7 @@ def test_monitors_report_once_an_hour(
     clock[0] += 3600
     assert post(10).findings == ()
     assert [f.label for f in post(200).findings] == ["chatty"]
-    assert [event["type"] for event in sink.events] == ["monitor", "monitor"]
+    assert [kind for kind, _ in sink.events] == ["monitor", "monitor"]
 
 
 def test_denied_requests_do_not_count_as_egress(
@@ -699,8 +699,8 @@ def test_verdicts_pair_denials_with_reason_codes() -> None:
 
 
 class _NullSink:
-    def record(self, event: object) -> None:
-        del event
+    def record(self, kind: str, payload: object) -> None:
+        del kind, payload
 
 
 # --- Package cache ---------------------------------------------------------------------------
@@ -809,7 +809,7 @@ def test_package_escalations_ask_for_the_install_not_the_lookup(
         cache_facts(make_facts, loaded, f"/cargo/dl/serde/1.0.200/{'a' * 64}", config=config)
     )
     assert download.reason_code == evaluator.APPROVAL_REQUIRED
-    assert sink.events[-1]["rule"] == "packages.cargo"
+    assert sink.events[-1][1]["rule"] == "packages.cargo"
     denied = middleware.evaluate_http(cache_facts(make_facts, loaded, "/npm/lodash", config=config))
     assert denied.reason_code == evaluator.POLICY_DENIED
 

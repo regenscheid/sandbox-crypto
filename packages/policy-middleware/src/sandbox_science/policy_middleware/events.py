@@ -3,38 +3,44 @@
 
 OpenShell logs every middleware decision itself (OCSF), but not the text of
 our findings. The middleware therefore records what other components act on:
-escalations, which become pending permission requests, and alerts. The event
-store with its hash chain will replace this JSON-lines file.
+escalations, which become pending permission requests, alerts and monitor
+findings. They go to the event store (docs/EVENT-STORE.md), whose hash chain
+makes later changes to them evident.
 """
 
 from __future__ import annotations
 
-import json
-import threading
 from collections.abc import Mapping
-from pathlib import Path
-from typing import Protocol
+from typing import Final, Protocol
+
+from sandbox_science.event_store import EventStore
+
+SOURCE: Final = "policy-middleware"
+"""The source of every record the middleware writes."""
+
+STORE_TIMEOUT: Final = 0.25
+"""Seconds an append may wait for the store's locks before it fails.
+
+OpenShell gives an evaluation 500 ms in the documented registration, so an
+append must give up well before that; the request is then denied if it needed
+the record (an alert).
+"""
 
 
 class EventSink(Protocol):
     """Somewhere to append middleware records."""
 
-    def record(self, event: Mapping[str, object]) -> None:
+    def record(self, kind: str, payload: Mapping[str, object]) -> None:
         """Append one record; raise if it could not be stored."""
         ...
 
 
-class JsonLinesEventLog:
-    """Append records to a file, one JSON object per line."""
+class StoreSink:
+    """Append records to the event store; each call returns once its record is on disk."""
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._lock = threading.Lock()
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, store: EventStore) -> None:
+        self._store = store
 
-    def record(self, event: Mapping[str, object]) -> None:
-        """Append one record and flush it to the operating system."""
-        line = json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
-        with self._lock, self._path.open("a", encoding="utf-8") as handle:
-            handle.write(line)
-            handle.flush()
+    def record(self, kind: str, payload: Mapping[str, object]) -> None:
+        """Append one record; raise EventStoreError if it was not stored."""
+        self._store.append(kind, SOURCE, payload)

@@ -397,15 +397,14 @@ class PolicyMiddleware:
             findings.append(Finding("policy_monitor", alert.rule, "low"))
             try:
                 self._events.record(
+                    "monitor",
                     {
-                        "type": "monitor",
-                        "time": now.isoformat(timespec="seconds"),
                         "sandbox_id": facts.sandbox_id,
                         "request_id": facts.request_id,
                         "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
                         "rule": alert.rule,
                         "reason": alert.reason,
-                    }
+                    },
                 )
             except Exception:
                 _log.exception("could not record monitor %s", alert.rule)
@@ -414,9 +413,8 @@ class PolicyMiddleware:
     def _record(
         self, kind: str, facts: HttpRequestFacts, loaded: LoadedPolicy, decision: Decision
     ) -> None:
-        event: dict[str, object] = {
-            "type": kind,
-            "time": self._now().isoformat(timespec="seconds"),
+        # The store adds the time; the payload keeps the decision and the request.
+        payload: dict[str, object] = {
             "sandbox_id": facts.sandbox_id,
             "request_id": facts.request_id,
             "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
@@ -434,11 +432,11 @@ class PolicyMiddleware:
             },
         }
         if decision.escalation is not None:
-            event["escalation"] = {
+            payload["escalation"] = {
                 "timeout_seconds": int(decision.escalation.timeout.total_seconds()),
                 "on_timeout": decision.escalation.on_timeout.value,
             }
-        self._events.record(event)
+        self._events.record(kind, payload)
 
 
 def _deny(code: str, reason: str, decision: Decision | None = None) -> Verdict:
