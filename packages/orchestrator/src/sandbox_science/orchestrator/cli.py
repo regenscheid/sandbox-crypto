@@ -418,7 +418,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     source = run.add_mutually_exclusive_group(required=True)
     source.add_argument("--script", type=Path, help="replay model turns from a JSON file")
-    source.add_argument("--model-url", help="OpenAI-compatible base URL (the LiteLLM proxy)")
+    source.add_argument(
+        "--model-url",
+        help="OpenAI-compatible base URL (the LiteLLM proxy), as the gateway answers it: "
+        "redirects are not followed",
+    )
     run.add_argument("--model", default="main", help="model alias")
     run.add_argument("--api-key-file", type=Path)
     run.add_argument("--min-isolation-tier", type=int, default=3)

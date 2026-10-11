@@ -98,6 +98,13 @@ function pyTrim(text: string, from: number, to: number): [number, number] {
   return [start, end];
 }
 
+/** Whether `text[from, to)` is only whitespace, as a `$$` block judges a blank line. */
+export function isBlank(text: string, from: number, to: number): boolean {
+  let start = from;
+  while (start < to && isPySpace(text.charCodeAt(start))) start += 1;
+  return start >= to;
+}
+
 function codePoints(text: string): number {
   return Array.from(text).length;
 }
@@ -131,9 +138,10 @@ function pythonEnds(text: string): { first: number; end: number } {
 /**
  * Whether an odd number of backslashes precede `position`. Positions count from the
  * first character markdown-it-py keeps, and the read before it, which Python makes at
- * index -1, takes the last character it keeps.
+ * index -1, takes the last character it keeps. LaTeX's own delimiters use it too
+ * (mathdelimiters.ts), so that both kinds of math read escapes alike.
  */
-function isEscaped(src: string, position: number): boolean {
+export function isEscaped(src: string, position: number): boolean {
   const { first, end } = pythonEnds(src);
   let backslashes = 0;
   let back = position;

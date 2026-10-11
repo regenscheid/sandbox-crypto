@@ -63,7 +63,7 @@ Terms:
 
 ### Role model settings
 
-- PD-27. Each role (main, delegated, reviewer) has project-level settings: a LiteLLM model alias (D61), plus the reasoning effort or thinking setting where the adapter supports it, maximum output tokens, maximum turns, a cost budget per run, and the context size at which compaction starts (new).
+- PD-27. Each role (main, delegated, reviewer, and the job watcher of [tools](tools.md#background-jobs), D83) has project-level settings: a LiteLLM model alias (D61), plus the reasoning effort or thinking setting where the adapter supports it, maximum output tokens, maximum turns, a cost budget per run, and the context size at which compaction starts (new).
 - PD-28. For a delegated run, the brief's model choice applies if the project allows overrides and lists that alias; otherwise the delegated role's settings, then the deployment default (new; Claude Code's public documentation describes a similar order for subagents). Agents cannot choose the reviewer's settings.
 - PD-29. Each agent run records its role, the alias, the provider model that LiteLLM resolved, and the effective settings. A setting the adapter cannot apply is reported, never dropped silently (new). Load evidence and lineage use these records (external skills, gate 2).
 - PD-30. An unavailable alias, or one lacking a capability the role needs such as tool calling, fails the run at start with a reason. A fallback alias is used only when the project names one, and its use is recorded (new).
