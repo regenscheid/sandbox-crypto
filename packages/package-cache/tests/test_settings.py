@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from sandbox_science.package_cache.adapters.hackage import HackageAdapter
+from sandbox_science.package_cache.adapters.opam import OpamAdapter
 from sandbox_science.package_cache.errors import SettingsError
 from sandbox_science.package_cache.settings import (
     CargoSettings,
@@ -209,6 +211,19 @@ def test_listen_addresses(tmp_path: Path, listen: str, host: str, port: int) -> 
             BASE + '[hackage]\nrepository = "https://h.test/?x"\n', "query", id="hackage-query"
         ),
         pytest.param(BASE + '[hackage]\nindex = "https://h.test"\n', "index", id="hackage-key"),
+        pytest.param(
+            BASE + '[opam]\nrepository = "https://opam.ocaml.org/a%2Fb"\n',
+            "percent-escapes",
+            id="opam-escape",
+        ),
+        pytest.param(
+            BASE + '[hackage]\nrepository = "https://h.test/a b"\n', "spaces", id="hackage-space"
+        ),
+        pytest.param(
+            BASE + '[hackage]\nrepository = "https://h.test/~x/p@q"\n',
+            "percent-escapes",
+            id="hackage-at",
+        ),
         pytest.param(BASE + 'max_size = "100Q"\n', "invalid size", id="size-unit"),
         pytest.param(BASE + "max_size = 0\n", "max_size", id="size-zero"),
         pytest.param(BASE + "max_size = 1.5\n", "max_size", id="size-float"),
@@ -267,6 +282,42 @@ def test_listen_addresses(tmp_path: Path, listen: str, host: str, port: int) -> 
 def test_invalid_settings_are_rejected(tmp_path: Path, text: str, message: str) -> None:
     with pytest.raises(SettingsError, match=message):
         load_settings(write(tmp_path, text))
+
+
+@pytest.mark.parametrize(
+    "repository",
+    [
+        "https://opam.ocaml.org",
+        "https://opam.ocaml.org/",
+        "https://OPAM.ocaml.org:8443/mirror/v2",
+        "https://[2001:db8::1]:8443",
+        "https://opam.ocaml.org/a%2Fb",
+        "https://opam.ocaml.org/a%41",
+        "https://opam.ocaml.org/a@b",
+        "https://opam.ocaml.org/a:b",
+        "https://opam.ocaml.org/a,b",
+        "https://opam.ocaml.org/a+b",
+        "https://opam.ocaml.org/.",
+        "https://user@opam.ocaml.org",
+        "http://opam.ocaml.org",
+        "https://opam.ocaml.org?x",
+        "https://opam_ocaml.org",
+    ],
+)
+def test_repositories_the_settings_accept_are_ones_the_adapters_accept(
+    tmp_path: Path, repository: str
+) -> None:
+    # A setting accepted here but refused by the adapter would stop the service at
+    # startup instead of being reported as invalid settings.
+    for table, adapter in (("opam", OpamAdapter), ("hackage", HackageAdapter)):
+        path = write(tmp_path, BASE + f'[{table}]\nrepository = "{repository}"\n')
+        try:
+            settings = load_settings(path)
+        except SettingsError:
+            continue
+        configured = settings.opam if table == "opam" else settings.hackage
+        assert configured is not None
+        adapter(repository=configured.repository)
 
 
 def test_a_missing_file_is_reported(tmp_path: Path) -> None:

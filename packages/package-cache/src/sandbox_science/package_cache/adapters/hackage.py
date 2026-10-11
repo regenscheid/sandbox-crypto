@@ -17,14 +17,17 @@ so the cache serves every file unchanged. Paths below ``/hackage/``:
     request headers lose ``Cache-Control``).
 ``01-index.tar.gz``
     The package index, about 140 MB, revalidated on every request like the
-    metadata that vouches for it. cabal updates its copy with one range request
-    for the end of the file, which the cache answers from the stored copy (206).
+    metadata that vouches for it, and stored byte for byte (``Fetch.exact``).
+    cabal updates its copy with one range request for the end of the file,
+    which the cache answers from the stored copy (206).
 ``package/<name>-<version>.tar.gz`` and ``package/<name>-<version>/<name>-<version>.tar.gz``
     A source distribution: the first form is what cabal requests, the second is
-    where Hackage serves it (it redirects the first). An immutable artifact,
-    fetched from the second form; both share one cache entry. cabal checks it
-    against the length and SHA-256 that the signed index lists for it. The cache
-    does not (docs/PACKAGE-CACHE.md, "Verification").
+    where Hackage serves it (it redirects the first). An artifact, fetched from
+    the second form; both share one cache entry. cabal checks it against the
+    length and SHA-256 that the signed index lists for it. The cache checks
+    only that it is a gzip file, and revalidates it after
+    ``SDIST_REVALIDATION`` with Hackage's ETag, so that a bad download does not
+    stay until it is evicted (docs/PACKAGE-CACHE.md, "Verification").
 
 Names and versions follow Cabal and Hackage: a name is ASCII words of letters
 and digits joined by single hyphens, each word holding at least one letter, and
@@ -43,9 +46,11 @@ from typing import Final
 # The ignore is needed until package_cache ships a py.typed marker; strict pyright
 # otherwise treats the contract module as an untyped library.
 from sandbox_science.package_cache.adapter import (  # pyright: ignore[reportMissingTypeStubs]
+    GZIP_MAGIC,
     Fetch,
     Kind,
     Route,
+    check_base_url,
 )
 
 METADATA_FILES: Final = frozenset({"root.json", "timestamp.json", "snapshot.json", "mirrors.json"})
@@ -53,6 +58,9 @@ METADATA_FILES: Final = frozenset({"root.json", "timestamp.json", "snapshot.json
 
 INDEX: Final = "01-index.tar.gz"
 """The package index that hackage-security downloads and updates."""
+
+SDIST_REVALIDATION: Final = 86400.0
+"""Seconds after which a stored source distribution is revalidated (a conditional request)."""
 
 MAX_NAME_LENGTH: Final = 214
 """Longer package names are refused (Hackage's longest is 58 characters)."""
@@ -65,12 +73,6 @@ _VERSION_RE: Final = re.compile(
 )
 _SDIST_SUFFIX: Final = ".tar.gz"
 _PACKAGE: Final = "package/"
-
-_HOST: Final = r"(?:[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*|\[[0-9A-Fa-f:.]+\])"
-_BASE_URL_RE: Final = re.compile(
-    rf"https://{_HOST}(?::[0-9]{{1,5}})?(?:/[A-Za-z0-9._~-]+)*", re.ASCII
-)
-"""An https base URL to append paths to: no user info, query, fragment or trailing slash."""
 
 
 def is_package_name(name: str) -> bool:
@@ -128,12 +130,7 @@ class HackageAdapter:
     prefix = "hackage"
 
     def __init__(self, *, repository: str) -> None:
-        if _BASE_URL_RE.fullmatch(repository) is None:
-            raise ValueError(
-                "the Hackage repository must be an absolute https URL without user info, "
-                f"query, fragment or trailing slash, not {repository!r}"
-            )
-        self._repository = repository
+        self._repository = check_base_url(repository, "the Hackage repository")
 
     def route(self, path: str, headers: Mapping[str, str]) -> Route:
         """Map a path below ``/hackage/`` to the cache's answer (see the module docstring)."""
@@ -141,7 +138,7 @@ class HackageAdapter:
             return self._index(path)
         if path == INDEX:
             # Stored exactly as published, as the signed snapshot describes it.
-            return self._index(path, headers={"Accept-Encoding": "identity"})
+            return self._index(path, exact=True)
         package_id = parse_sdist_path(path)
         if package_id is None:
             return None
@@ -150,13 +147,17 @@ class HackageAdapter:
             url=f"{self._repository}/{_PACKAGE}{package_id}/{package_id}{_SDIST_SUFFIX}",
             kind=Kind.ARTIFACT,
             immutable=True,
+            # Nothing else is checked: cabal verifies it against the signed index.
+            magic=GZIP_MAGIC,
+            revalidate_after=SDIST_REVALIDATION,
         )
 
-    def _index(self, path: str, *, headers: Mapping[str, str] | None = None) -> Fetch:
+    def _index(self, path: str, *, exact: bool = False) -> Fetch:
         return Fetch(
             key=f"{self.prefix}/{path}",
             url=f"{self._repository}/{path}",
             kind=Kind.METADATA,
-            headers={} if headers is None else headers,
+            exact=exact,
+            magic=GZIP_MAGIC if exact else b"",
             max_age=0,
         )

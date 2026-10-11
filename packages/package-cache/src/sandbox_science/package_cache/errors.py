@@ -61,6 +61,16 @@ class DigestMismatchError(UpstreamError):
     reason: ClassVar[str] = "digest mismatch"
 
 
+class ContentError(UpstreamError):
+    """An upstream body is not the file asked for.
+
+    A file stored byte for byte arrived with a content coding, or a body lacks
+    the magic number its format starts with (an error page sent with 200).
+    """
+
+    reason: ClassVar[str] = "unexpected upstream content"
+
+
 class RewriteError(UpstreamError):
     """The adapter could not rewrite an upstream index body."""
 
