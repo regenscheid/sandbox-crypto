@@ -54,8 +54,11 @@ PROBE_TEXT = 256
 """The longest value the isolation probe reports."""
 MAX_SENTINELS = 8
 SHARED = "shared"
+CONFIG_RECORD = "configured.json"
+"""In the executor's own directory: what ``configure`` wrote, by path and SHA-256."""
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 Message = dict[str, Any]
 Send = Callable[[Message], Awaitable[None]]
@@ -220,6 +223,8 @@ class Executor:
         self.running: dict[str, Running] = {}
         self.kernels: dict[tuple[str, str], Kernel] = {}
         self.tasks: set[asyncio.Task[None]] = set()
+        self.configured: dict[str, str] = {}
+        """Variables from ``configure``, added to every command's and kernel's environment."""
 
     # Plumbing.
 
@@ -249,6 +254,7 @@ class Executor:
         handlers: dict[str, Callable[[Message], Awaitable[None]]] = {
             "hello": self.op_hello,
             "probe": self.op_probe,
+            "configure": self.op_configure,
             "shell": self.op_shell,
             "cell": self.op_cell,
             "cancel": self.op_cancel,
@@ -351,6 +357,7 @@ class Executor:
 
     def environment(self, session: str) -> dict[str, str]:
         env = tool_environment(os.environ, sys.executable, sys.prefix)
+        env.update(self.configured)
         env["SESSION_WORKSPACE"] = str(self.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
         return env
@@ -383,6 +390,45 @@ class Executor:
         facts = await asyncio.to_thread(probe_facts)
         seen = {path: await asyncio.to_thread(sentinel_state, path) for path in paths}
         await self.reply(request, facts=facts, sentinels=seen)
+
+    async def op_configure(self, request: Message) -> None:
+        """Write configuration files, and add variables to every command's and kernel's environment.
+
+        The worker sends the package clients' configuration this way. Files go
+        in ``.executor/config`` or the home directory, and a file's ``variable``
+        names it. A file that differs from what this op last wrote there was
+        changed by someone else, or was never written by it: it is kept, and
+        the reply says so.
+        """
+        raw_files, raw_env = request.get("files", []), request.get("env", {})
+        if not isinstance(raw_files, list) or not isinstance(raw_env, dict):
+            raise ToolError("invalid_request", "files must be a list and env an object")
+        env: dict[str, str] = {}
+        for name, value in cast(dict[object, object], raw_env).items():
+            if not (isinstance(name, str) and _ENV_NAME_RE.fullmatch(name)):
+                raise ToolError("invalid_request", f"invalid variable name {name!r}")
+            if not isinstance(value, str) or "\x00" in value:
+                raise ToolError("invalid_request", f"invalid value for {name}")
+            env[name] = value
+        state = self.root / ".executor"
+        files: list[tuple[Path, str, str | None]] = []
+        for item in cast(list[object], raw_files):
+            fields = cast(dict[str, object], item) if isinstance(item, dict) else {}
+            base, path, content = fields.get("base"), fields.get("path"), fields.get("content")
+            variable = fields.get("variable")
+            if base not in ("config", "home") or not isinstance(content, str):
+                raise ToolError("invalid_request", "a file needs a base and string content")
+            if variable is not None and not (
+                isinstance(variable, str) and _ENV_NAME_RE.fullmatch(variable)
+            ):
+                raise ToolError("invalid_request", f"invalid variable name {variable!r}")
+            if not isinstance(path, str) or path == ".":
+                raise ToolError("invalid_request", f"invalid path {path!r}")
+            directory = state / "config" if base == "config" else Path.home()
+            files.append((directory / check_relative(path), content, variable))
+        written, skipped, pointers = await asyncio.to_thread(write_config_files, state, files)
+        self.configured = {**env, **pointers}
+        await self.reply(request, written=written, skipped=skipped)
 
     def accept(self, request: Message, kind: str) -> Running:
         execution = request.get("execution")
@@ -904,6 +950,78 @@ def _cpu_flag(flag: str) -> bool | None:
     except OSError:
         return None
     return None
+
+
+def write_config_files(
+    state: Path, files: list[tuple[Path, str, str | None]]
+) -> tuple[list[str], list[Message], dict[str, str]]:
+    """Write ``configure``'s files: (paths written, files kept with the reason, variables).
+
+    ``state`` holds the record of what was written, by path and SHA-256, so a
+    file changed since is recognized and kept. Each variable names its file,
+    once the file is there.
+    """
+    record_path = state / CONFIG_RECORD
+    try:
+        loaded: object = json.loads(record_path.read_text())
+    except (OSError, ValueError):
+        loaded = {}
+    record = cast(dict[str, object], loaded) if isinstance(loaded, dict) else {}
+    written: list[str] = []
+    skipped: list[Message] = []
+    variables: dict[str, str] = {}
+    for target, content, variable in files:
+        data = content.encode()
+        digest = hashlib.sha256(data).hexdigest()
+        try:
+            changed, reason = _write_config_file(target, data, digest, record.get(str(target)))
+        except OSError as exc:
+            changed, reason = False, f"cannot write it: {exc}"
+        if reason is not None:
+            skipped.append({"path": str(target), "reason": reason})
+        else:
+            record[str(target)] = digest
+            if changed:
+                written.append(str(target))
+        if variable is not None and target.is_file():
+            variables[variable] = str(target)
+    try:
+        _replace_file(record_path, json.dumps(record, indent=1).encode())
+    except OSError as exc:
+        skipped.append({"path": str(record_path), "reason": f"cannot write it: {exc}"})
+    return written, skipped, variables
+
+
+def _write_config_file(
+    target: Path, data: bytes, digest: str, recorded: object
+) -> tuple[bool, str | None]:
+    """Write ``data`` unless another file is there: (whether it wrote, why it kept the file)."""
+    if target.is_symlink() or (target.exists() and not target.is_file()):
+        return False, "it is not a regular file"
+    if target.exists():
+        current = hashlib.sha256(target.read_bytes()).hexdigest()
+        if current == digest:
+            return False, None
+        if current != recorded:
+            if recorded is None:
+                return False, "the executor did not write it"
+            return False, "it changed after the executor wrote it"
+    _replace_file(target, data)
+    return True, None
+
+
+def _replace_file(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(dir=target.parent, prefix=".configure-")
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
 
 
 def group_members(pgid: int) -> list[int]:
