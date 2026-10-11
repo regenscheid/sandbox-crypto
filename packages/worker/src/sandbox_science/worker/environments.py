@@ -71,8 +71,7 @@ from sandbox_science.policy.openshell import (
     compile_sandbox,
     load_targets,
 )
-from sandbox_science.policy_middleware.errors import StoreError
-from sandbox_science.policy_middleware.store import PolicyStore
+from sandbox_science.policy.store import PolicyStore, StoreError
 
 from .errors import WorkerError
 from .settings import EnvironmentSettings, OpenShellBackendSettings

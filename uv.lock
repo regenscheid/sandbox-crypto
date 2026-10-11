@@ -1639,7 +1639,6 @@ dependencies = [
     { name = "aiohttp" },
     { name = "sandbox-science-contracts" },
     { name = "sandbox-science-policy" },
-    { name = "sandbox-science-policy-middleware" },
 ]
 
 [package.optional-dependencies]
@@ -1659,7 +1658,6 @@ requires-dist = [
     { name = "pdf-oxide", marker = "extra == 'pdf'", specifier = ">=0.3.78" },
     { name = "sandbox-science-contracts", editable = "packages/contracts" },
     { name = "sandbox-science-policy", editable = "packages/policy" },
-    { name = "sandbox-science-policy-middleware", editable = "packages/policy-middleware" },
 ]
 provides-extras = ["kernels", "pdf"]
 
