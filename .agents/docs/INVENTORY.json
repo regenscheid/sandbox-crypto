@@ -122,6 +122,12 @@
       "category": "runtime-validation",
       "bytes": 3759,
       "sha256": "c7394d9b1cafe71ce59dd7c777885a39ed27bd4cd99545a70e3b83580ef78657"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-16-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 5033,
+      "sha256": "ceb1f695ccf3e849d5a541a0a4b5b3d1dad4ff70e897288e952f24fae3478366"
     }
   ]
 }
