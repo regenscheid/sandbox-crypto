@@ -1048,3 +1048,20 @@ async def test_a_failed_suspension_leaves_the_others_to_go_on(setup: Setup) -> N
     setup.environments.cli.run = flaky  # type: ignore[method-assign]
     assert await suspender.check() == ["env-b"]
     assert setup.environments.get("env-a").state is EnvironmentState.READY
+
+
+async def test_admission_notices_say_what_was_admitted_and_refused(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    before = datetime.now(UTC)
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    setup.fake.draft(info.sandbox, "pypi.org:443")
+    watcher = DraftWatcher(setup.environments, 1.0)
+    await watcher.check("env-1", info.sandbox)
+    notices = [text for _, text in setup.environments.notices("env-1", before)]
+    assert notices[0].startswith("eprint.iacr.org was admitted on demand")
+    assert notices[1].startswith("pypi.org:443 was not admitted: ")
+    seen = max(at for at, _ in setup.environments.notices("env-1", before))
+    # Another program for an admitted host is no news.
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443", "/usr/bin/wget")
+    await watcher.check("env-1", info.sandbox)
+    assert setup.environments.notices("env-1", seen) == []

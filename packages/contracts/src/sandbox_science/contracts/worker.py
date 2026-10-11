@@ -340,6 +340,9 @@ class Result(Contract):
     """The environment's revision when the attempt ended. It differs from the location's
     when the installed packages changed while it ran, which it or an attempt running
     beside it did."""
+    notices: tuple[str, ...] = ()
+    """What the platform did for the environment since the session's previous result, such
+    as admitting a host that a connection was refused for (D69)."""
 
 
 class Execution(Contract):

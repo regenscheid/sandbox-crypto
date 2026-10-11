@@ -167,6 +167,9 @@ class _Environment:
     """When the worker last asked anything of the environment, by the monotonic clock."""
 
 
+Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
+
+
 @dataclass(frozen=True)
 class Activity:
     """What an environment is doing, as the worker sees it, for idle suspension (W3)."""
@@ -217,6 +220,9 @@ class ExecutionManager:
         self._channels: set[ExecutorChannel] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closing = False
+        self.notices: Notices | None = None
+        """Admission notices for an environment since a time; the environments set it."""
+        self._noticed: dict[tuple[str, str], datetime] = {}
 
     async def start(self) -> None:
         """Report attempts a previous run left unfinished as lost.
@@ -810,7 +816,26 @@ class ExecutionManager:
             written_files_truncated=raw.get("written_files_truncated") is True
             or len(paths) > MAX_WRITTEN,
             environment_revision=self._revision_after(environment_id, live, raw),
+            notices=self._notices(environment_id, live),
         )
+
+    def _notices(self, environment_id: str, live: _Live) -> tuple[str, ...]:
+        """Admission notices the session has not seen, each once (D69).
+
+        A session's first result starts from its submission; later ones from the last
+        notice it received, since decisions are stamped when they are recorded.
+        """
+        if self.notices is None:
+            return ()
+        key = (environment_id, live.execution.context.session_id)
+        since = self._noticed.get(key, live.execution.submitted_at)
+        try:
+            fresh = self.notices(environment_id, since)
+        except Exception:
+            _log.exception("could not read the admission notices of %s", environment_id)
+            return ()
+        self._noticed[key] = max([since, *(at for at, _ in fresh)])
+        return tuple(text for _, text in fresh)
 
     def _located(self, environment_id: str, environment: _Environment) -> Location | None:
         """The environment's location, with its current revision."""

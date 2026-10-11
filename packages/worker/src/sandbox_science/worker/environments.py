@@ -86,6 +86,8 @@ _POLICY_TIMEOUT: Final = 120
 MAX_POLICY_YAML: Final = 320 * 1024
 """The largest compiled policy, as YAML, that admission grows to. OpenShell limits a
 sandbox's policy to 256 KiB as protobuf, which is smaller than its YAML."""
+MAX_NOTICES: Final = 10
+"""Admission notices one result carries at most; the newest are kept."""
 MAX_RECORDED: Final = 512
 """Decisions kept per environment: every admitted one, then the newest refusals."""
 
@@ -225,8 +227,14 @@ class EnvironmentRecords:
         return [info for info in infos if info.state is EnvironmentState.READY]
 
     def decide(self, environment_id: str, admissions: Iterable[Admission]) -> None:
-        """Record decisions on hosts, replacing earlier ones for the same host and port."""
+        """Record decisions on hosts, replacing earlier ones for the same host and port.
+
+        Each is stamped with the time it is recorded, so that a reader of decisions
+        made after a time never misses one recorded later.
+        """
         with self._lock:
+            now = datetime.now(UTC)
+            admissions = [replace(admission, decided_at=now) for admission in admissions]
             self._db.executemany(
                 "INSERT INTO admissions"
                 " (environment_id, host, port, admitted, reason, decided_at)"
@@ -257,6 +265,10 @@ class EnvironmentRecords:
         """Drop an environment's decisions, when its sandbox is deleted."""
         with self._lock:
             self._db.execute("DELETE FROM admissions WHERE environment_id = ?", (environment_id,))
+
+    def decided_since(self, environment_id: str, since: datetime) -> list[Admission]:
+        """An environment's decisions made after ``since``, oldest first."""
+        return [a for a in self.admissions(environment_id) if a.decided_at > since]
 
     def admissions(self, environment_id: str) -> list[Admission]:
         """An environment's decisions, oldest first."""
@@ -503,6 +515,24 @@ class Environments:
             self.records.save(deleted)
             _log.info("deleted sandbox %s of environment %s", info.sandbox, environment_id)
             return deleted
+
+    def notices(self, environment_id: str, since: datetime) -> list[tuple[datetime, str]]:
+        """What admission decided for the environment after ``since``, for the agent (D69).
+
+        Each notice comes with the time its decision was recorded. A host admitted
+        again for another program is no news, and is left out.
+        """
+        notices: list[tuple[datetime, str]] = []
+        for decision in self.records.decided_since(environment_id, since):
+            host = printable(decision.host)
+            if decision.admitted and decision.reason == "admitted":
+                text = f"{host} was admitted on demand: connections to it work now"
+            elif not decision.admitted:
+                text = f"{host}:{decision.port} was not admitted: {printable(decision.reason, 300)}"
+            else:
+                continue
+            notices.append((decision.decided_at, text))
+        return notices[-MAX_NOTICES:]
 
     async def suspend(self, environment_id: str, idle_since: float) -> bool:
         """Stop a ready environment's sandbox, unless the environment was used since then.

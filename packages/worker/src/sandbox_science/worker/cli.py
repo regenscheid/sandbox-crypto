@@ -99,6 +99,7 @@ async def serve(settings: Settings) -> None:
     if environments is not None:
         environments.release = manager.release
         environments.release_idle = manager.release_if_idle
+        manager.notices = environments.notices
     # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
     # attempts still running are stored as lost.
     stopping = asyncio.Event()

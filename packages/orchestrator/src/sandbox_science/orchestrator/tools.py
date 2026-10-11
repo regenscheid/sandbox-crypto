@@ -547,6 +547,8 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
             summary["kernel_generation"] = result.kernel.generation
         if result.state_lost:
             summary["state_lost"] = "the kernel restarted before this cell; earlier state is gone"
+        if result.notices:
+            summary["platform_notices"] = [_bound(notice, limit) for notice in result.notices]
     if execution.location is not None:
         summary["ran_on"] = {
             "sandbox": execution.location.sandbox_id,
