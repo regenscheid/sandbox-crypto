@@ -96,7 +96,14 @@ images/build.sh crypto-base
 - **Options.** Further arguments go to `docker buildx build`, such as `--no-cache` or `--build-arg G6K_MARCH_AMD64=x86-64-v2`. `PLATFORM` sets the platform (default `linux/amd64`) and `BUILDER` a buildx builder.
 - **Rebuilds** install the same packages; they are not bit-for-bit identical.
 
-On babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `docker` driver), build times from empty caches depend mostly on snapshot.ubuntu.com, which served several MB/s for the first builds on 2026-10-11 and 0.25 MB/s half an hour later:
+Built on babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `docker` driver) on 2026-10-11, from recipe revision `02f85b3`; both are in babbage's local image store:
+
+| Image | Digest | Compressed | Unpacked |
+| --- | --- | --- | --- |
+| `sandbox-science/minimal:02f85b3` | `sha256:88fab78766c9828abed9ea0198edae6513955fd22287f95819685ad5291eb9c6` | 135 MB | 374 MB |
+| `sandbox-science/crypto-base:02f85b3` | `sha256:cb12bbbe588f20e555d39385ffd56f7b45312fdd69b3bd8030278db555d0df4b` | 2.34 GB | 6.2 GB |
+
+Build times from empty caches depend mostly on snapshot.ubuntu.com, which served several MB/s for the first builds and 0.25 MB/s half an hour later:
 
 | Step | Time |
 | --- | --- |
@@ -142,6 +149,13 @@ The checks start the worker's executor as the OpenShell backend does (`python -I
 | `runtime-install` | micromamba and pip install a package into the prefix (needs conda-forge and PyPI; `NETWORK=0` skips it) |
 
 `images/tests/test_images.py` runs the same checks from pytest, one test per check and mode. It runs only when `SS_IMAGE_TESTS` names images Docker can see, such as `SS_IMAGE_TESTS="sandbox-science/minimal:abc1234 sandbox-science/crypto-base:abc1234" uv run pytest images`; CI skips it. `images/tests/test_recipes.py` runs in CI: it checks the pins, the lockfiles, the declared filesystem section against the compiler's model, and the license helpers.
+
+Results on babbage, 2026-10-11, for the images above:
+
+- **minimal** passed all 17 checks (8 as a container, 9 under the Landlock ruleset) in 12 s.
+- **crypto-base** passed all 35 (17 and 18) in 45 s. The first Sage cell, with the kernel's start, took 2.3 s; the primal uSVP estimate for Kyber512 came out at 2^143.8, as lattice-estimator's documentation gives.
+- **pytest** ran the same as 52 tests in 56 s.
+- **Under the ruleset without `/var/lib/texmf`**, pdflatex could not find its format file, so that path stays in the section. Nothing beyond OpenShell's baseline, the compiler's devices and the two declared paths was needed: Sage's pseudo-terminal interfaces, `multiprocessing`, runtime installs and the PDF tools all worked.
 
 ## arm64
 
