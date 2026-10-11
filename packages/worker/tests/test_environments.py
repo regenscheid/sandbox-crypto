@@ -1684,3 +1684,38 @@ async def test_the_backend_never_resolves_without_knowing_the_workers_environmen
     backend = cli_backend(settings, setup.environments)
     assert isinstance(backend, OpenShellBackend)
     assert backend.manages is not None
+
+
+async def test_hosts_are_admitted_ahead_of_use(api: Api) -> None:
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+    path = "/v1/environments/env-a/admissions"
+    body = {"hosts": [{"host": "EPrint.iacr.org"}, {"host": "pypi.org"}, {"host": "printer.local"}]}
+    status, result = await api.call("POST", path, A_TOKEN, body)
+    assert status == 200, result
+    assert {(d["host"], d["port"], d["admitted"]) for d in result["decisions"]} == {
+        ("eprint.iacr.org", 443, True),
+        ("pypi.org", 443, False),
+        ("printer.local", 443, False),
+    }
+    assert result["environment"]["admitted_hosts"] == ["eprint.iacr.org"]
+    # One revision for the batch, and none when nothing new is admitted.
+    assert len(api.setup.fake.calls("policy", "set")) == 1
+    assert (await api.call("POST", path, A_TOKEN, body))[0] == 200
+    assert len(api.setup.fake.calls("policy", "set")) == 1
+    assert await api.refused("POST", path, B_TOKEN, body) == (404, "not_found")
+    too_many = {"hosts": [{"host": f"h{index}.example.org"} for index in range(33)]}
+    assert await api.refused("POST", path, A_TOKEN, too_many) == (400, "invalid_request")
+    status, offered = await api.call("GET", "/v1/capabilities?environment_id=env-a", A_TOKEN)
+    assert (status, "admission" in offered["features"]) == (200, True)
+    # A suspended environment is started first.
+    environments = api.setup.environments
+    environments.release_idle = always
+    assert await environments.suspend("env-a", time.monotonic())
+    status, resumed = await api.call(
+        "POST", path, A_TOKEN, {"hosts": [{"host": "www.iacr.org", "port": 443}]}
+    )
+    assert status == 200, resumed
+    assert resumed["environment"]["state"] == "ready"
+    assert resumed["decisions"][0]["admitted"]
+    environments.settings = environments.settings.model_copy(update={"admission": False})
+    assert await api.refused("POST", path, A_TOKEN, body) == (422, "unsupported")

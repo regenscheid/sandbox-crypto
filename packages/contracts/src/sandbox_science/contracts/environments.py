@@ -10,14 +10,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Final
 
-from pydantic import StringConstraints
+from pydantic import Field, StringConstraints
 
 from .model import Contract, Identifier
 
 PolicyRevision = Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
 """A project policy revision: ``sha256:`` and the hex SHA-256 of the policy file's bytes."""
+
+MAX_ADMISSION_HOSTS: Final = 32
+"""The most hosts one admission request may name."""
 
 
 class EnvironmentState(StrEnum):
@@ -65,3 +68,36 @@ class EnvironmentInfo(Contract):
     them, which the sandbox can resolve only once admitted."""
     created_at: datetime
     updated_at: datetime
+
+
+class HostPort(Contract):
+    """A host some code is about to contact, and the port, 443 unless given."""
+
+    host: Annotated[str, StringConstraints(min_length=1, max_length=253)]
+    port: Annotated[int, Field(ge=1, le=65535)] = 443
+
+
+class AdmissionRequest(Contract):
+    """Ask the worker to admit hosts before code contacts them (D69).
+
+    The worker decides each host as it decides one a sandbox could not reach, and
+    names the admissible ones in one new compilation of the environment's policy.
+    """
+
+    hosts: tuple[HostPort, ...] = Field(min_length=1, max_length=MAX_ADMISSION_HOSTS)
+
+
+class AdmissionDecision(Contract):
+    host: str
+    """The host as the worker decided it: normalized, lower case."""
+    port: int
+    admitted: bool
+    """Whether code in the environment can now reach the host on this port, if the policy
+    allows the request it makes."""
+    reason: str
+    """``admitted``, or why the host was refused."""
+
+
+class AdmissionResult(Contract):
+    decisions: tuple[AdmissionDecision, ...]
+    environment: EnvironmentInfo
