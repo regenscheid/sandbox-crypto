@@ -378,7 +378,10 @@ async def test_configure_refuses_malformed_requests(
     reply = await configure(executor, replies, **request_fields)
     assert reply["ok"] is False
     assert reply["error"]["kind"] == "invalid_request"
-    assert not (tmp_path / "project" / ".executor").exists()
+    # The executor's state directory holds its package-command wrappers from the start.
+    state = tmp_path / "project" / ".executor"
+    assert not (state / "config").exists()
+    assert not (state / "configured.json").exists()
     assert list(home.iterdir()) == []
     assert executor.configured == {}
 

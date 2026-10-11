@@ -27,7 +27,12 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
-from sandbox_science.contracts import EnvironmentRequest, EnvironmentState, ErrorKind
+from sandbox_science.contracts import (
+    EnvironmentRequest,
+    EnvironmentState,
+    ErrorKind,
+    PackageCommand,
+)
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
 from sandbox_science.worker import environments as environments_module
@@ -1484,6 +1489,140 @@ async def test_sandboxes_made_by_hand_are_the_pools_alone(
     finally:
         await manager.close()
         manager.store.close()
+
+
+async def test_a_new_environment_starts_a_history_of_its_own(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    # Review of package commands (2026-10-11), M3: the pool's own token ran package
+    # commands for p1 in a sandbox made by hand, "lab"; once the operator retired it, a
+    # client of p2 created "lab" and read p1's commands, attempts and lockfiles (D78).
+    setup = Setup(tmp_path, sandboxes={"lab": "research-1"})
+    api, manager = await start_api(setup, aiohttp_client, tmp_path / "worker-api")
+    credential = "test-secret-p1-index-password"
+    index = f"--index-url=https://p1user:{credential}@private.p1.example/simple"
+    command = PackageCommand(argv=("pip", "install", index, "p1-tool"), via="wrapper")
+    lockfile = manager.revisions.prepare({"pip": [{"name": "p1-tool", "version": "4.2"}]})
+    assert lockfile is not None
+    manager.revisions.observe("lab", "a" * 32)
+    manager.revisions.observe(
+        "lab",
+        "b" * 32,
+        "att-0123456789abcdef01234567",
+        managed=True,
+        commands=(command,),
+        lockfile=lockfile,
+    )
+    await manager.close()
+    manager.store.close()
+    setup = Setup(tmp_path)  # the sandbox made by hand is retired
+    api, manager = await start_api(setup, aiohttp_client, tmp_path / "worker-api")
+    try:
+        setup.environments.records.grant("p2", setup.policy)
+        status, created = await api.call(
+            "POST", "/v1/environments", B_TOKEN, api.environment("lab", project_id="p2")
+        )
+        assert status == 201, created
+        for token in (B_TOKEN, TOKEN):
+            status, history = await api.call("GET", "/v1/environments/lab/revisions", token)
+            assert (status, history["revisions"]) == (200, []), token
+            path = "/v1/environments/lab/revisions/1/lockfile"
+            assert await api.refused("GET", path, token) == (404, "not_found"), token
+        assert not manager.revisions.blobs.path(lockfile.ref.sha256).exists()
+        # What it records from now on is its own.
+        manager.revisions.observe("lab", "c" * 32)
+        status, history = await api.call("GET", "/v1/environments/lab/revisions", B_TOKEN)
+        assert [entry["fingerprint"] for entry in history["revisions"]] == ["c" * 32]
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_review2_m1_a_deleted_environment_takes_its_revisions_and_lockfiles_along(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    # Second review of package commands (2026-10-11), M1: revisions were forgotten only
+    # when an ID was created again, so each environment ever created kept up to 64 MiB of
+    # lockfiles and 500 revisions.
+    api, manager = await start_api(setup, aiohttp_client, tmp_path / "worker-api")
+    blobs = tmp_path / "worker-api" / "lockfiles" / "blobs"
+    try:
+        setup.environments.records.grant("p1", setup.policy)
+        for environment in ("env-a", "env-b"):
+            status, created = await api.call(
+                "POST", "/v1/environments", A_TOKEN, api.environment(environment)
+            )
+            assert status == 201, created
+            for index in range(3):
+                lockfile = manager.revisions.prepare(
+                    {"pip": [{"name": f"{environment}-p{index}", "version": "1.0"}]}
+                )
+                assert lockfile is not None
+                manager.revisions.observe(environment, f"{index + 1:032x}", lockfile=lockfile)
+        assert len(list(blobs.glob("*/*"))) == 6
+        status, deleted = await api.call("DELETE", "/v1/environments/env-a", A_TOKEN)
+        assert (status, deleted["state"]) == (200, "deleted"), deleted
+        assert manager.revisions.history("env-a").revisions == ()
+        assert manager.store.lockfiles("env-a") == []
+        assert len(list(blobs.glob("*/*"))) == 3  # env-b's stay
+        assert len(manager.revisions.history("env-b").revisions) == 3
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_review3_l2_an_environment_the_worker_gives_up_forgets_its_revisions(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    # Third review of package commands (2026-10-11), L2: an environment the worker gave up
+    # itself, its sandbox gone or come back as another, was marked deleted with its
+    # revisions and lockfiles kept.
+    api, manager = await start_api(setup, aiohttp_client, tmp_path / "worker-api")
+    blobs = tmp_path / "worker-api" / "lockfiles" / "blobs"
+    try:
+        setup.environments.records.grant("p1", setup.policy)
+        status, created = await api.call(
+            "POST", "/v1/environments", A_TOKEN, api.environment("env-1")
+        )
+        assert status == 201, created
+        for index in range(3):
+            lockfile = manager.revisions.prepare({"pip": [{"name": f"p{index}", "version": "1.0"}]})
+            assert lockfile is not None
+            manager.revisions.observe("env-1", f"{index + 1:032x}", lockfile=lockfile)
+        state = setup.fake.read()
+        state["sandboxes"][created["sandbox"]]["id"] = "another-sandbox"
+        setup.fake.write(state)
+        with pytest.raises(WorkerError):
+            await setup.environments.resume("env-1")
+        assert setup.environments.get("env-1").state is EnvironmentState.DELETED
+        assert manager.revisions.history("env-1").revisions == ()
+        assert list(blobs.glob("*/*")) == []
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_each_one_told_of_deletions_hears_of_a_given_up_environment(setup: Setup) -> None:
+    # The shared files' sync, too, forgets an environment the worker gives up (D79).
+    told: list[tuple[str, str]] = []
+
+    async def first(environment_id: str) -> None:
+        told.append(("first", environment_id))
+
+    async def second(environment_id: str) -> None:
+        told.append(("second", environment_id))
+
+    setup.environments.deleted.extend([first, second])
+    info, _ = await setup.environments.create(setup.request())
+    state = setup.fake.read()
+    state["sandboxes"][info.sandbox]["id"] = "another-sandbox"
+    setup.fake.write(state)
+    with pytest.raises(WorkerError):
+        await setup.environments.resume("env-1")
+    assert told == [("first", "env-1"), ("second", "env-1")]
+    await setup.environments.create(setup.request("env-2"))
+    await setup.environments.delete("env-2")
+    assert told[2:] == [("first", "env-2"), ("second", "env-2")]
 
 
 async def test_a_known_environment_never_falls_back_to_a_sandbox_made_by_hand(

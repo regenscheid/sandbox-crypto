@@ -1,6 +1,6 @@
 # Automatic Conda provisioning
 
-Date: 2026-10-11. **Status: Approved for implementation as drafted (2026-10-11, by the user).** Shell installs go through wrappers (open question 1), and new executions wait while packages link (7); the other open questions are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Approved for implementation as drafted (2026-10-11, by the user).** Shell installs go through wrappers (open question 1), and new executions wait while packages link (7); the other open questions are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md). The worker implements the first slice: shell and kernel installs take turns through wrappers (CP-4, CP-11), executions wait while one runs (CP-12), and each change is a revision with a lockfile (CP-16, CP-18, CP-19; [worker](../WORKER.md#package-commands)), which settled open question 2. The provisioning tool and the rest are not built yet.
 
 ## Scope
 
@@ -24,6 +24,8 @@ Terms:
 - CP-2. A capability request checks first. If the capability's probe passed at the current revision, nothing is installed, and the result names the packages and the probe record that satisfy it ([monitoring](../MONITORING.md), Conda workflow step 2).
 - CP-3. A versioned capability catalog maps capabilities to conda-forge package specs and probes (new). Each operation records the catalog revision it used. Requests for packages outside the catalog are allowed under policy; their default probe is an import or version check.
 - CP-4. Package-manager commands run from the shell or a kernel against the managed prefix (`conda`, `mamba`, `micromamba`, `pip`, `uv pip`) go through wrappers that the environment layer installs. The wrappers hand the command to the environment manager, so it is queued and recorded like a tool request (new). A change to the prefix that no operation explains, detected after each execution, is recorded as an *unmanaged* revision caused by that attempt and flagged in the GUI (new).
+  - The wrappers come first on `PATH`, and a `sitecustomize` hook covers the same managers run by the environment's Python as modules (`python -m pip`, IPython's `%pip`). A command that may change the environment (`install`, `uninstall`, `update`, `remove` and the like) takes its turn; one that only reads (`pip list`) runs at once. Until the environment manager exists, a wrapped command runs where it was started, in its turn, and is recorded as a managed revision without the decision, dry-run and probe steps (settled 2026-10-11).
+  - A manager run by its full path, or by a Python that ignores `PYTHONPATH` (`python -I`), bypasses the wrappers; its change is the unmanaged revision above. An unmanaged change found when an execution starts was made before it, and names no attempt.
 - CP-5. System packages (`apt` and similar) cannot be installed at runtime. A request that needs one fails with `base_image_change_required` and names the dependency (D48).
 
 ### Decide
@@ -37,7 +39,9 @@ Terms:
 
 - CP-10. Solving, downloading, linking, post-link scripts and any pip or build steps MUST run inside the target environment's sandbox, under the same policy, network path and resource limits as its other executions (D16; implementation plan W2). The environment layer points the clients at the cache ([package cache](../PACKAGE-CACHE.md#client-configuration)).
 - CP-11. Operations on one environment are serialized in request order; waiting operations are visible as a queue. Operations on different environments are independent ([projects and sessions](../PROJECTS-AND-SESSIONS.md), W3).
+  - Shell and kernel installs take the environment's lock in the order they came, as far as the kernel's file locks keep it. The queue is not visible yet.
 - CP-12. While an operation links packages, new executions in that environment wait; executions already running continue and are marked as overlapping the change (new). Every execution records the revision current at its start, and a kernel also records the revision at its own start. After a revision change, the agent and the GUI are told which running kernels predate it (new).
+  - An execution waits at most its own time limit, which covers the wait; still waiting then, it ends `timed_out` without running and names the operation it waited for. The revision at its start is the one after the wait. It overlaps a change when its start and end revisions differ, or when an operation still held the lock as it ended (settled 2026-10-11).
 - CP-13. A failed operation leaves the environment at its previous revision. A failure before linking leaves the prefix untouched (outcome `failed`). A failure during linking or in a post-link script restores the previous revision, from a volume snapshot or by rebuilding from its lockfile (outcome `rolled_back`, D48). If restoring fails, the environment becomes `needs_recovery` and refuses executions until it is rebuilt. It MUST NOT be left silently in a mixed state (new).
 - CP-14. Installs have wall-time and disk limits from the policy's resources and can be cancelled like any execution ([tools](tools.md)); a cancelled install follows CP-13.
 - CP-15. pip inside the Conda environment is allowed through the cache under the `pypi` action. Falling back from Conda to pip for a package conda-forge lacks is recorded as a fallback, with the reason (monitoring, Conda workflow step 4).
@@ -50,10 +54,14 @@ Terms:
   - the decisions: policy revision, matched rules and permission requests;
   - the installed files with version, build, channel, SHA-256 and license, and the installer versions;
   - a lockfile for the new revision and the logs, both stored as artifacts; timings; the worker attempt that ran it.
+  - Until the provisioning tool exists, a revision made by shell or kernel installs records the package commands that made it (the last 8) and a lockfile the executor writes, which the worker keeps in a store of its own rather than as an artifact. Since research code can write what the executor reports, each environment keeps its newest 500 revisions and the lockfiles of its newest 50, in 64 MiB at most ([worker](../WORKER.md#package-commands)). Settled by the user (2026-10-11), with one rule to come once results record their lineage ([research artifacts](research-artifacts.md)): a lockfile that a recorded result's lineage names is never dropped.
 - CP-17. Failed, denied and cancelled operations are recorded with the same request data, the stage where they stopped (resolve, permission, download, link, post-link, probe) and the error. The revision does not advance.
 - CP-18. Lockfiles identify packages by channel, subdir, file name and SHA-256, never by the cache's address, so the environment can be rebuilt in another pool (new; [package cache](../PACKAGE-CACHE.md#planned), lockfiles that travel).
+  - A lockfile is the platform's own JSON (`Lockfile`): each Conda package by name, version, build, channel name, subdir, file name, SHA-256, MD5 and license, then each distribution pip or uv installed by name, version and installer, with its URL and SHA-256 for a direct-URL install. A rebuild in a pool turns it into an explicit spec with that pool's channel alias (settles open question 2).
 - CP-19. The `EnvironmentRecord` points at the current revision and its lockfile, and every execution records the revision it ran under. A dedicated session environment has its own history starting from the base image (D22). Installs into the project environment never change it, nor the reverse (D21).
+  - An environment's history starts when the worker creates it: revisions recorded under its ID before, by a sandbox made by hand or an earlier environment of the ID, are not its own (D78).
 - CP-20. Uninstalling, upgrading and returning to an earlier revision use the same request, decision, record and probe flow. Returning to revision *n* creates a new revision whose lockfile equals revision *n*'s (new).
+  - Returning to revision *n* needs its lockfile, which the worker keeps as CP-16 says: those of an environment's newest 50 revisions and, once results record their lineage, every one a recorded result's lineage names (settled by the user, 2026-10-11, with that rule to come).
 
 ### Probe
 
@@ -126,13 +134,13 @@ Terms:
 
 ## Open questions
 
-1. Shell-invoked installs: route them through wrappers (proposed, CP-4), or refuse them and require the provisioning tool?
-2. Lockfile format: an explicit spec with SHA-256 digests, conda-lock or pixi? D48 assumes one exists.
+1. Shell-invoked installs: route them through wrappers (proposed, CP-4), or refuse them and require the provisioning tool? Settled 2026-10-11: wrappers.
+2. Lockfile format: an explicit spec with SHA-256 digests, conda-lock or pixi? D48 assumes one exists. Settled 2026-10-11: an explicit lockfile of the platform's own, in JSON (CP-18). conda-lock needs a URL and hash for every pip entry, which an index install does not record, and an explicit spec names a host.
 3. One permission request per resolved install (CP-8) needs escalation grants in the policy middleware. Is a per-install grant the right unit for the user?
 4. Restoring the previous revision after a failed link: volume snapshot or rebuild from the lockfile? W3 chooses.
 5. Where do AGPL exceptions live: the policy's `packages` section, or the environment profile?
 6. May skill packs and project profiles extend the capability catalog, or only the platform?
-7. Should new executions wait during linking (proposed, CP-12), or run with a warning?
+7. Should new executions wait during linking (proposed, CP-12), or run with a warning? Settled 2026-10-11: they wait.
 
 ## Sources
 
