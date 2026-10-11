@@ -13,8 +13,10 @@ For each request the proxy:
 6. applies its own checks: parameters within ``mcp.proxy.max_argument_bytes``,
    no credential placeholders, and for ``tools/call`` a tool name the server
    advertised, exactly;
-7. holds escalations (recorded, then refused with ``approval_required``),
-   records alerts before they proceed, and forwards the rest;
+7. holds escalations (recorded, then refused with ``approval_required``;
+   ``audit_unavailable`` if the record cannot be stored, since there is then
+   no request to approve), records alerts before they proceed, and forwards
+   the rest;
 8. answers with the server's response, binary content withheld, and records
    the call.
 
@@ -520,7 +522,14 @@ class McpProxy:
             # The library refuses tools/call without a string name, so call.tool is set.
             await self._check_advertised(loaded, session, target, call.tool or "")
         if decision.action is Action.ESCALATE:
-            await self._record_finding("escalation", call, decision)
+            try:
+                await self._events.record("escalation", call.finding(decision))
+            except Exception as exc:
+                # No permission request exists, so the caller must not wait for an approval.
+                _log.exception("could not record an escalation")
+                raise RefusalError(
+                    AUDIT_UNAVAILABLE, "the permission request could not be recorded"
+                ) from exc
             raise RefusalError(APPROVAL_REQUIRED, decision.reason)
         if decision.action is Action.ALERT:
             try:
@@ -672,13 +681,6 @@ class McpProxy:
             raise UpstreamError(UPSTREAM_ERROR, "the server's error uses a code the proxy reserves")
         call.outcome = "server_error"
         return _server_answer({"jsonrpc": "2.0", "id": request_id, "error": error})
-
-    async def _record_finding(self, kind: str, call: Call, decision: Decision) -> None:
-        try:
-            await self._events.record(kind, call.finding(decision))
-        except Exception:
-            # The call is refused anyway; the log keeps what the store could not.
-            _log.exception("could not record %s for a call to %s", kind, call.server)
 
     async def _audit(self, call: Call) -> None:
         try:
