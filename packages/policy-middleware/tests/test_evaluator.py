@@ -562,6 +562,39 @@ def test_requests_to_hosts_with_a_bound_credential_count_as_credentialed(
     assert sink.events[0]["escalation"] == {"timeout_seconds": 1800, "on_timeout": on_timeout}
 
 
+@pytest.mark.parametrize(
+    ("scheme", "host", "port", "refused"),
+    [
+        pytest.param("http", "example.org", 443, True, id="plain-http-to-the-credential-port"),
+        pytest.param("http", "EXAMPLE.org.", 443, True, id="normalized-host"),
+        pytest.param("https", "example.org", 443, False, id="https"),
+        pytest.param("http", "example.org", 80, False, id="port-80-carries-no-credential"),
+        pytest.param("http", "example.net", 443, False, id="unbound-host"),
+    ],
+)
+def test_plain_http_to_a_credential_port_is_refused(
+    store: PolicyStore,
+    sandbox_id: str,
+    sink: Sink,
+    make_facts: FactsFactory,
+    policy_config: Callable[[LoadedPolicy], dict[str, object]],
+    scheme: str,
+    host: str,
+    port: int,
+    refused: bool,
+) -> None:
+    # OpenShell would substitute the credential and forward it unencrypted.
+    loaded = bind_policy(store, sandbox_id, READ_ESCALATION + PROVIDER)
+    middleware = PolicyMiddleware(
+        store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=sink
+    )
+    facts = make_facts(config=policy_config(loaded), scheme=scheme, host=host, port=port)
+    verdict = middleware.evaluate_http(facts)
+    assert not verdict.allowed
+    expected = evaluator.CREDENTIAL_UNENCRYPTED if refused else evaluator.APPROVAL_REQUIRED
+    assert verdict.reason_code == expected
+
+
 def test_monitors_report_once_an_hour(
     store: PolicyStore,
     sandbox_id: str,

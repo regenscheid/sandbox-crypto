@@ -7,8 +7,10 @@ from datetime import timedelta
 from textwrap import dedent, indent
 
 import pytest
+from pydantic import ValidationError
 
 from sandbox_science.policy import Action, PolicyLoadError, parse_policy
+from sandbox_science.policy.model import ProviderRef
 
 HEADER = dedent(
     """\
@@ -291,7 +293,6 @@ def test_providers_name_the_hosts_their_credential_may_reach() -> None:
         ("['*']", "name each host exactly"),
         ("[140.82.112.3]", "name the host, not an address"),
         ("['[2606:4700::1111]']", "name the host, not an address"),
-        ("[bücher.example]", "ASCII"),
         ("[github.com, GitHub.com]", "lists a host twice"),
         ("[42]", "must be strings"),
     ],
@@ -299,6 +300,12 @@ def test_providers_name_the_hosts_their_credential_may_reach() -> None:
 def test_provider_hosts_are_exact_names(hosts: str, message: str) -> None:
     with pytest.raises(PolicyLoadError, match=message):
         parse_policy(provider(hosts))
+
+
+def test_provider_hosts_must_be_ascii() -> None:
+    # Policy files are ASCII already; the model also refuses other sources.
+    with pytest.raises(ValidationError, match="ASCII"):
+        ProviderRef.model_validate({"name": "gh", "profile": "token", "hosts": ["bücher.example"]})
 
 
 def test_providers_need_hosts() -> None:

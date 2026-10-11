@@ -10,10 +10,11 @@
 #   openshell provider profile import -f examples/openshell/profiles/github-token.yaml
 #   openshell provider create --name github-readonly --type github-token --credential GITHUB_TOKEN
 #
-# The sandbox sees only a placeholder in GITHUB_TOKEN and GH_TOKEN. Clients send
-# it as usual (gh: "Authorization: token $GITHUB_TOKEN"), and OpenShell
-# substitutes the token at the bound hosts after the policy middleware allows the
-# request.
+# The sandbox sees only a placeholder, under the key the provider stores
+# (GITHUB_TOKEN with the command above; env_vars lists the names it may be
+# created from). Clients send it as usual (gh: "Authorization: token
+# $GITHUB_TOKEN"), and OpenShell substitutes the token at the bound hosts after
+# the policy middleware allows the request.
 
 id: github-token
 display_name: GitHub token

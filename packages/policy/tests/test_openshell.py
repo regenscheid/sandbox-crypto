@@ -773,6 +773,22 @@ def test_a_closed_policy_binds_credentials_without_address_ranges() -> None:
         ((80, 8443), None),
         ((443,), None),
     ]
+    # No rule names files.example.org, and a closed policy admits nothing else.
+    assert endpoints_for(compiled, "files.example.org") == []
+    (refused,) = [f for f in compiled.findings if f.subject == "credentials.providers.api-token"]
+    assert "no rule that could allow a request names files.example.org" in refused.message
+
+
+def test_a_closed_policy_does_not_bind_hosts_its_rules_deny() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: blocked, operation: http, match: {hosts: [api.example.org]}, action: deny}\n"
+        + PROVIDERS,
+        default="deny",
+    )
+    compiled = compile_research(policy)
+    assert "sandbox-science-credentials" not in compiled.policy.network_policies
+    assert endpoints_for(compiled, "api.example.org") == []
 
 
 def test_a_policy_without_providers_binds_nothing() -> None:
@@ -1006,34 +1022,47 @@ def test_random_policies_compile_unambiguously_and_bind_each_host_once() -> None
     names = ["api.example.org", "example.org", "files.example.org", "github.com", "a.b.example.org"]
     patterns = [*names, "*.example.org", "*.b.example.org", "*", "93.184.215.14", "10.0.0.5"]
     for _ in range(300):
-        rules = "".join(
-            f"    - {{name: r{index}, operation: http, match: {{hosts: "
-            f"[{', '.join(repr(h) for h in rng.sample(patterns, rng.randint(1, 3)))}]"
-            f"{', ports: [8443]' if rng.random() < 0.3 else ''}}}, "
-            f"action: {rng.choice(['allow', 'escalate', 'deny'])}}}\n"
-            for index in range(rng.randint(0, 4))
-        )
+        rules = [
+            (
+                rng.sample(patterns, rng.randint(1, 3)),
+                rng.random() < 0.3,
+                rng.choice(["allow", "escalate", "deny"]),
+            )
+            for _ in range(rng.randint(0, 4))
+        ]
+        default = rng.choice(["deny", "escalate"])
         bound = rng.sample(names, rng.randint(0, 3))
-        providers = "".join(
-            f"    - {{name: p{index}, profile: token, hosts: [{host}]}}\n"
-            for index, host in enumerate(bound)
+        text = "".join(
+            f"    - {{name: r{index}, operation: http, match: {{hosts: "
+            f"[{', '.join(repr(host) for host in hosts)}]{', ports: [8443]' if ports else ''}}}, "
+            f"action: {action}}}\n"
+            for index, (hosts, ports, action) in enumerate(rules)
         )
-        text = ("network:\n  rules:\n" + rules if rules else "") + (
-            "credentials:\n  providers:\n" + providers if providers else ""
-        )
-        policy = network_policy(text, default=rng.choice(["deny", "escalate"]))
-        compiled = compile_research(policy)
+        text = "network:\n  rules:\n" + text if text else ""
+        if bound:
+            text += "credentials:\n  providers:\n" + "".join(
+                f"    - {{name: p{index}, profile: token, hosts: [{host}]}}\n"
+                for index, host in enumerate(bound)
+            )
+        compiled = compile_research(network_policy(text, default=default))
         assert openshell_ambiguities(compiled.policy) == [], text
+        # A closed policy binds only hosts that a rule which could allow a request names.
+        reachable = [hosts for hosts, _, action in rules if action != "deny"]
+        open_internet = default != "deny" or any("*" in h for hosts in reachable for h in hosts)
+        named = {host for hosts in reachable for host in hosts if "*" not in host}
         for host in bound:
             on_https = [
                 (name, endpoint)
                 for name, endpoint in endpoints_for(compiled, host)
                 if 443 in endpoint.ports
             ]
-            assert len(on_https) == 1, text
-            ((name, endpoint),) = on_https
-            assert name == "sandbox-science-credentials"
-            assert endpoint.credential_binding is not None
+            if open_internet or host in named:
+                assert len(on_https) == 1, text
+                ((name, endpoint),) = on_https
+                assert name == "sandbox-science-credentials"
+                assert endpoint.credential_binding is not None
+            else:
+                assert endpoints_for(compiled, host) == [], text
 
 
 def test_output_is_deterministic() -> None:

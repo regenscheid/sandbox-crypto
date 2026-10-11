@@ -220,7 +220,7 @@ mcp:
 
 credentials:
   # Worker-visible credentials are OpenShell providers (placeholders only). The
-  # compiler binds each provider's credential to its `hosts`, over HTTPS only;
+  # compiler binds each provider's credential to its `hosts`, on port 443 only;
   # OpenShell substitutes it nowhere else. Its profile must have no endpoints
   # (examples/openshell/profiles/github-token.yaml).
   providers:
