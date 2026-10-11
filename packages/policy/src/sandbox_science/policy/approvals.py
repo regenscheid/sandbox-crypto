@@ -8,13 +8,18 @@ operator answers with an ``approval`` or a ``denial`` record, which the componen
 honours on the next retry until the answer expires. Unanswered past the rule's
 escalation timeout, a request follows ``on_timeout``.
 
-Keys come in two kinds, each with the scopes an answer can take:
+Keys come in three kinds, each with the scopes an answer can take:
 - ``http`` (the middleware): sandbox, policy revision, method, host, port and path.
   ``request`` covers the request itself; ``host`` every path on that host and port
   with that method.
 - ``mcp`` (the MCP proxy): project, caller, policy revision, server, method, tool and a
   digest of the arguments. ``call`` covers the call itself; ``tool`` the tool with any
   arguments.
+- ``packages`` (the worker's provisioning operations, Conda provisioning CP-8): sandbox,
+  policy revision, operation and a digest of an exact set of package files, which the
+  request's record lists by their paths at the package cache. ``files`` covers exactly
+  those files: the middleware allows their downloads to that sandbox under that revision,
+  and nothing else.
 
 Records are read through a small protocol, so this module needs no event store.
 """
@@ -34,17 +39,48 @@ APPROVAL: Final = "approval"
 DENIAL: Final = "denial"
 KINDS: Final = (ESCALATION, APPROVAL, DENIAL)
 
-KeyKind = Literal["http", "mcp"]
+KeyKind = Literal["http", "mcp", "packages"]
 KEY_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "http": ("sandbox_id", "policy_digest", "method", "host", "port", "path"),
     "mcp": ("project_id", "caller", "policy_digest", "server", "method", "tool", "arguments"),
+    "packages": ("sandbox_id", "policy_digest", "operation", "files"),
 }
 SCOPES: Final[dict[str, dict[str, tuple[str, ...]]]] = {
     "http": {"request": (), "host": ("path",)},
     "mcp": {"call": (), "tool": ("arguments",)},
+    "packages": {"files": ()},
 }
 """For each kind, each scope and the key fields it leaves out."""
 ALL_SCOPES: Final = tuple(dict.fromkeys(scope for scopes in SCOPES.values() for scope in scopes))
+DEFAULT_SCOPES: Final[dict[str, str]] = {"http": "request", "mcp": "call", "packages": "files"}
+MAX_GRANT_FILES: Final = 2000
+"""Package files one ``packages`` request may list."""
+MAX_GRANT_PATH: Final = 2048
+LISTED_FILES: Final = 20
+"""Files of a ``packages`` request that ``pending`` lists before it counts the rest."""
+
+
+def files_digest(paths: Iterable[str]) -> str:
+    """The digest a ``packages`` key holds for a set of package cache paths."""
+    canonical = json.dumps(sorted(set(paths)), separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def grant_paths(value: object) -> tuple[str, ...] | None:
+    """The paths of a ``packages`` request's ``files``, sorted; None if they are not a list
+    of objects with an absolute ``path`` each, within the limits."""
+    if not isinstance(value, list):
+        return None
+    items = cast(list[object], value)
+    if not 0 < len(items) <= MAX_GRANT_FILES:
+        return None
+    paths: list[str] = []
+    for item in items:
+        path = cast(dict[str, object], item).get("path") if isinstance(item, dict) else None
+        if not isinstance(path, str) or not path.startswith("/") or len(path) > MAX_GRANT_PATH:
+            return None
+        paths.append(path)
+    return tuple(sorted(set(paths)))
 
 
 class RecordLike(Protocol):
@@ -88,6 +124,15 @@ class RequestKey:
     ) -> RequestKey:
         """``arguments`` is a digest of the call's arguments, never the arguments."""
         return cls("mcp", (project_id, caller, policy_digest, server, method, tool, arguments))
+
+    @classmethod
+    def packages(
+        cls, sandbox_id: str, policy_digest: str, operation: str, paths: Iterable[str]
+    ) -> RequestKey:
+        """A provisioning operation's request for an exact set of package files, which
+        ``paths`` names by their paths at the package cache. Each operation asks anew, so
+        an answer to one never decides another."""
+        return cls("packages", (sandbox_id, policy_digest, operation, files_digest(paths)))
 
     def fields(self) -> dict[str, str | int]:
         return dict(zip(KEY_FIELDS[self.kind], self.values, strict=True))
@@ -179,16 +224,26 @@ def describe(key: RequestKey) -> str:
     if key.kind == "http":
         where = f"{fields['host']}:{fields['port']}{fields['path']}"
         return f"{fields['sandbox_id']}  {fields['method']} {where}"
+    if key.kind == "packages":
+        return f"{fields['sandbox_id']}  install package files for {fields['operation']}"
     return f"{fields['caller']}  {fields['server']} {fields['method']} {fields['tool']}"
 
 
 def pending_lines(approvals: Approvals) -> list[str]:
-    """One line per request nobody answered, for ``pending`` commands."""
-    return [
-        f"{request.seq}  {request.recorded:%Y-%m-%d %H:%M:%S}  {describe(request.key)}  "
-        f"(after {request.timeout.total_seconds() / 60:.0f} min: {request.on_timeout})"
-        for request in approvals.unanswered()
-    ]
+    """One line per request nobody answered, for ``pending`` commands, and below a
+    ``packages`` request the files it would let the sandbox download."""
+    lines: list[str] = []
+    for request in approvals.unanswered():
+        lines.append(
+            f"{request.seq}  {request.recorded:%Y-%m-%d %H:%M:%S}  {describe(request.key)}  "
+            f"(after {request.timeout.total_seconds() / 60:.0f} min: {request.on_timeout})"
+        )
+        if request.key.kind == "packages":
+            files = approvals.files(request.seq)
+            lines += [f"      {path}" for path in files[:LISTED_FILES]]
+            if len(files) > LISTED_FILES:
+                lines.append(f"      … {len(files) - LISTED_FILES} more")
+    return lines
 
 
 MAX_APPROVAL_HOURS: Final = 24 * 30
@@ -210,7 +265,7 @@ def prepare_answer(
     request = approvals.request(seq)
     if request is None:
         raise ValueError(f"no permission request {seq}")
-    scope = scope or ("request" if request.key.kind == "http" else "call")
+    scope = scope or DEFAULT_SCOPES[request.key.kind]
     problem = check_scope(request.key.kind, scope)
     if problem is not None:
         raise ValueError(problem)
@@ -248,6 +303,8 @@ class Approvals:
         self._by_fingerprint: dict[str, int] = {}
         self._answers: list[Answer] = []
         self._answered: set[int] = set()
+        self._files: dict[int, frozenset[str]] = {}
+        """The package cache paths each ``packages`` request lists."""
 
     @property
     def last_seq(self) -> int:
@@ -280,6 +337,12 @@ class Approvals:
             seconds, on_timeout = terms.get("timeout_seconds"), terms.get("on_timeout")
             if not isinstance(seconds, int) or on_timeout not in ("deny", "alert"):
                 return
+            if key.kind == "packages":
+                # The files must be the ones the key names, so a list cannot be swapped.
+                paths = grant_paths(data.get("files"))
+                if paths is None or files_digest(paths) != key.fields()["files"]:
+                    return
+                self._files[record.seq] = frozenset(paths)
             request = PendingRequest(
                 record.seq, key, recorded, timedelta(seconds=seconds), str(on_timeout)
             )
@@ -320,6 +383,59 @@ class Approvals:
     def unanswered(self) -> list[PendingRequest]:
         with self._lock:
             return [r for seq, r in sorted(self._requests.items()) if seq not in self._answered]
+
+    def files(self, seq: int) -> tuple[str, ...]:
+        """The package cache paths a ``packages`` request lists, sorted; empty for others."""
+        with self._lock:
+            return tuple(sorted(self._files.get(seq, ())))
+
+    def answer_to(self, seq: int) -> Answer | None:
+        """The newest answer to request ``seq`` itself, expired or not: a later answer
+        replaces an earlier one. An answer whose target is not the request's key does not
+        count."""
+        with self._lock:
+            request = self._requests.get(seq)
+            matching = [
+                answer
+                for answer in self._answers
+                if request is not None and answer.request_seq == seq and answer.key == request.key
+            ]
+        return max(matching, key=lambda answer: answer.seq) if matching else None
+
+    def granted(
+        self, sandbox_id: str, policy_digest: str, path: str, now: datetime
+    ) -> Answer | None:
+        """The approval that lets ``sandbox_id`` download the package file at ``path`` under
+        ``policy_digest``, if any (Conda provisioning, CP-8).
+
+        A ``packages`` request's newest answer decides it, as for other requests: an
+        approval grants the files the request lists, until it expires; a later denial
+        withdraws them. Among the requests that list the file, the newest live approval is
+        returned.
+        """
+        with self._lock:
+            newest: dict[int, Answer] = {}
+            for answer in self._answers:
+                request = self._requests.get(answer.request_seq)
+                if (
+                    answer.key.kind != "packages"
+                    or request is None
+                    or request.key != answer.key
+                    or path not in self._files.get(answer.request_seq, frozenset())
+                ):
+                    continue
+                fields = answer.key.fields()
+                if fields["sandbox_id"] != sandbox_id or fields["policy_digest"] != policy_digest:
+                    continue
+                current = newest.get(answer.request_seq)
+                if current is None or answer.seq > current.seq:
+                    newest[answer.request_seq] = answer
+        live = [
+            answer
+            for answer in newest.values()
+            if answer.kind == "approval" and (answer.expires is None or now < answer.expires)
+        ]
+        return max(live, key=lambda answer: answer.seq) if live else None
 
 
 def _mapping(value: object) -> Mapping[str, object]:

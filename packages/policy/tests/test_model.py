@@ -46,6 +46,23 @@ def test_opam_and_hackage_take_an_action() -> None:
     assert (defaults.opam.action, defaults.hackage.action) == (Action.ALLOW, Action.ALLOW)
 
 
+def test_agpl_exceptions_name_packages_per_ecosystem() -> None:
+    """The packages a project accepts despite the AGPL (Conda provisioning, CP-9)."""
+    assert parse_policy(HEADER).policy.packages.agpl_exceptions.conda == ()
+    text = policy_text("packages: {agpl_exceptions: {conda: [pymupdf], pypi: [py-mu-pdf]}}\n")
+    exceptions = parse_policy(text).policy.packages.agpl_exceptions
+    assert (exceptions.conda, exceptions.pypi) == (("pymupdf",), ("py-mu-pdf",))
+    for wrong in (
+        "packages: {agpl_exceptions: {pypi: [PyMuPDF]}}\n",  # PyPI names in normalized form
+        "packages: {agpl_exceptions: {pypi: [py_mupdf]}}\n",
+        "packages: {agpl_exceptions: {conda: [Pymupdf]}}\n",
+        "packages: {agpl_exceptions: {npm: [x]}}\n",
+        "packages: {agpl_exceptions: [pymupdf]}\n",
+    ):
+        with pytest.raises(PolicyLoadError):
+            parse_policy(policy_text(wrong))
+
+
 def test_defaults() -> None:
     policy = parse_policy(HEADER).policy
     assert policy.defaults.action is Action.ESCALATE
