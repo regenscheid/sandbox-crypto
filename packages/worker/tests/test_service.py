@@ -312,3 +312,38 @@ async def test_a_failed_probe_means_tier_0(
     finally:
         await started.manager.close()
         store.close()
+
+
+async def test_closing_a_session_stops_its_kernels_only(worker: Worker) -> None:
+    other = {**CONTEXT, "session_id": "s2"}
+
+    async def run_in(context: dict[str, str], operation_id: str, code: str) -> dict[str, Any]:
+        body = {"operation_id": operation_id, "context": context, "kind": "cell", "code": code}
+        status, execution = await worker.post("/v1/executions", body)
+        assert status == 201, execution
+        return await worker.finish(execution["execution_id"])
+
+    await worker.run("op-a1", kind="cell", code="x = 'kept'")
+    await run_in(other, "op-b1", "y = 'other'")
+    sleeping = await worker.submit("op-a2", kind="cell", code="import time\ntime.sleep(60)")
+    await worker.wait_running(sleeping["execution_id"])
+    status, closed = await worker.post("/v1/sessions/close", {"context": CONTEXT})
+    assert status == 200, closed
+    assert [kernel["language"] for kernel in closed["kernels"]] == ["python"]
+    generation = closed["kernels"][0]["generation"]
+    ended = await worker.finish(sleeping["execution_id"])
+    assert ended["state"] == "cancelled"
+    assert ended["result"]["error"]["message"] == "the session was closed"
+    after = await worker.run("op-a3", kind="cell", code="x")
+    assert after["result"]["error"]["name"] == "NameError"
+    assert after["result"]["state_lost"] is True
+    assert after["result"]["kernel"]["generation"] == generation + 1
+    kept = await run_in(other, "op-b2", "y")
+    assert kept["result"]["outputs"][0]["data"]["text/plain"] == "'other'"
+
+
+async def test_closing_a_session_starts_no_executor(worker: Worker) -> None:
+    idle = {**CONTEXT, "environment_id": "env-idle"}
+    status, closed = await worker.post("/v1/sessions/close", {"context": idle})
+    assert (status, closed) == (200, {"kernels": []})
+    assert "env-idle" not in worker.manager._environments  # pyright: ignore[reportPrivateUsage]

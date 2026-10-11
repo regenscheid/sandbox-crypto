@@ -49,6 +49,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 8. **Limits.** A cell has a wall-time limit, like a shell call, after which it is interrupted. Its outputs have size limits; a large rich output is written to a file and referenced instead of being returned inline.
 9. **Working directory.** A kernel starts in the session workspace.
 10. **Languages.** The agent gets a tool for each language the environment offers (`python`, `sage`), and none for the others. Sage runs in SageMath's own Jupyter kernel, so Sage syntax applies (`^` is exponentiation); the platform never emulates it in Python.
+11. **Closing a session** stops its kernels. Running cells end cancelled, queued cells never start, and the session's next cell starts a new generation that reports the lost state. The session's files stay.
 
 ## Files
 
