@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: MIT
+import { describe, expect, it } from 'vitest';
+import { visible } from './text';
+
+describe('visible', () => {
+  it('shows each bidirectional control as its code point', () => {
+    expect(visible('access‮ ⁦// admin⁩ ‎‏؜')).toBe(
+      'access⟦U+202E⟧ ⟦U+2066⟧// admin⟦U+2069⟧ ⟦U+200E⟧⟦U+200F⟧⟦U+061C⟧',
+    );
+  });
+
+  it('leaves other text as it is', () => {
+    const text = 'x = 1 # שלום, 😀,  ';
+    expect(visible(text)).toBe(text);
+  });
+});

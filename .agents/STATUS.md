@@ -6,6 +6,13 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **The workspace GUI, first slice** (W4, D80; [workspace](../docs/WORKSPACE.md)). A Svelte app, built into static files, and an aiohttp server, `sandbox-science-workspace`, show the harness's projects, sessions and runs, read-only: the agent's messages, its tool calls with their arguments and results, and the LaTeX in them, rendered by KaTeX.
+  - Login works like Jupyter's: a token printed once opens an HttpOnly, SameSite=Strict session. Changes need the server's own origin, a loopback server answers only to its own names, and the content policy admits no inline script.
+  - One component shows all text: raw HTML stays text, links only for http, https and mailto, images never load, KaTeX in its untrusted mode. A formula KaTeX cannot parse shows as written, beside its error.
+  - The browser's math rules are a port of mdit-py-plugins', which the server is to use; shared cases pin them, and the plugin passes them.
+  - The harness now keeps every run's record with `--state-dir`.
+  - Checked in a browser against records the harness wrote. CI has a `web` job, and checks the npm lockfile's licenses, sources and install scripts.
+  - An adversarial review found no way to run script, and eight other issues, all fixed. The worst: a formula could draw fake code over the tool call below it, and some texts took minutes to render.
 - **An image for the MCP proxy** ([lab 15](docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md)). The `mcp-proxy` image runs the proxy as its sandbox's command, through a launcher that waits for its settings and restarts it. In OpenShell, the providers' placeholders reached it, and it came back after the sandbox stopped and started; the port forward has to be started again.
 - **One policy store.** The middleware, the worker and the MCP proxy now share one store module in the policy library, and the worker no longer depends on the middleware package.
 - **Admission ahead of use** (D69). The agent can name the sites its code will contact before running it (`admit_hosts`), and the worker admits the allowed ones in one policy reload, so the first connection need not fail and no transfer is cut. In [lab 14](docs/agent-reports/babbage-openshell-lab-14-2026-10-11.md), a host named this way was reachable on the first connection, and clients limited to projects held against a real gateway.
@@ -93,6 +100,9 @@ Questions with a recommendation, waiting for the user:
 - **The W0 specs** (tools, skills, plans and delegation, consistency review, research artifacts, PDF sources), each with its open questions. The Conda provisioning spec is approved.
 - **A real model.** The first slice with a real model needs the user's LiteLLM gateway and a virtual key.
 - **Upstream.** Whether to file the OpenShell and libzmq descriptions in `.agents/upstream/`.
+- **Workspace GUI.**
+  - The GUI shows conversation text in its own origin, under its Markdown rules and a policy without inline script, while D54 puts previews of agent-written artifacts on a separate origin. Recommended: keep conversation text where it is, and give rich artifacts (HTML, SVG, notebook output, PDFs) the separate origin when previews come.
+  - The workspace server reads the harness's state directory through the orchestrator's store, an exception to the rule that deployable members never import each other. Recommended: accept it until W5 gives the control application an API.
 
 Known facts to keep in mind:
 - OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's tier 3 depends on it (D43); it worked in every lab.

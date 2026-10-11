@@ -15,6 +15,7 @@ Applies to all code and documentation in this repository. Change this file throu
 | `.agents/docs/` | Agent source investigations (historical evidence) |
 | `.agents/upstream/` | Descriptions of bugs found in upstream projects, one file each, ready to file. Filing is the user's call |
 | `packages/<component>/` | One uv workspace member per deployable or shared component |
+| `web/<app>/` | Browser apps, each an npm project of its own: `web/workspace/` is the research workspace GUI (D80, [workspace](../docs/WORKSPACE.md)). Not uv members, since uv, pyright and pytest search `packages/` |
 | `examples/` | Illustrative configuration (policy, deployment profiles); tests load these to keep them valid |
 | `images/` | Recipes for the base profile images (`minimal`, `crypto-base`): Containerfile, Conda lockfiles, build, lock and test scripts ([images](../docs/IMAGES.md)) |
 | `scripts/` | Repository tooling, such as the license check |
@@ -37,9 +38,11 @@ Planned members (created when work starts on them):
 | `package-cache` | `sandbox_science.package_cache` | Pull-through package cache for research sandboxes (D71) |
 | `event-store` | `sandbox_science.event_store` | Library: append-only event store with a hash chain (D74, shared) |
 | `connector-auth` | `sandbox_science.connector_auth` | Connector auth service (OAuth for MCP) |
-| `web` | — | Browser front end (separate toolchain, D60) |
+| `workspace` | `sandbox_science.workspace` | The research workspace's web server: the GUI's files and its API (D80) |
 
-Libraries must not import deployable members. Deployable members may import libraries, never each other.
+The browser front end itself is not a member: it lives in `web/workspace/`, with Node's toolchain (D60, D80).
+
+Libraries must not import deployable members. Deployable members may import libraries, never each other. One exception, until the control application has an API of its own (W5): `workspace` reads the harness's records through the orchestrator's `ProjectStore`.
 
 ## Language and tooling
 
@@ -49,6 +52,7 @@ Libraries must not import deployable members. Deployable members may import libr
 - **pyright** in strict mode for `packages/*/src`.
 - **pytest** for tests.
 - **pydantic v2** for every external schema (policy files, API messages, events). Models use `extra="forbid"` and are frozen unless mutation is essential.
+- **Browser apps** (D80) are Svelte 5 with TypeScript in strict mode, built by Vite, tested with vitest and checked with svelte-check and tsc. npm packages are untrusted downloads: exact versions, a committed `package-lock.json`, installs only with `--ignore-scripts` (the app's `.npmrc` says so too), `node_modules` inside the app's directory, and no `npx` for anything that is not a declared dependency.
 
 Run before every push:
 
@@ -62,11 +66,22 @@ uv run python scripts/check_licenses.py
 uv run python scripts/generate_protos.py --check
 ```
 
+and, in `web/workspace/`:
+
+```bash
+python3 ../../scripts/check_licenses.py --npm package-lock.json
+npm ci --ignore-scripts
+python3 ../../scripts/check_licenses.py --npm package-lock.json --installed
+npm run check
+npm test
+npm run build
+```
+
 CI runs the same commands.
 
 ## Licensing
 
-- Every source file starts with `# SPDX-License-Identifier: MIT`.
+- Every source file starts with `# SPDX-License-Identifier: MIT`, or the same in the file type's own comment syntax (`//`, `/* */`, `<!-- -->`). JSON files cannot carry it.
 - New dependencies must follow the tiers in [LICENSING.md](../docs/LICENSING.md). Tier 1 platform code may depend only on MIT, BSD, ISC, Apache-2.0, PSF-2.0, PostgreSQL, public-domain or unmodified MPL-2.0 packages.
 - Never import or link GPL, LGPL or AGPL code from platform code. GPL research tools are reached only through process or protocol boundaries.
 - Add each new runtime dependency to the LICENSING.md component table in the same pull request.

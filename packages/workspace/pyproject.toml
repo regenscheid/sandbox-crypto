@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+[project]
+name = "sandbox-science-workspace"
+version = "0.1.0"
+description = "The Sandbox Science research workspace: the GUI's web server and its API"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "sandbox-science-contracts",
+    "sandbox-science-orchestrator",
+    "aiohttp>=3.10",
+]
+
+[project.scripts]
+sandbox-science-workspace = "sandbox_science.workspace.cli:main"
+
+[tool.uv.sources]
+sandbox-science-contracts = { workspace = true }
+sandbox-science-orchestrator = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_science"]
