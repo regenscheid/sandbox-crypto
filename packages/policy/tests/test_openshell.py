@@ -32,6 +32,7 @@ from sandbox_science.policy.openshell import (
     Compiled,
     CompileError,
     Endpoint,
+    FilesystemPolicy,
     McpProxyTarget,
     OpenShellPolicy,
     SandboxFilesystem,
@@ -1146,7 +1147,7 @@ def test_a_research_sandbox_may_open_the_devices_research_code_needs() -> None:
     assert filesystem.read_only == SANDBOX_DEVICES_READ_ONLY
 
 
-def test_the_filesystem_section_comes_first_and_revisions_leave_it_out() -> None:
+def test_the_filesystem_section_comes_first_and_revisions_keep_the_live_one() -> None:
     policy = compile_research(EXAMPLE).policy
     assert list(yaml.safe_load(policy.to_yaml())) == [
         "version",
@@ -1154,11 +1155,12 @@ def test_the_filesystem_section_comes_first_and_revisions_leave_it_out() -> None
         "network_policies",
         "network_middlewares",
     ]
-    revision = policy.network_only()
-    assert revision.filesystem_policy is None
-    assert "filesystem_policy" not in yaml.safe_load(revision.to_yaml())
+    # OpenShell refuses a revision that drops paths it added at startup (lab, 2026-10-11).
+    live = FilesystemPolicy(read_only=("/dev/random", "/usr"), read_write=("/dev/shm", "/tmp"))  # noqa: S108 - device and system paths
+    revision = policy.with_filesystem(live)
+    assert revision.filesystem_policy == live
     assert revision.network_policies == policy.network_policies
-    assert policy.filesystem_policy is not None  # the original is unchanged
+    assert policy.filesystem_policy != live  # the original is unchanged
 
 
 def test_the_image_paths_are_added_and_writable_wins() -> None:

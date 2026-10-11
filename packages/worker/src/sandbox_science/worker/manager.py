@@ -140,6 +140,19 @@ class ExecutionManager:
                 ),
             )
 
+    async def release(self, environment_id: str) -> None:
+        """Stop an environment's executor before its sandbox goes away.
+
+        Attempts still running there end as the executor's channel closes.
+        """
+        environment = self._environments.get(environment_id)
+        if environment is None:
+            return
+        async with environment.lock:
+            if environment.channel is not None:
+                await environment.channel.close()
+            self._environments.pop(environment_id, None)
+
     async def close(self) -> None:
         for task in list(self._tasks):
             task.cancel()
