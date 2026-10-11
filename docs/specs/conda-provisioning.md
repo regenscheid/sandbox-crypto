@@ -1,6 +1,6 @@
 # Automatic Conda provisioning
 
-Date: 2026-10-11. **Status: Approved for implementation as drafted (2026-10-11, by the user).** Shell installs go through wrappers (open question 1), and new executions wait while packages link (7); the other open questions are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md). The worker implements the first slice: shell and kernel installs take turns through wrappers (CP-4, CP-11), executions wait while one runs (CP-12), and each change is a revision with a lockfile (CP-16, CP-18, CP-19; [worker](../WORKER.md#package-commands)), which settled open question 2. The provisioning tool and the rest are not built yet.
+Date: 2026-10-11. **Status: Approved for implementation as drafted (2026-10-11, by the user).** Shell installs go through wrappers (open question 1), and new executions wait while packages link (7); the other open questions are settled as the implementation reaches them, and recorded here. W0 behavior specification; conventions in the [index](README.md). The worker implements the first slice: shell and kernel installs take turns through wrappers (CP-4, CP-11), executions wait while one runs (CP-12), and each change is a revision with a lockfile (CP-16, CP-18, CP-19; [worker](../WORKER.md#package-commands)), which settled open question 2. The second slice is the provisioning tool ([worker](../WORKER.md#provisioning-operations)): requests (CP-1 to CP-3, CP-5, CP-15), dry runs and decisions (CP-6 to CP-9), installs in the environment's turn with the policy's wall time and a visible queue (CP-10, CP-11, CP-14), records and reports (CP-16, CP-17, CP-25), probes (CP-21 to CP-24), and failures that changed the packages reported as `needs_recovery` (CP-13 in part). It settled open questions 3, 5 and 6 for now. Restoring a revision (CP-13, CP-20), disk limits (CP-14), uninstalling and upgrading through the tool (CP-20) and the GUI (CP-26) are not built yet.
 
 ## Scope
 
@@ -32,7 +32,8 @@ Terms:
 
 - CP-6. Every package request leaves the sandbox through the package cache, and the policy middleware decides it with the policy's `packages` section. Index reads are allowed unless the ecosystem is denied, package files take the ecosystem's action, and unlisted Conda channels are denied (D71). The hard floor and the pool ceiling apply. The environment manager makes no policy decision; it records the decisions it received.
 - CP-7. Before installing, the environment manager resolves the request in a dry run, which needs only index reads, and records the exact package files: channel, subdir, file name, version, build, SHA-256 and declared license (new).
-- CP-8. If the policy action for any resolved file is `escalate`, the operation creates one `PermissionRequest` whose scope is exactly that file set, and waits in `awaiting_permission` (new). On approval it installs only those files; a fetch outside the set is denied. On denial or timeout the operation ends `denied`, and no package file has been downloaded. This depends on the escalation grants still open in the [backlog](../../.agents/BACKLOG.md).
+- CP-8. If the policy action for any resolved file is `escalate`, the operation creates one `PermissionRequest` whose scope is exactly that file set, and waits in `awaiting_permission` (new). On approval it installs only those files; a fetch outside the set is denied. On denial or timeout the operation ends `denied`, and no package file has been downloaded.
+  - The request is a `packages` permission request in the policy middleware's event store, answered like the others (D76); an approval lets exactly the listed files download to the environment's sandbox under that policy revision, until it expires (implemented 2026-10-11, [worker](../WORKER.md#provisioning-operations)).
 - CP-9. A resolved set containing an AGPL-licensed package is refused before download unless the project explicitly allows that package; the refusal names the package and its license ([licensing](../LICENSING.md), tier 3; the check is new).
 
 ### Install
@@ -136,10 +137,10 @@ Terms:
 
 1. Shell-invoked installs: route them through wrappers (proposed, CP-4), or refuse them and require the provisioning tool? Settled 2026-10-11: wrappers.
 2. Lockfile format: an explicit spec with SHA-256 digests, conda-lock or pixi? D48 assumes one exists. Settled 2026-10-11: an explicit lockfile of the platform's own, in JSON (CP-18). conda-lock needs a URL and hash for every pip entry, which an index install does not record, and an explicit spec names a host.
-3. One permission request per resolved install (CP-8) needs escalation grants in the policy middleware. Is a per-install grant the right unit for the user?
-4. Restoring the previous revision after a failed link: volume snapshot or rebuild from the lockfile? W3 chooses.
-5. Where do AGPL exceptions live: the policy's `packages` section, or the environment profile?
-6. May skill packs and project profiles extend the capability catalog, or only the platform?
+3. One permission request per resolved install (CP-8) needs escalation grants in the policy middleware. Is a per-install grant the right unit for the user? Implemented as proposed (2026-10-11), to confirm in use: one request per operation for its whole resolved set, its files listed under the request in the operator's `pending`, and the middleware honoring the approved set. An operation that waits keeps the environment's turn, so later operations there wait behind it (CP-11), until it is answered, times out or is cancelled.
+4. Restoring the previous revision after a failed link: volume snapshot or rebuild from the lockfile? W3 chooses. Until then a failed install that changed the packages ends `needs_recovery` (2026-10-11).
+5. Where do AGPL exceptions live: the policy's `packages` section, or the environment profile? Settled in implementation (2026-10-11), to confirm: the policy's `packages.agpl_exceptions`, a list of package names per ecosystem (`conda`, `pypi`). The policy already decides installs, and its revisions are the project's record of what it allows; an environment profile is shared by projects (D46).
+6. May skill packs and project profiles extend the capability catalog, or only the platform? Only the platform for now (2026-10-11): the catalog is a reviewed file shipped with the worker. The question stays open for skill packs and profiles.
 7. Should new executions wait during linking (proposed, CP-12), or run with a warning? Settled 2026-10-11: they wait.
 
 ## Sources
