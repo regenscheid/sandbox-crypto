@@ -95,6 +95,41 @@ def test_checkpoint_writes_to_stdout(
     assert Checkpoint.from_json(capsys.readouterr().out) == Checkpoint(4, records[-1].hash)
 
 
+def test_a_checkpoint_file_may_hold_one_per_line(
+    path: Path, records: list[Record], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # As a timer logs them to the journal, among the journal's own messages.
+    lines = ["Started sandbox-science-events-checkpoint.service."]
+    for _ in range(2):
+        assert main(["checkpoint", str(path)]) == 0
+        lines.append(capsys.readouterr().out.strip())
+        with EventStore(path) as store:
+            store.append("alert", SOURCE, {"n": 9})
+    journal = tmp_path / "checkpoints.jsonl"
+    journal.write_text("\n".join(lines) + "\n")
+    assert main(["verify", str(path), "--checkpoint", str(journal)]) == 0
+    assert "agrees with 2 checkpoints" in capsys.readouterr().out
+    # A line logged later for the same record cannot replace the one logged first.
+    forged = Checkpoint(5, "0" * 64).to_json()
+    journal.write_text("\n".join([*lines, forged]) + "\n")
+    assert main(["verify", str(path), "--checkpoint", str(journal)]) == 1
+    assert "two checkpoints for record 5 disagree" in capsys.readouterr().out
+
+
+def test_a_checkpoint_file_without_one_is_an_error(
+    path: Path, records: list[Record], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    empty = tmp_path / "checkpoints.jsonl"
+    empty.write_text("Started sandbox-science-events-checkpoint.service.\n")
+    assert main(["verify", str(path), "--checkpoint", str(empty)]) == 1
+    assert capsys.readouterr().err.startswith(f"error: {empty}: ")
+    damaged = tmp_path / "damaged.jsonl"
+    good = Checkpoint(4, records[-1].hash).to_json()
+    damaged.write_text(f'{good}\n{{"seq": 4}}\n')
+    assert main(["verify", str(path), "--checkpoint", str(damaged)]) == 1
+    assert capsys.readouterr().err.startswith(f"error: {damaged}: line 2: ")
+
+
 def test_export_writes_verifiable_json_lines(
     path: Path, records: list[Record], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
