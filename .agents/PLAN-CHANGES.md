@@ -4,6 +4,7 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **Environment revisions (W3).** After every call, the executor reports a fingerprint of the installed packages. The worker counts each change as a new revision of the environment. Each execution reports the revision it started and ended under, and the harness tells the model when a call changed the packages. Installs are recorded, not yet serialized.
 - **Idle suspension (W3;** [lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md)**).** The confirmed idle behaviour says environments persist but need not keep running. With `suspend_after`, the worker now stops the sandbox of an idle environment and starts it again on the next use.
   - Idle means no executions, no requests and almost no CPU use by its kernels. The executor's new `usage` operation reports that CPU time, so a computation in a kernel thread keeps the environment up.
   - Environments gain the state `stopped`.
