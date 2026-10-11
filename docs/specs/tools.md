@@ -87,7 +87,7 @@ The harness's instructions tell the agent to wait and retry.
 
 ## Lifecycle, idempotency and reconnection
 
-1. **Idempotency.** Every submission carries a client operation ID. Submitting the same ID again with the same request returns the same execution. The same ID with a different request is a `conflict`.
+1. **Idempotency.** Every submission carries a client operation ID, kept per project. Submitting the same ID again with the same request returns the same execution. The same ID with a different request is a `conflict`.
 2. **States.** An attempt moves through `queued`, `running`, then one terminal state: `succeeded`, `failed`, `timed_out`, `cancelled` or `lost`. Cancellation is a request: the attempt shows `cancelling` until the worker has observed the process end.
 3. **Events.** Every state change and every output chunk is an event with a sequence number that grows within the execution. Events are kept until well after the execution ends.
 4. **Reconnection.** If the client disconnects, the execution continues. On reconnecting, the client asks for the events after the last sequence number it saw, and receives each event once. The final result can be fetched any number of times.

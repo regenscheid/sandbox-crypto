@@ -35,14 +35,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import re
+import secrets
 import sqlite3
 import threading
 import time
-from collections.abc import Awaitable, Callable, Iterable, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -82,7 +82,6 @@ _log = logging.getLogger(__name__)
 SANDBOX_PREFIX: Final = "ss-"
 MAX_SANDBOX_NAME: Final = 19
 """OpenShell's limit on a sandbox's name (``MAX_ROUTABLE_NAME_LEN``)."""
-_UNSAFE: Final = re.compile(r"[^a-z0-9]+")
 _ANSI: Final = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SANDBOX_COMMAND: Final = ("sleep", "infinity")
 _POLL_SECONDS: Final = 1.0
@@ -123,18 +122,15 @@ def printable(text: str, limit: int = 255) -> str:
     return "".join(char if char.isprintable() else "?" for char in text[:limit])
 
 
-def sandbox_name(environment_id: str) -> str:
-    """A stable OpenShell sandbox name for an environment: lowercase, short and unique.
+def new_sandbox_name() -> str:
+    """A fresh OpenShell sandbox name: the prefix and 64 random bits, in 19 characters.
 
-    OpenShell v0.1.3 takes at most 19 characters, a DNS label that may not contain the
-    ``--`` it uses between the segments of routable names. So the name is the prefix,
-    at most seven characters of the ID for people to recognize, and eight hex digits of
-    its SHA-256 for uniqueness.
+    OpenShell v0.1.3 takes at most 19 characters, a DNS label without the ``--`` it uses
+    between the segments of routable names. A name derived from the environment ID left
+    room for only 32 bits of a hash, so a client could choose an ID whose name was
+    another project's sandbox (review of D78). The record keeps the name.
     """
-    digest = hashlib.sha256(environment_id.encode()).hexdigest()[:8]
-    room = MAX_SANDBOX_NAME - len(SANDBOX_PREFIX) - len(digest) - 1
-    slug = _UNSAFE.sub("-", environment_id.lower()).strip("-")[:room].strip("-") or "env"
-    return f"{SANDBOX_PREFIX}{slug}-{digest}"
+    return f"{SANDBOX_PREFIX}{secrets.token_hex((MAX_SANDBOX_NAME - len(SANDBOX_PREFIX)) // 2)}"
 
 
 class OpenShellCli:
@@ -214,6 +210,15 @@ class EnvironmentRecords:
             " admitted INTEGER NOT NULL, reason TEXT NOT NULL, decided_at TEXT NOT NULL,"
             " PRIMARY KEY (environment_id, host, port))"
         )
+        # No two environments' records name one sandbox.
+        self._db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS environments_sandbox ON environments (sandbox)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS policy_grants ("
+            " project_id TEXT NOT NULL, revision TEXT NOT NULL,"
+            " PRIMARY KEY (project_id, revision))"
+        )
         self._lock = threading.Lock()
 
     def get(self, environment_id: str) -> EnvironmentInfo | None:
@@ -231,6 +236,13 @@ class EnvironmentRecords:
                 " sandbox = excluded.sandbox, document = excluded.document",
                 (info.environment_id, info.sandbox, info.model_dump_json()),
             )
+
+    def sandbox_taken(self, sandbox: str) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM environments WHERE sandbox = ?", (sandbox,)
+            ).fetchone()
+        return row is not None
 
     def ready(self) -> list[EnvironmentInfo]:
         """The environments whose sandboxes are ready."""
@@ -276,6 +288,23 @@ class EnvironmentRecords:
                 (environment_id, environment_id, MAX_RECORDED),
             )
 
+    def grant(self, project_id: str, revision: str) -> None:
+        """Let clients limited to the project use a policy revision (D78)."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO policy_grants (project_id, revision) VALUES (?, ?)"
+                " ON CONFLICT DO NOTHING",
+                (project_id, revision),
+            )
+
+    def granted(self, project_id: str, revision: str) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM policy_grants WHERE project_id = ? AND revision = ?",
+                (project_id, revision),
+            ).fetchone()
+        return row is not None
+
     def forget(self, environment_id: str) -> None:
         """Drop an environment's decisions, when its sandbox is deleted."""
         with self._lock:
@@ -320,6 +349,7 @@ class Environments:
         cli_env: dict[str, str],
     ) -> None:
         self.settings = settings
+        self.handmade_sandboxes = frozenset(backend.sandboxes)
         self.cli = OpenShellCli(backend, cli_env)
         self.store = PolicyStore(settings.policy_store)
         self.floor = HardFloor(frozenset(settings.admin_hosts))
@@ -335,6 +365,8 @@ class Environments:
         self.release_idle: ReleaseIdle | None = None
         """Stops the executor unless the environment was used since a time; the manager sets it."""
         self._locks: dict[str, asyncio.Lock] = {}
+        self._users: dict[str, int] = {}
+        """Callers holding or waiting for each environment's lock."""
         self._start_failures: dict[str, tuple[float, str]] = {}
 
     def close(self) -> None:
@@ -345,19 +377,52 @@ class Environments:
         info = self.records.get(environment_id)
         return info.sandbox if info is not None and info.state is EnvironmentState.READY else None
 
+    def manages(self, environment_id: str) -> bool:
+        """Whether the worker has ever created the environment, whatever its state now."""
+        return self.records.get(environment_id) is not None
+
+    def handmade(self, environment_id: str) -> bool:
+        """Whether the settings map the environment to a sandbox made outside the worker."""
+        return environment_id in self.handmade_sandboxes
+
+    def busy(self, environment_id: str) -> bool:
+        """Whether a change to the environment is under way or waiting to start."""
+        return self._users.get(environment_id, 0) > 0
+
     def get(self, environment_id: str) -> EnvironmentInfo:
         info = self.records.get(environment_id)
         if info is None:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
         return info
 
-    def _lock(self, environment_id: str) -> asyncio.Lock:
-        return self._locks.setdefault(environment_id, asyncio.Lock())
+    @contextlib.asynccontextmanager
+    async def _lock(self, environment_id: str) -> AsyncGenerator[None]:
+        """Hold the environment's lock, counted from the moment a caller starts waiting."""
+        self._users[environment_id] = self._users.get(environment_id, 0) + 1
+        try:
+            async with self._locks.setdefault(environment_id, asyncio.Lock()):
+                yield
+        finally:
+            self._users[environment_id] -= 1
+            if not self._users[environment_id]:
+                del self._users[environment_id]
 
     async def create(self, request: EnvironmentRequest) -> tuple[EnvironmentInfo, bool]:
         """Create the environment's sandbox; return the existing one for the same request."""
+        # One answer for both, so that a client cannot tell sandboxes made by hand
+        # from other projects' environments.
+        taken = WorkerError(
+            ErrorKind.CONFLICT,
+            f"environment {request.environment_id!r} is taken; choose another ID",
+        )
+        if self.handmade(request.environment_id):
+            raise taken
         async with self._lock(request.environment_id):
             existing = self.records.get(request.environment_id)
+            if existing is not None and existing.project_id != request.project_id:
+                # An ID stays with the project that first created it, deleted or not, so
+                # that nothing checked for one project can reach another's (D78).
+                raise taken
             if existing is not None and existing.state in (
                 EnvironmentState.READY,
                 EnvironmentState.STOPPED,
@@ -384,7 +449,9 @@ class Environments:
             policy = self._policy(request.policy)
             compiled = self._compile(policy)
             providers = await self._check_providers(policy)
-            name = sandbox_name(request.environment_id)
+            name = new_sandbox_name()
+            while self.records.sandbox_taken(name):
+                name = new_sandbox_name()
             now = datetime.now(UTC)
             info = EnvironmentInfo(
                 environment_id=request.environment_id,
@@ -399,10 +466,11 @@ class Environments:
                 created_at=now,
                 updated_at=now,
             )
-            # Recorded first, so that a sandbox left by a crash is known to be ours.
+            # Recorded first, so that a sandbox left by a crash is known to be ours. Only
+            # this record's own leftover is ever deleted: a name is never another's.
             self.records.save(info)
-            if existing is not None or await self.cli.sandbox(name) is not None:
-                await self.cli.run("sandbox", "delete", name)
+            if existing is not None and existing.state is EnvironmentState.CREATING:
+                await self._discard(existing.sandbox)
             try:
                 sandbox_id = await self._create_sandbox(name, image, compiled, providers)
                 self.store.bind(sandbox_id, request.policy)
@@ -466,14 +534,18 @@ class Environments:
             return revised
 
     async def admit(
-        self, environment_id: str, requests: Sequence[tuple[str, int]]
-    ) -> list[Admission]:
+        self, environment_id: str, requests: Sequence[tuple[str, int]], *, wait: bool = True
+    ) -> list[Admission] | None:
         """Decide hosts a sandbox could not reach, and admit those its policy could allow (D69).
 
         Each request is the host and port of a refused connection. Admitted hosts the
         sandbox cannot resolve yet are named in one new compilation of the
-        environment's policy revision. Every decision is recorded and returned.
+        environment's policy revision. Every decision is recorded and returned. Without
+        ``wait``, nothing is decided while another change to the environment is under
+        way or waiting, and the result is None.
         """
+        if not wait and self.busy(environment_id):
+            return None
         async with self._lock(environment_id):
             info = self.get(environment_id)
             if info.state is not EnvironmentState.READY or info.sandbox_id is None:
@@ -604,6 +676,15 @@ class Environments:
         The sandbox's actual phase decides: a stop that failed left it ready. A start
         that fails is not tried again for a while, so that queued requests fail fast.
         """
+        if info.state is EnvironmentState.READY:
+            # Its sandbox must still be the one the worker created, not another under its name.
+            document = await self.cli.sandbox(info.sandbox)
+            if document is None or document.get("id") != info.sandbox_id:
+                found = None if document is None else document.get("id")
+                await self._abandon(
+                    info, f"sandbox {info.sandbox} is {found or 'gone'}, not {info.sandbox_id}"
+                )
+            return info
         if info.state is not EnvironmentState.STOPPED:
             return info
         failed = self._start_failures.get(info.environment_id)

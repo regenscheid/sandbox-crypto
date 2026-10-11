@@ -177,6 +177,9 @@ class DraftWatcher:
 
     async def check(self, environment_id: str, sandbox: str) -> Sequence[Admission]:
         """Decide one environment's pending drafts, then reject each with the decision."""
+        if self.environments.busy(environment_id):
+            # Its drafts wait for the next round, so that no environment holds up the others.
+            return ()
         cli = self.environments.cli
         text = await cli.run("rule", "get", sandbox, "--status", "pending", "--color", "never")
         drafts = [draft for draft in parse_drafts(text) if draft.status == "pending"]
@@ -186,7 +189,10 @@ class DraftWatcher:
         requests = list(dict.fromkeys(e for draft in drafts for e in draft.endpoints))
         requests = requests[:MAX_ENDPOINTS]
         try:
-            decisions = await self.environments.admit(environment_id, requests)
+            decided = await self.environments.admit(environment_id, requests, wait=False)
+            if decided is None:
+                return ()  # a change to the environment came first: next round
+            decisions = decided
         except WorkerError as error:
             failures = self._failures.get(environment_id, 0) + 1
             if failures < MAX_FAILURES:

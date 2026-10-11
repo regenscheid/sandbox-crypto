@@ -132,11 +132,17 @@ class OpenShellBackend:
         resolve: Callable[[str], str | None] | None = None,
         executor_args: Sequence[str] = (),
         prepare: Callable[[str], Awaitable[None]] | None = None,
+        manages: Callable[[str], bool] | None = None,
     ) -> None:
+        if (resolve is None) != (manages is None):
+            # Without ``manages``, a deleted environment would fall back to the static map.
+            raise ValueError("resolve and manages go together")
         self.settings = settings
         self.state_dir = state_dir
         self.resolve = resolve
         """Finds the sandboxes the worker created (environments.py) before the static map."""
+        self.manages = manages
+        """Tells environments the worker created, which never fall back to the static map."""
         self.executor_args = tuple(executor_args)
         self._prepare = prepare
         """Starts a stopped sandbox the worker created before an executor runs there."""
@@ -228,8 +234,13 @@ class OpenShellBackend:
         return channel
 
     def sandbox_id(self, environment_id: str) -> str | None:
-        created = self.resolve(environment_id) if self.resolve is not None else None
-        return created or self.settings.sandboxes.get(environment_id)
+        if self.resolve is not None:
+            created = self.resolve(environment_id)
+            if created is not None:
+                return created
+            if self.manages is not None and self.manages(environment_id):
+                return None  # created by the worker and not ready: never a sandbox made by hand
+        return self.settings.sandboxes.get(environment_id)
 
     def cli_env(self) -> dict[str, str]:
         """The environment the ``openshell`` CLI runs with."""

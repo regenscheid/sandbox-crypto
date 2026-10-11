@@ -3,7 +3,7 @@
 
 ```toml
 listen = "127.0.0.1:8100"
-token_file = "worker.token"      # the bearer token clients present, on one line
+token_file = "worker.token"      # the pool's own bearer token, on one line
 state_dir = "state"              # executions, events and published artifacts
 pool_id = "babbage"
 max_artifact_size = 1073741824   # bytes
@@ -26,6 +26,11 @@ profiles = {minimal = "docker.io/library/buildpack-deps:noble-scm"}   # profile 
 
 [local]                          # development and tests only: no isolation
 python = "/usr/bin/python3"      # default: the worker's own interpreter
+
+[[clients]]                      # optional: tokens that may act for some projects only
+name = "orchestrator-p1"
+token_sha256 = "<64 hex digits>" # sandbox-science-worker token --out FILE prints it
+projects = ["p1"]
 ```
 
 Relative paths resolve against the settings file's directory.
@@ -33,20 +38,37 @@ Relative paths resolve against the settings file's directory.
 
 from __future__ import annotations
 
+import hashlib
 import sys
 import tomllib
 from pathlib import Path
-from typing import Annotated, Self, cast
+from typing import Annotated, Final, Self, cast
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    model_validator,
+)
 
 from sandbox_science.contracts import Identifier
 
 from .package_clients import check_cache_url
 
+MIN_TOKEN: Final = 32
+"""The fewest characters a bearer token may have."""
+
 
 class SettingsError(Exception):
     """The settings file is missing or invalid."""
+
+
+def token_digest(token: str) -> str:
+    """The SHA-256 by which the settings name a client's token without holding it."""
+    return hashlib.sha256(token.encode("utf-8", "surrogateescape")).hexdigest()
 
 
 class _Model(BaseModel):
@@ -114,9 +136,22 @@ class OpenShellBackendSettings(_Model):
     """Lets the worker create, revise and delete research sandboxes itself (D73)."""
 
 
+class ClientSettings(_Model):
+    """A client whose token may act for some projects only: their executions, files,
+    artifacts and environments. The token itself never appears in the settings, and
+    such clients need ``[openshell.environments]``: only the environments the worker
+    creates are known to belong to a project."""
+
+    name: Identifier
+    token_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    """The SHA-256 of the client's bearer token, as ``sandbox-science-worker token`` prints it."""
+    projects: tuple[Identifier, ...] = Field(min_length=1)
+
+
 class Settings(_Model):
     listen: str = "127.0.0.1:8100"
     token_file: Path
+    """The pool's own token, which may act for every project."""
     state_dir: Path
     pool_id: Identifier = "local"
     max_artifact_size: Annotated[int, Field(gt=0)] = 1 << 30
@@ -125,11 +160,22 @@ class Settings(_Model):
     the lost state. Unset keeps kernels until they are closed, restarted or die."""
     local: LocalBackendSettings | None = None
     openshell: OpenShellBackendSettings | None = None
+    clients: tuple[ClientSettings, ...] = ()
+    """Clients limited to some projects, such as one orchestrator per project."""
 
     @model_validator(mode="after")
     def _one_backend(self) -> Self:
         if (self.local is None) == (self.openshell is None):
             raise ValueError("configure exactly one backend: [local] or [openshell]")
+        names = [client.name for client in self.clients]
+        digests = [client.token_sha256 for client in self.clients]
+        if len(set(names)) < len(names) or len(set(digests)) < len(digests):
+            raise ValueError("each client needs its own name and token")
+        if self.clients and (self.openshell is None or self.openshell.environments is None):
+            raise ValueError(
+                "clients need [openshell.environments]: only environments the worker creates "
+                "are known to belong to a project, so only they can keep projects apart"
+            )
         host, _, port = self.listen.rpartition(":")
         if not host or not port.isdigit() or not 0 < int(port) < 65536:
             raise ValueError(f"listen must be host:port, not {self.listen!r}")
@@ -148,8 +194,12 @@ class Settings(_Model):
             token = self.token_file.read_text().strip()
         except OSError as exc:
             raise SettingsError(f"cannot read the token file {self.token_file}: {exc}") from exc
-        if len(token) < 32:
-            raise SettingsError(f"the token in {self.token_file} is shorter than 32 characters")
+        if len(token) < MIN_TOKEN:
+            raise SettingsError(
+                f"the token in {self.token_file} is shorter than {MIN_TOKEN} characters"
+            )
+        if token_digest(token) in {client.token_sha256 for client in self.clients}:
+            raise SettingsError("a client has the pool's own token; give it a token of its own")
         return token
 
 
