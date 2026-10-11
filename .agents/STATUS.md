@@ -1,11 +1,12 @@
 # Status
 
-Updated: 2026-10-10.
+Updated: 2026-10-11.
 
 **Phase:** 1 (babbage), milestone M0. **Focus:** infrastructure track P: the policy library, its OpenShell compiler and the policy middleware.
 
 ## Recent progress
 
+- Lab 3 on babbage ([report](docs/agent-reports/babbage-openshell-lab-3-2026-10-11.md)): the compiled credential bindings load and work with an endpointless provider. OpenShell's substitution into plain HTTP on port 443 was seen at runtime (residual risk, [bug description](upstream/openshell-credential-substitution-over-plain-http.md)).
 - Provider credentials (D57 amended, the user's choice after lab 2): the policy names each provider's hosts, and the compiler binds the credential there on HTTPS. Providers use profiles without endpoints, and the middleware treats only those hosts as credentialed.
 - Lab 2 on babbage ([report](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)).
   - In a sandbox, real pip, uv, micromamba, npm, go and cargo installed through the policy middleware and the package cache, with toolchains from conda-forge.
@@ -25,7 +26,6 @@ Updated: 2026-10-10.
 
 ## Next
 
-- Run the compiled credential bindings on babbage at the next lab.
 - Orchestrator: the middleware's policy store and bindings, escalation grants, and on-demand admission of hosts.
 - W0 behavior specifications.
 
