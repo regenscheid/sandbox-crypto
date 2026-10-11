@@ -6,6 +6,11 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Math repairs in the workspace** ([workspace](../docs/WORKSPACE.md#math-repairs)), adapted from the user's own `cscience-crypto`, which the user contributed under MIT.
+  - The renderer reads `\(…\)`, `\[…\]` and bare display environments as math, by rules that follow dollar math's. Code stays as written, and displayed math stays in its list item or quote; the original's conversion before parsing rewrote both.
+  - What KaTeX rejects is repaired by rules where it can be, else by the reviewer model, else approximated in Unicode. Each is marked, with KaTeX's error and the LaTeX as written behind the mark; the text never changes.
+  - `POST /api/v0/math-repair` asks only the configured reviewer alias, through the model gateway, within the original's limits, and at most 60 times an hour for each browser session. The gateway is the server's only outbound connection, and only when configured.
+  - Tested with a scripted model and a fake gateway, and in a browser against the fake gateway. No real model or key yet.
 - **The workspace GUI, first slice** (W4, D80; [workspace](../docs/WORKSPACE.md)). A Svelte app, built into static files, and an aiohttp server, `sandbox-science-workspace`, show the harness's projects, sessions and runs, read-only: the agent's messages, its tool calls with their arguments and results, and the LaTeX in them, rendered by KaTeX.
   - Login works like Jupyter's: a token printed once opens an HttpOnly, SameSite=Strict session. Changes need the server's own origin, a loopback server answers only to its own names, and the content policy admits no inline script.
   - One component shows all text: raw HTML stays text, links only for http, https and mailto, images never load, KaTeX in its untrusted mode. A formula KaTeX cannot parse shows as written, beside its error.
