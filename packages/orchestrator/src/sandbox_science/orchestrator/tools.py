@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, cast
 
@@ -27,6 +28,7 @@ from sandbox_science.contracts import (
     ShellRequest,
     WriteFileRequest,
 )
+from sandbox_science.contracts.worker import Language
 
 from .model import ToolCall, ToolSpec
 from .worker_client import WorkerAPIError, WorkerClient, dump
@@ -35,6 +37,21 @@ TRACEBACK_LINES: Final = 20
 _UNSAFE: Final = re.compile(r"[^A-Za-z0-9._-]")
 
 _TIMEOUT = {"type": "number", "exclusiveMinimum": 0, "description": "Wall-time limit in seconds"}
+
+SAGE: Final = ToolSpec(
+    "sage",
+    "Run SageMath code in the session's persistent Sage kernel inside the project sandbox. "
+    "Sage syntax applies: ^ is exponentiation, 1/3 is an exact rational, and integer literals "
+    "are Sage Integers (convert them with int() before json.dumps). Variables persist between "
+    "calls until that kernel restarts. Results come back as plain text; run %display latex "
+    "first, or call latex(x), to get LaTeX.",
+    {
+        "type": "object",
+        "properties": {"code": {"type": "string"}, "timeout_seconds": _TIMEOUT},
+        "required": ["code"],
+        "additionalProperties": False,
+    },
+)
 
 SPECS: Final = (
     ToolSpec(
@@ -64,11 +81,6 @@ SPECS: Final = (
             "required": ["code"],
             "additionalProperties": False,
         },
-    ),
-    ToolSpec(
-        "restart_kernel",
-        "Restart the session's Python kernel, discarding all its state.",
-        {"type": "object", "properties": {}, "additionalProperties": False},
     ),
     ToolSpec(
         "read_file",
@@ -131,12 +143,35 @@ def operation_id(prefix: str, call: ToolCall) -> str:
 
 class Toolbox:
     def __init__(
-        self, client: WorkerClient, context: ExecutionContext, *, output_chars: int = 20000
+        self,
+        client: WorkerClient,
+        context: ExecutionContext,
+        *,
+        languages: Sequence[Language] = ("python",),
+        output_chars: int = 20000,
     ) -> None:
         self.client = client
         self.context = context
         self.output_chars = output_chars
-        self.specs = SPECS
+        self.languages = tuple(languages)
+        specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
+        if "sage" in self.languages:
+            specs.append(SAGE)
+        if self.languages:
+            specs.append(
+                ToolSpec(
+                    "restart_kernel",
+                    "Restart one of the session's kernels, discarding all its state.",
+                    {
+                        "type": "object",
+                        "properties": {
+                            "language": {"type": "string", "enum": list(self.languages)}
+                        },
+                        "additionalProperties": False,
+                    },
+                )
+            )
+        self.specs = tuple(specs)
 
     async def call(self, call: ToolCall, operation: str) -> ToolOutcome:
         try:
@@ -149,6 +184,7 @@ class Toolbox:
         handlers = {
             "shell": self._shell,
             "python": self._python,
+            "sage": self._sage,
             "restart_kernel": self._restart,
             "read_file": self._read,
             "write_file": self._write,
@@ -156,7 +192,7 @@ class Toolbox:
             "publish": self._publish,
         }
         handler = handlers.get(call.name)
-        if handler is None:
+        if handler is None or call.name not in {spec.name for spec in self.specs}:
             return _failure(ErrorKind.INVALID_REQUEST, f"there is no tool named {call.name!r}")
         try:
             return await handler(args, operation)
@@ -183,10 +219,17 @@ class Toolbox:
         )
 
     async def _python(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        return await self._cell("python", args, operation)
+
+    async def _sage(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+        return await self._cell("sage", args, operation)
+
+    async def _cell(self, language: Language, args: dict[str, Any], operation: str) -> ToolOutcome:
         request = CellRequest.model_validate(
             {
                 "operation_id": operation,
                 "context": self.context,
+                "language": language,
                 **_known(args, "code", "timeout_seconds"),
             }
         )
@@ -196,7 +239,10 @@ class Toolbox:
         )
 
     async def _restart(self, args: dict[str, Any], operation: str) -> ToolOutcome:
-        kernel = await self.client.restart_kernel(self.context)
+        language = args.get("language", self.languages[0] if self.languages else "python")
+        if language not in self.languages:
+            return _failure(ErrorKind.UNSUPPORTED, f"no {language!r} kernel in this environment")
+        kernel = await self.client.restart_kernel(self.context, language)
         return ToolOutcome(
             dump({"restarted": True, "kernel_generation": kernel.generation, "state_lost": True}),
             {"kernel": kernel.model_dump(mode="json")},

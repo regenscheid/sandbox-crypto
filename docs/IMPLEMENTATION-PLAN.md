@@ -71,7 +71,7 @@ Proposed by the plan review (D51). These components do not depend on harness det
 - Worker API schema and worker service, with the persistent-kernel, argv, file-staging, streaming, cancellation and attempt-reconciliation operations.
 - Read-only-rootfs environment layout with declared volumes, lockfile capture and rebuild (D48).
 - Policy middleware, which decides research sandboxes' requests inside OpenShell's proxy in place of a separate egress proxy (D69, D70, `packages/policy-middleware`), and the package mirror (D44).
-- Event store with an append-only hash chain, so monitor evidence is tamper-evident ([event store](EVENT-STORE.md), D72, `packages/event-store`).
+- Event store with an append-only hash chain, so monitor evidence is tamper-evident ([event store](EVENT-STORE.md), D73, `packages/event-store`).
 - Adversarial fixture suite ([monitoring](MONITORING.md)).
 - Isolation-tier probes that report the tier actually provided (D43).
 - The policy compiler from the project policy file ([policy](POLICY.md), D62) to OpenShell network/MCP/filesystem policy, with the hard floor, pool ceiling, most-restrictive-wins precedence and escalation timeout. It reports rules it cannot enforce. The policy model, validation and evaluation are implemented in `packages/policy` (D68), and its OpenShell compiler (D69) produces the research sandboxes' admission endpoints and policy-middleware attachment, and the MCP proxy's policy.
