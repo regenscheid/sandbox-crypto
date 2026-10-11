@@ -154,6 +154,60 @@ async def test_the_first_slice_through_the_harness(client: WorkerClient) -> None
     assert model.requests[-1][-1]["role"] == "tool"
 
 
+async def test_the_client_reads_revisions_and_their_lockfiles(client: WorkerClient) -> None:
+    toolbox = Toolbox(client, CONTEXT)
+    script = [{"tool_calls": [{"name": "shell", "arguments": {"script": "true"}}]}]
+    (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls  # pyright: ignore[reportPrivateUsage]
+    await toolbox.call(call, "op-revisions")
+    history = await client.revisions("env1")
+    for _ in range(300):  # the worker asks the executor for revision 0's lockfile
+        if history.revisions[0].lockfile is not None:
+            break
+        await asyncio.sleep(0.1)
+        history = await client.revisions("env1")
+    zero = history.revisions[0]
+    assert (zero.revision, zero.managed, zero.changed_by) == (0, None, None)
+    assert zero.lockfile is not None
+    lockfile = await client.lockfile("env1", 0)
+    assert lockfile.python == ".".join(map(str, sys.version_info[:3]))
+    assert len(lockfile.pip) == zero.lockfile.pip_distributions
+    with pytest.raises(WorkerAPIError) as missing:
+        await client.lockfile("env1", 7)
+    assert missing.value.kind is ErrorKind.NOT_FOUND
+
+
+async def test_the_client_pages_revisions_and_bounds_what_it_reads() -> None:
+    # Review of package commands (2026-10-11), H1: the client read a whole history, of
+    # any size, into memory.
+    asked: list[dict[str, str]] = []
+
+    async def page(request: web.Request) -> web.Response:
+        asked.append(dict(request.query))
+        return web.json_response({"environment_id": "env1", "revisions": [], "next_after": 7})
+
+    async def huge(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "application/json"})
+        await response.prepare(request)
+        for _ in range(9):  # over both bounds, a MiB at a time
+            await response.write(b" " * (1024 * 1024))
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/v1/environments/env1/revisions", page)
+    app.router.add_get("/v1/environments/env2/revisions", huge)
+    app.router.add_get("/v1/environments/env1/revisions/3/lockfile", huge)
+    async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
+        history = await client.revisions("env1", after=41, limit=10)
+        assert (history.revisions, history.next_after) == ((), 7)
+        assert asked == [{"after": "41", "limit": "10"}]
+        for call in (client.revisions("env2"), client.lockfile("env1", 3)):
+            with pytest.raises(WorkerAPIError) as raised:
+                await call
+            assert raised.value.kind is ErrorKind.INTERNAL
+            assert "over" in raised.value.message
+
+
 async def test_a_repeated_tool_call_is_one_execution(client: WorkerClient) -> None:
     toolbox = Toolbox(client, CONTEXT)
     (call,) = (
@@ -910,7 +964,7 @@ async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None
     from sandbox_science.contracts import ExecutionState
     from sandbox_science.orchestrator.tools import _describe  # pyright: ignore[reportPrivateUsage]
 
-    def execution(before: str, after: str) -> Execution:
+    def execution(before: str, after: str, overlapping: bool = False) -> Execution:
         return Execution(
             execution_id="exe-1",
             attempt_id="att-1",
@@ -925,9 +979,12 @@ async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None
                 hostname="h",
                 environment_revision=before,
             ),
-            result=Result(exit_code=0, environment_revision=after),
+            result=Result(exit_code=0, environment_revision=after, overlapping_change=overlapping),
         )
 
-    changed = _describe(execution("3", "4"), 1000, replayed=False)
+    changed = _describe(execution("3", "4", overlapping=True), 1000, replayed=False)
     assert "revision 3 to 4" in changed["environment_changed"]
     assert "environment_changed" not in _describe(execution("4", "4"), 1000, replayed=False)
+    # A package command still running at the end: the packages may be half installed.
+    changing = _describe(execution("4", "4", overlapping=True), 1000, replayed=False)
+    assert "still changing" in changing["environment_changed"]
