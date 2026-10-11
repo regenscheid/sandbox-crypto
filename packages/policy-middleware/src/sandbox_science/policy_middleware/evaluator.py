@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Final, cast
 
+from sandbox_science.event_store import Record
 from sandbox_science.policy import (
     Action,
     ClassificationError,
@@ -40,6 +41,7 @@ from sandbox_science.policy import (
 )
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
 
+from .approvals import Approvals, Target
 from .archives import MAX_PACKAGES, ArchiveLookup
 from .errors import MiddlewareError, StoreError
 from .events import EventSink
@@ -53,6 +55,10 @@ _log = logging.getLogger(__name__)
 # them, so each names what the agent can do about the denial.
 APPROVAL_REQUIRED: Final = "approval_required"
 """An escalate rule matched; the request is pending approval and may be retried after it."""
+APPROVAL_DENIED: Final = "approval_denied"
+"""An operator denied the permission request this escalation matches."""
+ESCALATION_TIMED_OUT: Final = "escalation_timed_out"
+"""Nobody answered the permission request within its rule's escalation timeout."""
 POLICY_DENIED: Final = "policy_denied"
 """A project rule or the policy's default denies the request."""
 POOL_CEILING_DENIED: Final = "pool_ceiling_denied"
@@ -249,8 +255,14 @@ class PolicyMiddleware:
         meter: EgressMeter | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         archives: ArchiveLookup | None = None,
+        requests: Callable[[int], Iterable[Record]] | None = None,
     ) -> None:
-        """``archives``, when given, names the opam packages of escalated opam archives."""
+        """``archives``, when given, names the opam packages of escalated opam archives.
+
+        ``requests`` reads the event store's records after a sequence number, from which
+        permission requests and their answers are known (approvals.py). Without it,
+        every escalation is recorded and denied, and none can be approved.
+        """
         self._store = store
         self._ceiling = ceiling
         self._floor = floor
@@ -260,6 +272,8 @@ class PolicyMiddleware:
         self._archives = archives
         self._monitor_alerts: dict[tuple[str, str], datetime] = {}
         self._lock = threading.Lock()
+        self._requests = requests
+        self._approvals = Approvals()
 
     def validate_config(self, config: Mapping[str, object] | None) -> str | None:
         """Return why a middleware entry's config is unacceptable, or None if it is valid.
@@ -359,15 +373,10 @@ class PolicyMiddleware:
             case Action.DENY:
                 return _deny(_LAYER_CODES[decision.layer], decision.reason, decision)
             case Action.ESCALATE:
-                try:
-                    self._record("escalation", facts, loaded, decision, operation)
-                except Exception:
-                    # No permission request exists, so the agent must not wait for an approval.
-                    _log.exception("could not record escalation of request %s", facts.request_id)
-                    return _deny(
-                        AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
-                    )
-                return _deny(APPROVAL_REQUIRED, decision.reason, decision)
+                answered = self._escalation(facts, loaded, decision, operation)
+                if isinstance(answered, Verdict):
+                    return answered
+                findings = answered
             case Action.ALERT:
                 try:
                     self._record("alert", facts, loaded, decision, operation)
@@ -386,6 +395,78 @@ class PolicyMiddleware:
             findings=findings,
             decision=decision,
         )
+
+    def _escalation(
+        self,
+        facts: HttpRequestFacts,
+        loaded: LoadedPolicy,
+        decision: Decision,
+        operation: Operation | None,
+    ) -> Verdict | tuple[Finding, ...]:
+        """Answer an escalated request from its permission request and any answers to it.
+
+        A denial, or a request still waiting, is a Verdict; an approval, or a read whose
+        request timed out, proceeds with the findings returned.
+        """
+        terms = decision.escalation
+        if terms is None:  # the library pairs terms with every escalation
+            return _deny(APPROVAL_REQUIRED, decision.reason, decision)
+        target = Target(
+            facts.sandbox_id,
+            loaded.digest,
+            facts.method.upper(),
+            normalize_host(facts.host),
+            facts.port,
+            facts.path,
+        )
+        now = self._now()
+        if self._requests is not None:
+            try:
+                self._approvals.load(self._requests(self._approvals.last_seq))
+            except Exception:
+                # Without the records no answer is known; the request waits, as before.
+                _log.exception("could not read permission requests from the event store")
+        answer = self._approvals.answer(target, now)
+        if answer is not None and answer.kind == "denial":
+            reason = f"permission request {answer.request_seq} was denied"
+            return _deny(APPROVAL_DENIED, reason, decision)
+        rule = decision.rule or "escalation"
+        if answer is not None:
+            extra = {"approval_seq": answer.seq, "request_seq": answer.request_seq}
+            try:
+                self._record("approved", facts, loaded, decision, operation, extra=extra)
+            except Exception:
+                _log.exception("could not record approved request %s", facts.request_id)
+                return _deny(
+                    AUDIT_UNAVAILABLE, "the approved request could not be recorded", decision
+                )
+            return (Finding("policy_approval", rule, "low"),)
+        pending = self._approvals.pending(target)
+        if pending is None:
+            try:
+                seq = self._record("escalation", facts, loaded, decision, operation, target=target)
+            except Exception:
+                # No permission request exists, so the agent must not wait for an approval.
+                _log.exception("could not record escalation of request %s", facts.request_id)
+                return _deny(
+                    AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
+                )
+            named = f" (permission request {seq})" if seq is not None else ""
+            return _deny(APPROVAL_REQUIRED, decision.reason + named, decision)
+        if not pending.expired(now):
+            reason = f"{decision.reason} (permission request {pending.seq}, still waiting)"
+            return _deny(APPROVAL_REQUIRED, reason, decision)
+        if pending.on_timeout == "alert":
+            extra = {"timed_out_request": pending.seq}
+            try:
+                self._record("alert", facts, loaded, decision, operation, extra=extra)
+            except Exception:
+                _log.exception("could not record alert for request %s", facts.request_id)
+                return _deny(AUDIT_UNAVAILABLE, "the alert could not be recorded", decision)
+            return (Finding("policy_alert", rule, "medium"),)
+        minutes = int(pending.timeout.total_seconds() // 60)
+        reason = f"permission request {pending.seq} was not answered within {minutes} minutes"
+        return _deny(ESCALATION_TIMED_OUT, reason, decision)
 
     def _monitor_findings(
         self, facts: HttpRequestFacts, loaded: LoadedPolicy
@@ -430,7 +511,11 @@ class PolicyMiddleware:
         loaded: LoadedPolicy,
         decision: Decision,
         operation: Operation | None = None,
-    ) -> None:
+        *,
+        target: Target | None = None,
+        extra: Mapping[str, object] | None = None,
+    ) -> int | None:
+        """Record the request; return the record's sequence number where the sink tells it."""
         # The store adds the time; the payload keeps the decision and the request.
         payload: dict[str, object] = {
             "sandbox_id": facts.sandbox_id,
@@ -456,7 +541,11 @@ class PolicyMiddleware:
             }
         if isinstance(operation, PackageOperation) and operation.digest is not None:
             payload["opam_archive"] = self._opam_archive(operation.digest)
-        self._events.record(kind, payload)
+        if target is not None:
+            payload["target"] = target.payload()
+        if extra:
+            payload.update(extra)
+        return self._events.record(kind, payload)
 
     def _opam_archive(self, digest: str) -> dict[str, object]:
         """An opam archive's digest and, if the package cache can tell, its packages.

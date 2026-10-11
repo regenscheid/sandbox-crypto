@@ -6,6 +6,10 @@ sandbox-science-policy-middleware serve --settings middleware.toml
 sandbox-science-policy-middleware store --state-dir DIR --policy policy.yaml
 sandbox-science-policy-middleware bind --state-dir DIR --sandbox ID --policy policy.yaml
 sandbox-science-policy-middleware unbind --state-dir DIR --sandbox ID
+sandbox-science-policy-middleware pending --settings middleware.toml
+sandbox-science-policy-middleware approve --settings middleware.toml --request SEQ \
+    [--scope host] [--for HOURS]
+sandbox-science-policy-middleware deny --settings middleware.toml --request SEQ
 ```
 
 The gateway asks the middleware to validate a compiled sandbox policy before it
@@ -21,16 +25,18 @@ import signal
 import sys
 import threading
 from collections.abc import Sequence
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from types import FrameType
 
 import grpc
 
-from sandbox_science.event_store import EventStore, EventStoreError
+from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
 from sandbox_science.policy.loader import read_limited
 
+from .approvals import APPROVAL, DENIAL, SCOPES, Approvals
 from .archives import CacheArchiveLookup
 from .auth import (
     Authenticator,
@@ -41,7 +47,7 @@ from .auth import (
 )
 from .errors import MiddlewareError, SettingsError
 from .evaluator import PolicyMiddleware
-from .events import STORE_TIMEOUT, StoreSink
+from .events import OPERATOR, STORE_TIMEOUT, StoreSink
 from .service import MiddlewareService, build_server
 from .settings import Settings, load_settings
 from .store import PolicyStore
@@ -68,6 +74,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     unbind = commands.add_parser("unbind", help="remove a sandbox's binding")
     unbind.add_argument("--state-dir", type=Path, required=True)
     unbind.add_argument("--sandbox", required=True)
+    pending = commands.add_parser("pending", help="list permission requests nobody answered")
+    pending.add_argument("--settings", type=Path, required=True)
+    for name, text in (("approve", "approve a permission request"), ("deny", "deny one")):
+        answer = commands.add_parser(name, help=text)
+        answer.add_argument("--settings", type=Path, required=True)
+        answer.add_argument("--request", type=int, required=True, help="its sequence number")
+        if name == "approve":
+            answer.add_argument(
+                "--scope",
+                choices=SCOPES,
+                default="request",
+                help="this request only, or any path on its host with its method",
+            )
+            answer.add_argument("--for", dest="hours", type=float, default=8.0, help="hours")
     args = parser.parse_args(argv)
     try:
         match args.command:
@@ -87,13 +107,70 @@ def main(argv: Sequence[str] | None = None) -> int:
                 store.bind(args.sandbox, loaded.digest)
                 print(f"bound {args.sandbox} to {loaded.policy.metadata.name} {loaded.digest}")
                 return 0
-            case _:
+            case "unbind":
                 removed = PolicyStore(args.state_dir).unbind(args.sandbox)
                 print(f"unbound {args.sandbox}" if removed else f"{args.sandbox} was not bound")
                 return 0
+            case "pending":
+                return _pending(load_settings(args.settings).event_store_path)
+            case _:
+                path = load_settings(args.settings).event_store_path
+                hours = getattr(args, "hours", None)
+                return _answer(
+                    path, args.command, args.request, getattr(args, "scope", "request"), hours
+                )
     except (MiddlewareError, PolicyLoadError, EventStoreError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+
+def _read_records(path: Path, after: int) -> list[Record]:
+    """Records after ``after``, read with a connection of this thread's own."""
+    with StoreReader(path) as reader:
+        return list(reader.records(after=after))
+
+
+def _pending(path: Path) -> int:
+    approvals = Approvals()
+    approvals.load(_read_records(path, 0))
+    waiting = approvals.unanswered()
+    for request in waiting:
+        target = request.target
+        print(
+            f"{request.seq}  {request.recorded:%Y-%m-%d %H:%M:%S}  {target.sandbox_id}  "
+            f"{target.method} {target.host}:{target.port}{target.path}  "
+            f"(after {request.timeout.total_seconds() / 60:.0f} min: {request.on_timeout})"
+        )
+    if not waiting:
+        print("no permission requests are waiting")
+    return 0
+
+
+def _answer(path: Path, command: str, seq: int, scope: str, hours: float | None) -> int:
+    """Append an approval or a denial of permission request ``seq``."""
+    approvals = Approvals()
+    approvals.load(_read_records(path, 0))
+    request = approvals.request(seq)
+    if request is None:
+        print(f"error: no permission request {seq}", file=sys.stderr)
+        return 1
+    payload: dict[str, object] = {
+        "request_seq": seq,
+        "scope": scope,
+        "target": request.target.payload(),
+        "expires": None,
+    }
+    if command == "approve" and hours is not None:
+        if not 0 < hours <= 24 * 30:
+            print("error: --for takes 0 to 720 hours", file=sys.stderr)
+            return 1
+        expires = datetime.now(UTC) + timedelta(hours=hours)
+        payload["expires"] = expires.isoformat(timespec="seconds")
+    kind = APPROVAL if command == "approve" else DENIAL
+    with EventStore(path) as events:
+        record = events.append(kind, OPERATOR, payload)
+    print(f"{'approved' if kind == APPROVAL else 'denied'} request {seq} as record {record.seq}")
+    return 0
 
 
 def _serve(settings: Settings) -> int:
@@ -105,6 +182,7 @@ def _serve(settings: Settings) -> int:
             ceiling=ceiling,
             floor=HardFloor(frozenset(settings.admin_hosts)),
             events=StoreSink(events),
+            requests=partial(_read_records, settings.event_store_path),
             archives=(
                 CacheArchiveLookup(settings.package_cache_url)
                 if settings.package_cache_url is not None

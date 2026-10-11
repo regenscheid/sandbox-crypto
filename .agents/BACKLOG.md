@@ -21,7 +21,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Provider credentials in research sandboxes (D57 amended; the user chose the arrangement after [lab 2](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)): `credentials.providers[].hosts` names where each credential may go. The compiler binds it there with `credential_binding` on port 443, providers use profiles without endpoints, and the middleware treats only those hosts as credentialed. Tests check the compiled policies with a port of OpenShell's ambiguity check
 - [x] On babbage: run the compiled credential bindings, including a bound host that rules also name (its other egress endpoint then keeps only port 80). Done 2026-10-11 ([lab 3](docs/agent-reports/babbage-openshell-lab-3-2026-10-11.md)); the plain-HTTP substitution bug was seen at runtime
 - [x] Attach to each research sandbox exactly the providers `credentials.providers` lists, each with a profile without endpoints: the worker does it when it creates the sandbox (D73; the threat model keeps gateway credentials out of the orchestrator). To verify on babbage
-- [ ] Escalation grants: record approvals as scoped grants that the policy middleware and MCP proxy honour, and compile them into the MCP proxy's fence
+- [x] Escalation grants in the policy middleware (D76): escalations are permission requests in the event store, answered with `approve` or `deny` (request or host scope, with an expiry); retries are recognized and not recorded again; escalation timeouts apply on retry
+- [ ] Escalation grants in the MCP proxy, compiled into its fence; approvals from the GUI with re-authentication (D54)
 - [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint, so the compiler admits public address ranges with a host-less endpoint and the policy middleware decides each request (D69)
 - [ ] Policy revisions: GUI and file edits, re-authentication for widening (D54)
 - [ ] `defaults.log`: decide whether allowed operations may go unlogged
@@ -61,7 +62,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] One policy store library for the policy middleware, the worker and the MCP proxy, which holds a copy of the middleware's store code
 - [x] Event store with an append-only hash chain (`packages/event-store`, D74): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
 - [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer). On a single-user host such as babbage, a systemd user timer could log each checkpoint to the journal, whose files the user's processes cannot rewrite
-- [ ] Event store growth: limit repeated escalations per sandbox and target (a sandbox retrying a denied write adds a synced record each time), and rotate old records (D74)
+- [ ] Event store growth: rotate old records (D74). Repeated escalations are no longer recorded again (D76)
 - [ ] Adversarial fixture suite
 - [x] Isolation-tier probes (D43): the worker probes each executor it starts and reports the tier in effect beside the declared one; evidence only lowers it, and the OpenShell backend must declare its tier ([worker](../docs/WORKER.md#isolation-tiers))
   - [x] Backend conformance suite (D52): the execution-tools fixtures through the worker API (`packages/worker/tests/test_conformance.py`), against the local backend in CI or a running worker named by `SS_CONFORMANCE_*` ([worker](../docs/WORKER.md#conformance-suite))
