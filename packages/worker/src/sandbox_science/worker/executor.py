@@ -67,6 +67,8 @@ INTERRUPT_GRACE = 5.0
 KERNEL_START_TIMEOUT = 120.0
 KILL_ROUNDS = 5
 KERNEL_NAMES = {"python": "python3", "sage": "sagemath"}
+PDF_HELPER = Path(__file__).with_name("pdfhelper.py")
+"""The PDF helper the worker copies beside this file (docs/specs/pdf-sources.md)."""
 """Each language's Jupyter kernelspec; SageMath installs ``sagemath`` beside its Python."""
 PROBE_TEXT = 256
 """The longest value the isolation probe reports."""
@@ -786,6 +788,7 @@ class Executor:
             "configure": self.op_configure,
             "shell": self.op_shell,
             "cell": self.op_cell,
+            "pdf": self.op_pdf,
             "cancel": self.op_cancel,
             "restart": self.op_restart,
             "close_session": self.op_close_session,
@@ -906,6 +909,7 @@ class Executor:
             },
             subreaper=self.subreaper,
             not_dumpable=self.protected,
+            features=available_features(),
         )
 
     async def op_probe(self, request: Message) -> None:
@@ -967,6 +971,12 @@ class Executor:
         running = Running(execution=execution, kind=kind)
         self.running[execution] = running
         return running
+
+    async def op_pdf(self, request: Message) -> None:
+        """Run the PDF helper as its own process, like a shell call's argv, in the session."""
+        if "pdf" not in available_features():
+            raise ToolError("unsupported", "pdf_oxide is not installed in this environment")
+        await self.op_shell({**request, "argv": pdf_argv(request), "cwd": "."})
 
     async def op_shell(self, request: Message) -> None:
         session = self.session(request)
@@ -1495,6 +1505,41 @@ def tool_environment(base: Mapping[str, str], python: str, prefix: str) -> dict[
     if os.path.isdir(os.path.join(prefix, "conda-meta")):
         env["CONDA_PREFIX"] = prefix
     return env
+
+
+def available_features() -> list[str]:
+    """What this environment offers beyond kernels: ``pdf`` with the helper and pdf_oxide."""
+    features: list[str] = []
+    if PDF_HELPER.is_file() and importlib.util.find_spec("pdf_oxide") is not None:
+        features.append("pdf")
+    return features
+
+
+def pdf_argv(request: Message) -> list[str]:
+    """The PDF helper's command line for a ``pdf`` request, run with this interpreter."""
+    operation, path = str(request.get("operation", "")), str(request.get("path", ""))
+    if operation not in ("info", "pages", "search", "render"):
+        raise ToolError("invalid_request", f"no PDF operation {operation!r}")
+    argv = [sys.executable, "-I", str(PDF_HELPER), operation, path]
+    match operation:
+        case "pages":
+            argv += ["--pages", str(request.get("pages", ""))]
+            if request.get("include_artifacts") is True:
+                argv.append("--include-artifacts")
+        case "search":
+            argv += ["--query", str(request.get("query", ""))]
+        case "render":
+            argv += ["--page", str(request.get("page", "")), "--dpi", str(request.get("dpi", 150))]
+            region: object = request.get("region")
+            if isinstance(region, list):
+                values = cast(list[object], region)
+                argv += ["--region", ",".join(str(value) for value in values)]
+            out: object = request.get("out")
+            if isinstance(out, str):
+                argv += ["--out", out]
+        case _:
+            pass
+    return argv
 
 
 def available_languages() -> list[str]:
