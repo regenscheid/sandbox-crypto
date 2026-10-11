@@ -6,6 +6,7 @@
 
 This spec covers the agent's execution tools and the worker API operations behind them:
 - shell commands;
+- background jobs: long computations that run while the agent works on, or after its turn ends;
 - persistent kernels: Python and Sage now, R later, all through the Jupyter protocol (D41);
 - file handoff between the session workspace and the agent;
 - admitting network hosts ahead of use;
@@ -31,7 +32,21 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 5. **Output.** stdout and stderr are separate streams of ordered chunks, each numbered within the execution. A stream larger than its limit keeps its head and its tail, drops the middle with a marker, and reports the total byte count. Bytes that are not UTF-8 are decoded with replacement characters.
 6. **Ending.** The result carries the exit code or the terminating signal, the elapsed time, and whether the call timed out or was cancelled. Partial output is kept.
 7. **Timeouts.** Each call has a wall-time limit, with a default and a maximum set by policy. When it expires, the process group gets SIGTERM, then SIGKILL after a short grace period.
-8. **Leftover processes.** When a call ends, the processes it started that are still running are terminated, including those that left its process group or session. A shell call cannot leave daemons running ([worker](../WORKER.md#leftover-processes) says how far the executor can find them).
+8. **Leftover processes.** When a call ends, the processes it started that are still running are terminated, including those that left its process group or session. A shell call cannot leave daemons running ([worker](../WORKER.md#leftover-processes) says how far the executor can find them). A computation that should outlive the call is a background job.
+
+## Background jobs
+
+A background job is a shell command that runs without holding the agent's turn: lattice sieving, parameter searches and other computations that take hours (D83, confirmed by the user on 2026-10-11).
+
+1. **Starting.** The agent starts a job with the shell tool's script or argv, a purpose and an optional time limit. The call returns at once with the job's ID, and the job runs in the session's environment and workspace, under the same policy, network path and resource limits as a shell call. The agent can go on working, start other tools, or end its turn.
+2. **A job is an execution.** It has the execution identity, states, numbered events, idempotency and reconnection of the lifecycle below, and the shell's rules for its environment, stdin and output, apart from what follows. Its result lists the files it wrote, as an attempt's does.
+3. **Output.** The job's stdout and stderr are also written whole to log files in the session workspace, under `.jobs/<job ID>/`, within the workspace's disk limits, so nothing is lost to the inline bounds. The agent reads the output so far, its head and its latest tail, at any time, while the job runs.
+4. **Status and control.** The agent lists the session's jobs (running and recently ended, with elapsed time and the purpose), reads one job's state and output, and cancels a job: SIGTERM, then SIGKILL after the grace period, as for a call. When a job ends, its leftover processes are ended as a call's are.
+5. **Limits.** A job's wall-time limit has a default and a maximum of their own in the policy's resources, longer than a call's; past it the job ends `timed_out`, with its output kept. The policy also bounds the jobs running at once in a session and in an environment; starting one more is refused with the list of jobs running.
+6. **Notice when it ends.** The harness tells the agent when a job ends, with its outcome, exit code, elapsed time and output tail: at the next safe point of a turn in progress (after the current tool call), or at the start of the session's next turn. The run that started the job gets the notice while it runs; after it ends, the session's main agent does. A job may also ask to resume the session when it ends, which starts a turn if none is running (an open question: *Waking the session*).
+7. **Lifetime.** A job outlives the turn, the call and the run that started it, the orchestrator's disconnection or restart, and the GUI's closing. It ends when it finishes, is cancelled, reaches its limit, or its session is closed or its environment deleted, which cancel it. An environment with a running job is busy: it is never suspended as idle.
+8. **Worker restarts.** A job survives the worker's restart: the worker reconnects to the sandbox's executor and resumes the job's events where they stopped, so a job is `lost` only when its sandbox is. This needs an executor in the sandbox that outlives the worker's connection ([worker](../WORKER.md#not-yet-done)); until it exists, a worker restart makes running jobs `lost`, as it does calls, and the harness says so.
+9. **The rest of the platform.** A job counts as a running execution everywhere else: package commands it runs take turns and new executions wait while they link ([Conda provisioning](conda-provisioning.md), CP-12); files it writes in `shared/` reach the project's other environments at the next sync point (D79); and the GUI lists the session's jobs with their state, elapsed time and output tail, and offers to cancel them.
 
 ## Kernels
 
@@ -98,7 +113,7 @@ The harness's instructions tell the agent to wait and retry.
 2. **States.** An attempt moves through `queued`, `running`, then one terminal state: `succeeded`, `failed`, `timed_out`, `cancelled` or `lost`. Cancellation is a request: the attempt shows `cancelling` until the worker has observed the process end.
 3. **Events.** Every state change and every output chunk is an event with a sequence number that grows within the execution. Events are kept until well after the execution ends.
 4. **Reconnection.** If the client disconnects, the execution continues. On reconnecting, the client asks for the events after the last sequence number it saw, and receives each event once. The final result can be fetched any number of times.
-5. **Worker restarts.** Attempts in progress when the worker restarts become `lost` unless the worker can show what happened to them. They are never silently run again.
+5. **Worker restarts.** Attempts in progress when the worker restarts become `lost` unless the worker can show what happened to them. They are never silently run again. Background jobs survive the restart once the executor outlives the worker's connection (background jobs, item 8).
 
 ## Contracts used
 
@@ -109,7 +124,7 @@ The harness's instructions tell the agent to wait and retry.
 
 ## Acceptance fixtures
 
-The worker's conformance suite runs these through the worker API against any backend ([worker](../WORKER.md#conformance-suite)); fixture 11 is the harness's.
+The worker's conformance suite runs these through the worker API against any backend ([worker](../WORKER.md#conformance-suite)); fixture 11, and the notices of fixtures 13 and 16, are the harness's.
 
 1. **Shell basics.** `echo hello; echo err >&2; exit 3` gives stdout `hello\n`, stderr `err\n` and exit code 3. The location names the sandbox, not the orchestrator's host.
 2. **Stateful cells.** Cell 1 `x = 41`, then cell 2 `x + 1`, gives an `execute_result` with `text/plain` `42`, in generation 1 of the same kernel.
@@ -123,9 +138,18 @@ The worker's conformance suite runs these through the worker API against any bac
 10. **Output bounds.** A command printing 5 MiB returns its head and tail, a truncation marker and the total of 5,242,880 bytes.
 11. **No fallback.** With the worker unreachable, a shell call fails `unavailable`, and a sentinel file on the orchestrator's host shows that nothing ran there.
 12. **Confinement.** Reading `../x`, `/etc/passwd` or a path through a symlink with the file tools fails with `invalid_request`. A host-only sentinel file outside the sandbox cannot be read from a shell call.
+13. **A job runs while the agent works.** Starting `sleep 20; echo done` as a job returns within 2 seconds with a job ID; a shell call made next runs and ends while the job is still running; the job then ends `succeeded` with stdout `done\n`, and the agent's next turn, or its next safe point, carries the notice.
+14. **Output so far.** A job printing one line a second shows, after 5 seconds, about five lines through the job's output, and the job is still `running`; its log file in `.jobs/<job ID>/` holds every line when it ends.
+15. **Job cancellation and limits.** Cancelling a running job ends it `cancelled`, with no process left. A job past its limit ends `timed_out` with its output kept. Starting more jobs than the policy allows at once is refused, naming the jobs running.
+16. **Jobs outlive their callers.** The orchestrator restarts while a job runs; the job ends normally, its events are complete after reconnection, and the agent gets its notice. With the executor outliving the worker's connection, the same holds for a worker restart.
+17. **Busy, not idle.** An environment whose only activity is a job running for longer than the idle period is not suspended.
 
 ## Open questions
 
 - **Shell state.** Should the shell keep a working directory between calls, as some interactive harnesses do? This spec proposes no state, which makes calls independent and retries safe.
 - **Default limits.** Wall time and output size for shell calls and cells.
-- **Daemons.** May a shell call start a long-running process, such as a local server for a notebook? This spec says no; a later batch or service tool could allow it explicitly.
+- **Daemons.** May a shell call start a long-running process, such as a local server for a notebook? This spec says no. Long computations are background jobs (settled with the user on 2026-10-11, D83); a service tool, for servers that answer requests, could come later.
+- **Job limits.** Proposed defaults: a job runs at most 24 hours unless the policy raises it, up to 7 days; at most 4 jobs run at once in a session and 8 in an environment.
+- **Waking the session.** Should a job's end start a turn by itself, which spends model budget while nobody watches? Proposed: the agent chooses per job, and the default is a notice at the next turn; resuming the session is allowed within the project's model budget.
+- **Closing a session.** Should closing a session cancel its jobs, as it stops its kernels (proposed), or let them finish and keep their results?
+- **Long cells.** Kernels stay interactive: a computation that should run in the background is a script run as a job. Should a cell also be able to run in the background, holding its kernel?
