@@ -9,8 +9,10 @@ each install starts and ends to the file ``FAKEPM_LOG`` names. It never reaches 
 network.
 
 Some package names do more: ``broken`` fails with exit code 3, ``sleepy`` waits for
-SIGTERM, ``nested`` and ``orphan`` install ``inner`` with ``python -m pip`` first (the
-second with a cleared environment), and ``--echo`` prints the arguments and stdin.
+SIGTERM, ``counting`` logs each SIGTERM and ends half a second after the first,
+``killed`` ends by SIGKILL, ``nested`` and ``orphan`` install ``inner`` with
+``python -m pip`` first (the second with a cleared environment), and ``--echo`` prints
+the arguments and stdin.
 """
 
 from __future__ import annotations
@@ -63,6 +65,21 @@ def special(name: str) -> None:
         log("ready", "sleepy")
         while True:
             time.sleep(0.1)
+    if name == "counting":
+        first: list[float] = []
+
+        def counted(signum: int, frame: object) -> None:
+            log("got", "TERM")
+            first.append(time.monotonic())
+
+        signal.signal(signal.SIGTERM, counted)
+        log("ready", "counting", os.getpid())
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not (first and time.monotonic() > first[0] + 0.5):
+            time.sleep(0.01)
+        sys.exit(143)
+    if name == "killed":  # as the kernel's OOM killer ends a process
+        os.kill(os.getpid(), signal.SIGKILL)
     if name in ("nested", "orphan"):
         env = None
         if name == "orphan":  # a step that lost the turn's mark
@@ -92,7 +109,7 @@ def pip(args: list[str]) -> int:
         return 0
     for name in names:
         special(name)
-        log("start", name, time.time())
+        log("start", name, time.time(), os.getpid())
         pause()
         info = site / f"{name}-1.0.dist-info"
         info.mkdir(exist_ok=True)

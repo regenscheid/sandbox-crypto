@@ -4,7 +4,12 @@
 A throwaway environment (a venv with a ``conda-meta`` directory) stands in for the
 sandbox's Conda prefix, and fake_manager.py for pip and micromamba, so nothing here
 installs a real package or reaches the network. The wrappers and the hook run as real
-processes; the worker tests use the local backend and real executors.
+processes; the worker tests use the local backend and real executors, or
+hostile_executor.py for an executor that research code has taken over.
+
+The last section holds the regression tests for the adversarial review of package
+commands (2026-10-11). Each names the finding it covers (C1, H1, M1 to M6, L1 to L5)
+and repeats its probe.
 """
 
 from __future__ import annotations
@@ -17,9 +22,11 @@ import os
 import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import sysconfig
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
@@ -37,18 +44,24 @@ from sandbox_science.contracts import (
     Lockfile,
     RevisionHistory,
 )
+from sandbox_science.contracts.revisions import MAX_REVISION_PAGE_BYTES
+from sandbox_science.worker import executor as executor_module
 from sandbox_science.worker import provisioning
+from sandbox_science.worker import revisions as revisions_module
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel
+from sandbox_science.worker.executor import Executor, Running, signal_processes, without_wrapped
 from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.revisions import Revisions
+from sandbox_science.worker.revisions import Prepared, Revisions
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
 
 FAKE = Path(__file__).with_name("fake_manager.py")
 CACHE_HOST = "host.openshell.internal"
+CACHE = f"http://{CACHE_HOST}:8090"
+"""The package cache's URL, as the worker's settings name it (package_cache)."""
 TOKEN = "p" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 CONTEXT = {"project_id": "p1", "session_id": "s1", "environment_id": "env1"}
@@ -79,6 +92,17 @@ class Prefix:
             elif word == "end":
                 spans[name] = (starts[name], float(rest[0]))
         return spans
+
+    def pid(self, word: str, name: str, timeout: float = 30) -> int:
+        """The pid the fake manager logged with ``word`` (start, ready) for ``name``."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for line in self.log.read_text().splitlines() if self.log.exists() else []:
+                words = line.split()
+                if words[:2] == [word, name]:
+                    return int(words[-1])
+            time.sleep(0.02)
+        raise AssertionError(f"{word} {name} never appeared in the log")
 
 
 def make_prefix(directory: Path, *, kernels: bool = False) -> Prefix:
@@ -187,6 +211,15 @@ def held(state: provisioning.State) -> Iterator[None]:
         os.close(descriptor)
 
 
+def alive(pid: int) -> bool:
+    """Whether a process runs: neither gone nor a zombie."""
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return state != "Z"
+
+
 # Which commands take a turn.
 
 
@@ -238,13 +271,16 @@ def _dist(site: Path, name: str, version: str, installer: str | None, **files: s
     return info
 
 
-def test_a_lockfile_names_packages_by_channel_never_by_the_cache(tmp_path: Path) -> None:
+NUMPY = "numpy-2.1.0-py313h0_0.conda"
+WHEEL = "ab/cd/cached-1.0-py3-none-any.whl"
+
+
+def installed(tmp_path: Path) -> provisioning.Places:
+    """An environment with Conda packages from the cache, conda.anaconda.org and elsewhere,
+    and distributions pip and uv installed beside them."""
     meta, site, user = tmp_path / "conda-meta", tmp_path / "site", tmp_path / "user"
     for directory in (meta, site, user):
         directory.mkdir()
-    sha = "a" * 64
-    cache = f"http://{CACHE_HOST}:8090"
-    numpy = "numpy-2.1.0-py313h0_0.conda"
     _meta(
         meta,
         "numpy-2.1.0-py313h0_0",
@@ -252,10 +288,10 @@ def test_a_lockfile_names_packages_by_channel_never_by_the_cache(tmp_path: Path)
             "name": "numpy",
             "version": "2.1.0",
             "build": "py313h0_0",
-            "url": f"{cache}/conda/conda-forge/linux-64/{numpy}",
-            "channel": f"{cache}/conda/conda-forge/linux-64",
-            "fn": numpy,
-            "sha256": sha,
+            "url": f"{CACHE}/conda/conda-forge/linux-64/{NUMPY}",
+            "channel": f"{CACHE}/conda/conda-forge/linux-64",
+            "fn": NUMPY,
+            "sha256": "a" * 64,
             "md5": "b" * 32,
             "license": "BSD-3-Clause",
             "files": ["lib/python3.13/site-packages/numpy-2.1.0.dist-info/METADATA"],
@@ -281,14 +317,8 @@ def test_a_lockfile_names_packages_by_channel_never_by_the_cache(tmp_path: Path)
     _dist(site, "numpy", "2.1.0", "conda")  # Conda's, by its file list
     _dist(site, "certifi", "2024.8.30", "conda")  # Conda's, by its installer
     _dist(site, "requests", "2.32.0", "pip")
-    wheel = "ab/cd/cached-1.0-py3-none-any.whl"
-    _dist(
-        site,
-        "cached",
-        "1.0",
-        "uv",
-        direct_url_json=json.dumps({"url": f"{cache}/pypi/files/cached/{'c' * 64}/{wheel}"}),
-    )
+    cached = {"url": f"{CACHE}/pypi/files/cached/{'c' * 64}/{WHEEL}"}
+    _dist(site, "cached", "1.0", "uv", direct_url_json=json.dumps(cached))
     local = "file:///sandbox/project/sessions/s1/dist/local_pkg-0.1-py3-none-any.whl"
     archive = {"url": local, "archive_info": {"hashes": {"sha256": "d" * 64}}}
     _dist(site, "local_pkg", "0.1", "pip", direct_url_json=json.dumps(archive))
@@ -296,69 +326,61 @@ def test_a_lockfile_names_packages_by_channel_never_by_the_cache(tmp_path: Path)
     _dist(site, "fromgit", "0.2", "pip", direct_url_json=json.dumps(vcs))
     (site / "legacy-1.0-py3.13.egg-info").write_text("Metadata-Version: 1.1\nName: legacy\n")
     _dist(user, "userpkg", "1.0", "pip")
-    places = provisioning.Places(str(meta), (str(site),), str(user))
+    return provisioning.Places(str(meta), (str(site),), str(user))
 
-    made = provisioning.lockfile(places)
+
+def test_a_lockfile_names_packages_by_channel(tmp_path: Path) -> None:
+    made = provisioning.lockfile(installed(tmp_path))
     lockfile = Lockfile.model_validate(made)
-    text = json.dumps(made)
-    for secret in (CACHE_HOST, ":8090", "test-secret", "cache.example"):
-        assert secret not in text
+    assert "test-secret" not in json.dumps(made)
+    assert lockfile.skipped == 2  # broken.json and list.json
     conda = {package.name: package for package in lockfile.conda}
     assert sorted(conda) == ["dev", "elsewhere", "local", "numpy", "old", "python", "secret"]
-    assert (conda["numpy"].channel, conda["numpy"].subdir, conda["numpy"].file) == (
-        "conda-forge",
-        "linux-64",
-        numpy,
-    )
-    assert (conda["numpy"].sha256, conda["numpy"].license) == (sha, "BSD-3-Clause")
+    numpy = conda["numpy"]
+    assert (numpy.subdir, numpy.file, numpy.sha256) == ("linux-64", NUMPY, "a" * 64)
+    assert numpy.license == "BSD-3-Clause"
+    # The executor cannot tell the package cache's URL: the worker names its channels.
+    assert numpy.channel == f"{CACHE}/conda/conda-forge"
     assert conda["python"].channel == "conda-forge"
     assert conda["dev"].channel == "conda-forge/label/dev"
     assert conda["secret"].channel == "private"
     assert conda["local"].channel == "file:///tmp/channel"
-    assert conda["elsewhere"].channel == "bioconda"
+    # Any other host keeps its URL, laid out like the cache or not.
+    assert conda["elsewhere"].channel == "https://cache.example/mirror/conda/bioconda"
     assert (conda["old"].channel, conda["old"].subdir) == ("conda-forge", "linux-64")
     pip = {item.name: item for item in lockfile.pip}
     assert sorted(pip) == ["cached", "fromgit", "legacy", "local_pkg", "requests", "userpkg"]
     assert (pip["requests"].version, pip["requests"].installer) == ("2.32.0", "pip")
-    assert pip["cached"].url == f"https://files.pythonhosted.org/{wheel}"
-    assert pip["cached"].sha256 == "c" * 64
-    assert (pip["local_pkg"].url, pip["local_pkg"].sha256) == (local, "d" * 64)
+    assert (
+        pip["local_pkg"].url
+        == "file:///sandbox/project/sessions/s1/dist/local_pkg-0.1-py3-none-any.whl"
+    )
+    assert pip["local_pkg"].sha256 == "d" * 64
     assert pip["fromgit"].url == "git+https://github.com/o/r.git"
     assert pip["legacy"].version == "1.0"
     assert pip["userpkg"].location == "user"
     assert lockfile.python == ".".join(map(str, sys.version_info[:3]))
 
 
-def test_the_worker_names_channels_again_whatever_the_executor_wrote(tmp_path: Path) -> None:
-    # Research code can write any lockfile; the stored one never names the cache.
-    revisions = Revisions(Store(tmp_path / "worker.sqlite3"), Blobs(tmp_path / "artifacts"))
-    forged = {
-        "conda": [
-            {
-                "name": "toolz",
-                "version": "1.0",
-                "build": "0",
-                "channel": f"http://{CACHE_HOST}:8090/conda/conda-forge",
-            }
-        ],
-        "pip": [
-            {
-                "name": "x",
-                "version": "1",
-                "url": f"https://u:p@{CACHE_HOST}/pypi/files/x/{'e' * 64}/x-1-py3-none-any.whl",
-            }
-        ],
-    }
+def test_the_worker_names_the_caches_channels_and_files_upstream(tmp_path: Path) -> None:
+    made = provisioning.lockfile(installed(tmp_path))
+    revisions = Revisions(
+        Store(tmp_path / "worker.sqlite3"), Blobs(tmp_path / "lockfiles"), cache=CACHE
+    )
     try:
-        stored = revisions.store_lockfile(forged)
-        assert stored is not None
-        data = revisions.blobs.path(stored.sha256).read_text()
-        assert CACHE_HOST not in data
-        lockfile = Lockfile.model_validate_json(data)
-        assert lockfile.conda[0].channel == "conda-forge"
-        assert lockfile.pip[0].url == "https://files.pythonhosted.org/x-1-py3-none-any.whl"
-        assert revisions.store_lockfile({"conda": [{"name": "no version"}]}) is None
-        assert revisions.store_lockfile("not a lockfile") is None
+        prepared = revisions.prepare(made)
+        assert prepared is not None
+        assert revisions.blobs.path(prepared.ref.sha256).read_bytes() == prepared.data
+        assert CACHE_HOST.encode() not in prepared.data
+        lockfile = Lockfile.model_validate_json(prepared.data)
+        conda = {package.name: package for package in lockfile.conda}
+        assert (conda["numpy"].channel, conda["numpy"].file) == ("conda-forge", NUMPY)
+        assert conda["elsewhere"].channel == "https://cache.example/mirror/conda/bioconda"
+        pip = {item.name: item for item in lockfile.pip}
+        assert pip["cached"].url == f"https://files.pythonhosted.org/{WHEEL}"
+        assert pip["cached"].sha256 == "c" * 64
+        assert revisions.prepare({"conda": [{"name": "no version"}]}) is None
+        assert revisions.prepare("not a lockfile") is None
     finally:
         revisions.store.close()
 
@@ -368,7 +390,8 @@ def test_the_worker_names_channels_again_whatever_the_executor_wrote(tmp_path: P
 
 def test_wrappers_are_written_for_the_managers_on_path(sandbox: Sandbox) -> None:
     bin_dir = sandbox.state.bin
-    assert sorted(path.name for path in bin_dir.iterdir()) == ["micromamba", "pip", "pip3"]
+    wrappers = {"micromamba", "pip", "pip3"}
+    assert wrappers <= {path.name for path in bin_dir.iterdir()}
     assert sandbox.env["PATH"].split(":")[0] == str(bin_dir)
     assert sandbox.env["PYTHONPATH"].split(":")[0] == str(sandbox.state.hook)
     assert sandbox.env["MAMBA_EXE"] == str(bin_dir / "micromamba")  # what %micromamba runs
@@ -424,7 +447,6 @@ def test_two_installs_take_turns(sandbox: Sandbox) -> None:
     assert [record["via"] for record in records] == ["wrapper", "wrapper"]
     assert [record["owner"] for record in records] == ["call-test", "call-test"]
     assert [item["name"] for item in records[1]["lockfile"]["pip"]] == ["alpha", "beta"]
-    assert records[0]["before_lockfile"] is None  # nothing changed before it
 
 
 def test_python_m_pip_waits_for_its_turn(sandbox: Sandbox) -> None:
@@ -488,23 +510,27 @@ def test_an_install_inside_another_runs_in_its_turn(sandbox: Sandbox, name: str)
     assert [item["name"] for item in record["lockfile"]["pip"]] == ["inner", name]
 
 
-def test_a_change_before_a_command_is_kept_apart(sandbox: Sandbox) -> None:
+def test_a_change_before_a_command_is_no_part_of_its_record(sandbox: Sandbox) -> None:
+    known = provisioning.fingerprint(sandbox.config.places)
     (sandbox.prefix.site / "sneaky-1.0.dist-info").mkdir()  # no wrapper saw this
     assert sandbox.run("pip", "install", "delta").returncode == 0
-    [record] = sandbox.records()
-    assert [item["name"] for item in record["before_lockfile"]["pip"]] == ["sneaky"]
-    observed = provisioning.observe(sandbox.state, sandbox.config.places, "0" * 32)
-    assert [entry["command"] for entry in observed.records] == [["pip", "install", "delta"]]
+    observed = provisioning.observe(sandbox.state, sandbox.config.places, known)
+    [(name, record)] = observed.records
+    assert record["command"] == ["pip", "install", "delta"]
+    assert record["before"] != known  # the executor reports that change apart, unmanaged
     assert observed.fingerprint == record["after"]
-    assert observed.lockfile is None  # the record accounts for the packages now
-    assert sandbox.records() == []  # taken from the journal
+    assert observed.lockfile is None  # not asked for
+    # The record stays in the journal until the worker has it.
+    assert [entry["command"] for entry in sandbox.records()] == [["pip", "install", "delta"]]
+    sandbox.state.remove_records([name])
+    assert sandbox.records() == []
 
 
 # The worker: executions wait while a package command runs, and each change is a revision.
 
 
 class Worker:
-    """A worker on the local backend whose executor runs with the throwaway prefix."""
+    """A worker whose executor runs with the throwaway prefix, or a hostile stand-in."""
 
     def __init__(
         self, client: TestClient[Any, Any], manager: ExecutionManager, root: Path, prefix: Prefix
@@ -568,10 +594,17 @@ class Worker:
             await asyncio.sleep(0.05)
         raise AssertionError(f"{line!r} never appeared in the log")
 
+    async def page(self, after: int = -1) -> tuple[RevisionHistory, int]:
+        """A page of the history, and its size in bytes."""
+        response = await self.client.get(
+            f"/v1/environments/env1/revisions?after={after}", headers=AUTH
+        )
+        data = await response.read()
+        assert response.status == 200, data[:500]
+        return RevisionHistory.model_validate_json(data), len(data)
+
     async def revisions(self) -> RevisionHistory:
-        status, body = await self.get("/v1/environments/env1/revisions")
-        assert status == 200, body
-        return RevisionHistory.model_validate(body)
+        return (await self.page())[0]
 
     async def lockfile(self, revision: int) -> tuple[Lockfile, bytes]:
         response = await self.client.get(
@@ -594,6 +627,7 @@ async def start_worker(
         pool_id="test-pool",
         max_artifact_size=1 << 20,
         state_dir=root,
+        package_cache=CACHE,
     )
     await manager.start()
     client = await aiohttp_client(create_app(manager, TOKEN))
@@ -636,14 +670,13 @@ async def test_installs_from_two_sessions_take_turns_and_each_is_a_revision(
     history = await worker.revisions()
     assert [entry.revision for entry in history.revisions] == [0, 1, 2]
     zero, one, two = history.revisions
-    assert (zero.managed, zero.changed_by, zero.command) == (None, None, None)
+    assert (zero.managed, zero.changed_by, zero.commands) == (None, None, ())
     assert (one.managed, one.changed_by) == (True, first["attempt_id"])
     assert (two.managed, two.changed_by) == (True, second["attempt_id"])
-    assert one.command is not None
-    assert two.command is not None
-    assert one.command.argv == ("pip", "install", "alpha")
-    assert two.command.argv == ("pip", "install", "beta")
-    assert (one.command.via, one.command.exit_code) == ("wrapper", 0)
+    assert [command.argv for command in one.commands] == [("pip", "install", "alpha")]
+    assert [command.argv for command in two.commands] == [("pip", "install", "beta")]
+    assert (one.commands[0].via, one.commands[0].exit_code) == ("wrapper", 0)
+    # Each with its own lockfile, whichever attempt's end reported them.
     for revision, names in ((1, ["alpha"]), (2, ["alpha", "beta"])):
         lockfile, _ = await worker.lockfile(revision)
         assert [item.name for item in lockfile.pip if item.location == "prefix"] == names
@@ -704,17 +737,17 @@ async def test_changes_are_recorded_as_managed_or_unmanaged(worker: Worker) -> N
     history = await worker.revisions()
     _, unmanaged, by_wrapper, by_module, by_micromamba = history.revisions
     # CP-4: a change no wrapper saw is unmanaged, set against the attempt it followed.
-    assert (unmanaged.managed, unmanaged.changed_by, unmanaged.command) == (
+    assert (unmanaged.managed, unmanaged.changed_by, unmanaged.commands) == (
         False,
         bypass["attempt_id"],
-        None,
+        (),
     )
     assert unmanaged.lockfile is not None
     assert (by_wrapper.managed, by_wrapper.changed_by) == (True, wrapped["attempt_id"])
     assert (by_module.managed, by_module.changed_by) == (True, module["attempt_id"])
-    assert by_module.command is not None
-    assert by_module.command.via == "module"
-    assert by_module.command.argv[1:] == ("-m", "pip", "install", "zeta")
+    [command] = by_module.commands
+    assert command.via == "module"
+    assert command.argv[1:] == ("-m", "pip", "install", "zeta")
     assert (by_micromamba.managed, by_micromamba.changed_by) == (True, conda["attempt_id"])
     lockfile, data = await worker.lockfile(by_micromamba.revision)
     # CP-18: a package that came through the cache is named by channel, never by the cache.
@@ -773,8 +806,8 @@ async def test_a_cell_waits_for_a_package_command_and_pip_in_a_kernel_takes_its_
     assert installed["state"] == "succeeded", installed["result"]
     last = (await worker.revisions()).revisions[-1]
     assert (last.managed, last.changed_by) == (True, installed["attempt_id"])
-    assert last.command is not None
-    assert last.command.argv[1:] == ("-m", "pip", "install", "kappa")
+    [command] = last.commands
+    assert command.argv[1:] == ("-m", "pip", "install", "kappa")
     assert installed["result"]["environment_revision"] == str(last.revision)
 
 
@@ -797,11 +830,18 @@ async def test_revision_routes_check_what_they_are_asked(worker: Worker) -> None
         ("/v1/environments/env1/revisions/x/lockfile", 400),
         ("/v1/environments/env1/revisions/99/lockfile", 404),
         ("/v1/environments/not%20an%20id/revisions", 400),
+        ("/v1/environments/env1/revisions?after=x", 400),
+        ("/v1/environments/env1/revisions?after=-2", 400),
+        ("/v1/environments/env1/revisions?limit=0", 400),
+        ("/v1/environments/env1/revisions?limit=101", 400),
     ):
         status, body = await worker.get(path)
         assert status == expected, (path, body)
     status, body = await worker.get("/v1/environments/never-used/revisions")
-    assert (status, body) == (200, {"environment_id": "never-used", "revisions": []})
+    assert (status, body) == (
+        200,
+        {"environment_id": "never-used", "revisions": [], "next_after": None},
+    )
 
 
 @pytest.mark.asyncio
@@ -890,39 +930,575 @@ class HostileBackend:
         return 0
 
 
+async def hostile_worker(
+    aiohttp_client: ClientFactory, root: Path, mode: str
+) -> tuple[Worker, Store]:
+    """A worker whose executor is hostile_executor.py in ``mode``."""
+    store = Store(root / "worker.sqlite3")
+    manager = ExecutionManager(
+        store,
+        HostileBackend(mode),
+        Blobs(root / "artifacts"),
+        pool_id="test-pool",
+        max_artifact_size=1 << 20,
+        state_dir=root,
+        package_cache=CACHE,
+    )
+    await manager.start()
+    client = await aiohttp_client(create_app(manager, TOKEN))
+    prefix = Prefix(root, Path(sys.executable), root, root / "installs.log")  # none runs
+    return Worker(client, manager, root, prefix), store
+
+
 @pytest.mark.asyncio
 async def test_revisions_from_a_taken_over_executor_are_bounded_and_checked(
     aiohttp_client: ClientFactory, tmp_path: Path
 ) -> None:
-    store = Store(tmp_path / "worker.sqlite3")
-    manager = ExecutionManager(
-        store,
-        HostileBackend("revisions"),
-        Blobs(tmp_path / "artifacts"),
-        pool_id="test-pool",
-        max_artifact_size=1 << 20,
-        state_dir=tmp_path,
-    )
-    await manager.start()
-    worker = Worker(
-        await aiohttp_client(create_app(manager, TOKEN)), manager, tmp_path, make_prefix(tmp_path)
-    )
+    worker, store = await hostile_worker(aiohttp_client, tmp_path, "revisions")
     try:
         execution = await worker.run("op-hostile", script="true")
         assert execution["state"] == "succeeded"
         revisions = (await worker.revisions()).revisions
         assert len(revisions) == 64  # MAX_REVISIONS for one execution
-        # Nothing names an attempt of no one's, and only the real lockfile is kept,
-        # named by its channel.
+        # Revision 0 is nobody's change; the others name an attempt of no one's.
         assert all(entry.changed_by is None for entry in revisions)
+        # Only the real lockfile is kept, named by its channel.
         assert revisions[0].lockfile is not None
         assert all(entry.lockfile is None for entry in revisions[1:])
         lockfile, data = await worker.lockfile(0)
         assert lockfile.conda[0].channel == "conda-forge"
         assert CACHE_HOST.encode() not in data
-        command = revisions[1].command
-        assert command is not None
-        assert len(command.argv[2]) == 1024
+        [command] = revisions[1].commands
+        assert command.argv == ("pip", "install", "x" * 512)
     finally:
-        await manager.close()
+        await worker.manager.close()
         store.close()
+
+
+# Regression tests for the adversarial review of package commands (2026-10-11).
+
+
+@pytest.mark.asyncio
+async def test_c1_a_lockfile_from_the_executor_is_checked_off_the_event_loop(
+    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One revision event whose lockfile has 7,000 Conda entries with channels of 2,047
+    # characters in ~1,000 path segments stalled the worker's event loop for ~15 s.
+    monkeypatch.setenv("HOSTILE_ENTRIES", "7000")
+    worker, store = await hostile_worker(aiohttp_client, tmp_path, "slow_lockfile")
+    gaps: list[float] = []
+
+    async def ticker() -> None:
+        last = time.monotonic()
+        while True:
+            await asyncio.sleep(0.01)
+            now = time.monotonic()
+            gaps.append(now - last)
+            last = now
+
+    task = asyncio.ensure_future(ticker())
+    try:
+        execution = await worker.run("op-slow", script="true")
+        assert execution["state"] == "succeeded"
+        [entry] = (await worker.revisions()).revisions
+        assert entry.lockfile is None  # over 8 MiB once checked: refused
+    finally:
+        task.cancel()
+        await worker.manager.close()
+        store.close()
+    assert max(gaps) < 2.0
+
+
+@pytest.mark.asyncio
+async def test_h1_lockfiles_are_kept_one_for_each_attempt_and_the_newest_only(
+    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Each revision event could store a distinct lockfile of up to 8 MiB, 64 of them an
+    # execution, kept forever.
+    monkeypatch.setattr(revisions_module, "MAX_LOCKFILES", 3)
+    monkeypatch.setenv("HOSTILE_COUNT", "8")
+    worker, store = await hostile_worker(aiohttp_client, tmp_path, "lockfiles")
+    try:
+        for index in range(5):
+            execution = await worker.run(f"op-{index}", script="true")
+            assert execution["state"] == "succeeded"
+        history = (await worker.revisions()).revisions
+        assert len(history) == 40
+        kept = [entry.lockfile for entry in history if entry.lockfile is not None]
+        # Each attempt brought eight; its first was kept, and of those the newest three.
+        assert [entry.revision for entry in history if entry.lockfile] == [16, 24, 32]
+        stored = (tmp_path / "lockfiles" / "blobs").glob("*/*")
+        assert sorted(path.name for path in stored) == sorted(ref.sha256 for ref in kept)
+    finally:
+        await worker.manager.close()
+        store.close()
+
+
+def test_h1_an_environment_keeps_its_newest_revisions_and_lockfiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(revisions_module, "MAX_HISTORY", 6)
+    revisions = Revisions(Store(tmp_path / "worker.sqlite3"), Blobs(tmp_path / "lockfiles"))
+    try:
+        made: list[Prepared] = []
+        for index in range(10):
+            prepared = revisions.prepare({"pip": [{"name": f"p{index}", "version": "1.0"}]})
+            assert prepared is not None
+            made.append(prepared)
+        monkeypatch.setattr(
+            revisions_module, "MAX_LOCKFILE_STORE", 2 * max(item.ref.size for item in made)
+        )
+        for index, prepared in enumerate(made):
+            revisions.observe("env1", f"{index + 1:032x}", lockfile=prepared)
+        history = revisions.history("env1").revisions
+        assert [entry.revision for entry in history] == [4, 5, 6, 7, 8, 9]
+        assert [entry.revision for entry in history if entry.lockfile] == [8, 9]
+        stored = (tmp_path / "lockfiles" / "blobs").glob("*/*")
+        assert sorted(path.name for path in stored) == sorted(
+            prepared.ref.sha256 for prepared in made[8:]
+        )
+        # A lockfile no revision takes is not kept either.
+        spare = revisions.prepare({"pip": [{"name": "spare", "version": "1.0"}]})
+        assert spare is not None
+        assert not revisions.attach("env1", "f" * 32, spare)
+        assert not revisions.blobs.path(spare.ref.sha256).exists()
+        # Pages, oldest first.
+        first = revisions.history("env1", limit=4)
+        assert ([entry.revision for entry in first.revisions], first.next_after) == (
+            [4, 5, 6, 7],
+            7,
+        )
+        rest = revisions.history("env1", after=7, limit=4)
+        assert ([entry.revision for entry in rest.revisions], rest.next_after) == ([8, 9], None)
+    finally:
+        revisions.store.close()
+
+
+@pytest.mark.asyncio
+async def test_h1_the_history_is_bounded_and_served_in_pages(
+    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Revisions with long command lines, 64 an execution, grew the history by ~4 MiB an
+    # execution, all of it served by one response.
+    monkeypatch.setattr(revisions_module, "MAX_HISTORY", 100)
+    monkeypatch.setenv("HOSTILE_COUNT", "64")
+    worker, store = await hostile_worker(aiohttp_client, tmp_path, "big_commands")
+    try:
+        for index in range(3):
+            execution = await worker.run(f"op-cmd-{index}", script="true")
+            assert execution["state"] == "succeeded"
+        seen: list[int] = []
+        sizes: list[int] = []
+        after = -1
+        while True:
+            page, size = await worker.page(after)
+            sizes.append(size)
+            seen += [entry.revision for entry in page.revisions]
+            for entry in page.revisions:
+                for command in entry.commands:
+                    assert sum(map(len, command.argv[:-1])) <= 4096
+                    assert command.argv[-1] == "[… 32 more arguments]"
+            if page.next_after is None:
+                break
+            after = page.next_after
+        assert seen == list(range(92, 192))  # the newest 100 of 192
+        assert len(sizes) > 1
+        assert max(sizes) <= MAX_REVISION_PAGE_BYTES
+    finally:
+        await worker.manager.close()
+        store.close()
+
+
+CACHE_FORMS = [
+    # The cache's address, otherwise than as the cache lays out its channels and files.
+    {"conda": [{"channel": f"{CACHE_HOST}:8090/conda/conda-forge"}]},
+    {"conda": [{"channel": f"http://{CACHE_HOST}:99999/conda/conda-forge"}]},
+    {"conda": [{"channel": f"http://{CACHE_HOST}:8090/pypi/simple"}]},
+    {"conda": [{"channel": f"HTTP://{CACHE_HOST.upper()}:8091/conda/conda-forge"}]},
+    {"conda": [{"channel": "conda-forge", "file": f"{CACHE}/conda/conda-forge/noarch/d.conda"}]},
+    {"pip": [{"url": f"{CACHE}/pypi/simple/e/e-1.tar.gz"}]},
+    {"pip": [{"url": f"{CACHE}/pypi/files/f/{'e' * 64}"}]},
+    # Line breaks and other controls.
+    {"conda": [{"file": "numpy-2.1.0-0.conda\nhttps://evil.example/payload-1.0-0.conda"}]},
+    {"conda": [{"channel": "conda-forge\n@EXPLICIT"}]},
+    {"conda": [{"name": "safe\u202egnp.exe"}]},
+    {"pip": [{"url": "https://files.pythonhosted.org/x.whl\r\nhttps://evil.example/x.whl"}]},
+    # Look-alike hosts, as they read (review M2).
+    {"conda": [{"channel": "https://c\u043enda.anaconda.org/conda-forge"}]},
+    {"pip": [{"url": "https://files.pythonh\u043ested.org/packages/ab/cd/numpy.whl"}]},
+    # URLs that do not parse.
+    {"conda": [{"channel": "http://[::1/conda-forge"}]},
+]
+
+
+@pytest.mark.parametrize("forged", CACHE_FORMS)
+def test_m1_a_lockfile_that_names_the_cache_or_holds_controls_is_refused(
+    tmp_path: Path, forged: dict[str, list[dict[str, str]]]
+) -> None:
+    entries = {
+        "conda": {"name": "numpy", "version": "2.1.0", "build": "0"},
+        "pip": {"name": "numpy", "version": "2.1.0"},
+    }
+    lockfile = {
+        section: [{**entries[section], **fields} for fields in items]
+        for section, items in forged.items()
+    }
+    revisions = Revisions(
+        Store(tmp_path / "worker.sqlite3"), Blobs(tmp_path / "lockfiles"), cache=CACHE
+    )
+    try:
+        assert revisions.prepare(lockfile) is None
+        assert list((tmp_path / "lockfiles" / "blobs").glob("*/*")) == []
+    finally:
+        revisions.store.close()
+
+
+def test_m2_only_the_cache_and_conda_anaconda_org_are_named_upstream(tmp_path: Path) -> None:
+    # A forged or a real package from any host laid out like the cache read as conda-forge's
+    # or PyPI's, and a look-alike host as the real one.
+    meta = tmp_path / "conda-meta"
+    meta.mkdir()
+    numpy = f"https://attacker.example/conda/conda-forge/linux-64/{NUMPY}"
+    look_alike = "https://c\u043enda.anaconda.org/conda-forge/noarch/toolz-1.0-0.conda"
+    _meta(meta, "numpy", {"name": "numpy", "version": "2.1.0", "build": "0", "url": numpy})
+    _meta(meta, "toolz", {"name": "toolz", "version": "1.0", "build": "0", "url": look_alike})
+    made = provisioning.lockfile(provisioning.Places(str(meta), ()))
+    channels = {item["name"]: item["channel"] for item in made["conda"]}
+    ascii_host = "c\u043enda.anaconda.org".encode("idna").decode()
+    assert ascii_host.startswith("xn--")
+    assert channels == {
+        "numpy": "https://attacker.example/conda/conda-forge",
+        "toolz": f"https://{ascii_host}/conda-forge",
+    }
+    wheel = (
+        f"https://attacker.example/pypi/files/numpy/{'9' * 64}/aa/bb/numpy-2.1.0-py3-none-any.whl"
+    )
+    assert provisioning.canonical_url(wheel, CACHE) == (wheel, None)
+    elsewhere = "https://attacker.example/x/conda/conda-forge"
+    assert provisioning.canonical_channel(elsewhere, CACHE) == elsewhere
+    # The cache's own, at its own host and port only, and conda.anaconda.org over HTTPS.
+    assert provisioning.canonical_channel(f"{CACHE}/conda/conda-forge", CACHE) == "conda-forge"
+    other_port = f"http://{CACHE_HOST}:8091/conda/conda-forge"
+    assert provisioning.canonical_channel(other_port, CACHE) == other_port
+    plain = "http://conda.anaconda.org/conda-forge"
+    assert provisioning.canonical_channel(plain, CACHE) == plain
+    file = f"{CACHE}/pypi/files/numpy/{'9' * 64}/aa/bb/numpy-2.1.0-py3-none-any.whl"
+    assert provisioning.canonical_url(file, CACHE) == (
+        "https://files.pythonhosted.org/aa/bb/numpy-2.1.0-py3-none-any.whl",
+        "9" * 64,
+    )
+
+
+def test_m4_a_wrapper_killed_with_sigkill_takes_its_command_along(sandbox: Sandbox) -> None:
+    # Only the wrapper held the lock: killed, it left the real command running outside
+    # any turn, and the next install ran beside it.
+    gate = sandbox.prefix.root.parent / "gate"
+    wrapper = sandbox.start("pip", "install", "alpha", FAKEPM_GATE=str(gate))
+    command = sandbox.prefix.pid("start", "alpha")
+    assert command != wrapper.pid
+    assert alive(command)
+    wrapper.kill()
+    assert wrapper.wait(30) == -signal.SIGKILL
+    deadline = time.monotonic() + 10
+    while alive(command):
+        assert time.monotonic() < deadline, "the command outlived its wrapper"
+        time.sleep(0.02)
+    gate.touch()
+    with held(sandbox.state):  # the turn ended with both
+        time.sleep(0.2)
+    assert not (sandbox.prefix.site / "alpha-1.0.dist-info").exists()
+    assert sandbox.records() == []
+
+
+def test_m5_the_executor_signals_a_wrapped_command_through_its_wrapper_only(
+    sandbox: Sandbox,
+) -> None:
+    # The executor sent SIGTERM to each process of a call, the wrapper passed its own on,
+    # and the command got two: the second can cut short the clean-up the first began.
+    wrapper = sandbox.start("pip", "install", "counting")
+    command = sandbox.prefix.pid("ready", "counting")
+    table = executor_module.process_table()
+    found = [table[wrapper.pid], table[command]]
+    chosen = without_wrapped(found)
+    assert [info.pid for info in chosen] == [wrapper.pid]
+    signal_processes(chosen, signal.SIGTERM)
+    assert wrapper.wait(30) == 143
+    lines = sandbox.prefix.log.read_text().splitlines()
+    assert lines.count("got TERM") == 1
+
+
+@pytest.mark.asyncio
+async def test_m5_a_timed_out_install_gets_one_sigterm(worker: Worker) -> None:
+    await worker.run("op-0", script="true")
+    done = await worker.run("op-t", script="exec pip install counting", timeout_seconds=2)
+    assert done["state"] == "timed_out", done["result"]
+    lines = worker.prefix.log.read_text().splitlines()
+    assert lines.count("got TERM") == 1
+
+
+@pytest.mark.asyncio
+async def test_m6_many_installs_in_one_call_are_one_revision_with_its_lockfile(
+    worker: Worker,
+) -> None:
+    # Past 64 package commands in one call, the records were lost, and so was the
+    # lockfile of the state the call left.
+    await worker.run("op-0", script="true")
+    script = "for i in $(seq 1 70); do pip install pkg$i >/dev/null || exit 1; done"
+    loop = await worker.run("op-loop", script=script, timeout_seconds=300)
+    assert loop["state"] == "succeeded", loop["result"]
+    history = (await worker.revisions()).revisions
+    assert [entry.revision for entry in history] == [0, 1]
+    last = history[-1]
+    assert (last.managed, last.changed_by) == (True, loop["attempt_id"])
+    assert [command.argv[2] for command in last.commands] == [f"pkg{i}" for i in range(63, 71)]
+    assert last.omitted_commands == 62
+    assert last.lockfile is not None
+    lockfile, _ = await worker.lockfile(1)
+    assert {item.name for item in lockfile.pip} == {f"pkg{i}" for i in range(1, 71)}
+
+
+class Sent:
+    """What an executor sends, kept."""
+
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    async def __call__(self, message: dict[str, Any]) -> None:
+        self.messages.append(message)
+
+    def revisions(self) -> list[dict[str, Any]]:
+        return [message for message in self.messages if message.get("event") == "revision"]
+
+
+def bare_executor(tmp_path: Path) -> tuple[Executor, Sent, provisioning.Config]:
+    """An executor whose environment is an empty ``conda-meta`` and site-packages, and the
+    configuration its package commands record turns with."""
+    sent = Sent()
+    executor = Executor(tmp_path / "project", sent)
+    assert executor.provisioning is not None
+    meta, site = tmp_path / "conda-meta", tmp_path / "site"
+    meta.mkdir()
+    site.mkdir()
+    places = provisioning.Places(str(meta), (str(site),))
+    executor.places = places
+    executor.reported = provisioning.baseline(executor.packages, places)
+    python, script = executor.provisioning.python, executor.provisioning.script
+    return executor, sent, provisioning.Config(python, script, str(tmp_path), places)
+
+
+@pytest.mark.asyncio
+async def test_m6_records_beyond_one_look_come_in_order_and_an_attempts_make_one_change(
+    tmp_path: Path,
+) -> None:
+    executor, sent, _ = bare_executor(tmp_path)
+    executor.own("call-x", "exe-x")
+    fingerprints = [executor.reported, *(f"{index:032x}" for index in range(1, 301))]
+    for index in range(300):
+        record = {
+            "version": provisioning.RECORD_VERSION,
+            "command": ["pip", "install", f"pkg{index}"],
+            "via": "wrapper",
+            "owner": "call-x",
+            "invoked": time.time(),
+            "exit_code": 0,
+            "before": fingerprints[index],
+            "after": fingerprints[index + 1],
+            "lockfile": {"pip": [{"name": f"pkg{index}", "version": "1.0"}]},
+        }
+        name = f"{index + 1:020d}-1.json"  # as the commands ended, one after another
+        (executor.packages.journal / name).write_text(json.dumps(record))
+    await executor.begin(Running(execution="exe-next", kind="shell"), 30)
+    first, second, last = sent.revisions()
+    # A look reads 256 records; the next, the rest; and then the packages themselves.
+    assert (first["managed"], first["cause"], first["fingerprint"]) == (
+        True,
+        "exe-x",
+        fingerprints[256],
+    )
+    assert [command["command"][2] for command in first["commands"]] == [
+        f"pkg{index}" for index in range(248, 256)
+    ]
+    assert first["omitted_commands"] == 248
+    assert first["lockfile"]["pip"][0]["name"] == "pkg255"
+    assert (second["fingerprint"], second["omitted_commands"]) == (fingerprints[300], 36)
+    assert second["lockfile"]["pip"][0]["name"] == "pkg299"
+    assert (last["managed"], last["cause"], last["fingerprint"]) == (False, None, fingerprints[0])
+    assert list(executor.packages.journal.glob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_l1_a_record_stays_in_the_journal_until_the_worker_has_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A cell cancelled while it waited in the queue, as its start read the journal, lost
+    # the record: the change was then reported as unmanaged.
+    executor, sent, config = bare_executor(tmp_path)
+    turn = provisioning.Turn(executor.packages, config, ["pip", "install", "alpha"], "wrapper")
+    assert turn.begin()
+    _dist(Path(config.places.site[0]), "alpha", "1.0", "pip")
+    turn.end(0)
+    release = threading.Event()
+    real = provisioning.observe
+
+    def slow_observe(*args: Any, **kwargs: Any) -> provisioning.Observation:
+        observed = real(*args, **kwargs)
+        release.wait(30)  # a large environment's look takes a while
+        return observed
+
+    monkeypatch.setattr(executor_module.provisioning, "observe", slow_observe)
+    queued = Running(execution="exe-cancelled", kind="cell", queued=True)
+    task = asyncio.ensure_future(executor.begin(queued, 30))
+    while not executor.observing.locked():
+        await asyncio.sleep(0.01)
+    await asyncio.sleep(0.1)
+    task.cancel()  # what op_cancel does for a queued cell
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    release.set()
+    monkeypatch.setattr(executor_module.provisioning, "observe", real)
+    assert len(list(executor.packages.journal.glob("*.json"))) == 1
+    await executor.begin(Running(execution="exe-next", kind="shell"), 30)
+    [event] = sent.revisions()
+    assert event["managed"] is True
+    assert [command["command"] for command in event["commands"]] == [["pip", "install", "alpha"]]
+    assert list(executor.packages.journal.glob("*.json")) == []
+
+
+@pytest.mark.asyncio
+async def test_l2_a_fifo_among_the_package_records_holds_nothing_up(tmp_path: Path) -> None:
+    # A FIFO in conda-meta blocked the look at the packages, and every attempt with it.
+    executor, sent, config = bare_executor(tmp_path)
+    running = Running(execution="exe-a", kind="shell")
+    await executor.begin(running, 60)
+    info = Path(config.places.site[0]) / "evil-1.0.dist-info"
+    info.mkdir()
+    fifos = [
+        Path(config.places.conda_meta) / "evil-1.0-0.json",
+        info / "METADATA",
+        info / "INSTALLER",
+        executor.packages.journal / f"{1:020d}-1.json",
+    ]
+    for fifo in fifos:
+        os.mkfifo(fifo)
+    task = asyncio.ensure_future(executor.settle(running))
+    try:
+        done, _ = await asyncio.wait({task}, timeout=10)
+        assert done, "the look at the packages waits for a FIFO"
+    finally:
+        # A reader that blocked would keep this process from ending: let each one go.
+        deadline = time.monotonic() + 30
+        while not task.done() and time.monotonic() < deadline:
+            for fifo in fifos:
+                with contextlib.suppress(OSError):
+                    os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            await asyncio.sleep(0.05)
+    settled = task.result()
+    [event] = sent.revisions()
+    assert (event["managed"], event["cause"]) == (False, "exe-a")
+    assert event["lockfile"]["skipped"] == 1  # the conda-meta record
+    assert [item["name"] for item in event["lockfile"]["pip"]] == ["evil"]  # by its directory
+    assert settled["environment"] == event["fingerprint"]
+
+
+def test_l3_scripts_find_the_environment_beside_its_package_managers(sandbox: Sandbox) -> None:
+    # `command -v conda` names the wrapper: what scripts look for beside it must be there.
+    root = sandbox.prefix.root
+    conda = root / "bin" / "conda"
+    conda.write_text("#!/bin/sh\nexit 0\n")
+    conda.chmod(0o755)
+    (root / "etc" / "profile.d").mkdir(parents=True)
+    (root / "etc" / "profile.d" / "conda.sh").write_text("CONDA_SOURCED=1\n")
+    path = hermetic_path(sandbox.prefix, root.parent)
+    assert "conda" in provisioning.refresh(sandbox.state, sandbox.config, path)
+    script = (
+        '. "$(dirname "$(command -v conda)")/../etc/profile.d/conda.sh" && echo "$CONDA_SOURCED"'
+        ' && "$(dirname "$(command -v pip)")/python" -c "import sys; print(sys.prefix)"'
+        ' && "$(dirname "$(command -v pip)")/pip" install sigma'
+    )
+    env = {**sandbox.env, "PATH": f"{sandbox.state.bin}:{path}:/usr/bin:/bin"}
+    result = subprocess.run(  # noqa: S603
+        ["/bin/sh", "-c", script], env=env, capture_output=True, text=True, timeout=60, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["1", str(root)]
+    [record] = sandbox.records()  # pip beside the wrappers is the wrapper
+    assert record["command"] == ["pip", "install", "sigma"]
+
+
+def test_l4_a_command_ended_by_a_signal_ends_its_wrapper_alike(sandbox: Sandbox) -> None:
+    real = sandbox.prefix.root / "bin" / "pip"
+    direct = sandbox.run(str(real), "install", "killed")
+    wrapped = sandbox.run("pip", "install", "killed")
+    assert direct.returncode == wrapped.returncode == -signal.SIGKILL
+    [record] = sandbox.records()
+    assert (record["exit_code"], record["signal"]) == (None, signal.SIGKILL)
+
+
+@pytest.mark.parametrize(
+    ("argument", "kept"),
+    [
+        (
+            "--index-url=https://user:test-secret-a@private.example/simple",
+            "--index-url=https://***@private.example/simple",
+        ),
+        ("https://user:p@ss@host.example/simple", "https://***@host.example/simple"),
+        (
+            "https://host.example/simple?token=test-secret-b&x=1",
+            "https://host.example/simple?token=***&x=1",
+        ),
+        ("--password=test-secret-c", "--password=***"),
+        ("git+ssh://git@github.com/o/r.git", "git+ssh://***@github.com/o/r.git"),
+        ("numpy>=2", "numpy>=2"),
+    ],
+)
+def test_l5_credentials_on_a_command_line_are_redacted(argument: str, kept: str) -> None:
+    assert provisioning.redact(argument) == kept
+
+
+def test_l5_a_recorded_command_line_is_redacted_bounded_and_printable() -> None:
+    bounded = provisioning.bounded_command
+    assert bounded(["pip", "install", "--token", "test-secret-d", "x"]) == [
+        "pip",
+        "install",
+        "--token",
+        "***",
+        "x",
+    ]
+    # Cut, the user information of a URL goes too, though its "@" was cut off.
+    long = "https://user:test-secret-e" + "s" * 5000 + "@host.example/simple"
+    assert bounded(["pip", "install", "--index-url", long]) == [
+        "pip",
+        "install",
+        "--index-url",
+        "https://***",
+    ]
+    words = bounded(["pip", "install", *(f"p{index}" for index in range(100))])
+    assert (len(words), words[-1]) == (33, "[… 70 more arguments]")
+    assert bounded(words) == words
+    assert bounded(["a\x1b[2Jb"]) == ["a?[2Jb"]
+    started = time.monotonic()
+    bounded(["--" + "token" * 10_000 + "!", "x://" * 100_000, "?" + "a" * 1_000_000])
+    assert time.monotonic() - started < 1  # no pattern backtracks over an argument
+
+
+@pytest.mark.asyncio
+async def test_l5_index_credentials_are_never_stored(worker: Worker) -> None:
+    await worker.run("op-0", script="true")
+    credential = "test-secret-index-token"
+    script = f"pip install --index-url=https://user:{credential}@private.example/simple alpha"
+    done = await worker.run("op-secret", script=script)
+    assert done["state"] == "succeeded", done["result"]
+    status, body = await worker.get("/v1/environments/env1/revisions")
+    assert status == 200
+    assert credential not in json.dumps(body)
+    [command] = RevisionHistory.model_validate(body).revisions[-1].commands
+    assert command.argv == (
+        "pip",
+        "install",
+        "--index-url=https://***@private.example/simple",
+        "alpha",
+    )
+    with contextlib.closing(sqlite3.connect(worker.root / "worker.sqlite3")) as database:
+        rows = database.execute("SELECT record FROM revision_entries").fetchall()
+    assert rows
+    assert all(credential not in row[0] for row in rows)

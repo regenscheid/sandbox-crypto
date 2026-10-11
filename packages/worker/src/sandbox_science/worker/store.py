@@ -56,12 +56,16 @@ CREATE TABLE IF NOT EXISTS environment_revisions (
     fingerprint TEXT NOT NULL,
     changed_by TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS revision_history (
+CREATE TABLE IF NOT EXISTS revision_entries (
     environment_id TEXT NOT NULL,
     revision INTEGER NOT NULL,
+    recorded REAL NOT NULL,
+    lockfile TEXT,
+    lockfile_size INTEGER NOT NULL,
     record TEXT NOT NULL,
     PRIMARY KEY (environment_id, revision)
 );
+CREATE INDEX IF NOT EXISTS revision_entries_lockfile ON revision_entries (lockfile);
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
     record TEXT NOT NULL
@@ -251,25 +255,91 @@ class Store:
             self.save_revision_entry(environment_id, entry)
 
     def save_revision_entry(self, environment_id: str, entry: EnvironmentRevision) -> None:
+        lockfile = entry.lockfile
         self._db.execute(
-            "INSERT OR REPLACE INTO revision_history VALUES (?, ?, ?)",
-            (environment_id, entry.revision, entry.model_dump_json()),
+            "INSERT OR REPLACE INTO revision_entries VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                environment_id,
+                entry.revision,
+                entry.recorded_at.timestamp(),
+                lockfile.sha256 if lockfile is not None else None,
+                lockfile.size if lockfile is not None else 0,
+                entry.model_dump_json(),
+            ),
         )
 
     def revision_entry(self, environment_id: str, revision: int) -> EnvironmentRevision | None:
         row = self._db.execute(
-            "SELECT record FROM revision_history WHERE environment_id = ? AND revision = ?",
+            "SELECT record FROM revision_entries WHERE environment_id = ? AND revision = ?",
             (environment_id, revision),
         ).fetchone()
         return _revision(environment_id, row[0]) if row else None
 
-    def revision_history(self, environment_id: str) -> list[EnvironmentRevision]:
-        """The environment's recorded revisions, oldest first; an unreadable one is skipped."""
+    def revision_page(
+        self, environment_id: str, after: int, limit: int, since: float | None = None
+    ) -> list[EnvironmentRevision]:
+        """Up to ``limit`` of the environment's revisions after ``after``, oldest first, and
+        none recorded before ``since``; an unreadable one is skipped."""
         rows = self._db.execute(
-            "SELECT record FROM revision_history WHERE environment_id = ? ORDER BY revision",
-            (environment_id,),
+            "SELECT record FROM revision_entries WHERE environment_id = ? AND revision > ?"
+            " AND recorded >= ? ORDER BY revision LIMIT ?",
+            (environment_id, after, since if since is not None else -1.0, limit),
         ).fetchall()
         return [found for row in rows if (found := _revision(environment_id, row[0])) is not None]
+
+    def trim_revisions(self, environment_id: str, keep: int) -> list[str]:
+        """Forget all but the environment's ``keep`` newest revisions; return the lockfiles
+        they referenced."""
+        bound = "SELECT revision FROM revision_entries WHERE environment_id = ?"
+        bound += " ORDER BY revision DESC LIMIT 1 OFFSET ?"
+        row = self._db.execute(bound, (environment_id, keep - 1)).fetchone()
+        if row is None:
+            return []
+        with self._transaction():
+            gone = self._db.execute(
+                "SELECT lockfile FROM revision_entries WHERE environment_id = ? AND revision < ?"
+                " AND lockfile IS NOT NULL",
+                (environment_id, int(row[0])),
+            ).fetchall()
+            self._db.execute(
+                "DELETE FROM revision_entries WHERE environment_id = ? AND revision < ?",
+                (environment_id, int(row[0])),
+            )
+        return [str(found[0]) for found in gone]
+
+    def lockfiles(self, environment_id: str) -> list[tuple[int, str, int]]:
+        """The environment's revisions that have a lockfile, oldest first: revision,
+        SHA-256 and size."""
+        rows = self._db.execute(
+            "SELECT revision, lockfile, lockfile_size FROM revision_entries"
+            " WHERE environment_id = ? AND lockfile IS NOT NULL ORDER BY revision",
+            (environment_id,),
+        ).fetchall()
+        return [(int(row[0]), str(row[1]), int(row[2])) for row in rows]
+
+    def lockfile_used(self, sha256: str) -> bool:
+        """Whether any environment's revision still names this lockfile."""
+        row = self._db.execute(
+            "SELECT 1 FROM revision_entries WHERE lockfile = ? LIMIT 1", (sha256,)
+        ).fetchone()
+        return row is not None
+
+    def forget_revisions(self, environment_id: str) -> list[str]:
+        """Forget an environment's revisions, the current one too; return the lockfiles
+        they referenced."""
+        with self._transaction():
+            gone = self._db.execute(
+                "SELECT lockfile FROM revision_entries WHERE environment_id = ?"
+                " AND lockfile IS NOT NULL",
+                (environment_id,),
+            ).fetchall()
+            self._db.execute(
+                "DELETE FROM revision_entries WHERE environment_id = ?", (environment_id,)
+            )
+            self._db.execute(
+                "DELETE FROM environment_revisions WHERE environment_id = ?", (environment_id,)
+            )
+        return [str(found[0]) for found in gone]
 
     # Kernels.
 

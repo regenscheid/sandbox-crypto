@@ -112,6 +112,7 @@ async def serve(settings: Settings) -> None:
         max_artifact_size=settings.max_artifact_size,
         state_dir=settings.state_dir,
         shared=shared,
+        package_cache=settings.openshell.package_cache if settings.openshell else None,
     )
     if environments is not None:
         environments.release = manager.release

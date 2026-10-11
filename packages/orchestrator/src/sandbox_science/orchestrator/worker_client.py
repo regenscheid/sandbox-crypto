@@ -49,6 +49,11 @@ from sandbox_science.contracts import (
     WriteFileRequest,
     WriteFileResult,
 )
+from sandbox_science.contracts.revisions import (
+    MAX_LOCKFILE_BYTES,
+    MAX_REVISION_PAGE,
+    MAX_REVISION_PAGE_BYTES,
+)
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MAX_EVENT_BYTES, Language
 
 _log = logging.getLogger(__name__)
@@ -113,8 +118,9 @@ class WorkerClient:
         model: type[_Model],
         body: BaseModel | None = None,
         params: dict[str, str] | None = None,
+        max_bytes: int | None = None,
     ) -> _Model:
-        return (await self._request(method, path, model, body, params))[0]
+        return (await self._request(method, path, model, body, params, max_bytes))[0]
 
     async def _request(
         self,
@@ -123,8 +129,9 @@ class WorkerClient:
         model: type[_Model],
         body: BaseModel | None = None,
         params: dict[str, str] | None = None,
+        max_bytes: int | None = None,
     ) -> tuple[_Model, int]:
-        """The response as ``model``, and its status."""
+        """The response as ``model``, and its status; a body over ``max_bytes`` is an error."""
         data = body.model_dump_json() if body is not None else None
         try:
             async with self._http().request(
@@ -135,7 +142,10 @@ class WorkerClient:
                 headers={**self._headers, "Content-Type": "application/json"},
                 timeout=aiohttp.ClientTimeout(sock_connect=10, sock_read=CALL_TIMEOUT),
             ) as response:
-                payload = await response.read()
+                if max_bytes is None:
+                    payload = await response.read()
+                else:
+                    payload = await _bounded_body(response.content, max_bytes)
                 if response.status >= 400:
                     raise _error(payload, response.status)
         except (aiohttp.ClientError, TimeoutError) as exc:
@@ -175,16 +185,27 @@ class WorkerClient:
             AdmissionRequest(hosts=tuple(hosts)),
         )
 
-    async def revisions(self, environment_id: str) -> RevisionHistory:
-        """The environment's revisions: how each change to its packages came, and its lockfile."""
+    async def revisions(
+        self, environment_id: str, *, after: int = -1, limit: int = MAX_REVISION_PAGE
+    ) -> RevisionHistory:
+        """A page of the environment's revisions after revision ``after``, oldest first: how
+        each change to its packages came, and its lockfile. The page's ``next_after`` is the
+        ``after`` of the next page, while there is one."""
         return await self._call(
-            "GET", f"/v1/environments/{environment_id}/revisions", RevisionHistory
+            "GET",
+            f"/v1/environments/{environment_id}/revisions",
+            RevisionHistory,
+            params={"after": str(after), "limit": str(limit)},
+            max_bytes=MAX_REVISION_PAGE_BYTES,
         )
 
     async def lockfile(self, environment_id: str, revision: int) -> Lockfile:
         """The packages of one revision of the environment (Conda provisioning, CP-18)."""
         return await self._call(
-            "GET", f"/v1/environments/{environment_id}/revisions/{revision}/lockfile", Lockfile
+            "GET",
+            f"/v1/environments/{environment_id}/revisions/{revision}/lockfile",
+            Lockfile,
+            max_bytes=MAX_LOCKFILE_BYTES,
         )
 
     # Executions.
@@ -336,6 +357,18 @@ class WorkerClient:
                 return await response.read()
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise WorkerAPIError(ErrorKind.UNAVAILABLE, f"cannot reach the worker: {exc}") from exc
+
+
+async def _bounded_body(content: aiohttp.StreamReader, limit: int) -> bytes:
+    """A response body of up to ``limit`` bytes; a longer one is an error."""
+    body = bytearray()
+    async for chunk in content.iter_chunked(64 * 1024):
+        body += chunk
+        if len(body) > limit:
+            raise WorkerAPIError(
+                ErrorKind.INTERNAL, f"a response from the worker is over {limit} bytes"
+            )
+    return bytes(body)
 
 
 async def _lines(content: aiohttp.StreamReader, limit: int) -> AsyncIterator[bytes]:
