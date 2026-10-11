@@ -59,7 +59,7 @@ An escalated request becomes a permission request (D76). The logic is shared wit
 
 ## Policy store
 
-The worker service writes, and the middleware reads, a state directory ([worker](WORKER.md), "Environments"; D73):
+The worker service writes, and the middleware reads, a state directory ([worker](WORKER.md), "Environments"; D73). The code is the policy library's (`sandbox_science.policy.store`), which the MCP proxy uses too, with project bindings (`projects/<project>.json`) in place of sandbox bindings:
 
 | Path | Contents |
 | --- | --- |

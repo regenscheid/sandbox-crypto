@@ -5,6 +5,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from sandbox_science.policy.store import StoreError
+
+__all__ = [
+    "McpProxyError",
+    "MessageError",
+    "RefusalError",
+    "SessionGoneError",
+    "SettingsError",
+    "StoreError",
+    "UpstreamError",
+]
+
 
 class McpProxyError(Exception):
     """Base class for MCP proxy errors."""
@@ -12,10 +24,6 @@ class McpProxyError(Exception):
 
 class SettingsError(McpProxyError):
     """The settings file is missing, malformed or inconsistent."""
-
-
-class StoreError(McpProxyError):
-    """A policy or a project binding could not be read, validated or written."""
 
 
 class MessageError(McpProxyError):

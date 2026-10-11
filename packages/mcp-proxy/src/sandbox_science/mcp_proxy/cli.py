@@ -38,7 +38,7 @@ from sandbox_science.policy.approvals import ALL_SCOPES, Approvals, pending_line
 from sandbox_science.policy.loader import read_limited
 
 from .callers import Callers, token_digest
-from .errors import McpProxyError
+from .errors import McpProxyError, StoreError
 from .proxy import McpProxy
 from .records import OPERATOR, STORE_TIMEOUT, StoreSink
 from .sessions import Sessions
@@ -112,7 +112,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"token = {token}")
                 print(f"token_sha256 = {token_digest(token)}")
                 return 0
-    except (McpProxyError, PolicyLoadError, EventStoreError, OSError) as exc:
+    except (McpProxyError, StoreError, PolicyLoadError, EventStoreError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

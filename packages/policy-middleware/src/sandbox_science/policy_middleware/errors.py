@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+from sandbox_science.policy.store import StoreError
+
+__all__ = ["AuthError", "MiddlewareError", "SettingsError", "StoreError"]
+
 
 class MiddlewareError(Exception):
     """Base class for policy middleware errors."""
@@ -10,10 +14,6 @@ class MiddlewareError(Exception):
 
 class SettingsError(MiddlewareError):
     """The service settings file is missing, malformed or inconsistent."""
-
-
-class StoreError(MiddlewareError):
-    """A policy or sandbox binding could not be read, validated or written."""
 
 
 class AuthError(MiddlewareError):

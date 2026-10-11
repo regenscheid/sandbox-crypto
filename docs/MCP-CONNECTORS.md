@@ -203,7 +203,6 @@ openshell forward service --target-port 8080 --local 127.0.0.1:8080 mcp-proxy
 - Approved tools are not compiled into the proxy sandbox's fence, so OpenShell still refuses an escalated tool there; until they are, the fence has to allow escalated tools for approvals to take effect (backlog).
 - `Basic` credentials in `headers` servers: how OpenShell expects a placeholder inside one is unchecked.
 - A test against crypto-research-mcp, which needs OAuth.
-- The policy store code is a copy of the middleware's; a shared library would serve the middleware, the worker and the proxy.
 
 ## Authentication modes
 

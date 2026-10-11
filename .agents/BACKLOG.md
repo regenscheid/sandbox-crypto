@@ -70,7 +70,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] MCP proxy: MCP 2026-07-28 (no sessions, metadata in every request, `Mcp-Method` and `Mcp-Name` headers, server requests embedded in results), and the policy's protocol method list for it
 - [ ] MCP proxy: pass server notifications (progress, logging, list changes) to callers, and resume interrupted event streams
 - [ ] MCP proxy callers: identity from the policy middleware, which knows the sandbox, instead of per-sandbox tokens; `process`-level attribution (D67)
-- [ ] One policy store library for the policy middleware, the worker and the MCP proxy, which holds a copy of the middleware's store code
+- [x] One policy store library for the policy middleware, the worker and the MCP proxy: `sandbox_science.policy.store`, with sandbox bindings for the middleware and project bindings for the proxy. The worker no longer depends on the middleware package
 - [x] Event store with an append-only hash chain (`packages/event-store`, D74): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
 - [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer). On a single-user host such as babbage, a systemd user timer could log each checkpoint to the journal, whose files the user's processes cannot rewrite
 - [ ] Event store growth: rotate old records (D74). Repeated escalations are no longer recorded again (D76)
