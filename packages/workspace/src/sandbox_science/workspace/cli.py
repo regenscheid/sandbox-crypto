@@ -3,7 +3,8 @@
 
 ```
 sandbox-science-workspace serve --state-dir DIR --static DIR [--listen 127.0.0.1:8200] \\
-    [--allow-remote]
+    [--allow-remote] \\
+    [--model-url http://127.0.0.1:4000 --reviewer-model reviewer --api-key-file key]
 ```
 
 ``--state-dir`` is the harness's state directory, whose records the workspace reads and
@@ -12,6 +13,11 @@ listens on a loopback address unless ``--allow-remote`` allows another one; it s
 plain HTTP, so on another address the login URL and the session cookie cross the
 network unencrypted. At each start it makes a new login token and prints the login URL
 once, on standard output.
+
+With ``--model-url``, ``--reviewer-model`` and ``--api-key-file``, the page may ask the
+reviewer model, through the model gateway, to repair math that KaTeX rejects
+(mathrepair.py); the gateway is then the one host the server connects to. Without them,
+or with ``--reviewer-model off``, it never does.
 """
 
 from __future__ import annotations
@@ -32,9 +38,43 @@ from aiohttp import web
 from sandbox_science.orchestrator.projects import ProjectStore
 
 from .app import create_app
+from .mathrepair import MathRepairService, gateway_service, reviewer_alias
 
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
+
+
+def math_repairs(
+    model_url: str | None, reviewer: str | None, api_key_file: Path | None
+) -> MathRepairService:
+    """The repair service the settings describe; ValueError for incomplete settings."""
+    if reviewer_alias(reviewer) is None:
+        if reviewer is None and (model_url is not None or api_key_file is not None):
+            raise ValueError("--model-url and --api-key-file need --reviewer-model")
+        return MathRepairService(reviewer=reviewer)
+    if model_url is None or api_key_file is None:
+        raise ValueError("--reviewer-model needs --model-url and --api-key-file")
+    if not model_url.startswith(("http://", "https://")):
+        raise ValueError(f"--model-url {model_url!r} is not an http or https URL")
+    try:
+        api_key = api_key_file.read_text().strip()
+        mode = api_key_file.stat().st_mode
+    except OSError as exc:
+        raise ValueError(f"cannot read the API key file {api_key_file}: {exc.strerror}") from None
+    except UnicodeDecodeError:
+        raise ValueError(f"the API key file {api_key_file} is not text") from None
+    if not api_key:
+        raise ValueError(f"the API key file {api_key_file} is empty")
+    if mode & 0o077:
+        _log.warning(
+            "the API key file %s can be read by other users (mode %o); chmod 600 it",
+            api_key_file,
+            mode & 0o777,
+        )
+    try:
+        return gateway_service(model_url, reviewer or "", api_key)
+    except ValueError as exc:
+        raise ValueError(f"the API key file {api_key_file}: {exc}") from None
 
 
 def parse_listen(text: str) -> tuple[str, int]:
@@ -86,9 +126,11 @@ async def serve(app: web.Application, host: str, port: int, login_token: str) ->
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point of ``sandbox-science-workspace``."""
-    parser = argparse.ArgumentParser(prog="sandbox-science-workspace")
+    parser = argparse.ArgumentParser(prog="sandbox-science-workspace", allow_abbrev=False)
     commands = parser.add_subparsers(dest="command", required=True)
-    command = commands.add_parser("serve", help="serve the workspace GUI and its API")
+    command = commands.add_parser(
+        "serve", help="serve the workspace GUI and its API", allow_abbrev=False
+    )
     command.add_argument(
         "--state-dir", type=Path, required=True, help="the harness's state directory"
     )
@@ -106,9 +148,31 @@ def main(argv: Sequence[str] | None = None) -> int:
     command.add_argument(
         "--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR")
     )
+    repairs = command.add_argument_group(
+        "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
+    )
+    repairs.add_argument(
+        "--model-url",
+        help="the model gateway's OpenAI-compatible base URL (the LiteLLM proxy), as the "
+        "gateway answers it: redirects are not followed",
+    )
+    repairs.add_argument(
+        "--reviewer-model",
+        help="the alias of the reviewer model, the only model asked for repairs (off: none)",
+    )
+    repairs.add_argument(
+        "--api-key-file", type=Path, help="a file holding the workspace's key for the gateway"
+    )
     args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     try:
         host, port = parse_listen(args.listen)
+    except ValueError as exc:
+        parser.error(str(exc))
+    try:
+        repair = math_repairs(args.model_url, args.reviewer_model, args.api_key_file)
     except ValueError as exc:
         parser.error(str(exc))
     loopback = is_loopback(host)
@@ -117,9 +181,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{host} is not a loopback address; --allow-remote accepts connections from "
             "other machines, over plain HTTP"
         )
-    logging.basicConfig(
-        level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
     if not args.state_dir.is_dir():
         print(f"error: there is no state directory {args.state_dir}", file=sys.stderr)
         return 1
@@ -130,10 +191,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.static,
             login_token=login_token,
             check_host=loopback,
+            math_repair=repair,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)
         return 1
+    if repair.enabled:
+        _log.info(
+            "math repairs ask the reviewer model %r through the model gateway", repair.reviewer
+        )
+    else:
+        _log.info("math repairs by a model are off")
     if not loopback:
         _log.warning(
             "listening on %s, which is not loopback: the login URL and session cookie travel "
