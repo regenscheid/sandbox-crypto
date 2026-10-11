@@ -33,18 +33,22 @@ from sandbox_science.contracts import (
 from sandbox_science.policy.package_requests import classify_package_request
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import OpenShellBackend
+from sandbox_science.worker.cli import _environments as cli_environments  # pyright: ignore[reportPrivateUsage]
+from sandbox_science.worker.cli import main
 from sandbox_science.worker.executor import Executor, Message
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.package_clients import (
     CacheUrlError,
     ClientConfiguration,
+    cache_endpoint,
     check_cache_url,
     render,
 )
-from sandbox_science.worker.settings import OpenShellBackendSettings
+from sandbox_science.worker.settings import OpenShellBackendSettings, load_settings
 from sandbox_science.worker.store import Store
 
 CACHE = "http://host.openshell.internal:8090"
+TARGETS = Path(__file__).resolve().parents[3] / "examples" / "openshell" / "targets.yaml"
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 VARIABLES = ("PIP_CONFIG_FILE", "CONDARC", "GOENV", "NPM_CONFIG_USERCONFIG", "UV_DEFAULT_INDEX")
 
@@ -513,3 +517,49 @@ def test_the_package_cache_setting_is_checked(tmp_path: Path) -> None:
     assert settings.package_cache == "http://cache.example:8090"
     with pytest.raises(ValidationError, match="package cache URL"):
         openshell_settings(tmp_path, package_cache="http://cache:8090,direct")
+
+
+@pytest.mark.parametrize(
+    ("url", "endpoint"),
+    [
+        (CACHE, ("host.openshell.internal", 8090)),
+        ("http://cache.example/", ("cache.example", 80)),
+        ("https://Cache.Example/mirror", ("cache.example", 443)),
+    ],
+)
+def test_the_cache_endpoint_is_the_host_and_port_clients_connect_to(
+    url: str, endpoint: tuple[str, int]
+) -> None:
+    assert cache_endpoint(url) == endpoint
+
+
+def environment_settings(tmp_path: Path, package_cache: str) -> Path:
+    """A worker settings file whose worker creates sandboxes, with the example targets."""
+    (tmp_path / "worker.token").write_text("t" * 40)
+    (tmp_path / "pool-ceiling.yaml").write_text(
+        "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
+    )
+    path = tmp_path / "worker.toml"
+    path.write_text(
+        'token_file = "worker.token"\nstate_dir = "state"\n\n'
+        f'[openshell]\nisolation_tier = 3\npackage_cache = "{package_cache}"\n\n'
+        f'[openshell.environments]\npolicy_store = "middleware"\ntargets = "{TARGETS}"\n'
+        'ceiling = "pool-ceiling.yaml"\nprofiles = {minimal = "docker.io/library/python:3.13"}\n'
+    )
+    return path
+
+
+def test_the_package_cache_must_be_where_the_targets_file_puts_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Policies compiled for the worker's sandboxes admit the cache only at the
+    # targets file's host and port, so clients pointed elsewhere would reach nothing.
+    assert main(["serve", "--settings", str(environment_settings(tmp_path, CACHE))]) == 1
+    assert capsys.readouterr().err == (
+        f"error: package_cache {CACHE} is not where the targets file puts the package cache "
+        "(package-cache.sandbox-science.internal:8090)\n"
+    )
+    matching = environment_settings(tmp_path, "http://package-cache.sandbox-science.internal:8090")
+    environments = cli_environments(load_settings(matching))
+    assert environments is not None
+    environments.close()

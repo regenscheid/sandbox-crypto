@@ -72,6 +72,9 @@ class _Cache:
     """Normalized, without a trailing slash."""
     netloc: str
     """``host`` or ``host:port``, as clients name the host they trust."""
+    host: str
+    port: int
+    """As given, or the scheme's default."""
     plain_http: bool
 
 
@@ -82,6 +85,12 @@ def check_cache_url(value: str) -> str:
     a path, and have no user info, query or fragment. Raises CacheUrlError.
     """
     return _cache(value).url
+
+
+def cache_endpoint(cache_url: str) -> tuple[str, int]:
+    """The host and port the clients connect to, as an OpenShell targets file names them."""
+    cache = _cache(cache_url)
+    return cache.host, cache.port
 
 
 def render(cache_url: str) -> ClientConfiguration:
@@ -115,10 +124,13 @@ def _cache(value: str) -> _Cache:
     if any(segment in (".", "..") for segment in path.split("/")):
         raise CacheUrlError(f"the package cache URL must not have . or .. segments: {value!r}")
     netloc = f"{host}:{port}" if port is not None else host
+    plain_http = match["scheme"] == "http"
     return _Cache(
         url=f"{match['scheme']}://{netloc}{path}",
         netloc=netloc,
-        plain_http=match["scheme"] == "http",
+        host=host,
+        port=int(port) if port is not None else 80 if plain_http else 443,
+        plain_http=plain_http,
     )
 
 
