@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,7 +38,7 @@ def store(tmp_path: Path) -> ProjectStore:
 def test_a_project_is_created_once(store: ProjectStore) -> None:
     record, created = store.create("p1", "minimal", POLICY)
     assert created
-    assert record.default_environment_id == "p1-default"
+    assert re.fullmatch(r"p1-default-[0-9a-f]{12}", record.default_environment_id)
     assert (record.profile, record.policy, record.sessions) == ("minimal", POLICY, {})
     again, created = store.create("p1", "minimal", POLICY)
     assert (again, created) == (record, False)
@@ -70,13 +71,15 @@ def test_sessions_share_the_default_environment_unless_dedicated(store: ProjectS
     a = store.open_session("p1", "a", dedicated=False)
     b = store.open_session("p1", "b", dedicated=False)
     c = store.open_session("p1", "c", dedicated=True)
-    assert a.environment_id == b.environment_id == "p1-default"
-    assert (c.environment_id, c.dedicated) == ("p1-c", True)
+    default = store.get("p1").default_environment_id
+    assert a.environment_id == b.environment_id == default
+    assert re.fullmatch(r"p1-c-[0-9a-f]{12}", c.environment_id)
+    assert c.dedicated
     assert store.open_session("p1", "a", dedicated=False) == a
     with pytest.raises(ProjectError) as conflict:
         store.open_session("p1", "a", dedicated=True)
     assert conflict.value.kind is ErrorKind.CONFLICT
-    assert store.get("p1").environments() == ["p1-default", "p1-c"]
+    assert store.get("p1").environments() == [default, c.environment_id]
 
 
 def test_a_closed_session_opens_again(store: ProjectStore) -> None:
@@ -224,4 +227,17 @@ def test_records_survive_a_new_store(tmp_path: Path, store: ProjectStore) -> Non
     store.open_session("p1", "a", dedicated=True)
     reopened = ProjectStore(tmp_path / "state")
     record: ProjectRecord = reopened.get("p1")
-    assert record.sessions["a"].environment_id == "p1-a"
+    assert re.fullmatch(r"p1-a-[0-9a-f]{12}", record.sessions["a"].environment_id)
+
+
+def test_environment_ids_are_unpredictable(tmp_path: Path) -> None:
+    # Two pools' records for the same project and session get different IDs, so no
+    # other project's client can take one first (D78).
+    first, second = ProjectStore(tmp_path / "one"), ProjectStore(tmp_path / "two")
+    ids = []
+    for store in (first, second):
+        record, _ = store.create("p1", "minimal", POLICY)
+        session = store.open_session("p1", "s1", dedicated=True)
+        ids.append((record.default_environment_id, session.environment_id))
+    assert ids[0][0] != ids[1][0]
+    assert ids[0][1] != ids[1][1]

@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: MIT
 """The worker API over HTTP (docs/WORKER.md).
 
-Every route needs ``Authorization: Bearer <token>``. Errors are JSON
-``WorkerErrorResponse`` bodies carrying an error kind from docs/specs/tools.md.
+Every route needs ``Authorization: Bearer <token>``: the pool's own token, which may act
+for every project, or a client's, which may act only for the projects its settings
+list. For such a client, the executions, artifacts and environments of other projects
+do not exist, and only the policy revisions granted to its projects can be used. When
+the worker manages environments, a request's environment must belong to the project
+it names. Errors are JSON ``WorkerErrorResponse`` bodies carrying an error kind from
+docs/specs/tools.md.
 """
 
 from __future__ import annotations
@@ -10,17 +15,22 @@ from __future__ import annotations
 import contextlib
 import hmac
 import logging
-from collections.abc import Awaitable, Callable
-from typing import Final
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from typing import Final, cast
 
 from aiohttp import web
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
+    ArtifactRef,
     EnvironmentRequest,
+    EnvironmentState,
     ErrorInfo,
     ErrorKind,
     Event,
+    Execution,
+    ExecutionContext,
     ExecutionRequest,
     Identifier,
     KernelRestartRequest,
@@ -28,6 +38,7 @@ from sandbox_science.contracts import (
     PolicyRevisionRequest,
     PublishRequest,
     ReadFileRequest,
+    SessionClosed,
     SessionCloseRequest,
     WorkerErrorResponse,
     WriteFileRequest,
@@ -37,6 +48,7 @@ from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
 from .environments import Environments
 from .errors import WorkerError
 from .manager import ExecutionManager
+from .settings import ClientSettings, token_digest
 
 _log = logging.getLogger(__name__)
 
@@ -49,6 +61,21 @@ _IDENTIFIER = TypeAdapter[str](Identifier)
 _MEDIA_TYPE = TypeAdapter[str](MediaType)
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+_CLIENT: Final = "sandbox_science.client"
+_MAX_TOKEN: Final = 4096
+_READS: Final = frozenset({"/v1/files/read", "/v1/files/list"})
+"""Requests that change nothing, though sent with POST: not logged as changes."""
+
+
+@dataclass(frozen=True, slots=True)
+class Client:
+    """Who is calling: ``projects`` is None for the pool's own token."""
+
+    name: str
+    projects: frozenset[str] | None
+
+    def allows(self, project_id: str) -> bool:
+        return self.projects is None or project_id in self.projects
 
 
 def _error(kind: ErrorKind, message: str, status: int) -> web.Response:
@@ -61,27 +88,50 @@ def _json(model: BaseModel, status: int = 200) -> web.Response:
 
 
 def create_app(
-    manager: ExecutionManager, token: str, environments: Environments | None = None
+    manager: ExecutionManager,
+    token: str,
+    environments: Environments | None = None,
+    clients: Sequence[ClientSettings] = (),
 ) -> web.Application:
+    if clients and environments is None:
+        raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
+    pool = Client("pool", None)
+    by_digest = {c.token_sha256: Client(c.name, frozenset(c.projects)) for c in clients}
+    if token_digest(token) in by_digest:
+        raise ValueError("a client has the pool's own token")
+
+    def identify(header: str) -> Client | None:
+        # Header bytes that are not UTF-8 arrive as surrogates; they must not raise.
+        presented = header.encode("utf-8", "surrogateescape")
+        if hmac.compare_digest(presented, expected):
+            return pool
+        scheme, _, secret = header.partition(" ")
+        if scheme != "Bearer" or not secret or len(secret) > _MAX_TOKEN:
+            return None
+        # A lookup by the token's hash compares no secret directly.
+        return by_digest.get(token_digest(secret))
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
-        # Header bytes that are not UTF-8 arrive as surrogates; they must not raise.
-        presented = request.headers.get("Authorization", "").encode("utf-8", "surrogateescape")
-        if not hmac.compare_digest(presented, expected):
+        client = identify(request.headers.get("Authorization", ""))
+        if client is None:
             return _error(ErrorKind.POLICY_DENIED, "missing or wrong bearer token", 401)
+        request[_CLIENT] = client
         try:
-            return await handler(request)
+            response = await handler(request)
         except WorkerError as error:
-            return _error(error.kind, error.message, error.status)
+            response = _error(error.kind, error.message, error.status)
         except ValidationError as exc:
-            return _error(ErrorKind.INVALID_REQUEST, _summary(exc), 400)
-        except web.HTTPException:
+            response = _error(ErrorKind.INVALID_REQUEST, _summary(exc), 400)
+        except web.HTTPException as exc:
+            _audit(request, client, exc.status)
             raise
         except Exception:
             _log.exception("worker API request failed")
-            return _error(ErrorKind.INTERNAL, "internal worker error", 500)
+            response = _error(ErrorKind.INTERNAL, "internal worker error", 500)
+        _audit(request, client, response.status)
+        return response
 
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app[MANAGER] = manager
@@ -124,6 +174,83 @@ def _identifier(value: str, what: str) -> str:
         raise WorkerError(ErrorKind.INVALID_REQUEST, f"{what} is not a valid identifier") from exc
 
 
+def _audit(request: web.Request, client: Client, status: int) -> None:
+    """Log a change a caller asked for, by route, never by the path it sent (review of D78)."""
+    if request.method == "GET":
+        return
+    route = request.match_info.route.resource
+    template = route.canonical if route is not None else "an unknown route"
+    if template in _READS:
+        return
+    _log.info("%s %s by %s: %d", request.method, template, client.name, status)
+
+
+def _client(request: web.Request) -> Client:
+    return cast(Client, request[_CLIENT])
+
+
+def _visible(request: web.Request, project_id: str, what: str) -> None:
+    """Hide what belongs to a project the client may not act for, as if it did not exist."""
+    if not _client(request).allows(project_id):
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no {what}")
+
+
+def _allowed(request: web.Request, project_id: str) -> None:
+    if not _client(request).allows(project_id):
+        raise WorkerError(
+            ErrorKind.POLICY_DENIED, f"this client may not act for project {project_id!r}"
+        )
+
+
+def _context(request: web.Request, context: ExecutionContext) -> None:
+    """Check that the client may act for the project, and that the environment is the project's.
+
+    An environment ID the worker created stays with its project, deleted or not, so
+    what passes here cannot reach another project's sandbox later (D78). A client
+    limited to some projects may use only the environments the worker created for
+    them; the pool's own token may also use the sandboxes made by hand.
+    """
+    _allowed(request, context.project_id)
+    environments = request.app.get(ENVIRONMENTS)
+    if environments is None:
+        return  # no environment belongs to a project here, and no client is limited
+    environment_id = context.environment_id
+    info = environments.records.get(environment_id)
+    limited = _client(request).projects is not None
+    if info is None:
+        if not limited and environments.handmade(environment_id):
+            return
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+    if info.project_id != context.project_id:
+        if limited:
+            raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+        raise WorkerError(
+            ErrorKind.CONFLICT,
+            f"environment {environment_id!r} belongs to project {info.project_id!r}, "
+            f"not {context.project_id!r}",
+        )
+    if limited and info.state is EnvironmentState.DELETED:
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+
+
+def _revision(
+    request: web.Request, environments: Environments, project_id: str, policy: str
+) -> None:
+    """A limited client may use only the policy revisions granted to the project.
+
+    A revision not granted gets the same answer as one never stored, so that a client
+    learns nothing of other projects' revisions.
+    """
+    if _client(request).projects is not None and not environments.records.granted(
+        project_id, policy
+    ):
+        raise WorkerError(
+            ErrorKind.NOT_FOUND,
+            f"no policy revision {policy} for project {project_id!r}; an operator grants "
+            "revisions with `sandbox-science-worker policy add --project`",
+        )
+
+
 def _project(request: web.Request) -> str | None:
     """The ``project_id`` query parameter: when given, the execution or artifact must be in it."""
     project_id = request.query.get("project_id")
@@ -143,22 +270,39 @@ def _environments(request: web.Request) -> Environments:
 
 async def create_environment(request: web.Request) -> web.Response:
     body = EnvironmentRequest.model_validate_json(await _body(request))
-    info, created = await _environments(request).create(body)
+    _allowed(request, body.project_id)
+    environments = _environments(request)
+    _revision(request, environments, body.project_id, body.policy)
+    # An environment of another project is a conflict that does not name the project.
+    info, created = await environments.create(body)
     return _json(info, 201 if created else 200)
 
 
+def _environment(request: web.Request, environments: Environments) -> str:
+    """The route's environment ID, once it is known to belong to the client's projects."""
+    environment_id = request.match_info["environment_id"]
+    info = environments.get(environment_id)
+    _visible(request, info.project_id, f"environment {environment_id!r}")
+    return environment_id
+
+
 async def get_environment(request: web.Request) -> web.Response:
-    return _json(_environments(request).get(request.match_info["environment_id"]))
+    environments = _environments(request)
+    return _json(environments.get(_environment(request, environments)))
 
 
 async def revise_environment(request: web.Request) -> web.Response:
     body = PolicyRevisionRequest.model_validate_json(await _body(request))
-    environment_id = request.match_info["environment_id"]
-    return _json(await _environments(request).revise(environment_id, body.policy))
+    environments = _environments(request)
+    environment_id = _environment(request, environments)
+    project_id = environments.get(environment_id).project_id
+    _revision(request, environments, project_id, body.policy)
+    return _json(await environments.revise(environment_id, body.policy))
 
 
 async def delete_environment(request: web.Request) -> web.Response:
-    return _json(await _environments(request).delete(request.match_info["environment_id"]))
+    environments = _environments(request)
+    return _json(await environments.delete(_environment(request, environments)))
 
 
 async def capabilities(request: web.Request) -> web.Response:
@@ -166,27 +310,41 @@ async def capabilities(request: web.Request) -> web.Response:
     if not environment_id:
         raise WorkerError(ErrorKind.INVALID_REQUEST, "environment_id is required")
     environment_id = _identifier(environment_id, "environment_id")
+    environments = request.app.get(ENVIRONMENTS)
+    if environments is not None and _client(request).projects is not None:
+        info = environments.records.get(environment_id)
+        if info is None or info.state is EnvironmentState.DELETED:
+            raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+        _visible(request, info.project_id, f"environment {environment_id!r}")
     return _json(await request.app[MANAGER].capabilities(environment_id))
 
 
 async def submit(request: web.Request) -> web.Response:
     execution_request = _REQUEST.validate_json(await _body(request))
+    _context(request, execution_request.context)
     execution, created = await request.app[MANAGER].submit(execution_request)
     return _json(execution, 201 if created else 200)
 
 
+def _execution(request: web.Request) -> Execution:
+    """The route's execution, once it is known to belong to the client's projects."""
+    execution_id = request.match_info["execution_id"]
+    execution = request.app[MANAGER].get(execution_id, _project(request))
+    _visible(request, execution.context.project_id, f"execution {execution_id}")
+    return execution
+
+
 async def get_execution(request: web.Request) -> web.Response:
-    return _json(request.app[MANAGER].get(request.match_info["execution_id"], _project(request)))
+    return _json(_execution(request))
 
 
 async def events(request: web.Request) -> web.StreamResponse:
     manager = request.app[MANAGER]
-    execution_id = request.match_info["execution_id"]
     try:
         after = min(max(0, int(request.query.get("after", "0"))), 2**62)
     except ValueError as exc:
         raise WorkerError(ErrorKind.INVALID_REQUEST, "after must be an integer") from exc
-    manager.get(execution_id, _project(request))
+    execution_id = _execution(request).execution_id
     response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson"})
     await response.prepare(request)
     # The status line is sent: from here on, an error can only end the stream early.
@@ -208,49 +366,66 @@ async def events(request: web.Request) -> web.StreamResponse:
 
 
 async def cancel(request: web.Request) -> web.Response:
-    execution_id = request.match_info["execution_id"]
-    return _json(await request.app[MANAGER].cancel(execution_id, _project(request)))
+    return _json(await request.app[MANAGER].cancel(_execution(request).execution_id))
 
 
 async def close_session(request: web.Request) -> web.Response:
     body = SessionCloseRequest.model_validate_json(await _body(request))
+    try:
+        _context(request, body.context)
+    except WorkerError as error:
+        if error.kind is not ErrorKind.NOT_FOUND:
+            raise
+        # No environment, so no kernels to stop: the session is closed as it is.
+        return _json(SessionClosed())
     return _json(await request.app[MANAGER].close_session(body))
 
 
 async def restart_kernel(request: web.Request) -> web.Response:
     body = KernelRestartRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
     return _json(await request.app[MANAGER].restart_kernel(body))
 
 
 async def read_file(request: web.Request) -> web.Response:
     body = ReadFileRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
     return _json(await request.app[MANAGER].read_file(body))
 
 
 async def write_file(request: web.Request) -> web.Response:
     body = WriteFileRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
     return _json(await request.app[MANAGER].write_file(body))
 
 
 async def list_files(request: web.Request) -> web.Response:
     body = ListFilesRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
     return _json(await request.app[MANAGER].list_files(body))
 
 
 async def publish(request: web.Request) -> web.Response:
     body = PublishRequest.model_validate_json(await _body(request))
+    _context(request, body.context)
     return _json(await request.app[MANAGER].publish(body), 201)
 
 
+def _artifact(request: web.Request) -> ArtifactRef:
+    """The route's artifact, once it is known to belong to the client's projects."""
+    artifact_id = request.match_info["artifact_id"]
+    artifact = request.app[MANAGER].artifact(artifact_id, _project(request))
+    _visible(request, artifact.project_id, f"artifact {artifact_id}")
+    return artifact
+
+
 async def get_artifact(request: web.Request) -> web.Response:
-    return _json(
-        request.app[MANAGER].artifact(request.match_info["artifact_id"], _project(request))
-    )
+    return _json(_artifact(request))
 
 
 async def get_artifact_content(request: web.Request) -> web.StreamResponse:
     manager = request.app[MANAGER]
-    artifact = manager.artifact(request.match_info["artifact_id"], _project(request))
+    artifact = _artifact(request)
     try:
         media_type = _MEDIA_TYPE.validate_python(artifact.media_type)
     except ValidationError:  # recorded before media types were checked

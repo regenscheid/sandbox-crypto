@@ -6,6 +6,13 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Per-project worker credentials** (D78, proposed). Besides the pool's own token, the worker accepts client tokens that act only for the projects the settings list.
+  - For such a client, other projects' executions, artifacts and environments do not exist. It can use only environments the worker created for its projects, under policy revisions an operator granted to them.
+  - Two adversarial reviews found three ways around the checks, all closed:
+    - An environment deleted and created again for another project while a request waited could receive that request. IDs now stay with their first project.
+    - A sandbox made by hand could be reached through a deleted environment of the same name. Those sandboxes are now the pool token's alone.
+    - Sandbox names derived from IDs could be shared by a crafted ID, which then took over another project's sandbox. Names are now random, and the worker checks a sandbox's identity before running code in it.
+  - Operation IDs are kept per project, and the harness's environment IDs end with a random tag.
 - **The MCP proxy in its own sandbox** ([lab 13](docs/agent-reports/babbage-openshell-lab-13-2026-10-11.md)).
   - The proxy ran in an OpenShell VM sandbox for the first time. It was reached from the host and from an orchestrator sandbox, and called DeepWiki's public MCP server and a fake one on the host.
   - OpenShell put the provider's token into the proxy's requests at the bound server only. The proxy's version header and its replies to the server's requests passed the fence.
@@ -63,7 +70,7 @@ Updated: 2026-10-11.
 
 Decisions to confirm, each proposed with a recommendation in its row:
 - D68 (policy evaluation details), the details of D69 (including how admission on demand works, after lab 10) and D70, and PSF-2.0 and MIT-0 in tier 1.
-- D72 (harness components), D73 (the worker creates sandboxes), D74 (event store), D75 (MCP proxy on its own JSON-RPC layer), D76 (permission requests) and D77 (image contract).
+- D72 (harness components), D73 (the worker creates sandboxes), D74 (event store), D75 (MCP proxy on its own JSON-RPC layer), D76 (permission requests), D77 (image contract) and D78 (per-project worker credentials).
 
 Questions with a recommendation, waiting for the user:
 - **Shared data across environments.** OpenShell VMs share no filesystem, so a workbook in its own environment cannot see the project's `shared/` area (W3). Recommended: the worker keeps the project's shared area and copies changes between environments before and after each call, with a conflict copy when two environments change the same file. The alternative is explicit transfer only.

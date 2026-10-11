@@ -3,12 +3,14 @@
 
 ```
 sandbox-science-worker serve --settings worker.toml [--log-level info]
-sandbox-science-worker token --out worker.token
-sandbox-science-worker policy add --settings worker.toml policy.yaml
+sandbox-science-worker token --out worker.token     # prints the new token's SHA-256
+sandbox-science-worker token --sha256 client.token  # the SHA-256 of an existing token
+sandbox-science-worker policy add --settings worker.toml [--project p1] policy.yaml
 ```
 
 ``policy add`` is the operator's way to put a project policy revision into the pool's
-policy store, where environments can then use it (D73); the worker API cannot.
+policy store, where environments can then use it (D73); the worker API cannot. With
+``--project``, clients limited to that project may use the revision too (D78).
 """
 
 from __future__ import annotations
@@ -20,10 +22,13 @@ import os
 import secrets
 import signal
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from aiohttp import web
+from pydantic import TypeAdapter, ValidationError
 
+from sandbox_science.contracts import Identifier
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy_middleware.errors import StoreError
 
@@ -35,7 +40,7 @@ from .environments import EnvironmentRecords, Environments, printable
 from .errors import WorkerError
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
-from .settings import Settings, SettingsError, load_settings
+from .settings import MIN_TOKEN, Settings, SettingsError, load_settings, token_digest
 from .store import Store
 from .suspend import Suspender
 
@@ -77,6 +82,7 @@ def _backend(settings: Settings, environments: Environments | None) -> Backend:
             environments.sandbox if environments is not None else None,
             executor_args=_executor_args(settings),
             prepare=environments.resume if environments is not None else None,
+            manages=environments.manages if environments is not None else None,
         )
     if settings.local is None:
         raise SettingsError("no backend is configured")
@@ -106,7 +112,9 @@ async def serve(settings: Settings) -> None:
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
-    runner = web.AppRunner(create_app(manager, token, environments), access_log=None)
+    runner = web.AppRunner(
+        create_app(manager, token, environments, settings.clients), access_log=None
+    )
     background: list[asyncio.Task[None]] = []
     try:
         await manager.start()
@@ -138,8 +146,11 @@ async def serve(settings: Settings) -> None:
             environments.close()
 
 
-def add_policies(settings: Settings, paths: list[Path]) -> int:
-    """Store project policy revisions for environments, after compiling each to check it."""
+def add_policies(settings: Settings, paths: list[Path], projects: Sequence[str] = ()) -> int:
+    """Store project policy revisions for environments, after compiling each to check it.
+
+    Each revision is granted to ``projects``, whose limited clients may then use it.
+    """
     openshell = settings.openshell
     if openshell is None or openshell.environments is None:
         print("error: the settings have no [openshell.environments] table", file=sys.stderr)
@@ -165,6 +176,9 @@ def add_policies(settings: Settings, paths: list[Path]) -> int:
                 status = 1
                 continue
             print(f"stored {path} as {loaded.digest}")
+            for project in projects:
+                environments.records.grant(project, loaded.digest)
+                print(f"  granted to project {project}")
             for finding in compiled.findings:
                 print(f"  {finding.severity}: {finding.subject}: {finding.message}")
     finally:
@@ -196,6 +210,16 @@ def show_admissions(settings: Settings, environment_id: str) -> int:
     return 0
 
 
+_IDENTIFIER = TypeAdapter[str](Identifier)
+
+
+def _project(value: str) -> str:
+    try:
+        return _IDENTIFIER.validate_python(value)
+    except ValidationError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a project ID") from None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sandbox-science-worker")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -204,12 +228,26 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument(
         "--log-level", default="info", choices=["debug", "info", "warning", "error"]
     )
-    token_parser = commands.add_parser("token", help="write a new random bearer token")
-    token_parser.add_argument("--out", type=Path, required=True)
+    token_parser = commands.add_parser(
+        "token", help="write a new random bearer token, or print a token's SHA-256"
+    )
+    which = token_parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--out", type=Path, help="write a new token here and print its SHA-256")
+    which.add_argument(
+        "--sha256", type=Path, metavar="FILE", help="print the SHA-256 of the token in FILE"
+    )
     policy_parser = commands.add_parser("policy", help="manage the pool's policy store")
     policy_commands = policy_parser.add_subparsers(dest="policy_command", required=True)
     add_parser = policy_commands.add_parser("add", help="store project policy revisions")
     add_parser.add_argument("--settings", type=Path, required=True)
+    add_parser.add_argument(
+        "--project",
+        dest="projects",
+        type=_project,
+        action="append",
+        default=[],
+        help="let clients limited to this project use the revisions (repeatable)",
+    )
     add_parser.add_argument("policies", type=Path, nargs="+")
     admissions_parser = commands.add_parser(
         "admissions", help="show an environment's admission decisions (D69)"
@@ -218,9 +256,25 @@ def main(argv: list[str] | None = None) -> int:
     admissions_parser.add_argument("--environment", required=True)
     args = parser.parse_args(argv)
     if args.command == "token":
-        descriptor = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w") as handle:
-            handle.write(secrets.token_urlsafe(32) + "\n")
+        if args.out is not None:
+            token = secrets.token_urlsafe(32)
+            descriptor = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w") as handle:
+                handle.write(token + "\n")
+        else:
+            try:
+                token = args.sha256.read_text().strip()
+            except OSError as exc:
+                print(f"error: cannot read {args.sha256}: {exc}", file=sys.stderr)
+                return 1
+            if len(token) < MIN_TOKEN:
+                print(
+                    f"error: the token in {args.sha256} is shorter than {MIN_TOKEN} characters",
+                    file=sys.stderr,
+                )
+                return 1
+        # The line a [[clients]] entry takes; the digest names the token without revealing it.
+        print(f'token_sha256 = "{token_digest(token)}"')
         return 0
     if args.command in ("policy", "admissions"):
         try:
@@ -229,7 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
         if args.command == "policy":
-            return add_policies(settings, args.policies)
+            return add_policies(settings, args.policies, args.projects)
         return show_admissions(settings, args.environment)
     logging.basicConfig(
         level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"
