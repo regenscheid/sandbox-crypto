@@ -29,17 +29,20 @@ from sandbox_science.policy.openshell import (
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
     AnyOf,
+    Binary,
     Compiled,
     CompileError,
     Endpoint,
     FilesystemPolicy,
     McpProxyTarget,
     OpenShellPolicy,
+    OrchestratorTarget,
     SandboxFilesystem,
     SandboxTarget,
     ServiceEndpoint,
     Severity,
     compile_mcp_proxy,
+    compile_orchestrator,
     compile_sandbox,
     load_targets,
     parse_targets,
@@ -1279,6 +1282,57 @@ def test_too_many_paths_are_a_compile_error() -> None:
 
 def test_example_targets_name_no_image_paths() -> None:
     assert TARGETS.sandbox.filesystem == SandboxFilesystem()
+
+
+# The orchestrator's sandbox.
+
+
+def test_the_orchestrator_reaches_only_the_worker_api_and_the_model_gateway() -> None:
+    assert TARGETS.orchestrator is not None
+    policy = compile_orchestrator(TARGETS.orchestrator)
+    assert list(policy.network_policies) == [
+        "sandbox-science-worker-api",
+        "sandbox-science-model-gateway",
+    ]
+    endpoints = [
+        (endpoint.host, endpoint.ports, endpoint.protocol, endpoint.enforcement, endpoint.access)
+        for entry in policy.network_policies.values()
+        for endpoint in entry.endpoints
+    ]
+    assert endpoints == [
+        ("worker.sandbox-science.internal", (8100,), "rest", "enforce", "full"),
+        ("litellm.sandbox-science.internal", (4000,), "rest", "enforce", "full"),
+    ]
+    for entry in policy.network_policies.values():
+        assert entry.binaries == (Binary(path="/opt/sandbox-science/bin/python*"),)
+    assert policy.network_middlewares is None
+    assert policy.filesystem_policy == FilesystemPolicy(include_workdir=True)
+    document = yaml.safe_load(policy.to_yaml())
+    assert schema_keys(document) <= ALLOWED_KEYS
+    assert None not in leaf_values(document)
+
+
+def test_the_model_gateway_is_optional_and_cannot_share_the_worker_api() -> None:
+    target = OrchestratorTarget(
+        worker_api=ServiceEndpoint(host="host.openshell.internal", port=8100),
+        binaries=("/usr/local/bin/python3*",),
+    )
+    assert list(compile_orchestrator(target).network_policies) == ["sandbox-science-worker-api"]
+    with pytest.raises(CompileError, match=r"share host\.openshell\.internal:8100"):
+        compile_orchestrator(target.model_copy(update={"model_gateway": target.worker_api}))
+
+
+@pytest.mark.parametrize(
+    "service",
+    [
+        {"host": "169.254.169.254", "port": 80},
+        {"host": "metadata.google.internal", "port": 80},
+        {"host": "worker.sandbox-science.internal", "port": 6443},
+    ],
+)
+def test_the_orchestrators_services_obey_the_service_rules(service: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        OrchestratorTarget.model_validate({"worker_api": service, "binaries": ["/usr/bin/python3"]})
 
 
 def test_tcp_service_hosts_must_be_names() -> None:

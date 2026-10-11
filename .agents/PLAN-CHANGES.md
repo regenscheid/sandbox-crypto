@@ -4,6 +4,7 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **The orchestrator runs in its own OpenShell sandbox** ([lab 7](docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md)). The compiler gains `compile_orchestrator()`. It produces a policy that admits only the worker API and the model gateway, for the harness's interpreter, which is the threat model's egress rule for Z2. Lab 7 ran the harness there against a worker-created research sandbox. This covers W1's requirement to run the control application in one container and execution in another.
 - **Event store (D74, proposed;** [event store](../docs/EVENT-STORE.md)**).** New library `packages/event-store` (conventions: new member). Records go to one SQLite file with durable commits, chained by SHA-256 over a length-prefixed encoding with RFC 8785 canonical payloads. `sandbox-science-events` verifies the chain, takes checkpoints and exports JSON lines.
   - The hash is not keyed, so truncation and rewritten chains show only against checkpoints kept out of the writers' reach (threat model, residual risks). Taking checkpoints automatically is on the backlog.
   - The policy middleware records escalations, alerts and monitor findings in the store instead of `events.jsonl`, and still denies an alert it cannot record. Measured on babbage, a durable commit adds about 2 ms to such a request. Concurrent appends first queued behind one sync each (16 threads: 104 ms at worst), so appends waiting for a commit now share the next one (19 ms at worst).
