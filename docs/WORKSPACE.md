@@ -132,7 +132,7 @@ Without the three, or with `--reviewer-model off`, model repairs are off and the
 | A formula sent | 4,000 characters, with KaTeX's error cut to 500 |
 | An answer | 512 tokens, within 25 s |
 | Requests to the model at once | 2, with 8 more waiting; beyond that the answer is `busy` |
-| Answers kept | 512, the least recently used dropped first; a repair or a refusal until the server stops, a failure (a timeout, the gateway's error) for 10 minutes |
+| Answers kept | 512, the least recently used dropped first; a repair or a refusal until the server stops, a failure (a timeout, the gateway's error) for an hour, as the draft living documents spec has it (LD-46) |
 | Requests to the model for one browser session | 60 in any hour; beyond that the endpoint answers 429, and the page asks no more |
 
 A formula the server has answered costs nothing more, whichever session asks. The model's answer is cleaned of code fences and delimiters, and refused if it is empty, the formula unchanged, more than three times as long plus 200 characters, or `UNFIXABLE`, the model's word for a formula it cannot repair without changing its meaning. It is untrusted LaTeX like any other: KaTeX renders it in its untrusted mode, and the page shows it marked as the model's.
@@ -140,6 +140,8 @@ A formula the server has answered costs nothing more, whichever session asks. Th
 **What leaves the machine.** With model repairs on, each formula that neither KaTeX nor the rules can render, with KaTeX's error and whether it is displayed, goes to the model gateway, and from there to the provider behind the reviewer alias. Nothing else of the text goes: not the sentence around the formula, nor the project, session or run. A formula from embargoed or restricted work goes too, so leave model repairs off, or point the reviewer alias at a model the data may reach, when such work is shown.
 
 The repairs, the approximation and the endpoint are adapted from the user's own `cscience-crypto` (`src/web/cscience-math.js` and `pkg/platform/lib/math-repair.mjs`, with their tests), contributed under the MIT License; each file says so. Its patches to the upstream Web UI are not part of it. The port fixes three faults of the original: names such as `\constructor` rendered as JavaScript functions in the approximation, `\sqrt[{3}]` added `undefined`, and nesting deep enough to exhaust the stack threw instead of falling back.
+
+The draft [living documents](specs/living-documents.md) spec states this behavior for the platform (LD-41 to LD-48). This slice differs from the draft in four ways, for now: it reads LaTeX's delimiters while parsing, where LD-41 drafts a conversion before parsing (see above); the endpoint is the workspace server's, with a cache for the server and a limit for each browser session, where LD-45 and LD-46 put it in the control API, with a cache for each project, records of each call and the project's model budget; nothing is saved in the dollar form yet (LD-42); and copying a rendered formula does not copy its LaTeX (LD-44).
 
 ## API v0
 

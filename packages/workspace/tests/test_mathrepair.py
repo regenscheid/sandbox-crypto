@@ -305,7 +305,7 @@ async def test_a_slow_model_times_out_and_failures_are_asked_again_later() -> No
     slow = await service.repair(request("x^"), "s")
     assert slow.reason == "the reviewer model did not answer within 0.05 s"
     assert (await service.repair(request("x^"), "s")).cached
-    now[0] += 601
+    now[0] += 3601
     model.release.set()
     assert (await service.repair(request("x^"), "s")).tex == "x^}"
 
