@@ -12,10 +12,13 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from sandbox_science.policy.approvals import (
     APPROVAL,
     DENIAL,
     ESCALATION,
+    WITHDRAWN,
     Approvals,
     RequestKey,
     answer_payload,
@@ -23,6 +26,7 @@ from sandbox_science.policy.approvals import (
     files_digest,
     pending_lines,
     prepare_answer,
+    request_lines,
 )
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
@@ -142,3 +146,57 @@ def test_the_operator_answers_with_the_files_scope_by_default() -> None:
     assert lines[0].startswith("1  ")
     assert "install package files for prv-1" in lines[0]
     assert [line.strip() for line in lines[1:]] == sorted([PARI, GMP])
+
+
+def withdrawal(seq: int, request: int, approvals: Approvals) -> Record:
+    """The worker's denial that closes a request as its operation ends."""
+    pending = approvals.request(request)
+    assert pending is not None
+    payload = {**answer_payload(pending, "files", None), WITHDRAWN: True}
+    return Record(seq, NOW.isoformat(), DENIAL, payload)
+
+
+def test_a_withdrawn_request_grants_nothing_ever_again() -> None:
+    approvals = Approvals()
+    key = RequestKey.packages("sbx-1", DIGEST, "prv-1", [PARI])
+    approvals.load([escalation(1, key, [PARI]), escalation(2, key, [PARI])])
+    assert approvals.packages_requests(["prv-1"]) == [1, 2]
+    assert approvals.packages_requests(["prv-9"]) == []
+    approvals.load([answer(3, 1, APPROVAL, approvals)])
+    approvals.load([withdrawal(4, 1, approvals)])
+    assert approvals.withdrawn(1)
+    assert approvals.packages_requests(["prv-1"]) == [2]
+    assert approvals.granted("sbx-1", DIGEST, PARI, NOW) is None
+    # A later approval, which the command line refuses, would open nothing either.
+    approvals.load([answer(5, 1, APPROVAL, approvals)])
+    assert approvals.granted("sbx-1", DIGEST, PARI, NOW) is None
+    with pytest.raises(ValueError, match="withdrawn"):
+        prepare_answer(approvals, 1, approve=True, scope=None, hours=2, now=NOW)
+    # Only the worker's mark closes a request: an operator's denial can be answered again.
+    approvals.load([answer(6, 2, DENIAL, approvals)])
+    assert not approvals.withdrawn(2)
+    approvals.load([answer(7, 2, APPROVAL, approvals)])
+    assert approvals.granted("sbx-1", DIGEST, PARI, NOW) is not None
+
+
+def test_a_request_is_shown_in_full_on_demand() -> None:
+    approvals = Approvals()
+    paths = [f"/conda/conda-forge/linux-64/p{index}-1.0-h0_0.conda" for index in range(25)]
+    key = RequestKey.packages("sbx-1", DIGEST, "prv-1", paths)
+    approvals.load([escalation(1, key, paths)])
+    lines = pending_lines(approvals)
+    assert lines[-1].strip() == "… 5 more: pending --request 1 lists them all"
+    shown = request_lines(approvals, 1)
+    assert shown is not None
+    assert shown[1].strip().startswith("waiting")
+    assert shown[2].strip() == "25 package files:"
+    assert [line.strip() for line in shown[3:]] == sorted(paths)
+    approvals.load([answer(2, 1, APPROVAL, approvals)])
+    shown = request_lines(approvals, 1)
+    assert shown is not None
+    assert shown[1].strip().startswith("approved by record 2, until ")
+    approvals.load([withdrawal(3, 1, approvals)])
+    shown = request_lines(approvals, 1)
+    assert shown is not None
+    assert shown[1].strip() == "withdrawn: its operation has ended"
+    assert request_lines(approvals, 9) is None
