@@ -714,4 +714,4 @@ network_middlewares:
     config:
       policy:
         name: permissive-default
-        digest: sha256:5ccc7d772d6cb1af1dc9c88b819ecee1d57b8af43090a4d312625cf13233c147
+        digest: sha256:0bc7d8a19c7247e3fcafa713bde5d6871be477f6ac2ce1eae6f06164217d9b0f

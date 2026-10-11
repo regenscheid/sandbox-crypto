@@ -16,7 +16,9 @@ defaults:
   log: true
 
 # Permission requests that nobody answers are denied. A read-only rule can set
-# its own `escalation: {on_timeout: allow}`, which then proceeds as an alert.
+# its own `escalation: {on_timeout: allow}`, which then proceeds as an alert;
+# add `allow_credentialed: true` to extend that to requests that may carry a
+# provider credential.
 escalation:
   timeout: 30m              # per-request wait
   on_timeout: deny          # must be deny policy-wide
