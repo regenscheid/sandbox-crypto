@@ -40,7 +40,7 @@ Records are appended to `events.jsonl` in the state directory, one JSON object p
 
 ## Policy store
 
-The orchestrator writes, and the middleware reads, a state directory:
+The worker service writes, and the middleware reads, a state directory ([worker](WORKER.md), "Environments"; D73):
 
 | Path | Contents |
 | --- | --- |
@@ -48,7 +48,7 @@ The orchestrator writes, and the middleware reads, a state directory:
 | `sandboxes/<sandbox id>.json` | `{"policy": "sha256:<hex>"}`: the revision an OpenShell sandbox is decided under |
 | `events.jsonl` | The middleware's records |
 
-`ValidateConfig` accepts a compiled sandbox policy only when its project policy is already in the store, so the gateway refuses a sandbox policy the middleware could not decide. The gateway asks before it creates the sandbox, so the policy must be stored first, and the sandbox bound once OpenShell has assigned its id. Until the orchestrator manages the store, the command line does both:
+`ValidateConfig` accepts a compiled sandbox policy only when its project policy is already in the store, so the gateway refuses a sandbox policy the middleware could not decide. The gateway asks before it creates the sandbox, so the policy must be stored first, and the sandbox bound once OpenShell has assigned its id. The worker does both for the sandboxes it creates (`sandbox-science-worker policy add` stores a revision). For sandboxes made by hand, the middleware's command line does them:
 
 ```bash
 uv run sandbox-science-policy-middleware store --state-dir STATE --policy policy.yaml
