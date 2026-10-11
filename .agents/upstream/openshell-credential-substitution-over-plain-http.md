@@ -1,6 +1,10 @@
 # OpenShell: provider credentials are substituted into plain HTTP and sent unencrypted
 
-**Status.** Kept here, not filed upstream: filing is the user's call. The bug was found by reading the source. An adversarial review of the credential binding found it on 2026-10-10, and the citations below were rechecked against the source. It has not yet been reproduced on a gateway; the next babbage lab is to observe it.
+**Status.** Kept here, not filed upstream: filing is the user's call. An adversarial review of the credential binding found it in the source on 2026-10-10, and the citations below were rechecked. It was then observed on babbage.
+- **Lab 2:** OpenShell substituted a credential into plain HTTP sent to a bound loopback endpoint.
+- **Lab 3:** in a VM sandbox, OpenShell allowed plain HTTP sent to `github.com:443` through its credential endpoint, logged no credential error, and forwarded it; GitHub closed the connection. The policy middleware allowed it as well, so OpenShell had told it the scheme was `https` ([lab 3 report](../docs/agent-reports/babbage-openshell-lab-3-2026-10-11.md)).
+
+Packet capture was not available, so the clear-text bytes were not seen on the wire.
 
 **Affects.** OpenShell v0.1.3 (tag commit `e1f3c82caa3e`). It affects every driver. In VM sandboxes all traffic reaches the supervisor transparently, as through a tunnel. Paths below are relative to the OpenShell repository at that tag.
 
