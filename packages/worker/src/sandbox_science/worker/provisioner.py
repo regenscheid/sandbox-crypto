@@ -71,6 +71,7 @@ from .errors import WorkerError
 from .manager import ExecutionManager
 from .permissions import Permissions, PermissionStoreError
 from .resolution import Decided, Resolved, ResolveError
+from .revisions import read_lockfile
 
 _log = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ LOCKFILE_WAIT: Final = 10.0
 """Seconds an operation waits for a revision's lockfile to arrive."""
 MAX_WAIT: Final = 60.0
 """The longest a client may ask ``wait`` to wait for a change."""
+MAX_QUEUED: Final = 32
+"""Operations an environment may have that have not finished; more are refused for now."""
 RETAIN: Final = 600.0
 """Seconds a finished operation stays in memory for clients still waiting on it."""
 ERROR_TEXT: Final = 1500
@@ -256,6 +259,12 @@ class Provisioner:
                 ErrorKind.UNSUPPORTED,
                 f"environment {environment_id!r} cannot be provisioned here: the worker "
                 "provisions the environments it created, under their stored policy (D73)",
+            )
+        if len(self._queues.get(environment_id, ())) >= MAX_QUEUED:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"environment {environment_id!r} has {MAX_QUEUED} provisioning operations "
+                "waiting, its limit; wait for them, or cancel some",
             )
         current = self.store.revision(environment_id)
         record = ProvisionOperation(
@@ -1152,7 +1161,9 @@ class Provisioner:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + LOCKFILE_WAIT
         while True:
-            found = await asyncio.to_thread(self.revisions.read_lockfile, environment_id, revision)
+            # The store is read here, on the event loop; only the file in a thread.
+            path = self.revisions.lockfile_path(environment_id, revision)
+            found = await asyncio.to_thread(read_lockfile, path) if path is not None else None
             if found is not None or loop.time() >= deadline:
                 return found
             await asyncio.sleep(0.2)
