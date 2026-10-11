@@ -346,12 +346,12 @@ class Revisions:
         entry = self.store.revision_entry(environment_id, revision)
         return entry.probes if entry is not None else ()
 
-    def read_lockfile(self, environment_id: str, revision: int) -> Lockfile | None:
-        """A revision's lockfile, if the worker has it. Blocking: call it in a thread."""
+    def lockfile_path(self, environment_id: str, revision: int) -> Path | None:
+        """Where a revision's lockfile is stored, if the worker has it. On the event loop:
+        it reads the store."""
         try:
-            path, _ = self.lockfile(environment_id, revision)
-            return Lockfile.model_validate_json(path.read_bytes())
-        except (WorkerError, OSError, ValidationError):
+            return self.lockfile(environment_id, revision)[0]
+        except WorkerError:
             return None
 
     # Reading.
@@ -399,6 +399,14 @@ class Revisions:
         if not path.is_file():
             raise WorkerError(ErrorKind.INTERNAL, f"the lockfile of revision {revision} is gone")
         return path, entry.lockfile
+
+
+def read_lockfile(path: Path) -> Lockfile | None:
+    """A stored lockfile, parsed; None if it cannot be read. Blocking: call it in a thread."""
+    try:
+        return Lockfile.model_validate_json(path.read_bytes())
+    except (OSError, ValidationError):
+        return None
 
 
 def _shape(raw: object) -> tuple[dict[str, Any], tuple[list[Any], list[Any]]] | None:

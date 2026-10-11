@@ -52,6 +52,7 @@ from sandbox_science.policy_middleware.cli import _read_records  # pyright: igno
 from sandbox_science.policy_middleware.cli import main as middleware
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import StoreSink
+from sandbox_science.worker import provisioner as provisioner_module
 from sandbox_science.worker import resolution
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
@@ -1057,7 +1058,21 @@ async def test_a_restarted_worker_ends_what_it_left(make_world: Factory) -> None
     assert any("may have changed" in note for note in ended.notes)
 
 
-# The API: idempotency, reserved IDs, access checks.
+# The API: idempotency, reserved IDs, bounds, access checks.
+
+
+@pytest.mark.asyncio
+async def test_an_environment_queues_a_bounded_number_of_operations(
+    make_world: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(provisioner_module, "MAX_QUEUED", 2)
+    world = await make_world(ESCALATE)
+    await world.waiting((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
+    await world.provision("op-2", conda=["gmp"])  # waits behind the first
+    refused = await world.provision("op-3", conda=["pari"], expected=503)
+    assert refused["error"]["kind"] == "unavailable"
+    # Another environment has a queue of its own.
+    await world.provision("op-4", conda=["gmp"], context={"environment_id": "env2"})
 
 
 @pytest.mark.asyncio
