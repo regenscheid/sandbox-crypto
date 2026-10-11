@@ -10,6 +10,7 @@ from typing import Protocol, cast
 import pytest
 
 from sandbox_science.policy import Action, HardFloor, LoadedPolicy, PoolCeiling, parse_ceiling
+from sandbox_science.policy.package_requests import SANDBOX_HEADER
 from sandbox_science.policy_middleware import evaluator, service
 from sandbox_science.policy_middleware.evaluator import (
     HttpRequestFacts,
@@ -820,6 +821,21 @@ def test_range_requests_to_the_cache_are_decided_by_path(
     ranged = middleware.evaluate_http(cache_facts(make_facts, example, path, headers=headers))
     assert ranged.allowed
     assert ranged.decision == plain.decision
+
+
+def test_an_allowed_cache_request_names_its_sandbox(
+    middleware: PolicyMiddleware, make_facts: FactsFactory, example: LoadedPolicy
+) -> None:
+    # The cache budgets upstream fetches by sandbox, so a sandbox must not name another.
+    facts = cache_facts(
+        make_facts, example, "/pypi/simple/numpy/", headers=((SANDBOX_HEADER.lower(), "other"),)
+    )
+    verdict = middleware.evaluate_http(facts)
+    assert verdict.allowed
+    assert verdict.headers == ((SANDBOX_HEADER, facts.sandbox_id),)
+    refused = middleware.evaluate_http(cache_facts(make_facts, example, "/npm/-/v1/search"))
+    assert not refused.allowed
+    assert refused.headers == ()
 
 
 def test_only_the_cache_port_is_the_package_cache(

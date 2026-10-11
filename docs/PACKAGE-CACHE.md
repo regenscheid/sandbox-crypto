@@ -92,9 +92,10 @@ cabal keeps a copy of Hackage's index (`01-index.tar.gz`, about 140 MB) and upda
 
 ## Logging and limits
 
-- **Logs.** Every request is logged with ecosystem, path, cache result (hit, miss, revalidated, stale), status, size and upstream time. Package names can carry data out (a lookup for a made-up name still reaches the registry), and the policy middleware's and OpenShell's logs tie each request to its sandbox.
-- **Rate limit.** Upstream fetches are rate-limited (a token bucket shared by all clients), so a flood of lookups for made-up names cannot hammer a registry through the cache.
-- **Rate limit details.** Every upstream request, each redirect hop included, takes a token. A request waits up to 10 seconds for one, then gets 503 with `Retry-After: 1`, unless a stale copy can be served.
+- **Logs.** Every request is logged with ecosystem, path, cache result (hit, miss, revalidated, stale), status, size, upstream time and the sandbox it came from. Package names can carry data out (a lookup for a made-up name still reaches the registry), and the policy middleware's and OpenShell's logs tie each request to its sandbox too.
+- **Rate limit.** Upstream fetches are rate-limited by a token bucket shared by all clients (`upstream_rate`, `upstream_burst`), so a flood of lookups for made-up names cannot hammer a registry through the cache.
+- **Budgets per sandbox.** Each sandbox also has a bucket of its own (`sandbox_rate`, default 10 fetches a second; `sandbox_burst`, 100), so one sandbox cannot spend the shared budget and stall every other project's installs. The policy middleware names the sandbox in the `X-Sandbox-Science-Sandbox` header of each request it allows to the cache, replacing whatever the sandbox sent, so a sandbox cannot spend another's budget. A request without the header, such as one from the host itself, takes only the shared bucket. The cache keeps buckets for the last 4096 sandboxes it saw. `sandbox_rate = 0` turns the budgets off.
+- **Rate limit details.** Every upstream request, each redirect hop included, takes a token: first from the sandbox's bucket, then from the shared one. A request waits up to 10 seconds for each, then gets 503 with `Retry-After: 1`, unless a stale copy can be served. Files the cache already holds cost no tokens.
 - **Package downloads.** At most `max_artifact_downloads` (default 16) package files download at once. A request waits up to 5 seconds for a slot, then gets 503 with `Retry-After: 1`. Index data does not need a slot.
 - **Wrong digests.** For an hour, the cache remembers the actual digests of each file it downloaded for a digest check, by upstream URL (the last 10,000 files). A later request whose digest contradicts them gets the same 502 at once, without a download. Requests that name different digests for one file take turns, so concurrent ones download it once. A request waits up to 5 seconds for its turn, then gets 503.
 - **Upstream connections.** One pool of `max_artifact_downloads` + 32 connections serves every upstream request. Package files never hold more than `max_artifact_downloads` of them, so 32 always remain for index data. Getting a connection, from the pool or by connecting, takes at most 10 seconds, or the request gets 503. A read that stalls for a minute fails, and an index fetch must finish within 2 minutes (for Hackage's 140 MB index, at about 1.2 MB/s or faster). Both get 502 unless a stale copy can be served.
@@ -124,6 +125,8 @@ max_artifact_downloads = 16  # package files downloading at once
 max_requests = 1024          # client requests served at once; more get 503
 upstream_rate = 20           # upstream fetches per second
 upstream_burst = 200
+sandbox_rate = 10            # of those, per sandbox (the policy middleware names it)
+sandbox_burst = 100
 
 [pypi]
 index = "https://pypi.org/simple"
@@ -203,8 +206,7 @@ Adapters are pure functions of the path, the request headers and their settings,
 
 ## Planned
 
-- Per-sandbox rate limits. The policy middleware would write a sandbox header on cache requests, overwriting anything the sandbox sent, so that each sandbox gets its own budget; today one budget serves all projects. The cooling-off period below needs the same mechanism.
-- A cooling-off period: refuse versions published in the last N days unless approved. PyPI, conda, Cargo, Go and npm publish release times, and Hackage's index records when each version was uploaded; opam's index records none. The middleware can pass the project's setting to the cache in a request header that it sets itself, overwriting anything the sandbox sent; the cache must accept the setting only from the middleware.
+- A cooling-off period: refuse versions published in the last N days unless approved. PyPI, conda, Cargo, Go and npm publish release times, and Hackage's index records when each version was uploaded; opam's index records none. The middleware can pass the project's setting to the cache in a request header that it writes itself, replacing anything the sandbox sent, as it does the sandbox's name for the budgets; the cache must accept the setting only from the middleware.
 - conda index files are passed through unchanged because conda-forge's base URLs are relative (empty). The cache should refuse index files whose `base_url` is absolute, in case a channel changes that. Likewise, opam's index is passed through unchanged because opam.ocaml.org's `repo` file names its archive cache relative to the repository and redirects only opam 1. The cache should refuse an index whose `repo` file names an absolute archive mirror or redirects opam 2.
 - Keeping files that active lockfiles use from eviction.
 - Lockfiles that travel. A lockfile written in a sandbox names the cache: npm records the rewritten download links, and `uv.lock` the cache's index and file URLs. It fails outside a sandbox, or after `public_url` changes. `Cargo.lock`, `go.sum`, cabal freeze files and opam lock files are unaffected.

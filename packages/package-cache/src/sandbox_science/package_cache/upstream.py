@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import hashlib
 import logging
@@ -182,6 +183,48 @@ class TokenBucket:
         except asyncio.CancelledError:
             self._tokens += 1
             raise
+
+
+class SandboxBudgets:
+    """A token bucket for each sandbox, so that no sandbox can spend every upstream fetch.
+
+    Sandboxes are named by the policy middleware (``SANDBOX_HEADER``). Only the most
+    recently seen ``capacity`` keep their buckets; a sandbox seen again after that starts
+    with a full one.
+    """
+
+    def __init__(
+        self,
+        rate: float,
+        burst: int,
+        *,
+        max_wait: float = DEFAULT_MAX_WAIT,
+        capacity: int = 4096,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._rate = rate
+        self._burst = burst
+        self._max_wait = max_wait
+        self._capacity = capacity
+        self._clock = clock
+        self._buckets: OrderedDict[str, TokenBucket] = OrderedDict()
+
+    def bucket(self, sandbox: str) -> TokenBucket:
+        bucket = self._buckets.get(sandbox)
+        if bucket is None:
+            bucket = TokenBucket(
+                self._rate, self._burst, max_wait=self._max_wait, clock=self._clock
+            )
+            self._buckets[sandbox] = bucket
+            if len(self._buckets) > self._capacity:
+                self._buckets.popitem(last=False)
+        else:
+            self._buckets.move_to_end(sandbox)
+        return bucket
+
+
+REQUESTER: Final = contextvars.ContextVar["TokenBucket | None"]("requester", default=None)
+"""The budget of the sandbox whose request a fetch serves, when the request named one."""
 
 
 class SingleFlight[T]:
@@ -640,6 +683,11 @@ class UpstreamClient:
         # stored byte for byte, when it must come without a content coding.
         decode = fetch.kind is not Kind.ARTIFACT and not fetch.exact
         for _ in range(self._max_redirects + 1):
+            # The sandbox's own budget first, so a sandbox past it spends nothing of the
+            # budget all clients share.
+            requester = REQUESTER.get()
+            if requester is not None:
+                await requester.acquire()
             await self._limiter.acquire()
             try:
                 async with self._session.get(

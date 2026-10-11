@@ -13,6 +13,7 @@ from google.protobuf import struct_pb2
 from google.protobuf.message import Message
 
 from sandbox_science.policy import LoadedPolicy
+from sandbox_science.policy.package_requests import SANDBOX_HEADER
 from sandbox_science.policy_middleware._proto import extension_pb2 as ext
 from sandbox_science.policy_middleware._proto import supervisor_middleware_pb2 as pb
 from sandbox_science.policy_middleware.auth import TokenAuthenticator, default_audience
@@ -275,6 +276,26 @@ def test_an_allowed_request(channel: grpc.Channel, example: LoadedPolicy) -> Non
     assert not result.header_mutations
     assert result.metadata["rule"] == "read-only-web"
     assert result.metadata["policy"] == example.digest
+
+
+def test_an_allowed_cache_request_carries_its_sandbox(
+    channel: grpc.Channel, example: LoadedPolicy
+) -> None:
+    host = "package-cache.sandbox-science.internal"
+    request = evaluation(
+        example,
+        scheme="http",
+        host=host,
+        port=8090,
+        path="/pypi/simple/numpy/",
+        headers=((SANDBOX_HEADER, "sbx-0002"),),
+    )
+    request.config.update({"package_cache": {"host": host, "port": 8090}})
+    result = call(channel, "EvaluateHttpRequest", request, pb.HttpRequestResult, auth())
+    assert result.decision == pb.DECISION_ALLOW
+    [mutation] = result.header_mutations
+    assert (mutation.write.name, mutation.write.value) == (SANDBOX_HEADER, "sbx-0001")
+    assert mutation.write.on_existing == pb.EXISTING_HEADER_ACTION_OVERWRITE
 
 
 def test_an_escalated_request(channel: grpc.Channel, example: LoadedPolicy) -> None:
