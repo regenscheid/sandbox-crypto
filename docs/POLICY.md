@@ -137,10 +137,14 @@ This deliberately relaxes the earlier review proposal (D44) that unknown destina
 
 ## Mapping to enforcement
 
-The compiler in `sandbox_science.policy.openshell` (D69, proposed) produces OpenShell v0.1.3 policy for two kinds of sandbox. The rendered examples are in [examples/openshell](../examples/openshell), generated from the example policy and [targets.yaml](../examples/openshell/targets.yaml).
+The compiler in `sandbox_science.policy.openshell` (D69) produces OpenShell v0.1.3 policy for two kinds of sandbox. The rendered examples are in [examples/openshell](../examples/openshell), generated from the example policy and [targets.yaml](../examples/openshell/targets.yaml).
 
 - **Research sandboxes.** OpenShell's own proxy carries their HTTP and git traffic. It terminates TLS, normalizes requests, checks addresses, injects provider credentials and logs.
-  - **Admission.** The compiled policy admits the destinations the project could reach. If any wildcard rule or a non-deny `defaults.action` needs it, a host-less endpoint admits public address ranges; otherwise exact endpoints admit the hosts the rules name.
+  - **Admission.** The compiled policy admits the destinations the project could reach.
+    - When any wildcard rule or a non-deny `defaults.action` needs it, a host-less endpoint admits public address ranges. Otherwise exact endpoints admit the hosts the rules name.
+    - A sandbox can resolve only the host names an endpoint names: OpenShell's policy DNS answers for nothing else, and VM sandboxes have no other route. Every public host name the rules mention therefore gets an endpoint beside the host-less one, with the same address ranges, and the host-less endpoint itself admits only requests to addresses.
+    - A `*.suffix` rule becomes OpenShell's `**.suffix`. OpenShell needs three labels in a wildcard host, so `*.org` cannot be named and the compiler reports it.
+    - Hosts that only `*` rules or the default reach are not resolvable yet. On-demand admission will add them: when OpenShell drafts a proposal for a blocked host, the orchestrator approves it if the policy could allow some request to that host (planned, D69).
   - **The policy middleware** is attached to every host (`**`, `fail_closed`). OpenShell calls it for each admitted request, after its network rules and before injecting credentials. The middleware applies this library to the request, so every rule in this file is enforced exactly, including requests to hosts that providers admit. [Policy middleware](POLICY-MIDDLEWARE.md) describes the service.
   - **Escalations** are denied with the reason code `approval_required` and recorded as pending requests; the agent retries after approval.
   - **Platform services**, the package mirror and (with worker access) the MCP proxy, are raw TCP endpoints outside the middleware. They must have private addresses, so that the host-less endpoint never admits them.
@@ -152,12 +156,13 @@ The compiler in `sandbox_science.policy.openshell` (D69, proposed) produces Open
 
 Wherever the compiled policy differs from the project policy, it is stricter, and the compiler reports it. A randomized test checks that the compiled tool rules never admit a tool the library would not allow. For example, OpenShell's `*` stops at a `.`. So whenever deny patterns exist, allow patterns admit only names whose part after the prefix has no dot, and a prefixed pattern never admits the bare prefix.
 
-The middleware path has limits to verify on babbage:
+The middleware path has these limits, checked against a real gateway on babbage ([lab report](../.agents/docs/agent-reports/babbage-openshell-lab-2026-10-10.md)):
 
 - **Body size.** A request body larger than the middleware's registered `max_payload_bytes` (at most 4 MiB) is blocked, so larger uploads fail.
-- **Names, not addresses.** The middleware sees host names, not resolved addresses. The host-less endpoint's `allowed_ips` keep wildcard rules on public addresses. Exact endpoints let a named host resolve to a private address, as the library's exact-host rule does.
+- **Names, not addresses.** The middleware sees host names, not resolved addresses. The host-less endpoint's `allowed_ips` keep wildcard rules on public addresses, and the named endpoints beside it share those ranges. That is stricter than the library's exact-host rule, which allows a name to resolve to a private address. A policy without the host-less endpoint keeps that rule.
 - **LAN names.** OpenShell requires overlapping endpoints to agree on `allowed_ips`, so a non-public host name cannot be admitted beside the host-less endpoint. Name the address in the rule instead.
-- **WebSockets.** The middleware denies every WebSocket upgrade at preflight, since the library does not support upgrades. Still to check: that upgrades reach the preflight, and how DNS resolution behaves for the host-less endpoint.
+- **WebSockets.** The library does not support upgrades, so the middleware denies the upgrade request and, as a second check, every WebSocket preflight.
+- **DNS.** Wildcards over a top-level domain cannot be named, and names reached only through `*` rules wait for on-demand admission (see Admission above).
 
 | Policy element | Enforced by |
 | --- | --- |
