@@ -177,6 +177,9 @@ class DraftWatcher:
 
     async def check(self, environment_id: str, sandbox: str) -> Sequence[Admission]:
         """Decide one environment's pending drafts, then reject each with the decision."""
+        if self.environments.busy(environment_id):
+            # Its drafts wait for the next round, so that no environment holds up the others.
+            return ()
         cli = self.environments.cli
         text = await cli.run("rule", "get", sandbox, "--status", "pending", "--color", "never")
         drafts = [draft for draft in parse_drafts(text) if draft.status == "pending"]

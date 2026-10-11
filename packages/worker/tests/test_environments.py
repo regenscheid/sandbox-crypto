@@ -16,7 +16,7 @@ import os
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -45,6 +45,7 @@ from sandbox_science.worker.cli import main
 from sandbox_science.worker.environments import (
     MAX_RECORDED,
     Admission,
+    EnvironmentRecords,
     Environments,
     sandbox_name,
 )
@@ -275,7 +276,7 @@ def variant(tmp_path: Path, name: str, *, extra_rule: bool = False, providers: b
 
 
 class Setup:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, sandboxes: dict[str, str] | None = None) -> None:
         self.tmp = tmp_path
         self.fake = Fake(tmp_path)
         ceiling = tmp_path / "pool-ceiling.yaml"
@@ -283,6 +284,7 @@ class Setup:
         self.settings = OpenShellBackendSettings(
             cli=str(self.fake.cli),
             isolation_tier=3,
+            sandboxes=sandboxes or {},
             environments=EnvironmentSettings(
                 policy_store=tmp_path / "middleware",
                 targets=TARGETS,
@@ -1194,13 +1196,15 @@ async def test_a_sandbox_in_a_dead_phase_fails_fast_and_backs_off(setup: Setup) 
     assert len(setup.fake.calls("sandbox", "start")) == 1
 
 
-# Per-project credentials: a client's token acts for the projects its settings list.
+# Per-project credentials: a client's token acts for the projects its settings list (D78).
 
 A_TOKEN = "test-secret-client-a-" + "0" * 24
 B_TOKEN = "test-secret-client-b-" + "0" * 24
+C_TOKEN = "test-secret-client-c-" + "0" * 24
 CLIENTS = (
     ClientSettings(name="client-a", token_sha256=token_digest(A_TOKEN), projects=("p1",)),
     ClientSettings(name="client-b", token_sha256=token_digest(B_TOKEN), projects=("p2",)),
+    ClientSettings(name="client-c", token_sha256=token_digest(C_TOKEN), projects=("p1", "p3")),
 )
 
 
@@ -1208,118 +1212,276 @@ def bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def test_a_client_acts_for_its_own_projects_only(
-    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
-    manager = idle_manager(tmp_path)
-    await manager.start()
-    client = await aiohttp_client(create_app(manager, TOKEN, setup.environments, CLIENTS))
-    a, b, pool = bearer(A_TOKEN), bearer(B_TOKEN), bearer(TOKEN)
+class Api:
+    """The worker API as the tests call it, with the clients' tokens."""
+
+    def __init__(self, client: TestClient[Any, Any], setup: Setup) -> None:
+        self.client = client
+        self.setup = setup
 
     async def call(
-        method: str, path: str, headers: dict[str, str], body: object = None
+        self, method: str, path: str, token: str, body: object = None
     ) -> tuple[int, Any]:
-        response = await client.request(method, path, json=body, headers=headers)
+        response = await self.client.request(method, path, json=body, headers=bearer(token))
         return response.status, await response.json()
 
     async def refused(
-        method: str, path: str, headers: dict[str, str], body: object = None
+        self, method: str, path: str, token: str, body: object = None
     ) -> tuple[int, str]:
-        status, reply = await call(method, path, headers, body)
+        status, reply = await self.call(method, path, token, body)
         return status, reply["error"]["kind"]
 
-    async def finish(execution_id: str) -> dict[str, Any]:
-        response = await client.get(f"/v1/executions/{execution_id}/events", headers=a)
+    async def finish(self, execution_id: str, token: str) -> dict[str, Any]:
+        response = await self.client.get(
+            f"/v1/executions/{execution_id}/events", headers=bearer(token)
+        )
         async for line in response.content:
             if line.strip() and (event := json.loads(line))["type"] == "result":
                 return event["execution"]
         raise AssertionError("the event stream ended without a result")
 
-    try:
-        for headers in ({}, bearer("test-secret-unknown-" + "0" * 24), {"Authorization": A_TOKEN}):
-            assert await refused("GET", "/v1/environments/env-a", headers) == (401, "policy_denied")
+    def environment(self, environment_id: str, project_id: str = "p1") -> dict[str, Any]:
+        return self.setup.request(environment_id, project_id=project_id).model_dump(mode="json")
 
-        # Each client creates its own project's environment and cannot see the other's.
-        env_a = setup.request("env-a").model_dump(mode="json")
-        env_b = setup.request("env-b", project_id="p2").model_dump(mode="json")
-        assert (await call("POST", "/v1/environments", a, env_a))[0] == 201
-        assert (await call("POST", "/v1/environments", b, env_b))[0] == 201
-        assert await refused("POST", "/v1/environments", a, env_b) == (403, "policy_denied")
-        status, taken = await call("POST", "/v1/environments", b, {**env_a, "project_id": "p2"})
-        assert (status, taken["error"]["kind"]) == (409, "conflict")
+
+async def start_api(
+    setup: Setup, aiohttp_client: ClientFactory, root: Path
+) -> tuple[Api, ExecutionManager]:
+    manager = idle_manager(root)
+    await manager.start()
+    client = await aiohttp_client(create_app(manager, TOKEN, setup.environments, CLIENTS))
+    return Api(client, setup), manager
+
+
+@pytest_asyncio.fixture
+async def api(setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Api]:
+    started, manager = await start_api(setup, aiohttp_client, tmp_path)
+    for project in ("p1", "p2", "p3"):
+        setup.environments.records.grant(project, setup.policy)
+    yield started
+    await manager.close()
+    manager.store.close()
+
+
+async def test_a_client_acts_for_its_own_projects_only(api: Api) -> None:
+    for headers in (
+        {},
+        bearer("test-secret-unknown-" + "0" * 24),
+        {"Authorization": A_TOKEN},
+        {"Authorization": f"bearer {A_TOKEN}"},
+        {"Authorization": f"Bearer  {A_TOKEN}"},
+        {"Authorization": f"Bearer\t{A_TOKEN}"},
+        {"Authorization": "Bearer "},
+        bearer(token_digest(A_TOKEN)),
+    ):
+        response = await api.client.get("/v1/environments/env-a", headers=headers)
+        assert response.status == 401, headers
+
+    # Each client creates its own project's environment and cannot see the other's.
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+    env_b = api.environment("env-b", "p2")
+    assert (await api.call("POST", "/v1/environments", B_TOKEN, env_b))[0] == 201
+    assert await api.refused("POST", "/v1/environments", A_TOKEN, env_b) == (403, "policy_denied")
+    status, taken = await api.call(
+        "POST", "/v1/environments", B_TOKEN, api.environment("env-a", "p2")
+    )
+    assert (status, taken["error"]["kind"]) == (409, "conflict")
+    assert "p1" not in taken["error"]["message"]
+    for method, path, body in (
+        ("GET", "/v1/environments/env-a", None),
+        ("POST", "/v1/environments/env-a/policy", {"policy": api.setup.policy}),
+        ("GET", "/v1/capabilities?environment_id=env-a", None),
+        ("DELETE", "/v1/environments/env-a", None),
+    ):
+        assert await api.refused(method, path, B_TOKEN, body) == (404, "not_found"), path
+    assert (await api.call("GET", "/v1/environments/env-a", TOKEN))[0] == 200
+
+    # Executions, files and artifacts of another project do not exist for a client.
+    context_a = {"project_id": "p1", "session_id": "s1", "environment_id": "env-a"}
+    shell = {"kind": "shell", "operation_id": "op-1", "script": "echo hi | tee note.txt"}
+    status, started = await api.call(
+        "POST", "/v1/executions", A_TOKEN, {**shell, "context": context_a}
+    )
+    assert status == 201
+    execution_id = started["execution_id"]
+    finished = await api.finish(execution_id, A_TOKEN)
+    assert finished["result"]["stdout"]["text"] == "hi\n"
+    for method, path in (
+        ("GET", f"/v1/executions/{execution_id}"),
+        ("GET", f"/v1/executions/{execution_id}/events"),
+        ("POST", f"/v1/executions/{execution_id}/cancel"),
+        ("GET", f"/v1/executions/{execution_id}?project_id=p2"),
+    ):
+        assert await api.refused(method, path, B_TOKEN) == (404, "not_found"), path
+    assert (await api.call("GET", f"/v1/executions/{execution_id}?project_id=p1", A_TOKEN))[
+        0
+    ] == 200
+    assert await api.refused("GET", f"/v1/executions/{execution_id}?project_id=p2", A_TOKEN) == (
+        404,
+        "not_found",
+    )
+    # A client for several projects acts for each of them.
+    assert (await api.call("GET", f"/v1/executions/{execution_id}", C_TOKEN))[0] == 200
+    assert (await api.call("GET", f"/v1/executions/{execution_id}", TOKEN))[0] == 200
+    borrowed = {**context_a, "project_id": "p2"}
+    for path, body in (
+        ("/v1/executions", {**shell, "context": borrowed}),
+        ("/v1/files/read", {"context": borrowed, "path": "note.txt"}),
+        ("/v1/files/write", {"context": borrowed, "path": "x.txt", "content_b64": "eA=="}),
+        ("/v1/files/list", {"context": borrowed, "path": "."}),
+        ("/v1/sessions/close", {"context": borrowed}),
+        ("/v1/kernels/restart", {"context": borrowed, "language": "python"}),
+        ("/v1/artifacts", {"context": borrowed, "path": "note.txt"}),
+    ):
+        assert await api.refused("POST", path, B_TOKEN, body) == (404, "not_found"), path
+    assert await api.refused(
+        "POST", "/v1/files/read", B_TOKEN, {"context": context_a, "path": "x"}
+    ) == (403, "policy_denied")
+    # The pool's own token may not mix projects in an environment either.
+    assert await api.refused("POST", "/v1/executions", TOKEN, {**shell, "context": borrowed}) == (
+        409,
+        "conflict",
+    )
+    # Operation IDs are per project: another project's op-1 is a new execution, while
+    # the same project's op-1 with another request is still a conflict.
+    context_b = {"project_id": "p2", "session_id": "s1", "environment_id": "env-b"}
+    status, other = await api.call(
+        "POST", "/v1/executions", B_TOKEN, {**shell, "context": context_b}
+    )
+    assert status == 201
+    assert other["execution_id"] != execution_id
+    changed = {**shell, "script": "echo changed", "context": context_a}
+    assert await api.refused("POST", "/v1/executions", A_TOKEN, changed) == (409, "conflict")
+
+    status, artifact = await api.call(
+        "POST", "/v1/artifacts", A_TOKEN, {"context": context_a, "path": "note.txt"}
+    )
+    assert status == 201
+    artifact_id = artifact["artifact_id"]
+    for path in (f"/v1/artifacts/{artifact_id}", f"/v1/artifacts/{artifact_id}/content"):
+        assert await api.refused("GET", path, B_TOKEN) == (404, "not_found"), path
+        response = await api.client.get(path, headers=bearer(A_TOKEN))
+        assert response.status == 200
+    assert (await api.call("GET", f"/v1/artifacts/{artifact_id}", TOKEN))[0] == 200
+    status, read = await api.call(
+        "POST", "/v1/files/read", A_TOKEN, {"context": context_a, "path": "note.txt"}
+    )
+    assert (status, read["size"]) == (200, 3)
+
+
+async def test_an_environment_id_stays_with_its_project(api: Api) -> None:
+    # Deleted or not, an ID belongs to the project that first created it, so nothing a
+    # check let through for one project can later reach another's sandbox (review of D78).
+    assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[0] == 201
+    assert (await api.call("DELETE", "/v1/environments/env-a", A_TOKEN))[0] == 200
+    for token in (B_TOKEN, TOKEN):
+        status, taken = await api.call(
+            "POST", "/v1/environments", token, api.environment("env-a", "p2")
+        )
+        assert (status, taken["error"]["kind"]) == (409, "conflict"), token
         assert "p1" not in taken["error"]["message"]
-        for method, path, body in (
-            ("GET", "/v1/environments/env-a", None),
-            ("POST", "/v1/environments/env-a/policy", {"policy": setup.policy}),
-            ("GET", "/v1/capabilities?environment_id=env-a", None),
-            ("DELETE", "/v1/environments/env-a", None),
-        ):
-            assert await refused(method, path, b, body) == (404, "not_found"), path
-        assert (await call("GET", "/v1/environments/env-a", pool))[0] == 200
+    context = {"project_id": "p2", "session_id": "s1", "environment_id": "env-a"}
+    shell = {"kind": "shell", "operation_id": "op-x", "script": "true", "context": context}
+    assert await api.refused("POST", "/v1/executions", TOKEN, shell) == (409, "conflict")
+    assert await api.refused("POST", "/v1/executions", B_TOKEN, shell) == (404, "not_found")
+    # A deleted environment is not one a client can use, even its own.
+    own = {**shell, "context": {**context, "project_id": "p1"}}
+    assert await api.refused("POST", "/v1/executions", A_TOKEN, own) == (404, "not_found")
+    status, again = await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a"))
+    assert (status, again["state"]) == (201, "ready")
 
-        # Executions, files and artifacts of another project do not exist for a client.
-        context_a = {"project_id": "p1", "session_id": "s1", "environment_id": "env-a"}
-        shell = {"kind": "shell", "operation_id": "op-1", "script": "echo hi | tee note.txt"}
-        status, started = await call("POST", "/v1/executions", a, {**shell, "context": context_a})
-        assert status == 201
-        execution_id = started["execution_id"]
-        finished = await finish(execution_id)
-        assert finished["result"]["stdout"]["text"] == "hi\n"
-        for method, path in (
-            ("GET", f"/v1/executions/{execution_id}"),
-            ("GET", f"/v1/executions/{execution_id}/events"),
-            ("POST", f"/v1/executions/{execution_id}/cancel"),
-        ):
-            assert await refused(method, path, b) == (404, "not_found"), path
-        assert (await call("GET", f"/v1/executions/{execution_id}", pool))[0] == 200
-        borrowed = {**context_a, "project_id": "p2"}
-        for path, body in (
-            ("/v1/executions", {**shell, "context": borrowed}),
-            ("/v1/files/read", {"context": borrowed, "path": "note.txt"}),
-            ("/v1/files/list", {"context": borrowed, "path": "."}),
-            ("/v1/sessions/close", {"context": borrowed}),
-            ("/v1/artifacts", {"context": borrowed, "path": "note.txt"}),
-        ):
-            assert await refused("POST", path, b, body) == (404, "not_found"), path
-        assert await refused("POST", "/v1/files/read", b, {"context": context_a, "path": "x"}) == (
-            403,
-            "policy_denied",
-        )
-        # A sandbox the worker did not create belongs to no project: only the pool uses it.
-        by_hand = {"project_id": "p1", "session_id": "s1", "environment_id": "env-by-hand"}
-        operation = {**shell, "operation_id": "op-2"}
-        assert await refused("POST", "/v1/executions", a, {**operation, "context": by_hand}) == (
-            404,
-            "not_found",
-        )
-        # The pool's own token may not mix projects in an environment either.
-        assert await refused("POST", "/v1/executions", pool, {**shell, "context": borrowed}) == (
-            409,
-            "conflict",
-        )
-        # Operation IDs are per project: another project's op-1 is a new execution.
-        context_b = {"project_id": "p2", "session_id": "s1", "environment_id": "env-b"}
-        status, other = await call("POST", "/v1/executions", b, {**shell, "context": context_b})
-        assert status == 201
-        assert other["execution_id"] != execution_id
 
-        status, artifact = await call(
-            "POST", "/v1/artifacts", a, {"context": context_a, "path": "note.txt"}
+async def test_a_client_uses_only_revisions_granted_to_its_project(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    api, manager = await start_api(setup, aiohttp_client, tmp_path)
+    try:
+        unknown = "sha256:" + "0" * 64
+        answers = []
+        for policy in (setup.policy, unknown):
+            body = {**api.environment("env-a"), "policy": policy}
+            status, reply = await api.call("POST", "/v1/environments", A_TOKEN, body)
+            answers.append((status, reply["error"]["message"].replace(policy, "<revision>")))
+        # A revision stored but not granted looks like one never stored.
+        assert answers[0] == answers[1]
+        assert answers[0][0] == 404
+        setup.environments.records.grant("p1", setup.policy)
+        assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-a")))[
+            0
+        ] == 201
+        revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
+        assert await api.refused(
+            "POST", "/v1/environments/env-a/policy", A_TOKEN, {"policy": revision}
+        ) == (404, "not_found")
+        setup.environments.records.grant("p1", revision)
+        status, revised = await api.call(
+            "POST", "/v1/environments/env-a/policy", A_TOKEN, {"policy": revision}
+        )
+        assert (status, revised["policy"]) == (200, revision)
+        # The pool's own token needs no grant.
+        status, _ = await api.call(
+            "POST", "/v1/environments", TOKEN, api.environment("env-pool", "p9")
         )
         assert status == 201
-        artifact_id = artifact["artifact_id"]
-        for path in (f"/v1/artifacts/{artifact_id}", f"/v1/artifacts/{artifact_id}/content"):
-            assert await refused("GET", path, b) == (404, "not_found"), path
-            response = await client.get(path, headers=a)
-            assert response.status == 200
-        assert (await call("GET", f"/v1/artifacts/{artifact_id}", pool))[0] == 200
-        status, read = await call(
-            "POST", "/v1/files/read", a, {"context": context_a, "path": "note.txt"}
-        )
-        assert (status, read["size"]) == (200, 3)
     finally:
         await manager.close()
         manager.store.close()
+
+
+async def test_sandboxes_made_by_hand_are_the_pools_alone(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    setup = Setup(tmp_path, sandboxes={"env-hand": "research-1"})
+    api, manager = await start_api(setup, aiohttp_client, tmp_path / "worker-api")
+    try:
+        setup.environments.records.grant("p1", setup.policy)
+        for token in (A_TOKEN, TOKEN):
+            status, refused = await api.call(
+                "POST", "/v1/environments", token, api.environment("env-hand")
+            )
+            assert (status, refused["error"]["kind"]) == (409, "conflict"), token
+        context = {"project_id": "p1", "session_id": "s1", "environment_id": "env-hand"}
+        shell = {"kind": "shell", "operation_id": "op-h", "script": "true", "context": context}
+        assert await api.refused("POST", "/v1/executions", A_TOKEN, shell) == (404, "not_found")
+        status, execution = await api.call("POST", "/v1/executions", TOKEN, shell)
+        assert status == 201, execution
+        nowhere = {**shell, "context": {**context, "environment_id": "env-nowhere"}}
+        assert await api.refused("POST", "/v1/executions", TOKEN, nowhere) == (404, "not_found")
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
+async def test_a_known_environment_never_falls_back_to_a_sandbox_made_by_hand(
+    tmp_path: Path,
+) -> None:
+    # An ID the worker created, then deleted, is never sent to a static mapping that an
+    # operator added for the same ID later (review of D78).
+    setup = Setup(tmp_path)
+    await setup.environments.create(setup.request("env-1"))
+    await setup.environments.delete("env-1")
+    settings = setup.settings.model_copy(
+        update={"sandboxes": {"env-1": "research-1", "env-2": "research-2"}}
+    )
+    backend = OpenShellBackend(
+        settings,
+        tmp_path / "state",
+        setup.environments.sandbox,
+        manages=setup.environments.manages,
+    )
+    assert backend.sandbox_id("env-1") is None
+    assert backend.sandbox_id("env-2") == "research-2"
+
+
+async def test_a_busy_environment_does_not_hold_up_admission(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
+    watcher = DraftWatcher(setup.environments, 1.0)
+    lock = setup.environments._lock("env-1")  # pyright: ignore[reportPrivateUsage]
+    async with lock:
+        assert await watcher.check("env-1", info.sandbox) == ()
+    decisions = await watcher.check("env-1", info.sandbox)
+    assert [(d.host, d.admitted) for d in decisions] == [("eprint.iacr.org", True)]
 
 
 async def test_clients_are_named_by_their_tokens_digests(
@@ -1339,6 +1501,8 @@ async def test_clients_are_named_by_their_tokens_digests(
     token = (tmp_path / "client.token").read_text().strip()
     assert client_line == f'token_sha256 = "{token_digest(token)}"'
     assert main(["token", "--sha256", str(tmp_path / "missing.token")]) == 1
+    (tmp_path / "short.token").write_text("test-secret-short\n")
+    assert main(["token", "--sha256", str(tmp_path / "short.token")]) == 1
 
     base = (
         'token_file = "worker.token"\nstate_dir = "state"\n\n[openshell]\nisolation_tier = 3\n\n'
@@ -1355,6 +1519,21 @@ async def test_clients_are_named_by_their_tokens_digests(
     loaded = load_settings(settings)
     assert [(c.name, c.projects) for c in loaded.clients] == [("orchestrator-p1", ("p1",))]
     assert loaded.token()
+    # policy add --project grants the revision to the project's clients.
+    assert (
+        main(["policy", "add", "--settings", str(settings), "--project", "p1", str(EXAMPLE)]) == 0
+    )
+    digest = re.search(r"as (sha256:[0-9a-f]{64})", capsys.readouterr().out)
+    assert digest is not None
+    records = EnvironmentRecords(tmp_path / "state" / "environments.sqlite3")
+    try:
+        assert records.granted("p1", digest[1])
+        assert not records.granted("p2", digest[1])
+    finally:
+        records.close()
+    with pytest.raises(SystemExit) as refused:
+        main(["policy", "add", "--settings", str(settings), "--project", "../p1", str(EXAMPLE)])
+    assert refused.value.code == 2
     settings.write_text(base + client("orchestrator-p1", pool_line))
     with pytest.raises(SettingsError, match="pool's own token"):
         load_settings(settings).token()
@@ -1380,3 +1559,11 @@ async def test_clients_are_named_by_their_tokens_digests(
         load_settings(settings)
     with pytest.raises(ValueError, match="managed environments"):
         create_app(idle_manager(tmp_path), TOKEN, None, CLIENTS)
+    pool_twin = ClientSettings(name="twin", token_sha256=token_digest(TOKEN), projects=("p1",))
+    (tmp_path / "twin").mkdir()
+    environments = Setup(tmp_path / "twin").environments
+    try:
+        with pytest.raises(ValueError, match="pool's own token"):
+            create_app(idle_manager(tmp_path / "twin"), TOKEN, environments, (pool_twin,))
+    finally:
+        environments.close()

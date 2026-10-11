@@ -214,6 +214,11 @@ class EnvironmentRecords:
             " admitted INTEGER NOT NULL, reason TEXT NOT NULL, decided_at TEXT NOT NULL,"
             " PRIMARY KEY (environment_id, host, port))"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS policy_grants ("
+            " project_id TEXT NOT NULL, revision TEXT NOT NULL,"
+            " PRIMARY KEY (project_id, revision))"
+        )
         self._lock = threading.Lock()
 
     def get(self, environment_id: str) -> EnvironmentInfo | None:
@@ -276,6 +281,23 @@ class EnvironmentRecords:
                 (environment_id, environment_id, MAX_RECORDED),
             )
 
+    def grant(self, project_id: str, revision: str) -> None:
+        """Let clients limited to the project use a policy revision (D78)."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO policy_grants (project_id, revision) VALUES (?, ?)"
+                " ON CONFLICT DO NOTHING",
+                (project_id, revision),
+            )
+
+    def granted(self, project_id: str, revision: str) -> bool:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT 1 FROM policy_grants WHERE project_id = ? AND revision = ?",
+                (project_id, revision),
+            ).fetchone()
+        return row is not None
+
     def forget(self, environment_id: str) -> None:
         """Drop an environment's decisions, when its sandbox is deleted."""
         with self._lock:
@@ -320,6 +342,7 @@ class Environments:
         cli_env: dict[str, str],
     ) -> None:
         self.settings = settings
+        self.handmade_sandboxes = frozenset(backend.sandboxes)
         self.cli = OpenShellCli(backend, cli_env)
         self.store = PolicyStore(settings.policy_store)
         self.floor = HardFloor(frozenset(settings.admin_hosts))
@@ -345,6 +368,19 @@ class Environments:
         info = self.records.get(environment_id)
         return info.sandbox if info is not None and info.state is EnvironmentState.READY else None
 
+    def manages(self, environment_id: str) -> bool:
+        """Whether the worker has ever created the environment, whatever its state now."""
+        return self.records.get(environment_id) is not None
+
+    def handmade(self, environment_id: str) -> bool:
+        """Whether the settings map the environment to a sandbox made outside the worker."""
+        return environment_id in self.handmade_sandboxes
+
+    def busy(self, environment_id: str) -> bool:
+        """Whether a change to the environment is under way."""
+        lock = self._locks.get(environment_id)
+        return lock is not None and lock.locked()
+
     def get(self, environment_id: str) -> EnvironmentInfo:
         info = self.records.get(environment_id)
         if info is None:
@@ -356,8 +392,21 @@ class Environments:
 
     async def create(self, request: EnvironmentRequest) -> tuple[EnvironmentInfo, bool]:
         """Create the environment's sandbox; return the existing one for the same request."""
+        if self.handmade(request.environment_id):
+            raise WorkerError(
+                ErrorKind.CONFLICT,
+                f"environment {request.environment_id!r} is a sandbox made by hand; "
+                "the worker creates only environments of its own",
+            )
         async with self._lock(request.environment_id):
             existing = self.records.get(request.environment_id)
+            if existing is not None and existing.project_id != request.project_id:
+                # An ID stays with the project that first created it, deleted or not, so
+                # that nothing checked for one project can reach another's (D78).
+                raise WorkerError(
+                    ErrorKind.CONFLICT,
+                    f"environment {request.environment_id!r} belongs to another project",
+                )
             if existing is not None and existing.state in (
                 EnvironmentState.READY,
                 EnvironmentState.STOPPED,

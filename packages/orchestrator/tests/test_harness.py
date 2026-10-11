@@ -710,7 +710,9 @@ async def test_projects_give_sessions_their_environments(
     assert shown == 0
     record = json.loads(capsys.readouterr().out)
     environments = {name: s["environment_id"] for name, s in record["sessions"].items()}
-    assert environments == {"a": "p1-default", "b": "p1-default", "c": "p1-c"}
+    assert environments["a"] == environments["b"] == record["default_environment_id"]
+    assert re.fullmatch(r"p1-default-[0-9a-f]{12}", environments["a"])
+    assert re.fullmatch(r"p1-c-[0-9a-f]{12}", environments["c"])
     assert record["sessions"]["a"]["closed_at"] is not None
 
 

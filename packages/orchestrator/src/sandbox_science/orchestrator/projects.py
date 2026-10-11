@@ -11,6 +11,10 @@ orchestrator asks for them by ID and keeps this record of which session uses whi
 Records are JSON files under the orchestrator's state directory, one per project.
 Each change rewrites its file atomically under a lock, so concurrent harness
 processes cannot lose one another's sessions.
+
+Environment IDs end with a random tag, kept in the record. A worker shared with other
+projects' orchestrators keeps each ID for the project that first creates it (D78), so
+an ID another orchestrator could predict, such as ``p1-default``, could be taken first.
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import contextlib
 import fcntl
 import hashlib
 import os
+import secrets
 from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +45,7 @@ from .worker_client import WorkerAPIError, WorkerClient
 
 _MAX_ID: Final = 128
 _IDENTIFIER: Final = TypeAdapter(Identifier)
+_TAG_BYTES: Final = 6
 
 
 class ProjectError(Exception):
@@ -77,12 +83,18 @@ class ProjectRecord(Contract):
 
 
 def environment_id(*parts: str) -> str:
-    """An environment ID from a project's and a session's IDs, short enough to be one."""
+    """An environment ID from its parts, such as a project's and a session's IDs, short
+    enough to be one."""
     joined = "-".join(parts)
     if len(joined) <= _MAX_ID:
         return joined
     digest = hashlib.sha256("\0".join(parts).encode()).hexdigest()[:16]
     return f"{joined[: _MAX_ID - len(digest) - 1]}-{digest}"
+
+
+def _new_environment_id(project_id: str, name: str) -> str:
+    """A new environment's ID: readable, and unpredictable to other projects' clients."""
+    return environment_id(project_id, name, secrets.token_hex(_TAG_BYTES))
 
 
 class ProjectStore:
@@ -125,7 +137,7 @@ class ProjectStore:
                 project_id=project_id,
                 profile=profile,
                 policy=policy,
-                default_environment_id=environment_id(project_id, "default"),
+                default_environment_id=_new_environment_id(project_id, "default"),
                 created_at=now,
                 updated_at=now,
             )
@@ -153,7 +165,7 @@ class ProjectStore:
             if session is None:
                 session = self._session(
                     session_id=session_id,
-                    environment_id=environment_id(project_id, session_id)
+                    environment_id=_new_environment_id(project_id, session_id)
                     if dedicated
                     else record.default_environment_id,
                     dedicated=dedicated,
