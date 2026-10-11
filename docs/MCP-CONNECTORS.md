@@ -63,7 +63,9 @@ The alternative of running the orchestrator itself as an OpenShell sandbox (D47)
 
 ## The MCP proxy as built
 
-Date: 2026-10-11. The first version is in `packages/mcp-proxy` (`sandbox_science.mcp_proxy`, command `sandbox-science-mcp-proxy`; D75, proposed). It has run only as a local service against a fake server in its tests, not yet in its OpenShell sandbox.
+Date: 2026-10-11. The first version is in `packages/mcp-proxy` (`sandbox_science.mcp_proxy`, command `sandbox-science-mcp-proxy`; D75, proposed). Its tests run it against a fake server. It has not run in its OpenShell sandbox yet.
+
+Checked by hand on 2026-10-11 with the MCP Python SDK 2.2.0 on both sides, its client calling the proxy and its server behind it: the client's `server/discover` probe (MCP 2026-07-28) is refused, the client falls back to `initialize`, and listing tools, an allowed call and an escalated one behave as below, over the server's event streams.
 
 **Endpoints.** Each declared server has a Streamable HTTP endpoint, `POST /mcp/<server>`, where `<server>` is its name under `mcp.servers`. The proxy speaks MCP 2025-03-26, 2025-06-18 and 2025-11-25, to callers and to servers, and answers every request with `application/json`. `GET` answers 405, since the proxy passes no server-initiated messages on, and `DELETE` ends the caller's session.
 

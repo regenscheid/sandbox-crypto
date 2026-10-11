@@ -33,6 +33,7 @@ def test_loads_reads_json() -> None:
         b"[" * 100_000 + b"]" * 100_000,
         b"",
         b"{",
+        b"[" + b"9" * 5000 + b"]",
     ],
 )
 def test_loads_refuses_what_a_strict_parser_would(data: bytes) -> None:
