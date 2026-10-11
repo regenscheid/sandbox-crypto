@@ -91,7 +91,7 @@ A caller holds at most `max_sessions_per_caller` sessions; its next one ends its
 | Nothing in the parameters that reads as an OpenShell placeholder | `credential_in_body` |
 | A placeholder for the server's credentials in the proxy's environment | `credential_unavailable` |
 | For `tools/call`, a name in the server's latest complete `tools/list`, compared exactly. The proxy lists the tools itself when it has no complete listing, and again after the server reports a change; the caller's own listings count once their last page arrives | `tool_not_advertised` |
-| An escalation is recorded as a pending request and refused. If the record cannot be stored, there is no request to approve, as for the middleware | `approval_required`, `audit_unavailable` |
+| An escalation is a permission request (D76), as in the middleware. Its first occurrence is recorded with its key: project, caller, policy revision, server, method, tool and a digest of the parameters, never the parameters. The refusal's `data.request` names the request; retries wait on it without new records. An approval covers the call or, with `--scope tool`, the tool with any arguments; a denial refuses; unanswered past the timeout, the call is refused as timed out. If the record cannot be stored, there is no request to approve | `approval_required`, `approval_denied`, `escalation_timed_out`, `audit_unavailable` |
 | An alert proceeds only once its record is stored | `audit_unavailable` |
 | The server's resolved addresses pass the hard floor and the pool ceiling, checked before each new connection | `destination_forbidden`, `pool_ceiling_denied` |
 
@@ -113,7 +113,8 @@ Of a caller's notifications, only `notifications/cancelled` for a call in flight
 - `container`: worker code in a shared project container. The header's label is recorded only as `session_claim`.
 
 **Records.** In the [event store](EVENT-STORE.md), with the source `mcp-proxy`:
-- `escalation`: a pending permission request, with the attribution, server, MCP session, method, tool, policy revision, rule, reason and escalation terms;
+- `escalation`: a pending permission request, with the attribution, server, MCP session, method, tool, policy revision, rule, reason, escalation terms and its `target` key;
+- `approved`: a call that went through on an approval, naming the approval and the request;
 - `alert`: the same fields, stored before the call proceeds;
 - `mcp-call`: one record for every message an authenticated caller sends, with the same subject, the decision (action, layer, rule), the reason code, the outcome (`forwarded`, `server_error`, `refused`, `failed` or `local`), the sizes of the request, the parameters and the answer, what a stream carried, and the duration. It is written on a best-effort basis, like the middleware's monitor findings.
 
@@ -172,7 +173,7 @@ Callers send `Authorization: Bearer <token>` to `http://<listen>/mcp/<server>`; 
 - MCP 2026-07-28, which the policy library knows: it has no sessions, carries metadata in every request, mirrors names in `Mcp-Method` and `Mcp-Name` headers and embeds server requests in results. The proxy refuses servers pinned to it, and the policy's list of protocol methods needs it too.
 - Passing server notifications (progress, logging, list changes) to callers, and resuming interrupted event streams.
 - Caller identity from the platform rather than per-sandbox tokens, since the middleware knows which sandbox sent a request, and `process`-level attribution.
-- Escalation grants: nothing turns an approval into a grant the proxy honours yet, so an escalated call stays refused (backlog).
+- Approved tools are not compiled into the proxy sandbox's fence, so OpenShell still refuses an escalated tool there; until they are, the fence has to allow escalated tools for approvals to take effect (backlog).
 - The orchestrator's sandbox policy admits only the worker API and the model gateway; it must admit the MCP proxy too.
 - `Basic` credentials in `headers` servers: how OpenShell expects a placeholder inside one is unchecked.
 - A test against crypto-research-mcp, which needs OAuth.

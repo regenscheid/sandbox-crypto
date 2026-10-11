@@ -40,7 +40,7 @@ The middleware itself can also deny: `git_request_invalid` (a fetch body that is
 
 ## Permission requests
 
-An escalated request becomes a permission request (`approvals.py`, D76).
+An escalated request becomes a permission request (D76). The logic is shared with the MCP proxy, in `sandbox_science.policy.approvals`; its keys come in two kinds, `http` here and `mcp` in the proxy ([MCP connectors](MCP-CONNECTORS.md)).
 - **Recording.** Its first occurrence is recorded as an `escalation`, whose sequence number identifies the request; the denial's reason names it ("permission request 12"). The record's `target` is what an answer covers: the sandbox, policy revision, method, host, port and path. Retries of the same request share its fingerprint and are not recorded again, so a sandbox retrying a denied write does not grow the store.
 - **Answering.** An operator answers on the pool host, until the GUI does it with re-authentication (D54):
 

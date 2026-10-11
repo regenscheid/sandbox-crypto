@@ -22,7 +22,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] On babbage: run the compiled credential bindings, including a bound host that rules also name (its other egress endpoint then keeps only port 80). Done 2026-10-11 ([lab 3](docs/agent-reports/babbage-openshell-lab-3-2026-10-11.md)); the plain-HTTP substitution bug was seen at runtime
 - [x] Attach to each research sandbox exactly the providers `credentials.providers` lists, each with a profile without endpoints: the worker does it when it creates the sandbox (D73; the threat model keeps gateway credentials out of the orchestrator). To verify on babbage
 - [x] Escalation grants in the policy middleware (D76): escalations are permission requests in the event store, answered with `approve` or `deny` (request or host scope, with an expiry); retries are recognized and not recorded again; escalation timeouts apply on retry
-- [ ] Escalation grants in the MCP proxy, compiled into its fence; approvals from the GUI with re-authentication (D54)
+- [x] Permission requests in the MCP proxy (D76): escalated calls are recorded once and answered with `sandbox-science-mcp-proxy approve` or `deny` (call or tool scope)
+- [ ] Compile approved tools into the MCP proxy sandbox's fence; approvals from the GUI with re-authentication (D54)
 - [x] Wildcard-host read rules: `*` cannot be an OpenShell endpoint, so the compiler admits public address ranges with a host-less endpoint and the policy middleware decides each request (D69)
 - [ ] Policy revisions: GUI and file edits, re-authentication for widening (D54)
 - [ ] `defaults.log`: decide whether allowed operations may go unlogged
