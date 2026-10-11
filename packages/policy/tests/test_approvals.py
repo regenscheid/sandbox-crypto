@@ -18,6 +18,7 @@ from sandbox_science.policy.approvals import (
     APPROVAL,
     DENIAL,
     ESCALATION,
+    VALID_UNTIL,
     WITHDRAWN,
     Approvals,
     RequestKey,
@@ -51,6 +52,7 @@ def escalation(seq: int, key: RequestKey, paths: list[str], **extra: object) -> 
     payload: dict[str, object] = {
         "target": key.payload(),
         "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+        VALID_UNTIL: (NOW + timedelta(hours=12)).isoformat(),
         "files": [{"path": path, "name": path.rsplit("/", 1)[-1]} for path in paths],
         **extra,
     }
@@ -189,8 +191,9 @@ def test_a_request_is_shown_in_full_on_demand() -> None:
     shown = request_lines(approvals, 1)
     assert shown is not None
     assert shown[1].strip().startswith("waiting")
-    assert shown[2].strip() == "25 package files:"
-    assert [line.strip() for line in shown[3:]] == sorted(paths)
+    assert shown[2].strip().startswith("grants nothing after ")
+    assert shown[3].strip() == "25 package files:"
+    assert [line.strip() for line in shown[4:]] == sorted(paths)
     approvals.load([answer(2, 1, APPROVAL, approvals)])
     shown = request_lines(approvals, 1)
     assert shown is not None
@@ -200,3 +203,33 @@ def test_a_request_is_shown_in_full_on_demand() -> None:
     assert shown is not None
     assert shown[1].strip() == "withdrawn: its operation has ended"
     assert request_lines(approvals, 9) is None
+
+
+def test_a_file_set_grants_nothing_past_its_own_deadline() -> None:
+    approvals = Approvals()
+    key = RequestKey.packages("sbx-1", DIGEST, "prv-1", [PARI])
+    until = NOW + timedelta(hours=1)
+    approvals.load([escalation(1, key, [PARI], valid_until=until.isoformat())])
+    approvals.load([answer(2, 1, APPROVAL, approvals, hours=8)])
+    assert approvals.granted("sbx-1", DIGEST, PARI, NOW) is not None
+    # The approval lasts eight hours; the request, one: a withdrawal that never came is moot.
+    assert approvals.granted("sbx-1", DIGEST, PARI, until) is None
+    # A file set without a deadline is no request.
+    bare = escalation(3, key, [PARI])
+    del bare.payload[VALID_UNTIL]
+    approvals.load([bare])
+    assert approvals.request(3) is None
+
+
+def test_a_request_shows_what_was_asked_and_why_in_safe_text() -> None:
+    approvals = Approvals()
+    key = RequestKey.packages("sbx-1", DIGEST, "prv-1", [PARI])
+    purpose = "factor\x1b[2Jthe\nlattice " + "x" * 400
+    approvals.load([escalation(1, key, [PARI], asked="Conda: pari>=2.15", purpose=purpose)])
+    shown = request_lines(approvals, 1)
+    assert shown is not None
+    assert "asked for: Conda: pari>=2.15" in shown[2]
+    assert "\x1b" not in "".join(shown)
+    assert shown[3].strip().startswith("purpose (the agent's words): factor [2Jthe lattice x")
+    assert len(shown[3].strip()) < 340
+    assert shown[4].strip().startswith("grants nothing after ")

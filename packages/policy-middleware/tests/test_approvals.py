@@ -332,6 +332,7 @@ def packages_request(
     payload: dict[str, object] = {
         "target": key.payload(),
         "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+        "valid_until": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
         "files": [{"path": path} for path in paths],
     }
     return events.append("escalation", "worker", payload).seq
@@ -351,6 +352,7 @@ def test_an_approved_file_set_downloads_and_nothing_else(
     payload: dict[str, object] = {
         "target": key.payload(),
         "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+        "valid_until": (datetime.now(UTC) + timedelta(days=1)).isoformat(),
         "files": [{"path": PARI, "name": "pari"}, {"path": GMP, "name": "gmp"}],
     }
     seq = events.append("escalation", "worker", payload).seq
@@ -363,7 +365,8 @@ def test_an_approved_file_set_downloads_and_nothing_else(
     assert main(["pending", "--settings", str(settings), "--request", str(seq)]) == 0
     shown = capsys.readouterr().out.splitlines()
     assert "waiting" in shown[1]
-    assert [line.strip() for line in shown[3:]] == sorted([PARI, GMP])
+    assert shown[2].strip().startswith("grants nothing after ")
+    assert [line.strip() for line in shown[4:]] == sorted([PARI, GMP])
     assert main(["pending", "--settings", str(settings), "--request", "999"]) == 1
     # Unanswered, its files wait like any escalated download; index reads go on.
     assert fetch(PARI).reason_code == evaluator.APPROVAL_REQUIRED
