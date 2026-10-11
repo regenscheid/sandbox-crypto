@@ -477,3 +477,28 @@ async def test_package_changes_count_as_environment_revisions(
     finally:
         await again.manager.close()
         store.close()
+
+
+async def test_a_session_sees_each_admission_notice_once(worker: Worker) -> None:
+    recorded: list[tuple[datetime, str]] = []
+
+    def notices(environment_id: str, since: datetime) -> list[tuple[datetime, str]]:
+        return [(at, text) for at, text in recorded if at > since]
+
+    worker.manager.notices = notices
+    first = await worker.run("op-n1", kind="shell", script="true")
+    assert first["result"]["notices"] == []
+    recorded.append((datetime.now(UTC), "a.example.org was admitted on demand"))
+    second = await worker.run("op-n2", kind="shell", script="true")
+    assert second["result"]["notices"] == ["a.example.org was admitted on demand"]
+    third = await worker.run("op-n3", kind="shell", script="true")
+    assert third["result"]["notices"] == []
+    # Another session starts from its own first submission: an older admission is not news.
+    other = {**CONTEXT, "session_id": "s2"}
+    status, execution = await worker.post(
+        "/v1/executions",
+        {"operation_id": "op-n4", "context": other, "kind": "shell", "script": "true"},
+    )
+    assert status == 201, execution
+    fourth = await worker.finish(execution["execution_id"])
+    assert fourth["result"]["notices"] == []
