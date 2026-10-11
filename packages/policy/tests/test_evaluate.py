@@ -2244,10 +2244,9 @@ packages:
         pytest.param("pypi", "numpy", None, Action.ALLOW, Action.ALLOW, id="pypi-allow"),
         pytest.param("cargo", "serde", None, Action.ESCALATE, Action.ALLOW, id="cargo-escalate"),
         pytest.param("npm", "lodash", None, Action.DENY, Action.DENY, id="npm-deny"),
-        # Not configured: defaults.action (escalate) for files; lookups still allowed.
-        pytest.param(
-            "go", "golang.org/x/mod", None, Action.ESCALATE, Action.ALLOW, id="go-default"
-        ),
+        # Not configured: defaults.action (escalate) for files. A Go lookup also reads
+        # the module's origin, which no rule allows here, so it escalates too.
+        pytest.param("go", "golang.org/x/mod", None, Action.ESCALATE, Action.ESCALATE, id="go"),
         pytest.param("conda", "numpy", "conda-forge", Action.ALLOW, Action.ALLOW, id="conda-forge"),
         pytest.param("conda", "numpy", "bioconda", Action.DENY, Action.DENY, id="conda-unlisted"),
     ],
@@ -2303,6 +2302,90 @@ def test_package_registries_are_reachable_only_through_the_cache(url: str) -> No
     decision = decide_http(policy, "GET", url)
     assert decision.action == Action.DENY
     assert decision.layer == "floor"
+
+
+GO_READS = """
+packages:
+  go: {action: allow}
+network:
+  rules:
+    - {name: reads, operation: http, match: {hosts: ["*"], methods: [GET]}, action: allow}
+    - {name: no-evil, operation: http, match: {hosts: [evil.example.org]}, action: deny}
+    - {name: ask, operation: http, match: {hosts: [ask.example.org]}, action: escalate}
+"""
+
+
+@pytest.mark.parametrize(
+    ("module", "kind", "action"),
+    [
+        pytest.param("golang.org/x/mod", "index", Action.ALLOW, id="public-origin"),
+        pytest.param("golang.org/x/mod", "artifact", Action.ALLOW, id="public-origin-zip"),
+        pytest.param("evil.example.org/x", "index", Action.DENY, id="denied-origin"),
+        pytest.param("ask.example.org/x", "artifact", Action.ESCALATE, id="escalated-origin"),
+        pytest.param("metadata.google.internal/x", "index", Action.DENY, id="floor-origin"),
+        pytest.param("10.0.0.5/x", "index", Action.DENY, id="private-origin"),
+        pytest.param("registry.npmjs.org/x", "index", Action.DENY, id="registry-origin"),
+    ],
+)
+def test_go_modules_are_also_reads_of_their_origin(
+    module: str, kind: Literal["index", "artifact"], action: Action
+) -> None:
+    # The Go module proxy fetches a module it lacks from its origin, so a lookup for
+    # a made-up module would otherwise send data to a host the rules forbid.
+    policy = load(GO_READS)
+    assert decide_package(policy, "go", module, kind=kind).action == action
+
+
+def test_the_pool_ceiling_applies_to_package_registries() -> None:
+    policy = load(MIXED_PACKAGES)
+    closed = PoolCeiling.model_validate({"network": {"allow_hosts": []}})
+    decision = evaluate(PackageOperation("pypi", "numpy"), policy, ceiling=closed)
+    assert (decision.action, decision.layer) == (Action.DENY, "ceiling")
+    no_npm = PoolCeiling.model_validate({"network": {"deny_hosts": ["registry.npmjs.org"]}})
+    npm_index = evaluate(PackageOperation("npm", None, kind="index"), policy, ceiling=no_npm)
+    assert npm_index.layer == "ceiling"
+    numpy = evaluate(PackageOperation("pypi", "numpy"), policy, ceiling=no_npm)
+    assert numpy.action == Action.ALLOW
+
+
+def test_unconfigured_conda_reaches_only_conda_forge() -> None:
+    policy = load("defaults: {action: allow}\n")
+    assert decide_package(policy, "conda", "numpy", "conda-forge").action == Action.ALLOW
+    assert decide_package(policy, "conda", "numpy", "bioconda").action == Action.DENY
+    assert decide_package(policy, "conda", None, "some-channel", kind="index").action == Action.DENY
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "registry.npmjs.com",
+        "replicate.npmjs.com",
+        "unpkg.com",
+        "cdn.jsdelivr.net",
+        "npm.pkg.github.com",
+        "test.pypi.org",
+        "test-files.pythonhosted.org",
+        "conda-static.anaconda.org",
+        "api.anaconda.org",
+        "anaconda.org",
+        "fast.prefix.dev",
+        "prefix.dev",
+        "repo.continuum.io",
+        "anything.crates.io",
+        "goproxy.io",
+        "sum.golang.google.cn",
+    ],
+)
+def test_registry_aliases_and_mirrors_are_on_the_floor(host: str) -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - {name: reads, operation: http, match: {hosts: ["*"], methods: [GET]}, action: allow}
+        """
+    )
+    decision = decide_http(policy, "GET", f"https://{host}/x")
+    assert (decision.action, decision.layer) == (Action.DENY, "floor")
 
 
 # --- Escalation timeout --------------------------------------------------------------------------

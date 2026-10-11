@@ -89,14 +89,37 @@ WHEEL = f"{PYPI_FILE}/numpy-2.1.0-cp312-cp312-manylinux_2_17_x86_64.whl"
         ),
         *[
             (f"/go/sumdb/sum.golang.org/{rest}", PackageOperation("go", None, kind="index"))
-            for rest in (
-                "supported",
-                "latest",
-                "lookup/golang.org/x/mod@v0.20.0",
-                "tile/8/0/x123/456",
-                "tile/8/1/000.p/12",
-            )
+            for rest in ("supported", "latest", "tile/8/0/x123/456", "tile/8/1/000.p/12")
         ],
+        # A checksum lookup names its module.
+        (
+            "/go/sumdb/sum.golang.org/lookup/github.com/!burnt!sushi/toml@v1.4.0",
+            PackageOperation("go", "github.com/BurntSushi/toml", kind="index"),
+        ),
+        # conda-forge's shards sit beside repodata.
+        (
+            f"/conda/conda-forge/linux-64/{SHA256}.msgpack.zst",
+            PackageOperation("conda", None, "conda-forge", "index"),
+        ),
+        # PyPI epochs and sdists
+        (
+            f"/pypi/files/numpy/-/{PYPI_FILE}/numpy-1!2.0.0.tar.gz",
+            PackageOperation("pypi", "numpy"),
+        ),
+        (
+            f"/pypi/files/zope-interface/-/{PYPI_FILE}/zope.interface-6.0.tar.gz",
+            PackageOperation("pypi", "zope-interface"),
+        ),
+        # npm lockfile paths, legacy names and "@" separators
+        ("/npm/lodash/-/lodash-4.17.21.tgz", PackageOperation("npm", "lodash")),
+        ("/npm/@types/node/-/node-20.0.0.tgz", PackageOperation("npm", "@types/node")),
+        ("/npm/@types%2fnode/-/node-20.0.0.tgz", PackageOperation("npm", "@types/node")),
+        ("/npm/hello!world(1)", PackageOperation("npm", "hello!world(1)", kind="index")),
+        (
+            "/npm/files/-/thirty-two/-/thirty-two@0.0.1.tgz",
+            PackageOperation("npm", "thirty-two"),
+        ),
+        ("/npm/files/-/express/-/express-1.0.0rc2.tgz", PackageOperation("npm", "express")),
         # npm
         ("/npm/lodash", PackageOperation("npm", "lodash", kind="index")),
         ("/npm/JSONStream", PackageOperation("npm", "JSONStream", kind="index")),
@@ -187,6 +210,15 @@ def test_only_get_and_head_reach_the_cache(method: str) -> None:
         "/npm/files/zz/lodash/-/lodash-4.17.21.tgz",
         f"/npm/files/{SHA512}/lodash/-/lodash-4.17.21.tar",
         f"/npm/files/{SHA512}/lodash/-/../../x.tgz",
+        # a file of another package under this package's name
+        f"/pypi/files/numpy/-/{PYPI_FILE}/evil-1.0-py3-none-any.whl",
+        f"/pypi/files/foo/-/{PYPI_FILE}/foo-bar-1.0.tar.gz",
+        f"/pypi/files/numpy/-/{PYPI_FILE}/numpy-2.0.exe",
+        "/npm/files/-/lodash/-/evil-1.0.0.tgz",
+        "/npm/files/-/foo/-/foo-bar-1.0.0.tgz",
+        "/npm/lodash/-/evil-1.0.0.tgz",
+        "/npm/-/lodash-1.0.0.tgz",
+        "/go/sumdb/sum.golang.org/lookup/github.com/Azure/x@v1.0.0",
         # characters outside the URL-safe set, which OpenShell would have escaped
         "/npm/lodash?x=1",
         "/npm/lodash#x",

@@ -207,7 +207,8 @@ def test_example_sandbox_policy() -> None:
     assert cache.allow_encoded_slash is True
     assert cache.allowed_ips is None
     (proxy,) = entries["sandbox-science-mcp-proxy"].endpoints
-    assert proxy.protocol == "tcp"
+    assert (proxy.host, proxy.ports) == ("mcp-proxy.sandbox-science.internal", (8080,))
+    assert (proxy.protocol, proxy.enforcement, proxy.access) == ("rest", "enforce", "full")
     assert proxy.allowed_ips is None
     middlewares = compiled.policy.network_middlewares
     assert middlewares is not None
@@ -215,11 +216,12 @@ def test_example_sandbox_policy() -> None:
     assert middleware.middleware == "sandbox-science-policy"
     assert middleware.on_error == "fail_closed"
     assert middleware.endpoints.include == ("**",)
-    # The package cache is inspected; only the raw MCP proxy is left out.
-    assert middleware.endpoints.exclude == ("mcp-proxy.sandbox-science.internal",)
+    # Nothing is excluded: OpenShell selects middleware by host alone.
+    assert middleware.endpoints.exclude is None
     assert middleware.config == {
         "policy": {"name": "permissive-default", "digest": EXAMPLE.digest},
         "package_cache": {"host": "package-cache.sandbox-science.internal", "port": 8090},
+        "mcp_proxy": {"host": "mcp-proxy.sandbox-science.internal", "port": 8080},
     }
     assert compiled.policy_digest == EXAMPLE.digest
 
@@ -376,6 +378,92 @@ def test_a_service_on_an_admitted_port_is_a_compile_error() -> None:
     )
     with pytest.raises(CompileError, match="port 443"):
         compile_sandbox(EXAMPLE, target, ceiling=OPEN)
+
+
+def single_host_target() -> SandboxTarget:
+    return TARGETS.sandbox.model_copy(
+        update={
+            "package_cache": ServiceEndpoint.model_validate(
+                {"host": "host.openshell.internal", "port": 8090}
+            ),
+            "mcp_proxy": ServiceEndpoint.model_validate(
+                {"host": "host.openshell.internal", "port": 8080}
+            ),
+        }
+    )
+
+
+def test_single_host_services_stay_behind_the_middleware() -> None:
+    # Both services on the gateway host (the VM driver on babbage). Excluding the
+    # host would take every port on it out of the middleware.
+    compiled = compile_sandbox(EXAMPLE, single_host_target(), ceiling=OPEN)
+    middlewares = compiled.policy.network_middlewares
+    assert middlewares is not None
+    middleware = middlewares["sandbox-science-policy"]
+    assert middleware.endpoints.include == ("**",)
+    assert middleware.endpoints.exclude is None
+    assert middleware.config["package_cache"] == {"host": "host.openshell.internal", "port": 8090}
+    assert middleware.config["mcp_proxy"] == {"host": "host.openshell.internal", "port": 8080}
+    entries = compiled.policy.network_policies
+    for key in ("sandbox-science-package-cache", "sandbox-science-mcp-proxy"):
+        (endpoint,) = entries[key].endpoints
+        assert endpoint.protocol == "rest"
+
+
+def test_services_sharing_a_port_are_a_compile_error() -> None:
+    target = single_host_target().model_copy(
+        update={
+            "mcp_proxy": ServiceEndpoint.model_validate(
+                {"host": "host.openshell.internal", "port": 8090}
+            )
+        }
+    )
+    with pytest.raises(CompileError, match="different ports"):
+        compile_sandbox(EXAMPLE, target, ceiling=OPEN)
+
+
+RESERVED_RULES = """
+network:
+  rules:
+    - name: names
+      operation: http
+      match:
+        hosts:
+          - pypi.org
+          - registry.npmjs.com
+          - mcp.example.org
+          - package-cache.sandbox-science.internal
+          - mcp-proxy.sandbox-science.internal
+          - ok.example.org
+      action: allow
+    - {name: crates, operation: http, match: {hosts: ["*.crates.io"]}, action: allow}
+mcp:
+  servers:
+    tools:
+      url: https://mcp.example.org/mcp
+      revision: "2025-11-25"
+      auth: {mode: none}
+      tools: {allow: [x]}
+"""
+
+
+@pytest.mark.parametrize("default", ["deny", "escalate"])
+def test_reserved_hosts_named_in_rules_are_not_admitted(default: str) -> None:
+    policy = network_policy(RESERVED_RULES, default=default)
+    compiled = compile_research(policy)
+    hosts = {
+        endpoint.host
+        for entry in compiled.policy.network_policies.values()
+        for endpoint in entry.endpoints
+    }
+    assert "ok.example.org" in hosts
+    for reserved in ("pypi.org", "registry.npmjs.com", "mcp.example.org", "**.crates.io"):
+        assert reserved not in hosts
+    refused = {f.subject for f in compiled.findings if "not admitted" in f.message}
+    assert {"hosts.pypi.org", "hosts.registry.npmjs.com", "hosts.mcp.example.org"} <= refused
+    assert "hosts.*.crates.io" in refused
+    for service in ("package-cache", "mcp-proxy"):
+        assert f"hosts.{service}.sandbox-science.internal" in refused
 
 
 def test_the_gateway_host_alias_is_accepted_only_as_a_service_host() -> None:

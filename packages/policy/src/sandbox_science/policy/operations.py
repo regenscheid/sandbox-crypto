@@ -49,7 +49,10 @@ _PACKAGE_NAMES: Final[dict[str, re.Pattern[str]]] = {
     "pypi": re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"),
     "conda": re.compile(r"[a-z0-9_][a-z0-9_.+-]*"),
     "cargo": re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,63}"),
-    "npm": re.compile(r"(?:@[A-Za-z0-9~-][A-Za-z0-9._~-]*/)?[A-Za-z0-9~-][A-Za-z0-9._~-]*"),
+    # npm names use the characters encodeURIComponent leaves alone.
+    "npm": re.compile(
+        r"(?:@[A-Za-z0-9._~!*'()-]+/[A-Za-z0-9_~!*'()-]|[A-Za-z0-9~!*'()])[A-Za-z0-9._~!*'()-]*"
+    ),
     # A decoded Go module path; module_path_problem checks the rest.
     "go": re.compile(r"[a-z0-9.-]+(?:/[A-Za-z0-9._~-]+)*"),
 }
