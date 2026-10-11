@@ -26,10 +26,12 @@ policy and these checks have not passed.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Final, cast, get_args
 
 from aiohttp import hdrs, web
@@ -42,6 +44,7 @@ from sandbox_science.policy import (
     PoolCeiling,
     evaluate_mcp_message,
 )
+from sandbox_science.policy.approvals import Approvals, RecordLike, RequestKey
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import McpVersion
 
@@ -51,10 +54,12 @@ from .credentials import contains_placeholder, credential_headers
 from .errors import MessageError, RefusalError, SessionGoneError, StoreError, UpstreamError
 from .jsonrpc import JsonObject, Notification, Request, RequestId, Response
 from .reasons import (
+    APPROVAL_DENIED,
     APPROVAL_REQUIRED,
     ARGUMENTS_TOO_LARGE,
     AUDIT_UNAVAILABLE,
     CREDENTIAL_IN_BODY,
+    ESCALATION_TIMED_OUT,
     LAYER_CODES,
     MESSAGES,
     ORIGIN_FORBIDDEN,
@@ -232,7 +237,15 @@ class McpProxy:
         sessions: Sessions,
         credentials: Mapping[str, str],
         environ: Mapping[str, str],
+        requests: Callable[[int], Iterable[RecordLike]] | None = None,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
+        """``requests`` reads the event store's records after a sequence number, from which
+        permission requests and their answers are known (D76). Without it, every escalation
+        is recorded and refused, and none can be approved."""
+        self._requests = requests
+        self._now = now
+        self._approvals = Approvals()
         self._store = store
         self._callers = callers
         self._ceiling = ceiling
@@ -349,7 +362,9 @@ class McpProxy:
         except RefusalError as refusal:
             _log.info("refused a call to %r: %s", _bounded(call.server), refusal)
             status = 200 if request_id is not None else 403
-            return self._refused(call, request_id, refusal.reason_code, status, REFUSED)
+            return self._refused(
+                call, request_id, refusal.reason_code, status, REFUSED, data=refusal.data
+            )
         except SessionGoneError:
             if call.session is not None:
                 self._sessions.remove(call.session)
@@ -522,16 +537,8 @@ class McpProxy:
             # The library refuses tools/call without a string name, so call.tool is set.
             await self._check_advertised(loaded, session, target, call.tool or "")
         if decision.action is Action.ESCALATE:
-            try:
-                await self._events.record("escalation", call.finding(decision))
-            except Exception as exc:
-                # No permission request exists, so the caller must not wait for an approval.
-                _log.exception("could not record an escalation")
-                raise RefusalError(
-                    AUDIT_UNAVAILABLE, "the permission request could not be recorded"
-                ) from exc
-            raise RefusalError(APPROVAL_REQUIRED, decision.reason)
-        if decision.action is Action.ALERT:
+            await self._escalation(call, loaded, decision, message.method, encoded)
+        elif decision.action is Action.ALERT:
             try:
                 await self._events.record("alert", call.finding(decision))
             except Exception as exc:
@@ -652,6 +659,85 @@ class McpProxy:
             cursor = next_cursor
         raise UpstreamError(UPSTREAM_ERROR, f"tools/list has more than {MAX_LIST_PAGES} pages")
 
+    async def _escalation(
+        self, call: Call, loaded: LoadedPolicy, decision: Decision, method: str, params: bytes
+    ) -> None:
+        """Answer an escalated call from its permission request (D76); raise unless it proceeds.
+
+        The key holds a digest of the parameters, never the parameters themselves.
+        """
+        key = RequestKey.mcp(
+            call.caller.project,
+            call.caller.name,
+            loaded.digest,
+            call.server,
+            method,
+            call.tool or "",
+            hashlib.sha256(params).hexdigest(),
+        )
+        now = self._now()
+        if self._requests is not None:
+            try:
+                self._approvals.load(self._requests(self._approvals.last_seq))
+            except Exception:
+                # Without the records no answer is known; the call waits, as before.
+                _log.exception("could not read permission requests from the event store")
+        answer = self._approvals.answer(key, now)
+        if answer is not None and answer.kind == "denial":
+            raise RefusalError(
+                APPROVAL_DENIED,
+                f"permission request {answer.request_seq} was denied",
+                data={"request": answer.request_seq},
+            )
+        if answer is not None:
+            payload = {
+                **call.finding(decision),
+                "approval_seq": answer.seq,
+                "request_seq": answer.request_seq,
+            }
+            try:
+                await self._events.record("approved", payload)
+            except Exception as exc:
+                _log.exception("could not record an approved call")
+                raise RefusalError(
+                    AUDIT_UNAVAILABLE, "the approved call could not be recorded"
+                ) from exc
+            return
+        pending = self._approvals.pending(key)
+        if pending is None:
+            try:
+                seq = await self._events.record(
+                    "escalation", {**call.finding(decision), "target": key.payload()}
+                )
+            except Exception as exc:
+                # No permission request exists, so the caller must not wait for an approval.
+                _log.exception("could not record an escalation")
+                raise RefusalError(
+                    AUDIT_UNAVAILABLE, "the permission request could not be recorded"
+                ) from exc
+            data = {"request": seq} if seq is not None else None
+            raise RefusalError(APPROVAL_REQUIRED, decision.reason, data=data)
+        if not pending.expired(now):
+            raise RefusalError(
+                APPROVAL_REQUIRED,
+                f"{decision.reason} (permission request {pending.seq}, still waiting)",
+                data={"request": pending.seq},
+            )
+        if pending.on_timeout == "alert":
+            try:
+                await self._events.record(
+                    "alert", {**call.finding(decision), "timed_out_request": pending.seq}
+                )
+            except Exception as exc:
+                _log.exception("could not record an alert")
+                raise RefusalError(AUDIT_UNAVAILABLE, "the alert could not be recorded") from exc
+            return
+        raise RefusalError(
+            ESCALATION_TIMED_OUT,
+            f"permission request {pending.seq} was not answered in time",
+            data={"request": pending.seq},
+        )
+
     def _target(self, server: McpServer, session: Session | None) -> Target:
         return Target(
             url=server.url,
@@ -663,12 +749,19 @@ class McpProxy:
     # --- Answers and records -----------------------------------------------------------------
 
     def _refused(
-        self, call: Call, request_id: RequestId | None, reason_code: str, status: int, code: int
+        self,
+        call: Call,
+        request_id: RequestId | None,
+        reason_code: str,
+        status: int,
+        code: int,
+        *,
+        data: Mapping[str, object] | None = None,
     ) -> web.Response:
         call.reason_code = reason_code
         if call.outcome != "failed":
             call.outcome = "refused"
-        return _refusal(status, request_id, reason_code, code)
+        return _refusal(status, request_id, reason_code, code, data)
 
     def _relay_error(self, call: Call, request_id: RequestId, response: Response) -> web.Response:
         """Pass a server's JSON-RPC error to the caller, under the caller's id.
@@ -780,7 +873,13 @@ def _answer_limit(loaded: LoadedPolicy) -> int:
 
 
 def _refusal(
-    status: int, request_id: RequestId | None, reason_code: str, code: int = REFUSED
+    status: int,
+    request_id: RequestId | None,
+    reason_code: str,
+    code: int = REFUSED,
+    data: Mapping[str, object] | None = None,
 ) -> web.Response:
     message = f"{reason_code}: {MESSAGES[reason_code]}"
-    return _answer(status, jsonrpc.error(request_id, code, message, {"reason": reason_code}))
+    return _answer(
+        status, jsonrpc.error(request_id, code, message, {**(data or {}), "reason": reason_code})
+    )

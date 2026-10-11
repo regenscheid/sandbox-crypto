@@ -34,9 +34,15 @@ import grpc
 
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
+from sandbox_science.policy.approvals import (
+    ALL_SCOPES,
+    APPROVAL,
+    Approvals,
+    pending_lines,
+    prepare_answer,
+)
 from sandbox_science.policy.loader import read_limited
 
-from .approvals import APPROVAL, DENIAL, SCOPES, Approvals
 from .archives import CacheArchiveLookup
 from .auth import (
     Authenticator,
@@ -83,9 +89,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if name == "approve":
             answer.add_argument(
                 "--scope",
-                choices=SCOPES,
-                default="request",
-                help="this request only, or any path on its host with its method",
+                choices=ALL_SCOPES,
+                help="request (the default), or host: any path on its host with its method",
             )
             answer.add_argument("--for", dest="hours", type=float, default=8.0, help="hours")
     args = parser.parse_args(argv)
@@ -133,40 +138,23 @@ def _read_records(path: Path, after: int) -> list[Record]:
 def _pending(path: Path) -> int:
     approvals = Approvals()
     approvals.load(_read_records(path, 0))
-    waiting = approvals.unanswered()
-    for request in waiting:
-        target = request.target
-        print(
-            f"{request.seq}  {request.recorded:%Y-%m-%d %H:%M:%S}  {target.sandbox_id}  "
-            f"{target.method} {target.host}:{target.port}{target.path}  "
-            f"(after {request.timeout.total_seconds() / 60:.0f} min: {request.on_timeout})"
-        )
-    if not waiting:
-        print("no permission requests are waiting")
+    lines = pending_lines(approvals)
+    print("\n".join(lines) if lines else "no permission requests are waiting")
     return 0
 
 
-def _answer(path: Path, command: str, seq: int, scope: str, hours: float | None) -> int:
+def _answer(path: Path, command: str, seq: int, scope: str | None, hours: float | None) -> int:
     """Append an approval or a denial of permission request ``seq``."""
     approvals = Approvals()
     approvals.load(_read_records(path, 0))
-    request = approvals.request(seq)
-    if request is None:
-        print(f"error: no permission request {seq}", file=sys.stderr)
+    try:
+        kind, payload = prepare_answer(
+            approvals, seq, approve=command == "approve", scope=scope, hours=hours,
+            now=datetime.now(UTC),
+        )  # fmt: skip
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
-    payload: dict[str, object] = {
-        "request_seq": seq,
-        "scope": scope,
-        "target": request.target.payload(),
-        "expires": None,
-    }
-    if command == "approve" and hours is not None:
-        if not 0 < hours <= 24 * 30:
-            print("error: --for takes 0 to 720 hours", file=sys.stderr)
-            return 1
-        expires = datetime.now(UTC) + timedelta(hours=hours)
-        payload["expires"] = expires.isoformat(timespec="seconds")
-    kind = APPROVAL if command == "approve" else DENIAL
     with EventStore(path) as events:
         record = events.append(kind, OPERATOR, payload)
     print(f"{'approved' if kind == APPROVAL else 'denied'} request {seq} as record {record.seq}")

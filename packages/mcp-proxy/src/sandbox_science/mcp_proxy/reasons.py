@@ -22,6 +22,8 @@ UPSTREAM_FAILED: Final = -31002
 
 # Decisions of the policy library.
 APPROVAL_REQUIRED: Final = "approval_required"
+APPROVAL_DENIED: Final = "approval_denied"
+ESCALATION_TIMED_OUT: Final = "escalation_timed_out"
 POLICY_DENIED: Final = "policy_denied"
 POOL_CEILING_DENIED: Final = "pool_ceiling_denied"
 DESTINATION_FORBIDDEN: Final = "destination_forbidden"
@@ -60,6 +62,8 @@ LAYER_CODES: Final[Mapping[Layer, str]] = {
 
 MESSAGES: Final[Mapping[str, str]] = {
     APPROVAL_REQUIRED: "this call needs the user's approval; it is recorded as a pending request",
+    APPROVAL_DENIED: "the user denied this call's permission request",
+    ESCALATION_TIMED_OUT: "nobody answered this call's permission request in time",
     POLICY_DENIED: "the project policy denies this call",
     POOL_CEILING_DENIED: "the worker pool's ceiling denies this call",
     DESTINATION_FORBIDDEN: "the server's address is forbidden",

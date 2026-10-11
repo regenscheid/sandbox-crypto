@@ -5,12 +5,17 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Mapping
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Protocol
 
 import pytest
 
+from sandbox_science.event_store import EventStore
+from sandbox_science.mcp_proxy.cli import _answer, _pending  # pyright: ignore[reportPrivateUsage]
 from sandbox_science.mcp_proxy.upstream import address_check
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
+from sandbox_science.policy.approvals import Approvals, RequestKey, prepare_answer
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,8 +61,11 @@ class Answer(Protocol):
 class Sink(Protocol):
     events: list[tuple[str, Mapping[str, object]]]
     fail: bool
+    now: Callable[[], datetime]
 
     def kinds(self, kind: str) -> list[Mapping[str, Any]]: ...
+    def records(self, after: int) -> list[Any]: ...
+    def append(self, kind: str, payload: Mapping[str, object]) -> int: ...
 
 
 class Harness(Protocol):
@@ -1011,3 +1019,118 @@ async def test_caller_text_cannot_forge_log_lines(
     assert reason(answer) == "request_unclassifiable"
     assert caplog.records
     assert all("\nFORGED" not in record.getMessage() for record in caplog.records)
+
+
+# Permission requests (D76).
+
+
+def request_of(answer: Answer) -> int:
+    request = answer.body["error"]["data"].get("request")
+    assert isinstance(request, int), answer.body
+    return request
+
+
+def answer_request(harness: Harness, seq: int, *, approve: bool, scope: str | None = None) -> None:
+    """Approve or deny a request as the command line does, into the harness's store."""
+    approvals = Approvals()
+    approvals.load(harness.sink.records(0))
+    kind, payload = prepare_answer(
+        approvals, seq, approve=approve, scope=scope, hours=1, now=harness.sink.now()
+    )
+    harness.sink.append(kind, payload)
+
+
+async def test_a_retried_escalation_waits_on_the_same_request(harness: Harness) -> None:
+    session = await harness.initialize()
+    first = await harness.tool(session, "crawl", {"url": "https://example.org/a"})
+    assert reason(first) == "approval_required"
+    seq = request_of(first)
+    again = await harness.tool(session, "crawl", {"url": "https://example.org/a"})
+    assert (reason(again), request_of(again)) == ("approval_required", seq)
+    assert len(harness.sink.kinds("escalation")) == 1
+    [escalation] = harness.sink.kinds("escalation")
+    target = escalation["target"]
+    assert (target["kind"], target["server"], target["tool"]) == ("mcp", "papers", "crawl")
+    assert "example.org" not in json.dumps(target)  # the arguments only as a digest
+
+
+async def test_an_approved_call_goes_through_and_only_that_call(harness: Harness) -> None:
+    session = await harness.initialize()
+    seq = request_of(await harness.tool(session, "crawl", {"url": "https://example.org/a"}))
+    answer_request(harness, seq, approve=True)
+    approved = await harness.tool(session, "crawl", {"url": "https://example.org/a"})
+    assert approved.body["result"]["content"][0]["text"].startswith("crawl")
+    assert harness.fake.tool_calls() == ["crawl"]
+    assert harness.sink.kinds("approved")[0]["request_seq"] == seq
+    other = await harness.tool(session, "crawl", {"url": "https://example.org/b"})
+    assert reason(other) == "approval_required"
+    assert request_of(other) != seq
+
+
+async def test_a_tool_wide_approval_covers_other_arguments(harness: Harness) -> None:
+    session = await harness.initialize()
+    seq = request_of(await harness.tool(session, "crawl", {"url": "https://example.org/a"}))
+    answer_request(harness, seq, approve=True, scope="tool")
+    other = await harness.tool(session, "crawl", {"url": "https://example.org/b"})
+    assert "result" in other.body, other.body
+
+
+async def test_a_denied_call_is_refused_with_its_request(harness: Harness) -> None:
+    session = await harness.initialize()
+    seq = request_of(await harness.tool(session, "crawl"))
+    answer_request(harness, seq, approve=False)
+    denied = await harness.tool(session, "crawl")
+    assert (reason(denied), request_of(denied)) == ("approval_denied", seq)
+    assert harness.fake.tool_calls() == []
+
+
+async def test_an_unanswered_call_times_out(harness: Harness) -> None:
+    session = await harness.initialize()
+    seq = request_of(await harness.tool(session, "crawl"))
+    later = harness.sink.now() + timedelta(minutes=31)
+    harness.sink.now = lambda: later
+    late = await harness.tool(session, "crawl")
+    assert (reason(late), request_of(late)) == ("escalation_timed_out", seq)
+
+
+async def test_requests_belong_to_their_caller(harness: Harness) -> None:
+    session = await harness.initialize()
+    seq = request_of(await harness.tool(session, "crawl"))
+    answer_request(harness, seq, approve=True, scope="tool")
+    worker = await harness.initialize(caller="shared")
+    theirs = await harness.tool(worker, "crawl", caller="shared")
+    assert reason(theirs) == "approval_required"
+    assert request_of(theirs) != seq
+
+
+async def test_an_mcp_request_takes_mcp_scopes(harness: Harness) -> None:
+    session = await harness.initialize()
+    seq = request_of(await harness.tool(session, "crawl"))
+    approvals = Approvals()
+    approvals.load(harness.sink.records(0))
+    with pytest.raises(ValueError, match="call or tool"):
+        prepare_answer(approvals, seq, approve=True, scope="host", hours=1, now=harness.sink.now())
+
+
+async def test_the_command_line_answers_requests_in_the_store(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "events.db"
+    key = RequestKey.mcp(
+        "crypto", "orchestrator", "sha256:" + "0" * 64, "papers", "tools/call", "crawl", "d" * 64
+    )
+    with EventStore(path) as events:
+        events.append(
+            "escalation",
+            "mcp-proxy",
+            {
+                "target": key.payload(),
+                "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+            },
+        )
+    assert _pending(path) == 0
+    assert "papers tools/call crawl" in capsys.readouterr().out
+    assert _answer(path, approve=True, seq=1, scope="tool", hours=2) == 0
+    assert _answer(path, approve=True, seq=9, scope=None, hours=2) == 1
+    assert _pending(path) == 0
+    assert "no permission requests are waiting" in capsys.readouterr().out
