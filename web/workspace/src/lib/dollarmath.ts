@@ -138,9 +138,10 @@ function pythonEnds(text: string): { first: number; end: number } {
 /**
  * Whether an odd number of backslashes precede `position`. Positions count from the
  * first character markdown-it-py keeps, and the read before it, which Python makes at
- * index -1, takes the last character it keeps.
+ * index -1, takes the last character it keeps. LaTeX's own delimiters use it too
+ * (mathdelimiters.ts), so that both kinds of math read escapes alike.
  */
-function isEscaped(src: string, position: number): boolean {
+export function isEscaped(src: string, position: number): boolean {
   const { first, end } = pythonEnds(src);
   let backslashes = 0;
   let back = position;

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,7 @@ from sandbox_science.workspace import cli
 from sandbox_science.workspace.app import create_app
 from sandbox_science.workspace.mathrepair import (
     MAX_ACTIVE,
+    MAX_ANSWER_BYTES,
     MAX_OUTPUT_TOKENS,
     MAX_WAITING,
     SYSTEM_PROMPT,
@@ -310,6 +312,10 @@ async def test_a_slow_model_times_out_and_failures_are_asked_again_later() -> No
     assert (await service.repair(request("x^"), "s")).tex == "x^}"
 
 
+def pieces(secret: str, length: int = 8) -> list[str]:
+    return [secret[start : start + length] for start in range(len(secret) - length + 1)]
+
+
 @pytest.mark.asyncio
 async def test_the_gateway_key_stays_out_of_answers_and_the_log(
     gateway: Gateway, caplog: pytest.LogCaptureFixture
@@ -317,6 +323,9 @@ async def test_the_gateway_key_stays_out_of_answers_and_the_log(
     async def answer(count: int) -> web.Response:
         if count == 1:
             return web.Response(status=401, text=f"invalid key {KEY}")
+        if count == 2:
+            # The review's case: the key starts near the 300 characters the client keeps.
+            return web.Response(status=401, text=f"{'x' * 258}invalid key {KEY} more")
         return web.Response(status=200, text=f"not a completion, key {KEY}")
 
     gateway.answer = answer
@@ -324,14 +333,17 @@ async def test_the_gateway_key_stays_out_of_answers_and_the_log(
     with caplog.at_level(logging.DEBUG):
         try:
             refused = await service.repair(request("a"), "s")
-            garbled = await service.repair(request("b"), "s")
+            cut = await service.repair(request("b"), "s")
+            garbled = await service.repair(request("c"), "s")
         finally:
             await service.close()
-    assert refused.reason == "the model gateway answered HTTP 401"
+    assert refused.reason == cut.reason == "the model gateway answered HTTP 401"
     assert garbled.reason == "the model gateway failed (the server's log says how)"
-    assert KEY not in caplog.text
-    assert "[the gateway key]" in caplog.text
-    assert KEY not in str(refused.to_json()) + str(garbled.to_json())
+    assert "a math repair failed: the model gateway answered HTTP 401" in caplog.text
+    assert "a math repair failed: unexpected completion" in caplog.text
+    assert not [piece for piece in pieces(KEY) if piece in caplog.text]
+    answers = str(refused.to_json()) + str(cut.to_json()) + str(garbled.to_json())
+    assert not [piece for piece in pieces(KEY) if piece in answers]
 
 
 @pytest.mark.asyncio
@@ -344,6 +356,105 @@ async def test_model_errors_without_a_status() -> None:
 
     answer = await MathRepairService(Unreachable(), reviewer="rev").repair(request("a"), "s")
     assert answer.reason == "the model gateway failed (the server's log says how)"
+
+
+@pytest.mark.asyncio
+async def test_any_failure_is_an_answer_kept_for_the_hour() -> None:
+    # An answer that is not UTF-8, a header aiohttp refuses: never a 500 asked again and again.
+    now = [0.0]
+    calls: list[str] = []
+
+    class Broken:
+        async def complete(
+            self, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        ) -> ModelTurn:
+            calls.append("called")
+            raise ValueError("Newline or carriage return character detected in HTTP status")
+
+    service = MathRepairService(Broken(), reviewer="rev", clock=lambda: now[0])
+    first = await service.repair(request("x^"), "s")
+    again = await service.repair(request("x^"), "s")
+    assert first.reason == "the model gateway failed (the server's log says how)"
+    assert again.cached
+    assert len(calls) == 1
+    now[0] += 3601
+    await service.repair(request("x^"), "s")
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_undecodable_answer_is_kept_not_a_500(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, gateway: Gateway
+) -> None:
+    async def answer(_count: int) -> web.Response:
+        return web.Response(
+            body=b'{"choices": [{"message": {"content": "\xff\xfe"}}]}',
+            content_type="application/json",
+        )
+
+    gateway.answer = answer
+    service = gateway_service(gateway.url, "rev", KEY)
+    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, math_repair=service)
+    client = await aiohttp_client(app)
+    await login(client)
+    statuses: list[int] = []
+    reasons: list[object] = []
+    for _ in range(3):
+        response = await client.post(
+            "/api/v0/math-repair", json={"tex": "\\frac{1", "error": "e"}, headers=origin(client)
+        )
+        statuses.append(response.status)
+        reasons.append((await response.json())["reason"])
+    assert statuses == [200, 200, 200]
+    assert len(gateway.calls) == 1
+    assert reasons == ["the model gateway failed (the server's log says how)"] * 3
+
+
+@pytest.mark.asyncio
+async def test_redirects_are_not_followed_and_large_answers_not_read(gateway: Gateway) -> None:
+    reached: list[bytes] = []
+
+    async def elsewhere(incoming: web.Request) -> web.Response:
+        reached.append(await incoming.read())
+        return completion("x^{2}")
+
+    other = web.Application()
+    other.router.add_post("/v1/chat/completions", elsewhere)
+    async with TestServer(other) as server:
+        target = str(server.make_url("/v1/chat/completions"))
+
+        async def answer(count: int) -> web.Response:
+            if count == 1:
+                raise web.HTTPTemporaryRedirect(target)
+            return web.Response(status=502, body=b"z" * (MAX_ANSWER_BYTES + 1))
+
+        gateway.answer = answer
+        service = gateway_service(gateway.url, "rev", KEY)
+        try:
+            redirected = await service.repair(request("x^"), "s")
+            large = await service.repair(request("y^"), "s")
+        finally:
+            await service.close()
+    assert redirected.reason == "the model gateway answered HTTP 307"
+    assert reached == []
+    assert large.reason == "the model gateway failed (the server's log says how)"
+
+
+def test_a_fence_full_of_spaces_takes_no_time() -> None:
+    original = "y" * 4000
+    budget = len(original) * 3 + 300
+    for answer in (
+        "```" + " " * (budget - 4) + "x",
+        "```" + "\n" * (budget - 4) + "x",
+        "```" + " \n" * ((budget - 4) // 2) + "```",
+        "```\n" * (budget // 4),
+    ):
+        started = time.perf_counter()
+        sanitize(answer, original)
+        assert time.perf_counter() - started < 0.05
+    assert sanitize("```\nx^2\n```", "x^") == "x^2"
+    assert sanitize("```x^2```", "x^") == "x^2"  # one line: no info string to drop
+    assert sanitize("```latex x^2```", "x^") == "latex x^2"
 
 
 # The endpoint.
@@ -427,6 +538,13 @@ async def test_the_endpoint_refuses_what_it_cannot_read(repairing: TestClient[An
         "/api/v0/math-repair", data=b"x" * 70_000, headers=origin(repairing)
     )
     assert huge.status == 413
+    # Nested past Python's stack, within the size limit: refused, not a 500.
+    nested = await repairing.post(
+        "/api/v0/math-repair",
+        data=b"[" * 60_000,
+        headers={**origin(repairing), "Content-Type": "application/json"},
+    )
+    assert nested.status == 400
 
 
 @pytest.mark.asyncio
@@ -495,6 +613,29 @@ def test_the_settings_turn_repairs_on_only_when_complete(tmp_path: Path) -> None
     key.write_text("  \n")
     with pytest.raises(ValueError, match="is empty"):
         cli.math_repairs(url, "rev", key)
+    # A second line would make every request's Authorization header fail.
+    key.write_text(f"{KEY}\n# a comment\n")
+    with pytest.raises(ValueError, match="one line of visible ASCII"):
+        cli.math_repairs(url, "rev", key)
+    with pytest.raises(ValueError, match="one line of visible ASCII"):
+        gateway_service(url, "rev", "test-secret with a space")
+
+
+def test_a_key_file_others_can_read_is_reported(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    key = tmp_path / "gateway.key"
+    key.write_text(f"{KEY}\n")
+    url = "http://127.0.0.1:4000"
+    key.chmod(0o600)
+    with caplog.at_level(logging.WARNING):
+        cli.math_repairs(url, "rev", key)
+    assert "can be read by other users" not in caplog.text
+    key.chmod(0o644)
+    with caplog.at_level(logging.WARNING):
+        cli.math_repairs(url, "rev", key)
+    assert "can be read by other users (mode 644)" in caplog.text
+    assert KEY not in caplog.text
 
 
 def test_flags_must_be_spelled_out(tmp_path: Path, static_dir: Path) -> None:

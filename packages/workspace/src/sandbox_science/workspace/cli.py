@@ -58,13 +58,23 @@ def math_repairs(
         raise ValueError(f"--model-url {model_url!r} is not an http or https URL")
     try:
         api_key = api_key_file.read_text().strip()
+        mode = api_key_file.stat().st_mode
     except OSError as exc:
         raise ValueError(f"cannot read the API key file {api_key_file}: {exc.strerror}") from None
     except UnicodeDecodeError:
         raise ValueError(f"the API key file {api_key_file} is not text") from None
     if not api_key:
         raise ValueError(f"the API key file {api_key_file} is empty")
-    return gateway_service(model_url, reviewer or "", api_key)
+    if mode & 0o077:
+        _log.warning(
+            "the API key file %s can be read by other users (mode %o); chmod 600 it",
+            api_key_file,
+            mode & 0o777,
+        )
+    try:
+        return gateway_service(model_url, reviewer or "", api_key)
+    except ValueError as exc:
+        raise ValueError(f"the API key file {api_key_file}: {exc}") from None
 
 
 def parse_listen(text: str) -> tuple[str, int]:
@@ -152,6 +162,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--api-key-file", type=Path, help="a file holding the workspace's key for the gateway"
     )
     args = parser.parse_args(argv)
+    logging.basicConfig(
+        level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
+    )
     try:
         host, port = parse_listen(args.listen)
     except ValueError as exc:
@@ -166,9 +179,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{host} is not a loopback address; --allow-remote accepts connections from "
             "other machines, over plain HTTP"
         )
-    logging.basicConfig(
-        level=args.log_level, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
-    )
     if not args.state_dir.is_dir():
         print(f"error: there is no state directory {args.state_dir}", file=sys.stderr)
         return 1

@@ -272,7 +272,7 @@ def create_app(
     async def repair_math(request: web.Request) -> web.StreamResponse:
         try:
             payload: object = await request.json()
-        except ValueError:
+        except (ValueError, RecursionError):  # not JSON, or nested past Python's stack
             return json_error(400, ErrorKind.INVALID_REQUEST, "the request's body is not JSON")
         try:
             wanted = parse_request(payload)
