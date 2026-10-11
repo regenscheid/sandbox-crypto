@@ -119,7 +119,7 @@ async def serve(settings: Settings) -> None:
         environments.release_idle = manager.release_if_idle
         manager.notices = environments.notices
         if shared is not None:
-            environments.deleted = shared.forget
+            environments.deleted.append(shared.forget)
     # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
     # attempts still running are stored as lost.
     stopping = asyncio.Event()

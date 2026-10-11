@@ -149,6 +149,7 @@ def create_app(
     app[CREATING] = {}
     if environments is not None:
         app[ENVIRONMENTS] = environments
+        environments.deleted.append(manager.forget_revisions)
     app.add_routes(
         [
             web.post("/v1/environments", create_environment),
@@ -357,12 +358,9 @@ async def revise_environment(request: web.Request) -> web.Response:
 
 
 async def delete_environment(request: web.Request) -> web.Response:
-    """Delete the environment, and its revisions and lockfiles with it."""
+    """Delete the environment; its revisions and lockfiles go with it (forget_revisions)."""
     environments = _environments(request)
-    environment_id = _environment(request, environments)
-    info = await environments.delete(environment_id)
-    request.app[MANAGER].revisions.forget(environment_id)
-    return _json(info)
+    return _json(await environments.delete(_environment(request, environments)))
 
 
 async def admit_hosts(request: web.Request) -> web.Response:

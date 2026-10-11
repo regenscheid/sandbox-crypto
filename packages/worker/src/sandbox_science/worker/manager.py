@@ -570,6 +570,11 @@ class ExecutionManager:
             environment.features = features
             environment.channel = channel
 
+    async def forget_revisions(self, environment_id: str) -> None:
+        """Forget a deleted environment's revisions, and delete the lockfiles only they
+        named: environments that are gone keep nothing in the store."""
+        self.revisions.forget(environment_id)
+
     def _want_lockfile(self, environment_id: str) -> bool:
         """Ask the executor for the current lockfile if the current revision has none, as
         revision 0 has none at first; return whether it was asked. One request at a time
