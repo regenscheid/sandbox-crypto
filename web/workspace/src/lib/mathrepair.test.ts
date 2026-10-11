@@ -112,7 +112,7 @@ describe('deterministic LaTeX repairs', () => {
     expect(repairTex('\\left( x', "Expected '\\right', got 'EOF' at end of input: \\left( x")[0]).toBe(
       '\\left( x \\right.',
     );
-    expect(repairTex('x^', "Expected group after '^' at position 2: x^̲")[0]).toBe('x');
+    expect(repairTex('x^', "Expected group after '^' at position 2: x^\u0332")[0]).toBe('x');
   });
 });
 
@@ -172,6 +172,72 @@ describe('commands the repairs never make', () => {
     expect(definesMacros('\\verb\n\\def\\a{x}\r\n')).toBe('def');
   });
 
+  it('read % with a combining mark as KaTeX does: a token, not a comment', () => {
+    // The third review's bypass: KaTeX reads `%\u0301` as one token, which these macros skip
+    // or peek at unparsed, and then defines.
+    const acute = '\u0301';
+    expect(definesMacros(`\\@secondoftwo{%${acute}}{}\\def\\a{x}\\a`)).toBe('def');
+    expect(definesMacros(`\\TextOrMath{%${acute}}{}\\gdef\\a{x}\\a`)).toBe('gdef');
+    expect(definesMacros(`\\@ifnextchar%${acute}{}{}\\newcommand{\\a}{x}\\a`)).toBe('newcommand');
+    expect(definesMacros(`x %${acute} \\def\\a{x}\\a`)).toBe('def');
+    // A combining mark as a \verb's delimiter, and a letter after \verb*, as KaTeX reads them.
+    expect(definesMacros(`\\verb${acute} \\def ${acute} x`)).toBeNull();
+    expect(definesMacros('\\verb*a\\def\\b{x}a\\b')).toBeNull();
+    // Where KaTeX's lexer stops with an error, reading on finds more, not less.
+    expect(definesMacros('x \u0001 \\def\\a{x}')).toBe('def');
+    expect(definesMacros('\uD835 \\def\\a{x}')).toBe('def');
+  });
+
+  it("find every definer KaTeX's own lexer finds (the review's fuzz)", () => {
+    // KaTeX 0.18.9's token pattern and comment rule (src/Lexer.ts, MIT License), unchanged,
+    // as the reference: a stream of its tokens that holds a definer, where definesMacros
+    // finds none, would be a way past the refusal.
+    const space = '[ \r\n\t]';
+    const marks = '[\u0300-\u036F]';
+    const pattern = new RegExp(
+      `(${space}+)|\\\\(\n|[ \r\t]+\n?)[ \r\t]*|` +
+        `([!-\\[\\]-\u2027\u202A-\uD7FF\uF900-\uFFFF]${marks}*` +
+        `|[\uD800-\uDBFF][\uDC00-\uDFFF]${marks}*` +
+        '|\\\\verb\\*([^]).*?\\4|\\\\verb([^*a-zA-Z]).*?\\5' +
+        `|(\\\\[a-zA-Z@]+)${space}*|\\\\[^\uD800-\uDFFF])`,
+      'g',
+    );
+    const tokens = (input: string): string[] | null => {
+      pattern.lastIndex = 0;
+      const out: string[] = [];
+      for (;;) {
+        const position = pattern.lastIndex;
+        if (position === input.length) return out;
+        const match = pattern.exec(input);
+        if (match === null || match.index !== position) return null;
+        const text = match[6] || match[3] || (match[2] ? '\\ ' : ' ');
+        if (text === '%') {
+          const newline = input.indexOf('\n', pattern.lastIndex);
+          pattern.lastIndex = newline === -1 ? input.length : newline + 1;
+          continue;
+        }
+        out.push(text);
+      }
+    };
+    const definers = new Set(['\\def', '\\gdef', '\\edef', '\\xdef', '\\let', '\\futurelet', '\\global', '\\long', '\\newcommand', '\\renewcommand', '\\providecommand']);
+    const alphabet = ['\\', '\\', '%', 'v', 'e', 'r', 'b', 'verb', '\\verb', '\\def', 'def', '*', '|', '\n', '\r', '\u0301', '{', '}', ' ', '@', 'a', ' ', '\t', '\\%', '\\\\'];
+    let seed = 12345;
+    const random = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const misses: string[] = [];
+    let checked = 0;
+    for (let n = 0; n < 300_000; n += 1) {
+      const length = 1 + Math.floor(random() * 12);
+      let tex = '';
+      for (let i = 0; i < length; i += 1) tex += alphabet[Math.floor(random() * alphabet.length)];
+      const stream = tokens(tex);
+      if (stream === null) continue;
+      checked += 1;
+      if (stream.some((token) => definers.has(token)) && definesMacros(tex) === null) misses.push(tex);
+    }
+    expect(checked).toBeGreaterThan(200_000);
+    expect(misses.slice(0, 5)).toEqual([]);
+  });
+
   it('read \\verb openers that never close in linear time', () => {
     // Each with a delimiter of its own: looking for each one's to the end of the line
     // took time quadratic in their number.
@@ -224,7 +290,7 @@ describe('Unicode transliteration', () => {
   });
 
   it('keeps unknown macros readable', () => {
-    expect(texToUnicode('\\Tr(A) \\quad \\hat{x} \\to y')).toBe('Tr(A) x̂ → y');
+    expect(texToUnicode('\\Tr(A) \\quad \\hat{x} \\to y')).toBe('Tr(A) x\u0302 → y');
   });
 
   it('reads names that objects inherit as names', () => {
@@ -705,15 +771,15 @@ describe('the marks', () => {
       {
         status: 'fallback',
         unicode: 'x',
-        error: 'Double superscript at position 3: x^^‮abc',
+        error: 'Double superscript at position 3: x^^\u202Eabc',
         state: 'unrepairable',
-        reason: 'no ⁦repair',
+        reason: 'no \u2066repair',
       },
       'span',
       false,
       '$x$',
     );
-    expect(html).not.toMatch(/[‮⁦]/);
+    expect(html).not.toMatch(/[\u202E\u2066]/);
     expect(html.match(/⟦U\+202E⟧/g)).toHaveLength(2);
     expect(html.match(/⟦U\+2066⟧/g)).toHaveLength(2);
     expect(html).toContain('<span class="math-message">KaTeX could not render this: Double superscript');
