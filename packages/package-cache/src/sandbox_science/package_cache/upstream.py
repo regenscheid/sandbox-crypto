@@ -780,8 +780,11 @@ class _Sink:
         self._file = file
         self._path = path
         self._sha256 = hashlib.sha256()
+        # An MD5 check only confirms that an opam archive is the one its path names;
+        # opam checks the stronger checksums an opam file lists itself. Declaring it
+        # so keeps it available where FIPS mode forbids MD5 for security.
         self._other = (
-            hashlib.new(digest.algorithm)
+            hashlib.new(digest.algorithm, usedforsecurity=digest.algorithm != "md5")
             if digest is not None and digest.algorithm != "sha256"
             else None
         )
