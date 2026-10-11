@@ -845,3 +845,13 @@ async def test_a_result_that_cannot_be_stored_still_ends_the_attempt(
     done = await _shell(synced, "op-1", _in("env1", "s1"), "echo hi")
     assert done["state"] == "failed"
     assert done["result"]["error"]["message"] == "the attempt's result could not be stored"
+
+
+async def test_held_notices_are_bounded_by_size() -> None:
+    from sandbox_science.worker.manager import MAX_HELD_BYTES, MAX_HELD_NOTICES, _held
+
+    many = [f"notice {n}" for n in range(MAX_HELD_NOTICES * 2)]
+    assert _held(many) == many[-MAX_HELD_NOTICES:]
+    large = ["x" * (MAX_HELD_BYTES // 3)] * 5
+    assert sum(len(notice) for notice in _held(large)) <= MAX_HELD_BYTES
+    assert _held(large) == large[-3:]

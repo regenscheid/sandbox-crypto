@@ -56,7 +56,7 @@ class Environment:
         self.odd: list[str] = []
         """Names to report as not text."""
         self.opened: set[str] = set()
-        """Files some process has open."""
+        """Files some process is writing."""
         self.latency = 0.0
         """Seconds each request takes, as over a real channel."""
         self.log: list[tuple[str, dict[str, Any]]] = []
@@ -119,6 +119,8 @@ class Environment:
                 raise WorkerError(ErrorKind.NOT_FOUND, "no file")
             if _sha(current) != fields["expected_sha256"]:
                 raise WorkerError(ErrorKind.CONFLICT, "changed")
+            if fields.get("if_unused") and fields["path"] in self.opened:
+                return {"removed": False, "busy": True}
             self.remove(fields["path"])
             return {"removed": True}
         if op == "move":
@@ -161,8 +163,6 @@ class Environment:
             "mark": self.mark,
             "now": self.clock if self.racy else self.clock + 10 * 10**9,
         }
-        if fields.get("open"):
-            reply["open"] = sorted(self.opened)
         return reply
 
     def _write(self, fields: dict[str, Any]) -> dict[str, Any]:
@@ -177,6 +177,8 @@ class Environment:
         expected = fields.get("expected_sha256")
         if expected is not None and (current is None or _sha(current) != expected):
             raise WorkerError(ErrorKind.CONFLICT, f"{path!r} changed")
+        if current is not None and fields.get("if_unused") and path in self.opened:
+            return {"busy": True}
         data = base64.b64decode(fields["content_b64"])
         self.put(path, data, executable=fields.get("executable") is True)
         return {"sha256": _sha(data), "size": len(data), "stamp": self.stamps[path][:3]}
@@ -201,7 +203,11 @@ async def test_changes_reach_the_projects_other_environments(sync: SharedSync) -
     await sync.up("p1", "e1", "s1", e1)
     await sync.down("p1", "e2", "s2", e2)
     assert e2.files["shared/r.csv"] == b"1,2\n3,4\n"
-    # With nothing changed, a call costs one scan before it and one after.
+    # A file the sync wrote is hashed once more, in case it changed in the same clock tick.
+    e2.log.clear()
+    await sync.up("p1", "e2", "s2", e2)
+    assert [fields["hash"] for _, fields in e2.log] == [[], ["shared/r.csv"]]
+    # Then, with nothing changed, a call costs one scan before it and one after.
     e2.log.clear()
     await sync.down("p1", "e2", "s2", e2)
     await sync.up("p1", "e2", "s2", e2)
@@ -401,9 +407,9 @@ async def test_a_write_expects_the_projects_version(sync: SharedSync) -> None:
             "create_only": False,
         }
 
-    await sync.write("p1", "e1", "s1", e1, body(b"from e1"), 10)
+    await sync.write("p1", "e1", "s1", e1, body(b"from e1"), 10, [])
     with pytest.raises(WorkerError) as refused:
-        await sync.write("p1", "e2", "s2", e2, body(b"from e2"), 10)
+        await sync.write("p1", "e2", "s2", e2, body(b"from e2"), 10, [])
     assert refused.value.kind is ErrorKind.CONFLICT
     assert e2.files["shared/x.txt"] == b"from e1"
 
@@ -415,7 +421,7 @@ async def test_a_write_is_not_made_when_the_sync_before_it_fails(sync: SharedSyn
     e2.refuse["shared/x.txt"] = WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
     fields = {"path": "shared/y.txt", "content_b64": "eQ==", "create_only": True}
     with pytest.raises(WorkerError) as refused:
-        await sync.write("p1", "e2", "s2", e2, fields, 10)
+        await sync.write("p1", "e2", "s2", e2, fields, 10, [])
     assert refused.value.kind is ErrorKind.UNAVAILABLE
     assert "shared/y.txt" not in e2.files
 
@@ -663,8 +669,10 @@ async def test_a_write_is_refused_if_its_file_could_not_be_brought_up_to_date(
         "expected_sha256": _sha(b"v1"),
         "create_only": False,
     }
+    notices: list[str] = []
     with pytest.raises(WorkerError, match="could not be brought up to date") as refused:
-        await sync.write("p1", "e2", "s2", e2, fields, 10)
+        await sync.write("p1", "e2", "s2", e2, fields, 10, notices)
+    assert notices == ["shared/x.txt could not be brought into this environment: Permission denied"]
     assert refused.value.kind is ErrorKind.UNAVAILABLE
     assert e2.files["shared/x.txt"] == b"v1"
 
@@ -730,3 +738,129 @@ async def test_a_damaged_blob_is_not_copied_and_is_read_again(tmp_path: Path) ->
         assert e2.files == {"shared/x": b"right"}
     finally:
         records.close()
+
+
+# The third review's findings.
+
+
+async def test_a_blob_unreadable_for_now_is_not_lost(
+    sync: SharedSync, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # N1: one transient error deleted the project's only copy of a file.
+    e1, e2 = Environment(), Environment()
+    e1.put("shared/x", b"only here")
+    await sync.up("p1", "e1", "s1", e1)
+    blob = sync.blobs("p1").path(_sha(b"only here"))
+    read_bytes = Path.read_bytes
+
+    def exhausted(self: Path) -> bytes:
+        if self == blob:
+            raise OSError(24, "Too many open files")
+        return read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", exhausted)
+    await sync.down("p1", "e2", "s2", e2)
+    monkeypatch.undo()
+    assert blob.read_bytes() == b"only here"
+    assert e2.files == {}
+
+
+async def test_a_step_that_waited_for_the_lock_still_gets_its_time(tmp_path: Path) -> None:
+    # N2: a step's budget ran while it waited for another environment's step.
+    records = SharedRecords(tmp_path / "shared.sqlite3")
+    sync = SharedSync(records, tmp_path / "shared", step_seconds=0.2)
+    try:
+        busy, other = Environment(), Environment()
+        for n in range(200):
+            busy.put(f"shared/a{n:03}", b"a%d" % n)
+        for n in range(20):
+            other.put(f"shared/b{n:02}", b"b%d" % n)
+        busy.latency = other.latency = 0.004
+        await asyncio.gather(sync.up("p1", "e1", "s1", busy), sync.up("p1", "e2", "s2", other))
+        names = records.state("p1", "e2").files
+        assert any(name.startswith("shared/b") for name in names)
+    finally:
+        records.close()
+
+
+async def test_a_file_a_process_reads_is_still_updated(sync: SharedSync) -> None:
+    # N3: a file open only for reading was never updated; only writers keep it back.
+    e1, e2 = Environment(), Environment()
+    e1.put("shared/data.h5", b"v1")
+    await sync.up("p1", "e1", "s1", e1)
+    await sync.down("p1", "e2", "s2", e2)
+    e1.put("shared/data.h5", b"v2")
+    await sync.up("p1", "e1", "s1", e1)
+    await sync.down("p1", "e2", "s2", e2)  # a kernel reading it does not count as writing
+    assert e2.files["shared/data.h5"] == b"v2"
+    e1.put("shared/data.h5", b"v3")
+    await sync.up("p1", "e1", "s1", e1)
+    e2.opened.add("shared/data.h5")  # now a process writes it
+    [notice] = await sync.down("p1", "e2", "s2", e2)
+    assert "while a process here is writing it" in notice
+    fields = {
+        "path": "shared/data.h5",
+        "content_b64": base64.b64encode(b"mine").decode(),
+        "expected_sha256": _sha(b"v3"),
+        "create_only": False,
+    }
+    with pytest.raises(WorkerError, match="a process in this environment is writing it"):
+        await sync.write("p1", "e2", "s2", e2, fields, 10, [])
+    e2.opened.clear()
+    await sync.down("p1", "e2", "s2", e2)
+    assert e2.files["shared/data.h5"] == b"v3"
+
+
+async def test_a_sandbox_made_again_with_older_content_keeps_the_projects(
+    sync: SharedSync,
+) -> None:
+    # N5: an environment restored from an old copy rolled the project back.
+    e1, e2 = Environment(), Environment()
+    e1.put("shared/plan.md", b"old")
+    await sync.up("p1", "e1", "s1", e1)
+    await sync.down("p1", "e2", "s2", e2)
+    restored = Environment()  # e2 made again from a backup holding a different version
+    restored.put("shared/plan.md", b"restored")
+    [notice] = await sync.up("p1", "e2", "s2", restored)
+    assert "kept as shared/plan.conflict-e2.md" in notice
+    await sync.down("p1", "e1", "s1", e1)
+    assert e1.files == {"shared/plan.md": b"old", "shared/plan.conflict-e2.md": b"restored"}
+
+
+async def test_updates_reach_files_past_a_scan_cut_short(sync: SharedSync) -> None:
+    # N6: a synced file beyond a truncated scan never got new versions.
+    e1, e2 = Environment(), Environment()
+    e1.put("shared/x", b"1")
+    await sync.up("p1", "e1", "s1", e1)
+    await sync.down("p1", "e2", "s2", e2)
+    e1.put("shared/x", b"2")
+    await sync.up("p1", "e1", "s1", e1)
+    e2.partial = True
+    e2.hidden = {"shared/x"}
+    await sync.down("p1", "e2", "s2", e2)
+    assert e2.files == {"shared/x": b"2"}
+
+
+async def test_a_rewrite_in_the_tick_after_the_syncs_write_is_found(sync: SharedSync) -> None:
+    # N7: the stamp the sync wrote was trusted, so a same-tick rewrite was missed.
+    e1, e2 = Environment(), Environment()
+    e1.put("shared/s.txt", b"aaaa")
+    await sync.up("p1", "e1", "s1", e1)
+    await sync.down("p1", "e2", "s2", e2)
+    e2.put("shared/s.txt", b"bbbb", same_stamp=True)  # within the write's clock tick
+    await sync.up("p1", "e2", "s2", e2)
+    await sync.down("p1", "e1", "s1", e1)
+    assert e1.files == {"shared/s.txt": b"bbbb"}
+
+
+async def test_a_moved_files_name_is_never_left_empty(sync: SharedSync) -> None:
+    # N8: after a move, the name stayed empty until a later step wrote it.
+    e1, e2 = Environment(), Environment()
+    e1.put("shared/notes.md", b"a")
+    await sync.up("p1", "e1", "s1", e1)
+    await sync.down("p1", "e2", "s2", e2)
+    e1.put("shared/notes.md", b"b")
+    e2.put("shared/notes.md", b"c")
+    await sync.up("p1", "e1", "s1", e1)
+    await sync.up("p1", "e2", "s2", e2)  # an ``up`` alone, with no ``down`` after it
+    assert e2.files == {"shared/notes.md": b"b", "shared/notes.conflict-e2.md": b"c"}
