@@ -67,7 +67,7 @@ Settings are a TOML file (relative paths resolve against it):
 
 ```toml
 registration = "sandbox-science-policy"   # the gateway registration's name
-listen = "0.0.0.0:50051"
+listen = "127.0.0.1:50051"
 state_dir = "state"
 ceiling = "pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal"]   # added to the hard floor
@@ -85,16 +85,21 @@ public_key = "/path/to/gateway/jwt/public.pem"
 uv run sandbox-science-policy-middleware serve --settings middleware.toml
 ```
 
-Register it with the gateway, which must be able to reach it, as must every sandbox supervisor; the gateway checks it at startup, so start the middleware first. The registration's `max_payload_bytes` must not exceed the middleware's own:
+Register it with the gateway. The gateway checks it at startup, so start the middleware first. The registration's `max_payload_bytes` must not exceed the middleware's own:
 
 ```toml
 [[openshell.supervisor.middleware]]
 name = "sandbox-science-policy"
-grpc_endpoint = "https://host.openshell.internal:50051"
+grpc_endpoint = "https://127.0.0.1:50051"
 tls_ca_cert_path = "/path/to/middleware-ca.pem"
 max_payload_bytes = 4194304
 timeout = "500ms"
 ```
+
+The gateway and every sandbox supervisor call the middleware at the registered address, without rewriting it.
+- **VM driver (babbage).** OpenShell v0.1.3 runs each sandbox's supervisor as a process on the gateway's host; only the workload runs in the microVM. Both callers are local, so the middleware listens on loopback, as above.
+- **Other drivers.** Use an address both the gateway and the supervisors can reach. Never listen on all interfaces of a host whose network is not trusted.
+- **Certificates.** The service's certificate must name the registered host: for the address above, `IP:127.0.0.1`. `tls_ca_cert_path` must hold certificates only, the CA that issued it rather than a self-signed server certificate.
 
 The compiler attaches it to every host in each research sandbox's policy (`examples/openshell/research-sandbox.yaml`).
 
