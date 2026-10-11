@@ -50,7 +50,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 9. **Working directory.** A kernel starts in the session workspace.
 10. **Languages.** The agent gets a tool for each language the environment offers (`python`, `sage`), and none for the others. Sage runs in SageMath's own Jupyter kernel, so Sage syntax applies (`^` is exponentiation); the platform never emulates it in Python.
 11. **Closing a session** stops its kernels. Running cells end cancelled, queued cells never start, and the session's next cell starts a new generation that reports the lost state. The session's files stay.
-12. **Idle kernels.** A pool may stop kernels nobody has used for a set time. The session's next cell then starts a new generation and reports the lost state, as after a restart.
+12. **Idle kernels and environments.** A pool may stop kernels nobody has used for a set time, or suspend a whole environment nobody has used, whose kernels are not computing. Files and installed tools survive a suspension; kernels do not. The session's next cell then starts a new generation and reports the lost state, as after a restart.
 
 ## Files
 

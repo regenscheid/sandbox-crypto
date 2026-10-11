@@ -183,6 +183,22 @@ Things to know:
   - Such text is made printable before it reaches records, logs or the reasons OpenShell stores.
 - **Leave OpenShell's approval mode manual.** With `proposal_approval_mode` set to `auto`, OpenShell would approve drafts itself and add its own raw-TCP rules. The fail-closed middleware would deny their traffic, but the policy would no longer be the worker's alone.
 
+## Idle suspension
+
+Environments persist, but need not keep running ([projects and sessions](PROJECTS-AND-SESSIONS.md), "Provisioning and persistence"). With `suspend_after` set, the worker stops the sandbox of an environment nobody is using, and starts it again on the next use (W3):
+
+- **Idle** means three things for `suspend_after` seconds:
+  - no execution ran there;
+  - the worker was asked nothing about it (calls, files, capabilities);
+  - its kernels used almost no CPU: under 2% of one core, sampled from the executor (`usage`). So a computation left running in a kernel thread keeps the environment up.
+- **Suspending:**
+  1. The worker checks again, under the execution manager's lock, that nothing started meanwhile.
+  2. It stops the executor and runs `openshell sandbox stop`, and records the environment as `stopped`.
+  3. OpenShell keeps a stopped sandbox's writable disk: the session workspaces, the shared area and installed tools survive. Its identity and policy survive too, including hosts admitted on demand and the middleware's binding.
+  4. Kernels do not survive. The next cell in a session that had a kernel reports `state_lost`, as after any executor restart.
+- **Resuming:** any use of a stopped environment first runs `openshell sandbox start` and waits until the sandbox is ready. That covers executions, file operations, capabilities, `create` with the same request, and a policy revision. A request that arrives while a suspension is stopping the sandbox waits for it, then starts it again. If the sandbox comes back with another ID, the worker refuses it.
+- **Trust.** The executor reports the CPU time, and research code may take the executor over. It can only keep its own environment running, or let it be suspended.
+
 ## PDFs
 
 A `PdfRequest` runs one operation of the [PDF sources spec](specs/pdf-sources.md): `info`, `pages`, `search` or `render`.
@@ -231,6 +247,7 @@ admission = true                     # admit hosts on demand (D69)
 admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's admin_hosts
 admission_interval = 3               # seconds between checks of each environment's drafts
 max_admitted_hosts = 64              # hosts admitted on demand per environment
+suspend_after = 3600                 # optional: stop sandboxes idle for an hour (W3)
 ```
 
 Run it with `sandbox-science-worker serve --settings worker.toml`. The sandbox's environment needs Python with `ipykernel` and `jupyter_client`. On babbage they come from conda-forge through the [package cache](PACKAGE-CACHE.md), like any other tool.

@@ -138,6 +138,9 @@ class HostileBackend:
         self.env = env
         self.channels: list[ExecutorChannel] = []
 
+    async def prepare(self, environment_id: str) -> None:
+        return None
+
     async def open(
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
     ) -> ExecutorChannel:

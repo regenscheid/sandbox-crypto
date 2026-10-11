@@ -19,6 +19,10 @@ A revision replaces the sandbox's network sections with ``openshell policy set``
 carrying the filesystem section the sandbox reports, then rebinds. Between the two
 steps the middleware denies requests as ``policy_stale``, so the change fails closed.
 
+An environment nobody uses can be suspended (W3): ``suspend.Suspender`` stops the
+sandbox, which keeps its writable disk, and the next use starts it again through the
+backend's ``prepare`` hook. Kernels do not survive; the worker reports the loss.
+
 A sandbox resolves only the host names its compiled policy names. When a policy
 reaches hosts it does not name, through a wildcard rule or a non-deny default, the
 worker admits them on demand (D69): ``admission.DraftWatcher`` reads the proposals
@@ -86,6 +90,7 @@ MAX_RECORDED: Final = 512
 """Decisions kept per environment: every admitted one, then the newest refusals."""
 
 Release = Callable[[str], Awaitable[None]]
+ReleaseIdle = Callable[[str, float], Awaitable[bool]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +305,8 @@ class Environments:
         self.records = EnvironmentRecords(state_dir / "environments.sqlite3")
         self.release: Release | None = None
         """Stops the environment's executor; the execution manager sets it."""
+        self.release_idle: ReleaseIdle | None = None
+        """Stops the executor unless the environment was used since a time; the manager sets it."""
         self._locks: dict[str, asyncio.Lock] = {}
 
     def close(self) -> None:
@@ -323,14 +330,17 @@ class Environments:
         """Create the environment's sandbox; return the existing one for the same request."""
         async with self._lock(request.environment_id):
             existing = self.records.get(request.environment_id)
-            if existing is not None and existing.state is EnvironmentState.READY:
+            if existing is not None and existing.state in (
+                EnvironmentState.READY,
+                EnvironmentState.STOPPED,
+            ):
                 same = (existing.project_id, existing.profile, existing.policy) == (
                     request.project_id,
                     request.profile,
                     request.policy,
                 )
                 if same:
-                    return existing, False
+                    return await self._start(existing), False
                 raise WorkerError(
                     ErrorKind.CONFLICT,
                     f"environment {request.environment_id!r} exists for another project, profile"
@@ -390,7 +400,7 @@ class Environments:
     async def revise(self, environment_id: str, revision: str) -> EnvironmentInfo:
         """Move a ready environment to another policy revision."""
         async with self._lock(environment_id):
-            info = self.get(environment_id)
+            info = await self._start(self.get(environment_id))
             if info.state is not EnvironmentState.READY or info.sandbox_id is None:
                 raise WorkerError(
                     ErrorKind.CONFLICT, f"environment {environment_id!r} is {info.state}"
@@ -494,7 +504,63 @@ class Environments:
             _log.info("deleted sandbox %s of environment %s", info.sandbox, environment_id)
             return deleted
 
+    async def suspend(self, environment_id: str, idle_since: float) -> bool:
+        """Stop a ready environment's sandbox, unless the environment was used since then.
+
+        ``idle_since`` is a time by the monotonic clock. Returns whether it stopped.
+        """
+        async with self._lock(environment_id):
+            info = self.records.get(environment_id)
+            if info is None or info.state is not EnvironmentState.READY:
+                return False
+            if self.release_idle is not None and not await self.release_idle(
+                environment_id, idle_since
+            ):
+                return False
+            await self.cli.run("sandbox", "stop", info.sandbox)
+            self.records.save(
+                info.model_copy(
+                    update={"state": EnvironmentState.STOPPED, "updated_at": datetime.now(UTC)}
+                )
+            )
+            _log.info("suspended environment %s (sandbox %s)", environment_id, info.sandbox)
+            return True
+
+    async def resume(self, environment_id: str) -> None:
+        """Start a stopped environment's sandbox again; the backend calls it before an executor.
+
+        It waits for the environment's lock even when the sandbox looks ready, so that
+        a request arriving while a suspension stops the sandbox starts it again after.
+        """
+        if self.records.get(environment_id) is None:
+            return  # a sandbox made by hand, from the static map
+        async with self._lock(environment_id):
+            info = self.records.get(environment_id)
+            if info is not None:
+                await self._start(info)
+
     # Steps.
+
+    async def _start(self, info: EnvironmentInfo) -> EnvironmentInfo:
+        """Start a stopped environment's sandbox; return any other environment unchanged."""
+        if info.state is not EnvironmentState.STOPPED:
+            return info
+        started = datetime.now(UTC)
+        await self.cli.run("sandbox", "start", info.sandbox, timeout=self.settings.create_timeout)
+        sandbox_id = await self._wait_ready(info.sandbox)
+        if sandbox_id != info.sandbox_id:
+            # OpenShell keeps a stopped sandbox's identity; another one is not this environment's.
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"sandbox {info.sandbox} came back as {sandbox_id}, not {info.sandbox_id}",
+            )
+        ready = info.model_copy(
+            update={"state": EnvironmentState.READY, "updated_at": datetime.now(UTC)}
+        )
+        self.records.save(ready)
+        seconds = (ready.updated_at - started).total_seconds()
+        _log.info("resumed environment %s in %.1f s", info.environment_id, seconds)
+        return ready
 
     def _policy(self, revision: str) -> LoadedPolicy:
         try:
@@ -639,6 +705,10 @@ class Environments:
             args += ["--provider", provider]
         args += ["--no-auto-providers", "--detach", "--", *_SANDBOX_COMMAND]
         await self.cli.run(*args, timeout=self.settings.create_timeout)
+        return await self._wait_ready(name)
+
+    async def _wait_ready(self, name: str) -> str:
+        """Wait until the sandbox is ready; return its ID."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.settings.create_timeout
         while True:

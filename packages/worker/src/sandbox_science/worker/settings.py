@@ -84,6 +84,9 @@ class EnvironmentSettings(_Model):
     admin_hosts: tuple[str, ...] = ()
     """The deployment's administration endpoints, as the policy middleware's settings list
     them: the compiler and admission apply the same hard floor."""
+    suspend_after: Annotated[float, Field(gt=0)] | None = None
+    """Seconds an environment may go without executions, and without CPU use by its kernels,
+    before the worker stops its sandbox; the next use starts it again (W3). Off when unset."""
 
 
 class OpenShellBackendSettings(_Model):

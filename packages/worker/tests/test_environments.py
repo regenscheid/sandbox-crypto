@@ -14,10 +14,11 @@ import json
 import os
 import re
 import sys
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -46,7 +47,7 @@ from sandbox_science.worker.environments import (
     sandbox_name,
 )
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.manager import Activity, ExecutionManager
 from sandbox_science.worker.settings import (
     EnvironmentSettings,
     LocalBackendSettings,
@@ -54,6 +55,7 @@ from sandbox_science.worker.settings import (
     load_settings,
 )
 from sandbox_science.worker.store import Store
+from sandbox_science.worker.suspend import Suspender
 
 pytestmark = pytest.mark.asyncio
 
@@ -119,8 +121,17 @@ elif command == ["sandbox", "get"]:
     if name not in sandboxes:
         fail("code: 'Some requested entity was not found', message: \"sandbox not found\"")
     box = sandboxes[name]
-    out = json.dumps({"id": box["id"], "name": name, "phase": "Ready",
+    out = json.dumps({"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
                       "configuration_admission": {"state": "accepted", "error": ""}})
+elif command == ["sandbox", "stop"]:
+    sandboxes[argv[2]]["phase"] = "Stopped"
+    out = "stopped"
+elif command == ["sandbox", "start"]:
+    box = sandboxes[argv[2]]
+    box["phase"] = "Ready"
+    if state.get("new_id_on_start"):
+        box["id"] = str(uuid.uuid4())
+    out = "started"
 elif command == ["sandbox", "delete"]:
     sandboxes.pop(argv[2], None)
     out = "deleted"
@@ -906,3 +917,134 @@ async def test_text_from_the_sandbox_is_made_printable(setup: Setup) -> None:
     decisions = await DraftWatcher(setup.environments, 1.0).check("env-1", info.sandbox)
     assert all(d.host.isprintable() for d in decisions)
     assert setup.fake.drafts(info.sandbox)[chunk]["reason"].isprintable()
+
+
+# Idle suspension (W3).
+
+
+async def always(environment_id: str, idle_since: float) -> bool:
+    return True
+
+
+async def test_a_suspended_environment_keeps_its_sandbox_and_resumes_on_use(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    assert await setup.environments.suspend("env-1", time.monotonic())
+    stopped = setup.environments.get("env-1")
+    assert stopped.state is EnvironmentState.STOPPED
+    assert setup.fake.calls("sandbox", "stop") == [["sandbox", "stop", info.sandbox]]
+    # Stopped: no executor may run there, no drafts are read, and it is not suspended again.
+    assert setup.environments.sandbox("env-1") is None
+    assert setup.environments.records.ready() == []
+    assert not await setup.environments.suspend("env-1", time.monotonic())
+    await setup.environments.resume("env-1")
+    resumed = setup.environments.get("env-1")
+    assert resumed.state is EnvironmentState.READY
+    assert resumed.sandbox_id == info.sandbox_id
+    assert setup.environments.sandbox("env-1") == info.sandbox
+    assert len(setup.fake.calls("sandbox", "start")) == 1
+    await setup.environments.resume("env-1")  # ready: nothing to do
+    assert len(setup.fake.calls("sandbox", "start")) == 1
+    # The middleware's binding never changed.
+    assert setup.environments.store.binding(info.sandbox_id or "") == setup.policy
+
+
+async def test_an_environment_in_use_is_not_suspended(setup: Setup) -> None:
+    await setup.environments.create(setup.request())
+
+    async def busy(environment_id: str, idle_since: float) -> bool:
+        return False
+
+    setup.environments.release_idle = busy
+    assert not await setup.environments.suspend("env-1", time.monotonic())
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+    assert setup.fake.calls("sandbox", "stop") == []
+
+
+async def test_create_and_revise_start_a_suspended_environment(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    await setup.environments.suspend("env-1", time.monotonic())
+    again, created = await setup.environments.create(setup.request())
+    assert not created
+    assert again.state is EnvironmentState.READY
+    await setup.environments.suspend("env-1", time.monotonic())
+    revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
+    revised = await setup.environments.revise("env-1", revision)
+    assert (revised.state, revised.policy) == (EnvironmentState.READY, revision)
+    calls = [call[:2] for call in setup.fake.read()["calls"]]
+    assert calls.index(["sandbox", "start"]) < calls.index(["policy", "set"])
+    assert info.sandbox_id == revised.sandbox_id
+
+
+async def test_a_sandbox_that_comes_back_as_another_is_refused(setup: Setup) -> None:
+    await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    await setup.environments.suspend("env-1", time.monotonic())
+    setup.fake.update(new_id_on_start=True)
+    with pytest.raises(WorkerError, match="came back as") as refused:
+        await setup.environments.resume("env-1")
+    assert refused.value.kind is ErrorKind.UNAVAILABLE
+    assert setup.environments.get("env-1").state is EnvironmentState.STOPPED
+
+
+class StubManager:
+    """What the suspender asks the execution manager, set by each test."""
+
+    def __init__(self) -> None:
+        self.activities: dict[str, Activity | None] = {}
+
+    async def activity(self, environment_id: str) -> Activity | None:
+        return self.activities.get(environment_id)
+
+
+async def test_the_suspender_stops_only_idle_environments(setup: Setup) -> None:
+    for name in ("idle", "running", "computing", "unknown", "quiet", "recent"):
+        await setup.environments.create(setup.request(f"env-{name}"))
+    setup.environments.release_idle = always
+    stub = StubManager()
+    long_ago = time.monotonic() - 100
+    stub.activities = {
+        "env-idle": Activity(long_ago, 0, None, 0),
+        "env-running": Activity(long_ago, 1, 2.0, 1),
+        "env-computing": Activity(long_ago, 0, 1.0, 1),
+        "env-unknown": None,
+        "env-quiet": Activity(long_ago, 0, 3.0, 1),
+        "env-recent": Activity(time.monotonic(), 0, None, 0),
+    }
+    suspender = Suspender(setup.environments, cast(ExecutionManager, stub), 10.0, interval=1)
+    suspender.started = long_ago
+    # An executor's CPU needs two samples to tell.
+    assert await suspender.check() == ["env-idle"]
+    stub.activities["env-computing"] = Activity(long_ago, 0, 30.0, 1)
+    assert await suspender.check() == ["env-quiet"]
+    states = {
+        info.environment_id: info.state
+        for name in ("idle", "running", "computing", "unknown", "quiet", "recent")
+        if (info := setup.environments.get(f"env-{name}"))
+    }
+    assert {name for name, state in states.items() if state is EnvironmentState.STOPPED} == {
+        "env-idle",
+        "env-quiet",
+    }
+
+
+async def test_a_failed_suspension_leaves_the_others_to_go_on(setup: Setup) -> None:
+    for name in ("a", "b"):
+        await setup.environments.create(setup.request(f"env-{name}"))
+    setup.environments.release_idle = always
+    stub = StubManager()
+    long_ago = time.monotonic() - 100
+    stub.activities = {name: Activity(long_ago, 0, None, 0) for name in ("env-a", "env-b")}
+    suspender = Suspender(setup.environments, cast(ExecutionManager, stub), 10.0, interval=1)
+    suspender.started = long_ago
+    real = setup.environments.cli.run
+
+    async def flaky(*args: str, timeout: float = 120.0) -> str:
+        if args[:2] == ("sandbox", "stop") and args[2] == sandbox_name("env-a"):
+            raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox stop failed")
+        return await real(*args, timeout=timeout)
+
+    setup.environments.cli.run = flaky  # type: ignore[method-assign]
+    assert await suspender.check() == ["env-b"]
+    assert setup.environments.get("env-a").state is EnvironmentState.READY

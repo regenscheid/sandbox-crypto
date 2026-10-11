@@ -13,6 +13,7 @@ import asyncio
 import json
 import signal
 import sys
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,7 +29,7 @@ from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import Backend, LocalBackend
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.manager import ExecutionManager
+from sandbox_science.worker.manager import Activity, ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
@@ -371,3 +372,65 @@ async def test_an_idle_kernel_is_stopped_and_its_state_reported_lost(
         assert after["result"]["kernel"]["generation"] == 2
     finally:
         await manager.close()
+
+
+async def test_activity_reports_use_running_calls_and_kernel_cpu(worker: Worker) -> None:
+    manager = worker.manager
+    assert await manager.activity("env1") == Activity(None, 0, None, 0)
+    await worker.run("op-u1", kind="cell", code="x = sum(i * i for i in range(3_000_000))")
+    idle = await manager.activity("env1")
+    assert idle is not None
+    assert (idle.running, idle.kernels) == (0, 1)
+    assert idle.cpu_seconds is not None
+    assert idle.cpu_seconds > 0.05
+    assert idle.last_used is not None
+    assert idle.last_used <= time.monotonic()
+    busy = await worker.submit("op-u2", kind="cell", code="import time\ntime.sleep(60)")
+    await worker.wait_running(busy["execution_id"])
+    running = await manager.activity("env1")
+    assert running is not None
+    assert running.running == 1
+    status, _ = await worker.post(f"/v1/executions/{busy['execution_id']}/cancel", {})
+    assert status == 200
+    await worker.finish(busy["execution_id"])
+
+
+async def test_cpu_used_by_a_kernel_thread_counts_as_activity(worker: Worker) -> None:
+    spin = (
+        "import threading, time\n"
+        "def spin():\n"
+        "    end = time.time() + 4\n"
+        "    while time.time() < end:\n"
+        "        pass\n"
+        "threading.Thread(target=spin, daemon=True).start()"
+    )
+    await worker.run("op-t1", kind="cell", code=spin)
+    first = await worker.manager.activity("env1")
+    await asyncio.sleep(1.5)
+    second = await worker.manager.activity("env1")
+    assert first is not None
+    assert second is not None
+    assert first.cpu_seconds is not None
+    assert second.cpu_seconds is not None
+    assert second.cpu_seconds - first.cpu_seconds > 0.5
+    assert second.running == 0
+
+
+async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker: Worker) -> None:
+    manager = worker.manager
+    await worker.run("op-r1", kind="cell", code="x = 1")
+    # Used after this time: kept.
+    assert not await manager.release_if_idle("env1", time.monotonic() - 60)
+    busy = await worker.submit("op-r2", kind="cell", code="import time\ntime.sleep(60)")
+    await worker.wait_running(busy["execution_id"])
+    # Running: kept, whatever the time.
+    assert not await manager.release_if_idle("env1", time.monotonic() + 60)
+    status, _ = await worker.post(f"/v1/executions/{busy['execution_id']}/cancel", {})
+    assert status == 200
+    await worker.finish(busy["execution_id"])
+    assert await manager.release_if_idle("env1", time.monotonic())
+    assert "env1" not in manager._environments  # pyright: ignore[reportPrivateUsage]
+    assert await manager.release_if_idle("env1", time.monotonic())  # nothing left to stop
+    after = await worker.run("op-r3", kind="cell", code="x")
+    assert after["result"]["state_lost"] is True
+    assert after["result"]["error"]["name"] == "NameError"

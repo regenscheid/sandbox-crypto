@@ -431,6 +431,38 @@ def process_table() -> dict[int, Process]:
     return table
 
 
+def cpu_seconds_below(root: int) -> float:
+    """CPU time of every process below ``root``, and of the children ``root`` reaped.
+
+    A process's ``cutime`` and ``cstime`` hold what its reaped children used, so the
+    sum stays put when a process ends, wherever below ``root`` it is reaped.
+    """
+    ticks: dict[int, tuple[int, int, int]] = {}  # pid -> (ppid, own, reaped children)
+    with contextlib.suppress(OSError):
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/stat", "rb") as handle:
+                    data = handle.read()
+                fields = data[data.rfind(b")") + 2 :].split()
+                ppid, own = int(fields[1]), int(fields[11]) + int(fields[12])
+                ticks[int(entry)] = (ppid, own, int(fields[13]) + int(fields[14]))
+            except (OSError, IndexError, ValueError):
+                continue
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _, _) in ticks.items():
+        children.setdefault(ppid, []).append(pid)
+    total = ticks[root][2] if root in ticks else 0
+    stack = list(children.get(root, []))
+    while stack:
+        pid = stack.pop()
+        _, own, reaped = ticks[pid]
+        total += own + reaped
+        stack.extend(children.get(pid, []))
+    return total / os.sysconf("SC_CLK_TCK")
+
+
 def process_owner(pid: int) -> str | None:
     """The OWNER a process started with: ``""`` without one, None when unreadable.
 
@@ -803,6 +835,7 @@ class Executor:
             "cancel": self.op_cancel,
             "restart": self.op_restart,
             "close_session": self.op_close_session,
+            "usage": self.op_usage,
             "read": self.op_read,
             "write": self.op_write,
             "list": self.op_list,
@@ -1465,6 +1498,16 @@ class Executor:
                     await kernel.stop()
                     kernel.state_lost = True
         await self.reply(request, kernels=stopped)
+
+    async def op_usage(self, request: Message) -> None:
+        """The CPU time used below this executor, and its running kernels and calls.
+
+        The worker samples it to tell an environment whose kernels still compute,
+        say in a background thread, from an idle one.
+        """
+        cpu = await asyncio.to_thread(cpu_seconds_below, os.getpid())
+        kernels = sum(1 for kernel in self.kernels.values() if kernel.manager is not None)
+        await self.reply(request, cpu_seconds=cpu, kernels=kernels, running=len(self.running))
 
     async def op_read(self, request: Message) -> None:
         path = request.get("path")
