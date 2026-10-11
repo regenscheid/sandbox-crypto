@@ -16,6 +16,7 @@ Applies to all code and documentation in this repository. Change this file throu
 | `.agents/upstream/` | Descriptions of bugs found in upstream projects, one file each, ready to file. Filing is the user's call |
 | `packages/<component>/` | One uv workspace member per deployable or shared component |
 | `examples/` | Illustrative configuration (policy, deployment profiles); tests load these to keep them valid |
+| `images/` | Recipes for the base profile images (`minimal`, `crypto-base`): Containerfile, Conda lockfiles, build, lock and test scripts ([images](../docs/IMAGES.md)) |
 | `scripts/` | Repository tooling, such as the license check |
 | `.github/workflows/` | CI |
 
