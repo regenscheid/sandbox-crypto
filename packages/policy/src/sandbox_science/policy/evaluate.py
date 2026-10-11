@@ -324,9 +324,12 @@ PACKAGE_INDEX_HOSTS: Final = frozenset(
         "hackage-origin.haskell.org",
         "hackage-content.haskell.org",
         # Hackage's signed mirror list (mirrors.json), which cabal falls back to
-        # when the cache fails, and Stack's content store of Hackage packages.
+        # when the cache fails, the bucket's names on its object store (the
+        # path-style form is in PACKAGE_REGISTRY_PATHS), and Stack's content store
+        # of Hackage packages.
         "hackage.fpcomplete.com",
         "hackage-mirror.objects-us-east-1.dream.io",
+        "hackage-mirror.objects-website-us-east-1.dream.io",
         "casa.stackage.org",
         "casa.fpcomplete.com",
     }
@@ -639,8 +642,10 @@ def _evaluate_package(
         rule = f"packages.{operation.ecosystem}"
         if operation.name is not None:
             reason = f"{label} package {operation.name}"
-        elif operation.kind == "artifact":
-            reason = f"{label} archive (fetched by digest, so it names no package)"
+        elif operation.digest is not None:
+            reason = (
+                f"{label} archive {operation.digest} (fetched by digest, so it names no package)"
+            )
         else:
             reason = f"{label} index"
         channels = config.channels if isinstance(config, CondaPackages) else ()

@@ -140,9 +140,10 @@ def decide_package(
     name: str | None,
     channel: str | None = None,
     kind: Literal["index", "artifact"] = "artifact",
+    digest: str | None = None,
 ) -> Decision:
     return evaluate(
-        PackageOperation(ecosystem=ecosystem, name=name, channel=channel, kind=kind),
+        PackageOperation(ecosystem=ecosystem, name=name, channel=channel, kind=kind, digest=digest),
         policy,
         ceiling=PoolCeiling.unrestricted(),
     )
@@ -2387,6 +2388,7 @@ def test_unconfigured_conda_reaches_only_conda_forge() -> None:
         "hackage-content.haskell.org",
         "hackage.fpcomplete.com",
         "hackage-mirror.objects-us-east-1.dream.io",
+        "hackage-mirror.objects-website-us-east-1.dream.io",
         "casa.stackage.org",
     ],
 )
@@ -2408,29 +2410,32 @@ packages:
   opam: {action: escalate}
   hackage: {action: allow}
 """
+OPAM_ARCHIVE = "md5:ca770e5806032a96131b670f6e07f146"  # ocamlfind 1.9.8
 
 
 @pytest.mark.parametrize(
-    ("ecosystem", "name", "artifact", "index"),
+    ("ecosystem", "name", "digest", "artifact", "index"),
     [
-        pytest.param("opam", None, Action.ESCALATE, Action.ALLOW, id="opam-archive"),
-        pytest.param("hackage", "cryptol", Action.ALLOW, Action.ALLOW, id="hackage"),
+        pytest.param("opam", None, OPAM_ARCHIVE, Action.ESCALATE, Action.ALLOW, id="opam-archive"),
+        pytest.param("hackage", "cryptol", None, Action.ALLOW, Action.ALLOW, id="hackage"),
     ],
 )
 def test_opam_and_hackage_take_their_actions(
-    ecosystem: Ecosystem, name: str | None, artifact: Action, index: Action
+    ecosystem: Ecosystem, name: str | None, digest: str | None, artifact: Action, index: Action
 ) -> None:
     policy = load(OPAM_HACKAGE)
-    file = decide_package(policy, ecosystem, name)
+    file = decide_package(policy, ecosystem, name, digest=digest)
     assert (file.action, file.rule) == (artifact, f"packages.{ecosystem}")
     assert decide_package(policy, ecosystem, None, kind="index").action == index
 
 
 def test_an_opam_archive_is_decided_by_ecosystem_and_says_so() -> None:
-    # opam fetches archives by digest, so the decision cannot name the package.
+    # opam fetches archives by digest, so the decision names the digest, not a package.
     policy = load(OPAM_HACKAGE)
-    decision = decide_package(policy, "opam", None)
-    assert decision.reason == "opam archive (fetched by digest, so it names no package)"
+    decision = decide_package(policy, "opam", None, digest=OPAM_ARCHIVE)
+    assert decision.reason == (
+        f"opam archive {OPAM_ARCHIVE} (fetched by digest, so it names no package)"
+    )
     assert decide_package(policy, "hackage", "cryptol").reason == "Hackage package cryptol"
     assert decide_package(policy, "hackage", None, kind="index").reason == (
         "Hackage index (index lookup)"
@@ -2439,19 +2444,19 @@ def test_an_opam_archive_is_decided_by_ecosystem_and_says_so() -> None:
 
 @pytest.mark.parametrize("ecosystem", ["opam", "hackage"])
 def test_unconfigured_opam_and_hackage_take_the_default(ecosystem: Ecosystem) -> None:
-    name = None if ecosystem == "opam" else "split"
+    name, digest = (None, OPAM_ARCHIVE) if ecosystem == "opam" else ("split", None)
     denied = load("defaults: {action: deny}\n")
-    assert decide_package(denied, ecosystem, name).action == Action.DENY
+    assert decide_package(denied, ecosystem, name, digest=digest).action == Action.DENY
     assert decide_package(denied, ecosystem, None, kind="index").action == Action.DENY
     asking = load("defaults: {action: escalate}\n")
-    assert decide_package(asking, ecosystem, name).action == Action.ESCALATE
+    assert decide_package(asking, ecosystem, name, digest=digest).action == Action.ESCALATE
     assert decide_package(asking, ecosystem, None, kind="index").action == Action.ALLOW
 
 
 def test_the_pool_ceiling_applies_to_opam_and_hackage() -> None:
     policy = load(OPAM_HACKAGE)
     no_opam = PoolCeiling.model_validate({"network": {"deny_hosts": ["opam.ocaml.org"]}})
-    archive = evaluate(PackageOperation("opam", None), policy, ceiling=no_opam)
+    archive = evaluate(PackageOperation("opam", None, digest=OPAM_ARCHIVE), policy, ceiling=no_opam)
     assert (archive.action, archive.layer) == (Action.DENY, "ceiling")
     sdist = evaluate(PackageOperation("hackage", "split"), policy, ceiling=no_opam)
     assert sdist.action == Action.ALLOW
