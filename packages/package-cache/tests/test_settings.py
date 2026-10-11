@@ -58,6 +58,7 @@ def test_the_documented_example_is_valid(tmp_path: Path) -> None:
     assert settings.max_artifact_downloads == 16
     assert settings.max_requests == 1024
     assert settings.upstream_rate == 20
+    assert (settings.sandbox_rate, settings.sandbox_burst) == (10, 100)
     assert settings.upstream_burst == 200
     assert settings.pypi == PypiSettings(
         index="https://pypi.org/simple", files="https://files.pythonhosted.org"
@@ -233,6 +234,8 @@ def test_listen_addresses(tmp_path: Path, listen: str, host: str, port: int) -> 
         pytest.param(BASE + "upstream_rate = 0\n", "upstream_rate", id="rate-zero"),
         pytest.param(BASE + 'upstream_rate = "20"\n', "upstream_rate", id="rate-text"),
         pytest.param(BASE + "upstream_rate = inf\n", "upstream_rate", id="rate-inf"),
+        pytest.param(BASE + "sandbox_rate = -1\n", "sandbox_rate", id="sandbox-rate-negative"),
+        pytest.param(BASE + "sandbox_burst = 0\n", "sandbox_burst", id="sandbox-burst-zero"),
         pytest.param(BASE + "upstream_burst = 0\n", "upstream_burst", id="burst-zero"),
         pytest.param(BASE + "upstream_burst = 1.5\n", "upstream_burst", id="burst-float"),
         pytest.param(BASE + "upstream_burst = true\n", "upstream_burst", id="burst-bool"),
