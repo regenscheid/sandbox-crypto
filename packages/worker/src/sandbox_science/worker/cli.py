@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import secrets
+import signal
 import sys
 from pathlib import Path
 
@@ -81,16 +82,23 @@ async def serve(settings: Settings) -> None:
         max_artifact_size=settings.max_artifact_size,
         state_dir=settings.state_dir,
     )
-    await manager.start()
     if environments is not None:
         environments.release = manager.release
+    # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
+    # attempts still running are stored as lost.
+    stopping = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(signum, stopping.set)
     runner = web.AppRunner(create_app(manager, token, environments), access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
-    await site.start()
-    _log.info("worker API on %s (%s backend)", settings.listen, manager.backend.name)
     try:
-        await asyncio.Event().wait()
+        await manager.start()
+        await runner.setup()
+        site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
+        await site.start()
+        _log.info("worker API on %s (%s backend)", settings.listen, manager.backend.name)
+        await stopping.wait()
+        _log.info("stopping")
     finally:
         await runner.cleanup()
         await manager.close()
@@ -168,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         asyncio.run(serve(settings))
-    except KeyboardInterrupt:
+    except KeyboardInterrupt:  # before the signal handlers are in place
         return 0
     except SettingsError as exc:
         print(f"error: {exc}", file=sys.stderr)

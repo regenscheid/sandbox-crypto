@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import hashlib
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal, Protocol
@@ -25,7 +27,34 @@ _log = logging.getLogger(__name__)
 EXECUTOR_SOURCE = Path(executor.__file__)
 SCHED_SHIM_SOURCE = Path(__file__).with_name("shim") / "sched_self.c"
 SCHED_SHIM_NAME = "libsandbox-science-sched.so"
+COMMAND_TIMEOUT = 120.0
+"""Seconds a helper command (the OpenShell CLI, the compiler) may take."""
+_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 ClosedHandler = Callable[[ExecutorChannel], Awaitable[None]]
+
+
+async def _command(*argv: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
+    """Run a helper command to completion, within COMMAND_TIMEOUT; return its code and output."""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+        )
+    except OSError as exc:
+        raise WorkerError(ErrorKind.UNAVAILABLE, f"cannot run {argv[0]}: {exc}") from exc
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), COMMAND_TIMEOUT)
+    except TimeoutError as exc:
+        with contextlib.suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
+        raise WorkerError(
+            ErrorKind.UNAVAILABLE, f"{argv[0]} did not finish within {COMMAND_TIMEOUT:g} s"
+        ) from exc
+    return process.returncode or 0, output
 
 
 class Backend(Protocol):
@@ -56,6 +85,9 @@ class LocalBackend:
     async def open(
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
     ) -> ExecutorChannel:
+        # The ID becomes a directory name: nothing but an identifier may reach the path.
+        if not _IDENTIFIER.fullmatch(environment_id):
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid environment ID")
         project = self.root / environment_id / "project"
         project.mkdir(parents=True, exist_ok=True)
         # -I keeps the executor's directory off sys.path, so the worker's other
@@ -104,16 +136,8 @@ class OpenShellBackend:
         return {**_child_env(), **self.settings.env}
 
     async def _run(self, *args: str) -> None:
-        process = await asyncio.create_subprocess_exec(
-            self.settings.cli,
-            *args,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=self._env(),
-        )
-        output, _ = await process.communicate()
-        if process.returncode != 0:
+        code, output = await _command(self.settings.cli, *args, env=self._env())
+        if code != 0:
             text = output.decode("utf-8", "replace").strip()[-500:]
             raise WorkerError(
                 ErrorKind.UNAVAILABLE, f"openshell {args[0]} {args[1]} failed: {text}"
@@ -133,15 +157,11 @@ class OpenShellBackend:
                 return target
             target.parent.mkdir(parents=True, exist_ok=True)
             partial = target.with_suffix(".tmp")
-            process = await asyncio.create_subprocess_exec(
+            code, output = await _command(
                 self.settings.cc, "-shared", "-fPIC", "-O2", "-o", str(partial),
                 str(SCHED_SHIM_SOURCE),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
             )  # fmt: skip
-            output, _ = await process.communicate()
-            if process.returncode != 0:
+            if code != 0:
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE,
                     f"cannot build the scheduler shim: {output.decode('utf-8', 'replace')[-300:]}",
