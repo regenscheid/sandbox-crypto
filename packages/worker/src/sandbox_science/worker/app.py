@@ -16,24 +16,28 @@ from aiohttp import web
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
+    EnvironmentRequest,
     ErrorInfo,
     ErrorKind,
     Event,
     ExecutionRequest,
     KernelRestartRequest,
     ListFilesRequest,
+    PolicyRevisionRequest,
     PublishRequest,
     ReadFileRequest,
     WorkerErrorResponse,
     WriteFileRequest,
 )
 
+from .environments import Environments
 from .errors import WorkerError
 from .manager import ExecutionManager
 
 _log = logging.getLogger(__name__)
 
 MANAGER: Final = web.AppKey("manager", ExecutionManager)
+ENVIRONMENTS: Final = web.AppKey("environments", Environments)
 MAX_BODY: Final = 16 * 1024 * 1024
 _REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
 _EVENT = TypeAdapter[Event](Event)
@@ -50,7 +54,9 @@ def _json(model: BaseModel, status: int = 200) -> web.Response:
     return web.json_response(text=model.model_dump_json(), status=status)
 
 
-def create_app(manager: ExecutionManager, token: str) -> web.Application:
+def create_app(
+    manager: ExecutionManager, token: str, environments: Environments | None = None
+) -> web.Application:
     expected = f"Bearer {token}".encode()
 
     @web.middleware
@@ -72,8 +78,14 @@ def create_app(manager: ExecutionManager, token: str) -> web.Application:
 
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app[MANAGER] = manager
+    if environments is not None:
+        app[ENVIRONMENTS] = environments
     app.add_routes(
         [
+            web.post("/v1/environments", create_environment),
+            web.get("/v1/environments/{environment_id}", get_environment),
+            web.post("/v1/environments/{environment_id}/policy", revise_environment),
+            web.delete("/v1/environments/{environment_id}", delete_environment),
             web.get("/v1/capabilities", capabilities),
             web.post("/v1/executions", submit),
             web.get("/v1/executions/{execution_id}", get_execution),
@@ -99,6 +111,33 @@ def _summary(exc: ValidationError) -> str:
 
 async def _body(request: web.Request) -> bytes:
     return await request.read()
+
+
+def _environments(request: web.Request) -> Environments:
+    environments = request.app.get(ENVIRONMENTS)
+    if environments is None:
+        raise WorkerError(ErrorKind.UNSUPPORTED, "this worker does not manage environments (D73)")
+    return environments
+
+
+async def create_environment(request: web.Request) -> web.Response:
+    body = EnvironmentRequest.model_validate_json(await _body(request))
+    info, created = await _environments(request).create(body)
+    return _json(info, 201 if created else 200)
+
+
+async def get_environment(request: web.Request) -> web.Response:
+    return _json(_environments(request).get(request.match_info["environment_id"]))
+
+
+async def revise_environment(request: web.Request) -> web.Response:
+    body = PolicyRevisionRequest.model_validate_json(await _body(request))
+    environment_id = request.match_info["environment_id"]
+    return _json(await _environments(request).revise(environment_id, body.policy))
+
+
+async def delete_environment(request: web.Request) -> web.Response:
+    return _json(await _environments(request).delete(request.match_info["environment_id"]))
 
 
 async def capabilities(request: web.Request) -> web.Response:

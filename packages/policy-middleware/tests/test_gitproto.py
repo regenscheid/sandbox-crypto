@@ -26,7 +26,6 @@ from typing import Any, cast
 
 import pytest
 
-from sandbox_science.policy_middleware import gitproto
 from sandbox_science.policy_middleware.gitproto import (
     MAX_AGENT_BYTES,
     MAX_DECODED_BYTES,
@@ -1061,7 +1060,7 @@ def test_decompression_bomb_is_rejected_within_the_bound(monkeypatch: pytest.Mon
         def __getattr__(self, name: str) -> Any:
             return getattr(self._inflater, name)
 
-    monkeypatch.setattr(gitproto.zlib, "decompressobj", Spy)
+    monkeypatch.setattr(zlib, "decompressobj", Spy)  # the module gitproto uses
     rejects(check_gzip, bomb, "decompresses to more than")
     assert produced == [MAX_DECODED_BYTES + 1]
 

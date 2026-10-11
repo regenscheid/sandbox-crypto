@@ -35,6 +35,10 @@ Every route needs `Authorization: Bearer <token>`. Bodies are the JSON forms of 
 | `POST /v1/files/read`, `/write`, `/list` | `ReadFileRequest` → `FileContent`; `WriteFileRequest` → `WriteFileResult`; `ListFilesRequest` → `FileListing` |
 | `POST /v1/artifacts` | `PublishRequest` → `ArtifactRef` (201) |
 | `GET /v1/artifacts/{id}`, `/content` | → `ArtifactRef`, or the bytes with `X-Content-SHA256` |
+| `POST /v1/environments` | `EnvironmentRequest` → `EnvironmentInfo`: 201 when created, 200 when the same environment exists, 409 when it exists with another project, profile or policy ([environments](#environments)) |
+| `GET /v1/environments/{id}` | → `EnvironmentInfo` |
+| `POST /v1/environments/{id}/policy` | `PolicyRevisionRequest` → `EnvironmentInfo` under the new revision |
+| `DELETE /v1/environments/{id}` | → `EnvironmentInfo` in state `deleted` |
 
 ## Behavior worth knowing
 
@@ -85,6 +89,32 @@ Other things to know:
 
 Both restrictions are described for upstream in `.agents/upstream/`.
 
+## Environments
+
+With an `[openshell.environments]` table, the worker creates the sandboxes behind logical environments itself (D73). The orchestrator holds no gateway credentials (threat model, Z2), so it asks the worker, naming an environment, a project, a base profile (D46) and a policy revision.
+
+- **Policy revisions** come from the pool's policy store, the policy middleware's state directory. Only an operator adds them, on the pool host:
+
+  ```bash
+  sandbox-science-worker policy add --settings worker.toml policy.yaml
+  ```
+
+  The command compiles each file to check it, then prints its revision (`sha256:…`) and the compiler's findings. The API cannot add a revision, so a compromised orchestrator can only choose among the stored ones.
+- **Creating** an environment:
+  1. The worker compiles the revision under the pool ceiling, with the deployment's targets file.
+  2. It checks the providers. Every provider in `credentials.providers` must be registered in the gateway under the profile the policy names, and that profile must name no endpoints (D57). Otherwise it reports `unavailable`.
+  3. It records the environment as `creating`, then creates the sandbox `ss-<environment>-<hash>`. The sandbox comes from the profile's image, with exactly those providers (`--no-auto-providers`) and the compiled document, filesystem section included.
+  4. It waits until the sandbox is ready, then binds it to the revision in the middleware's store.
+
+  If any step fails, the worker deletes the sandbox and records the environment as `deleted`. A sandbox left by a crash during creation is replaced on the next request.
+- **Revising:**
+  1. The worker compiles the new revision. It refuses one whose providers differ, since OpenShell attaches providers only when it creates a sandbox.
+  2. It reads the sandbox's live filesystem section (`openshell policy get --base`), because OpenShell refuses a revision that removes any path from it.
+  3. It applies the new document with `openshell policy set --wait`, then rebinds. Between those two steps the middleware denies the sandbox's requests as `policy_stale`, so the change fails closed.
+- **Deleting:** the worker stops the environment's executor (running attempts end as `lost`), deletes the sandbox and removes its binding.
+
+Sandboxes made outside the worker still work through the static `sandboxes` map.
+
 ## Executor protocol
 
 The worker sends one JSON object per line; each carries an `id` and an `op`. The operations are `hello`, `probe` (the [isolation probe](#isolation-tiers)), `shell`, `cell`, `cancel`, `restart`, `read`, `write` and `list`.
@@ -108,7 +138,14 @@ project_root = "/sandbox/project"
 isolation_tier = 3                   # required: the tier the driver gives (D43); the probe can lower it
 sched_shim = true                    # build and preload the scheduler shim (needs cc on this host)
 env = {XDG_CONFIG_HOME = "/home/andy/.local/state/openshell-lab/config"}
-sandboxes = {"env-1" = "research-1"}
+sandboxes = {"env-1" = "research-1"}   # sandboxes made by hand
+
+[openshell.environments]             # optional: the worker creates sandboxes (D73)
+policy_store = "/var/lib/sandbox-science/middleware"   # the policy middleware's state_dir
+targets = "targets.yaml"             # OpenShell targets for the compiler
+ceiling = "pool-ceiling.yaml"        # the same pool ceiling the middleware applies
+profiles = {minimal = "docker.io/library/python:3.13-slim"}   # base profile -> image
+create_timeout = 600                 # seconds for a sandbox to become ready
 ```
 
 Run it with `sandbox-science-worker serve --settings worker.toml`. The sandbox's environment needs Python with `ipykernel` and `jupyter_client`. On babbage they come from conda-forge through the [package cache](PACKAGE-CACHE.md), like any other tool.
@@ -139,7 +176,7 @@ The local runs are then skipped; setting only some of the variables is an error.
 ## Not yet done
 
 - **Survival across worker restarts.** The executor serves one stdio connection, so it ends when the worker restarts, and kernels end with it. The planned fix is a daemon in the sandbox listening on a socket, with the worker reconnecting through `openshell sandbox exec`.
-- **Environment lifecycle.** The worker maps environments to sandboxes that already exist. Creating, binding, suspending and restoring environments belongs to the environment manager (W3).
+- **Environment lifecycle.** The worker creates, revises and deletes sandboxes ([environments](#environments)). Suspending and restoring them, and provisioning their tools, belong to the environment manager (W3). Policy revisions enter the store only through the operator's command; an approval path from the GUI, with re-authentication for widening (D54), comes later.
 - **Data grants.** Scoped grants of project data, and session containers beside the project container.
 - **Large outputs.** A rich output over the limit is replaced by a note; the spec's spill to a referenced file is not implemented.
 - **Authentication.** A single bearer token; the outbound, worker-initiated channel for hosted control (architecture) comes later.

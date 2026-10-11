@@ -20,6 +20,8 @@ from sandbox_science.contracts import (
     ArtifactRef,
     Capabilities,
     CellRequest,
+    EnvironmentInfo,
+    EnvironmentRequest,
     ErrorKind,
     Event,
     Execution,
@@ -29,6 +31,7 @@ from sandbox_science.contracts import (
     KernelInfo,
     KernelRestartRequest,
     ListFilesRequest,
+    PolicyRevisionRequest,
     PublishRequest,
     ReadFileRequest,
     ResultEvent,
@@ -101,6 +104,25 @@ class WorkerClient:
             return model.model_validate_json(text)
         except ValidationError as exc:
             raise WorkerAPIError(ErrorKind.INTERNAL, f"unexpected worker response: {exc}") from exc
+
+    # Environments (D73): the worker creates sandboxes under stored policy revisions.
+
+    async def create_environment(self, request: EnvironmentRequest) -> EnvironmentInfo:
+        return await self._call("POST", "/v1/environments", EnvironmentInfo, request)
+
+    async def environment(self, environment_id: str) -> EnvironmentInfo:
+        return await self._call("GET", f"/v1/environments/{environment_id}", EnvironmentInfo)
+
+    async def revise_environment(self, environment_id: str, policy: str) -> EnvironmentInfo:
+        return await self._call(
+            "POST",
+            f"/v1/environments/{environment_id}/policy",
+            EnvironmentInfo,
+            PolicyRevisionRequest(policy=policy),
+        )
+
+    async def delete_environment(self, environment_id: str) -> EnvironmentInfo:
+        return await self._call("DELETE", f"/v1/environments/{environment_id}", EnvironmentInfo)
 
     # Executions.
 

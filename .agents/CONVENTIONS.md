@@ -34,7 +34,7 @@ Planned members (created when work starts on them):
 | `mcp-proxy` | `sandbox_science.mcp_proxy` | MCP proxy (runs in its own OpenShell sandbox) |
 | `policy-middleware` | `sandbox_science.policy_middleware` | OpenShell supervisor middleware that decides each request with the policy library (D69) |
 | `package-cache` | `sandbox_science.package_cache` | Pull-through package cache for research sandboxes (D71) |
-| `event-store` | `sandbox_science.event_store` | Library: append-only event store with a hash chain (D73, shared) |
+| `event-store` | `sandbox_science.event_store` | Library: append-only event store with a hash chain (D74, shared) |
 | `connector-auth` | `sandbox_science.connector_auth` | Connector auth service (OAuth for MCP) |
 | `web` | — | Browser front end (separate toolchain, D60) |
 
