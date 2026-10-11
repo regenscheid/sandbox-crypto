@@ -35,7 +35,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Worker service: per-project credentials, so that the `project_id` a request names is access control and not only a consistency check (adversarial review of 2026-10-11, "no project scoping")
 - [x] On babbage: the executor's hardening under OpenShell's seccomp filter ([lab 8](docs/agent-reports/babbage-openshell-lab-8-2026-10-11.md)). Both `prctl` calls are allowed and leftover processes end. A process that is not dumpable loses its sockets there, so the executor stays dumpable under OpenShell and `/proc/<executor>/fd` stays open to research code in the same environment
 - [x] Worker service: close a session's kernels (`POST /v1/sessions/close`); per-session kernels otherwise accumulate in a long-lived environment (lab 8)
-- [ ] Worker service: stop kernels idle for longer than a setting, and have the orchestrator close sessions when they end (W3)
+- [x] Worker service: stop kernels unused for longer than `kernel_idle_timeout` (off by default)
+- [ ] The orchestrator closes sessions when they end (W3)
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48)
 - [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
 - [x] Write the middleware's policy store and sandbox bindings when sandboxes are created and revised: the worker's environments (D73), with `sandbox-science-worker policy add` as the operator's way in. To verify on babbage

@@ -10,7 +10,7 @@ import hashlib
 import logging
 import os
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -79,8 +79,14 @@ class LocalBackend:
 
     name: Literal["local"] = "local"
 
-    def __init__(self, settings: LocalBackendSettings, state_dir: Path) -> None:
+    def __init__(
+        self,
+        settings: LocalBackendSettings,
+        state_dir: Path,
+        executor_args: Sequence[str] = (),
+    ) -> None:
         self.settings = settings
+        self.executor_args = tuple(executor_args)
         self.root = state_dir / "environments"
 
     async def open(
@@ -94,6 +100,7 @@ class LocalBackend:
         # -I keeps the executor's directory off sys.path, so the worker's other
         # modules cannot shadow anything it imports.
         argv = [self.settings.python, "-I", str(EXECUTOR_SOURCE), "--stdio", "--root", str(project)]
+        argv += self.executor_args
         channel = ExecutorChannel(argv, on_event, on_closed, env=_child_env())
         await channel.start()
         return channel
@@ -116,10 +123,12 @@ class OpenShellBackend:
         settings: OpenShellBackendSettings,
         state_dir: Path,
         resolve: Callable[[str], str | None] | None = None,
+        executor_args: Sequence[str] = (),
     ) -> None:
         self.settings = settings
         self.state_dir = state_dir
         self.resolve = resolve
+        self.executor_args = tuple(executor_args)
         """Finds the sandboxes the worker created (environments.py) before the static map."""
         self._shim_lock = asyncio.Lock()
         self._clients = None if settings.package_cache is None else render(settings.package_cache)
@@ -192,7 +201,7 @@ class OpenShellBackend:
             argv += ["--env", f"LD_PRELOAD={settings.executor_dir}/{SCHED_SHIM_NAME}"]
         argv += [
             "--", settings.python, "-I", f"{settings.executor_dir}/{EXECUTOR_SOURCE.name}",
-            "--stdio", "--root", settings.project_root,
+            "--stdio", "--root", settings.project_root, *self.executor_args,
         ]  # fmt: skip
         channel = ExecutorChannel(argv, on_event, on_closed, env=self._env())
         await channel.start()
