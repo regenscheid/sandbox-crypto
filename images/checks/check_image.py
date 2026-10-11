@@ -1,21 +1,31 @@
 # SPDX-License-Identifier: MIT
-"""Check a base profile image from the inside (docs/IMAGES.md, "Tests").
+"""Check a profile image from the inside (docs/IMAGES.md, "Tests").
 
 images/test.sh runs this in the image as uid 1000, with a read-only root filesystem and only the
-declared paths writable. It starts the worker's executor the way the OpenShell backend does
-(``python -I /sandbox/.sandbox-science/executor.py --stdio --root /sandbox/project``), asks it
-for its languages, and runs cells and shell commands through it. Kernels therefore start
-through jupyter_client with the executor's environment.
+declared paths writable.
+
+In the research profiles (minimal, crypto-base) it starts the worker's executor the way the
+OpenShell backend does (``python -I /sandbox/.sandbox-science/executor.py --stdio --root
+/sandbox/project``), asks it for its languages, and runs cells and shell commands through it.
+Kernels therefore start through jupyter_client with the executor's environment.
+
+In the orchestrator profile it runs the harness's command by its full path, without the image's
+environment variables, as an OpenShell sandbox would: its help, a project record in the
+workdir, and a scripted task against a stub of the worker API on loopback.
 
 It prints one JSON object per check (``check``, ``ok``, ``seconds``, ``detail``) and exits 1 if
 any failed. It needs only the standard library.
 
-Usage: check_image.py --profile minimal|crypto-base --worker-files DIR [--network] [--landlock]
+Usage: check_image.py --profile minimal|crypto-base|orchestrator --worker-files DIR [--network]
+       [--landlock]
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import http.server
+import importlib.util
 import itertools
 import json
 import os
@@ -29,7 +39,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+PROFILES = ("minimal", "crypto-base", "orchestrator")
 PREFIX = "/opt/sandbox-science"
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
 WORKER_FILES = ("executor.py", "pdfhelper.py")
@@ -41,6 +53,24 @@ LANGUAGES = {"minimal": ["python"], "crypto-base": ["python", "sage"]}
 FEATURES = {"minimal": [], "crypto-base": ["pdf"]}
 """What the executor offers beyond kernels: ``pdf`` where the PDF helper finds pdf_oxide."""
 MARKER = "Sandbox Science image check"
+
+HARNESS = f"{PREFIX}/bin/sandbox-science-harness"
+HARNESS_PACKAGES = ("sandbox-science-contracts", "sandbox-science-orchestrator")
+HARNESS_DISTS = (*HARNESS_PACKAGES, "aiohttp", "pydantic", "pydantic-core")
+HARNESS_MODULES = (
+    "sandbox_science.orchestrator.cli",
+    "sandbox_science.contracts",
+    "aiohttp",
+    "pydantic",
+    "pydantic_core",
+)
+HARNESS_DIR = Path("/sandbox/harness")
+"""Where the orchestrator checks keep the harness's files: in the workdir, as a deployment would."""
+HARNESS_ENV = {"HOME": "/sandbox", "PATH": "/usr/local/bin:/usr/bin:/bin"}
+"""The harness's environment in the checks: a home and a system ``PATH``, not the image's
+variables, which OpenShell's VM driver does not apply."""
+KERNEL_PACKAGES = ("ipykernel", "jupyter_client", "zmq")
+TEST_TOKEN = "test-secret-image-check"  # noqa: S105 - a synthetic token for the stub worker
 
 Message = dict[str, Any]
 
@@ -165,6 +195,10 @@ class Checks:
     def crypto(self) -> bool:
         return self.profile == "crypto-base"
 
+    @property
+    def orchestrator(self) -> bool:
+        return self.profile == "orchestrator"
+
     def check(self, name: str, function: Callable[[], str]) -> None:
         started = time.monotonic()
         try:
@@ -196,12 +230,22 @@ class Checks:
             return True
 
         refused = ["/", "/usr/local", "/etc", "/opt", "/var/tmp", "/usr/share/sandbox-science"]  # noqa: S108
-        allowed = ["/sandbox", "/tmp", "/dev/shm", PREFIX]  # noqa: S108 - writable paths under test
+        allowed = ["/sandbox", "/tmp"]  # noqa: S108 - writable paths under test
+        if self.orchestrator:
+            # The harness installs nothing at runtime: its prefix is only read.
+            refused.append(PREFIX)
+            records = sorted(Path(PREFIX, "conda-meta").glob("*.json"))
+            expect(bool(records), f"nothing readable in {PREFIX}/conda-meta")
+            json.loads(records[0].read_text())
+        else:
+            # Runtime installs go into the prefix (D48); multiprocessing needs /dev/shm.
+            allowed += ["/dev/shm", PREFIX]  # noqa: S108
         wrongly = [path for path in refused if writable(path)]
         missing = [path for path in allowed if not writable(path)]
         expect(not wrongly, f"writable but should not be: {wrongly}")
         expect(not missing, f"not writable: {missing}")
-        return f"writable: {', '.join(allowed)}; read-only: {', '.join(refused)}"
+        detail = f"writable: {', '.join(allowed)}; read-only: {', '.join(refused)}"
+        return detail + (f"; {PREFIX} readable" if self.orchestrator else "")
 
     def landlock(self) -> str:
         """The ruleset is in effect: a system file outside OpenShell's baseline is unreadable."""
@@ -217,6 +261,11 @@ class Checks:
         # OpenShell would use a policy baked into the image when given none; the worker gives one.
         expect(not Path("/etc/openshell").exists(), "the image carries /etc/openshell")
         counts = {kind: len(items) for kind, items in record["packages"].items()}
+        if self.orchestrator:
+            pip = {item["name"]: item for item in record["packages"]["pip"]}
+            for name in HARNESS_PACKAGES:
+                expect(name in pip, f"the record lists no {name}")
+                expect(pip[name]["license"] == "MIT", f"{name} is {pip[name]['license']}")
         return f"revision {record['revision']}; packages {counts}; no image policy"
 
     # The executor and its kernels.
@@ -415,6 +464,132 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         expect(len(paths) == 2 and all(path.startswith(PREFIX) for path in paths), f"{out!r}")
         return "micromamba and pip installed into the Conda prefix"
 
+    # orchestrator: the harness as its sandbox runs it.
+
+    def harness(self, *args: str) -> str:
+        """Run the harness's command; return its standard output, or fail with its error."""
+        done = subprocess.run(  # noqa: S603 - the image's own command, fixed arguments
+            [HARNESS, *args], capture_output=True, text=True, env=HARNESS_ENV, timeout=120
+        )
+        if done.returncode != 0:
+            output = (done.stderr or done.stdout)[-1500:]
+            raise CheckError(f"harness {args[0]} exited {done.returncode}: {output}")
+        return done.stdout
+
+    def harness_cli(self) -> str:
+        """The harness's command: on ``PATH``, and by its full path without it."""
+        found = shutil.which("sandbox-science-harness")
+        expect(found == HARNESS, f"sandbox-science-harness on PATH is {found}")
+        # The full path must work where the image's PATH does not apply.
+        interpreter = Path(HARNESS).read_text().splitlines()[0]
+        expect(interpreter.startswith(f"#!{PREFIX}/bin/python"), f"it starts {interpreter!r}")
+        for command in ([], ["run"], ["project"], ["session"]):
+            usage = self.harness(*command, "--help")
+            expect(usage.startswith("usage: sandbox-science-harness"), f"help: {usage[:200]!r}")
+        return f"{HARNESS} ({interpreter}): --help for itself, run, project and session"
+
+    def harness_imports(self) -> str:
+        """The harness and its dependencies import from the prefix, with their versions."""
+        code = (
+            "import importlib, importlib.metadata as metadata, json\n"
+            f"modules = {list(HARNESS_MODULES)!r}\n"
+            "files = {name: importlib.import_module(name).__file__ for name in modules}\n"
+            f"versions = {{name: metadata.version(name) for name in {list(HARNESS_DISTS)!r}}}\n"
+            "print(json.dumps({'files': files, 'versions': versions}))"
+        )
+        done = subprocess.run(  # noqa: S603 - the image's own interpreter
+            [f"{PREFIX}/bin/python", "-I", "-c", code],
+            capture_output=True,
+            text=True,
+            env=HARNESS_ENV,
+            timeout=120,
+        )
+        expect(done.returncode == 0, f"imports failed: {done.stderr[-1500:]}")
+        found = json.loads(done.stdout)
+        outside = {
+            name: file for name, file in found["files"].items() if not file.startswith(PREFIX)
+        }
+        expect(not outside, f"imported from outside the prefix: {outside}")
+        versions = found["versions"]
+        return ", ".join(f"{name} {versions[name]}" for name in HARNESS_DISTS) + f" from {PREFIX}"
+
+    def no_kernels(self) -> str:
+        """The orchestrator runs no research code (D11): no kernelspecs, no kernel packages."""
+        kernels = Path(PREFIX, "share", "jupyter", "kernels")
+        specs = sorted(path.name for path in kernels.iterdir()) if kernels.is_dir() else []
+        expect(not specs, f"kernelspecs in the image: {specs}")
+        present = [name for name in KERNEL_PACKAGES if importlib.util.find_spec(name) is not None]
+        expect(not present, f"kernel packages in the image: {present}")
+        return f"no kernelspecs, and none of {', '.join(KERNEL_PACKAGES)}"
+
+    def harness_state(self) -> str:
+        """A project record in the workdir, where the harness keeps its state (``--state-dir``)."""
+        state = str(HARNESS_DIR / "state")
+        policy = "sha256:" + hashlib.sha256(MARKER.encode()).hexdigest()
+        project = ["--state-dir", state, "--project", SESSION]
+        self.harness("project", "create", *project, "--profile", "minimal", "--policy", policy)
+        shown = json.loads(self.harness("project", "show", *project))
+        expect((shown["profile"], shown["policy"]) == ("minimal", policy), f"record {shown}")
+        environment = shown["default_environment_id"]
+        return f"project create and show in {state}: default environment {environment}"
+
+    def harness_run(self) -> str:
+        """A scripted task through to its answer, against a stub of the worker API on loopback.
+
+        The stub answers only ``GET /v1/capabilities`` with the token; the scripted model answers
+        without tools, so the harness needs nothing else from a worker.
+        """
+        requests: list[str] = []
+        capabilities = json.dumps(
+            {
+                "protocol": 1,
+                "languages": ["python"],
+                "location": {"pool_id": SESSION, "backend": "local", "hostname": "stub-worker"},
+            }
+        ).encode()
+
+        class StubWorker(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                requests.append(self.path)
+                authorized = self.headers.get("Authorization") == f"Bearer {TEST_TOKEN}"
+                found = urlsplit(self.path).path == "/v1/capabilities"
+                status = 200 if authorized and found else 404 if authorized else 401
+                body = capabilities if status == 200 else b"{}"
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: Any) -> None:
+                """Keep this script's output to its JSON lines."""
+
+        HARNESS_DIR.mkdir(parents=True, exist_ok=True)
+        token, script = HARNESS_DIR / "worker.token", HARNESS_DIR / "script.json"
+        token.write_text(TEST_TOKEN + "\n")
+        script.write_text(json.dumps([{"text": MARKER}]))
+        transcript = HARNESS_DIR / "transcript.json"
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), StubWorker)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        worker = f"http://127.0.0.1:{server.server_port}"
+        try:
+            out = self.harness(
+                "run",
+                *("--worker", worker, "--token-file", str(token)),
+                *("--project", SESSION, "--session", SESSION, "--environment", SESSION),
+                *("--script", str(script), "--allow-unisolated"),
+                *("--transcript", str(transcript)),
+                "Answer with the marker.",
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        expect(requests[:1] == [f"/v1/capabilities?environment_id={SESSION}"], f"{requests}")
+        expect(out.rstrip().endswith(MARKER), f"output {out[-500:]!r}")
+        stopped = json.loads(transcript.read_text())["stopped"]
+        expect(stopped == "answered", f"stopped: {stopped}")
+        return f"run against {worker}: capabilities with the token, then the scripted answer"
+
     def run(self) -> int:
         for name in planned(self.profile, landlock=self.under_landlock, network=self.network):
             self.check(name, getattr(self, name.replace("-", "_")))
@@ -426,6 +601,10 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
 def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
     """The checks for a profile, in order; each is the ``Checks`` method of the same name."""
     names = ["identity", "filesystem", *(["landlock"] if landlock else []), "record"]
+    if profile == "orchestrator":
+        # The harness's image: no executor or kernels, and nothing installed at runtime.
+        harness = ["harness-cli", "harness-imports", "no-kernels", "harness-state", "harness-run"]
+        return names + harness
     names += ["executor", "python-kernel", "tools-on-path", "multiprocessing"]
     if profile == "crypto-base":
         names += ["sage-kernel", "sage-interfaces", "fpylll", "g6k", "lattice-estimator"]
@@ -436,13 +615,13 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description="Check a base profile image from the inside.")
-    parser.add_argument("--profile", required=True, choices=sorted(LANGUAGES))
+    parser = argparse.ArgumentParser(description="Check a profile image from the inside.")
+    parser.add_argument("--profile", required=True, choices=PROFILES)
     parser.add_argument(
         "--worker-files",
         required=True,
         type=Path,
-        help="a directory with executor.py and pdfhelper.py",
+        help="a directory with executor.py and pdfhelper.py (unused for orchestrator)",
     )
     parser.add_argument("--network", action="store_true", help="also install packages at runtime")
     parser.add_argument("--landlock", action="store_true", help="expect a Landlock ruleset")

@@ -1,16 +1,19 @@
 # SPDX-License-Identifier: MIT
-"""The base profile recipes, checked without Docker (docs/IMAGES.md).
+"""The profile recipes, checked without Docker (docs/IMAGES.md).
 
 The pins are exact, the lockfiles cover both architectures with a SHA-256 for every package,
-the declared OpenShell filesystem paths are a valid targets section, the Landlock emulation in
-test.sh matches the policy compiler, and the license helpers that gate the minimal image behave.
+each image's tag covers what its build reads, the declared OpenShell filesystem paths are valid
+targets sections, the Landlock emulation in test.sh matches the policy compiler, and the
+license helpers that gate the permissive images behave.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -21,12 +24,18 @@ import yaml
 from sandbox_science.policy.openshell import (
     SANDBOX_DEVICES_READ_ONLY,
     SANDBOX_DEVICES_READ_WRITE,
+    FilesystemPolicy,
     SandboxFilesystem,
+    compile_orchestrator,
+    parse_targets,
 )
 
 IMAGES = Path(__file__).resolve().parents[1]
-PROFILES = ("minimal", "crypto-base")
+ROOT = IMAGES.parent
+RESEARCH_PROFILES = ("minimal", "crypto-base")
+PROFILES = (*RESEARCH_PROFILES, "orchestrator")
 PLATFORMS = ["linux-64", "linux-aarch64"]
+PREFIX = "/opt/sandbox-science"
 
 
 def _load(name: str, path: Path) -> ModuleType:
@@ -50,6 +59,32 @@ def _containerfile_args() -> dict[str, str]:
 
 def _lockfile(profile: str) -> dict[str, Any]:
     return yaml.safe_load((IMAGES / profile / "conda-lock.yml").read_text())
+
+
+def _stages() -> dict[str, str]:
+    """The Containerfile's stages by name, with their instructions."""
+    text = (IMAGES / "Containerfile").read_text()
+    parts = re.split(r"^FROM \S+ AS (\S+)$", text, flags=re.MULTILINE)
+    return dict(zip(parts[1::2], parts[2::2], strict=True))
+
+
+def _context_paths(stage: str) -> set[str]:
+    """The build-context paths a stage reads: bind mounts and copies not from another stage."""
+    mounts = re.findall(r"--mount=type=bind,source=([^,\s]+)", stage)
+    copies = re.findall(r"^COPY (?:--chmod=\S+ )?([a-z]\S*) ", stage, flags=re.MULTILINE)
+    return {*mounts, *copies}
+
+
+def _recipe_inputs(profile: str) -> list[str]:
+    """What revision.sh counts as the profile's build inputs, relative to images/."""
+    script = f'. "$1" && recipe_inputs {profile} && printf "%s\\n" "${{inputs[@]}}"'
+    done = subprocess.run(  # noqa: S603 - the repository's own script
+        ["bash", "-c", script, "bash", str(IMAGES / "revision.sh")],  # noqa: S607 - bash from PATH
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return done.stdout.split()
 
 
 # Pins.
@@ -91,12 +126,61 @@ def test_lockfiles_pin_every_package_for_both_architectures(profile: str) -> Non
         assert wanted <= names, f"{platform} lacks {wanted - names}"
 
 
-@pytest.mark.parametrize("profile", PROFILES)
-def test_each_profile_locks_the_kernel_packages(profile: str) -> None:
+@pytest.mark.parametrize("profile", RESEARCH_PROFILES)
+def test_each_research_profile_locks_the_kernel_packages(profile: str) -> None:
     names = {package["name"] for package in _lockfile(profile)["package"]}
     assert {"python", "ipykernel", "jupyter_client", "pip"} <= names
     if profile == "crypto-base":
         assert {"sage", "sagelib", "fpylll", "fplll", "pari", "libflint", "cython"} <= names
+
+
+def test_the_orchestrator_locks_the_harness_dependencies_and_no_kernels() -> None:
+    names = {package["name"] for package in _lockfile("orchestrator")["package"]}
+    assert {"python", "aiohttp", "pydantic", "pydantic-core", "pip"} <= names
+    assert not {"ipykernel", "jupyter_client", "pyzmq", "zeromq"} & names
+
+
+@pytest.mark.parametrize("name", ["aiohttp", "pydantic"])
+def test_the_orchestrator_locks_the_minor_versions_uv_lock_pins(name: str) -> None:
+    # The harness's tests run with uv.lock's versions; relock the image when it moves on.
+    uv_lock = tomllib.loads((ROOT / "uv.lock").read_text())
+    tested = next(package["version"] for package in uv_lock["package"] if package["name"] == name)
+    minor = ".".join(tested.split(".")[:2])
+    locked = {p["version"] for p in _lockfile("orchestrator")["package"] if p["name"] == name}
+    assert locked
+    assert all(version.startswith(f"{minor}.") for version in locked), (locked, tested)
+
+
+# Tags and build contexts.
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+def test_the_recipe_revision_covers_what_the_build_reads(profile: str) -> None:
+    inputs = _recipe_inputs(profile)
+    assert {"Containerfile", ".dockerignore", "common", profile} <= set(inputs)
+    assert not set(PROFILES) - {profile} & set(inputs), "another profile changes the tag"
+    for path in inputs:
+        assert (IMAGES / path).exists(), path
+    stages = _stages()
+    read = _context_paths(stages["base"]) | _context_paths(stages[profile])
+    assert read
+    for path in read:
+        assert any(path == item or path.startswith(f"{item}/") for item in inputs), path
+    if profile == "orchestrator":
+        # build.sh builds the harness's wheels from these.
+        for package in ("contracts", "orchestrator"):
+            sources = {f"../packages/{package}/pyproject.toml", f"../packages/{package}/src"}
+            assert sources <= set(inputs)
+
+
+def test_the_orchestrator_build_stops_without_the_harness_wheels() -> None:
+    # build.sh passes the wheels as the build context `wheels`. Without it, a stage of that name
+    # stops the build; with no such stage, BuildKit would pull an image called wheels.
+    stages = _stages()
+    assert list(stages).index("wheels") < list(stages).index("orchestrator")
+    assert re.search(r"\bexit 1\s*$", stages["wheels"])
+    assert "--mount=type=bind,from=wheels," in stages["orchestrator"]
+    assert '--build-context "wheels=' in (IMAGES / "build.sh").read_text()
 
 
 # The OpenShell view.
@@ -105,7 +189,20 @@ def test_each_profile_locks_the_kernel_packages(profile: str) -> None:
 def test_the_declared_filesystem_paths_are_a_valid_targets_section() -> None:
     section = yaml.safe_load((IMAGES / "common" / "sandbox-filesystem.yml").read_text())
     filesystem = SandboxFilesystem.model_validate(section)
-    assert "/opt/sandbox-science" in filesystem.read_write
+    assert PREFIX in filesystem.read_write
+
+
+def test_the_orchestrators_filesystem_section_reads_the_prefix_only() -> None:
+    section = yaml.safe_load((IMAGES / "orchestrator" / "filesystem.yml").read_text())
+    filesystem = SandboxFilesystem.model_validate(section)
+    assert filesystem == SandboxFilesystem(read_only=(PREFIX,))
+    # The example targets file lists it, and the compiler adds no devices to it.
+    targets = parse_targets((ROOT / "examples" / "openshell" / "targets.yaml").read_text())
+    assert targets.orchestrator is not None
+    assert targets.orchestrator.filesystem == filesystem
+    assert compile_orchestrator(targets.orchestrator).filesystem_policy == FilesystemPolicy(
+        include_workdir=True, read_only=(PREFIX,)
+    )
 
 
 def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
@@ -118,6 +215,16 @@ def test_the_landlock_emulation_adds_the_compilers_devices() -> None:
 
     assert array("devices_ro") == SANDBOX_DEVICES_READ_ONLY
     assert array("devices_rw") == SANDBOX_DEVICES_READ_WRITE
+    # compile_orchestrator() adds none to the orchestrator's sandbox.
+    branch = re.search(
+        r'^if \[ "\$profile" = orchestrator \]; then$(.*?)^fi$',
+        text,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert branch is not None
+    assert re.search(r"^  devices_ro=\(\)$", branch.group(1), flags=re.MULTILINE)
+    assert re.search(r"^  devices_rw=\(\)$", branch.group(1), flags=re.MULTILINE)
+    assert "orchestrator/filesystem.yml" in branch.group(1)
 
 
 def test_the_check_plan_names_methods_of_the_checks() -> None:
@@ -126,6 +233,9 @@ def test_the_check_plan_names_methods_of_the_checks() -> None:
             assert callable(getattr(checks.Checks, name.replace("-", "_")))
     assert "landlock" not in checks.planned("minimal", landlock=False, network=False)
     assert "sage-kernel" not in checks.planned("minimal", landlock=True, network=True)
+    orchestrator = checks.planned("orchestrator", landlock=True, network=True)
+    assert {"landlock", "harness-cli", "harness-run", "no-kernels"} <= set(orchestrator)
+    assert not {"executor", "python-kernel", "runtime-install"} & set(orchestrator)
 
 
 # Licenses.

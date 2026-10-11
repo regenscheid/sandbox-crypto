@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Solve the base profiles' Conda lockfiles again: images/lock.sh [minimal|crypto-base ...]
+# Solve the profiles' Conda lockfiles again: images/lock.sh [minimal|crypto-base|orchestrator ...]
 #
 # Each images/<profile>/conda-lock.yml pins every package, with its SHA-256, for linux-64 and
 # linux-aarch64, as conda-lock solves images/<profile>/environment.yml. conda-lock runs from a
@@ -20,7 +20,7 @@ fi
 "${conda_lock[@]}" --version | grep -q "version $CONDA_LOCK_VERSION\$" ||
   echo "lock.sh: warning: not conda-lock $CONDA_LOCK_VERSION" >&2
 profiles=("$@")
-[ ${#profiles[@]} -gt 0 ] || profiles=(minimal crypto-base)
+[ ${#profiles[@]} -gt 0 ] || profiles=(minimal crypto-base orchestrator)
 
 arg() { sed -n "s/^ARG $1=//p" "$here/Containerfile"; }
 version=$(arg MICROMAMBA_VERSION)

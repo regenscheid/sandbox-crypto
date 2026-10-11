@@ -91,7 +91,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
 - [x] First slice: one shell command and two stateful Python cells through the worker API, driven by the harness's tool loop with a scripted model. Done locally and on babbage in an OpenShell VM sandbox ([lab 4](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)), after working around two OpenShell seccomp restrictions (scheduler shim, process-group signals)
 - [x] The control application in one container and execution in another: the harness in its own OpenShell sandbox under the compiled orchestrator policy (worker API only), the tools in a sandbox the worker created; location, state, the boundary in both directions and reconnection checked ([lab 7](docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md))
-- [ ] An orchestrator image, so the harness's sandbox needs no uploaded wheelhouse (D46)
+- [x] An orchestrator image, so the harness's sandbox needs no uploaded wheelhouse (D46): the `orchestrator` profile in `images/` ([images](../docs/IMAGES.md#the-orchestrator-image)). The harness is installed from wheels built from the checkout, over a lockfile with aiohttp and pydantic at `uv.lock`'s minor versions; the prefix is read-only and there are no kernels. Built for linux/amd64 on babbage and checked as a plain container and under a Landlock ruleset like the orchestrator policy's, including a scripted run against a stub worker
+  - [ ] Run the harness from the image in an OpenShell lab, under the compiled orchestrator policy with the targets file's `orchestrator.filesystem`
 - [ ] The first slice with a real model through LiteLLM (needs the user's model gateway and a virtual key)
 
 ## W2: certify babbage execution with math and source capabilities

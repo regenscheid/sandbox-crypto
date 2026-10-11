@@ -1,31 +1,34 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Check a base profile image as a sandbox sees it: images/test.sh minimal|crypto-base [IMAGE]
+# Check a profile image as a sandbox sees it: images/test.sh PROFILE [IMAGE]
+# PROFILE is minimal, crypto-base or orchestrator.
 #
 # Runs images/checks/check_image.py in the image as uid 1000, with no capabilities, a read-only
 # root filesystem and only the declared paths writable (docs/IMAGES.md, "Tests"):
-#   container  tmpfs at /sandbox and /tmp, and a volume for the Conda prefix (D48), as a
-#              container driver would run it;
+#   container  tmpfs at /sandbox and /tmp, and for the research profiles a volume for the Conda
+#              prefix (D48), as a container driver would run it;
 #   landlock   the same under a Landlock ruleset like OpenShell's: its baseline, the devices the
-#              policy compiler adds, and images/common/sandbox-filesystem.yml.
+#              policy compiler adds to research sandboxes, and the image's filesystem section
+#              (images/common/sandbox-filesystem.yml, or images/orchestrator/filesystem.yml for
+#              the orchestrator's sandbox, which gets no devices).
 # IMAGE defaults to the tag build.sh gives. MODES picks the modes (default
 # "container landlock"); NETWORK=0 skips the runtime installs, which need conda-forge and PyPI;
-# FILESYSTEM names another sandbox-filesystem.yml to try. Prints one JSON line per check and
-# exits 1 if any failed.
+# FILESYSTEM names another filesystem section to try. Prints one JSON line per check and exits 1
+# if any failed.
 set -euo pipefail
 
 profile=${1:-}
 case $profile in
-  minimal | crypto-base) ;;
-  *) echo "usage: images/test.sh minimal|crypto-base [IMAGE]" >&2; exit 2 ;;
+  minimal | crypto-base | orchestrator) ;;
+  *) echo "usage: images/test.sh minimal|crypto-base|orchestrator [IMAGE]" >&2; exit 2 ;;
 esac
 here=$(cd "$(dirname "$0")" && pwd)
 worker="$here/../packages/worker/src/sandbox_science/worker"   # its in-sandbox files
 image=${2:-}
 if [ -z "$image" ]; then  # the tag build.sh gives
-  inputs=(Containerfile .dockerignore common minimal crypto-base)
-  short=$(git -C "$here" rev-parse --short "$(git -C "$here" log -1 --format=%H -- "${inputs[@]}")")
-  [ -z "$(git -C "$here" status --porcelain -- "${inputs[@]}")" ] || short="$short-dirty"
+  # shellcheck source=revision.sh
+  . "$here/revision.sh"
+  recipe_revision "$profile"
   image="sandbox-science/$profile:$short"
 fi
 docker image inspect "$image" >/dev/null
@@ -38,6 +41,15 @@ devices_ro=(/dev/random)
 devices_rw=(/dev/full /dev/ptmx /dev/pts /dev/shm /dev/tty /dev/zero)
 # The image's own paths, as the targets file lists them.
 filesystem=${FILESYSTEM:-$here/common/sandbox-filesystem.yml}
+# Runtime installs go into the Conda prefix, a writable volume (D48).
+prefix=(--mount type=volume,target=/opt/sandbox-science)
+if [ "$profile" = orchestrator ]; then
+  # compile_orchestrator() adds no devices, and the harness's prefix stays read-only.
+  devices_ro=()
+  devices_rw=()
+  filesystem=${FILESYSTEM:-$here/orchestrator/filesystem.yml}
+  prefix=()
+fi
 list() { sed -n "s/^$1: \[\(.*\)\]\$/\1/p" "$filesystem" | tr -d ' ' | tr ',' ' '; }
 read -r -a image_ro <<<"$(list read_only)"
 read -r -a image_rw <<<"$(list read_write)"
@@ -73,7 +85,7 @@ for mode in ${MODES:-container landlock}; do
     --tmpfs /sandbox:rw,exec,uid=1000,gid=1000,mode=0755,size=8g \
     --tmpfs /tmp:rw,exec,mode=1777,size=4g \
     --shm-size 1g \
-    --mount type=volume,target=/opt/sandbox-science \
+    "${prefix[@]}" \
     --mount "type=bind,source=$checks,target=/checks,readonly" \
     "${network[@]}" \
     "$image" \

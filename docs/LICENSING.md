@@ -96,6 +96,6 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 ## Enforcement
 
 - CI runs `scripts/check_licenses.py`, which fails when an installed distribution's license is undeclared or outside the tier 1 allowlist (so GPL/LGPL/AGPL/SSPL/BUSL fail).
-- The base image builds record every package and its license (`/usr/share/sandbox-science/image.json`). The `minimal` build fails on any license that is not permissive, outside an explicit allowlist of the base distribution's runtime libraries ([images](IMAGES.md#licensing)). A standard-format SBOM for the published image is still to do.
+- The base image builds record every package and its license (`/usr/share/sandbox-science/image.json`). The `minimal` and `orchestrator` builds fail on any license that is not permissive, outside an explicit allowlist of the base distribution's runtime libraries ([images](IMAGES.md#licensing)). A standard-format SBOM for the published image is still to do.
 - Record tier 3 package licenses in each environment record (conda `info/licenses`, PyPI metadata). Show AGPL packages in the GUI when they are installed at runtime.
 - Before copying any code from a reuse source, record its license and revision in the commit.
