@@ -6,6 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- Event store (`packages/event-store`, D74 proposed, [docs](../docs/EVENT-STORE.md)): hash-chained SQLite records, checkpoints and the `sandbox-science-events` command. The policy middleware records its escalations, alerts and monitor findings there instead of `events.jsonl`.
 - Worker-managed environments (D73, proposed; [lab 6](docs/agent-reports/babbage-openshell-lab-6-2026-10-11.md)). The worker creates, revises and deletes research sandboxes: it compiles a stored policy revision, attaches exactly the listed providers and binds the middleware. An operator adds revisions with `sandbox-science-worker policy add`. Against a real gateway, a sandbox was ready in 11 s and a revision took 9 s. Isolation-tier probes and the backend conformance suite also landed (PR #22).
 - Isolation-tier probes (D43): results report the tier in effect, the declared tier and the evidence, and evidence only lowers the declared tier. The backend conformance suite (D52) runs the execution-tools fixtures through the worker API against any backend; it still has to run against OpenShell in a lab.
 - Sage (W2): the worker offers SageMath's own Jupyter kernel when an environment has it, and the harness gives the agent a `sage` tool (PR #20). Lab 5 on babbage ([report](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)) ran a real SageMath 10.9 from conda-forge in OpenShell VM sandboxes. Preparsing, finite fields, polynomial rings, Gröbner bases, exact matrices, LaTeX, GAP, Maxima, PARI and fpylll all worked, as did interrupt, timeout, restart and kernel death. Two fixes came out of it: the compiled policy now allows pseudo-terminals and `/dev/shm`, and the executor puts the environment's tools on `PATH`. The VM costs 0–7% on single-threaded mathematics.
@@ -37,6 +38,7 @@ Updated: 2026-10-11.
 ## Blockers and open questions
 
 - Confirm D68 (policy evaluation details), the details of D69 (its direction, OpenShell plus a policy middleware, is confirmed), D70 (the middleware service) and PSF-2.0 and MIT-0 in tier 1.
+- Confirm D74 (event store), and decide where its checkpoints are kept.
 - OpenShell's VM driver README calls the driver experimental at v0.1.3, while the support matrix lists it as supported. babbage's planned tier 3 isolation depends on it (D43). It worked throughout the lab.
 - babbage enforces Ubuntu's AppArmor restriction on unprivileged user namespaces. Shells started from Claude Desktop run under its `claude-desktop` profile and are exempt, so qualification checks must run from a plain terminal or `systemd-run --user`.
 - crypto-analysis-skills: confirm the copyright holder before merging its MIT LICENSE pull request.
