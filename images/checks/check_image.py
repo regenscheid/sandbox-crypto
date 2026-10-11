@@ -13,17 +13,23 @@ In the orchestrator profile it runs the harness's command by its full path, with
 environment variables, as an OpenShell sandbox would: its help, a project record in the
 workdir, and a scripted task against a stub of the worker API on loopback.
 
+In the mcp-proxy profile it starts the image's launcher the same way, as the proxy's sandbox
+runs its command: it waits for the settings, starts the proxy, which then answers on loopback
+and keeps its stores in the workdir, and starts it again when it dies.
+
 It prints one JSON object per check (``check``, ``ok``, ``seconds``, ``detail``) and exits 1 if
 any failed. It needs only the standard library.
 
-Usage: check_image.py --profile minimal|crypto-base|orchestrator --worker-files DIR [--network]
-       [--landlock]
+Usage: check_image.py --profile minimal|crypto-base|orchestrator|mcp-proxy --worker-files DIR
+       [--network] [--landlock]
 """
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import hashlib
+import http.client
 import http.server
 import importlib.util
 import itertools
@@ -31,7 +37,11 @@ import json
 import os
 import pwd
 import queue
+import re
 import shutil
+import signal
+import socket
+import stat
 import subprocess
 import sys
 import threading
@@ -41,7 +51,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-PROFILES = ("minimal", "crypto-base", "orchestrator")
+PROFILES = ("minimal", "crypto-base", "orchestrator", "mcp-proxy")
+SERVICES = ("orchestrator", "mcp-proxy")
+"""The platform services' images: no executor or kernels, and a read-only prefix."""
 PREFIX = "/opt/sandbox-science"
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
 WORKER_FILES = ("executor.py", "pdfhelper.py")
@@ -66,11 +78,72 @@ HARNESS_MODULES = (
 )
 HARNESS_DIR = Path("/sandbox/harness")
 """Where the orchestrator checks keep the harness's files: in the workdir, as a deployment would."""
-HARNESS_ENV = {"HOME": "/sandbox", "PATH": "/usr/local/bin:/usr/bin:/bin"}
-"""The harness's environment in the checks: a home and a system ``PATH``, not the image's
+SERVICE_ENV = {"HOME": "/sandbox", "PATH": "/usr/local/bin:/usr/bin:/bin"}
+"""The services' environment in the checks: a home and a system ``PATH``, not the image's
 variables, which OpenShell's VM driver does not apply."""
 KERNEL_PACKAGES = ("ipykernel", "jupyter_client", "zmq")
-TEST_TOKEN = "test-secret-image-check"  # noqa: S105 - a synthetic token for the stub worker
+TEST_TOKEN = "test-secret-image-check"  # noqa: S105 - synthetic, for the stub worker and the proxy
+
+PROXY = f"{PREFIX}/bin/sandbox-science-mcp-proxy"
+EVENTS = f"{PREFIX}/bin/sandbox-science-events"
+LAUNCHER = f"{PREFIX}/bin/mcp-proxy-run"
+PROXY_PACKAGES = (
+    "sandbox-science-contracts",
+    "sandbox-science-policy",
+    "sandbox-science-event-store",
+    "sandbox-science-mcp-proxy",
+)
+PROXY_DISTS = (*PROXY_PACKAGES, "aiohttp", "pydantic", "pydantic-core", "pyyaml")
+PROXY_MODULES = (
+    "sandbox_science.mcp_proxy.cli",
+    "sandbox_science.policy",
+    "sandbox_science.event_store",
+    "sandbox_science.contracts",
+    "aiohttp",
+    "pydantic",
+    "pydantic_core",
+    "yaml",
+)
+SERVICE_PACKAGES = {"orchestrator": HARNESS_PACKAGES, "mcp-proxy": PROXY_PACKAGES}
+"""The repository's packages each service image installs from wheels; all MIT."""
+PROXY_BINARIES = f"{PREFIX}/bin/python*"
+"""The targets file's ``mcp_proxy.binaries``: OpenShell sees the interpreter (lab 13)."""
+PROXY_DIR = Path("/sandbox/mcp-proxy")
+"""The proxy's directory in the workdir: its settings, where the launcher waits for them, and
+its stores (``state``)."""
+PROXY_SETTINGS = PROXY_DIR / "proxy.toml"
+PROXY_ADDRESS = ("127.0.0.1", 8080)
+PROXY_SERVER = "papers"
+PROXY_PLACEHOLDER = ("PAPERS_TOKEN", "openshell:resolve:env:v1_PAPERS_TOKEN")
+"""A credential variable as OpenShell sets it in the sandbox: a placeholder, never a secret."""
+PROXY_CEILING = "apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n"
+PROXY_POLICY = f"""\
+apiVersion: sandbox-science/v0alpha1
+kind: ProjectPolicy
+metadata:
+  name: image-check
+mcp:
+  servers:
+    {PROXY_SERVER}:
+      url: https://mcp.example.invalid/mcp
+      revision: "2025-11-25"
+      auth: {{mode: none}}
+      tools: {{allow: [search]}}
+"""
+"""A policy with one server, which the checks never reach: no call gets past the session check."""
+PROXY_TOML = f"""\
+listen = "{PROXY_ADDRESS[0]}:{PROXY_ADDRESS[1]}"
+state_dir = "state"
+ceiling = "pool-ceiling.yaml"
+
+[[callers]]
+name = "image-check"
+token_sha256 = "{hashlib.sha256(TEST_TOKEN.encode()).hexdigest()}"
+kind = "orchestrator"
+project = "{SESSION}"
+"""
+"""The proxy's settings, as an operator uploads them: one caller, with the token's hash."""
+LIST_TOOLS = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
 
 Message = dict[str, Any]
 
@@ -182,6 +255,79 @@ class Executor:
             self.process.kill()
 
 
+class Launcher:
+    """The mcp-proxy image's command, started as the proxy's sandbox starts it: by its full path,
+    without the image's environment, with a credential placeholder as OpenShell sets one."""
+
+    def __init__(self, log: Path) -> None:
+        self.log = log
+        with log.open("wb") as output:
+            self.process = subprocess.Popen(  # noqa: S603 - the image's own command
+                [LAUNCHER],
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                env={**SERVICE_ENV, PROXY_PLACEHOLDER[0]: PROXY_PLACEHOLDER[1]},
+            )
+
+    def text(self) -> str:
+        """What the launcher and the proxy have logged."""
+        return self.log.read_text(errors="replace")
+
+    def proxies(self) -> list[int]:
+        """The proxy processes the launcher started, oldest first, as its log names them."""
+        return [int(pid) for pid in re.findall(r"started the proxy \(pid (\d+)\)", self.text())]
+
+    def expect_running(self) -> None:
+        code = self.process.poll()
+        expect(code is None, f"the launcher exited with {code}: {self.text()[-1500:]}")
+
+    def wait_for(self, what: str, found: Callable[[], bool], timeout: float = 60) -> None:
+        """Wait until ``found()``, while the launcher runs."""
+        deadline = time.monotonic() + timeout
+        while not found():
+            self.expect_running()
+            if time.monotonic() > deadline:
+                raise CheckError(f"no {what} within {timeout:g} s: {self.text()[-1500:]}")
+            time.sleep(0.1)
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+
+
+def proxy_post(token: str | None, message: Message) -> tuple[int, Message]:
+    """POST a JSON-RPC message to the proxy's endpoint for the checks' server, as a caller does;
+    return the status and the JSON answer. Raises OSError while nothing listens."""
+    headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    connection = http.client.HTTPConnection(*PROXY_ADDRESS, timeout=30)
+    try:
+        connection.request("POST", f"/mcp/{PROXY_SERVER}", json.dumps(message), headers)
+        response = connection.getresponse()
+        return response.status, json.loads(response.read() or b"{}")
+    finally:
+        connection.close()
+
+
+def refusal(answer: Message) -> object:
+    """The reason code of the proxy's refusal (``error.data.reason``)."""
+    return answer.get("error", {}).get("data", {}).get("reason")
+
+
+def proxy_listening() -> bool:
+    try:
+        socket.create_connection(PROXY_ADDRESS, timeout=5).close()
+    except ConnectionRefusedError:
+        return False
+    return True
+
+
 class Checks:
     def __init__(self, profile: str, worker_files: Path, network: bool, landlock: bool) -> None:
         self.profile = profile
@@ -189,6 +335,7 @@ class Checks:
         self.under_landlock = landlock
         self.worker_files = worker_files
         self.client: Executor | None = None
+        self.proxy_launcher: Launcher | None = None
         self.failed = 0
 
     @property
@@ -198,6 +345,10 @@ class Checks:
     @property
     def orchestrator(self) -> bool:
         return self.profile == "orchestrator"
+
+    @property
+    def service(self) -> bool:
+        return self.profile in SERVICES
 
     def check(self, name: str, function: Callable[[], str]) -> None:
         started = time.monotonic()
@@ -231,8 +382,8 @@ class Checks:
 
         refused = ["/", "/usr/local", "/etc", "/opt", "/var/tmp", "/usr/share/sandbox-science"]  # noqa: S108
         allowed = ["/sandbox", "/tmp"]  # noqa: S108 - writable paths under test
-        if self.orchestrator:
-            # The harness installs nothing at runtime: its prefix is only read.
+        if self.service:
+            # The services install nothing at runtime: their prefix is only read.
             refused.append(PREFIX)
             records = sorted(Path(PREFIX, "conda-meta").glob("*.json"))
             expect(bool(records), f"nothing readable in {PREFIX}/conda-meta")
@@ -245,7 +396,7 @@ class Checks:
         expect(not wrongly, f"writable but should not be: {wrongly}")
         expect(not missing, f"not writable: {missing}")
         detail = f"writable: {', '.join(allowed)}; read-only: {', '.join(refused)}"
-        return detail + (f"; {PREFIX} readable" if self.orchestrator else "")
+        return detail + (f"; {PREFIX} readable" if self.service else "")
 
     def landlock(self) -> str:
         """The ruleset is in effect: a system file outside OpenShell's baseline is unreadable."""
@@ -261,9 +412,9 @@ class Checks:
         # OpenShell would use a policy baked into the image when given none; the worker gives one.
         expect(not Path("/etc/openshell").exists(), "the image carries /etc/openshell")
         counts = {kind: len(items) for kind, items in record["packages"].items()}
-        if self.orchestrator:
+        if self.service:
             pip = {item["name"]: item for item in record["packages"]["pip"]}
-            for name in HARNESS_PACKAGES:
+            for name in SERVICE_PACKAGES[self.profile]:
                 expect(name in pip, f"the record lists no {name}")
                 expect(pip[name]["license"] == "MIT", f"{name} is {pip[name]['license']}")
         return f"revision {record['revision']}; packages {counts}; no image policy"
@@ -464,17 +615,51 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         expect(len(paths) == 2 and all(path.startswith(PREFIX) for path in paths), f"{out!r}")
         return "micromamba and pip installed into the Conda prefix"
 
+    # The services' images (orchestrator, mcp-proxy).
+
+    def command(self, program: str, *args: str) -> str:
+        """Run one of the image's commands by its full path, as a service's sandbox would;
+        return its standard output, or fail with its error."""
+        done = subprocess.run(  # noqa: S603 - the image's own command, fixed arguments
+            [program, *args], capture_output=True, text=True, env=SERVICE_ENV, timeout=120
+        )
+        if done.returncode != 0:
+            output = (done.stderr or done.stdout)[-1500:]
+            words = " ".join([Path(program).name, *args[:1]])
+            raise CheckError(f"{words} exited {done.returncode}: {output}")
+        return done.stdout
+
+    def prefix_imports(self, modules: tuple[str, ...], dists: tuple[str, ...]) -> dict[str, str]:
+        """Import ``modules`` with the prefix's interpreter, in isolated mode and without the
+        image's environment; fail unless all come from the prefix. The versions of ``dists``."""
+        code = (
+            "import importlib, importlib.metadata as metadata, json\n"
+            f"modules = {list(modules)!r}\n"
+            "files = {name: importlib.import_module(name).__file__ for name in modules}\n"
+            f"versions = {{name: metadata.version(name) for name in {list(dists)!r}}}\n"
+            "print(json.dumps({'files': files, 'versions': versions}))"
+        )
+        found = json.loads(self.command(f"{PREFIX}/bin/python", "-I", "-c", code))
+        outside = {
+            name: file for name, file in found["files"].items() if not file.startswith(PREFIX)
+        }
+        expect(not outside, f"imported from outside the prefix: {outside}")
+        return found["versions"]
+
+    def no_kernels(self) -> str:
+        """The services run no research code (D11): no kernelspecs, no kernel packages."""
+        kernels = Path(PREFIX, "share", "jupyter", "kernels")
+        specs = sorted(path.name for path in kernels.iterdir()) if kernels.is_dir() else []
+        expect(not specs, f"kernelspecs in the image: {specs}")
+        present = [name for name in KERNEL_PACKAGES if importlib.util.find_spec(name) is not None]
+        expect(not present, f"kernel packages in the image: {present}")
+        return f"no kernelspecs, and none of {', '.join(KERNEL_PACKAGES)}"
+
     # orchestrator: the harness as its sandbox runs it.
 
     def harness(self, *args: str) -> str:
         """Run the harness's command; return its standard output, or fail with its error."""
-        done = subprocess.run(  # noqa: S603 - the image's own command, fixed arguments
-            [HARNESS, *args], capture_output=True, text=True, env=HARNESS_ENV, timeout=120
-        )
-        if done.returncode != 0:
-            output = (done.stderr or done.stdout)[-1500:]
-            raise CheckError(f"harness {args[0]} exited {done.returncode}: {output}")
-        return done.stdout
+        return self.command(HARNESS, *args)
 
     def harness_cli(self) -> str:
         """The harness's command: on ``PATH``, and by its full path without it."""
@@ -490,37 +675,8 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
 
     def harness_imports(self) -> str:
         """The harness and its dependencies import from the prefix, with their versions."""
-        code = (
-            "import importlib, importlib.metadata as metadata, json\n"
-            f"modules = {list(HARNESS_MODULES)!r}\n"
-            "files = {name: importlib.import_module(name).__file__ for name in modules}\n"
-            f"versions = {{name: metadata.version(name) for name in {list(HARNESS_DISTS)!r}}}\n"
-            "print(json.dumps({'files': files, 'versions': versions}))"
-        )
-        done = subprocess.run(  # noqa: S603 - the image's own interpreter
-            [f"{PREFIX}/bin/python", "-I", "-c", code],
-            capture_output=True,
-            text=True,
-            env=HARNESS_ENV,
-            timeout=120,
-        )
-        expect(done.returncode == 0, f"imports failed: {done.stderr[-1500:]}")
-        found = json.loads(done.stdout)
-        outside = {
-            name: file for name, file in found["files"].items() if not file.startswith(PREFIX)
-        }
-        expect(not outside, f"imported from outside the prefix: {outside}")
-        versions = found["versions"]
+        versions = self.prefix_imports(HARNESS_MODULES, HARNESS_DISTS)
         return ", ".join(f"{name} {versions[name]}" for name in HARNESS_DISTS) + f" from {PREFIX}"
-
-    def no_kernels(self) -> str:
-        """The orchestrator runs no research code (D11): no kernelspecs, no kernel packages."""
-        kernels = Path(PREFIX, "share", "jupyter", "kernels")
-        specs = sorted(path.name for path in kernels.iterdir()) if kernels.is_dir() else []
-        expect(not specs, f"kernelspecs in the image: {specs}")
-        present = [name for name in KERNEL_PACKAGES if importlib.util.find_spec(name) is not None]
-        expect(not present, f"kernel packages in the image: {present}")
-        return f"no kernelspecs, and none of {', '.join(KERNEL_PACKAGES)}"
 
     def harness_state(self) -> str:
         """A project record in the workdir, where the harness keeps its state (``--state-dir``)."""
@@ -590,11 +746,144 @@ By \cref{thm:mink}, $\mathbb{F}_{17}^\times$ has order $16$.
         expect(stopped == "answered", f"stopped: {stopped}")
         return f"run against {worker}: capabilities with the token, then the scripted answer"
 
+    # mcp-proxy: the proxy as its sandbox runs it, kept running by the image's launcher.
+
+    def proxy_cli(self) -> str:
+        """The proxy's command and the event store's: on ``PATH``, and by full path without it."""
+        found = shutil.which("sandbox-science-mcp-proxy")
+        expect(found == PROXY, f"sandbox-science-mcp-proxy on PATH is {found}")
+        interpreter = Path(PROXY).read_text().splitlines()[0]
+        expect(interpreter.startswith(f"#!{PREFIX}/bin/python"), f"it starts {interpreter!r}")
+        for command in ([], ["serve"], ["bind"], ["pending"], ["approve"], ["deny"]):
+            usage = self.command(PROXY, *command, "--help")
+            expect(usage.startswith("usage: sandbox-science-mcp-proxy"), f"help: {usage[:200]!r}")
+        usage = self.command(EVENTS, "--help")
+        expect(usage.startswith("usage: sandbox-science-events"), f"help: {usage[:200]!r}")
+        return (
+            f"{PROXY} ({interpreter}): --help for itself, serve, bind, pending, approve and deny;"
+            f" {EVENTS} --help"
+        )
+
+    def proxy_imports(self) -> str:
+        """The proxy and its dependencies import from the prefix, with their versions; the
+        default TLS context trusts the prefix's CA bundle (OpenShell sets its own in a sandbox)."""
+        versions = self.prefix_imports(PROXY_MODULES, PROXY_DISTS)
+        code = (
+            "import ssl\n"
+            "print(ssl.get_default_verify_paths().cafile,"
+            " ssl.create_default_context().cert_store_stats()['x509_ca'])"
+        )
+        cafile, count = self.command(f"{PREFIX}/bin/python", "-I", "-c", code).split()
+        expect(cafile.startswith(PREFIX) and int(count) > 0, f"CA bundle {cafile}, {count} CAs")
+        found = ", ".join(f"{name} {versions[name]}" for name in PROXY_DISTS)
+        return f"{found} from {PREFIX}; {count} CAs in {cafile}"
+
+    def launched(self) -> Launcher:
+        if self.proxy_launcher is None:
+            raise CheckError("the launcher did not start")
+        return self.proxy_launcher
+
+    def proxy_answer(self, token: str | None) -> tuple[int, Message]:
+        """The proxy's answer to a call once it listens, while the launcher runs."""
+        launcher = self.launched()
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                return proxy_post(token, LIST_TOOLS)
+            except (OSError, http.client.HTTPException):
+                launcher.expect_running()
+                if time.monotonic() > deadline:
+                    raise CheckError(f"no answer within 60 s: {launcher.text()[-1500:]}") from None
+                time.sleep(0.2)
+
+    def launcher(self) -> str:
+        """The sandbox's command: in the prefix, executable, and waiting for the settings."""
+        path = Path(LAUNCHER)
+        mode = stat.S_IMODE(path.stat().st_mode)
+        expect(mode == 0o755 and os.access(path, os.X_OK), f"{LAUNCHER} has mode {mode:o}")
+        first = path.read_text().splitlines()[0]
+        expect(first == "#!/bin/sh", f"it starts {first!r}")
+        expect(not PROXY_DIR.exists(), f"{PROXY_DIR} exists before the settings are written")
+        launcher = Launcher(Path("/tmp/mcp-proxy-run.log"))  # noqa: S108 - writable in the checks
+        self.proxy_launcher = launcher
+        launcher.wait_for("wait", lambda: f"waiting for {PROXY_SETTINGS}" in launcher.text())
+        time.sleep(2)  # it looks for the settings every second
+        launcher.expect_running()
+        expect(not launcher.proxies(), f"it started the proxy without settings: {launcher.text()}")
+        expect(not proxy_listening(), f"something listens on {PROXY_ADDRESS}")
+        return (
+            f"{LAUNCHER} (mode 755, {first}), started without the image's environment, waits"
+            f" for {PROXY_SETTINGS} and starts nothing"
+        )
+
+    def proxy_serve(self) -> str:
+        """Once the settings are there, the launcher starts the proxy, which keeps its stores in
+        the workdir and decides each call under the project's current binding."""
+        launcher = self.launched()
+        # As the operator uploads them: the ceiling, then the settings.
+        PROXY_DIR.mkdir(parents=True, exist_ok=True)
+        (PROXY_DIR / "pool-ceiling.yaml").write_text(PROXY_CEILING)
+        PROXY_SETTINGS.write_text(PROXY_TOML)
+        status, answer = self.proxy_answer(None)
+        expect((status, refusal(answer)) == (401, "unauthenticated"), f"{status} {answer}")
+        status, answer = proxy_post(TEST_TOKEN, LIST_TOOLS)
+        expect((status, refusal(answer)) == (503, "project_unbound"), f"{status} {answer}")
+        policy = PROXY_DIR / "policy.yaml"
+        policy.write_text(PROXY_POLICY)
+        project = ["--state-dir", str(PROXY_DIR / "state"), "--project", SESSION]
+        bound = self.command(PROXY, "bind", *project, "--policy", str(policy))
+        expect(bound.startswith(f"bound {SESSION} to image-check sha256:"), f"bind: {bound!r}")
+        status, answer = proxy_post(TEST_TOKEN, LIST_TOOLS)
+        expect((status, refusal(answer)) == (400, "session_required"), f"{status} {answer}")
+        pending = self.command(PROXY, "pending", "--settings", str(PROXY_SETTINGS)).strip()
+        expect(pending == "no permission requests are waiting", f"pending: {pending!r}")
+        # The process OpenShell sees connect to the servers, and the environment it got.
+        pid = launcher.proxies()[-1]
+        executable = os.readlink(f"/proc/{pid}/exe")
+        expect(fnmatch.fnmatchcase(executable, PROXY_BINARIES), f"the proxy runs {executable}")
+        environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        expect("=".join(PROXY_PLACEHOLDER).encode() in environ, "the placeholder did not reach it")
+        return (
+            f"{executable} (pid {pid}), matching {PROXY_BINARIES}, with the launcher's"
+            f" environment: 401 without the token; with it project_unbound, then"
+            f" session_required once bound; no pending requests"
+        )
+
+    def proxy_restart(self) -> str:
+        """When the proxy dies the launcher starts it again, with its binding and records
+        intact; SIGTERM stops both."""
+        launcher = self.launched()
+        first = launcher.proxies()[-1]
+        os.kill(first, signal.SIGKILL)
+        launcher.wait_for("new proxy", lambda: len(launcher.proxies()) > 1)
+        second = launcher.proxies()[-1]
+        status, answer = self.proxy_answer(TEST_TOKEN)
+        expect((status, refusal(answer)) == (400, "session_required"), f"{status} {answer}")
+        expect("exited with status 137" in launcher.text(), f"log: {launcher.text()[-1500:]}")
+        # One record per authenticated call, and the chain verifies after the crash.
+        store = str(PROXY_DIR / "state" / "events.db")
+        verified = self.command(EVENTS, "verify", store).strip()
+        expect(verified.startswith("ok: "), f"verify: {verified!r}")
+        exported = [json.loads(line) for line in self.command(EVENTS, "export", store).splitlines()]
+        calls = [(r["kind"], r["source"], r["payload"]["reason_code"]) for r in exported]
+        reasons = ("project_unbound", "session_required", "session_required")
+        expect(calls == [("mcp-call", "mcp-proxy", reason) for reason in reasons], f"{calls}")
+        launcher.process.terminate()
+        code = launcher.process.wait(timeout=30)
+        expect(code == 0, f"the launcher exited with {code} on SIGTERM: {launcher.text()[-500:]}")
+        expect(not Path(f"/proc/{second}").exists(), f"the proxy (pid {second}) is still there")
+        return (
+            f"after SIGKILL to pid {first}, the launcher started pid {second}, which kept the"
+            f" binding; events.db {verified.removeprefix('ok: ')}; SIGTERM stopped both"
+        )
+
     def run(self) -> int:
         for name in planned(self.profile, landlock=self.under_landlock, network=self.network):
             self.check(name, getattr(self, name.replace("-", "_")))
         if self.client is not None:
             self.client.close()
+        if self.proxy_launcher is not None:
+            self.proxy_launcher.close()
         return 1 if self.failed else 0
 
 
@@ -605,6 +894,11 @@ def planned(profile: str, *, landlock: bool, network: bool) -> list[str]:
         # The harness's image: no executor or kernels, and nothing installed at runtime.
         harness = ["harness-cli", "harness-imports", "no-kernels", "harness-state", "harness-run"]
         return names + harness
+    if profile == "mcp-proxy":
+        # The MCP proxy's image: the same, and a launcher as the sandbox's command.
+        proxy = ["proxy-cli", "proxy-imports", "no-kernels"]
+        proxy += ["launcher", "proxy-serve", "proxy-restart"]
+        return names + proxy
     names += ["executor", "python-kernel", "tools-on-path", "multiprocessing"]
     if profile == "crypto-base":
         names += ["sage-kernel", "sage-interfaces", "fpylll", "g6k", "lattice-estimator"]
@@ -621,7 +915,7 @@ def main(argv: list[str]) -> int:
         "--worker-files",
         required=True,
         type=Path,
-        help="a directory with executor.py and pdfhelper.py (unused for orchestrator)",
+        help="a directory with executor.py and pdfhelper.py (unused for the services' images)",
     )
     parser.add_argument("--network", action="store_true", help="also install packages at runtime")
     parser.add_argument("--landlock", action="store_true", help="expect a Landlock ruleset")
