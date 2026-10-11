@@ -54,13 +54,20 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 ## W0: behavior specification and harness foundation
 
 - [ ] Behavior specs with acceptance fixtures: tools ([drafted](../docs/specs/tools.md)), skills, plans and delegation, automatic review, Conda provisioning, artifacts; all to review with the user
-- [ ] Harness building-block decision with licenses recorded
+- [x] Harness building-block decision with licenses recorded: D72, proposed, to confirm with the user
 
 ## W1: shared references and one worker adapter
 
 - [x] `contracts` package (`ExecutionContext`, `ArtifactRef`, `Event`, the worker API types)
 - [x] First slice: one shell command and two stateful Python cells through the worker API, driven by the harness's tool loop with a scripted model. Done locally and on babbage in an OpenShell VM sandbox ([lab 4](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)), after working around two OpenShell seccomp restrictions (scheduler shim, process-group signals)
 - [ ] The first slice with a real model through LiteLLM (needs the user's model gateway and a virtual key)
+
+## W2: certify babbage execution with math and source capabilities
+
+- [x] Sage through SageMath's own Jupyter kernel (`sagemath` kernelspec): the worker offers it when the environment has it, and the harness gives the agent a `sage` tool. Tested with a stand-in kernelspec
+- [ ] Real SageMath from conda-forge in an OpenShell sandbox: preparsing, finite fields, polynomial rings, exact matrices, LaTeX results, interrupt and restart; first-install time (lab)
+- [ ] `crypto-base` profile with Sage present at session start (D46)
+- [ ] PDF extraction and rendering in the worker (pdf_oxide, D59)
 
 ## babbage
 

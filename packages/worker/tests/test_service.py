@@ -41,6 +41,15 @@ ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def isolated_jupyter(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hide the host's own kernelspecs (a real SageMath, say) from the executor."""
+    monkeypatch.setenv("JUPYTER_DATA_DIR", str(tmp_path_factory.mktemp("jupyter-data")))
+    monkeypatch.delenv("JUPYTER_PATH", raising=False)
+
+
 class Worker:
     """A test client plus helpers that follow an execution to its end."""
 
@@ -477,6 +486,53 @@ async def test_closing_the_worker_loses_running_attempts(
         assert record.state == "lost"
     finally:
         store.close()
+
+
+async def test_a_sage_kernel_is_offered_when_its_kernelspec_exists(
+    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stand-in "sagemath" kernelspec that starts an ordinary Python kernel tests
+    # the plumbing; real SageMath runs in the babbage lab.
+    spec = tmp_path / "jupyter" / "kernels" / "sagemath"
+    spec.mkdir(parents=True)
+    (spec / "kernel.json").write_text(
+        json.dumps(
+            {
+                "argv": [sys.executable, "-m", "ipykernel_launcher", "-f", "{connection_file}"],
+                "display_name": "stand-in for SageMath",
+                "language": "sage",
+            }
+        )
+    )
+    monkeypatch.setenv("JUPYTER_PATH", str(tmp_path / "jupyter"))
+    started, store = await start_worker(aiohttp_client, tmp_path / "state")
+    try:
+        _, capabilities = await started.get("/v1/capabilities?environment_id=env1")
+        assert capabilities["languages"] == ["python", "sage"]
+        await started.run("op-p1", kind="cell", code="x = 'python'")
+        sage = await started.run("op-s1", kind="cell", language="sage", code="x = 'sage'\nx")
+        python = await started.run("op-p2", kind="cell", code="x")
+        assert sage["result"]["kernel"] == {
+            "kernel_id": "krn-s1-sage",
+            "language": "sage",
+            "generation": 1,
+        }
+        assert sage["result"]["outputs"][0]["data"]["text/plain"] == "'sage'"
+        # Each language has its own kernel and state.
+        assert python["result"]["outputs"][0]["data"]["text/plain"] == "'python'"
+        status, kernel = await started.post(
+            "/v1/kernels/restart", {"context": CONTEXT, "language": "sage"}
+        )
+        assert (status, kernel["language"], kernel["generation"]) == (200, "sage", 2)
+    finally:
+        await started.manager.close()
+        store.close()
+
+
+async def test_a_language_without_a_kernel_is_unsupported(worker: Worker) -> None:
+    execution = await worker.run("op-sage", kind="cell", language="sage", code="1")
+    assert execution["state"] == "failed"
+    assert execution["result"]["error"]["kind"] == "unsupported"
 
 
 async def test_capabilities(worker: Worker) -> None:

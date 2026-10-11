@@ -47,8 +47,10 @@ def validate_relative_path(value: str) -> str:
 RelativePath = Annotated[str, AfterValidator(validate_relative_path)]
 Timeout = Annotated[float, Field(gt=0, le=MAX_TIMEOUT_SECONDS, allow_inf_nan=False)]
 OutputLimit = Annotated[int, Field(ge=1024, le=MAX_OUTPUT_LIMIT)]
-Language = Literal["python"]
-"""Kernel languages; R and Sage join through the same Jupyter protocol (D41)."""
+Language = Literal["python", "sage"]
+"""Kernel languages, all through the Jupyter protocol (D41): Python, and SageMath's own
+kernel, which preparses Sage syntax. R joins the same way."""
+LANGUAGES: Final[tuple[Language, ...]] = ("python", "sage")
 
 
 def _no_nul(text: str, what: str) -> None:

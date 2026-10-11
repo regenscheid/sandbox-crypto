@@ -54,7 +54,7 @@ from sandbox_science.contracts import (
     WriteFileResult,
     new_id,
 )
-from sandbox_science.contracts.worker import MAX_READ_BYTES, PROTOCOL_VERSION
+from sandbox_science.contracts.worker import LANGUAGES, MAX_READ_BYTES, PROTOCOL_VERSION
 
 from .artifacts import Blobs
 from .backends import Backend
@@ -455,8 +455,12 @@ class ExecutionManager:
         self.store.save_kernel(
             environment_id, session_id, language, KernelRecord(incarnation, base, base + generation)
         )
+        if language not in LANGUAGES:
+            return None, state_lost
         info = KernelInfo(
-            kernel_id=str(raw.get("kernel_id")), language="python", generation=base + generation
+            kernel_id=str(raw.get("kernel_id")),
+            language=language,
+            generation=base + generation,
         )
         return info, state_lost
 
@@ -524,7 +528,7 @@ class ExecutionManager:
             )
         return Capabilities(
             protocol=PROTOCOL_VERSION,
-            languages=tuple(name for name in environment.languages if name == "python"),
+            languages=tuple(name for name in environment.languages if name in LANGUAGES),
             location=environment.location,
         )
 
