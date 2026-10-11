@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Final, Literal, Self
 
-from pydantic import AfterValidator, Field, model_validator
+from pydantic import AfterValidator, Field, StringConstraints, model_validator
 
 from .artifacts import Sha256
 from .context import ExecutionContext
@@ -176,6 +176,56 @@ class KernelInfo(Contract):
     generation: Annotated[int, Field(ge=1)]
 
 
+IsolationTier = Annotated[int, Field(ge=0, le=3)]
+"""0 (none) to 3 (a microVM per sandbox), as docs/THREAT-MODEL.md defines them (D43)."""
+ProbeText = Annotated[str, StringConstraints(max_length=256)]
+KernelSharing = Literal["separate", "shared", "unknown"]
+SentinelState = Literal["hidden", "visible", "unknown"]
+
+
+class ProbeFacts(Contract):
+    """What a probe read about the machine and the process it ran in (D43).
+
+    The executor reads these inside the sandbox, and the worker reads the same on
+    its own host to compare. ``None`` means the probe could not tell.
+    """
+
+    kernel_release: ProbeText | None = None
+    boot_id: ProbeText | None = None
+    """``/proc/sys/kernel/random/boot_id``: the same value means the same running kernel."""
+    hostname: ProbeText | None = None
+    machine_id: ProbeText | None = None
+    seccomp: Literal["disabled", "strict", "filter"] | None = None
+    no_new_privs: bool | None = None
+    capabilities: ProbeText | None = None
+    """The effective capability set (``CapEff``), in hex."""
+    uid: Annotated[int, Field(ge=0)] | None = None
+    hypervisor: bool | None = None
+    """Whether the CPU reports a hypervisor; ``None`` where it lists no flags (arm64)."""
+    sys_vendor: ProbeText | None = None
+    product_name: ProbeText | None = None
+
+
+class IsolationEvidence(Contract):
+    """What the worker's probe found when it started the executor (docs/WORKER.md).
+
+    Evidence only ever lowers the declared tier. A probe from inside one sandbox
+    cannot show that it has a VM of its own, so a declared tier 3 stands when
+    nothing contradicts it.
+    """
+
+    kernel: KernelSharing
+    """Whether the sandbox runs on the worker host's kernel, compared by boot ID."""
+    sentinel: SentinelState
+    """Whether a random file the worker wrote in its state directory shows at the same path."""
+    findings: tuple[str, ...] = ()
+    """What limits the tier, in plain words; empty when nothing does."""
+    sandbox: ProbeFacts | None = None
+    """What the executor read in the sandbox; ``None`` when the probe failed."""
+    error: str | None = None
+    """Why the probe failed; the tier is then 0."""
+
+
 class Location(Contract):
     """Where an execution ran: evidence that it ran in the sandbox."""
 
@@ -183,8 +233,12 @@ class Location(Contract):
     backend: Literal["local", "openshell"]
     sandbox_id: str | None = None
     hostname: str
-    isolation_tier: int | None = None
-    """The isolation tier the backend provides (D43); ``None`` when unmeasured."""
+    isolation_tier: IsolationTier | None = None
+    """The isolation tier in effect (D43): the declared tier, lowered by what the probe
+    found. ``None`` when unmeasured."""
+    declared_isolation_tier: IsolationTier | None = None
+    """The tier the backend's settings declare."""
+    isolation_evidence: IsolationEvidence | None = None
     environment_revision: str | None = None
 
 

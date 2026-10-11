@@ -47,6 +47,7 @@ async def serve(settings: Settings) -> None:
         Blobs(settings.state_dir / "artifacts"),
         pool_id=settings.pool_id,
         max_artifact_size=settings.max_artifact_size,
+        state_dir=settings.state_dir,
     )
     await manager.start()
     runner = web.AppRunner(create_app(manager, token), access_log=None)
