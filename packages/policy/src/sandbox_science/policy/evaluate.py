@@ -297,6 +297,10 @@ PACKAGE_INDEX_HOSTS: Final = frozenset(
         # npm
         "registry.npmjs.org",
         "registry.yarnpkg.com",
+        # opam
+        "opam.ocaml.org",
+        # Hackage
+        "hackage.haskell.org",
         # Aliases and mirrors of the same registries
         "test.pypi.org",
         "anaconda.org",
@@ -313,6 +317,18 @@ PACKAGE_INDEX_HOSTS: Final = frozenset(
         "goproxy.cn",
         "proxy.golang.com.cn",
         "sum.golang.google.cn",
+        "opam-2.ocaml.org",
+        "opam-3.ocaml.org",
+        "opam-4.ocaml.org",
+        "opam-5.ocaml.org",
+        "hackage-origin.haskell.org",
+        "hackage-content.haskell.org",
+        # Hackage's signed mirror list (mirrors.json), which cabal falls back to
+        # when the cache fails, and Stack's content store of Hackage packages.
+        "hackage.fpcomplete.com",
+        "hackage-mirror.objects-us-east-1.dream.io",
+        "casa.stackage.org",
+        "casa.fpcomplete.com",
     }
 )
 """Package registries, which workers reach only through the package cache (D44, D71)."""
@@ -322,8 +338,15 @@ PACKAGE_REGISTRY_SUFFIXES: Final = (
     ".anaconda.org",
     ".prefix.dev",
     ".crates.io",
+    ".opam.ocaml.org",
 )
 """Domains whose every host serves a package registry or its files."""
+
+PACKAGE_REGISTRY_PATHS: Final[dict[str, tuple[str, ...]]] = {
+    # A bucket on a shared object store, which Hackage's mirrors.json lists.
+    "objects-us-east-1.dream.io": ("/hackage-mirror",),
+}
+"""Registry mirrors that are one path on a shared host: the path is reserved, not the host."""
 
 ECOSYSTEM_UPSTREAMS: Final[dict[str, tuple[str, ...]]] = {
     "pypi": ("pypi.org", "files.pythonhosted.org"),
@@ -331,6 +354,8 @@ ECOSYSTEM_UPSTREAMS: Final[dict[str, tuple[str, ...]]] = {
     "cargo": ("index.crates.io", "static.crates.io"),
     "go": ("proxy.golang.org", "sum.golang.org"),
     "npm": ("registry.npmjs.org",),
+    "opam": ("opam.ocaml.org",),
+    "hackage": ("hackage.haskell.org",),
 }
 """The registries the package cache fetches from, per ecosystem; the pool ceiling applies."""
 
@@ -339,6 +364,23 @@ def registry_reason(host: str) -> str | None:
     """Why a host is reachable only through the package cache, or None."""
     if host in PACKAGE_INDEX_HOSTS or host.endswith(PACKAGE_REGISTRY_SUFFIXES):
         return f"{host} is a package registry, reachable only through the package cache"
+    return None
+
+
+def registry_path_reason(host: str, path: str) -> str | None:
+    """Why a path on a shared host is reachable only through the package cache, or None.
+
+    Prefixes match whole segments, as rule paths do: ``/hackage-mirror`` matches
+    ``/hackage-mirror`` and ``/hackage-mirror/x``, not ``/hackage-mirrors``.
+    """
+    segments = path_segments(path)
+    for prefix in PACKAGE_REGISTRY_PATHS.get(host, ()):
+        reserved = path_segments(prefix)
+        if segments[: len(reserved)] == reserved:
+            return (
+                f"{host}{prefix} is a package registry mirror, reachable only through the "
+                "package cache"
+            )
     return None
 
 
@@ -393,7 +435,9 @@ def _evaluate_network(
         )
     # Otherwise a read rule would let workers fetch packages around the package
     # cache and the packages section (ecosystem and channel rules).
-    reason = registry_reason(operation.host)
+    reason = registry_reason(operation.host) or registry_path_reason(
+        operation.host, _operation_path(operation)
+    )
     if reason is not None:
         return _deny("floor", reason, policy)
 
@@ -593,7 +637,12 @@ def _evaluate_package(
         action = config.action
         layer = "policy"
         rule = f"packages.{operation.ecosystem}"
-        reason = f"{label} package {operation.name}" if operation.name else f"{label} index"
+        if operation.name is not None:
+            reason = f"{label} package {operation.name}"
+        elif operation.kind == "artifact":
+            reason = f"{label} archive (fetched by digest, so it names no package)"
+        else:
+            reason = f"{label} index"
         channels = config.channels if isinstance(config, CondaPackages) else ()
     if operation.channel is not None and operation.channel not in channels:
         return _deny("policy", f"conda channel {operation.channel!r} is not allowed", policy, rule)
@@ -644,6 +693,8 @@ _ECOSYSTEM_LABELS: Final[dict[str, str]] = {
     "cargo": "Cargo",
     "go": "Go",
     "npm": "npm",
+    "opam": "opam",
+    "hackage": "Hackage",
 }
 
 
@@ -661,5 +712,9 @@ def _ecosystem_config(
             return packages.go
         case "npm":
             return packages.npm
+        case "opam":
+            return packages.opam
+        case "hackage":
+            return packages.hackage
         case _:
             return None

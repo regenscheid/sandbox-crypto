@@ -22,7 +22,7 @@ from .hosts import normalize_host
 Scheme = Literal["http", "https"]
 GitService = Literal["upload-pack", "receive-pack"]
 Origin = Literal["orchestrator", "worker"]
-Ecosystem = Literal["conda", "pypi", "cargo", "go", "npm"]
+Ecosystem = Literal["conda", "pypi", "cargo", "go", "npm", "opam", "hackage"]
 PackageKind = Literal["index", "artifact"]
 
 DEFAULT_PORTS: Final[dict[Scheme, int]] = {"http": 80, "https": 443}
@@ -55,6 +55,10 @@ _PACKAGE_NAMES: Final[dict[str, re.Pattern[str]]] = {
     ),
     # A decoded Go module path; module_path_problem checks the rest.
     "go": re.compile(r"[a-z0-9.-]+(?:/[A-Za-z0-9._~-]+)*"),
+    # opam (OpamPackage.Name): letters, digits, "_", "+" and "-", with a letter.
+    "opam": re.compile(r"[0-9_+-]*[A-Za-z][A-Za-z0-9_+-]*"),
+    # Cabal: ASCII words of letters and digits joined by "-", each with a letter.
+    "hackage": re.compile(r"[0-9]*[A-Za-z][A-Za-z0-9]*(?:-[0-9]*[A-Za-z][A-Za-z0-9]*)*"),
 }
 _MAX_PACKAGE_NAME: Final = 214
 
@@ -191,8 +195,11 @@ class PackageOperation:
     ``kind`` is ``artifact`` for a package file and ``index`` for index data.
     ``name`` is the package the request concerns, or None for index data that
     covers a whole registry or channel (conda repodata, Cargo's ``config.json``,
-    Go's checksum database). Names are normalized where the registry treats
-    spellings as one package: PEP 503 for PyPI, case and ``-``/``_`` for crates.
+    Go's checksum database, opam's and Hackage's indexes). opam's archives are
+    the one kind of package file without a name: opam fetches them by digest,
+    so the path names no package. Names are normalized where the registry
+    treats spellings as one package: PEP 503 for PyPI, case and ``-``/``_`` for
+    crates.
     """
 
     ecosystem: Ecosystem
@@ -208,7 +215,8 @@ class PackageOperation:
         if (self.ecosystem == "conda") != (self.channel is not None):
             raise ClassificationError("conda requests, and only they, name a channel")
         if self.name is None:
-            if self.kind != "index":
+            # opam's archive cache is content-addressed: its paths name a digest.
+            if self.kind != "index" and self.ecosystem != "opam":
                 raise ClassificationError("a package file belongs to a named package")
             return
         if len(self.name) > _MAX_PACKAGE_NAME or not _PACKAGE_NAMES[self.ecosystem].fullmatch(
