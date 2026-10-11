@@ -1,0 +1,3 @@
+00aawant 8c071d824b88d1c172f61d8ed044b1e424cb38fb multi_ack_detailed no-done side-band-64k thin-pack no-progress ofs-delta deepen-since deepen-not agent=git/2.53.0-Linux
+0034shallow c4e66e403532355d2dde411b94eeb8448c72dfa300000032have 75641245606f6dc032f9b56925e35b3249d7a90d
+0009done

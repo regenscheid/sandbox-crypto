@@ -55,6 +55,7 @@ uv run ruff check .
 uv run pyright
 uv run pytest
 uv run python scripts/check_licenses.py
+uv run python scripts/generate_protos.py --check
 ```
 
 CI runs the same commands.
