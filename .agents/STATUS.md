@@ -10,6 +10,7 @@ Updated: 2026-10-11.
   - A sandbox now reaches hosts its policy allows but does not name. The first connection fails. The worker then reads OpenShell's draft for it, checks the host against the policy, and names it in a new compilation. On a real gateway the host was reachable 9 to 20 s later.
   - The compiled policy no longer has a host-less endpoint, which had kept OpenShell from drafting anything.
   - Each admission reloads the sandbox's policy, which interrupts transfers in progress.
+- **Project records in the orchestrator** (W3). The harness records each project's profile, policy and sessions, and creates the default and dedicated environments through the worker. `run --state-dir` picks the session's environment, and `session close` stops its kernels.
 - **The M1 exit run** ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)).
   - The harness ran in its own sandbox (A), which can reach only the worker API, and drove a research sandbox (B) that the worker had created from the `crypto-base` image, at tier 3 with the probe's evidence.
   - In B the agent:
