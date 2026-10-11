@@ -39,7 +39,15 @@ packages:
     action: allow
   pypi:
     action: allow
+  cargo:
+    action: allow
+  go:
+    action: allow
+  npm:
+    action: allow
   system_packages: deny     # read-only rootfs; change the base image instead
+  # Packages come only through the package cache (docs/PACKAGE-CACHE.md); C and
+  # C++ libraries and toolchains for every language come from conda-forge.
 
 network:
   rules:
@@ -61,6 +69,22 @@ network:
     #   operation: http
     #   match: { hosts: [api.example.org], paths: [/v1/search], methods: [POST] }
     #   action: allow
+    # Sources that builds download themselves (release tarballs, raw files). A
+    # sandbox can resolve only hosts the policy names (docs/POLICY.md, "Admission").
+    - name: source-downloads
+      operation: http
+      match:
+        hosts:
+          - github.com
+          - codeload.github.com
+          - objects.githubusercontent.com
+          - release-assets.githubusercontent.com
+          - raw.githubusercontent.com
+          - gitlab.com
+          - codeberg.org
+        methods: [GET, HEAD]
+      limits: { max_url_bytes: 4096 }
+      action: allow
     - name: git-fetch
       operation: git
       match: { hosts: [github.com, gitlab.com, codeberg.org], git_service: upload-pack }

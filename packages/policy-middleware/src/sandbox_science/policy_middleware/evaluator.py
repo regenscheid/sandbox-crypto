@@ -29,10 +29,13 @@ from sandbox_science.policy import (
     HttpRequest,
     Layer,
     LoadedPolicy,
+    PackageOperation,
     PoolCeiling,
     classify_http_request,
+    classify_package_request,
     evaluate,
     evaluate_monitors,
+    normalize_host,
 )
 
 from .errors import MiddlewareError, StoreError
@@ -96,10 +99,23 @@ class PolicyConfigError(MiddlewareError):
 
 @dataclass(frozen=True, slots=True)
 class PolicyRef:
-    """The project policy revision a compiled sandbox policy was built from."""
+    """The project policy revision a compiled sandbox policy was built from.
+
+    ``package_cache`` and ``mcp_proxy`` are where the sandbox's platform services
+    listen (host, port), when the compiled policy admits them: requests to the
+    cache are package operations, and requests to the MCP proxy go to it, which
+    decides each tool call.
+    """
 
     name: str
     digest: str
+    package_cache: tuple[str, int] | None = None
+    mcp_proxy: tuple[str, int] | None = None
+
+    def service_hosts(self) -> frozenset[str]:
+        """Hosts that serve platform services; other ports on them are refused."""
+        services = (self.package_cache, self.mcp_proxy)
+        return frozenset(service[0] for service in services if service is not None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,10 +172,20 @@ class Verdict:
 
 
 def parse_config(config: Mapping[str, object] | None) -> PolicyRef:
-    """Read ``{"policy": {"name": ..., "digest": ...}}``, the compiler's middleware config."""
-    expected = 'config must be {"policy": {"name": <policy name>, "digest": <revision>}}'
-    if config is None or set(config) != {"policy"}:
+    """Read the compiler's middleware config.
+
+    ``{"policy": {"name": ..., "digest": ...}}``, optionally with
+    ``"package_cache"`` and ``"mcp_proxy"``, each ``{"host": ..., "port": ...}``.
+    """
+    expected = (
+        'config must be {"policy": {"name": <policy name>, "digest": <revision>}} and '
+        'optionally "package_cache" and "mcp_proxy", each {"host": <name>, "port": <port>}'
+    )
+    keys = {"policy", "package_cache", "mcp_proxy"}
+    if config is None or "policy" not in config or not set(config) <= keys:
         raise PolicyConfigError(expected)
+    package_cache = _service(config.get("package_cache"), expected)
+    mcp_proxy = _service(config.get("mcp_proxy"), expected)
     entry = config["policy"]
     if not isinstance(entry, Mapping):
         raise PolicyConfigError(expected)
@@ -176,7 +202,33 @@ def parse_config(config: Mapping[str, object] | None) -> PolicyRef:
         check_digest(digest)
     except StoreError as exc:
         raise PolicyConfigError(str(exc)) from exc
-    return PolicyRef(name=name, digest=digest)
+    return PolicyRef(name=name, digest=digest, package_cache=package_cache, mcp_proxy=mcp_proxy)
+
+
+def _service(entry: object, expected: str) -> tuple[str, int] | None:
+    if entry is None:
+        return None
+    if not isinstance(entry, Mapping):
+        raise PolicyConfigError(expected)
+    fields = cast("Mapping[str, object]", entry)
+    host = fields.get("host")
+    port = fields.get("port")
+    # protobuf Structs carry every number as a float.
+    if isinstance(port, float) and port.is_integer():
+        port = int(port)
+    if (
+        set(fields) != {"host", "port"}
+        or not isinstance(host, str)
+        or not _HOST_RE.fullmatch(host)
+        or isinstance(port, bool)
+        or not isinstance(port, int)
+        or not 1 <= port <= 65535
+    ):
+        raise PolicyConfigError(expected)
+    try:
+        return normalize_host(host), port
+    except ValueError as exc:
+        raise PolicyConfigError(f"{expected}: {exc}") from exc
 
 
 class PolicyMiddleware:
@@ -248,7 +300,20 @@ class PolicyMiddleware:
         # time out into an alert ("Escalation timeout").
         credentialed = bool(loaded.policy.credentials.providers)
         try:
-            operation = classify_http_request(_http_request(facts, credentialed=credentialed))
+            destination = (normalize_host(facts.host), facts.port)
+        except ValueError as exc:
+            return _deny(REQUEST_UNCLASSIFIABLE, f"malformed destination host: {exc}")
+        if destination == ref.mcp_proxy:
+            return self._verdict(facts, loaded, _mcp_proxy_decision(loaded))
+        if destination[0] in ref.service_hosts() and destination != ref.package_cache:
+            # Platform services listen on these hosts; nothing else there is for workers.
+            reason = f"{facts.host} serves platform services; port {facts.port} is not one"
+            return _deny(DESTINATION_FORBIDDEN, reason)
+        try:
+            if destination == ref.package_cache:
+                operation = _package_operation(facts)
+            else:
+                operation = classify_http_request(_http_request(facts, credentialed=credentialed))
         except ClassificationError as exc:
             decision = Decision(
                 action=Action.DENY,
@@ -408,7 +473,37 @@ def _http_request(facts: HttpRequestFacts, *, credentialed: bool) -> HttpRequest
     )
 
 
-def _is_fetch_post(operation: HttpOperation | GitOperation) -> bool:
+def _package_operation(facts: HttpRequestFacts) -> PackageOperation:
+    """Classify a request to the package cache (docs/PACKAGE-CACHE.md)."""
+    if facts.query or facts.body:
+        raise ClassificationError("package cache requests carry no query string or body")
+    if facts.scheme.lower() in ("ws", "wss") or any(
+        name == "upgrade" or name.startswith("sec-websocket-") for name, _ in facts.headers
+    ):
+        raise ClassificationError("protocol upgrades such as WebSocket are not supported")
+    return classify_package_request(facts.method, facts.path)
+
+
+def _mcp_proxy_decision(loaded: LoadedPolicy) -> Decision:
+    """Worker code may use the MCP proxy, which decides each tool call, if the policy says so."""
+    if loaded.policy.mcp.proxy.worker_access:
+        return Decision(
+            action=Action.ALLOW,
+            layer="policy",
+            reason="the MCP proxy decides each tool call",
+            rule="mcp.proxy.worker_access",
+            policy_digest=loaded.digest,
+        )
+    return Decision(
+        action=Action.DENY,
+        layer="policy",
+        reason="worker code may not use the MCP proxy",
+        rule="mcp.proxy.worker_access",
+        policy_digest=loaded.digest,
+    )
+
+
+def _is_fetch_post(operation: HttpOperation | GitOperation | PackageOperation) -> bool:
     return (
         isinstance(operation, GitOperation)
         and operation.service == "upload-pack"
