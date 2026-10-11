@@ -12,7 +12,7 @@ dependencies = [
     "sandbox-science-package-cache",
     "sandbox-science-policy",
     "sandbox-science-policy-middleware",
-    "sandbox-science-worker[kernels]",
+    "sandbox-science-worker[kernels,pdf]",
 ]
 
 [dependency-groups]

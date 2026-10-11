@@ -19,6 +19,10 @@ kernels = [
     "jupyter_client>=8.6",
     "ipykernel>=6.29",
 ]
+# PDF parsing runs inside the sandbox (pdfhelper.py); the tests need it beside them.
+pdf = [
+    "pdf_oxide>=0.3.78",
+]
 
 [project.scripts]
 sandbox-science-worker = "sandbox_science.worker.cli:main"
