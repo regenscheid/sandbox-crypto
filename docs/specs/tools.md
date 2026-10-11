@@ -30,7 +30,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 5. **Output.** stdout and stderr are separate streams of ordered chunks, each numbered within the execution. A stream larger than its limit keeps its head and its tail, drops the middle with a marker, and reports the total byte count. Bytes that are not UTF-8 are decoded with replacement characters.
 6. **Ending.** The result carries the exit code or the terminating signal, the elapsed time, and whether the call timed out or was cancelled. Partial output is kept.
 7. **Timeouts.** Each call has a wall-time limit, with a default and a maximum set by policy. When it expires, the process group gets SIGTERM, then SIGKILL after a short grace period.
-8. **Leftover processes.** When a call ends, processes left in its process group are terminated. A shell call cannot leave daemons running.
+8. **Leftover processes.** When a call ends, the processes it started that are still running are terminated, including those that left its process group or session. A shell call cannot leave daemons running ([worker](../WORKER.md#leftover-processes) says how far the executor can find them).
 
 ## Kernels
 
@@ -44,7 +44,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 3. **State.** Within one generation, state persists from cell to cell: a variable one cell defines is visible to the next.
 4. **Queue.** A kernel runs one cell at a time, in submission order. Cancelling a queued cell removes it from the queue.
 5. **Interrupt** stops the running cell. It ends with an error (`KeyboardInterrupt` for Python), and the kernel keeps its state.
-6. **Restart** is explicit. State is lost and the generation grows; the next results report the new generation, and the harness tells the agent its state is gone.
+6. **Restart** is explicit. State is lost and the generation grows; the next results report the new generation, and the harness tells the agent its state is gone. A restart does not wait for a running cell: that cell ends `cancelled`.
 7. **Kernel death.** A kernel that dies (a crash, running out of memory, `os._exit`) ends its running cell with `kernel_died`. The next cell starts a new generation and reports that earlier state was lost. The worker never hides a restart.
 8. **Limits.** A cell has a wall-time limit, like a shell call, after which it is interrupted. Its outputs have size limits; a large rich output is written to a file and referenced instead of being returned inline.
 9. **Working directory.** A kernel starts in the session workspace.

@@ -14,8 +14,9 @@ These specifications state what the new harness must do for the CScience feature
 | [Consistency review](consistency-review.md) | Checkpoint and terminal triggers, reviewer scope, evidence snapshots, findings and severity, author response, claimed-fix confirmation, bounded completion, outcomes | D27, D28, D35 |
 | [Conda provisioning](conda-provisioning.md) | Requests, policy decisions through the package cache, installation, environment revisions and lockfiles, probes, failure and rollback | D16, D46, D48, D71 |
 | [Research artifacts](research-artifacts.md) | Artifact identity and revisions, publication, lineage, references, annotations | D09, D10, D28, D37, D40 |
+| [PDF sources](pdf-sources.md) | Page facts and labels, page text with line anchors, search, page and region renders, `PdfAnchor` | D59 |
 
-Not yet specified: native Sage kernel behavior and exact PDF/source anchors (roadmap M0), living documents and the ledger, board and frontier ([research workspace](../RESEARCH-WORKSPACE.md)), and the proposed reproduction review (D27). The [external skills compatibility gates](../EXTERNAL-SKILLS.md#compatibility-gates) 5 and 6 (shared board records, connector PDFs with page anchors) belong to those specs. Gates 1–3 and 7 have fixtures here, and so does gate 4 apart from its link to a board entry.
+Not yet specified: native Sage kernel behavior (roadmap M0), living documents and the ledger, board and frontier ([research workspace](../RESEARCH-WORKSPACE.md)), and the proposed reproduction review (D27). The [external skills compatibility gates](../EXTERNAL-SKILLS.md#compatibility-gates) 5 and 6 (shared board records, connector PDFs with page anchors) belong to those specs. Gates 1–3 and 7 have fixtures here, and so does gate 4 apart from its link to a board entry.
 
 ## Conventions
 

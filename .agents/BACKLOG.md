@@ -30,6 +30,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 - [x] Worker API schema and worker service, first version ([worker](../docs/WORKER.md)): idempotent executions with numbered, replayable events, cancellation, watchdogs, kernels through the Jupyter protocol, files and publication; local (tier 0, tests only) and OpenShell backends
 - [ ] Worker service: an executor daemon in the sandbox that survives worker restarts; spilling large rich outputs to files; data grants and session containers
+- [ ] Worker service: per-project credentials, so that the `project_id` a request names is access control and not only a consistency check (adversarial review of 2026-10-11, "no project scoping")
+- [x] On babbage: the executor's hardening under OpenShell's seccomp filter ([lab 8](docs/agent-reports/babbage-openshell-lab-8-2026-10-11.md)). Both `prctl` calls are allowed and leftover processes end. A process that is not dumpable loses its sockets there, so the executor stays dumpable under OpenShell and `/proc/<executor>/fd` stays open to research code in the same environment
+- [ ] Worker service: close a session's kernels when the session ends, or stop idle ones; per-session kernels otherwise accumulate in a long-lived environment (lab 8)
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48)
 - [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
 - [x] Write the middleware's policy store and sandbox bindings when sandboxes are created and revised: the worker's environments (D73), with `sandbox-science-worker policy add` as the operator's way in. To verify on babbage
@@ -56,7 +59,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] MCP proxy callers: identity from the policy middleware, which knows the sandbox, instead of per-sandbox tokens; `process`-level attribution (D67)
 - [ ] One policy store library for the policy middleware, the worker and the MCP proxy, which holds a copy of the middleware's store code
 - [x] Event store with an append-only hash chain (`packages/event-store`, D74): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
-- [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer)
+- [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer). On a single-user host such as babbage, a systemd user timer could log each checkpoint to the journal, whose files the user's processes cannot rewrite
+- [ ] Event store growth: limit repeated escalations per sandbox and target (a sandbox retrying a denied write adds a synced record each time), and rotate old records (D74)
 - [ ] Adversarial fixture suite
 - [x] Isolation-tier probes (D43): the worker probes each executor it starts and reports the tier in effect beside the declared one; evidence only lowers it, and the OpenShell backend must declare its tier ([worker](../docs/WORKER.md#isolation-tiers))
   - [x] Backend conformance suite (D52): the execution-tools fixtures through the worker API (`packages/worker/tests/test_conformance.py`), against the local backend in CI or a running worker named by `SS_CONFORMANCE_*` ([worker](../docs/WORKER.md#conformance-suite))
@@ -82,7 +86,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Sage through SageMath's own Jupyter kernel (`sagemath` kernelspec): the worker offers it when the environment has it, and the harness gives the agent a `sage` tool. Tested with a stand-in kernelspec
 - [x] Real SageMath from conda-forge in an OpenShell sandbox ([lab 5](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)): preparsing, finite fields, polynomial rings, Gröbner bases, exact matrices, LaTeX, GAP, Maxima, PARI and fpylll, interrupt, timeout, restart and kernel death. SageMath 10.9 installs in about 30 s through the cache; the VM costs 0–7% on single-threaded mathematics. Needed two fixes: the compiled policy now allows pseudo-terminals and `/dev/shm`, and the executor puts the environment's tools on `PATH`
 - [ ] `crypto-base` profile with Sage present at session start (D46)
-- [ ] PDF extraction and rendering in the worker (pdf_oxide, D59)
+- [x] PDF extraction and rendering in the worker (pdf_oxide, D59): the in-sandbox helper, the [spec](../docs/specs/pdf-sources.md), the worker's `PdfRequest` and the harness's `pdf_*` tools
+- [ ] PDF evidence on babbage: a real cryptography paper through the PDF tools in an OpenShell sandbox; check page labels, line anchors and equation crops against the printed paper
 
 ## babbage
 

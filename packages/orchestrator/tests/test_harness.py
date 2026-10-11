@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -27,17 +28,31 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import (
+    ErrorInfo,
     ErrorKind,
+    Execution,
     ExecutionContext,
     IsolationEvidence,
     Location,
+    Result,
     ResultEvent,
+    RichOutput,
     ShellRequest,
+    StreamEvent,
+    StreamOutput,
+    WriteFileRequest,
 )
-from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import OpenAICompatibleModel, ScriptedModel, ToolSpec
-from sandbox_science.orchestrator.tools import Toolbox, operation_id
+from sandbox_science.orchestrator.model import (
+    ModelError,
+    OpenAICompatibleModel,
+    ScriptedModel,
+    ToolCall,
+    ToolSpec,
+    _parse_completion,  # pyright: ignore[reportPrivateUsage]
+)
+from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 pytestmark = pytest.mark.asyncio
@@ -251,14 +266,248 @@ async def test_a_tool_the_environment_lacks_is_refused() -> None:
     assert outcome["error"]["message"] == "there is no tool named 'sage'"
 
 
+def _call(name: str, arguments: dict[str, Any], call_id: str = "call-1") -> ToolCall:
+    return ToolCall(call_id, name, json.dumps(arguments))
+
+
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
-def test_operation_ids_are_path_safe() -> None:
-    (call,) = (
-        ScriptedModel.from_json([{"tool_calls": [{"name": "shell", "arguments": {}}]}])
-        ._turns[0]
-        .tool_calls
-    )  # pyright: ignore[reportPrivateUsage]
-    assert operation_id("run/1 t0", call) == "run-1-t0-call-1"
+def test_operation_ids_name_the_whole_call() -> None:
+    # Review, Low: a long run prefix cut the call ID off, so different calls shared one.
+    shell = _call("shell", {"script": "echo a"})
+    identifier = operation_id("run/1 t0", shell)
+    assert identifier.startswith("run-1-t0-call-1-")
+    assert re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", identifier)
+    prefix = "r" * 200
+    first = operation_id(prefix, _call("shell", {}, "call_AAAA"))
+    second = operation_id(prefix, _call("shell", {}, "call_BBBB"))
+    assert first != second
+    assert max(len(first), len(second)) <= 128
+    assert operation_id("run", shell) == operation_id("run", shell)
+    assert operation_id("run", shell) != operation_id("run", _call("shell", {"script": "echo b"}))
+
+
+async def test_a_reused_run_id_marks_replayed_results(client: WorkerClient) -> None:
+    # Review, Low: a reused --run-id silently returned the earlier run's results.
+    turn = [{"tool_calls": [{"name": "shell", "arguments": {"script": "date +%s%N"}}]}]
+    script = [*turn, {"text": "ok"}]
+    runs = [
+        await run_task(
+            ScriptedModel.from_json(script), Toolbox(client, CONTEXT), "t", run_id="run-1"
+        )
+        for _ in range(2)
+    ]
+    before, after = (json.loads(run.messages[3]["content"]) for run in runs)
+    assert "replayed" not in before
+    assert after["attempt_id"] == before["attempt_id"]
+    assert after["replayed"].startswith("this call was made before")
+    assert runs[1].tool_records[0]["replayed"] is True
+    # A different call under the same run ID runs, instead of meeting a conflict.
+    other = [{"tool_calls": [{"name": "shell", "arguments": {"script": "echo other"}}]}]
+    third = await run_task(
+        ScriptedModel.from_json([*other, {"text": "ok"}]),
+        Toolbox(client, CONTEXT),
+        "t",
+        run_id="run-1",
+    )
+    assert json.loads(third.messages[3]["content"])["stdout"] == "other\n"
+
+
+async def test_h1_large_results_reach_the_model(client: WorkerClient) -> None:
+    # aiohttp's line limit (512 KiB) ended run_task on any longer result event; spec
+    # fixture 10 failed at the default output limit.
+    script = [
+        {"tool_calls": [{"name": "shell", "arguments": {"script": "yes a | head -c 540000"}}]},
+        {"tool_calls": [{"name": "shell", "arguments": {"script": "yes b | head -c 5242880"}}]},
+        {"text": "done"},
+    ]
+    toolbox = Toolbox(client, CONTEXT)
+    transcript = await run_task(ScriptedModel.from_json(script), toolbox, "large", run_id="run-2")
+    assert transcript.stopped == "answered"
+    tools = [message["content"] for message in transcript.messages if message["role"] == "tool"]
+    small, large = (json.loads(text) for text in tools)
+    assert small["state"] == large["state"] == "succeeded"
+    assert large["stdout_total_bytes"] == 5242880
+    assert all(len(text) <= toolbox.output_chars for text in tools)
+
+
+def _event(seq: int, **fields: Any) -> bytes:
+    body = {"execution_id": "exe-1", "seq": seq, "time": "2026-10-11T00:00:00Z", **fields}
+    return json.dumps(body).encode() + b"\n"
+
+
+EXECUTION = {
+    "execution_id": "exe-1",
+    "attempt_id": "att-1",
+    "operation_id": "op-1",
+    "kind": "shell",
+    "context": CONTEXT.model_dump(),
+    "state": "succeeded",
+    "submitted_at": "2026-10-11T00:00:00Z",
+}
+
+
+async def test_h1_the_client_reads_every_event_line_the_worker_may_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "x" * (20 * 1024 * 1024)
+
+    async def events(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        await response.write(_event(1, type="stream", name="stdout", text=text))
+        await response.write(_event(2, type="result", execution=EXECUTION))
+        await response.write_eof()
+        return response
+
+    app = web.Application()
+    app.router.add_get("/v1/executions/exe-1/events", events)
+    async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
+        received = [item async for item in client.events("exe-1")]
+        assert [item.seq for item in received] == [1, 2]
+        first = received[0]
+        assert isinstance(first, StreamEvent)
+        assert len(first.text) == len(text)
+        # A line over the limit is an error the caller can handle, not a crash.
+        monkeypatch.setattr(worker_client, "MAX_EVENT_BYTES", 1024 * 1024)
+        with pytest.raises(WorkerAPIError) as raised:
+            [item async for item in client.events("exe-1")]
+        assert raised.value.kind is ErrorKind.INTERNAL
+
+
+async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The client had no read timeout, so a stream that went quiet hung it forever.
+    monkeypatch.setattr(worker_client, "RECONNECT_DELAY", 0.01)
+    asked: list[str] = []
+
+    async def quiet(request: web.Request) -> web.StreamResponse:
+        asked.append(request.query["after"])
+        response = web.StreamResponse()
+        await response.prepare(request)
+        for _ in range(10):
+            await response.write(b"\n")
+            await asyncio.sleep(0.1)
+        await response.write(_event(1, type="result", execution=EXECUTION))
+        await response.write_eof()
+        return response
+
+    async def silent(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        await asyncio.sleep(60)
+        return response
+
+    app = web.Application()
+    app.router.add_get("/v1/executions/exe-1/events", quiet)
+    app.router.add_get("/v1/executions/exe-2/events", silent)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("")), TOKEN, stream_timeout=0.5) as client,
+    ):
+        assert [item.seq async for item in client.events("exe-1")] == [1]
+        assert asked == ["0"]  # a second of heartbeats, and never a reconnection
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(WorkerAPIError) as raised:
+            [item async for item in client.events("exe-2")]
+        assert raised.value.kind is ErrorKind.UNAVAILABLE
+        assert loop.time() - started < 10
+
+
+async def test_h2_run_gives_up_when_no_result_comes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker_client, "RESULT_GRACE", 0.5)
+
+    async def submit(request: web.Request) -> web.Response:
+        return web.json_response({**EXECUTION, "state": "queued"}, status=201)
+
+    async def forever(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        await response.prepare(request)
+        while True:  # heartbeats, and never a result
+            await response.write(b"\n")
+            await asyncio.sleep(0.1)
+
+    app = web.Application()
+    app.router.add_post("/v1/executions", submit)
+    app.router.add_get("/v1/executions/exe-1/events", forever)
+    request = ShellRequest(operation_id="op-1", context=CONTEXT, script="true", timeout_seconds=0.5)
+    async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
+        with pytest.raises(WorkerAPIError) as raised:
+            await asyncio.wait_for(client.run(request), 10)
+    assert raised.value.kind is ErrorKind.UNAVAILABLE
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_m4_tool_results_are_bounded_as_a_whole() -> None:
+    # 20,000 displays gave the model 149 KB; a 300 KB exception message, 600 KB.
+    toolbox = Toolbox(WorkerClient("http://127.0.0.1:9", TOKEN), CONTEXT)
+    outputs = tuple(RichOutput(type="display", data={"text/plain": str(i)}) for i in range(20000))
+    error = ErrorInfo(
+        kind=ErrorKind.EXCEPTION, message="ValueError: " + "y" * 300000, traceback=("t" * 300000,)
+    )
+    stdout = StreamOutput(name="stdout", text="z" * 300000, total_bytes=300000)
+    execution = Execution.model_validate(
+        {
+            **EXECUTION,
+            "state": "failed",
+            "result": Result(outputs=outputs, error=error, stdout=stdout).model_dump(),
+        }
+    )
+    text = toolbox._summary(execution)  # pyright: ignore[reportPrivateUsage]
+    assert len(text) <= toolbox.output_chars
+    summary = json.loads(text)
+    assert summary["outputs"][10] == "[… 19980 outputs omitted …]"
+    assert summary["outputs"][-1] == "19999"
+    assert "characters omitted" in summary["error"]["message"]
+
+
+async def test_m5_inputs_that_crashed_the_harness_are_tool_errors() -> None:
+    async def read(request: web.Request) -> web.Response:
+        # Content that is not base64, as a compromised executor could have sent through.
+        body = {"path": "x", "sha256": "0" * 64, "size": 1, "offset": 0, "eof": True}
+        return web.json_response({**body, "content_b64": "a"})
+
+    app = web.Application()
+    app.router.add_post("/v1/files/read", read)
+    async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
+        toolbox = Toolbox(client, CONTEXT)
+        surrogate = ToolCall("c1", "write_file", '{"path": "a.txt", "content": "\\ud800"}')
+        written = json.loads((await toolbox.call(surrogate, "op-a")).text)
+        assert written["error"]["kind"] == "invalid_request"
+        read_back = json.loads((await toolbox.call(_call("read_file", {"path": "x"}), "op-b")).text)
+        assert read_back["error"]["kind"] == "internal"
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"choices": [{"message": "hi"}]},
+        {"choices": [{"message": {"tool_calls": "x"}}]},
+        {"choices": [{"message": {"tool_calls": ["x"]}}]},
+        {"choices": [{"message": {"tool_calls": [{"function": "x"}]}}]},
+        {"choices": "x"},
+        [1],
+    ],
+)
+def test_m5_malformed_completions_are_model_errors(body: object) -> None:
+    with pytest.raises(ModelError):
+        _parse_completion(json.dumps(body))  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_m5_one_failing_tool_call_does_not_end_the_task() -> None:
+    class Failing(Toolbox):
+        async def _list(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+            raise RuntimeError("something nobody expected")
+
+    script = [{"tool_calls": [{"name": "list_files", "arguments": {}}]}, {"text": "carried on"}]
+    async with WorkerClient("http://127.0.0.1:9", TOKEN) as client:
+        transcript = await run_task(
+            ScriptedModel.from_json(script), Failing(client, CONTEXT), "task", run_id="run-3"
+        )
+    assert transcript.final_text == "carried on"
+    assert json.loads(transcript.messages[3]["content"])["error"]["kind"] == "internal"
 
 
 async def test_the_openai_adapter() -> None:
@@ -358,3 +607,49 @@ async def test_worker_errors_keep_their_kind(client: WorkerClient) -> None:
     assert conflict.value.kind is ErrorKind.CONFLICT
     content = base64.b64encode(b"x").decode()
     assert content == "eA=="
+
+
+async def test_the_pdf_tools_read_cite_and_render_in_the_sandbox(client: WorkerClient) -> None:
+    pdf_oxide = pytest.importorskip("pdf_oxide")
+    capabilities = await client.capabilities(CONTEXT.environment_id)
+    assert capabilities.features == ("pdf",)
+    toolbox = Toolbox(client, CONTEXT, features=capabilities.features)
+    assert {"pdf_info", "pdf_pages", "pdf_search", "pdf_render"} <= {s.name for s in toolbox.specs}
+    note = "# A Note on GF(17)\n\nFor every a in GF(17), a^17 = a.\n"
+    data = bytes(pdf_oxide.Pdf.from_markdown(note).to_bytes())
+    await client.write_file(
+        WriteFileRequest(
+            context=CONTEXT, path="note.pdf", content_b64=base64.b64encode(data).decode()
+        )
+    )
+    digest = hashlib.sha256(data).hexdigest()
+
+    async def tool(name: str, operation: str, **arguments: Any) -> str:
+        return (await toolbox.call(_call(name, arguments), operation)).text
+
+    info = await tool("pdf_info", "op-pdf-info", path="note.pdf")
+    assert info.startswith(f"note.pdf (sha256 {digest[:16]}…): 1 pages")
+    assert "pages (physical: printed label): 1: 1" in info
+    pages = await tool("pdf_pages", "op-pdf-pages", path="note.pdf", pages="1")
+    assert "--- page 1 (printed 1) ---" in pages
+    assert "[p1:1] A Note on GF(17)" in pages
+    hits = await tool("pdf_search", "op-pdf-search", path="note.pdf", query="gf(17)")
+    assert hits.startswith("2 hits for 'gf(17)'")
+    assert "[p1:1] (printed 1) A Note on GF(17)" in hits
+    rendered = await tool(
+        "pdf_render", "op-pdf-render", path="note.pdf", page=1, region=[72, 640, 288, 720], dpi=100
+    )
+    assert "rendered region [72.0, 640.0, 288.0, 720.0] of page 1" in rendered
+    assert "300x112 px" in rendered
+    png = rendered.split(" to ", 1)[1].split(":", 1)[0]
+    published = json.loads(await tool("publish", "op-pdf-publish", path=png))
+    assert published["published"]["media_type"] == "image/png"
+    missing = json.loads(await tool("pdf_pages", "op-pdf-missing", path="gone.pdf", pages="1"))
+    assert missing["error"]["kind"] == "invalid_request"
+    assert "does not exist" in missing["error"]["message"]
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_the_pdf_tools_need_the_feature() -> None:
+    client = WorkerClient("http://127.0.0.1:9", TOKEN)
+    assert not {"pdf_pages", "pdf_render"} & {s.name for s in Toolbox(client, CONTEXT).specs}

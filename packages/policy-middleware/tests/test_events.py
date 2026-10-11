@@ -141,7 +141,7 @@ def test_an_alert_that_cannot_be_stored_is_denied(
         assert not alert.allowed
         assert alert.reason_code == evaluator.AUDIT_UNAVAILABLE
         escalation = recording.evaluate_http(facts(method="POST"))
-        assert escalation.reason_code == evaluator.APPROVAL_REQUIRED
+        assert escalation.reason_code == evaluator.AUDIT_UNAVAILABLE
         # Requests that need no record are unaffected, monitors included.
         allowed = recording.evaluate_http(facts(path="/" + "a" * 200))
         assert allowed.allowed

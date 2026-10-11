@@ -84,7 +84,12 @@ async def _run(args: argparse.Namespace) -> int:
 
         transcript = await run_task(
             model,
-            Toolbox(client, context, languages=capabilities.languages),
+            Toolbox(
+                client,
+                context,
+                languages=capabilities.languages,
+                features=capabilities.features,
+            ),
             args.task,
             run_id=args.run_id or new_id("run"),
             max_turns=args.max_turns,
@@ -125,7 +130,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--min-isolation-tier", type=int, default=3)
     run.add_argument("--allow-unisolated", action="store_true")
     run.add_argument("--max-turns", type=int, default=30)
-    run.add_argument("--run-id")
+    run.add_argument(
+        "--run-id",
+        help="name the run (default: a new random ID). Under a reused ID, a call identical "
+        "to one already made in the same place returns its earlier result, marked replayed",
+    )
     run.add_argument("--transcript", type=Path)
     run.add_argument("task")
     args = parser.parse_args(argv)
