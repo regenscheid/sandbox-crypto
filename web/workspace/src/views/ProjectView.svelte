@@ -2,11 +2,12 @@
 <script lang="ts">
   import { api } from '../lib/api';
   import { formatTime } from '../lib/format';
-  import { sessionHref } from '../lib/router';
+  import { documentHref, sessionHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
 
   let { projectId }: { projectId: string } = $props();
   const loading = $derived(api.project(projectId));
+  const documents = $derived(api.documents(projectId));
 </script>
 
 <nav class="trail"><a href="#/">Projects</a> /</nav>
@@ -58,6 +59,45 @@
       </tbody>
     </table>
   {/if}
+
+  <h2>Documents</h2>
+  {#await documents}
+    <p class="muted">Loading…</p>
+  {:then listed}
+    {#if listed.length === 0}
+      <p>
+        No documents yet. Agents create them with the document tool; the user imports them
+        with <code>sandbox-science-harness document import</code>.
+      </p>
+    {:else}
+      <table>
+        <thead>
+          <tr>
+            <th>Document</th>
+            <th>Title</th>
+            <th>Where</th>
+            <th>Revision</th>
+            <th>Created</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each listed as found (found.document_id)}
+            <tr>
+              <td><a href={documentHref(projectId, found.document_id)}>{found.name}</a></td>
+              <td>{found.title}</td>
+              <td>
+                {found.scope === 'project' ? 'the project' : `session ${found.session_id}'s workbook`}
+              </td>
+              <td>{found.head}</td>
+              <td>{formatTime(found.created_at)}</td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  {:catch error}
+    <ErrorMessage {error} />
+  {/await}
 
   <h2>Environments</h2>
   <table>

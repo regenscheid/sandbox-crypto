@@ -415,3 +415,82 @@ div.math-skipped {
 .note {
   color: var(--muted);
 }
+
+/* A living document (living documents, LD-9): each block carries its ID, shown at its top
+   right while the pointer is over it, inside the text's own box; the blocks the
+   revision changed are marked at their left; a block the server's block map has no block
+   for is outlined. */
+.document {
+  margin: 1rem 0 0;
+}
+
+.document [data-block] {
+  position: relative;
+}
+
+.document [data-block]:hover::after {
+  content: attr(data-block);
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  pointer-events: none;
+}
+
+.document [data-status] {
+  padding-left: 0.6rem;
+  border-left: 3px solid var(--border);
+}
+
+.document [data-status='changed'] {
+  border-left-color: var(--approximate);
+}
+
+.document [data-status='added'] {
+  border-left-color: var(--ok);
+}
+
+.document [data-status='moved'] {
+  border-left-color: var(--link);
+}
+
+.document [data-unmatched] {
+  outline: 1px dashed var(--failed);
+  outline-offset: 2px;
+}
+
+.document .theorem {
+  margin: 0.8rem 0;
+  padding-left: 0.8rem;
+  border-left: 3px solid var(--border);
+}
+
+.document .theorem-head {
+  margin: 0 0 0.3rem;
+  font-weight: 600;
+}
+
+.document details.front-matter {
+  margin: 0 0 1rem;
+  color: var(--muted);
+}
+
+.mismatch {
+  margin: 1rem 0;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--failed);
+  border-radius: 6px;
+}
+
+.mismatch p {
+  margin: 0.2rem 0;
+}
+
+.warnings li {
+  margin: 0.2rem 0;
+}

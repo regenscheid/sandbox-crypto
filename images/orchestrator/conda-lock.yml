@@ -13,8 +13,8 @@
 version: 1
 metadata:
   content_hash:
-    linux-64: a4c85868abc836f9a358c1849b0afff59206559e5f45c4491855da1df4b22571
-    linux-aarch64: 90410696060face3a62b274b438cf9501e59541526757635b0511083aae93672
+    linux-64: 69d1acf3c845f58f9888321e124919837acfb458260eef507e21c28163545382
+    linux-aarch64: 09ad624632bb25bbd00247d217c4fca0bb9456636fdfc3e6c07aa2695795b3a8
   channels:
   - url: conda-forge
     used_env_vars: []
@@ -74,7 +74,7 @@ package:
   category: main
   optional: false
 - name: aiohttp
-  version: 3.14.4
+  version: 3.14.5
   manager: conda
   platform: linux-64
   dependencies:
@@ -84,20 +84,20 @@ package:
     attrs: '>=17.3.0'
     frozenlist: '>=1.1.1'
     libgcc: '>=15'
-    multidict: '>=4.5,<7.0'
+    multidict: '>=4.5,<8.0'
     propcache: '>=0.2.0'
     python: ''
     python_abi: 3.14.*
     typing_extensions: '>=4.4'
     yarl: '>=1.25.1,<2.0'
-  url: https://conda.anaconda.org/conda-forge/linux-64/aiohttp-3.14.4-py314h93e9acf_0.conda
+  url: https://conda.anaconda.org/conda-forge/linux-64/aiohttp-3.14.5-py314h93e9acf_0.conda
   hash:
-    md5: 03e631ece6f4c65810557239d8eab175
-    sha256: 5473273d0b91a5c756a531c80fe5af46090c3c75790c555702ffd3673918970c
+    md5: a621fa162a774337e2d43ab799afd1ed
+    sha256: 09f5eae9f63e2e551afdcf519948aefe24f7fb7b3b1afdee47d833cd24886f59
   category: main
   optional: false
 - name: aiohttp
-  version: 3.14.4
+  version: 3.14.5
   manager: conda
   platform: linux-aarch64
   dependencies:
@@ -106,16 +106,16 @@ package:
     attrs: '>=17.3.0'
     frozenlist: '>=1.1.1'
     libgcc: '>=15'
-    multidict: '>=4.5,<7.0'
+    multidict: '>=4.5,<8.0'
     propcache: '>=0.2.0'
     python: ''
     python_abi: 3.14.*
     typing_extensions: '>=4.4'
     yarl: '>=1.25.1,<2.0'
-  url: https://conda.anaconda.org/conda-forge/linux-aarch64/aiohttp-3.14.4-py314ha6eade7_0.conda
+  url: https://conda.anaconda.org/conda-forge/linux-aarch64/aiohttp-3.14.5-py314ha6eade7_0.conda
   hash:
-    md5: 1ff7d8251ee5d0ea44c9aa2d5e12625f
-    sha256: 8032e7136b55e14856abdfb8cab6b975047e9900e68512f0a01f9457a639a536
+    md5: f3624fe06ace971ccfbe87fb4f0df89d
+    sha256: 271d0e81e2e0544c8c9b906aa0ecc2d5c13e758fc676e9463b9a381ed08a8dad
   category: main
   optional: false
 - name: aiosignal
@@ -593,6 +593,82 @@ package:
     sha256: 76efa6cc9d7e6f5ee3bbca0939f64054af2bdfb3c3632531f8e633cf6c2ea41e
   category: main
   optional: false
+- name: markdown-it-py
+  version: 4.2.0
+  manager: conda
+  platform: linux-64
+  dependencies:
+    mdurl: '>=0.1,<1'
+    python: '>=3.10'
+  url: https://conda.anaconda.org/conda-forge/noarch/markdown-it-py-4.2.0-pyhd8ed1ab_0.conda
+  hash:
+    md5: 6d03368f2b2b0a5fb6839df53b2eb5e0
+    sha256: 0c4c35376fe920714390d46e4b8d31c876d65f18e1655899e0763ec25f2a902f
+  category: main
+  optional: false
+- name: markdown-it-py
+  version: 4.2.0
+  manager: conda
+  platform: linux-aarch64
+  dependencies:
+    mdurl: '>=0.1,<1'
+    python: '>=3.10'
+  url: https://conda.anaconda.org/conda-forge/noarch/markdown-it-py-4.2.0-pyhd8ed1ab_0.conda
+  hash:
+    md5: 6d03368f2b2b0a5fb6839df53b2eb5e0
+    sha256: 0c4c35376fe920714390d46e4b8d31c876d65f18e1655899e0763ec25f2a902f
+  category: main
+  optional: false
+- name: mdit-py-plugins
+  version: 0.6.1
+  manager: conda
+  platform: linux-64
+  dependencies:
+    markdown-it-py: '>=2.0.0,<5.0.0'
+    python: '>=3.10'
+  url: https://conda.anaconda.org/conda-forge/noarch/mdit-py-plugins-0.6.1-pyhd8ed1ab_0.conda
+  hash:
+    md5: ad6821df7a98510117db06e9a833281f
+    sha256: 49db23cbfb1c1d414a14d7540195208b994ebd747beba0f15c903f3a0a2dc446
+  category: main
+  optional: false
+- name: mdit-py-plugins
+  version: 0.6.1
+  manager: conda
+  platform: linux-aarch64
+  dependencies:
+    markdown-it-py: '>=2.0.0,<5.0.0'
+    python: '>=3.10'
+  url: https://conda.anaconda.org/conda-forge/noarch/mdit-py-plugins-0.6.1-pyhd8ed1ab_0.conda
+  hash:
+    md5: ad6821df7a98510117db06e9a833281f
+    sha256: 49db23cbfb1c1d414a14d7540195208b994ebd747beba0f15c903f3a0a2dc446
+  category: main
+  optional: false
+- name: mdurl
+  version: 0.1.2
+  manager: conda
+  platform: linux-64
+  dependencies:
+    python: '>=3.9'
+  url: https://conda.anaconda.org/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
+  hash:
+    md5: 592132998493b3ff25fd7479396e8351
+    sha256: 78c1bbe1723449c52b7a9df1af2ee5f005209f67e40b6e1d3c7619127c43b1c7
+  category: main
+  optional: false
+- name: mdurl
+  version: 0.1.2
+  manager: conda
+  platform: linux-aarch64
+  dependencies:
+    python: '>=3.9'
+  url: https://conda.anaconda.org/conda-forge/noarch/mdurl-0.1.2-pyhd8ed1ab_1.conda
+  hash:
+    md5: 592132998493b3ff25fd7479396e8351
+    sha256: 78c1bbe1723449c52b7a9df1af2ee5f005209f67e40b6e1d3c7619127c43b1c7
+  category: main
+  optional: false
 - name: multidict
   version: 6.7.1
   manager: conda
@@ -868,6 +944,37 @@ package:
     sha256: e7f8e965bbfb98e08feb2365cacdad8bb218fa5b5a0a2752f747287f425f213c
   category: main
   optional: false
+- name: pyyaml
+  version: 6.0.3
+  manager: conda
+  platform: linux-64
+  dependencies:
+    __glibc: '>=2.17,<3.0.a0'
+    libgcc: '>=14'
+    python: '>=3.14,<3.15.0a0'
+    python_abi: 3.14.*
+    yaml: '>=0.2.5,<0.3.0a0'
+  url: https://conda.anaconda.org/conda-forge/linux-64/pyyaml-6.0.3-py314h67df5f8_1.conda
+  hash:
+    md5: 2035f68f96be30dc60a5dfd7452c7941
+    sha256: b318fb070c7a1f89980ef124b80a0b5ccf3928143708a85e0053cde0169c699d
+  category: main
+  optional: false
+- name: pyyaml
+  version: 6.0.3
+  manager: conda
+  platform: linux-aarch64
+  dependencies:
+    libgcc: '>=14'
+    python: '>=3.14,<3.15.0a0,>=3.14,<3.15.0a0'
+    python_abi: 3.14.*
+    yaml: '>=0.2.5,<0.3.0a0'
+  url: https://conda.anaconda.org/conda-forge/linux-aarch64/pyyaml-6.0.3-py314h807365f_1.conda
+  hash:
+    md5: 9ae2c92975118058bd720e9ba2bb7c58
+    sha256: 496b5e65dfdd0aaaaa5de0dcaaf3bceea00fcb4398acf152f89e567c82ec1046
+  category: main
+  optional: false
 - name: readline
   version: '8.3'
   manager: conda
@@ -1016,6 +1123,31 @@ package:
   hash:
     md5: fcb489df604d100968b737f2cb6076c6
     sha256: b928c30ddcb0e3f544c6eade8352737e6e610e263276b90232db6a578ef899d8
+  category: main
+  optional: false
+- name: yaml
+  version: 0.2.5
+  manager: conda
+  platform: linux-64
+  dependencies:
+    __glibc: '>=2.17,<3.0.a0'
+    libgcc: '>=15'
+  url: https://conda.anaconda.org/conda-forge/linux-64/yaml-0.2.5-hebe6cf0_3.conda
+  hash:
+    md5: e741576fb8f89821ac7c1c537322a33d
+    sha256: d164dfa75ecd538f6fd68765defcc06aa875bc697b9b215362d79a2a73125dd0
+  category: main
+  optional: false
+- name: yaml
+  version: 0.2.5
+  manager: conda
+  platform: linux-aarch64
+  dependencies:
+    libgcc: '>=15'
+  url: https://conda.anaconda.org/conda-forge/linux-aarch64/yaml-0.2.5-h29ee22c_3.conda
+  hash:
+    md5: 6c97c1f44a81be1b4d5ba15a06153256
+    sha256: 97e0fbe447c8f8bb1789047f37448062ebecda29bd264fcdf6129b8d08f174c9
   category: main
   optional: false
 - name: yarl

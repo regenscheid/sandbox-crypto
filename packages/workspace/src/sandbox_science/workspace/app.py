@@ -41,9 +41,10 @@ from typing import Final, cast
 from aiohttp import hdrs, web
 
 from sandbox_science.contracts import ErrorKind
+from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
-from . import api
+from . import api, documents
 from .mathrepair import (
     MathRepairService,
     RepairRequestError,
@@ -202,13 +203,19 @@ def create_app(
     check_host: bool = True,
     max_run_bytes: int = api.MAX_RUN_BYTES,
     math_repair: MathRepairService | None = None,
+    document_store: DocumentStore | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
-    the page is told that there is no reviewer model to repair math."""
+    the page is told that there is no reviewer model to repair math. Without
+    ``document_store``, the documents are read from the control store in the state
+    directory of ``store``, opened read-only."""
     sessions = Sessions(login_token)
     files = StaticFiles(static_dir)
     repairs = math_repair if math_repair is not None else MathRepairService()
+    if document_store is None:
+        state_dir = store.root.parent
+        document_store = DocumentStore(store_path(state_dir), producer="workspace", readonly=True)
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
@@ -292,12 +299,18 @@ def create_app(
     async def close_repairs(app: web.Application) -> None:
         await repairs.close()
 
+    async def close_documents(app: web.Application) -> None:
+        app[documents.DOCUMENTS].close()
+
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
     app[api.STORE] = store
     app[api.MAX_RUN] = max_run_bytes
+    app[documents.DOCUMENTS] = document_store
     app.on_response_prepare.append(secure)
     app.on_cleanup.append(close_repairs)
+    app.on_cleanup.append(close_documents)
     api.add_routes(app)
+    documents.add_routes(app)
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)

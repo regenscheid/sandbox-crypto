@@ -50,6 +50,7 @@ from sandbox_science.contracts import (
     WriteFileRequest,
 )
 from sandbox_science.orchestrator import cli, worker_client
+from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
     ModelError,
@@ -954,6 +955,71 @@ async def test_projects_give_sessions_their_environments(
     assert re.fullmatch(r"p1-default-[0-9a-f]{12}", environments["a"])
     assert re.fullmatch(r"p1-c-[0-9a-f]{12}", environments["c"])
     assert record["sessions"]["a"]["closed_at"] is not None
+
+
+async def test_runs_with_a_state_dir_write_living_documents(
+    worker_url: str, tmp_path: Path
+) -> None:
+    # W4: the agent's document tools reach the control store in the state directory.
+    state, token = tmp_path / "harness-state", tmp_path / "token"
+    token.write_text(TOKEN)
+    policy = "sha256:" + "d" * 64
+    created = await asyncio.to_thread(
+        cli.main,
+        ["project", "create", "--state-dir", str(state), "--project", "p1",
+         "--profile", "minimal", "--policy", policy],
+    )  # fmt: skip
+    assert created == 0
+
+    async def run(session: str, turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        script, transcript = tmp_path / f"{session}.json", tmp_path / f"{session}-t.json"
+        script.write_text(json.dumps([*turns, {"text": "done"}]))
+        status = await asyncio.to_thread(
+            cli.main,
+            ["run", "--worker", worker_url, "--token-file", str(token), "--project", "p1",
+             "--session", session, "--state-dir", str(state), "--allow-unisolated",
+             "--script", str(script), "--transcript", str(transcript), "--run-id",
+             f"run-{session}", "task"],
+        )  # fmt: skip
+        assert status == 0
+        recorded = json.loads(transcript.read_text())
+        return [json.loads(m["content"]) for m in recorded["messages"] if m["role"] == "tool"]
+
+    def call(tool: str, /, **arguments: Any) -> dict[str, Any]:
+        return {"tool_calls": [{"name": tool, "arguments": arguments}]}
+
+    (made,) = await run(
+        "a",
+        [call("document_create", name="ff", title="Fermat", scope="project", text="Let \\(p\\).")],
+    )
+    assert made["outcome"] == "created"
+    read, patched = await run(
+        "b",
+        [
+            call("document_read", document="ff"),
+            call(
+                "document_patch",
+                document="ff",
+                base_revision=1,
+                reason="prime",
+                operations=[
+                    {"op": "replace_text", "block": "b1", "quote": "$p$", "with": "$p$ prime"}
+                ],
+            ),
+        ],
+    )
+    assert read["blocks"][0]["text"] == "Let $p$."
+    assert patched["revision"] == 2
+    store = DocumentStore(store_path(state), readonly=True)
+    try:
+        revisions = store.revisions("p1", "ff")
+        assert store.revision("p1", "ff").text == "Let $p$ prime."
+    finally:
+        store.close()
+    authors = [
+        (info.author.session_id, info.author.run_id, info.author.alias) for info in revisions
+    ]
+    assert authors == [("a", "run-a", "scripted"), ("b", "run-b", "scripted")]
 
 
 async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None:
