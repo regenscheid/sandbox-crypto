@@ -19,7 +19,13 @@ import pytest_asyncio
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, DocumentTool
 from sandbox_science.orchestrator.loop import run_task
-from sandbox_science.orchestrator.model import Message, ModelTurn, ScriptedModel, ToolSpec
+from sandbox_science.orchestrator.model import (
+    Message,
+    ModelTurn,
+    ScriptedModel,
+    ToolCall,
+    ToolSpec,
+)
 from sandbox_science.orchestrator.reviews import CheckpointWindow
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -221,7 +227,6 @@ async def test_notices_name_other_runs_once_and_never_the_runs_own(
             {"op": "replace_text", "block": ids["P"], "quote": "holds", "with": "always holds"}
         ],
     }
-    from sandbox_science.orchestrator.model import ToolCall
 
     first = await toolbox.call(ToolCall("c1", "document_patch", json.dumps(own)), "op-1")
     assert "platform_notices" not in json.loads(first.text)
@@ -232,6 +237,43 @@ async def test_notices_name_other_runs_once_and_never_the_runs_own(
     assert f"{ids['S']} changed" in notice
     again = await toolbox.call(ToolCall("c3", "document_list", "{}"), "op-3")
     assert "platform_notices" not in json.loads(again.text)
+
+
+async def test_a_rebased_patch_still_tells_of_the_revisions_it_was_rebased_over(
+    client: WorkerClient, store: DocumentStore
+) -> None:
+
+    ids = _ids(store)
+    other = DocumentTool(
+        store,
+        ExecutionContext(project_id="p1", session_id="s2", environment_id="env2"),
+        run_id="run-b",
+    )
+    toolbox = _toolbox(client, store, "run-a")
+    await toolbox.call(ToolCall("c1", "document_read", json.dumps({"document": "ff"})), "op-1")
+    await other.call(
+        "document_patch",
+        {
+            "document": "ff",
+            "base_revision": 1,
+            "reason": "summary",
+            "operations": [{"op": "replace", "block": ids["S"], "markdown": "Short."}],
+        },
+        operation="b-1",
+    )
+    mine = {
+        "document": "ff",
+        "base_revision": 1,
+        "reason": "p",
+        "operations": [{"op": "replace_text", "block": ids["P"], "quote": "holds", "with": "is"}],
+    }
+    patched = json.loads(
+        (await toolbox.call(ToolCall("c2", "document_patch", json.dumps(mine)), "op-2")).text
+    )
+    assert (patched["revision"], patched["rebased"]) == (3, True)
+    (notice,) = patched["platform_notices"]
+    assert "revision 2 by agent run run-b" in notice
+    assert "revision 3 by" not in notice
 
 
 async def test_ld_f13_document_revisions_count_as_text_and_structure(

@@ -395,8 +395,10 @@ class DocumentTool:
             author=self.author(call_id, model),
             operation_id=str(given) if given is not None else operation,
         )
-        if result.outcome in ("applied", "unchanged") and result.revision is not None:
-            self._saw(info, result.revision)
+        # The run has seen its base. Revisions after it are the notices' to tell, its own
+        # skipped: a rebased patch's result does not say what the revisions it was
+        # rebased over changed (LD-15).
+        self._saw(info, base)
         return self._result(result, info)
 
     def _delete(
@@ -412,7 +414,7 @@ class DocumentTool:
             reason=_text(args, "reason"),
             operation_id=operation,
         )
-        self._saw(info, result.revision or info.head)
+        self._saw(info, info.head)
         return self._result(result, info)
 
     def _result(self, result: ChangeResult, info: DocumentInfo) -> tuple[str, Json]:
