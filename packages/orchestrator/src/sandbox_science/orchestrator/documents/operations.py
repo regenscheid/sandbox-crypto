@@ -297,8 +297,8 @@ def _delete(mapped: Mapped, block: Block) -> list[_Edit]:
         end = len(text) if following == -1 else following + 1
     elif start > 0 and _line_before_blank(text, block.start):
         start = _line_start(text, start - 1)
-    if end == len(text) and start > 0:
-        # Removing the last lines: the line break before them goes too.
+    if end == len(text) and start > 0 and not text.endswith("\n"):
+        # The text ends with the block, without a line break: the one before it goes.
         start -= 1
     return [_Edit(start, end, "")]
 

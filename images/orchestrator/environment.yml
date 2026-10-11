@@ -16,4 +16,7 @@ dependencies:
   - python 3.14.*
   - aiohttp 3.14.*
   - pydantic 2.14.*
+  - markdown-it-py 4.2.*
+  - mdit-py-plugins 0.6.*
+  - pyyaml 6.0.*
   - pip

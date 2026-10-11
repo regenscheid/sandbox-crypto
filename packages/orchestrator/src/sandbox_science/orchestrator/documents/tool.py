@@ -265,6 +265,11 @@ class DocumentTool:
         handler = handlers.get(name)
         if handler is None:
             return _failure(INVALID_REQUEST, f"there is no tool named {name!r}")
+        # Unknown arguments are refused, so that none can stand for an author (RA-16).
+        spec = next(spec for spec in self.specs if spec.name == name)
+        unknown = sorted(set(args) - set(cast(dict[str, Any], spec.parameters["properties"])))
+        if unknown:
+            return _failure(INVALID_REQUEST, f"unknown arguments: {', '.join(unknown)}")
         try:
             return await asyncio.to_thread(handler)
         except DocumentError as error:
