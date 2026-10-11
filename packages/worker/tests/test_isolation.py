@@ -19,8 +19,12 @@ from sandbox_science.worker.isolation import assess, failed, probe, sentinel_res
 from sandbox_science.worker.settings import SettingsError, load_settings
 
 HOST = ProbeFacts(boot_id="host-boot", seccomp="disabled", no_new_privs=False)
-VM = ProbeFacts(boot_id="vm-boot", seccomp="filter", no_new_privs=True)
-HARDENED = ProbeFacts(boot_id="host-boot", seccomp="filter", no_new_privs=True)
+VM = ProbeFacts(
+    boot_id="vm-boot", seccomp="filter", no_new_privs=True, capabilities="0000000000000000"
+)
+HARDENED = ProbeFacts(
+    boot_id="host-boot", seccomp="filter", no_new_privs=True, capabilities="0000000000000000"
+)
 """A hardened container on the worker host's kernel."""
 
 
@@ -60,6 +64,29 @@ def test_a_shared_kernel_needs_seccomp_and_no_new_privs_for_tier_1(
     assessment = assess(3, HOST, sandbox, "hidden")
     assert assessment.tier == 0
     assert len(assessment.evidence.findings) == 2
+
+
+@pytest.mark.parametrize(
+    ("capabilities", "finding"),
+    [
+        ("00000000a80425fb", "the executor runs with capabilities 00000000a80425fb"),
+        (None, "the executor's capabilities are unknown"),
+        ("not-hex", "the executor runs with capabilities not-hex"),
+    ],
+)
+def test_a_shared_kernel_needs_no_capabilities_for_tier_1(
+    capabilities: str | None, finding: str
+) -> None:
+    # Docker's default set (00000000a80425fb) is not a hardened container (threat model, tier 1).
+    sandbox = HARDENED.model_copy(update={"capabilities": capabilities})
+    assessment = assess(3, HOST, sandbox, "hidden")
+    assert assessment.tier == 0
+    assert finding in assessment.evidence.findings
+
+
+def test_capabilities_do_not_matter_with_a_kernel_of_its_own() -> None:
+    sandbox = VM.model_copy(update={"capabilities": "000001ffffffffff"})
+    assert assess(3, HOST, sandbox, "hidden").tier == 3
 
 
 @pytest.mark.parametrize(("host_boot", "sandbox_boot"), [(None, "vm-boot"), ("host-boot", None)])
