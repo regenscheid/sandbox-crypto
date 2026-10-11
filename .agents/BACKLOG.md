@@ -76,7 +76,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] MCP proxy callers: identity from the policy middleware, which knows the sandbox, instead of per-sandbox tokens; `process`-level attribution (D67)
 - [x] One policy store library for the policy middleware, the worker and the MCP proxy: `sandbox_science.policy.store`, with sandbox bindings for the middleware and project bindings for the proxy. The worker no longer depends on the middleware package
 - [x] Event store with an append-only hash chain (`packages/event-store`, D74): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
-- [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer). On a single-user host such as babbage, a systemd user timer could log each checkpoint to the journal, whose files the user's processes cannot rewrite
+- [x] Event store checkpoints: a systemd user timer template logs a checkpoint every five minutes to the journal, whose files the user's processes cannot rewrite, and `verify` reads a journal export of them ([event store](../docs/EVENT-STORE.md#checkpoints-in-the-journal)). Sending checkpoints off the host remains
 - [ ] Event store growth: rotate old records (D74). Repeated escalations are no longer recorded again (D76)
 - [ ] Adversarial fixture suite
 - [x] Isolation-tier probes (D43): the worker probes each executor it starts and reports the tier in effect beside the declared one; evidence only lowers it, and the OpenShell backend must declare its tier ([worker](../docs/WORKER.md#isolation-tiers))
