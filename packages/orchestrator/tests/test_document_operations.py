@@ -244,3 +244,66 @@ def test_operations_apply_in_turn() -> None:
     assert final.parsed.text == "C.\n\nA2.\n"
     assert compare(head, final).blocks == {"b3": "moved", "b1": "changed"}
     assert not unnamed
+
+
+# Found by the random documents of test_document_properties.py.
+
+
+def test_deleting_a_quotes_last_block_keeps_the_next_quote_apart() -> None:
+    text = "- > a\n  >\n  > b\n\n  > c\n"
+    _, final, unnamed = _apply(text, {"op": "delete", "block": "b5"})
+    assert final.parsed.text == "- > a\n  >\n\n  > c\n"
+    assert not unnamed
+    assert [block.kind for block in final.parsed.blocks].count("quote") == 2
+
+
+def test_deleting_a_block_between_lines_of_text_leaves_them_apart() -> None:
+    # A table interrupts the paragraph above it, and a heading the table; without the
+    # table, a blank line must stay, or the heading's text would join the paragraph.
+    _, final, unnamed = _apply(
+        "Text above\n| a |\n| - |\n# Heading\n", {"op": "delete", "block": "b2"}
+    )
+    assert final.parsed.text == "Text above\n\n# Heading\n"
+    assert not unnamed
+    _, final, unnamed = _apply(
+        "Text above\n| a |\n| - |\n\nText below\n", {"op": "delete", "block": "b2"}
+    )
+    assert final.parsed.text == "Text above\n\nText below\n"
+    assert not unnamed
+
+
+def test_deleting_one_of_two_equal_blocks_removes_its_own_id() -> None:
+    text = "$$\nx = 1\n$$\n\n$$\nx = 1\n$$\n"
+    _, final, unnamed = _apply(text, {"op": "delete", "block": "b2"})
+    assert final.block_ids == ("b1",)
+    assert not unnamed
+
+
+def test_deleting_an_items_first_block_keeps_a_table_in_the_item() -> None:
+    # On the marker's line, a table would take the marker in: 1. | a | is a table row.
+    text = "1. Intro\n\n   | a | b |\n   | - | - |\n"
+    _, final, unnamed = _apply(text, {"op": "delete", "block": "b3"})
+    assert final.parsed.text == "1.\n   | a | b |\n   | - | - |\n"
+    assert not unnamed
+    assert [block.kind for block in final.parsed.blocks] == ["list", "list_item", "table"]
+
+
+def test_deleting_an_items_first_block_keeps_an_indented_next_block() -> None:
+    text = "- Intro\n\n     indented paragraph\n"
+    _, final, unnamed = _apply(text, {"op": "delete", "block": "b3"})
+    assert final.parsed.text == "-\n     indented paragraph\n"
+    assert not unnamed
+
+
+def test_a_block_moves_out_of_the_quote_that_holds_it() -> None:
+    _, final, unnamed = _apply("> a\n>\n> b\n", {"op": "move", "block": "b3", "after": "b1"})
+    assert final.parsed.text == "> a\n\nb\n"
+    assert not unnamed
+    with pytest.raises(DocumentError, match="replace b1 with it instead"):
+        _apply("> only\n", {"op": "move", "block": "b2", "after": "b1"})
+
+
+def test_a_move_brings_in_no_text_to_normalize() -> None:
+    _, final, unnamed = _apply("A \\(x\\).\n\nB.\n", {"op": "move", "block": "b1", "after": "b2"})
+    assert final.parsed.text == "B.\n\nA \\(x\\).\n"
+    assert not unnamed

@@ -26,11 +26,13 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .blocks import Block, normalize_newlines
+from .blocks import Block, normalize_newlines, parse
 from .errors import INVALID_REQUEST, DocumentError
 from .identity import BlockHint, Mapped, SpanHint
 
 MAX_OPERATIONS: Final = 64
+_NOT_AFTER_MARKER: Final = frozenset({"table", "thematic_break"})
+"""Blocks that read otherwise on a list item's marker line."""
 _ID = Annotated[str, Field(pattern=r"^[bm][0-9]{1,9}$")]
 
 
@@ -161,6 +163,8 @@ class Step:
     span_hints: tuple[SpanHint, ...] = ()
     expect: tuple[str, str] | None = None
     """A span ID and the TeX it must read after a ``replace_math``."""
+    removed: tuple[str, ...] = ()
+    """Blocks the operation replaced or deleted, whose IDs no other block may take."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -285,21 +289,41 @@ def _delete(mapped: Mapped, block: Block) -> list[_Edit]:
         # its next sibling takes that line, or the marker stays alone.
         siblings = mapped.parsed.blocks[block.parent].children if block.parent is not None else ()
         position = siblings.index(block.index) if block.index in siblings else -1
+        trailing = len(block.prefix) - len(block.prefix.rstrip())
         if 0 <= position < len(siblings) - 1:
             following = mapped.parsed.blocks[siblings[position + 1]]
+            single = block.prefix.endswith(" ") and not block.prefix.endswith("  ")
+            joins_badly = following.text[:1].isspace() or following.kind in _NOT_AFTER_MARKER
+            if joins_badly and single and "\t" not in block.prefix:
+                # On the marker's line, a block indented further than the item's content
+                # would move the content's column, and a table or a thematic break would
+                # take the marker in (`- ---` is a break): the marker stays on its own line,
+                # which keeps the column where one space after it puts it. (With a tab or
+                # more spaces after the marker, neither keeps it, and LD-18 refuses.)
+                return [_Edit(block.start - trailing, _line_start(text, following.start), "\n")]
             return [_Edit(block.start, following.start, "")]
-        trailing = len(block.prefix) - len(block.prefix.rstrip())
         return [_Edit(block.start - trailing, block.end, "")]
     start = _line_start(text, block.start)
     end = min(block.end + 1, len(text))
-    if end < len(text) and _line_after_blank(text, block.end):
-        following = text.find("\n", end)
+    # A blank line of the block's own container may go with it; one with another prefix
+    # keeps two blocks apart, such as two quotes in a list item.
+    blank = block.continuation.rstrip()
+    following = text.find("\n", end)
+    after = text[end : len(text) if following == -1 else following] if end < len(text) else None
+    before = text[_line_start(text, start - 1) : start - 1] if start > 0 else None
+    blank_after = after is not None and after.rstrip() == blank
+    blank_before = before is None or before.rstrip() == blank
+    if not blank_before and after is not None and not blank_after and block.kind != "list_item":
+        # Text on both sides: a blank line takes the block's place, or the text before
+        # it would run on into the text after (list items follow each other directly).
+        return [_Edit(start, end, blank + "\n")]
+    if blank_before and blank_after:
         end = len(text) if following == -1 else following + 1
-    elif start > 0 and _line_before_blank(text, block.start):
+    elif blank_before and after is None and before is not None:
+        # The last block: the blank line before it goes, and the text keeps its ending.
         start = _line_start(text, start - 1)
-    if end == len(text) and start > 0 and not text.endswith("\n"):
-        # The text ends with the block, without a line break: the one before it goes.
-        start -= 1
+        if not text.endswith("\n"):
+            start -= 1
     return [_Edit(start, end, "")]
 
 
@@ -327,7 +351,8 @@ def apply(mapped: Mapped, operation: Operation) -> Step:
             laid = _lay(_markdown(operation.markdown, "the replacement"), block.continuation)
             new, (start,) = _apply(text, [_Edit(block.start, block.end, laid)])
             region = (start, start + len(laid))
-            return Step(new, region, (BlockHint(operation.block, block.kind, *region),))
+            hint = BlockHint(operation.block, block.kind, *region)
+            return Step(new, region, (hint,), removed=(operation.block,))
         case Insert():
             markdown = _markdown(operation.markdown, "the insertion")
             if operation.at is not None:
@@ -345,7 +370,10 @@ def apply(mapped: Mapped, operation: Operation) -> Step:
         case Delete():
             block = _block(mapped, operation.block)
             new, _ = _apply(text, _delete(mapped, block))
-            return Step(new, None)
+            inside = tuple(
+                mapped.block_ids[child] for child in mapped.parsed.descendants(block.index)
+            )
+            return Step(new, None, removed=(operation.block, *inside))
         case ReplaceMath():
             return _replace_math(mapped, operation)
         case ReplaceText():
@@ -383,27 +411,50 @@ def _insert_at(mapped: Mapped, end: str, markdown: str) -> Step:
     return Step(new, (start, start + len(markdown)))
 
 
+def _shifted(offset: int, edits: list[_Edit]) -> int | None:
+    """Where an offset lands once the edits are made; None inside text they remove."""
+    delta = 0
+    for edit in edits:
+        if edit.end <= offset:
+            delta += len(edit.text) - (edit.end - edit.start)
+        elif edit.start < offset:
+            return None
+    return offset + delta
+
+
 def _move(mapped: Mapped, operation: Move) -> Step:
-    text = mapped.parsed.text
+    """The block taken out, then put next to its anchor as the text then stands, which
+    lets a block move out of the block that holds it."""
     block = _block(mapped, operation.block)
     anchor = _block(mapped, operation.before or operation.after or "")
     if block.index in mapped.parsed.ancestors(anchor.index):
         raise DocumentError(INVALID_REQUEST, f"block {operation.block} cannot move into itself")
-    laid = _lay(block.text, anchor.continuation)
     removal = _delete(mapped, block)
+    taken, _ = _apply(mapped.parsed.text, removal)
+    start = _shifted(anchor.start, removal)
+    found = parse(taken).blocks if start is not None else ()
+    target = next(
+        (other for other in found if (other.start, other.kind) == (start, anchor.kind)), None
+    )
+    if target is None:
+        other = operation.before or operation.after
+        why = (
+            f"it is all of {other}, which goes with it: replace {other} with it instead"
+            if anchor.index in mapped.parsed.ancestors(block.index)
+            else "taking it out changes the blocks around it"
+        )
+        raise DocumentError(
+            INVALID_REQUEST, f"block {operation.block} cannot move next to {other}: {why}"
+        )
+    laid = _lay(block.text, target.continuation)
     if operation.before is not None:
-        placed = _insert_before(text, anchor, laid)
+        placed = _insert_before(taken, target, laid)
     else:
-        placed = _insert_after(text, anchor, laid)
-    for removed in removal:
-        for inserted in placed.edits:
-            if removed.start < inserted.start < removed.end:
-                raise DocumentError(
-                    INVALID_REQUEST, f"block {operation.block} cannot move into its own place"
-                )
-    new, start = _place(text, placed, removal)
-    region = (start, start + len(laid))
-    return Step(new, region, (BlockHint(operation.block, block.kind, *region),))
+        placed = _insert_after(taken, target, laid)
+    new, at = _place(taken, placed, [])
+    # A move brings in no new text, so nothing in it is normalized (LD-42).
+    hint = BlockHint(operation.block, block.kind, at, at + len(laid))
+    return Step(new, None, (hint,))
 
 
 def _replace_math(mapped: Mapped, operation: ReplaceMath) -> Step:
