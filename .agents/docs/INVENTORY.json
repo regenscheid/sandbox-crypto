@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-10",
-  "status": "planning and source inspection, plus fourteen runtime validation records (babbage labs, 2026-10-10 and 2026-10-11). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, plus fifteen runtime validation records (babbage labs, 2026-10-10 and 2026-10-11). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 5490,
-      "sha256": "7d1a73e723c9b752e7354cf6ab7f7d97c7e7189462c5d180c62b7c990e4e937a"
+      "bytes": 5776,
+      "sha256": "c9f6c7f2eb289af6c5f22b8b4c7e8945185b9a756418f272ac0156e21e232d75"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-2-2026-10-10.md",
@@ -116,6 +116,12 @@
       "category": "runtime-validation",
       "bytes": 4446,
       "sha256": "6a74eaa2f75521e19d2dfc549332f3a904b24ed9abb292e233fcd80054e52e66"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-15-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 3759,
+      "sha256": "c7394d9b1cafe71ce59dd7c777885a39ed27bd4cd99545a70e3b83580ef78657"
     }
   ]
 }
