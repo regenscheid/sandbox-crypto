@@ -619,6 +619,8 @@ class Running:
     cancel_requested: bool = False
     restarted: bool = False
     """Its kernel was restarted under it."""
+    closing: bool = False
+    """Its session was closed under it, which stops the kernel."""
     process: asyncio.subprocess.Process | None = None
     leader: Leader | None = None
     kernel: Kernel | None = None
@@ -789,6 +791,7 @@ class Executor:
             "pdf": self.op_pdf,
             "cancel": self.op_cancel,
             "restart": self.op_restart,
+            "close_session": self.op_close_session,
             "read": self.op_read,
             "write": self.op_write,
             "list": self.op_list,
@@ -1234,10 +1237,13 @@ class Executor:
             "error": {"kind": "kernel_died", "message": "the kernel process ended"},
         }
         while True:
-            if running.restarted:
+            if running.restarted or running.closing:
+                message = (
+                    "the session was closed" if running.closing else "the kernel was restarted"
+                )
                 return "cancelled", {
                     "status": "aborted",
-                    "error": {"kind": "cancelled", "message": "the kernel was restarted"},
+                    "error": {"kind": "cancelled", "message": message},
                     "state_lost": True,
                 }
             now = loop.time()
@@ -1248,7 +1254,7 @@ class Executor:
             if interrupted_at is not None and now - interrupted_at > INTERRUPT_GRACE:
                 # The kernel ignored the interrupt: restart it, losing its state.
                 async with kernel.control:
-                    if not running.restarted:
+                    if not (running.restarted or running.closing):
                         await kernel.restart()
                 kind = "timed_out" if timed_out else "cancelled"
                 return kind, {
@@ -1262,7 +1268,7 @@ class Executor:
             try:
                 message = await client.get_iopub_msg(timeout=0.5)
             except Empty:
-                if running.restarted:
+                if running.restarted or running.closing:
                     continue
                 if not await _alive(manager):
                     kernel.state_lost = True
@@ -1274,7 +1280,7 @@ class Executor:
                 task = asyncio.current_task()
                 if task is not None and task.cancelling():
                     raise
-                if running.restarted:
+                if running.restarted or running.closing:
                     continue
                 kernel.state_lost = True
                 return "failed", died
@@ -1400,6 +1406,30 @@ class Executor:
             else:
                 await kernel.restart()
         await self.reply(request, kernel=kernel.info())
+
+    async def op_close_session(self, request: Message) -> None:
+        """Stop a session's kernels; reply with the ones that were running.
+
+        Its running cells end cancelled and its queued ones never start. Each kernel
+        keeps its generation, so the session's next cell starts a new one and reports
+        that earlier state is gone. Shell calls are not affected.
+        """
+        session = self.session(request)
+        stopped: list[Message] = []
+        for (owner, _), kernel in list(self.kernels.items()):
+            if owner != session:
+                continue
+            for running in self.running.values():
+                if running.kernel is kernel:
+                    running.cancel_requested = True
+                    if running.started:
+                        running.closing = True
+            async with kernel.control:
+                if kernel.manager is not None:
+                    stopped.append(kernel.info())
+                    await kernel.stop()
+                    kernel.state_lost = True
+        await self.reply(request, kernels=stopped)
 
     async def op_read(self, request: Message) -> None:
         path = request.get("path")

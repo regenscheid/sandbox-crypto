@@ -4,6 +4,11 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **MCP proxy, first version (D75, proposed;** [MCP connectors](../docs/MCP-CONNECTORS.md#the-mcp-proxy-as-built)**).** New member `packages/mcp-proxy` (conventions: planned member). It decides every MCP message with the policy library before anything goes upstream, refuses escalations as pending requests, records alerts before they proceed, and writes one record per call to the event store.
+  - D67 planned the proxy on the MCP Python SDK. It has its own JSON-RPC layer on aiohttp instead, so that it bounds sizes while bytes arrive and builds every header and body it sends (D75).
+  - The policy gains `mcp.proxy.max_argument_bytes` (default 64 KiB) beside `max_response_bytes`: tool arguments can carry data out, as URLs can.
+  - Lab 2's findings are built in: only tool names in the server's latest complete listing go upstream, every request after `initialize` carries `MCP-Protocol-Version`, and credential placeholders travel only in headers.
+  - Binary results are withheld until artifact references exist. MCP 2026-07-28, which the policy library knows, is not spoken yet.
 - **The orchestrator runs in its own OpenShell sandbox** ([lab 7](docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md)). The compiler gains `compile_orchestrator()`. It produces a policy that admits only the worker API and the model gateway, for the harness's interpreter, which is the threat model's egress rule for Z2. Lab 7 ran the harness there against a worker-created research sandbox. This covers W1's requirement to run the control application in one container and execution in another.
 - **Event store (D74, proposed;** [event store](../docs/EVENT-STORE.md)**).** New library `packages/event-store` (conventions: new member). Records go to one SQLite file with durable commits, chained by SHA-256 over a length-prefixed encoding with RFC 8785 canonical payloads. `sandbox-science-events` verifies the chain, takes checkpoints and exports JSON lines.
   - The hash is not keyed, so truncation and rewritten chains show only against checkpoints kept out of the writers' reach (threat model, residual risks). Taking checkpoints automatically is on the backlog.
