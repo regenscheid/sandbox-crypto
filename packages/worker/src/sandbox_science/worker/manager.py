@@ -688,8 +688,8 @@ class ExecutionManager:
     ) -> tuple[Execution, bool]:
         """Return the execution for ``request.operation_id``, creating it if it is new.
 
-        ``origin`` names the provisioning operation the execution is a step of: a change it
-        makes to the packages is recorded as that operation's.
+        ``origin`` names the provisioning operation the execution is an install step of: a
+        managed change its package commands make is recorded as that operation's.
         """
         digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
         found = self.store.find_operation(request.context.project_id, request.operation_id)
@@ -1139,23 +1139,14 @@ class ExecutionManager:
         return location.model_copy(update={"environment_revision": str(record.revision)})
 
     def _revision_after(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> str | None:
-        """The environment's revision once the attempt's fingerprint is counted."""
-        revision = self._observe(
-            environment_id,
-            raw.get("environment"),
-            live.execution.attempt_id,
-            live.execution.origin,
-        )
+        """The environment's revision once the attempt's fingerprint is counted. A change
+        seen only here is unmanaged, so it is no provisioning operation's, even when the
+        execution is one's step."""
+        revision = self._observe(environment_id, raw.get("environment"), live.execution.attempt_id)
         self._ask_lockfile(environment_id, live)
         return None if revision is None else str(revision)
 
-    def _observe(
-        self,
-        environment_id: str,
-        fingerprint: object,
-        changed_by: str,
-        operation: str | None = None,
-    ) -> int | None:
+    def _observe(self, environment_id: str, fingerprint: object, changed_by: str) -> int | None:
         """The environment's revision after the executor reported ``fingerprint`` (W3).
 
         The first fingerprint is revision 0, and each different one counts one up,
@@ -1164,7 +1155,7 @@ class ExecutionManager:
         here is one it could not account for. The executor is untrusted: research code
         can only make its own environment's revisions count up.
         """
-        return self.revisions.observe(environment_id, fingerprint, changed_by, operation=operation)
+        return self.revisions.observe(environment_id, fingerprint, changed_by)
 
     async def _revised(self, environment_id: str, live: _Live, message: Message) -> None:
         """A change to the environment's packages that the executor saw (CP-4, CP-16).
@@ -1214,7 +1205,8 @@ class ExecutionManager:
             commands=commands,
             omitted=omitted,
             lockfile=prepared,
-            operation=origin,
+            # Only a change its own package commands made is the operation's.
+            operation=origin if managed is True else None,
         )
         self._ask_lockfile(environment_id, live)
 

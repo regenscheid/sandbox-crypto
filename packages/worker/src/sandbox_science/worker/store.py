@@ -444,7 +444,7 @@ class Store:
 
     def package_status(self, environment_id: str) -> tuple[str, str, int | None] | None:
         """An environment's package status other than ``ready``: the status, the operation
-        that left it so, and the revision."""
+        that left it so, and the last revision known good before it."""
         row = self._db.execute(
             "SELECT status, provision_id, revision FROM package_status WHERE environment_id = ?",
             (environment_id,),
@@ -456,13 +456,13 @@ class Store:
     def set_package_status(
         self, environment_id: str, status: str, provision_id: str, revision: int | None
     ) -> None:
+        """Mark an environment's packages, unless a mark is there already: the earliest
+        holds, with the last revision known good (CP-13). Forgetting the environment's
+        revisions clears it."""
         self._db.execute(
-            "INSERT OR REPLACE INTO package_status VALUES (?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO package_status VALUES (?, ?, ?, ?)",
             (environment_id, status, provision_id, revision),
         )
-
-    def forget_package_status(self, environment_id: str) -> None:
-        self._db.execute("DELETE FROM package_status WHERE environment_id = ?", (environment_id,))
 
 
 def _provision(record: str) -> ProvisionOperation | None:

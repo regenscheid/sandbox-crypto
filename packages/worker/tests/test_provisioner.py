@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -47,6 +48,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.event_store import EventStore, Record, StoreReader
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
+from sandbox_science.policy.approvals import Approvals, RequestKey
 from sandbox_science.policy.store import PolicyStore
 from sandbox_science.policy_middleware.cli import _read_records  # pyright: ignore[reportPrivateUsage]
 from sandbox_science.policy_middleware.cli import main as middleware
@@ -129,6 +131,7 @@ INDEX: dict[str, dict[str, dict[str, Any]]] = {
             "postlink": "fail",
         },
         "slowlink": {"version": "1.0", "build": "h0_0", "subdir": "linux-64", "postlink": "slow"},
+        "otherbad": {"version": "1.0", "build": "h0_0", "subdir": "linux-64", "postlink": "fail"},
         "lostlink": {"version": "1.0", "build": "h0_0", "subdir": "linux-64", "postlink": "lost"},
         "wronggp": {
             "version": "1.0",
@@ -345,6 +348,12 @@ class World:
     def records(self) -> list[Record]:
         with StoreReader(self.events) as reader:
             return list(reader.records())
+
+    def withdrawn(self, seq: int) -> bool:
+        """Whether the worker closed permission request ``seq`` for good."""
+        approvals = Approvals()
+        approvals.load(self.records())
+        return approvals.withdrawn(seq)
 
     def use(self, text: str) -> LoadedPolicy:
         """Store a policy and put the environment and its sandbox under it."""
@@ -618,6 +627,15 @@ async def test_cp_f3_an_escalated_install_is_denied_then_approved(make_world: Fa
         await asyncio.to_thread(opener.open, other, timeout=10)
     assert refused.value.code == 403
     assert world.cache.fetched[-1].code == "approval_required"
+    # The grant ended with the operation: the worker withdrew the request for good, so
+    # neither research code nor a later approval can fetch its files.
+    approved = f"http://127.0.0.1:{world.cache.port}{world.cache.artifacts()[0].path}"
+    with pytest.raises(urllib.error.HTTPError) as closed:
+        await asyncio.to_thread(opener.open, approved, timeout=10)
+    assert closed.value.code == 403
+    assert world.withdrawn(second.permission_request)
+    arguments = ["approve", "--settings", str(world.settings)]
+    assert middleware([*arguments, "--request", str(second.permission_request)]) == 1
 
 
 @pytest.mark.asyncio
@@ -845,7 +863,7 @@ async def test_the_decision_matches_the_middlewares(make_world: Factory) -> None
     codes = {"allow": "", "alert": "", "escalate": "approval_required", "deny": "policy_denied"}
     for text in policies:
         loaded = world.use(text)
-        items = [resolution.Resolved(PLACEHOLDER, path) for path in paths]
+        items = [resolution.Resolved(_file_at(path), path) for path in paths]
         decided = resolution.decide(items, loaded, PoolCeiling.unrestricted(), HardFloor())
         for path, file in zip(paths, decided.files, strict=True):
             facts = _facts(world, loaded, path)
@@ -866,7 +884,30 @@ async def test_the_decision_matches_the_middlewares(make_world: Factory) -> None
 PLACEHOLDER = ResolvedFile(
     ecosystem="conda", name="x", version="1", file="x-1-0.conda", action="allow"
 )
-"""The decision reads only a file's path at the cache."""
+
+
+def _file_at(path: str) -> ResolvedFile:
+    """The record of the file at ``path``, as the parsers make sure it is; the placeholder
+    for a path that names no file."""
+    parts = path.split("/")
+    if parts[1] == "pypi":
+        return ResolvedFile(
+            ecosystem="pypi", name=parts[3], version="0.7.1", file=parts[-1], action="allow"
+        )
+    try:
+        name, version, build = parts[4].removesuffix(".conda").rsplit("-", 2)
+        return ResolvedFile(
+            ecosystem="conda",
+            name=name,
+            version=version,
+            build=build,
+            channel=parts[2],
+            subdir=parts[3],
+            file=parts[4],
+            action="allow",
+        )
+    except ValueError:
+        return PLACEHOLDER
 
 
 def _facts(world: World, loaded: LoadedPolicy, path: str) -> HttpRequestFacts:
@@ -930,8 +971,39 @@ async def test_cancelling_an_operation_awaiting_permission_withdraws_its_request
     assert (done.outcome, done.reason, done.stage) == ("failed", "cancelled", "permission")
     [denial] = [r for r in world.records() if r.kind == "denial"]
     assert (denial.source, denial.data()["request_seq"]) == ("worker", waiting.permission_request)
-    # A late approval is still the operator's to give, and no operation acts on it.
+    assert denial.data()["withdrawn"] is True
+    # A late approval is refused: the request is closed for good.
+    assert waiting.permission_request is not None
+    command = ["approve", "--settings", str(world.settings)]
+    assert middleware([*command, "--request", str(waiting.permission_request)]) == 1
     assert world.cache.artifacts() == []
+
+
+@pytest.mark.asyncio
+async def test_cancelling_after_the_approval_closes_the_grant(
+    make_world: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = await make_world(ESCALATE)
+    monkeypatch.setenv("FAKEPM_GATE", str(gate(world)))  # never opened: the install waits
+    waiting = await world.waiting((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
+    assert waiting.permission_request is not None
+    world.answer("approve", waiting.permission_request)
+    installing = await world.until(waiting.provision_id, lambda op: op.state == "installing")
+    await asyncio.sleep(0.5)
+    path = f"/v1/provisioning/{installing.provision_id}/cancel"
+    assert (await world.client.post(path, headers=AUTH)).status == 200
+    done = await world.finished(waiting.provision_id)
+    assert (done.outcome, done.reason) == ("failed", "cancelled")
+    assert world.withdrawn(waiting.permission_request)
+    approved = f"http://127.0.0.1:{world.cache.port}{_path_of(done.files[0])}"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with pytest.raises(urllib.error.HTTPError) as closed:
+        await asyncio.to_thread(opener.open, approved, timeout=10)
+    assert closed.value.code == 403
+
+
+def _path_of(file: ResolvedFile) -> str:
+    return f"/conda/{file.channel}/{file.subdir}/{file.file}"
 
 
 @pytest.mark.asyncio
@@ -979,29 +1051,14 @@ async def test_a_cancelled_install_that_linked_needs_recovery(make_world: Factor
     assert (await world.queue()).status == "needs_recovery"
 
 
-class CancelledAfterConda(Provisioner):
-    """Cancels each operation as soon as its Conda install ends, before its pip install."""
-
-    async def _execute(self, op: Any, argv: Any, *, label: str, **options: Any) -> Any:
-        execution = await super()._execute(op, argv, label=label, **options)
-        if label == "install-conda":
-            op.cancelled.set()
-        return execution
-
-
 @pytest.mark.asyncio
-async def test_a_cancellation_between_installs_is_no_silent_mix(make_world: Factory) -> None:
-    world = await make_world(kind=CancelledAfterConda)
-    operation = await world.provision(
-        "op-1", conda=["fpylll"], pip=["fakeflint"], pip_reason="conda-forge lacks it"
+async def test_conda_and_pip_packages_come_in_separate_requests(make_world: Factory) -> None:
+    # pip resolves against the Conda packages once they are installed, never beside them.
+    world = await make_world()
+    refused = await world.provision(
+        "op-1", conda=["fpylll"], pip=["fakeflint"], pip_reason="r", expected=400
     )
-    done = await world.finished(operation["provision_id"])
-    assert (done.outcome, done.reason) == ("needs_recovery", "environment_changed")
-    assert done.error is not None
-    assert done.error.kind == "cancelled"
-    assert (done.revision_before, done.revision_after) == (0, 1)
-    labels = [(await world.execution(e))["operation_id"].rsplit(".", 1)[1] for e in done.executions]
-    assert labels == ["resolve-conda", "resolve-pip", "install-conda"]
+    assert "separate requests" in refused["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -1029,14 +1086,99 @@ class Blind(Provisioner):
 
 
 @pytest.mark.asyncio
-async def test_an_install_whose_effect_is_unseen_claims_nothing(make_world: Factory) -> None:
+async def test_an_install_whose_effect_is_unseen_needs_recovery(make_world: Factory) -> None:
+    # CP-13: what nobody saw may have changed: the environment is marked, never left mixed.
     world = await make_world(kind=Blind)
     done = await world.finished((await world.provision("op-1", conda=["lostlink"]))["provision_id"])
-    assert (done.outcome, done.reason, done.stage) == ("failed", "install_failed", "link")
+    assert (done.outcome, done.reason, done.stage) == ("needs_recovery", "install_failed", "link")
     assert (done.revision_before, done.revision_after) == (0, None)
-    assert any("whether they changed is unknown" in note for note in done.notes)
+    assert any("packages may have changed" in note for note in done.notes)
     assert done.next_step is not None
-    assert "may have changed some packages" in done.next_step
+    assert "may have changed packages" in done.next_step
+    assert "revision 0" in done.next_step
+    assert (await world.queue()).status == "needs_recovery"
+
+
+class IndexMoves(Provisioner):
+    """Between the dry run and the install, the index changes as ``moves`` says, as when a
+    new build is published."""
+
+    moves: Callable[[dict[str, Any]], None] = staticmethod(lambda index: None)
+
+    async def _install(self, op: Any, governing: Any, conda: Any, decided: Any) -> Any:
+        path = Path(os.environ["FAKEPM_INDEX"])
+        index = json.loads(path.read_text())
+        self.moves(index)
+        path.write_text(json.dumps(index))
+        return await super()._install(op, governing, conda, decided)
+
+
+class NewBuild(IndexMoves):
+    moves = staticmethod(lambda index: index["conda"]["gmp"].update(build="h0_2"))
+
+
+class AgplDependency(IndexMoves):
+    moves = staticmethod(lambda index: index["conda"]["fpylll"].update(depends=["pymupdf"]))
+
+
+@pytest.mark.asyncio
+async def test_the_install_is_pinned_to_the_decided_files(make_world: Factory) -> None:
+    world = await make_world(kind=NewBuild)
+    done = await world.finished((await world.provision("op-1", conda=["pari"]))["provision_id"])
+    # The new gmp build is not the decided one: the pinned solve fails, and nothing changed.
+    assert (done.outcome, done.reason, done.stage) == ("failed", "install_failed", "resolve")
+    assert done.revision_after == done.revision_before
+    pins = [line for line in world.prefix.log.read_text().splitlines() if line.startswith("pin")]
+    assert pins == [
+        "pinned conda-forge/linux-64::gmp==6.3.0=h0_1,conda-forge/linux-64::pari==2.15.4=h0_0"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_agpl_package_the_decision_never_saw_needs_recovery(make_world: Factory) -> None:
+    # CP-9 refuses before download; were one to come all the same, it is no silent success.
+    world = await make_world(kind=AgplDependency)
+    done = await world.finished((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
+    assert (done.outcome, done.reason, done.stage) == ("needs_recovery", "agpl_license", "link")
+    assert done.error is not None
+    assert "pymupdf" in done.error.message
+    assert any("installed beyond the decided set" in note for note in done.notes)
+    assert (await world.queue()).status == "needs_recovery"
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_install_unconfirmed_by_a_lockfile_fails(
+    make_world: Factory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = await make_world()
+    first = await world.finished((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
+    assert first.outcome == "completed"
+    monkeypatch.setattr(provisioner_module, "LOCKFILE_WAIT", 0.2)
+    monkeypatch.setattr(world.provisioner.revisions, "lockfile_path", lambda *args: None)
+    again = await world.finished((await world.provision("op-2", conda=["fpylll"]))["provision_id"])
+    assert (again.outcome, again.reason, again.stage) == ("failed", "probe_failed", "probe")
+    assert [probe.status for probe in again.probes] == ["error"]
+
+
+@pytest.mark.asyncio
+async def test_the_earliest_recovery_mark_holds(make_world: Factory) -> None:
+    world = await make_world()
+    first = await world.finished(
+        (await world.provision("op-1", conda=["badpostlink"]))["provision_id"]
+    )
+    assert (first.outcome, first.revision_before, first.revision_after) == ("needs_recovery", 0, 1)
+    second = await world.finished(
+        (await world.provision("op-2", conda=["otherbad"]))["provision_id"]
+    )
+    assert (second.outcome, second.revision_before, second.revision_after) == (
+        "needs_recovery",
+        1,
+        2,
+    )
+    # Revision 1 was already mixed: the packages were last good at revision 0.
+    assert second.next_step is not None
+    assert "revision 0's lockfile lists the packages as they were" in second.next_step
+    assert any(first.provision_id in note for note in second.notes)
 
 
 @pytest.mark.asyncio
@@ -1052,6 +1194,8 @@ async def test_an_unanswered_permission_request_times_out_denied(make_world: Fac
     )
     assert [r.kind for r in world.records()].count("denial") == 1
     assert world.cache.artifacts() == []
+    assert waiting.permission_request is not None
+    assert world.withdrawn(waiting.permission_request)  # a late approval opens nothing
 
 
 @pytest.mark.asyncio
@@ -1083,15 +1227,27 @@ async def test_a_restarted_worker_ends_what_it_left(make_world: Factory) -> None
         "INSERT INTO provisions VALUES (?, ?, ?, ?, 0, 0, ?)",
         (left.provision_id, "p1/left", "x", "env1", left.model_dump_json()),
     )
+    # It had recorded a permission request, and crashed before noting it.
+    path = "/conda/conda-forge/linux-64/fpylll-0.6.1-py313h0_0.conda"
+    key = RequestKey.packages(SANDBOX, world.governed.digest, left.provision_id, [path])
+    payload: dict[str, object] = {
+        "target": key.payload(),
+        "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+        "files": [{"path": path}],
+    }
+    unnoted = world.sink.append("escalation", "worker", payload).seq
     await world.provisioner.start()
     ended = world.store.provision(left.provision_id)
     assert ended is not None
-    assert (ended.state, ended.reason, ended.stage) == (
+    assert (ended.state, ended.outcome, ended.reason, ended.stage) == (
         "finished",
+        "needs_recovery",
         "worker_restarted",
         "link",
     )
     assert any("may have changed" in note for note in ended.notes)
+    assert world.withdrawn(unnoted)
+    assert (await world.queue()).status == "needs_recovery"
 
 
 # The API: idempotency, reserved IDs, bounds, access checks.
@@ -1225,6 +1381,11 @@ async def test_clients_limited_to_projects_reach_only_their_operations(make_worl
         f"/v1/provisioning/{provision_id}", params={"project_id": "p2"}, headers=AUTH
     )
     assert response.status == 404
+    # Even with the pool's token, naming p2's environment for p1 does not name p2.
+    named = {**body, "operation_id": "op-3", "context": {**CONTEXT, "environment_id": "env2"}}
+    response = await world.client.post("/v1/provisioning", json=named, headers=AUTH)
+    assert response.status == 404
+    assert "p2" not in (await response.json())["error"]["message"]
     # The pool's token names the project too, for the queue: env1 is p1's.
     for project_id, expected in (("p2", 404), ("p1", 200)):
         response = await world.client.get(

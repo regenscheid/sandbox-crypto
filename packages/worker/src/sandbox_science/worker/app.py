@@ -234,13 +234,15 @@ def _allowed(request: web.Request, project_id: str) -> None:
         )
 
 
-def _context(request: web.Request, context: ExecutionContext) -> None:
+def _context(request: web.Request, context: ExecutionContext, *, hide: bool = False) -> None:
     """Check that the client may act for the project, and that the environment is the project's.
 
     An environment ID the worker created stays with its project, deleted or not, so
     what passes here cannot reach another project's sandbox later (D78). A client
     limited to some projects may use only the environments the worker created for
-    them; the pool's own token may also use the sandboxes made by hand.
+    them; the pool's own token may also use the sandboxes made by hand. With ``hide``,
+    another project's environment is ``not_found`` for every client, as for an agent
+    that names the environment itself: the answer must not name the other project.
     """
     _allowed(request, context.project_id)
     environments = request.app.get(ENVIRONMENTS)
@@ -254,7 +256,7 @@ def _context(request: web.Request, context: ExecutionContext) -> None:
             return
         raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     if info.project_id != context.project_id:
-        if limited:
+        if limited or hide:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
         raise WorkerError(
             ErrorKind.CONFLICT,
@@ -528,7 +530,7 @@ def _provision(request: web.Request) -> ProvisionOperation:
 async def submit_provision(request: web.Request) -> web.Response:
     """Ask for a capability or packages in an environment: one operation, queued."""
     body = ProvisionRequest.model_validate_json(await _body(request))
-    _context(request, body.context)
+    _context(request, body.context, hide=True)  # the agent may name the environment
     operation, created = await _provisioner(request).submit(body)
     return _json(operation, 201 if created else 200)
 

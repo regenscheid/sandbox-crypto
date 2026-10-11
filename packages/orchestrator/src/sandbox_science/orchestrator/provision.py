@@ -70,7 +70,8 @@ PROVISION: Final = ToolSpec(
     "a capability of the platform's catalog by name (such as gp, gap, sage, sympy, fpylll or "
     "python-flint), which a functional probe tests and which is left alone when it works "
     "already; or for conda-forge package specs (conda), such as 'pari>=2.15'; or, only for what "
-    "conda-forge lacks, PyPI requirements (pip) with the reason (pip_reason). Ubuntu packages "
+    "conda-forge lacks, PyPI requirements (pip) with the reason (pip_reason), in a request of "
+    "their own after the Conda one, installed from wheels only. Ubuntu packages "
     "(apt) cannot be installed at runtime: name them in system to record the need. The result "
     "gives the outcome (already_satisfied, completed, awaiting_permission, denied, failed, "
     "needs_recovery), the environment's revisions before and after, the package changes, the "
@@ -307,7 +308,8 @@ def describe(
         summary["changes"] = _bounded(changes, limit)
     if operation.probes:
         probes = [
-            f"{p.probe} ({p.kind}) {p.status} at revision {p.revision}"
+            f"{p.probe} ({p.kind}) {p.status}"
+            + (f" at revision {p.revision}" if p.revision is not None else "")
             + (f": {_line(p.output)}" if p.status != "passed" and p.output else "")
             for p in operation.probes
         ]

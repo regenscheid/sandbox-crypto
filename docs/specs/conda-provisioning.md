@@ -32,8 +32,9 @@ Terms:
 
 - CP-6. Every package request leaves the sandbox through the package cache, and the policy middleware decides it with the policy's `packages` section. Index reads are allowed unless the ecosystem is denied, package files take the ecosystem's action, and unlisted Conda channels are denied (D71). The hard floor and the pool ceiling apply. The environment manager makes no policy decision; it records the decisions it received.
 - CP-7. Before installing, the environment manager resolves the request in a dry run, which needs only index reads, and records the exact package files: channel, subdir, file name, version, build, SHA-256 and declared license (new).
+  - pip resolves from wheels only, whose metadata the index serves, so that its dry run builds no source distribution; a PyPI package with no wheel cannot be installed through the tool yet. The Conda install is pinned to the decided builds (implemented 2026-10-11).
 - CP-8. If the policy action for any resolved file is `escalate`, the operation creates one `PermissionRequest` whose scope is exactly that file set, and waits in `awaiting_permission` (new). On approval it installs only those files; a fetch outside the set is denied. On denial or timeout the operation ends `denied`, and no package file has been downloaded.
-  - The request is a `packages` permission request in the policy middleware's event store, answered like the others (D76); an approval lets exactly the listed files download to the environment's sandbox under that policy revision, until it expires (implemented 2026-10-11, [worker](../WORKER.md#provisioning-operations)).
+  - The request is a `packages` permission request in the policy middleware's event store, answered like the others (D76); an approval lets exactly the listed files download to the environment's sandbox under that policy revision, until the operation ends or the approval expires (implemented 2026-10-11, [worker](../WORKER.md#provisioning-operations)).
 - CP-9. A resolved set containing an AGPL-licensed package is refused before download unless the project explicitly allows that package; the refusal names the package and its license ([licensing](../LICENSING.md), tier 3; the check is new).
 
 ### Install
@@ -46,6 +47,7 @@ Terms:
 - CP-13. A failed operation leaves the environment at its previous revision. A failure before linking leaves the prefix untouched (outcome `failed`). A failure during linking or in a post-link script restores the previous revision, from a volume snapshot or by rebuilding from its lockfile (outcome `rolled_back`, D48). If restoring fails, the environment becomes `needs_recovery` and refuses executions until it is rebuilt. It MUST NOT be left silently in a mixed state (new).
 - CP-14. Installs have wall-time and disk limits from the policy's resources and can be cancelled like any execution ([tools](tools.md)); a cancelled install follows CP-13.
 - CP-15. pip inside the Conda environment is allowed through the cache under the `pypi` action. Falling back from Conda to pip for a package conda-forge lacks is recorded as a fallback, with the reason (monitoring, Conda workflow step 4).
+  - Through the provisioning tool, Conda and pip packages come in separate requests, the Conda ones first, so that pip resolves against the Conda packages as installed and never installs its own copy of one (2026-10-11).
 
 ### Record
 

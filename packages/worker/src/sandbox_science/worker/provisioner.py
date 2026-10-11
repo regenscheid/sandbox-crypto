@@ -58,7 +58,7 @@ from sandbox_science.contracts import (
     ShellRequest,
     new_id,
 )
-from sandbox_science.contracts.provisioning import MAX_FILES, Reason, Stage
+from sandbox_science.contracts.provisioning import MAX_FILES, MAX_TEXT, Reason, Stage
 from sandbox_science.contracts.revisions import MAX_PROBE_OUTPUT
 from sandbox_science.contracts.worker import MAX_TIMEOUT_SECONDS
 from sandbox_science.policy import Action, HardFloor, LoadedPolicy, PoolCeiling
@@ -98,6 +98,10 @@ RETAIN: Final = 600.0
 """Seconds a finished operation stays in memory for clients still waiting on it."""
 ERROR_TEXT: Final = 1500
 """Characters of a step's output an error quotes."""
+MAX_NOTES: Final = 32
+"""Notes a record holds (``ProvisionOperation.notes``)."""
+MAX_CHANGES: Final = 2 * MAX_FILES
+"""Package changes a record holds (``ProvisionOperation.changes``)."""
 _PROBE_ID: Final = re.compile(r"[^a-z0-9:._-]")
 _STAGES: Final[dict[ProvisionState, Stage]] = {
     ProvisionState.QUEUED: "queue",
@@ -208,32 +212,23 @@ class Provisioner:
         return self.policies is not None and self.policies.governing(environment_id) is not None
 
     async def start(self) -> None:
-        """End the operations a previous run left unfinished: they never run again."""
-        for record in self.store.unfinished_provisions():
-            note = None
-            if record.state is ProvisionState.INSTALLING:
-                note = "its install may have changed the environment's packages: its revisions tell"
-            if (
-                record.state is ProvisionState.AWAITING_PERMISSION
-                and record.permission_request is not None
-                and self.permissions is not None
-            ):
-                await self._withdraw(record.permission_request, "the worker restarted")
-            finished = _validated(
-                record,
-                state=ProvisionState.FINISHED,
-                outcome=ProvisionOutcome.FAILED,
-                reason="worker_restarted",
-                stage=_STAGES[record.state],
-                error=ErrorInfo(
-                    kind=ErrorKind.INTERNAL,
-                    message="the worker restarted during this operation; request it again",
-                ),
-                notes=(*record.notes, note) if note else record.notes,
-                ended_at=self.clock(),
-                queue_position=None,
-                seq=record.seq + 1,
-            )
+        """End the operations a previous run left unfinished: they never run again. Their
+        permission requests are withdrawn, those a crash left unnoted included, and an
+        install cut short leaves its environment needing recovery (CP-13)."""
+        unfinished = self.store.unfinished_provisions()
+        if unfinished and self.permissions is not None:
+            try:
+                await asyncio.to_thread(
+                    self.permissions.withdraw_operations,
+                    [record.provision_id for record in unfinished],
+                    "the worker restarted",
+                    self.clock(),
+                )
+            except PermissionStoreError as exc:
+                _log.warning("could not withdraw the permission requests left open: %s", exc)
+        for record in unfinished:
+            stop = self._cut_short(record, "restarted")
+            finished = _validated(record, **self._fields(record, stop), seq=record.seq + 1)
             self.store.update_provision(finished)
 
     async def submit(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
@@ -439,20 +434,24 @@ class Provisioner:
         except Exception:
             # Whatever failed, recording the end included, the operation must end.
             _log.exception("provisioning operation %s failed", op.record.provision_id)
+            error = ErrorInfo(
+                kind=ErrorKind.INTERNAL,
+                message="the worker failed during this operation; its executions and "
+                "the environment's revisions tell what happened",
+            )
             failed = _Stop(
-                ProvisionOutcome.FAILED,
-                "install_failed",
-                _STAGES[op.record.state],
-                ErrorInfo(
-                    kind=ErrorKind.INTERNAL,
-                    message="the worker failed during this operation; its executions and "
-                    "the environment's revisions tell what happened",
-                ),
+                ProvisionOutcome.FAILED, "install_failed", _STAGES[op.record.state], error
             )
             try:
+                if op.record.state is ProvisionState.INSTALLING:
+                    failed = self._unseen_install(
+                        op.record, "the worker failed during its install", "install_failed", error
+                    )
                 await self._end(op, failed)
             except Exception:
                 _log.exception("could not record the end of %s", op.record.provision_id)
+                if op.record.permission_request is not None:
+                    await self._withdraw(op.record.permission_request, "its operation failed")
         finally:
             self._release(op)
 
@@ -559,9 +558,18 @@ class Provisioner:
     # Steps.
 
     async def _execute(
-        self, op: _Op, argv: Sequence[str], *, label: str, stage: Stage, timeout: float, limit: int
+        self,
+        op: _Op,
+        argv: Sequence[str],
+        *,
+        label: str,
+        stage: Stage,
+        timeout: float,
+        limit: int,
     ) -> Execution:
-        """Run one step as an execution in the operation's context, to its end."""
+        """Run one step as an execution in the operation's context, to its end. Its origin
+        names the operation; a change to the packages is the operation's only when the
+        step's own package commands made it (managed), as only the install's do."""
         if op.cancelled.is_set():
             raise _cancelled(stage)
         request = ShellRequest(
@@ -659,7 +667,8 @@ class Provisioner:
             version=probe.version,
             kind=probe.kind,
             status=status,
-            revision=_started_revision(execution) or 0,
+            # Unstarted, it ran at no revision: the one noted at dispatch is not proof.
+            revision=_started_revision(execution) if execution.started_at is not None else None,
             execution_id=execution.execution_id,
             output=_tail(output, MAX_PROBE_OUTPUT),
             duration_seconds=result.elapsed_seconds if result is not None else 0.0,
@@ -668,14 +677,13 @@ class Provisioner:
         )
 
     def _unrun(self, op: _Op, capability: str, probe: ProbeSpec, why: str) -> ProbeResult:
-        current = self.store.revision(op.record.request.context.environment_id)
+        """A probe that never ran, so at no revision."""
         return ProbeResult(
             capability=capability,
             probe=probe.id,
             version=probe.version,
             kind=probe.kind,
             status="error",
-            revision=current.revision if current is not None else 0,
             output=why,
             operation=op.record.provision_id,
             recorded_at=self.clock(),
@@ -728,7 +736,8 @@ class Provisioner:
                     ),
                 )
             try:
-                resolved += parse(stdout.text, self.cache)
+                # Up to 16 MiB of untrusted JSON: read in a thread, off the event loop.
+                resolved += await asyncio.to_thread(parse, stdout.text, self.cache)
             except ResolveError as exc:
                 raise _Stop(
                     ProvisionOutcome.FAILED,
@@ -757,6 +766,7 @@ class Provisioner:
         environment_id = request.context.environment_id
         current = self.store.revision(environment_id)
         revision = current.revision if current is not None else None
+        at = f"revision {revision}" if revision is not None else "the current revision"
         if capability is not None:
             raise _Stop(
                 ProvisionOutcome.FAILED,
@@ -765,7 +775,7 @@ class Provisioner:
                 ErrorInfo(
                     kind=ErrorKind.EXCEPTION,
                     message=f"{request.capability}'s packages are installed, but its probes "
-                    f"fail at revision {revision}",
+                    f"fail at {at}",
                 ),
                 next_step="Read the probes' output: the capability is installed but does not "
                 "work as the catalog expects.",
@@ -774,6 +784,24 @@ class Provisioner:
             )
         checks = await self._version_checks(op, request, revision)
         self.revisions.record_probes(environment_id, checks)
+        unseen = [check for check in checks if check.status != "passed"]
+        if unseen:
+            names = ", ".join(f"{check.probe} ({check.status})" for check in unseen)
+            raise _Stop(
+                ProvisionOutcome.FAILED,
+                "probe_failed",
+                "probe",
+                ErrorInfo(
+                    kind=ErrorKind.EXCEPTION,
+                    message=f"the dry runs found nothing to install, but the version checks "
+                    f"at {at} did not pass: {names}",
+                ),
+                next_step="Read the checks' output: the packages may be installed under other "
+                "names, or the environment's lockfile may be missing.",
+                probes=(*op.record.probes, *checks),
+                revision_before=revision,
+                revision_after=revision,
+            )
         raise _Stop(
             ProvisionOutcome.ALREADY_SATISFIED,
             probes=(*op.record.probes, *checks),
@@ -875,10 +903,11 @@ class Provisioner:
             outcome=ProvisionOutcome.AWAITING_PERMISSION,
             permission_request=seq,
             next_step=f"Permission request {seq} asks to download the {len(decided.files)} "
-            "package files listed. The user approves it on the pool host with "
-            f"`sandbox-science-policy-middleware approve --request {seq}`, or denies it. The "
-            f"operation installs once it is approved, and ends denied if it is refused or "
-            f"nobody answers within {minutes} minutes.",
+            "package files listed. On the pool host, the user reviews them with "
+            f"`sandbox-science-policy-middleware pending --request {seq}`, then approves the "
+            f"request (`approve --request {seq}`) or denies it. The operation installs once "
+            f"it is approved, and ends denied if it is refused or nobody answers within "
+            f"{minutes} minutes.",
         )
         _log.info("provisioning %s waits for permission request %d", op.record.provision_id, seq)
         await self._await_answer(op, seq, self.permissions)
@@ -956,43 +985,58 @@ class Provisioner:
     async def _install(
         self, op: _Op, governing: Governing, conda: Sequence[str], decided: Decided
     ) -> tuple[int | None, int | None]:
-        """Install in the environment's turn, as executions, under the policy's wall time
-        (CP-10, CP-14); return the revisions before and after."""
-        self._update(op, state=ProvisionState.INSTALLING, outcome=None, next_step=None)
-        timeout = _install_timeout(governing)
+        """Install in the environment's turn, as an execution, under the policy's wall time
+        (CP-10, CP-14); return the revisions before and after. A request names Conda or pip
+        packages, never both, so one step installs them: micromamba pinned to the decided
+        files, or pip with exactly them."""
+        environment_id = op.record.request.context.environment_id
+        current = self.store.revision(environment_id)
+        before = current.revision if current is not None else None
+        self._update(
+            op,
+            state=ProvisionState.INSTALLING,
+            outcome=None,
+            next_step=None,
+            revision_before=before,
+        )
         conda_files = [file for file in decided.files if file.ecosystem == "conda"]
-        pip_files = [file for file in decided.files if file.ecosystem == "pypi"]
-        steps: list[tuple[str, tuple[str, ...]]] = []
-        if conda_files:
-            steps.append(("install-conda", resolution.conda_install(conda)))
-        if pip_files:
-            steps.append(("install-pip", resolution.pip_install(pip_files)))
-        before: int | None = None
-        after: int | None = None
-        for label, argv in steps:
-            if op.cancelled.is_set():
-                # Before the first step nothing changed; between them, the first may have.
-                error = ErrorInfo(kind=ErrorKind.CANCELLED, message="cancelled on request")
-                await self._failed_install(op, error, True, before, after)
-            execution = await self._execute(
-                op, argv, label=label, stage="download", timeout=timeout, limit=STEP_OUTPUT
-            )
-            started, ended = _started_revision(execution), _ended_revision(execution)
-            uncertain = ended is None and (
-                execution.started_at is not None or execution.state is ExecutionState.LOST
-            )
-            if uncertain:
-                # It may have run, but its end reported no revision, as when the executor is
-                # lost: a look at the packages tells whether they changed (CP-13).
-                ended = await self._look(op, label)
-                uncertain = ended is None
-            before = started if before is None else before
-            after = ended if ended is not None else after
-            self._update(op, revision_before=before, revision_after=after)
-            if execution.state is not ExecutionState.SUCCEEDED:
-                cancelled = execution.state is ExecutionState.CANCELLED or op.cancelled.is_set()
-                error = _step_error(execution, "the install")
-                await self._failed_install(op, error, cancelled, before, after, uncertain)
+        try:
+            if conda_files:
+                label, argv = "install-conda", resolution.conda_install(conda, conda_files)
+            else:
+                pip_files = [file for file in decided.files if file.ecosystem == "pypi"]
+                label, argv = "install-pip", resolution.pip_install(pip_files)
+        except ValueError as exc:
+            raise _Stop(
+                ProvisionOutcome.FAILED,
+                "resolve_failed",
+                "resolve",
+                ErrorInfo(kind=ErrorKind.INTERNAL, message=str(exc)),
+                next_step="Nothing was installed.",
+            ) from None
+        execution = await self._execute(
+            op,
+            argv,
+            label=label,
+            stage="download",
+            timeout=_install_timeout(governing),
+            limit=STEP_OUTPUT,
+        )
+        started, after = _started_revision(execution), _ended_revision(execution)
+        uncertain = after is None and (
+            execution.started_at is not None or execution.state is ExecutionState.LOST
+        )
+        if uncertain:
+            # It may have run, but its end reported no revision, as when the executor is
+            # lost: a look at the packages tells whether they changed (CP-13).
+            after = await self._look(op, label)
+            uncertain = after is None
+        before = started if started is not None else before
+        self._update(op, revision_before=before, revision_after=after)
+        if execution.state is not ExecutionState.SUCCEEDED:
+            cancelled = execution.state is ExecutionState.CANCELLED or op.cancelled.is_set()
+            error = _step_error(execution, "the install")
+            await self._failed_install(op, error, cancelled, before, after, uncertain)
         return before, after
 
     async def _look(self, op: _Op, label: str) -> int | None:
@@ -1030,7 +1074,8 @@ class Provisioner:
     ) -> None:
         """End an install that failed or was cancelled: ``failed`` if the packages are as
         before, else ``rolled_back`` once restored, or ``needs_recovery`` (CP-13).
-        ``uncertain`` says the last step's effect on the packages could not be seen."""
+        ``uncertain`` says its effect on the packages could not be seen, which counts as a
+        change."""
         environment_id = op.record.request.context.environment_id
         if cancelled:
             error = error.model_copy(update={"kind": ErrorKind.CANCELLED})
@@ -1040,18 +1085,13 @@ class Provisioner:
         stage = resolution.failure_stage(text, changed or uncertain)
         reason: Reason = "cancelled" if cancelled else "install_failed"
         if uncertain and not changed:
-            raise _Stop(
-                ProvisionOutcome.FAILED,
+            raise self._unseen_install(
+                op.record,
+                "the install's step reported no revision at its end, and nothing could look "
+                "at the packages after it",
                 reason,
-                stage,
                 error,
-                notes=(
-                    "the install's last step reported no revision at its end, and the worker "
-                    "could not look at the packages after it: whether they changed is unknown",
-                ),
-                next_step="The install may have changed some packages before it stopped. Tell "
-                "the user: the environment's next revision and its lockfile will show what it "
-                "holds. Request the install again once the environment answers.",
+                stage,
             )
         if changed and before is not None and after is not None:
             if await self._same_packages(environment_id, before, after):
@@ -1073,17 +1113,18 @@ class Provisioner:
                     error,
                     next_step=f"The environment is back at the packages of revision {before}.",
                 )
-            self.store.set_package_status(
-                environment_id, "needs_recovery", op.record.provision_id, after
-            )
+            good = self._mark(environment_id, op.record.provision_id, before)
             raise _Stop(
                 ProvisionOutcome.NEEDS_RECOVERY,
                 "environment_changed",
                 stage,
                 error,
-                next_step=f"The failed install changed the environment's packages (revision "
-                f"{before} to {after}) and the worker cannot restore revision {before} yet. Tell "
-                f"the user: revision {before}'s lockfile lists the packages as they were.",
+                next_step=self._recovery_step(
+                    environment_id,
+                    f"The failed install changed the environment's packages (revision {before} "
+                    f"to {after}).",
+                    good,
+                ),
             )
         next_step = "Nothing was installed."
         if stage == "download" and ("403" in text or "approval_required" in text):
@@ -1091,7 +1132,71 @@ class Provisioner:
                 "A download was refused: the install wanted a file outside the decided set, "
                 "as when the index changed meanwhile. Request the install again."
             )
+        elif stage == "resolve" and not cancelled:
+            next_step = (
+                "Nothing was installed: the install could not link the decided builds, as when "
+                "the index changed since the dry run. Request the install again."
+            )
         raise _Stop(ProvisionOutcome.FAILED, reason, stage, error, next_step=next_step)
+
+    def _unseen_install(
+        self,
+        record: ProvisionOperation,
+        what: str,
+        reason: Reason,
+        error: ErrorInfo,
+        stage: Stage = "link",
+    ) -> _Stop:
+        """How an install ends whose effect nobody saw (``what`` says why): it may have
+        changed the packages, so the environment needs recovery from the last revision
+        known good (CP-13)."""
+        environment_id = record.request.context.environment_id
+        before = record.revision_before
+        good = self._mark(
+            environment_id,
+            record.provision_id,
+            before if before is not None else record.planned_revision,
+        )
+        return _Stop(
+            ProvisionOutcome.NEEDS_RECOVERY,
+            reason,
+            stage,
+            error,
+            next_step=self._recovery_step(
+                environment_id, f"{what[:1].upper()}{what[1:]}: it may have changed packages.", good
+            ),
+            notes=_notes(record.notes, f"{what}, so the packages may have changed"),
+        )
+
+    def _cut_short(self, record: ProvisionOperation, how: str) -> _Stop:
+        """How an operation ends that the worker's stop or restart cut short (``how``):
+        ``failed``, or ``needs_recovery`` if it was installing."""
+        error = ErrorInfo(
+            kind=ErrorKind.INTERNAL,
+            message=f"the worker {how} during this operation; request it again",
+        )
+        if record.state is ProvisionState.INSTALLING:
+            return self._unseen_install(
+                record, f"the worker {how} during its install", "worker_restarted", error
+            )
+        return _Stop(ProvisionOutcome.FAILED, "worker_restarted", _STAGES[record.state], error)
+
+    def _mark(self, environment_id: str, provision_id: str, good: int | None) -> int | None:
+        """Mark the environment as needing recovery (CP-13), unless an earlier operation
+        did, whose mark holds; return the mark's last revision known good."""
+        self.store.set_package_status(environment_id, "needs_recovery", provision_id, good)
+        marked = self.store.package_status(environment_id)
+        return marked[2] if marked is not None else good
+
+    def _recovery_step(self, environment_id: str, what: str, good: int | None) -> str:
+        """What to tell the user about an environment whose packages need recovery."""
+        if good is None:
+            known = "no earlier revision of its packages is known"
+        elif self.revisions.lockfile_path(environment_id, good) is not None:
+            known = f"revision {good}'s lockfile lists the packages as they were"
+        else:
+            known = f"the worker holds no lockfile of revision {good}, the last known good"
+        return f"{what} The worker cannot restore an earlier revision yet. Tell the user: {known}."
 
     async def _same_packages(self, environment_id: str, before: int, after: int) -> bool:
         old = await self._lockfile(environment_id, before)
@@ -1126,6 +1231,9 @@ class Provisioner:
         elif old is None:
             which = "the revision before the install" if before is None else f"revision {before}"
             notes.append(f"{which} has no lockfile available: every package is listed")
+        if len(changes) > MAX_CHANGES:
+            notes.append(f"{len(changes) - MAX_CHANGES} more package changes are not listed")
+            changes = changes[:MAX_CHANGES]
         if before is not None and after is not None and after - before > 1:
             notes.append(f"other changes came between revision {before} and {after}")
         extra = resolution.unplanned(changes, decided.files)
@@ -1141,7 +1249,27 @@ class Provisioner:
                 and resolution.is_agpl(package.license)
             ]
             if agpl:
-                notes.append(f"AGPL-licensed, not excepted, and installed: {', '.join(agpl)}")
+                # Refused before download is the rule (CP-9): one came all the same.
+                good = self._mark(environment_id, op.record.provision_id, before)
+                listed = ", ".join(agpl[:20])
+                raise _Stop(
+                    ProvisionOutcome.NEEDS_RECOVERY,
+                    "agpl_license",
+                    "link",
+                    ErrorInfo(
+                        kind=ErrorKind.POLICY_DENIED,
+                        message=f"the install linked AGPL-licensed packages the decision never "
+                        f"saw, which the project does not allow: {listed}",
+                    ),
+                    next_step=self._recovery_step(
+                        environment_id,
+                        f"The install linked AGPL-licensed packages ({listed}) against the "
+                        "project's licensing policy.",
+                        good,
+                    ),
+                    changes=tuple(changes),
+                    notes=_notes((), *notes),
+                )
         if capability is not None and request.capability is not None:
             probes = [
                 await self._probe(op, request.capability, probe, f"probe-{index}", "probe")
@@ -1155,18 +1283,19 @@ class Provisioner:
         failing = [probe for probe in probes if probe.status != "passed"]
         next_step = None
         if failing:
+            at = f"revision {after}" if after is not None else "the new revision"
             names = ", ".join(f"{probe.probe} ({probe.status})" for probe in failing)
-            notes.append(f"probes that did not pass at revision {after}: {names}")
+            notes.append(f"probes that did not pass at {at}: {names}")
             next_step = (
-                f"The install completed, and revision {after} stands, but {names} did not pass "
+                f"The install completed, and {at} stands, but {names} did not pass "
                 "(CP-23). Read the probes' output; nothing was uninstalled."
             )
         raise _Stop(
             ProvisionOutcome.COMPLETED,
-            next_step=next_step,
+            next_step=_clip(next_step) if next_step is not None else None,
             changes=tuple(changes),
             probes=(*op.record.probes, *probes),
-            notes=tuple(notes[:32]),
+            notes=_notes((), *notes),
         )
 
     async def _version_checks(
@@ -1189,12 +1318,13 @@ class Provisioner:
         """A version check for each requested package, from the revision's lockfile: it
         shows the package installed, not working (``import_check``, CP-22)."""
         checks: list[ProbeResult] = []
+        at = f"revision {revision}" if revision is not None else "the unknown revision"
         for kind, name in resolution.requested_names(request.conda, request.pip):
             version = resolution.installed_version(lockfile, kind, name) if lockfile else None
             if lockfile is None:
-                status, output = "error", f"revision {revision} has no lockfile to check"
+                status, output = "error", f"{at} has no lockfile to check"
             elif version is None:
-                status, output = "failed", f"revision {revision}'s lockfile does not list {name}"
+                status, output = "failed", f"{at}'s lockfile does not list {name}"
             else:
                 status, output = "passed", f"{name} {version}"
             checks.append(
@@ -1202,7 +1332,7 @@ class Provisioner:
                     probe=_PROBE_ID.sub("-", f"installed:{kind}:{name}")[:128],
                     kind="import_check",
                     status=status,
-                    revision=revision or 0,
+                    revision=revision,
                     output=output,
                     operation=op.record.provision_id,
                     recorded_at=self.clock(),
@@ -1226,7 +1356,8 @@ class Provisioner:
 
     # Ending.
 
-    async def _end(self, op: _Op, stop: _Stop) -> None:
+    def _fields(self, record: ProvisionOperation, stop: _Stop) -> dict[str, Any]:
+        """The record's fields once ``stop`` ends it."""
         completed = stop.outcome in (ProvisionOutcome.COMPLETED, ProvisionOutcome.ALREADY_SATISFIED)
         fields: dict[str, Any] = {
             "state": ProvisionState.FINISHED,
@@ -1239,47 +1370,38 @@ class Provisioner:
             "queue_position": None,
             **stop.updates,
         }
-        marked = self.store.package_status(op.record.request.context.environment_id)
-        if marked is not None and stop.outcome is not ProvisionOutcome.NEEDS_RECOVERY:
-            note = (
-                f"the environment needs recovery since operation {marked[1]} (revision {marked[2]})"
-            )
-            fields["notes"] = (*fields.get("notes", op.record.notes), note)[:32]
-        self._update(op, **fields)
+        marked = self.store.package_status(record.request.context.environment_id)
+        if marked is not None and marked[1] != record.provision_id:
+            good = f": revision {marked[2]} is the last known good" if marked[2] is not None else ""
+            note = f"the environment needs recovery since operation {marked[1]}{good}"
+            fields["notes"] = _notes(fields.get("notes", record.notes), note)
+        return fields
+
+    async def _end(self, op: _Op, stop: _Stop) -> None:
+        """Close the operation's permission request for good, whatever the outcome, so its
+        grant ends with it; then record the end, which clients see."""
+        if op.record.permission_request is not None:
+            reason = f"its operation ended {stop.outcome.value}"
+            await self._withdraw(op.record.permission_request, reason)
+        self._update(op, **self._fields(op.record, stop))
         _log.info(
             "provisioning %s ended %s%s",
             op.record.provision_id,
             stop.outcome.value,
-            f" at {stop.stage} ({stop.reason})" if not completed else "",
+            f" at {stop.stage} ({stop.reason})" if op.record.stage is not None else "",
         )
 
     def _stopped(self, op: _Op) -> None:
-        """Record an operation the worker's shutdown cut short. The worker is stopping, so
-        the permission request is withdrawn here, without waiting."""
+        """Record an operation the worker's shutdown cut short, and close its permission
+        request. The worker is stopping, so both happen here, without waiting."""
         if op.record.state is ProvisionState.FINISHED:
             return
         seq = op.record.permission_request
-        if (
-            op.record.state is ProvisionState.AWAITING_PERMISSION
-            and seq is not None
-            and self.permissions is not None
-        ):
+        if seq is not None and self.permissions is not None:
             with contextlib.suppress(PermissionStoreError):
                 self.permissions.withdraw(seq, "the worker stopped", self.clock())
         with contextlib.suppress(Exception):
-            self._update(
-                op,
-                state=ProvisionState.FINISHED,
-                outcome=ProvisionOutcome.FAILED,
-                reason="worker_restarted",
-                stage=_STAGES[op.record.state],
-                error=ErrorInfo(
-                    kind=ErrorKind.INTERNAL,
-                    message="the worker stopped during this operation; request it again",
-                ),
-                ended_at=self.clock(),
-                queue_position=None,
-            )
+            self._update(op, **self._fields(op.record, self._cut_short(op.record, "stopped")))
 
 
 def _validated(record: ProvisionOperation, **changes: Any) -> ProvisionOperation:
@@ -1291,6 +1413,15 @@ def _validated(record: ProvisionOperation, **changes: Any) -> ProvisionOperation
             "an update to provisioning operation %s does not validate", record.provision_id
         )
         raise
+
+
+def _clip(text: str, limit: int = MAX_TEXT) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _notes(notes: Sequence[str], *more: str) -> tuple[str, ...]:
+    """Notes as a record holds them: each at most MAX_TEXT characters, the newest 32."""
+    return tuple(_clip(note) for note in (*notes, *more) if note)[-MAX_NOTES:]
 
 
 def _cancelled(stage: Stage) -> _Stop:

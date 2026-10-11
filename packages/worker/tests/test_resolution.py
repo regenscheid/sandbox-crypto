@@ -16,7 +16,7 @@ from sandbox_science.contracts import (
     ProvisionRequest,
     ResolvedFile,
 )
-from sandbox_science.policy import HardFloor, PoolCeiling, parse_policy
+from sandbox_science.policy import Action, HardFloor, PoolCeiling, parse_policy
 from sandbox_science.worker import provisioning, resolution
 from sandbox_science.worker.catalog import Catalog, CatalogError, load_catalog
 from sandbox_science.worker.resolution import ResolveError
@@ -119,6 +119,37 @@ def test_a_dry_run_the_worker_cannot_hold_is_refused(text: str) -> None:
         resolution.parse_conda_dry_run(text, CACHE)
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [
+        # A name that is not its file's: the grant would hold another package's path.
+        link(
+            name="numpy",
+            version="1.26.4",
+            build="py_0",
+            fn=None,
+            url=f"{CACHE}/conda/conda-forge/linux-64/evilpkg-6.6.6-h0_0.conda",
+        ),
+        link(fn="evilpkg-6.6.6-h0_0.conda"),
+        link(subdir="noarch"),
+        link(version="2.15.5"),
+        link(url=None, fn="evilpkg-6.6.6-h0_0.conda"),
+        # Another ecosystem's file at the cache, or a path the cache does not lay out.
+        link(url=f"{CACHE}/npm/left-pad/-/left-pad-1.3.0.tgz"),
+        link(url=f"{CACHE}/conda/conda-forge/label/x/linux-64/pari-2.15.4-h0_0.conda"),
+    ],
+)
+def test_a_dry_run_whose_names_and_paths_disagree_is_refused(entry: dict[str, Any]) -> None:
+    with pytest.raises(ResolveError):
+        resolution.parse_conda_dry_run(dry_run(entry), CACHE)
+
+
+def test_a_dry_run_longer_than_an_operation_may_install_is_refused() -> None:
+    entries = [link()] * 2001
+    with pytest.raises(ResolveError, match="more than the 2000"):
+        resolution.parse_conda_dry_run(dry_run(*entries), CACHE)
+
+
 def report(*entries: dict[str, Any]) -> str:
     return json.dumps({"version": "1", "install": list(entries)})
 
@@ -184,6 +215,54 @@ def test_licenses_that_only_resemble_the_agpl_pass() -> None:
 def test_a_report_without_an_index_file_and_its_hash_is_refused(entry: dict[str, Any]) -> None:
     with pytest.raises(ResolveError):
         resolution.parse_pip_report(report(entry), CACHE)
+
+
+def wheel_at(url: str) -> dict[str, Any]:
+    return {"url": url, "archive_info": {"hashes": {"sha256": SHA}}}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        distribution(metadata={"name": "numpy"}),  # the path is fakeflint's
+        distribution(
+            download_info=wheel_at(
+                f"{CACHE}/pypi/files/fakeflint/{'d' * 64}/packages/ab/cd/"
+                "fakeflint-0.7.1-py3-none-any.whl"
+            )
+        ),
+        distribution(download_info=wheel_at(f"{CACHE}/npm/left-pad/-/left-pad-1.3.0.tgz")),
+        distribution(download_info=wheel_at(f"{CACHE}/pypi/simple/fakeflint/")),
+    ],
+)
+def test_a_report_whose_names_and_paths_disagree_is_refused(entry: dict[str, Any]) -> None:
+    with pytest.raises(ResolveError):
+        resolution.parse_pip_report(report(entry), CACHE)
+
+
+def test_a_path_that_is_not_the_records_file_is_denied() -> None:
+    loaded = parse_policy(POLICY)
+    [good] = resolution.parse_conda_dry_run(dry_run(link()), CACHE)
+    other = "/conda/conda-forge/linux-64/evilpkg-6.6.6-h0_0.conda"
+    index = "/conda/conda-forge/linux-64/repodata.json"
+    resolved = [good, resolution.Resolved(good.file, other), resolution.Resolved(good.file, index)]
+    decided = resolution.decide(resolved, loaded, PoolCeiling.unrestricted(), HardFloor())
+    assert [decision.action for decision in decided.decisions] == [
+        Action.ALLOW,
+        Action.DENY,
+        Action.DENY,
+    ]
+    assert "not the package file of pari" in decided.decisions[1].reason
+
+
+def test_the_conda_install_is_pinned_to_the_decided_files() -> None:
+    [resolved] = resolution.parse_conda_dry_run(dry_run(link()), CACHE)
+    argv = resolution.conda_install(["pari>=2.15"], [resolved.file])
+    assert argv[3:] == ("sh", "conda-forge/linux-64::pari==2.15.4=h0_0", "pari>=2.15")
+    assert "MAMBA_PINNED_PACKAGES" in argv[2]
+    elsewhere = resolved.file.model_copy(update={"channel": "https://elsewhere.example/c"})
+    with pytest.raises(ValueError, match="cannot pin"):
+        resolution.conda_pins([elsewhere])
 
 
 POLICY = """\
@@ -315,6 +394,9 @@ def test_a_dry_run_takes_no_turn() -> None:
         "pip", ["install", "--dry-run", "--report", "-", "x"]
     )
     assert provisioning.changes_environment("pip", ["install", "x"])
+    # Only right after install: elsewhere, --dry-run may be another option's value.
+    assert provisioning.changes_environment("pip", ["install", "--no-binary", "--dry-run", "x"])
+    assert provisioning.changes_environment("pip", ["--quiet", "install", "--dry-run", "x"])
 
 
 def test_the_shipped_catalog_loads_and_a_broken_one_does_not() -> None:

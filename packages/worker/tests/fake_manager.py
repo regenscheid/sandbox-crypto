@@ -28,7 +28,10 @@ A Conda package can bring files (``provides``: a path in the prefix and its text
 executable under ``bin/``), and one whose ``postlink`` is ``fail`` is linked, then fails
 as a failed post-link script does; one whose ``postlink`` is ``slow`` is linked, then
 takes half a minute; one whose ``postlink`` is ``lost`` is linked, then kills the
-executor it runs under. It reaches no network but the cache it is given.
+executor it runs under. Like micromamba, an install honors ``MAMBA_PINNED_PACKAGES``
+(``channel/subdir::name==version=build``, separated by commas): it logs the pins, and
+fails to solve if a package it would link is pinned to another version or build. It
+reaches no network but the cache it is given.
 """
 
 from __future__ import annotations
@@ -69,6 +72,8 @@ VALUED = {
     "--name",
     "-f",
     "--file",
+    "--only-binary",
+    "--no-binary",
 }
 """Options whose value is the next argument."""
 
@@ -375,6 +380,16 @@ def conda_closure(names: list[str], prefix: Path) -> list[tuple[str, dict[str, A
     return list(found.items())
 
 
+def pins() -> dict[str, tuple[str, str]]:
+    """The version and build MAMBA_PINNED_PACKAGES pins each package to."""
+    pinned: dict[str, tuple[str, str]] = {}
+    for spec in filter(None, os.environ.get("MAMBA_PINNED_PACKAGES", "").split(",")):
+        name, _, rest = spec.split("::")[-1].partition("==")
+        version, _, build = rest.partition("=")
+        pinned[name] = (version, build)
+    return pinned
+
+
 def conda(tool: str, args: list[str]) -> int:
     prefix = Path(sys.prefix)
     command, names = arguments(args)
@@ -395,6 +410,17 @@ def conda(tool: str, args: list[str]) -> int:
         return 0
     version = f"python{sys.version_info.major}.{sys.version_info.minor}"
     planned = conda_closure(names, prefix)
+    pinned = pins()
+    if "MAMBA_PINNED_PACKAGES" in os.environ:
+        log("pinned", os.environ["MAMBA_PINNED_PACKAGES"] or "-")
+    for name, entry in planned:
+        if name in pinned and pinned[name] != (entry["version"], entry["build"]):
+            print(
+                f"error    libmamba Could not solve for environment specs: {name} is pinned "
+                f"to {'='.join(pinned[name])}",
+                file=sys.stderr,
+            )
+            return 1
     for name, entry in planned:
         url = conda_record(name, entry)["url"]
         try:
@@ -448,11 +474,11 @@ def kill_executor() -> None:
     pid = os.getppid()
     while pid > 1:
         try:
-            arguments = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            words = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
             stat = Path(f"/proc/{pid}/stat").read_text()
         except OSError:
             return
-        if b"--stdio" in arguments:
+        if b"--stdio" in words:
             os.kill(pid, signal.SIGKILL)
             return
         pid = int(stat.rsplit(")", 1)[1].split()[1])  # the parent's
