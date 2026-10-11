@@ -7,6 +7,7 @@ by the client: submitting the same ID again returns the same execution.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Final, Literal, Self
@@ -112,7 +113,61 @@ class CellRequest(Contract):
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
 
 
-ExecutionRequest = Annotated[ShellRequest | CellRequest, Field(discriminator="kind")]
+Feature = Literal["pdf"]
+"""Capabilities beyond kernels that an environment can offer; ``pdf`` needs pdf_oxide (D59)."""
+FEATURES: Final[tuple[Feature, ...]] = ("pdf",)
+PdfOperation = Literal["info", "pages", "search", "render"]
+PageList = Annotated[
+    str, StringConstraints(pattern=r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$", max_length=200)
+]
+"""Pages by physical number, from 1, such as ``3-5,9``."""
+
+
+class PdfRequest(Contract):
+    """A PDF operation (docs/specs/pdf-sources.md), parsed inside the sandbox.
+
+    The result's stdout holds the PDF helper's JSON: the operation's result, or, with
+    exit code 3, ``{"error": {"kind", "message"}}``. A render writes a PNG into the
+    session workspace, so it appears in ``written_files`` and can be published.
+    """
+
+    kind: Literal["pdf"] = "pdf"
+    operation_id: Identifier
+    context: ExecutionContext
+    operation: PdfOperation
+    path: RelativePath
+    pages: PageList | None = None
+    query: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
+    page: Annotated[int, Field(ge=1)] | None = None
+    region: tuple[float, float, float, float] | None = None
+    """``[x0, y0, x1, y1]`` in PDF points, origin at the page's bottom left."""
+    dpi: Annotated[int, Field(ge=18, le=300)] = 150
+    include_artifacts: bool = False
+    out: RelativePath | None = None
+    timeout_seconds: Timeout = DEFAULT_TIMEOUT_SECONDS
+    output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
+
+    @model_validator(mode="after")
+    def _arguments(self) -> Self:
+        needs: dict[str, tuple[str, object]] = {
+            "pages": ("pages", self.pages),
+            "search": ("query", self.query),
+            "render": ("page", self.page),
+        }
+        if self.operation in needs:
+            name, value = needs[self.operation]
+            if value is None:
+                raise ValueError(f"{self.operation} needs {name}")
+        if self.query is not None:
+            _no_nul(self.query, "query")
+        if self.region is not None:
+            x0, y0, x1, y1 = self.region
+            if not all(math.isfinite(value) for value in self.region) or x0 >= x1 or y0 >= y1:
+                raise ValueError("region must be finite [x0, y0, x1, y1] with x0 < x1 and y0 < y1")
+        return self
+
+
+ExecutionRequest = Annotated[ShellRequest | CellRequest | PdfRequest, Field(discriminator="kind")]
 
 
 class ExecutionState(StrEnum):
@@ -287,7 +342,7 @@ class Execution(Contract):
     execution_id: Identifier
     attempt_id: Identifier
     operation_id: Identifier
-    kind: Literal["shell", "cell"]
+    kind: Literal["shell", "cell", "pdf"]
     context: ExecutionContext
     state: ExecutionState
     submitted_at: datetime
@@ -368,6 +423,7 @@ class Capabilities(Contract):
     protocol: int
     languages: tuple[Language, ...]
     location: Location
+    features: tuple[Feature, ...] = ()
 
 
 class WorkerErrorResponse(Contract):
