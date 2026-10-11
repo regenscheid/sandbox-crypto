@@ -10,6 +10,7 @@ to enforcement").
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import threading
@@ -41,6 +42,7 @@ from sandbox_science.policy import (
 )
 from sandbox_science.policy.approvals import Approvals, RequestKey
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
+from sandbox_science.policy.package_requests import SANDBOX_HEADER
 
 from .archives import MAX_PACKAGES, ArchiveLookup
 from .errors import MiddlewareError, StoreError
@@ -174,6 +176,8 @@ class Verdict:
     reason: str
     findings: tuple[Finding, ...] = ()
     decision: Decision | None = None
+    headers: tuple[tuple[str, str], ...] = ()
+    """Request headers to write on an allowed request, replacing any the sandbox sent."""
 
     def __post_init__(self) -> None:
         if self.allowed != (self.reason_code == ""):
@@ -360,7 +364,11 @@ class PolicyMiddleware:
                 _check_git_body(facts)
             except GitRequestError as exc:
                 return _deny(GIT_REQUEST_INVALID, str(exc), decision)
-        return self._verdict(facts, loaded, decision, operation)
+        verdict = self._verdict(facts, loaded, decision, operation)
+        if verdict.allowed and destination == ref.package_cache:
+            # The cache budgets upstream fetches by sandbox; a sandbox cannot name another.
+            verdict = dataclasses.replace(verdict, headers=((SANDBOX_HEADER, facts.sandbox_id),))
+        return verdict
 
     def _verdict(
         self,

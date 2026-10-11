@@ -33,6 +33,7 @@ from sandbox_science.package_cache.app import (
 from sandbox_science.package_cache.errors import StoreError
 from sandbox_science.package_cache.settings import Settings
 from sandbox_science.package_cache.upstream import USER_AGENT
+from sandbox_science.policy.package_requests import SANDBOX_HEADER
 
 pytestmark = pytest.mark.asyncio
 
@@ -681,8 +682,10 @@ async def test_a_range_is_logged_with_the_bytes_sent(
         if record.name == "sandbox_science.package_cache.requests"
     ]
     assert lines[1:] == [
-        "ecosystem=pkg method=GET path=/pkg/index result=hit status=206 bytes=4 upstream_ms=-",
-        "ecosystem=pkg method=GET path=/pkg/index result=hit status=416 bytes=0 upstream_ms=-",
+        "ecosystem=pkg method=GET path=/pkg/index result=hit status=206 bytes=4"
+        " upstream_ms=- sandbox=-",
+        "ecosystem=pkg method=GET path=/pkg/index result=hit status=416 bytes=0"
+        " upstream_ms=- sandbox=-",
     ]
 
 
@@ -1130,6 +1133,37 @@ async def test_the_upstream_rate_limit_answers_503(make_harness: HarnessFactory)
     assert harness.upstream.count("/b") == 0
 
 
+async def test_each_sandbox_has_its_own_upstream_budget(
+    make_harness: HarnessFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sandbox_science.package_cache.requests")
+    harness = await make_harness(sandbox_rate=0.001, sandbox_burst=1, rate_limit_wait=0)
+    for name in "abc":
+        harness.upstream.set(f"/{name}", name.encode())
+        harness.route(name)
+    first = {SANDBOX_HEADER: "sbx-0001"}
+    assert (await harness.get("a", headers=first))[:2] == (200, b"a")
+    status, _, headers = await harness.get("b", headers=first)
+    assert (status, headers["Retry-After"]) == (503, "1")
+    # Another sandbox still fetches, and so does a request no sandbox sent.
+    assert (await harness.get("b", headers={SANDBOX_HEADER: "sbx-0002"}))[:2] == (200, b"b")
+    assert (await harness.get("c"))[:2] == (200, b"c")
+    # What is stored costs nothing.
+    assert (await harness.get("a", headers=first))[:2] == (200, b"a")
+    logged = [
+        record.getMessage() for record in caplog.records if "path=/pkg/b " in record.getMessage()
+    ]
+    assert [line.rpartition(" ")[2] for line in logged] == ["sandbox=sbx-0001", "sandbox=sbx-0002"]
+
+
+async def test_per_sandbox_budgets_can_be_turned_off(make_harness: HarnessFactory) -> None:
+    harness = await make_harness(sandbox_rate=0, rate_limit_wait=0)
+    for name in "ab":
+        harness.upstream.set(f"/{name}", name.encode())
+        harness.route(name)
+        assert (await harness.get(name, headers={SANDBOX_HEADER: "sbx-0001"}))[0] == 200
+
+
 async def test_eviction_keeps_the_store_under_its_cap(make_harness: HarnessFactory) -> None:
     # Each entry counts its 300 bytes and 1 KiB of overhead: four are over the cap.
     harness = await make_harness(max_size="5000", max_artifact_size="400", max_metadata_size="400")
@@ -1201,11 +1235,12 @@ async def test_each_request_is_logged_once(
     assert lines[0].startswith(
         "ecosystem=pkg method=GET path=/pkg/index result=miss status=200 bytes=10 upstream_ms="
     )
-    assert not lines[0].endswith("upstream_ms=-")
+    assert "upstream_ms=- " not in lines[0]
+    unfetched = " upstream_ms=- sandbox=-"
     assert lines[1:] == [
-        "ecosystem=pkg method=GET path=/pkg/index result=hit status=200 bytes=10 upstream_ms=-",
-        "ecosystem=pkg method=HEAD path=/pkg/index result=hit status=200 bytes=0 upstream_ms=-",
-        "ecosystem=pkg method=GET path=/pkg/unrouted result=- status=404 bytes=0 upstream_ms=-",
+        "ecosystem=pkg method=GET path=/pkg/index result=hit status=200 bytes=10" + unfetched,
+        "ecosystem=pkg method=HEAD path=/pkg/index result=hit status=200 bytes=0" + unfetched,
+        "ecosystem=pkg method=GET path=/pkg/unrouted result=- status=404 bytes=0" + unfetched,
     ]
 
 
