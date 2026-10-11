@@ -519,6 +519,11 @@ network:
             Action.DENY.value,
             id="providers",
         ),
+        pytest.param(
+            "credentials: {providers: [{name: gh, profile: github}]}\n",
+            Action.ALERT.value,
+            id="providers-and-allow-credentialed",
+        ),
     ],
 )
 def test_requests_count_as_credentialed_when_the_project_has_providers(
@@ -530,7 +535,13 @@ def test_requests_count_as_credentialed_when_the_project_has_providers(
     providers: str,
     on_timeout: str,
 ) -> None:
-    loaded = bind_policy(store, sandbox_id, READ_ESCALATION + providers)
+    escalation = READ_ESCALATION
+    if on_timeout == Action.ALERT.value and providers:
+        escalation = escalation.replace(
+            "escalation: {on_timeout: allow}",
+            "escalation: {on_timeout: allow, allow_credentialed: true}",
+        )
+    loaded = bind_policy(store, sandbox_id, escalation + providers)
     middleware = PolicyMiddleware(
         store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=sink
     )

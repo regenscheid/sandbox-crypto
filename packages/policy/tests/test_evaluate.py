@@ -2373,6 +2373,104 @@ def test_credentialed_requests_are_denied_on_timeout_even_under_read_only_rules(
     assert escalation_terms(credentialed) == (timedelta(minutes=30), Action.DENY)
 
 
+@pytest.mark.parametrize(("method", "url"), [("GET", "https://example.org/"), ("POST", FETCH)])
+def test_a_rule_can_let_credentialed_requests_proceed_on_timeout(method: str, url: str) -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - name: reads
+              operation: http
+              match: {hosts: ["*"], methods: [GET]}
+              action: escalate
+              escalation: {on_timeout: allow, allow_credentialed: true}
+            - name: fetch
+              operation: git
+              match: {hosts: ["*"], git_service: upload-pack}
+              action: escalate
+              escalation: {on_timeout: allow, allow_credentialed: true}
+        """
+    )
+    credentialed = decide_http(policy, method, url, credentialed=True)
+    assert escalation_terms(credentialed) == (timedelta(minutes=30), Action.ALERT)
+
+
+def test_allow_credentialed_does_not_lift_url_limits() -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - name: reads
+              operation: http
+              match: {hosts: ["*"], methods: [GET]}
+              limits: {max_url_bytes: 64}
+              action: escalate
+              escalation: {on_timeout: allow, allow_credentialed: true}
+        """
+    )
+    long_url = "https://example.org/?" + "q" * 100
+    # An escalate rule whose limit is exceeded still asks, but never proceeds unanswered.
+    decision = decide_http(policy, "GET", long_url, credentialed=True)
+    assert escalation_terms(decision) == (timedelta(minutes=30), Action.DENY)
+
+
+def test_credentialed_requests_proceed_only_if_every_tied_rule_allows_it() -> None:
+    policy = load(
+        """
+        network:
+          rules:
+            - name: with
+              operation: http
+              match: {hosts: [example.org], methods: [GET]}
+              action: escalate
+              escalation: {on_timeout: allow, allow_credentialed: true}
+            - name: without
+              operation: http
+              match: {hosts: [example.org], methods: [GET, HEAD]}
+              action: escalate
+              escalation: {on_timeout: allow}
+        """
+    )
+    anonymous = decide_http(policy, "GET", "https://example.org/")
+    credentialed = decide_http(policy, "GET", "https://example.org/", credentialed=True)
+    assert escalation_terms(anonymous)[1] is Action.ALERT
+    assert escalation_terms(credentialed)[1] is Action.DENY
+
+
+@pytest.mark.parametrize(
+    "escalation",
+    ["{allow_credentialed: true}", "{on_timeout: deny, allow_credentialed: true}"],
+)
+def test_allow_credentialed_needs_on_timeout_allow(escalation: str) -> None:
+    with pytest.raises(PolicyLoadError, match="allow_credentialed"):
+        load(
+            f"""
+            network:
+              rules:
+                - name: reads
+                  operation: http
+                  match: {{hosts: ["*"], methods: [GET]}}
+                  action: escalate
+                  escalation: {escalation}
+            """
+        )
+
+
+def test_allow_credentialed_cannot_widen_a_rule_that_writes() -> None:
+    with pytest.raises(PolicyLoadError, match="read-only"):
+        load(
+            """
+            network:
+              rules:
+                - name: writes
+                  operation: http
+                  match: {hosts: ["*"], methods: [GET, POST]}
+                  action: escalate
+                  escalation: {on_timeout: allow, allow_credentialed: true}
+            """
+        )
+
+
 def test_write_rules_may_override_the_timeout_with_on_timeout_deny() -> None:
     policy = load(
         """
