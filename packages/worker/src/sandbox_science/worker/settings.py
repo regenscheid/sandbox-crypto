@@ -79,7 +79,11 @@ class EnvironmentSettings(_Model):
     """Seconds between checks of each ready environment's drafts."""
     max_admitted_hosts: Annotated[int, Field(ge=0, le=100)] = 64
     """Hosts admitted on demand per environment. Each adds an endpoint with the public
-    address ranges (about 2 KiB), and OpenShell limits a sandbox's policy to 256 KiB."""
+    address ranges (about 4 KiB of YAML), and OpenShell limits a sandbox's policy to
+    256 KiB; the worker also stops admitting before the compiled policy grows too large."""
+    admin_hosts: tuple[str, ...] = ()
+    """The deployment's administration endpoints, as the policy middleware's settings list
+    them: the compiler and admission apply the same hard floor."""
 
 
 class OpenShellBackendSettings(_Model):

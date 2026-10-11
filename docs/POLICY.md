@@ -172,7 +172,12 @@ The compiler in `sandbox_science.policy.openshell` (D69) produces OpenShell v0.1
     - A `*.suffix` rule becomes OpenShell's `**.suffix`, with the same ranges. OpenShell needs three labels in a wildcard host, so `*.org` cannot be named and the compiler reports it.
     - **Admission on demand** (D69). `*` rules and a non-deny `defaults.action` reach hosts nobody can name in advance.
       - OpenShell refuses the first connection to such a host and drafts a proposal for it.
-      - The worker reads the drafts of the sandboxes it manages. When the policy could allow or escalate some request to the host on a port the policy admits, the worker names the host in a new compilation of the same revision, with the public ranges.
+      - The worker reads the drafts of the sandboxes it manages. It admits a host when all of these hold:
+        - the host is public and not a platform service host;
+        - the port is one the policy admits;
+        - some request to the host there could be allowed or escalated. URL limits are left out of this check, so under a very small `max_url_bytes` a host can be admitted whose every request is then denied.
+      - An admitted host is named in a new compilation of the same revision, with the public ranges.
+      - An `http` deny rule alone does not keep a host out under a non-deny default: git requests to it still take the default. To keep a host out, deny it for `git` as well, or deny by default.
       - It never approves the draft. It rejects it, giving its decision as the reason ([worker](WORKER.md#admission-on-demand)).
       - Addresses are admitted the same way.
       - In [lab 10](../.agents/docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md), a host was reachable 9 to 20 s after the first refused connection.
@@ -206,14 +211,20 @@ Wherever the compiled policy differs from the project policy, it is stricter, an
 The middleware path has these limits, checked against a real gateway on babbage ([lab report](../.agents/docs/agent-reports/babbage-openshell-lab-2026-10-10.md)):
 
 - **Body size.** A request body larger than the middleware's registered `max_payload_bytes` (at most 4 MiB) is blocked, so larger uploads fail.
-- **Names, not addresses.** The middleware sees host names, not resolved addresses. In a policy that reaches hosts it does not name, the `allowed_ips` of endpoints for public hosts keep them on public addresses; overlapping endpoints must agree on them, so a wildcard's endpoint and those of the hosts under it carry the same ranges. That is stricter than the library's exact-host rule, which allows a public name a rule names exactly to resolve to a private address. A policy without wildcard rules and with a `deny` default keeps that rule.
+- **Names, not addresses.** The middleware sees host names, not resolved addresses. So in a policy that reaches hosts it does not name, the `allowed_ips` of endpoints for public hosts carry the address checks. They hold the public address ranges, less every address the library denies whatever the name:
+  - the floor's metadata addresses, such as Azure's 168.63.129.16;
+  - the deployment's `admin_hosts`, which the worker's settings list too;
+  - the pool ceiling's denied addresses;
+  - MCP servers declared by address.
+
+  A name a sandbox chooses, such as one under a wildcard DNS service, cannot reach these. Overlapping endpoints must agree on the ranges, so a wildcard's endpoint and those of the hosts under it carry the same ones. That is stricter than the library's exact-host rule, which allows a public name a rule names exactly to resolve to a private address. A policy without wildcard rules and with a `deny` default keeps that rule; there, and for LAN hosts a rule names exactly, the name is trusted as the library trusts it, and the middleware cannot check where it resolves.
 - **WebSockets.** The library does not support upgrades, so the middleware denies the upgrade request and, as a second check, every WebSocket preflight.
 - **DNS.** Wildcards over a top-level domain cannot be named. Hosts reached only through `*` rules or the default become reachable once the worker admits them, so the first connection to each fails (see Admission above).
 - **Policy reloads.** Each admission is a new compilation, and when a sandbox loads one, OpenShell closes every connection opened under the previous one. An admission therefore interrupts transfers in progress. In lab 10, Python's line-by-line reading of a cut chunked response even ended without an error. Clients that retry recover; check downloads by length or checksum.
 
 | Policy element | Enforced by |
 | --- | --- |
-| Hard floor | OpenShell blocks loopback, link-local and unspecified addresses itself; the middleware applies the rest (metadata and gateway-host names, administration endpoints, MCP hosts, package registries) |
+| Hard floor | OpenShell blocks loopback, link-local and unspecified addresses itself; the middleware applies the rest by name (metadata and gateway-host names, administration endpoints, MCP hosts, package registries), and the compiled address ranges leave out the floor's, the ceiling's and the administration endpoints' public addresses |
 | `network.rules`, ceiling host lists, URL limits, the public/non-public rule | The policy middleware, with this library, behind OpenShell's admission endpoints and address checks |
 | `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox; `worker_access` also decides whether research sandboxes can reach the MCP proxy |
 | `mcp.servers.*.auth` | The connector auth service and OpenShell providers bound with `credential_binding` ([MCP connectors](MCP-CONNECTORS.md), D66, D67) |

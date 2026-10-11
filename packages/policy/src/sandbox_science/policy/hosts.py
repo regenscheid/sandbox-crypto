@@ -173,6 +173,16 @@ def address_forms(host: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(str(candidate) for candidate in _embedded_addresses(address)))
 
 
+def floor_addresses() -> frozenset[IPAddress]:
+    """The addresses the built-in floor denies one by one: cloud metadata endpoints."""
+    return _METADATA_ADDRESSES
+
+
+def address_variants(address: IPAddress) -> list[IPAddress]:
+    """An address and the IPv4 addresses it embeds (IPv4-mapped, NAT64, 6to4, Teredo)."""
+    return _embedded_addresses(address)
+
+
 def floor_reason(host: str) -> str | None:
     """Return why the built-in hard floor denies a host, or None.
 
