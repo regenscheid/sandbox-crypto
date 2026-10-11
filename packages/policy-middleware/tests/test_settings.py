@@ -42,6 +42,12 @@ def test_relative_paths_resolve_against_the_settings_file(tmp_path: Path) -> Non
     assert settings.max_payload_bytes == MAX_PAYLOAD_BYTES
 
 
+def test_the_event_store_defaults_to_the_state_directory(tmp_path: Path) -> None:
+    assert load_settings(write(tmp_path, DEV)).event_store_path == tmp_path / "s" / "events.db"
+    elsewhere = load_settings(write(tmp_path, DEV + 'event_store = "evidence/events.db"\n'))
+    assert elsewhere.event_store_path == tmp_path / "evidence" / "events.db"
+
+
 def test_local_development_without_tokens(tmp_path: Path) -> None:
     settings = load_settings(
         write(tmp_path, 'state_dir = "s"\nceiling = "c.yaml"\nallow_unauthenticated = true\n')

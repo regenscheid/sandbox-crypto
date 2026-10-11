@@ -406,15 +406,14 @@ class PolicyMiddleware:
             findings.append(Finding("policy_monitor", alert.rule, "low"))
             try:
                 self._events.record(
+                    "monitor",
                     {
-                        "type": "monitor",
-                        "time": now.isoformat(timespec="seconds"),
                         "sandbox_id": facts.sandbox_id,
                         "request_id": facts.request_id,
                         "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
                         "rule": alert.rule,
                         "reason": alert.reason,
-                    }
+                    },
                 )
             except Exception:
                 _log.exception("could not record monitor %s", alert.rule)
@@ -428,9 +427,8 @@ class PolicyMiddleware:
         decision: Decision,
         operation: Operation | None = None,
     ) -> None:
-        event: dict[str, object] = {
-            "type": kind,
-            "time": self._now().isoformat(timespec="seconds"),
+        # The store adds the time; the payload keeps the decision and the request.
+        payload: dict[str, object] = {
             "sandbox_id": facts.sandbox_id,
             "request_id": facts.request_id,
             "policy": {"name": loaded.policy.metadata.name, "digest": loaded.digest},
@@ -448,13 +446,13 @@ class PolicyMiddleware:
             },
         }
         if decision.escalation is not None:
-            event["escalation"] = {
+            payload["escalation"] = {
                 "timeout_seconds": int(decision.escalation.timeout.total_seconds()),
                 "on_timeout": decision.escalation.on_timeout.value,
             }
         if isinstance(operation, PackageOperation) and operation.digest is not None:
-            event["opam_archive"] = self._opam_archive(operation.digest)
-        self._events.record(event)
+            payload["opam_archive"] = self._opam_archive(operation.digest)
+        self._events.record(kind, payload)
 
     def _opam_archive(self, digest: str) -> dict[str, object]:
         """An opam archive's digest and, if the package cache can tell, its packages.
