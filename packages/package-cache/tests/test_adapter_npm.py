@@ -7,9 +7,14 @@ Rewriting one must point every version's tarball at the cache with the SHA-512 f
 ``integrity``, change nothing else, and routing each new link must lead back to the
 registry's tarball with that digest.
 
+The registry's own tarball path, which clients request from a lockfile, routes to the
+same tarball without a digest, in each spelling npm, pnpm and yarn use. Everything the
+adapter serves must classify the same way in the policy library.
+
 The negative tests cover names npm refuses, paths outside the layout (the registry's API
-among them), Accept headers that allow neither variant, and metadata the rewrite must not
-pass on: tarballs on another host or path, unusable integrity, malformed JSON.
+among them), tarballs of another package, Accept headers that allow neither variant, and
+metadata the rewrite must not pass on: tarballs on another host or path, unusable
+integrity, malformed JSON.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from sandbox_science.package_cache.adapters.npm import (
     NpmAdapter,
     NpmMetadataError,
 )
+from sandbox_science.policy import ClassificationError, classify_package_request
 
 REGISTRY = "https://registry.npmjs.org"
 PUBLIC = "http://host.openshell.internal:8090"
@@ -179,32 +185,31 @@ def test_invalid_settings_are_refused(registry: str, public_url: str) -> None:
 
 # --- package metadata --------------------------------------------------------------------
 
+# (path, the name the registry is asked for)
+METADATA_ROUTES = [
+    ("lodash", "lodash"),
+    ("files", "files"),  # a package called "files": tarballs live below files/
+    ("JSONStream", "JSONStream"),  # legacy capital letters are kept, never folded
+    ("Base64", "Base64"),
+    ("http", "http"),  # core module names are old package names
+    ("underscore.string", "underscore.string"),
+    ("a", "a"),
+    ("7", "7"),
+    ("~legacy!(*)'", "~legacy!(*)'"),  # characters old packages may still have
+    ("x" * MAX_NAME_LENGTH, "x" * MAX_NAME_LENGTH),
+    ("@types%2Fnode", "@types%2fnode"),  # pnpm (encodeURIComponent)
+    ("@types%2fnode", "@types%2fnode"),  # npm, yarn
+    ("@types/node", "@types%2fnode"),
+    ("@isaacs%2fstring-locale-compare", "@isaacs%2fstring-locale-compare"),
+    ("@scope%2f_private", "@scope%2f_private"),  # only "." may not start a scoped name
+    ("@scope%2f-dash", "@scope%2f-dash"),
+    ("@.scope%2fpkg", "@.scope%2fpkg"),
+    ("@Scope%2FName", "@Scope%2fName"),
+    ("@s%2f" + "x" * (MAX_NAME_LENGTH - 3), "@s%2f" + "x" * (MAX_NAME_LENGTH - 3)),
+]
 
-@pytest.mark.parametrize(
-    ("path", "upstream_name"),
-    [
-        ("lodash", "lodash"),
-        ("files", "files"),  # a package called "files": tarballs live below files/
-        ("JSONStream", "JSONStream"),  # legacy capital letters are kept, never folded
-        ("Base64", "Base64"),
-        ("http", "http"),  # core module names are old package names
-        ("underscore.string", "underscore.string"),
-        ("a", "a"),
-        ("7", "7"),
-        ("~legacy!(*)'", "~legacy!(*)'"),  # characters old packages may still have
-        ("x" * MAX_NAME_LENGTH, "x" * MAX_NAME_LENGTH),
-        ("@types%2Fnode", "@types%2fnode"),  # pnpm (encodeURIComponent)
-        ("@types%2fnode", "@types%2fnode"),  # npm, yarn
-        ("@types/node", "@types%2fnode"),
-        ("@isaacs%2fstring-locale-compare", "@isaacs%2fstring-locale-compare"),
-        ("@scope%2f_private", "@scope%2f_private"),  # only "." may not start a scoped name
-        ("@scope%2f-dash", "@scope%2f-dash"),
-        ("@.scope%2fpkg", "@.scope%2fpkg"),
-        ("@Scope%2FName", "@Scope%2fName"),
-        ("@s%2f" + "x" * (MAX_NAME_LENGTH - 3), "@s%2f" + "x" * (MAX_NAME_LENGTH - 3)),
-    ],
-    ids=short_id,
-)
+
+@pytest.mark.parametrize(("path", "upstream_name"), METADATA_ROUTES, ids=short_id)
 def test_metadata_routes(path: str, upstream_name: str) -> None:
     for accept, variant in ((INSTALL_ACCEPT, ABBREVIATED_METADATA), (None, FULL_METADATA)):
         route = fetch(path, accept)
@@ -333,60 +338,59 @@ def test_accept_that_allows_neither_variant_is_refused(accept: str) -> None:
 
 # --- tarballs ----------------------------------------------------------------------------
 
+# (path, upstream URL)
+TARBALL_ROUTES = [
+    (f"files/{HEX}/lodash/-/lodash-4.17.21.tgz", f"{REGISTRY}/lodash/-/lodash-4.17.21.tgz"),
+    (
+        f"files/{HEX}/@types/node/-/node-20.11.0.tgz",
+        f"{REGISTRY}/@types/node/-/node-20.11.0.tgz",
+    ),
+    (
+        f"files/{HEX}/JSONStream/-/JSONStream-1.3.5.tgz",
+        f"{REGISTRY}/JSONStream/-/JSONStream-1.3.5.tgz",
+    ),
+    (f"files/{HEX}/files/-/files-1.0.0.tgz", f"{REGISTRY}/files/-/files-1.0.0.tgz"),
+    (
+        f"files/{HEX}/demo/-/demo-1.0.0-alpha.1+build.5.tgz",
+        f"{REGISTRY}/demo/-/demo-1.0.0-alpha.1+build.5.tgz",
+    ),
+    (
+        f"files/{HEX}/~legacy!(*)'/-/~legacy!(*)'-1.0.0.tgz",
+        f"{REGISTRY}/~legacy!(*)'/-/~legacy!(*)'-1.0.0.tgz",
+    ),
+    (
+        f"files/{HEX}/@scope/_private/-/_private-1.0.0.tgz",
+        f"{REGISTRY}/@scope/_private/-/_private-1.0.0.tgz",
+    ),
+    # Legacy names the registry still serves: early npm left out the hyphen before a
+    # prerelease (1.0.0rc2 holds version 1.0.0-rc2), and a few tarballs use "@".
+    (
+        f"files/{HEX}/express/-/express-1.0.0rc2.tgz",
+        f"{REGISTRY}/express/-/express-1.0.0rc2.tgz",
+    ),
+    (f"files/{HEX}/riak-js/-/riak-js-0.2.2f.tgz", f"{REGISTRY}/riak-js/-/riak-js-0.2.2f.tgz"),
+    (f"files/{HEX}/demo/-/demo-1.0.0beta-2.tgz", f"{REGISTRY}/demo/-/demo-1.0.0beta-2.tgz"),
+    (f"files/{HEX}/demo/-/demo-1.0.0rc.1.tgz", f"{REGISTRY}/demo/-/demo-1.0.0rc.1.tgz"),
+    (
+        f"files/{HEX}/thirty-two/-/thirty-two@0.0.1.tgz",
+        f"{REGISTRY}/thirty-two/-/thirty-two@0.0.1.tgz",
+    ),
+    (
+        f"files/{HEX}/nodemailer/-/nodemailer@0.1.1.tgz",
+        f"{REGISTRY}/nodemailer/-/nodemailer@0.1.1.tgz",
+    ),
+    (
+        f"files/{HEX}/{'x' * MAX_NAME_LENGTH}/-/{'x' * MAX_NAME_LENGTH}-1.0.0.tgz",
+        f"{REGISTRY}/{'x' * MAX_NAME_LENGTH}/-/{'x' * MAX_NAME_LENGTH}-1.0.0.tgz",
+    ),
+    (
+        f"files/{HEX}/demo/-/demo-1.0.0-{'a' * (MAX_VERSION_LENGTH - 6)}.tgz",
+        f"{REGISTRY}/demo/-/demo-1.0.0-{'a' * (MAX_VERSION_LENGTH - 6)}.tgz",
+    ),
+]
 
-@pytest.mark.parametrize(
-    ("path", "upstream"),
-    [
-        (f"files/{HEX}/lodash/-/lodash-4.17.21.tgz", f"{REGISTRY}/lodash/-/lodash-4.17.21.tgz"),
-        (
-            f"files/{HEX}/@types/node/-/node-20.11.0.tgz",
-            f"{REGISTRY}/@types/node/-/node-20.11.0.tgz",
-        ),
-        (
-            f"files/{HEX}/JSONStream/-/JSONStream-1.3.5.tgz",
-            f"{REGISTRY}/JSONStream/-/JSONStream-1.3.5.tgz",
-        ),
-        (f"files/{HEX}/files/-/files-1.0.0.tgz", f"{REGISTRY}/files/-/files-1.0.0.tgz"),
-        (
-            f"files/{HEX}/demo/-/demo-1.0.0-alpha.1+build.5.tgz",
-            f"{REGISTRY}/demo/-/demo-1.0.0-alpha.1+build.5.tgz",
-        ),
-        (
-            f"files/{HEX}/~legacy!(*)'/-/~legacy!(*)'-1.0.0.tgz",
-            f"{REGISTRY}/~legacy!(*)'/-/~legacy!(*)'-1.0.0.tgz",
-        ),
-        (
-            f"files/{HEX}/@scope/_private/-/_private-1.0.0.tgz",
-            f"{REGISTRY}/@scope/_private/-/_private-1.0.0.tgz",
-        ),
-        # Legacy names the registry still serves: early npm left out the hyphen before a
-        # prerelease (1.0.0rc2 holds version 1.0.0-rc2), and a few tarballs use "@".
-        (
-            f"files/{HEX}/express/-/express-1.0.0rc2.tgz",
-            f"{REGISTRY}/express/-/express-1.0.0rc2.tgz",
-        ),
-        (f"files/{HEX}/riak-js/-/riak-js-0.2.2f.tgz", f"{REGISTRY}/riak-js/-/riak-js-0.2.2f.tgz"),
-        (f"files/{HEX}/demo/-/demo-1.0.0beta-2.tgz", f"{REGISTRY}/demo/-/demo-1.0.0beta-2.tgz"),
-        (f"files/{HEX}/demo/-/demo-1.0.0rc.1.tgz", f"{REGISTRY}/demo/-/demo-1.0.0rc.1.tgz"),
-        (
-            f"files/{HEX}/thirty-two/-/thirty-two@0.0.1.tgz",
-            f"{REGISTRY}/thirty-two/-/thirty-two@0.0.1.tgz",
-        ),
-        (
-            f"files/{HEX}/nodemailer/-/nodemailer@0.1.1.tgz",
-            f"{REGISTRY}/nodemailer/-/nodemailer@0.1.1.tgz",
-        ),
-        (
-            f"files/{HEX}/{'x' * MAX_NAME_LENGTH}/-/{'x' * MAX_NAME_LENGTH}-1.0.0.tgz",
-            f"{REGISTRY}/{'x' * MAX_NAME_LENGTH}/-/{'x' * MAX_NAME_LENGTH}-1.0.0.tgz",
-        ),
-        (
-            f"files/{HEX}/demo/-/demo-1.0.0-{'a' * (MAX_VERSION_LENGTH - 6)}.tgz",
-            f"{REGISTRY}/demo/-/demo-1.0.0-{'a' * (MAX_VERSION_LENGTH - 6)}.tgz",
-        ),
-    ],
-    ids=short_id,
-)
+
+@pytest.mark.parametrize(("path", "upstream"), TARBALL_ROUTES, ids=short_id)
 def test_tarball_routes(path: str, upstream: str) -> None:
     for accept in (None, INSTALL_ACCEPT):
         route = fetch(path, accept)
@@ -417,6 +421,134 @@ def test_tarball_keys_include_the_digest() -> None:
     assert len(keys) == 3
 
 
+# --- lockfile tarballs -------------------------------------------------------------------
+
+# (path, package, upstream URL). npm rebases a lockfile's tarball URL on the default
+# registry onto the configured one, and pnpm and yarn build the same path from the name
+# and version: the scope's slash stays literal, except that yarn 2 and later write %2f.
+LOCKFILE_ROUTES = [
+    ("lodash/-/lodash-4.17.21.tgz", "lodash", f"{REGISTRY}/lodash/-/lodash-4.17.21.tgz"),
+    ("@types/node/-/node-20.11.0.tgz", "@types/node", f"{REGISTRY}/@types/node/-/node-20.11.0.tgz"),
+    (
+        "@types%2fnode/-/node-20.11.0.tgz",
+        "@types/node",
+        f"{REGISTRY}/@types/node/-/node-20.11.0.tgz",
+    ),
+    (
+        "@types%2Fnode/-/node-20.11.0.tgz",  # percent-escapes are case-insensitive
+        "@types/node",
+        f"{REGISTRY}/@types/node/-/node-20.11.0.tgz",
+    ),
+    (
+        "@scope%2f_private/-/_private-1.0.0.tgz",
+        "@scope/_private",
+        f"{REGISTRY}/@scope/_private/-/_private-1.0.0.tgz",
+    ),
+    # A package called "files" is not the cache's files/ route.
+    ("files/-/files-1.0.0.tgz", "files", f"{REGISTRY}/files/-/files-1.0.0.tgz"),
+    (
+        "JSONStream/-/JSONStream-1.3.5.tgz",
+        "JSONStream",
+        f"{REGISTRY}/JSONStream/-/JSONStream-1.3.5.tgz",
+    ),
+    (
+        "demo/-/demo-1.0.0-alpha.1+build.5.tgz",
+        "demo",
+        f"{REGISTRY}/demo/-/demo-1.0.0-alpha.1+build.5.tgz",
+    ),
+    (
+        "~legacy!(*)'/-/~legacy!(*)'-1.0.0.tgz",
+        "~legacy!(*)'",
+        f"{REGISTRY}/~legacy!(*)'/-/~legacy!(*)'-1.0.0.tgz",
+    ),
+    ("express/-/express-1.0.0rc2.tgz", "express", f"{REGISTRY}/express/-/express-1.0.0rc2.tgz"),
+    (
+        "thirty-two/-/thirty-two@0.0.1.tgz",
+        "thirty-two",
+        f"{REGISTRY}/thirty-two/-/thirty-two@0.0.1.tgz",
+    ),
+    (
+        f"{'x' * MAX_NAME_LENGTH}/-/{'x' * MAX_NAME_LENGTH}-1.0.0.tgz",
+        "x" * MAX_NAME_LENGTH,
+        f"{REGISTRY}/{'x' * MAX_NAME_LENGTH}/-/{'x' * MAX_NAME_LENGTH}-1.0.0.tgz",
+    ),
+    (
+        f"@s%2F{'x' * (MAX_NAME_LENGTH - 3)}/-/{'x' * (MAX_NAME_LENGTH - 3)}-1.0.0.tgz",
+        f"@s/{'x' * (MAX_NAME_LENGTH - 3)}",
+        f"{REGISTRY}/@s/{'x' * (MAX_NAME_LENGTH - 3)}/-/{'x' * (MAX_NAME_LENGTH - 3)}-1.0.0.tgz",
+    ),
+]
+
+
+@pytest.mark.parametrize(("path", "package", "upstream"), LOCKFILE_ROUTES, ids=short_id)
+def test_lockfile_tarball_routes(path: str, package: str, upstream: str) -> None:
+    for accept in (None, INSTALL_ACCEPT):
+        route = fetch(path, accept)
+        assert route.url == upstream
+        assert upstream == f"{REGISTRY}/{package}/-/{path.rpartition('/')[2]}"
+        # No digest: the client checks the tarball against its lockfile's integrity.
+        assert route.key == f"npm tarball - {upstream}"
+        assert route.digest is None
+        assert route.kind is Kind.ARTIFACT
+        assert route.immutable
+        assert route.rewrite is None
+        assert route.headers == {}
+        assert route.content_type == TARBALL_CONTENT_TYPE
+
+
+def test_lockfile_tarballs_share_only_the_unverified_entry() -> None:
+    # Every spelling of a lockfile path, and the files/-/ link the cache writes for a
+    # version without integrity, is the same unverified tarball. None of them may share
+    # an entry with a path that names a digest.
+    upstream = f"{REGISTRY}/@types/node/-/node-20.11.0.tgz"
+    unverified = [
+        fetch(path)
+        for path in (
+            "@types/node/-/node-20.11.0.tgz",
+            "@types%2fnode/-/node-20.11.0.tgz",
+            "@types%2Fnode/-/node-20.11.0.tgz",
+            "files/-/@types/node/-/node-20.11.0.tgz",
+        )
+    ]
+    assert {(route.key, route.url, route.digest) for route in unverified} == {
+        (f"npm tarball - {upstream}", upstream, None)
+    }
+    verified = fetch(f"files/{HEX}/@types/node/-/node-20.11.0.tgz")
+    assert verified.url == upstream
+    assert verified.digest == Digest("sha512", HEX)
+    assert verified.key not in {route.key for route in unverified}
+
+
+# Tarballs requested under another package's name: the policy decides by the name in the
+# path, so neither the adapter nor the policy may let them through.
+OTHER_PACKAGES_TARBALLS = [
+    "lodash/-/underscore-1.13.6.tgz",
+    "lodash/-/lodash-es-4.17.21.tgz",
+    "lodash-es/-/lodash-4.17.21.tgz",
+    "lodash/-/lodash.min-4.17.21.tgz",
+    "lodash/-/Lodash-4.17.21.tgz",
+    "Lodash/-/lodash-4.17.21.tgz",
+    "files/-/lodash-4.17.21.tgz",
+    "@types/node/-/react-18.3.1.tgz",
+    "@types%2fnode/-/react-18.3.1.tgz",
+    "@types%2Fnode/-/react-18.3.1.tgz",
+    "@types/node/-/types-node-20.11.0.tgz",
+    "@types/node/-/node-types-20.11.0.tgz",
+    "@types%2Fnode/-/nodejs-20.11.0.tgz",
+    "@scope/a/-/b-1.0.0.tgz",
+    "@scope/pkg/-/pkg2-1.0.0.tgz",
+    "files/-/lodash/-/underscore-1.13.6.tgz",
+    f"files/{HEX}/@types/node/-/react-18.3.1.tgz",
+]
+
+
+@pytest.mark.parametrize("path", OTHER_PACKAGES_TARBALLS, ids=short_id)
+def test_tarballs_of_another_package_are_refused(path: str) -> None:
+    assert ADAPTER.route(path, {}) is None
+    with pytest.raises(ClassificationError):
+        classify_package_request("GET", f"/npm/{path}")
+
+
 # --- refused paths -----------------------------------------------------------------------
 
 REFUSED_PATHS = [
@@ -443,14 +575,11 @@ REFUSED_PATHS = [
     "-/org/acme/user",
     "-/all",
     "-/tarballs/sha512/" + base64.urlsafe_b64encode(DIGEST).decode(),  # pnpm 11 lockfiles
-    # other paths below a package: versions, unpublishing, the registry's own tarball path
+    # other paths below a package: versions, unpublishing
     "lodash/",
     "lodash/latest",
     "lodash/4.17.21",
     "lodash/-rev/1-0123456789abcdef",
-    "lodash/-/lodash-4.17.21.tgz",
-    "@types%2fnode/-/node-20.11.0.tgz",
-    "@types/node/-/node-20.11.0.tgz",
     "/lodash",
     "lodash//",
     "./lodash",
@@ -590,6 +719,61 @@ REFUSED_PATHS = [
     f"files/{HEX}/./-/.-1.0.0.tgz",
     f"files/{HEX}/-/-/--0.0.1.tgz",  # the registry's "-" package sits in its API namespace
     f"files/{HEX}/{'x' * (MAX_NAME_LENGTH + 1)}/-/{'x' * (MAX_NAME_LENGTH + 1)}-1.0.0.tgz",
+    # lockfile tarball paths outside the layout
+    "lodash/-",
+    "lodash/-/",
+    "lodash/-/lodash-4.17.21.tgz/",
+    "lodash/-/lodash-4.17.21.tgz/x",
+    "lodash/-//lodash-4.17.21.tgz",
+    "lodash//-/lodash-4.17.21.tgz",
+    "lodash/-/-/lodash-4.17.21.tgz",
+    "lodash/x/lodash-4.17.21.tgz",
+    "lodash/--/lodash-4.17.21.tgz",
+    "lodash/lodash-4.17.21.tgz",
+    "/lodash/-/lodash-4.17.21.tgz",
+    "lodash%2F-%2Flodash-4.17.21.tgz",
+    "lodash/-%2Flodash-4.17.21.tgz",
+    "lodash/-/..%2flodash-4.17.21.tgz",
+    "lodash/-/lodash-4.17.21.tar.gz",
+    "lodash/-/lodash-4.17.21.TGZ",
+    "lodash/-/lodash-4.17.21",
+    "lodash/-/lodash-4.17.21.tgz.sig",
+    "lodash/-/lodash-4.17.21%2etgz",
+    "lodash/-/lodash-4.17.21.tgz%3Fx=1",
+    "lodash/-/lodash-latest.tgz",
+    "lodash/-/lodash-4.17.21.1.tgz",
+    "lodash/-/lodash-v4.17.21.tgz",
+    "lodash/-/lodash-4.17.21%2B1.tgz",
+    "lodash/-/lodash.tgz",
+    f"lodash/-/lodash-4.17.21-{'a' * MAX_VERSION_LENGTH}.tgz",
+    # lockfile paths of scoped packages: one "@scope/" (or "%2F") and the unscoped file name
+    "@types/-/types-1.0.0.tgz",
+    "@types%2F/-/node-20.11.0.tgz",
+    "@types//node/-/node-20.11.0.tgz",
+    "@types%2F%2Fnode/-/node-20.11.0.tgz",
+    "@types/%2Fnode/-/node-20.11.0.tgz",
+    "@types%252Fnode/-/node-20.11.0.tgz",
+    "%40types%2Fnode/-/node-20.11.0.tgz",
+    "%40types/node/-/node-20.11.0.tgz",
+    "@types%5Cnode/-/node-20.11.0.tgz",
+    "@types%2fnode%2f-%2fnode-20.11.0.tgz",
+    "@types%2Fnode/-%2Fnode-20.11.0.tgz",
+    "@types/node/extra/-/node-1.0.0.tgz",
+    "@types/node/-/@types/node-20.11.0.tgz",
+    "@types/node/-/@types%2fnode-20.11.0.tgz",
+    "@types%2Fnode/-/@types%2Fnode-20.11.0.tgz",
+    "@types/.node/-/.node-1.0.0.tgz",
+    "@types%2F.node/-/.node-1.0.0.tgz",
+    # names npm refuses, in lockfile paths
+    "-/-/--0.0.1.tgz",
+    ".lodash/-/.lodash-1.0.0.tgz",
+    "_all_docs/-/_all_docs-1.0.0.tgz",
+    "node_modules/-/node_modules-1.0.0.tgz",
+    "favicon.ico/-/favicon.ico-1.0.0.tgz",
+    "lo dash/-/lo dash-1.0.0.tgz",
+    "lo%20dash/-/lo%20dash-1.0.0.tgz",
+    f"{'x' * (MAX_NAME_LENGTH + 1)}/-/{'x' * (MAX_NAME_LENGTH + 1)}-1.0.0.tgz",
+    f"@s%2F{'x' * (MAX_NAME_LENGTH - 2)}/-/{'x' * (MAX_NAME_LENGTH - 2)}-1.0.0.tgz",
 ]
 
 
@@ -1055,3 +1239,55 @@ def test_error_messages_quote_untrusted_text_briefly() -> None:
     message = str(error.value)
     assert len(message) < 400
     assert "\x1b" not in message
+
+
+# --- agreement with the policy classifier ------------------------------------------------
+
+
+def classified(path: str) -> tuple[str, str | None, str]:
+    """How the policy middleware classifies a request for ``/npm/<path>``."""
+    operation = classify_package_request("GET", f"/npm/{path}")
+    return operation.ecosystem, operation.name, operation.kind
+
+
+def served_paths() -> list[tuple[str, str, str]]:
+    """(path, package, kind) for each path the route tests serve."""
+    served = [(path, name.replace("%2f", "/"), "index") for path, name in METADATA_ROUTES]
+    for path, upstream in TARBALL_ROUTES:
+        name = upstream.removeprefix(f"{REGISTRY}/").rpartition("/-/")[0]
+        served.append((path, name, "artifact"))
+    served += [(path, name, "artifact") for path, name, _ in LOCKFILE_ROUTES]
+    return served
+
+
+@pytest.mark.parametrize(("path", "package", "kind"), served_paths(), ids=short_id)
+def test_policy_classifies_what_the_adapter_serves(path: str, package: str, kind: str) -> None:
+    # The policy middleware decides each request with classify_package_request before it
+    # reaches the cache: everything the adapter serves must be the same package and kind.
+    route = fetch(path)
+    assert route.kind is (Kind.METADATA if kind == "index" else Kind.ARTIFACT)
+    assert classified(path) == ("npm", package, kind)
+
+
+@pytest.mark.parametrize("fixture", ALL_FIXTURES, ids=lambda fixture: fixture.file)
+def test_policy_classifies_real_packages_alike(fixture: Fixture) -> None:
+    # For every version of a real package: its metadata, the link the cache writes for its
+    # tarball, and the paths a lockfile leads npm, pnpm and yarn to.
+    package = fixture.package
+    assert classified(metadata_path(package)) == ("npm", package, "index")
+    rewritten = json.loads(rewrite_fixture(fixture))
+    for version, manifest in json.loads(fixture.body)["versions"].items():
+        tarball = manifest["dist"]["tarball"]
+        link = rewritten["versions"][version]["dist"]["tarball"].removeprefix(f"{PUBLIC}/npm/")
+        lockfile = tarball.removeprefix(f"{REGISTRY}/")
+        paths = [link, lockfile]
+        if package.startswith("@"):
+            paths += [lockfile.replace("/", "%2f", 1), lockfile.replace("/", "%2F", 1)]
+        for path in paths:
+            route = fetch(path)
+            assert route.url == tarball
+            assert route.kind is Kind.ARTIFACT
+            assert classified(path) == ("npm", package, "artifact")
+            if path != link:
+                assert route.key == f"npm tarball - {tarball}"
+                assert route.digest is None

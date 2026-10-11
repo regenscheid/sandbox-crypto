@@ -2,15 +2,19 @@
 """The web application, end to end against a local TLS upstream and a fake adapter."""
 
 import asyncio
+import contextlib
 import gzip
 import hashlib
 import logging
+import os
 import ssl
+import threading
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol
 
+import aiohttp
 import pytest
 import pytest_asyncio
 from aiohttp import web
@@ -19,7 +23,13 @@ from multidict import CIMultiDictProxy
 from pytest_aiohttp import AiohttpClient
 
 from sandbox_science.package_cache.adapter import Digest, Fetch, Kind, Route, Static
-from sandbox_science.package_cache.app import CACHE, PackageCache, create_app
+from sandbox_science.package_cache.app import (
+    CACHE,
+    MAX_REWRITES,
+    SEND_TIMEOUT,
+    PackageCache,
+    create_app,
+)
 from sandbox_science.package_cache.errors import StoreError
 from sandbox_science.package_cache.settings import Settings
 from sandbox_science.package_cache.upstream import USER_AGENT
@@ -127,9 +137,15 @@ async def make_harness(
     core_tls: Tls,
     core_settings: Callable[..., Settings],
 ) -> HarnessFactory:
-    """Start caches; keyword arguments override settings keys (and ``rate_limit_wait``)."""
+    """Start caches; keyword arguments override settings keys (and ``create_app``'s waits)."""
 
-    async def make(*, rate_limit_wait: float = 10.0, **overrides: object) -> Harness:
+    async def make(
+        *,
+        rate_limit_wait: float = 10.0,
+        download_wait: float = 5.0,
+        send_timeout: float = SEND_TIMEOUT,
+        **overrides: object,
+    ) -> Harness:
         clock = Clock()
         adapter = FakeAdapter("pkg")
         settings = core_settings(core_upstream.origin, **overrides)
@@ -139,6 +155,8 @@ async def make_harness(
             ssl_context=core_tls.client,
             clock=clock,
             rate_limit_wait=rate_limit_wait,
+            download_wait=download_wait,
+            send_timeout=send_timeout,
         )
         client = await aiohttp_client(app)
         return Harness(client, core_upstream, adapter, clock, settings)
@@ -181,6 +199,15 @@ async def until(condition: Callable[[], bool], timeout: float = 5.0) -> None:
 
 def digest(algorithm: Literal["sha256", "sha512"], body: bytes) -> Digest:
     return Digest(algorithm, hashlib.new(algorithm, body).hexdigest())
+
+
+def open_files() -> set[str]:
+    """What this process's file descriptors point at (Linux)."""
+    paths: set[str] = set()
+    for name in os.listdir("/proc/self/fd"):
+        with contextlib.suppress(OSError):
+            paths.add(os.readlink(f"/proc/self/fd/{name}"))
+    return paths
 
 
 # Hits, misses, freshness and revalidation.
@@ -382,7 +409,114 @@ async def test_a_stored_body_is_served_only_for_the_digest_it_was_verified_again
     assert (await harness.get("a.tgz"))[:2] == (200, body)
     assert (await harness.get("b.tgz"))[:2] == (502, b"digest mismatch\n")
     assert (await harness.get("a.tgz"))[:2] == (200, body)
-    assert harness.upstream.count("/a.tgz") == 2
+    # The download for a.tgz showed what the file is: b.tgz's digest is refused unfetched.
+    assert harness.upstream.count("/a.tgz") == 1
+
+
+def route_digest(harness: Harness, tail: str, path: str, expected: bytes) -> None:
+    """Route ``tail`` to the artifact at ``path``, keyed by the digest, as the adapters do."""
+    checked = digest("sha256", expected)
+    harness.adapter.routes[tail] = Fetch(
+        key=f"{path} sha256={checked.hex}",
+        url=harness.upstream.url(path),
+        kind=Kind.ARTIFACT,
+        immutable=True,
+        digest=checked,
+    )
+
+
+async def test_requests_naming_a_wrong_digest_download_the_file_once(harness: Harness) -> None:
+    body = b"the published file"
+    harness.upstream.set("/f.whl", body)
+    for number in range(3):
+        route_digest(harness, f"wrong{number}", "/f.whl", b"forged %d" % number)
+    route_digest(harness, "right", "/f.whl", body)
+    for number in range(3):
+        for _ in range(2):
+            assert (await harness.get(f"wrong{number}"))[:2] == (502, b"digest mismatch\n")
+    assert harness.upstream.count("/f.whl") == 1
+    assert (await harness.get("right"))[:2] == (200, body)
+    assert (await harness.get("wrong0"))[:2] == (502, b"digest mismatch\n")
+    assert (await harness.get("right"))[:2] == (200, body)
+    assert harness.upstream.count("/f.whl") == 2
+    assert harness.files("tmp") == []
+    stats = await harness.stats()
+    assert (stats["entries"], stats["errors"], stats["hits"]) == (1, 7, 1)
+
+
+async def test_concurrent_requests_naming_different_digests_download_the_file_once(
+    harness: Harness,
+) -> None:
+    gate = asyncio.Event()
+    harness.upstream.set("/f.whl", b"x" * 100_000, gate=gate)
+    for number in range(5):
+        route_digest(harness, f"wrong{number}", "/f.whl", b"forged %d" % number)
+    requests = [asyncio.create_task(harness.get(f"wrong{number}")) for number in range(5)]
+    await until(lambda: harness.upstream.count("/f.whl") == 1)
+    await asyncio.sleep(0.1)
+    gate.set()
+    results = await asyncio.gather(*requests)
+    assert [result[:2] for result in results] == [(502, b"digest mismatch\n")] * 5
+    assert harness.upstream.count("/f.whl") == 1
+
+
+async def test_index_data_that_is_rewritten_has_its_own_size_limit(
+    make_harness: HarnessFactory,
+) -> None:
+    harness = await make_harness(
+        max_size="1Mi", max_artifact_size="4Ki", max_metadata_size="4Ki", max_rewrite_size="1Ki"
+    )
+    calls: list[int] = []
+
+    def rewrite(body: bytes, content_type: str) -> bytes:
+        calls.append(len(body))
+        return body
+
+    harness.upstream.set("/big", b"x" * 2000)
+    harness.route("big", rewrite=rewrite)
+    harness.upstream.set(
+        "/big.gz", gzip.compress(b"x" * 2000), headers={"Content-Encoding": "gzip"}
+    )
+    harness.route("big.gz", rewrite=rewrite)
+    harness.upstream.set("/small", b"s" * 1000)
+    harness.route("small", rewrite=rewrite)
+    harness.upstream.set("/plain", b"y" * 2000)
+    harness.route("plain")
+    for tail in ("big", "big.gz"):
+        assert (await harness.get(tail))[:2] == (502, b"upstream file too large\n")
+    assert (await harness.get("small"))[:2] == (200, b"s" * 1000)
+    assert (await harness.get("plain"))[:2] == (200, b"y" * 2000)
+    assert calls == [1000]
+
+
+async def test_at_most_two_rewrites_run_at_once(harness: Harness) -> None:
+    release = threading.Event()
+    lock = threading.Lock()
+    running = 0
+    peak = 0
+
+    def rewrite(body: bytes, content_type: str) -> bytes:
+        nonlocal running, peak
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        release.wait(5)
+        with lock:
+            running -= 1
+        return body
+
+    for number in range(4):
+        harness.upstream.set(f"/index{number}", b"body %d" % number)
+        harness.route(f"index{number}", rewrite=rewrite)
+    requests = [asyncio.create_task(harness.get(f"index{number}")) for number in range(4)]
+    await until(lambda: running == MAX_REWRITES == 2)
+    await asyncio.sleep(0.2)  # the other two have downloaded and are waiting their turn
+    assert (running, peak) == (2, 2)
+    assert all(harness.upstream.count(f"/index{number}") == 1 for number in range(4))
+    release.set()
+    results = await asyncio.gather(*requests)
+    assert [result[:2] for result in results] == [(200, b"body %d" % n) for n in range(4)]
+    assert peak == 2
 
 
 async def test_size_limits_bound_every_download(make_harness: HarnessFactory) -> None:
@@ -552,6 +686,24 @@ async def test_urls_outside_the_configured_upstreams_are_refused(harness: Harnes
     assert harness.upstream.requests == []
 
 
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://169.254.169.254/latest/meta-data/",
+        "https://localhost/x",
+        "https://10.0.0.5/x",
+        "https://registry.internal/x",
+    ],
+)
+async def test_redirects_to_hosts_that_are_not_public_are_refused(
+    harness: Harness, location: str
+) -> None:
+    harness.upstream.set("/moved.tgz", status=302, headers={"Location": location})
+    harness.route("moved.tgz", kind=Kind.ARTIFACT)
+    assert (await harness.get("moved.tgz"))[:2] == (502, b"upstream redirect refused\n")
+    assert (await harness.stats())["entries"] == 0
+
+
 async def test_redirects_are_followed_but_only_to_https(harness: Harness) -> None:
     harness.upstream.set("/moved", status=301, headers={"Location": "/new"})
     harness.upstream.set("/new", b"new home")
@@ -613,6 +765,125 @@ async def test_a_client_that_stops_reading_is_not_an_error(
     assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
 
 
+async def test_a_client_that_stalls_is_cut_off_and_the_file_closed(
+    make_harness: HarnessFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    harness = await make_harness(send_timeout=0.3)
+    body = b"v" * 40_000_000  # far more than the socket buffers hold
+    harness.upstream.set("/huge.tgz", body)
+    harness.route("huge.tgz", kind=Kind.ARTIFACT)
+    assert (await harness.get("huge.tgz", method="HEAD"))[0] == 200
+    blob = str(harness.cache.store.blob_path(hashlib.sha256(body).hexdigest()))
+    reader, writer = await asyncio.open_connection(harness.client.host, harness.client.port)
+    try:
+        writer.write(b"GET /pkg/huge.tgz HTTP/1.1\r\nHost: cache.test\r\n\r\n")
+        assert (await reader.readline()).startswith(b"HTTP/1.1 200")
+        assert harness.cache.active_requests == 1
+        assert blob in open_files()
+        # The client reads nothing more; the cache gives up within a few send timeouts.
+        await until(lambda: harness.cache.active_requests == 0, timeout=5)
+        assert blob not in open_files()
+        received = b""
+        with contextlib.suppress(ConnectionResetError):
+            async with asyncio.timeout(5):
+                received = await reader.read()
+        assert len(received) < len(body)
+    finally:
+        writer.close()
+    assert (await harness.get("huge.tgz"))[:2] == (200, body)
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
+async def test_answers_built_in_memory_have_a_deadline_too(
+    make_harness: HarnessFactory, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="sandbox_science.package_cache.app")
+    harness = await make_harness(send_timeout=0.3)
+    body = b"m" * 20_000_000
+    harness.adapter.routes["big.json"] = Static(body, "application/json")
+    reader, writer = await asyncio.open_connection(harness.client.host, harness.client.port)
+    try:
+        writer.write(b"GET /pkg/big.json HTTP/1.1\r\nHost: cache.test\r\n\r\n")
+        assert (await reader.readline()).startswith(b"HTTP/1.1 200")
+        await until(
+            lambda: any("stopped receiving an answer" in r.getMessage() for r in caplog.records)
+        )
+        received = b""
+        with contextlib.suppress(ConnectionResetError):
+            async with asyncio.timeout(5):
+                received = await reader.read()
+        assert len(received) < len(body)
+    finally:
+        writer.close()
+    assert (await harness.get("big.json"))[:2] == (200, body)
+
+
+async def test_requests_beyond_max_requests_are_answered_503(
+    make_harness: HarnessFactory,
+) -> None:
+    harness = await make_harness(max_requests=2)
+    gate = asyncio.Event()
+    harness.upstream.set("/slow", b"slow", gate=gate)
+    harness.route("slow")
+    harness.upstream.set("/fast", b"fast")
+    harness.route("fast")
+    waiting = [asyncio.create_task(harness.get("slow")) for _ in range(2)]
+    await until(lambda: harness.cache.active_requests == 2)
+    status, body, headers = await harness.get("fast")
+    assert (status, body, headers["Retry-After"]) == (503, b"too many requests, retry later\n", "1")
+    assert harness.upstream.count("/fast") == 0
+    async with harness.client.get("/-/health") as response:
+        assert response.status == 200
+    assert (await harness.stats())["entries"] == 0
+    gate.set()
+    assert [result[:2] for result in await asyncio.gather(*waiting)] == [(200, b"slow")] * 2
+    assert harness.cache.active_requests == 0
+    assert (await harness.get("fast"))[:2] == (200, b"fast")
+
+
+async def test_artifact_downloads_beyond_the_cap_are_503_while_index_data_flows(
+    make_harness: HarnessFactory,
+) -> None:
+    harness = await make_harness(max_artifact_downloads=1, download_wait=0.2)
+    gate = asyncio.Event()
+    harness.upstream.set("/a.tgz", b"a", gate=gate)
+    harness.route("a.tgz", kind=Kind.ARTIFACT)
+    harness.upstream.set("/b.tgz", b"b")
+    harness.route("b.tgz", kind=Kind.ARTIFACT)
+    harness.upstream.set("/index", b"index")
+    harness.route("index")
+    first = asyncio.create_task(harness.get("a.tgz"))
+    await until(lambda: harness.upstream.count("/a.tgz") == 1)
+    status, body, headers = await harness.get("b.tgz")
+    assert (status, body, headers["Retry-After"]) == (503, b"cache busy, retry later\n", "1")
+    assert harness.upstream.count("/b.tgz") == 0
+    assert (await harness.get("index"))[:2] == (200, b"index")
+    gate.set()
+    assert (await first)[:2] == (200, b"a")
+    assert (await harness.get("b.tgz"))[:2] == (200, b"b")
+
+
+async def test_downloads_that_would_overflow_the_temp_space_are_503(
+    make_harness: HarnessFactory,
+) -> None:
+    harness = await make_harness(
+        max_size="1Mi", max_artifact_size="600", max_metadata_size="600", max_temp_size="1000"
+    )
+    pause = asyncio.Event()
+    harness.upstream.set("/a.tgz", b"a" * 600, pause=pause, pause_after=100)
+    harness.route("a.tgz", kind=Kind.ARTIFACT)
+    harness.upstream.set("/b.tgz", b"b" * 600)
+    harness.route("b.tgz", kind=Kind.ARTIFACT)
+    first = asyncio.create_task(harness.get("a.tgz"))
+    await until(lambda: len(harness.files("tmp")) == 1)
+    status, body, headers = await harness.get("b.tgz")
+    assert (status, body, headers["Retry-After"]) == (503, b"cache busy, retry later\n", "1")
+    pause.set()
+    assert (await first)[:2] == (200, b"a" * 600)
+    assert (await harness.get("b.tgz"))[:2] == (200, b"b" * 600)
+    assert harness.files("tmp") == []
+
+
 async def test_the_upstream_rate_limit_answers_503(make_harness: HarnessFactory) -> None:
     harness = await make_harness(upstream_rate=0.001, upstream_burst=1, rate_limit_wait=0)
     harness.upstream.set("/a", b"a")
@@ -627,7 +898,8 @@ async def test_the_upstream_rate_limit_answers_503(make_harness: HarnessFactory)
 
 
 async def test_eviction_keeps_the_store_under_its_cap(make_harness: HarnessFactory) -> None:
-    harness = await make_harness(max_size="1000", max_artifact_size="400", max_metadata_size="400")
+    # Each entry counts its 300 bytes and 1 KiB of overhead: four are over the cap.
+    harness = await make_harness(max_size="5000", max_artifact_size="400", max_metadata_size="400")
     for name in "abcd":
         harness.upstream.set(f"/{name}.tgz", name.encode() * 300)
         harness.route(f"{name}.tgz", kind=Kind.ARTIFACT)
@@ -638,6 +910,31 @@ async def test_eviction_keeps_the_store_under_its_cap(make_harness: HarnessFacto
     assert store.keys() == ["pkg:b.tgz", "pkg:c.tgz", "pkg:d.tgz"]
     assert store.stats().bytes == 900
     assert len(harness.files("blobs")) == 3
+
+
+async def test_not_found_answers_cannot_grow_the_index_without_limit(
+    make_harness: HarnessFactory,
+) -> None:
+    harness = await make_harness(max_size="5000", max_artifact_size="400", max_metadata_size="400")
+    store = harness.cache.store
+    for number in range(10):
+        harness.upstream.set(f"/made-up-{number}", b"not found", status=404)
+        harness.route(f"made-up-{number}")
+        assert (await harness.get(f"made-up-{number}"))[0] == 404
+        harness.clock.now += 61
+    # They share one 9-byte blob, but each counts 1 KiB toward the 5000-byte cap.
+    await until(lambda: len(store.keys()) == 4)
+    assert store.stats().bytes == 9
+    # Once past their TTL and stale_if_error, eviction purges them before anything else.
+    harness.clock.now += 86400
+    harness.upstream.set("/exists", b"x" * 400)
+    harness.route("exists")
+    assert (await harness.get("exists"))[0] == 200
+    harness.upstream.set("/made-up-new", b"not found", status=404)
+    harness.route("made-up-new")
+    assert (await harness.get("made-up-new"))[0] == 404
+    await until(lambda: len(store.keys()) == 2)
+    assert store.keys() == ["pkg:exists", "pkg:made-up-new"]
 
 
 # Status endpoints, logging and setup.
@@ -695,6 +992,18 @@ async def test_adapters_are_registered_under_their_prefix(
     for name, prefix in (("other", "pkg"), ("-", "-"), ("Pkg", "Pkg"), ("a/b", "a/b")):
         with pytest.raises(ValueError, match="prefix"):
             create_app(settings, {name: FakeAdapter(prefix)})
+
+
+async def test_a_connector_must_leave_connections_for_index_data(
+    core_settings: Callable[..., Settings],
+) -> None:
+    settings = core_settings("https://registry.test", max_artifact_downloads=4)
+    connector = aiohttp.TCPConnector(limit=4)
+    try:
+        with pytest.raises(ValueError, match="index data"):
+            create_app(settings, {"pkg": FakeAdapter("pkg")}, connector=connector)
+    finally:
+        await connector.close()
 
 
 async def test_two_caches_cannot_share_a_directory(make_harness: HarnessFactory) -> None:

@@ -3,19 +3,21 @@
 
 fixtures/conda records conda-forge on conda.anaconda.org as observed on 2026-10-10
 (fixtures/conda/manifest.json): which channel paths exist upstream and how the
-adapter must answer them, where repodata shards really live, and a sample of real
-package file names that covers every shape among the 1.5 million in repodata.
+adapter must answer them, where repodata shards really live, a sample of real
+package file names that covers every shape among the 1.5 million in repodata, and
+one real shard, whose name is the SHA-256 the cache verifies it against.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from sandbox_science.package_cache.adapter import Adapter, Fetch, Kind
+from sandbox_science.package_cache.adapter import Adapter, Digest, Fetch, Kind
 from sandbox_science.package_cache.adapters.conda import (
     CHANNEL_DATA,
     INDEX_FILES,
@@ -30,7 +32,10 @@ FILENAMES = (FIXTURES / "filenames.txt").read_text().splitlines()
 BASE = "https://conda.anaconda.org"
 CHANNEL = "conda-forge"
 SUBDIRS = ["linux-64", "linux-aarch64", "noarch"]
+# The noarch shard of requests; fixtures/conda holds its body.
 SHARD = "eb66076ab6428bdb9093fd1524266c6f6da0933bcabc1719b668eb5aa254a848"
+SHARD_SUFFIX = ".msgpack.zst"
+ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 
 
 def make_adapter(**settings: Any) -> CondaAdapter:
@@ -43,14 +48,25 @@ def route(path: str, adapter: CondaAdapter | None = None) -> Fetch | None:
     return answer
 
 
+def shard_digest(path: str) -> Digest | None:
+    """The digest a path's shard is named by, or None if it is not a shard."""
+    name = path.rpartition("/")[2]
+    if name in INDEX_FILES or not name.endswith(SHARD_SUFFIX):
+        return None  # the shard index, repodata_shards.msgpack.zst, is not one
+    return Digest("sha256", name.removesuffix(SHARD_SUFFIX))
+
+
 def expect_fetch(path: str, upstream_path: str | None = None) -> Fetch:
-    """Route ``path`` below the channel and check the parts every answer shares."""
+    """Route ``path`` below the channel and check the parts every answer shares.
+
+    Only shards are verified by the cache, against the SHA-256 that names them.
+    """
     fetch = route(f"{CHANNEL}/{path}")
     assert fetch is not None, path
     url = f"{BASE}/{CHANNEL}/{upstream_path or path}"
     assert fetch.url == url
     assert fetch.key == url
-    assert fetch.digest is None
+    assert fetch.digest == shard_digest(path)
     assert fetch.rewrite is None
     assert fetch.content_type is None
     assert dict(fetch.headers) == {}
@@ -133,6 +149,36 @@ def test_routes_the_documented_shards_directory(path: str) -> None:
     fetch = expect_fetch(path)
     assert fetch.kind is Kind.METADATA
     assert fetch.immutable
+
+
+def test_a_real_shard_is_verified_against_its_name() -> None:
+    # A shard's name is the SHA-256 of the compressed file exactly as conda-forge serves
+    # it (fixtures/conda/manifest.json), so the cache can refuse a shard that is not what
+    # its name says.
+    body = (FIXTURES / f"{SHARD}{SHARD_SUFFIX}").read_bytes()
+    assert body.startswith(ZSTD_MAGIC)
+    assert hashlib.sha256(body).hexdigest() == SHARD
+    for path in (f"noarch/{SHARD}{SHARD_SUFFIX}", f"noarch/shards/{SHARD}{SHARD_SUFFIX}"):
+        fetch = expect_fetch(path)
+        assert fetch.digest == Digest("sha256", SHARD)
+        assert fetch.kind is Kind.METADATA
+        assert fetch.immutable
+
+
+def test_each_shard_is_verified_against_its_own_name() -> None:
+    shards = [
+        path
+        for path in LAYOUT["routed"] + LAYOUT["routed_absent_upstream"]
+        if shard_digest(path) is not None
+    ]
+    assert len(shards) == 5
+    for path in shards:
+        fetch = expect_fetch(path)
+        assert fetch.digest == Digest("sha256", path.rpartition("/")[2][:64])
+    # Index data that is not content-addressed, the shard index among it, has no digest.
+    assert expect_fetch(CHANNEL_DATA).digest is None
+    for name in INDEX_FILES:
+        assert expect_fetch(f"noarch/{name}").digest is None
 
 
 @pytest.mark.parametrize(

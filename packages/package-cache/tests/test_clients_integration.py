@@ -239,6 +239,54 @@ def test_npm(cache_url: str, tmp_path: Path) -> None:
     assert (modules / "@isaacs" / "string-locale-compare").is_dir()
 
 
+def test_npm_installs_from_a_lockfile_made_against_the_public_registry(
+    cache_url: str, tmp_path: Path
+) -> None:
+    # npm rebases lockfile URLs on the default registry onto the configured one,
+    # so it fetches <cache>/npm/<name>/-/<file>.tgz and checks the lockfile's integrity.
+    npm = need("npm")
+    with urllib.request.urlopen(f"{cache_url}/npm/is-number", timeout=30) as response:  # noqa: S310
+        integrity = json.load(response)["versions"]["7.0.0"]["dist"]["integrity"]
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "package.json").write_text(
+        json.dumps({"name": "smoke", "version": "1.0.0", "dependencies": {"is-number": "7.0.0"}})
+    )
+    lock = {
+        "name": "smoke",
+        "version": "1.0.0",
+        "lockfileVersion": 3,
+        "requires": True,
+        "packages": {
+            "": {"name": "smoke", "version": "1.0.0", "dependencies": {"is-number": "7.0.0"}},
+            "node_modules/is-number": {
+                "version": "7.0.0",
+                "resolved": "https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz",
+                "integrity": integrity,
+                "license": "MIT",
+                "engines": {"node": ">=0.12.0"},
+            },
+        },
+    }
+    (project / "package-lock.json").write_text(json.dumps(lock, indent=2))
+    run(
+        [
+            npm,
+            "ci",
+            "--registry",
+            f"{cache_url}/npm/",
+            "--cache",
+            str(tmp_path / "npm-cache"),
+            "--no-audit",
+            "--no-fund",
+            "--no-update-notifier",
+        ],
+        cwd=project,
+        env={"npm_config_userconfig": os.devnull},
+    )
+    assert (project / "node_modules" / "is-number" / "package.json").is_file()
+
+
 def test_the_cache_counted_the_traffic(cache_url: str) -> None:
     counters = stats(cache_url)
     assert counters["misses"] > 0

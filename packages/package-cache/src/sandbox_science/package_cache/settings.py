@@ -10,6 +10,10 @@ metadata_ttl = "5m"
 stale_if_error = "1d"
 max_artifact_size = "4Gi"
 max_metadata_size = "1Gi"
+max_rewrite_size = "128Mi"   # index data the cache rewrites (PyPI pages, npm metadata)
+max_temp_size = "16Gi"       # downloads in progress, in tmp/
+max_artifact_downloads = 16  # package files downloading at once
+max_requests = 1024          # client requests served at once; more get 503
 upstream_rate = 20           # upstream fetches per second
 upstream_burst = 200
 
@@ -39,6 +43,12 @@ shown. An ecosystem whose table is absent is disabled; a table with no keys
 enables it with the default upstreams. Relative paths resolve against the
 settings file's directory. URLs are normalized without a trailing slash, so
 adapters append paths with ``f"{url}/..."``.
+
+The size limits must agree: ``max_artifact_size`` and ``max_metadata_size``
+at most ``max_size`` and at most ``max_temp_size``, and ``max_rewrite_size``,
+when given, at most ``max_metadata_size``. The cache uses at most ``max_size``
+of ``max_temp_size`` (``temp_limit``), and at most ``max_metadata_size`` of
+the default ``max_rewrite_size`` (``rewrite_limit``).
 """
 
 from __future__ import annotations
@@ -67,6 +77,7 @@ from sandbox_science.policy.units import parse_duration, parse_size
 
 from .errors import SettingsError
 
+_MIB: Final = 1024**2
 _GIB: Final = 1024**3
 
 _HOSTNAME_RE: Final = re.compile(
@@ -207,6 +218,14 @@ class Settings(_Model):
     stale_if_error: Duration = timedelta(days=1)
     max_artifact_size: Size = 4 * _GIB
     max_metadata_size: Size = 1 * _GIB
+    max_rewrite_size: Size = 128 * _MIB
+    """The largest index body the cache rewrites: rewriting parses the whole body in memory."""
+    max_temp_size: Size = 16 * _GIB
+    """Bytes that downloads in progress may hold in the temp directory."""
+    max_artifact_downloads: Annotated[int, Field(ge=1)] = 16
+    """Package files that may download at once; the upstream pool keeps more for index data."""
+    max_requests: Annotated[int, Field(ge=1)] = 1024
+    """Client requests served at once; more are answered 503."""
     upstream_rate: Annotated[float, Field(gt=0, allow_inf_nan=False)] = 20.0
     """Upstream requests per second, shared by all clients."""
     upstream_burst: Annotated[int, Field(ge=1)] = 200
@@ -225,7 +244,26 @@ class Settings(_Model):
         for name, limit in limits.items():
             if limit > self.max_size:
                 raise ValueError(f"{name} must not be larger than max_size")
+        for name, limit in limits.items():
+            if limit > self.max_temp_size:
+                # A download of that size could never fit in the temp space.
+                raise ValueError(f"{name} must not be larger than max_temp_size")
+        if (
+            "max_rewrite_size" in self.model_fields_set
+            and self.max_rewrite_size > self.max_metadata_size
+        ):
+            raise ValueError("max_rewrite_size must not be larger than max_metadata_size")
         return self
+
+    @property
+    def temp_limit(self) -> int:
+        """Bytes downloads in progress may hold: ``max_temp_size``, at most ``max_size``."""
+        return min(self.max_temp_size, self.max_size)
+
+    @property
+    def rewrite_limit(self) -> int:
+        """The largest body rewritten: ``max_rewrite_size``, at most ``max_metadata_size``."""
+        return min(self.max_rewrite_size, self.max_metadata_size)
 
     @property
     def listen_host(self) -> str:

@@ -16,6 +16,13 @@ deleted before its blob, so a crash leaves at worst a blob that no entry
 refers to. Recovery removes those and stray temp files. An entry whose blob
 has gone missing is ignored and dropped.
 
+The size cap counts the blobs that entries refer to (a shared blob once) plus
+a fixed ``entry_overhead`` per entry, about what an index row costs, so that
+entries sharing one small blob (negative answers) cannot grow the index
+without limit. Eviction first purges negative entries older than
+``negative_expiry``, which the cache no longer serves, then removes the least
+recently accessed entries.
+
 The store is synchronous and thread-safe; the web application calls it from
 worker threads.
 """
@@ -52,6 +59,10 @@ ORPHAN_GRACE: Final = 3600.0
 """How old a blob without an entry must be before ``prune`` deletes it, since a
 running cache may be about to commit an entry for a blob it has just stored."""
 
+ENTRY_OVERHEAD: Final = 1024
+"""Bytes each entry counts toward the size cap besides its blob: about what its index row,
+with its key and the indexes over it, takes in ``index.sqlite3``."""
+
 _SCHEMA_VERSION: Final = 1
 _HEX64: Final = re.compile(r"[0-9a-f]{64}")
 _HEX2: Final = re.compile(r"[0-9a-f]{2}")
@@ -73,6 +84,7 @@ CREATE TABLE IF NOT EXISTS entries (
 );
 CREATE INDEX IF NOT EXISTS entries_by_access ON entries (accessed);
 CREATE INDEX IF NOT EXISTS entries_by_blob ON entries (sha256);
+CREATE INDEX IF NOT EXISTS entries_negative ON entries (fetched) WHERE status != 200;
 """
 _SELECT_BY_KEY: Final = """
 SELECT key, sha256, size, kind, content_type, fetched, accessed, etag, last_modified,
@@ -87,6 +99,11 @@ INSERT OR REPLACE INTO entries (
 """
 _TOTAL: Final = """
 SELECT COALESCE(SUM(size), 0) FROM (SELECT MAX(size) AS size FROM entries GROUP BY sha256)
+"""
+_COUNT: Final = "SELECT COUNT(*) FROM entries"
+# The term "status != 200" lets SQLite use the partial index entries_negative.
+_EXPIRED_NEGATIVE: Final = """
+SELECT key, sha256, size FROM entries WHERE status != 200 AND fetched < ? LIMIT ?
 """
 
 _log = logging.getLogger(__name__)
@@ -158,15 +175,32 @@ class Store:
         max_size: int,
         clock: Callable[[], float] = time.time,
         access_interval: float = ACCESS_INTERVAL,
+        entry_overhead: int = ENTRY_OVERHEAD,
+        negative_expiry: float | None = None,
     ) -> None:
+        """Open (creating if need be) the store in ``root``.
+
+        ``entry_overhead`` is what each entry counts toward ``max_size``
+        besides its blob. ``negative_expiry`` is the age in seconds after which
+        eviction purges a negative (404/410) entry; None leaves them to the
+        least-recently-used order.
+        """
         if max_size <= 0:
             raise ValueError("max_size must be positive")
+        if entry_overhead < 0:
+            raise ValueError("entry_overhead must not be negative")
+        if negative_expiry is not None and negative_expiry <= 0:
+            raise ValueError("negative_expiry must be positive")
         self._root = root
         self._blobs = root / "blobs"
         self._temp = root / "tmp"
         self._max_size = max_size
         self._clock = clock
         self._access_interval = access_interval
+        self._entry_overhead = entry_overhead
+        self._negative_expiry = negative_expiry
+        self._bytes = 0
+        self._entries = 0
         self._lock = threading.RLock()
         self._lock_fd: int | None = None
         try:
@@ -183,7 +217,7 @@ class Store:
         try:
             with self._errors("open the index"):
                 self._initialize()
-                self._total: int = self._compute_total()
+                self._recount()
         except BaseException:
             self._db.close()
             raise
@@ -217,7 +251,12 @@ class Store:
     @property
     def total_size(self) -> int:
         """Bytes in referenced blobs, as tracked by this process since the last recount."""
-        return self._total
+        return self._bytes
+
+    @property
+    def charged_size(self) -> int:
+        """What counts toward ``max_size``: ``total_size`` plus the overhead of every entry."""
+        return self._bytes + self._entries * self._entry_overhead
 
     def close(self) -> None:
         """Close the index and release the directory lock, if held."""
@@ -301,7 +340,8 @@ class Store:
             entry = _entry(row)
             if entry is None:
                 _log.warning("dropping malformed index entry %r", key)
-                self._db.execute("DELETE FROM entries WHERE key = ?", (key,))
+                cursor = self._db.execute("DELETE FROM entries WHERE key = ?", (key,))
+                self._entries = max(self._entries - cursor.rowcount, 0)
                 return None
             file = self._open(entry)
             if file is None:
@@ -396,6 +436,7 @@ class Store:
             digest=digest,
         )
         referenced = True
+        added = False
         freed: tuple[str, int] | None = None
         with self._lock:
             try:
@@ -407,6 +448,7 @@ class Store:
                             "SELECT sha256, size FROM entries WHERE key = ?", (key,)
                         ).fetchone()
                         db.execute(_UPSERT, _row(entry))
+                        added = old is None
                         if (
                             old is not None
                             and old[0] != blob.sha256
@@ -417,10 +459,12 @@ class Store:
                 # A no-op once the body has been moved into blobs/.
                 blob.path.unlink(missing_ok=True)
             if not referenced:
-                self._total += blob.size
+                self._bytes += blob.size
+            if added:
+                self._entries += 1
             if freed is not None:
                 self._unlink_blob(freed[0])
-                self._total = max(self._total - freed[1], 0)
+                self._bytes = max(self._bytes - freed[1], 0)
         return entry
 
     def _place(self, blob: TempBlob, target: Path) -> None:
@@ -453,25 +497,28 @@ class Store:
         return replace(entry, fetched=now, accessed=now, etag=etag, last_modified=last_modified)
 
     def over_capacity(self) -> bool:
-        """Whether the store holds more than ``max_size`` bytes, as tracked by this process."""
-        return self._total > self._max_size
+        """Whether the store counts more than ``max_size`` bytes, as tracked by this process."""
+        return self.charged_size > self._max_size
 
     def evict(self) -> Removal:
-        """Bring the store under its cap.
+        """Purge expired negative entries, then bring the store under its cap.
 
-        If it holds more than ``max_size`` bytes, remove the least recently
-        accessed entries until it holds at most ``EVICT_TO`` of the cap, and
-        delete each blob once no entry refers to it.
+        Negative entries older than ``negative_expiry`` go first: the cache no
+        longer serves them, not even as a stale fallback. Then, if the store
+        counts more than ``max_size`` bytes (``charged_size``), the least
+        recently accessed entries are removed until it counts at most
+        ``EVICT_TO`` of the cap. A blob is deleted once no entry refers to it.
         """
         target = int(self._max_size * EVICT_TO)
-        removed = Removal()
         with self._lock, self._errors("evict entries"):
-            self._total = self._compute_total()
-            if self._total <= self._max_size:
+            self._recount()
+        removed = self._purge_negative()
+        with self._lock:
+            if self.charged_size <= self._max_size:
                 return removed
         while True:
             with self._lock, self._errors("evict entries"):
-                if self._total <= target:
+                if self.charged_size <= target:
                     return removed
                 rows = self._db.execute(
                     "SELECT key, sha256, size FROM entries ORDER BY accessed, key LIMIT ?",
@@ -480,6 +527,19 @@ class Store:
                 if not rows:
                     return removed
                 removed += self._delete_entries(rows, stop_at=target)
+
+    def _purge_negative(self) -> Removal:
+        """Delete the negative entries older than ``negative_expiry``, a batch at a time."""
+        removed = Removal()
+        if self._negative_expiry is None:
+            return removed
+        cutoff = self._clock() - self._negative_expiry
+        while True:
+            with self._lock, self._errors("purge negative entries"):
+                rows = self._db.execute(_EXPIRED_NEGATIVE, (cutoff, _EVICT_BATCH)).fetchall()
+                if not rows:
+                    return removed
+                removed += self._delete_entries(rows)
 
     def remove_orphans(self, *, min_age: float = 0.0) -> Removal:
         """Delete blobs that no entry refers to and that are at least ``min_age`` seconds old.
@@ -518,13 +578,15 @@ class Store:
     def stats(self) -> StoreStats:
         """Count the entries and the bytes their blobs hold."""
         with self._lock, self._errors("count entries"):
-            (entries,) = self._db.execute("SELECT COUNT(*) FROM entries").fetchone()
-            self._total = self._compute_total()
-            return StoreStats(entries=int(entries), bytes=self._total)
+            self._recount()
+            return StoreStats(entries=self._entries, bytes=self._bytes)
 
-    def _compute_total(self) -> int:
+    def _recount(self) -> None:
+        """Count the entries and blob bytes afresh. Call with the lock held."""
         (total,) = self._db.execute(_TOTAL).fetchone()
-        return int(total)
+        (entries,) = self._db.execute(_COUNT).fetchone()
+        self._bytes = int(total)
+        self._entries = int(entries)
 
     def _referenced(self, sha256: str) -> bool:
         row = self._db.execute("SELECT 1 FROM entries WHERE sha256 = ? LIMIT 1", (sha256,))
@@ -535,28 +597,32 @@ class Store:
     ) -> Removal:
         """Delete entries, then the blobs they leave unreferenced. Call with the lock held.
 
-        With ``stop_at``, stop as soon as the store holds at most that many bytes.
+        With ``stop_at``, stop as soon as the store counts at most that many bytes.
         """
         freed: dict[str, int] = {}
         deleted = 0
-        total = self._total
+        charged = self.charged_size
         with self._transaction() as db:
             for key, sha256, size in rows:
-                if stop_at is not None and total <= stop_at:
+                if stop_at is not None and charged <= stop_at:
                     break
                 cursor = db.execute(
                     "DELETE FROM entries WHERE key = ? AND sha256 = ?", (key, sha256)
                 )
                 deleted += cursor.rowcount
+                charged -= cursor.rowcount * self._entry_overhead
                 if sha256 not in freed and not self._referenced(sha256):
                     freed[sha256] = size
-                    total -= size
-        self._total = max(total, 0)
+                    charged -= size
+        self._entries = max(self._entries - deleted, 0)
+        self._bytes = max(self._bytes - sum(freed.values()), 0)
         for sha256 in freed:
             self._unlink_blob(sha256)
         return Removal(entries=deleted, blobs=len(freed), bytes=sum(freed.values()))
 
     def _unlink_blob(self, sha256: str) -> None:
+        if not _HEX64.fullmatch(sha256):
+            return  # a malformed index row: there is no blob of that name
         try:
             self.blob_path(sha256).unlink(missing_ok=True)
         except OSError as exc:

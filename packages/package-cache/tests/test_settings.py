@@ -19,6 +19,7 @@ from sandbox_science.package_cache.settings import (
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DOC = REPO_ROOT / "docs" / "PACKAGE-CACHE.md"
+MIB = 1024**2
 GIB = 1024**3
 BASE = 'public_url = "http://cache.test:8090"\ncache_dir = "cache"\n'
 
@@ -48,6 +49,10 @@ def test_the_documented_example_is_valid(tmp_path: Path) -> None:
     assert settings.stale_if_error == timedelta(days=1)
     assert settings.max_artifact_size == 4 * GIB
     assert settings.max_metadata_size == GIB
+    assert settings.max_rewrite_size == settings.rewrite_limit == 128 * MIB
+    assert settings.max_temp_size == settings.temp_limit == 16 * GIB
+    assert settings.max_artifact_downloads == 16
+    assert settings.max_requests == 1024
     assert settings.upstream_rate == 20
     assert settings.upstream_burst == 200
     assert settings.pypi == PypiSettings(
@@ -90,6 +95,27 @@ def test_absent_tables_disable_their_ecosystem(tmp_path: Path) -> None:
     assert settings.listen == "127.0.0.1:8090"
     assert settings.max_size == 100 * GIB
     assert settings.metadata_ttl == timedelta(minutes=5)
+    assert (settings.max_rewrite_size, settings.max_temp_size) == (128 * MIB, 16 * GIB)
+    assert (settings.max_artifact_downloads, settings.max_requests) == (16, 1024)
+
+
+def test_default_limits_shrink_to_fit_smaller_ones(tmp_path: Path) -> None:
+    text = BASE + 'max_size = "8Gi"\nmax_artifact_size = "1Gi"\nmax_metadata_size = "64Mi"\n'
+    settings = load_settings(write(tmp_path, text))
+    assert settings.max_rewrite_size == 128 * MIB
+    assert settings.rewrite_limit == 64 * MIB
+    assert settings.max_temp_size == 16 * GIB
+    assert settings.temp_limit == 8 * GIB
+
+
+def test_explicit_limits_are_kept(tmp_path: Path) -> None:
+    text = BASE + (
+        'max_rewrite_size = "1Gi"\nmax_temp_size = "4Gi"\n'
+        "max_artifact_downloads = 4\nmax_requests = 100\n"
+    )
+    settings = load_settings(write(tmp_path, text))
+    assert (settings.rewrite_limit, settings.temp_limit) == (GIB, 4 * GIB)
+    assert (settings.max_artifact_downloads, settings.max_requests) == (4, 100)
 
 
 def test_an_empty_table_enables_its_ecosystem_with_the_defaults(tmp_path: Path) -> None:
@@ -190,6 +216,32 @@ def test_listen_addresses(tmp_path: Path, listen: str, host: str, port: int) -> 
             "max_metadata_size must not be larger",
             id="metadata-cap",
         ),
+        pytest.param(
+            BASE + 'max_metadata_size = "64Mi"\nmax_rewrite_size = "128Mi"\n',
+            "max_rewrite_size must not be larger than max_metadata_size",
+            id="rewrite-cap",
+        ),
+        pytest.param(
+            BASE + 'max_temp_size = "2Gi"\n',
+            "max_artifact_size must not be larger than max_temp_size",
+            id="temp-below-artifact",
+        ),
+        pytest.param(
+            BASE + 'max_temp_size = "1Gi"\nmax_artifact_size = "1Gi"\nmax_metadata_size = "2Gi"\n',
+            "max_metadata_size must not be larger than max_temp_size",
+            id="temp-below-metadata",
+        ),
+        pytest.param(BASE + 'max_temp_size = "0"\n', "max_temp_size", id="temp-zero"),
+        pytest.param(BASE + 'max_rewrite_size = "1Q"\n', "invalid size", id="rewrite-unit"),
+        pytest.param(
+            BASE + "max_artifact_downloads = 0\n", "max_artifact_downloads", id="downloads-zero"
+        ),
+        pytest.param(
+            BASE + 'max_artifact_downloads = "16"\n', "max_artifact_downloads", id="downloads-text"
+        ),
+        pytest.param(BASE + "max_requests = 0\n", "max_requests", id="requests-zero"),
+        pytest.param(BASE + "max_requests = 2.5\n", "max_requests", id="requests-float"),
+        pytest.param(BASE + "max_requests = true\n", "max_requests", id="requests-bool"),
         pytest.param(BASE + 'listen = "8090"\n', "listen", id="listen-port-only"),
         pytest.param(BASE + 'listen = "::1:8090"\n', "listen", id="listen-ipv6-brackets"),
         pytest.param(BASE + 'listen = "[::x]:8090"\n', "listen", id="listen-ipv6"),

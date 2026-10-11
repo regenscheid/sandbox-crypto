@@ -19,10 +19,22 @@ immutable index files until they are evicted, other index data for
 ``metadata_ttl``, negative (404/410) entries for a minute. Otherwise the cache
 fetches it, or revalidates it with its stored validators; concurrent requests
 for one key share one fetch. If the fetch fails, a stale copy at most
-``stale_if_error`` old is served; without one the answer is 502 (503 when the
-upstream rate limit is exhausted). Upstream 404 and 410 pass through, and are
-cached briefly for index data. HEAD is answered like GET without the body,
-and populates the cache the same way.
+``stale_if_error`` old is served; without one the answer is 502 (503 with
+``Retry-After`` when the cache is busy: the upstream rate limit, download
+slots, temp space or upstream connections). Upstream 404 and 410 pass
+through, and are cached briefly for index data. HEAD is answered like GET
+without the body, and populates the cache the same way.
+
+Load is bounded so that one client cannot degrade the cache for the others:
+
+- at most ``max_requests`` package requests are served at once; more are
+  answered 503 at once (the status routes are exempt);
+- index data that is rewritten may be at most ``rewrite_limit`` bytes, and at
+  most ``MAX_REWRITES`` rewrites run at once;
+- a client must accept each ``SEND_CHUNK`` of a body within ``send_timeout``
+  seconds, or its connection is closed (and the stored file with it);
+- ``KEEPALIVE_TIMEOUT`` is the idle time after which the server closes a
+  client connection (``cli`` passes it to the server).
 """
 
 from __future__ import annotations
@@ -49,22 +61,36 @@ from .settings import Settings
 from .store import Entry, Store, TempBlob
 from .upstream import (
     DEFAULT_MAX_WAIT,
+    DEFAULT_SLOT_WAIT,
     Downloaded,
     NotModified,
     SingleFlight,
+    TempSpace,
     TokenBucket,
     UpstreamClient,
     Validators,
     create_session,
+    pool_size,
 )
 
 NEGATIVE_TTL: Final = 60.0
 """Seconds an upstream 404 or 410 for index data is served from the store."""
 
+MAX_REWRITES: Final = 2
+"""Index bodies rewritten at once. A rewrite holds the body in memory several times
+over while it parses it, and parsing holds the interpreter lock, stalling every request."""
+
+SEND_CHUNK: Final = 1024 * 1024
+SEND_TIMEOUT: Final = 30.0
+"""Seconds a client may take to accept each ``SEND_CHUNK`` of a body (at least ~34 KiB/s)."""
+
+KEEPALIVE_TIMEOUT: Final = 15.0
+"""Seconds an idle client connection is kept open."""
+
 _MAX_KEY_LENGTH: Final = 4096
 _PREFIX_RE: Final = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 _PATH_RE: Final = re.compile(r"/(?:[A-Za-z0-9\-._~!$&'()*+,;=:@/]|%[0-9A-Fa-f]{2})*")
-_COPY_CHUNK: Final = 256 * 1024
+_STATUS_PATHS: Final = frozenset({"/-/health", "/-/stats"})
 
 _log = logging.getLogger(__name__)
 _requests = logging.getLogger("sandbox_science.package_cache.requests")
@@ -140,7 +166,10 @@ class PackageCache:
         upstream: UpstreamClient,
         *,
         clock: Callable[[], float] = time.time,
+        send_timeout: float = SEND_TIMEOUT,
     ) -> None:
+        if send_timeout <= 0:
+            raise ValueError("send_timeout must be positive")
         self._adapters = dict(adapters)
         self._store = store
         self._upstream = upstream
@@ -150,6 +179,11 @@ class PackageCache:
         self._stale_if_error = settings.stale_if_error.total_seconds()
         self._max_artifact_size = settings.max_artifact_size
         self._max_metadata_size = settings.max_metadata_size
+        self._max_rewrite_size = settings.rewrite_limit
+        self._rewrites = asyncio.Semaphore(MAX_REWRITES)
+        self._max_requests = settings.max_requests
+        self._active = 0
+        self._send_timeout = send_timeout
         self._flights: SingleFlight[_Outcome] = SingleFlight()
         self._eviction: asyncio.Task[None] | None = None
         self.counters = Counters()
@@ -158,6 +192,11 @@ class PackageCache:
     def store(self) -> Store:
         """The store the cache serves from."""
         return self._store
+
+    @property
+    def active_requests(self) -> int:
+        """Package requests being served now (the status routes are not counted)."""
+        return self._active
 
     def start(self) -> None:
         """Evict in the background if the store starts out over its cap."""
@@ -184,21 +223,56 @@ class PackageCache:
         }
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
-        """Answer one request and log it."""
+        """Answer one request and log it; beyond ``max_requests`` at once, answer 503."""
         log = _RequestLog()
         try:
-            response = await self._dispatch(request, log)
+            if request.raw_path.partition("?")[0] in _STATUS_PATHS:
+                response = await self._dispatch(request, log)
+            elif self._active >= self._max_requests:
+                response = _text(
+                    503, "too many requests, retry later", headers={"Retry-After": "1"}
+                )
+            else:
+                self._active += 1
+                try:
+                    response = await self._dispatch(request, log)
+                finally:
+                    self._active -= 1
             if log.status is None:
                 log.status = response.status
+            if not response.prepared:
+                await self._write_answer(request, response)
             return response
         finally:
             _log_request(request, log)
+
+    async def _write_answer(self, request: web.Request, response: web.StreamResponse) -> None:
+        """Send an answer built in memory within ``send_timeout``, or close the connection.
+
+        Left to the server, it would be written after the handler returns, with
+        no deadline, to a client that may never read it.
+        """
+        try:
+            async with asyncio.timeout(self._send_timeout):
+                await response.prepare(request)
+                await response.write_eof()
+        except ConnectionError as exc:
+            _log.debug("client went away before its answer was sent: %s", exc)
+            response.force_close()
+        except TimeoutError:
+            _log.info(
+                "closing a connection that stopped receiving an answer to %s",
+                _printable(request.raw_path),
+            )
+            response.force_close()
+            if request.transport is not None:
+                request.transport.abort()
 
     async def _dispatch(self, request: web.Request, log: _RequestLog) -> web.StreamResponse:
         if request.method not in ("GET", "HEAD"):
             return _text(405, "method not allowed", headers={"Allow": "GET, HEAD"})
         path = request.raw_path.partition("?")[0]
-        if path in ("/-/health", "/-/stats"):
+        if path in _STATUS_PATHS:
             log.quiet = True
             if path == "/-/health":
                 return web.json_response({"status": "ok"})
@@ -246,7 +320,8 @@ class PackageCache:
             if self._fresh(entry, fetch) and _satisfies(entry, fetch):
                 return await self._send(request, entry, file, fetch, log, CacheResult.HIT)
             file.close()
-            stale = entry
+            if _satisfies(entry, fetch):
+                stale = entry  # a body verified against another digest is no fallback
         outcome = await self._flights.run(key, lambda: self._refresh(key, fetch, stale))
         log.upstream_ms = outcome.upstream_ms
         if outcome.entry is None:
@@ -292,11 +367,23 @@ class PackageCache:
             log.status = response.status
             if request.method == "GET" and entry.size > 0:
                 try:
-                    await _send_file(request, response, file, entry.size)
+                    await _send_file(
+                        request, response, file, entry.size, timeout=self._send_timeout
+                    )
                 except ConnectionError as exc:
                     # The client went away mid-body (an interrupted install): not an error.
                     _log.debug("client went away while receiving %s: %s", entry.key, exc)
                     response.force_close()
+                    return response
+                except TimeoutError:
+                    # A stalled reader would hold the connection and the open file
+                    # (even once evicted) for as long as it likes.
+                    _log.info(
+                        "closing a connection that stopped receiving %s", _printable(entry.key)
+                    )
+                    response.force_close()
+                    if request.transport is not None:
+                        request.transport.abort()
                     return response
                 log.bytes = entry.size
             await response.write_eof()
@@ -326,7 +413,12 @@ class PackageCache:
             and _satisfies(stale, fetch)
         ):
             validators = Validators(stale.etag, stale.last_modified)
-        limit = self._max_artifact_size if fetch.kind is Kind.ARTIFACT else self._max_metadata_size
+        if fetch.kind is Kind.ARTIFACT:
+            limit = self._max_artifact_size
+        elif fetch.rewrite is not None:
+            limit = self._max_rewrite_size
+        else:
+            limit = self._max_metadata_size
         result = await self._upstream.fetch(fetch, max_size=limit, validators=validators)
         if isinstance(result, NotModified):
             if stale is None:
@@ -344,7 +436,7 @@ class PackageCache:
         try:
             return await self._keep(key, fetch, result)
         finally:
-            result.blob.path.unlink(missing_ok=True)  # a no-op once stored
+            result.close()  # deleting the temp file is a no-op once stored
 
     async def _keep(self, key: str, fetch: Fetch, download: Downloaded) -> _Outcome:
         """Store a downloaded body (rewritten if need be), or pass an error body on."""
@@ -388,12 +480,15 @@ class PackageCache:
         return _Outcome(CacheResult.MISS, entry=entry)
 
     async def _rewrite(self, rewrite: Rewrite, url: str, download: Downloaded) -> TempBlob:
-        raw = await asyncio.to_thread(_read, download.blob.path)
-        try:
-            body = await asyncio.to_thread(rewrite, raw, download.content_type)
-        except ValueError as exc:
-            raise RewriteError(f"cannot rewrite the index from {url}: {exc}") from exc
-        return await asyncio.to_thread(self._store.write_temp, body)
+        # The body is already downloaded, so wait for a turn however long it takes.
+        async with self._rewrites:
+            raw = await asyncio.to_thread(_read, download.blob.path)
+            try:
+                body = await asyncio.to_thread(rewrite, raw, download.content_type)
+            except ValueError as exc:
+                raise RewriteError(f"cannot rewrite the index from {url}: {exc}") from exc
+            del raw  # free it before the rewritten body is written out
+            return await asyncio.to_thread(self._store.write_temp, body)
 
     def _fallback(self, key: str, stale: Entry | None, error: PackageCacheError) -> _Outcome:
         if stale is not None and 0 <= self._clock() - stale.fetched <= self._stale_if_error:
@@ -452,6 +547,8 @@ def create_app(
     connector: aiohttp.BaseConnector | None = None,
     clock: Callable[[], float] = time.time,
     rate_limit_wait: float = DEFAULT_MAX_WAIT,
+    download_wait: float = DEFAULT_SLOT_WAIT,
+    send_timeout: float = SEND_TIMEOUT,
 ) -> web.Application:
     """Build the cache's web application.
 
@@ -460,27 +557,47 @@ def create_app(
     directory's lock) and creates the upstream session; it closes both when it
     stops. ``ssl_context`` or ``connector`` replace the default TLS
     verification for upstream requests (tests use a local TLS upstream with
-    its own certificate authority). ``clock`` gives the Unix time used for
-    freshness, and ``rate_limit_wait`` is how long a fetch may wait for an
-    upstream token before it fails with 503.
+    its own certificate authority); a connector must allow more connections
+    than ``max_artifact_downloads``, so that index data always gets one.
+    ``clock`` gives the Unix time used for freshness. ``rate_limit_wait`` is
+    how long a fetch may wait for an upstream token, and ``download_wait`` for
+    a download slot, before it fails with 503; ``send_timeout`` is how long a
+    client may take to accept each ``SEND_CHUNK`` of a body.
     """
     checked = _check_adapters(adapters)
     if ssl_context is not None and connector is not None:
         raise ValueError("pass ssl_context or connector, not both")
+    if connector is not None and 0 < connector.limit <= settings.max_artifact_downloads:
+        raise ValueError(
+            "the connector must allow more connections than max_artifact_downloads, "
+            "so that index data always gets one"
+        )
     app = web.Application()
 
     async def lifecycle(app: web.Application) -> AsyncIterator[None]:
         store = await asyncio.to_thread(_open_store, settings, clock)
         try:
-            session = create_session(ssl_context=ssl_context, connector=connector)
+            session = create_session(
+                ssl_context=ssl_context,
+                connector=connector,
+                limit=pool_size(settings.max_artifact_downloads),
+            )
             try:
                 limiter = TokenBucket(
                     settings.upstream_rate, settings.upstream_burst, max_wait=rate_limit_wait
                 )
                 upstream = UpstreamClient(
-                    session, temp_dir=store.temp_dir, limiter=limiter, allowed=settings.upstreams()
+                    session,
+                    temp_dir=store.temp_dir,
+                    limiter=limiter,
+                    allowed=settings.upstreams(),
+                    temp_space=TempSpace(settings.temp_limit),
+                    max_artifact_downloads=settings.max_artifact_downloads,
+                    max_wait=download_wait,
                 )
-                cache = PackageCache(settings, checked, store, upstream, clock=clock)
+                cache = PackageCache(
+                    settings, checked, store, upstream, clock=clock, send_timeout=send_timeout
+                )
                 app[CACHE] = cache
                 cache.start()
                 try:
@@ -501,8 +618,19 @@ async def _handle(request: web.Request) -> web.StreamResponse:
     return await request.app[CACHE].handle(request)
 
 
+def negative_expiry(settings: Settings) -> float:
+    """Seconds after which a negative entry is of no use: its TTL plus ``stale_if_error``."""
+    ttl = min(NEGATIVE_TTL, settings.metadata_ttl.total_seconds())
+    return ttl + settings.stale_if_error.total_seconds()
+
+
 def _open_store(settings: Settings, clock: Callable[[], float]) -> Store:
-    store = Store(settings.cache_dir, max_size=settings.max_size, clock=clock)
+    store = Store(
+        settings.cache_dir,
+        max_size=settings.max_size,
+        clock=clock,
+        negative_expiry=negative_expiry(settings),
+    )
     try:
         removed = store.recover()
     except BaseException:
@@ -564,24 +692,46 @@ def _client_headers(request: web.Request) -> dict[str, str]:
 
 
 async def _send_file(
-    request: web.Request, response: web.StreamResponse, file: BinaryIO, size: int
+    request: web.Request,
+    response: web.StreamResponse,
+    file: BinaryIO,
+    size: int,
+    *,
+    timeout: float,
 ) -> None:
-    transport = request.transport
-    if transport is None or transport.is_closing():
-        raise ConnectionResetError("the client went away")
-    try:
-        await asyncio.get_running_loop().sendfile(transport, file, 0, size)
-    except NotImplementedError:
-        # Event loops without sendfile (uvloop): copy in chunks instead.
-        offset = 0
-        while offset < size:
-            chunk = await asyncio.to_thread(
-                os.pread, file.fileno(), min(_COPY_CHUNK, size - offset), offset
-            )
-            if not chunk:
-                raise StoreError(f"blob {file.name!r} ended at {offset} of {size} bytes") from None
-            await response.write(chunk)
-            offset += len(chunk)
+    """Send a blob's ``size`` bytes, each ``SEND_CHUNK`` of them within ``timeout`` seconds.
+
+    Raises ConnectionResetError when the client goes away, and TimeoutError
+    when it stops accepting the body.
+    """
+    loop = asyncio.get_running_loop()
+    native = True
+    offset = 0
+    while offset < size:
+        transport = request.transport
+        if transport is None or transport.is_closing():
+            raise ConnectionResetError("the client went away")
+        count = min(SEND_CHUNK, size - offset)
+        async with asyncio.timeout(timeout):
+            if native:
+                try:
+                    await loop.sendfile(transport, file, offset, count)
+                except NotImplementedError:
+                    native = False  # event loops without sendfile (uvloop): copy instead
+            if not native:
+                count = await _copy(response, file, offset, count, size)
+        offset += count
+
+
+async def _copy(
+    response: web.StreamResponse, file: BinaryIO, offset: int, count: int, size: int
+) -> int:
+    """Write up to ``count`` bytes of ``file`` from ``offset``; return how many."""
+    chunk = await asyncio.to_thread(os.pread, file.fileno(), count, offset)
+    if not chunk:
+        raise StoreError(f"blob {file.name!r} ended at {offset} of {size} bytes")
+    await response.write(chunk)
+    return len(chunk)
 
 
 def _read(path: Path) -> bytes:

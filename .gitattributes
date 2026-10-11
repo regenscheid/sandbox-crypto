@@ -1,2 +1,3 @@
 # Captured git request bodies: byte-exact test fixtures, never convert line endings.
 packages/policy-middleware/tests/fixtures/git/*.bin binary
+packages/package-cache/tests/fixtures/conda/*.msgpack.zst binary

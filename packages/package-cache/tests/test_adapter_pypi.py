@@ -124,7 +124,7 @@ def check_link(
     route = adapter.route(link.removeprefix(f"{PUBLIC}/pypi/"), {})
     assert isinstance(route, Fetch)
     assert route.url == upstream
-    assert route.key == upstream
+    assert route.key == f"{upstream} sha256={sha or '-'}"
     assert route.kind is Kind.ARTIFACT
     assert route.immutable
     assert route.digest == (Digest("sha256", sha) if sha else None)
@@ -133,6 +133,7 @@ def check_link(
     metadata = adapter.route(f"{link.removeprefix(f'{PUBLIC}/pypi/')}.metadata", {})
     assert isinstance(metadata, Fetch)
     assert metadata.url == f"{upstream}.metadata"
+    assert metadata.key == metadata.url
     assert metadata.kind is Kind.METADATA
     assert metadata.immutable
     assert metadata.digest is None
@@ -334,6 +335,12 @@ def files_path(project: str, filename: str, digest: str = SHA) -> str:
     return f"files/{project}/{digest}/packages/{BLAKE}/{filename}"
 
 
+def fetch_file(adapter: PypiAdapter, path: str) -> Fetch:
+    route = adapter.route(path, {})
+    assert isinstance(route, Fetch)
+    return route
+
+
 @pytest.mark.parametrize(
     ("project", "filename"),
     [
@@ -365,14 +372,44 @@ def test_distribution_files(project: str, filename: str) -> None:
     url = f"{FILES}/packages/{BLAKE}/{filename}"
     route = adapter.route(files_path(project, filename), {})
     assert route == Fetch(
-        key=url, url=url, kind=Kind.ARTIFACT, immutable=True, digest=Digest("sha256", SHA)
+        key=f"{url} sha256={SHA}",
+        url=url,
+        kind=Kind.ARTIFACT,
+        immutable=True,
+        digest=Digest("sha256", SHA),
     )
     route = adapter.route(files_path(project, filename, "-"), {})
-    assert route == Fetch(key=url, url=url, kind=Kind.ARTIFACT, immutable=True)
+    assert route == Fetch(key=f"{url} sha256=-", url=url, kind=Kind.ARTIFACT, immutable=True)
     route = adapter.route(f"{files_path(project, filename)}.metadata", {})
     assert route == Fetch(
         key=f"{url}.metadata", url=f"{url}.metadata", kind=Kind.METADATA, immutable=True
     )
+
+
+def test_file_keys_include_the_digest() -> None:
+    # Requests naming different digests, or none, must never share a fetch or a stored
+    # file: a request naming a wrong digest would otherwise make a concurrent request
+    # naming the right one fail (502), and a body verified against one digest must never
+    # be served for another.
+    adapter = make_adapter()
+    filename = "sampleproject-4.0.0-py3-none-any.whl"
+    digests = (WHEEL_SHA, SHA, "-")
+    files = [fetch_file(adapter, files_path("sampleproject", filename, d)) for d in digests]
+    assert {route.url for route in files} == {f"{FILES}/packages/{BLAKE}/{filename}"}
+    assert len({route.key for route in files}) == len(digests)
+    assert [route.digest for route in files] == [
+        Digest("sha256", WHEEL_SHA),
+        Digest("sha256", SHA),
+        None,
+    ]
+    # The core metadata (PEP 658) has no digest of its own and nothing verifies it, so
+    # every spelling of its path shares one entry, which no distribution shares.
+    metadata_keys = {
+        fetch_file(adapter, f"{files_path('sampleproject', filename, d)}.metadata").key
+        for d in digests
+    }
+    assert metadata_keys == {f"{FILES}/packages/{BLAKE}/{filename}.metadata"}
+    assert metadata_keys.isdisjoint(route.key for route in files)
 
 
 @pytest.mark.parametrize(

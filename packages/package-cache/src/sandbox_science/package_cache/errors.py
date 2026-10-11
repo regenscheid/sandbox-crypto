@@ -44,7 +44,7 @@ class UpstreamStatusError(UpstreamError):
 
 
 class RedirectError(UpstreamError):
-    """Upstream redirected too often, or to something other than an https URL."""
+    """Upstream redirected too often, or to something other than a public https URL."""
 
     reason: ClassVar[str] = "upstream redirect refused"
 
@@ -67,8 +67,18 @@ class RewriteError(UpstreamError):
     reason: ClassVar[str] = "upstream index cannot be rewritten"
 
 
-class RateLimitedError(UpstreamError):
-    """The shared upstream rate limit would delay a fetch for too long."""
+class BusyError(UpstreamError):
+    """A capacity limit stopped a fetch: no download slot, temp space or upstream connection.
+
+    The fetch was not attempted, or was abandoned, because the cache is busy;
+    the client should retry later (503 with ``Retry-After``).
+    """
 
     http_status: ClassVar[int] = 503
+    reason: ClassVar[str] = "cache busy, retry later"
+
+
+class RateLimitedError(BusyError):
+    """The shared upstream rate limit would delay a fetch for too long."""
+
     reason: ClassVar[str] = "upstream rate limit reached, retry later"
