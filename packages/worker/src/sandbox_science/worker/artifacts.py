@@ -47,7 +47,13 @@ class BlobWriter:
         self.size += len(data)
 
     def commit(self, expected_sha256: str) -> bool:
-        """Store the blob if its hash is ``expected_sha256``; return whether it was."""
+        """Store the blob if its hash is ``expected_sha256``; return whether it was.
+
+        The blob is on disk before this returns, so a record made afterwards never names
+        a blob that a crash left empty or torn.
+        """
+        self._file.flush()
+        os.fsync(self._file.fileno())
         self._file.close()
         sha256 = self._digest.hexdigest()
         if sha256 != expected_sha256:
@@ -56,6 +62,11 @@ class BlobWriter:
         target = self._blobs.path(sha256)
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(self._path, target)
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
         return True
 
     def discard(self) -> None:

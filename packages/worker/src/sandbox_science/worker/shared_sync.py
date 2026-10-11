@@ -15,25 +15,32 @@ Every change to a project's copy takes the next value of the project's counter a
 version. For each file in an environment, the worker records the stamp (modification
 time, size and inode) and SHA-256 its copy had when last synced, and the version it
 matched. A change an environment made to a file whose project version moved on
-meanwhile is a conflict: the project keeps its version, the environment's is kept
-beside it as a conflict copy named after the environment, and the agent is told. A
-deletion that meets a change loses to it.
+meanwhile is a conflict: the project keeps its version, and the environment's file is
+renamed there to a conflict copy named after the environment, so a call still writing
+to it goes on writing to the copy. The project's version then takes the name, and the
+agent is told. A deletion that meets a change loses to it.
 
 Research code controls ``shared/``, so the worker trusts nothing an executor reports.
 Paths, stamps and digests are checked; content is read from the environment and kept
 only if the bytes received hash to the digest, unless the same project already holds
 that content; and a scan with unreadable parts, or one cut short, proves no file
 missing. A mark the worker writes beside ``shared/`` identifies the directory it
-synced, so a new sandbox under an old ID starts afresh rather than looking as if
-everything in it was deleted. An environment's ``shared/`` is synced for the first
-project that uses it, and no other.
+synced: a new sandbox under an old ID, or a mark removed, makes the environment's
+records unverified, so nothing in it reads as deleted while the project's own
+deletions still apply. An environment's ``shared/`` is synced for the first project
+that uses it, and no other.
 
 Stamps decide which files to hash, so a call that changes nothing in ``shared/`` costs a
-scan before it and one after. Files modified within two seconds of a scan are hashed
-again at the next, since a clock coarser than a rewrite could hide one. Files over
+scan before it and one after. A file recorded within two seconds of its last change is
+hashed again at the next scan, since a clock coarser than a rewrite could hide one.
+Each step has a time and a byte budget and records its progress as it goes, so a large
+change arrives over several calls rather than never. A file that a process has open is
+not replaced or removed until nothing has it open. A failure on one file is retried
+later and the agent told once; only a failing executor stops a step. Files over
 ``max_file_bytes``, and changes that would take the project's copy past
 ``max_project_bytes`` or ``max_project_files``, stay where they are, and the agent is
-told once. Blobs no shared file uses any more are deleted.
+told once. Blobs are written to disk before they are recorded and checked when read,
+and blobs no shared file uses any more are deleted.
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import dataclasses
 import hashlib
 import logging
 import posixpath
@@ -71,24 +79,35 @@ MAX_PROJECT_FILES: Final = 10_000
 """The most files a project's copy may hold; an environment's scan reports up to 20,000."""
 HASH_BUDGET: Final = 256 * 1024 * 1024
 """The bytes one scan hashes; files past it are hashed at a later scan."""
+STEP_SECONDS: Final = 60.0
+"""A step starts no transfer after this long, and the next step goes on where it stopped.
+
+The execution manager gives a step 120 seconds in all, waits for locks included."""
+STEP_BYTES: Final = 1024 * 1024 * 1024
+"""The most one step reads from an environment."""
+COMMIT_FILES: Final = 100
+COMMIT_BYTES: Final = 64 * 1024 * 1024
+"""``up`` records what it read in batches this large, so a step cut short keeps them."""
 READ_BYTES: Final = 8 * 1024 * 1024
 RACY_NS: Final = 2_000_000_000
-"""Files modified this close to a scan are hashed again at the next one."""
+"""A file recorded this soon after its last change is hashed again at the next scan."""
 FAILURE_BACKOFF: Final = 600.0
 """Seconds before a file that could not be written into an environment is tried again."""
 MAX_NOTICES: Final = 10
 """The most notices one sync step adds to a result."""
 MAX_REMEMBERED: Final = 10_000
 """Bounds the notices told once and the files remembered as failing or too large."""
-MAX_WROTE: Final = 1000
+RECENT_BYTES: Final = 256 * 1024
+"""Path bytes of the writes into one environment remembered for attributing files."""
 SHARED: Final = "shared/"
+NAME_MAX: Final = 255
+"""The longest file name, in bytes, that Linux file systems take."""
 _DIGEST: Final = re.compile(r"[0-9a-f]{64}")
 _MAX_PATH_BYTES: Final = 4096
 _MAX_INT: Final = 2**63 - 1
-_FILE_ERRORS: Final = frozenset(
-    {ErrorKind.CONFLICT, ErrorKind.NOT_FOUND, ErrorKind.INVALID_REQUEST, ErrorKind.POLICY_DENIED}
-)
-"""Errors about one file. Any other means the executor failed, and the sync stops."""
+_STOP: Final = frozenset({ErrorKind.UNAVAILABLE, ErrorKind.TIMED_OUT, ErrorKind.CANCELLED})
+"""Errors that mean the executor, its channel or its disk failed: the step stops. Any
+other error concerns one file, which is tried again later."""
 
 Stamp = tuple[int, int, int]
 """A file's modification time in nanoseconds, size and inode, as the executor scans them."""
@@ -119,6 +138,8 @@ class Copy:
     version: int
     """The project version it matched; lower than the project's when it is out of date."""
     stamp: Stamp
+    verified: bool = True
+    """False once the environment's directory was found replaced: the file may be gone."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,8 +226,12 @@ class SharedRecords:
             "CREATE TABLE IF NOT EXISTS copies ("
             " environment_id TEXT NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL,"
             " version INTEGER NOT NULL, mtime INTEGER NOT NULL, size INTEGER NOT NULL,"
-            " inode INTEGER NOT NULL, PRIMARY KEY (environment_id, path));"
+            " inode INTEGER NOT NULL, verified INTEGER NOT NULL DEFAULT 1,"
+            " PRIMARY KEY (environment_id, path));"
         )
+        columns = {str(row[1]) for row in self._db.execute("PRAGMA table_info(copies)")}
+        if "verified" not in columns:  # records from before copies could be unverified
+            self._db.execute("ALTER TABLE copies ADD COLUMN verified INTEGER NOT NULL DEFAULT 1")
         self._lock = threading.Lock()
 
     def close(self) -> None:
@@ -222,9 +247,13 @@ class SharedRecords:
         return None if row is None else Claim(str(row[0]), str(row[1]))
 
     def reclaim(self, environment_id: str, project_id: str, mark: str) -> None:
-        """Sync an environment afresh for ``project_id``: its old copies prove nothing now."""
+        """Mark an environment's directory as new: its copies are kept, but unverified."""
         with self._lock, self._transaction():
-            self._db.execute("DELETE FROM copies WHERE environment_id = ?", (environment_id,))
+            self._db.execute(
+                "UPDATE copies SET verified = 0, mtime = -1, size = -1, inode = -1"
+                " WHERE environment_id = ?",
+                (environment_id,),
+            )
             self._db.execute(
                 "INSERT INTO environments VALUES (?, ?, ?, -1) ON CONFLICT (environment_id)"
                 " DO UPDATE SET project_id = excluded.project_id, mark = excluded.mark,"
@@ -253,9 +282,9 @@ class SharedRecords:
                 "SELECT version FROM projects WHERE project_id = ?", (project_id,)
             ).fetchone()
             copies = {
-                str(r[0]): Copy(str(r[1]), int(r[2]), (int(r[3]), int(r[4]), int(r[5])))
+                str(r[0]): Copy(str(r[1]), int(r[2]), (int(r[3]), int(r[4]), int(r[5])), bool(r[6]))
                 for r in self._db.execute(
-                    "SELECT path, sha256, version, mtime, size, inode FROM copies"
+                    "SELECT path, sha256, version, mtime, size, inode, verified FROM copies"
                     " WHERE environment_id = ?",
                     (environment_id,),
                 )
@@ -290,12 +319,12 @@ class SharedRecords:
                 [(project, path) for path in batch.deleted],
             )
             self._db.executemany(
-                "INSERT INTO copies VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO copies VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
                 " ON CONFLICT (environment_id, path) DO UPDATE SET sha256 = excluded.sha256,"
                 " version = excluded.version, mtime = excluded.mtime, size = excluded.size,"
-                " inode = excluded.inode",
+                " inode = excluded.inode, verified = excluded.verified",
                 [
-                    (environment, path, c.sha256, c.version, *c.stamp)
+                    (environment, path, c.sha256, c.version, *c.stamp, int(c.verified))
                     for path, c in batch.copies.items()
                 ],
             )
@@ -310,10 +339,28 @@ class SharedRecords:
                 )
             return [digest for digest in batch.released if not self._uses(project, digest)]
 
+    def unverify(self, project_id: str, sha256: str) -> None:
+        """Have the project's environments hash their copies of ``sha256`` again."""
+        with self._lock, self._transaction():
+            self._db.execute(
+                "UPDATE copies SET mtime = -1, size = -1, inode = -1 WHERE sha256 = ?"
+                " AND environment_id IN"
+                " (SELECT environment_id FROM environments WHERE project_id = ?)",
+                (sha256, project_id),
+            )
+
     def used(self, project_id: str, digests: Collection[str]) -> set[str]:
         """Which of ``digests`` a file of the project uses."""
         with self._lock:
             return {digest for digest in digests if self._uses(project_id, digest)}
+
+    def project_digests(self, project_id: str) -> set[str]:
+        """Every digest the project's files use."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT DISTINCT sha256 FROM files WHERE project_id = ?", (project_id,)
+            ).fetchall()
+        return {str(row[0]) for row in rows}
 
     def digests(self) -> dict[str, set[str]]:
         """Every project's digests, for the blob stores' sweep."""
@@ -350,12 +397,39 @@ class _Scan:
     """Each path's stamp and executable bit."""
     sha256: dict[str, str]
     too_large: frozenset[str]
-    incomplete: bool
-    """Cut short, or with parts that could not be read: a missing file proves nothing."""
+    reason: str | None
+    """Why the scan proves no file missing: ``truncated``, ``partial`` or ``malformed``."""
     odd: tuple[str, ...]
     """Names that cannot be synced: not text, or not a plain path below ``shared/``."""
     mark: str | None
     now: int
+    open: frozenset[str] = frozenset()
+    """Files some process had open, when asked for."""
+
+    @property
+    def incomplete(self) -> bool:
+        return self.reason is not None
+
+
+class _Recent:
+    """What the sync wrote into one environment lately, so calls are not credited with it."""
+
+    def __init__(self) -> None:
+        self.writes: deque[tuple[float, str, Stamp]] = deque()
+        self.size = 0
+        self.latest: dict[str, Stamp] = {}
+        """Those paths' stamps at the environment's latest scan."""
+
+    def add(self, when: float, path: str, stamp: Stamp) -> None:
+        self.writes.append((when, path, stamp))
+        self.size += len(path)
+        while self.size > RECENT_BYTES:
+            _, old, _ = self.writes.popleft()
+            self.size -= len(old)
+
+
+class _BlobError(Exception):
+    """A blob that is missing, or whose content does not hash to its digest."""
 
 
 class SharedSync:
@@ -371,6 +445,8 @@ class SharedSync:
         max_project_files: int = MAX_PROJECT_FILES,
         hash_budget: int = HASH_BUDGET,
         failure_backoff: float = FAILURE_BACKOFF,
+        step_seconds: float = STEP_SECONDS,
+        step_bytes: int = STEP_BYTES,
     ) -> None:
         self.records = records
         self.root = root
@@ -380,16 +456,21 @@ class SharedSync:
         self.max_project_files = max_project_files
         self.hash_budget = hash_budget
         self.failure_backoff = failure_backoff
+        self.step_seconds = step_seconds
+        self.step_bytes = step_bytes
         self._stores: dict[str, Blobs] = {}
         self._project_locks = weakref.WeakValueDictionary[str, asyncio.Lock]()
         self._environment_locks = weakref.WeakValueDictionary[str, asyncio.Lock]()
-        self._told = OrderedDict[tuple[str, ...], None]()
-        self._failing: dict[str, dict[str, tuple[int, float]]] = {}
+        self._told = OrderedDict[bytes, None]()
+        self._failing: dict[str, dict[bytes, tuple[int, float]]] = {}
         """By environment and path: the version that could not be written, and when to retry."""
-        self._large: dict[str, dict[str, Stamp]] = {}
-        """By environment and path: the stamp of a file too large to copy, not hashed again."""
-        self._wrote: dict[str, deque[tuple[float, str]]] = {}
-        """By environment: when ``down`` wrote which path, so calls are not credited with it."""
+        self._large: dict[str, dict[bytes, Stamp]] = {}
+        """By environment and path: the stamp of a file not to be read again until it changes."""
+        self._recent: dict[str, _Recent] = {}
+        self._dirty: set[str] = set()
+        """Projects whose stores may hold blobs a cut-short step read and never recorded."""
+        self._missing: dict[str, set[str]] = {}
+        """By project: digests whose blobs were lost, to read again from an environment."""
 
     def blobs(self, project_id: str) -> Blobs:
         """The project's blob store: no other project's sync reads or deletes its blobs."""
@@ -410,30 +491,43 @@ class SharedSync:
     async def up(
         self, project_id: str, environment_id: str, session_id: str, channel: Channel
     ) -> list[str]:
-        """Copy the environment's changes to its shared files into the project's copy."""
+        """Copy the environment's changes to its shared files into the project's copy.
+
+        Files moved to their conflict copies get the project's versions at once.
+        """
+        deadline = time.monotonic() + self.step_seconds
         async with self._locked(self._environment_locks, environment_id):
             scan, notices = await self._attach(project_id, environment_id, channel)
             if scan is not None:
                 async with self._locked(self._project_locks, project_id):
-                    told, _ = await self._up(project_id, environment_id, session_id, channel, scan)
+                    told, moved = await self._up(
+                        project_id, environment_id, session_id, channel, scan, deadline
+                    )
                 notices += told
+                if moved:
+                    notices += await self._down(
+                        project_id, environment_id, session_id, channel, deadline, only=moved
+                    )
         return _bounded(notices)
 
     async def down(
         self, project_id: str, environment_id: str, session_id: str, channel: Channel
     ) -> list[str]:
         """Bring the environment's shared files up to the project's, its own changes first."""
+        deadline = time.monotonic() + self.step_seconds
         async with self._locked(self._environment_locks, environment_id):
             scan, notices = await self._attach(project_id, environment_id, channel)
             if scan is not None:
                 async with self._locked(self._project_locks, project_id):
-                    told, scan = await self._up(
-                        project_id, environment_id, session_id, channel, scan
+                    told, _ = await self._up(
+                        project_id, environment_id, session_id, channel, scan, deadline
                     )
                 notices += told
                 # Another environment's ``up`` may record changes meanwhile; the next
                 # ``down`` brings them.
-                notices += await self._down(project_id, environment_id, session_id, channel, scan)
+                notices += await self._down(
+                    project_id, environment_id, session_id, channel, deadline
+                )
         return _bounded(notices)
 
     async def write(
@@ -444,31 +538,40 @@ class SharedSync:
         channel: Channel,
         fields: dict[str, Any],
         timeout: float,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], list[str]]:
         """A file request's write in ``shared/``, its precondition held against the project.
 
         The environment is brought up to date first and the written file goes up at once,
         all under the project's lock: of two writers in different environments that expect
         the same version, the second gets ``conflict``, as in one environment. If the sync
-        before the write fails, the write is not made (``unavailable``); if the one after
-        fails, the next sync takes the file.
+        before the write fails, or leaves the file out of date, the write is not made
+        (``unavailable``); if the one after fails, the next sync takes the file. Returns
+        the executor's reply and the syncs' notices.
         """
-        scan: _Scan | None = None
+        path = posixpath.normpath(str(fields.get("path", "")))
+        notices: list[str] = []
+        synced = False
         async with contextlib.AsyncExitStack() as held:
             try:
                 async with asyncio.timeout(timeout):
+                    deadline = time.monotonic() + self.step_seconds
                     await held.enter_async_context(
                         self._locked(self._environment_locks, environment_id)
                     )
-                    scan, _ = await self._attach(project_id, environment_id, channel)
+                    scan, told = await self._attach(project_id, environment_id, channel)
+                    notices += told
                     if scan is not None:
                         await held.enter_async_context(
                             self._locked(self._project_locks, project_id)
                         )
-                        _, scan = await self._up(
-                            project_id, environment_id, session_id, channel, scan
+                        told, _ = await self._up(
+                            project_id, environment_id, session_id, channel, scan, deadline
                         )
-                        await self._down(project_id, environment_id, session_id, channel, scan)
+                        notices += told
+                        notices += await self._down(
+                            project_id, environment_id, session_id, channel, deadline
+                        )
+                        synced = True
             except Exception as error:
                 _log.warning(
                     "syncing shared/ in %s before a write failed: %r", environment_id, error
@@ -478,21 +581,38 @@ class SharedSync:
                     "the project's shared files could not be synced with this environment, so "
                     "the write was not made; try again",
                 ) from error
+            if synced:
+                await self._check_current(project_id, environment_id, path)
             reply = await channel.request("write", session=session_id, **fields)
-            if scan is not None:
+            if synced:
                 try:
                     async with asyncio.timeout(timeout):
                         after = await self._scan(channel, ())
-                        await self._up(project_id, environment_id, session_id, channel, after)
+                        told, _ = await self._up(
+                            project_id,
+                            environment_id,
+                            session_id,
+                            channel,
+                            after,
+                            time.monotonic() + self.step_seconds,
+                        )
+                        notices += told
                 except Exception as error:  # the write stands; the next sync takes it
                     _log.warning(
                         "syncing shared/ in %s after a write failed: %r", environment_id, error
                     )
-        return reply
+        return reply, _bounded(notices)
 
-    def written_since(self, environment_id: str, since: float) -> set[str]:
-        """The paths ``down`` wrote into the environment since ``since`` (monotonic clock)."""
-        return {path for when, path in self._wrote.get(environment_id, ()) if when >= since}
+    def unchanged_writes(
+        self, environment_id: str, paths: Collection[str], since: float, until: float
+    ) -> set[str]:
+        """Which of ``paths`` the sync wrote into the environment between ``since`` and
+        ``until`` (monotonic clock), unchanged at its latest scan: no call wrote them."""
+        recent = self._recent.get(environment_id)
+        if recent is None:
+            return set()
+        wrote = {path: stamp for when, path, stamp in recent.writes if since <= when <= until}
+        return {path for path in paths if path in wrote and recent.latest.get(path) == wrote[path]}
 
     async def forget(self, environment_id: str) -> None:
         """Drop what is known of a deleted environment."""
@@ -505,7 +625,7 @@ class SharedSync:
     async def _attach(
         self, project_id: str, environment_id: str, channel: Channel
     ) -> tuple[_Scan | None, list[str]]:
-        """Scan the environment's ``shared/``, syncing it afresh if it is not the one known.
+        """Scan the environment's ``shared/``, marking it as new if it is not the one known.
 
         None if the environment's ``shared/`` is synced for another project.
         """
@@ -518,8 +638,8 @@ class SharedSync:
                 "so not with this project's; use one of this project's own environments",
             )
         if claim is None or scan.mark != claim.mark:
-            # A new sandbox under this ID, or one never synced: what it holds is compared
-            # with the project's files afresh, so nothing in it reads as deleted.
+            # A new sandbox under this ID, a mark removed, or one never synced: what the
+            # records say it holds is checked again, and nothing reads as deleted.
             mark = f"{secrets.token_hex(16)} {project_id}"[:256]
             await asyncio.to_thread(self.records.reclaim, environment_id, project_id, mark)
             self._reset(environment_id)
@@ -531,7 +651,21 @@ class SharedSync:
             notices += self._once(
                 ("odd", project_id, name),
                 f"{name} is not synced with the project's other environments: its name is not "
-                f"text, or its path is over {_MAX_PATH_BYTES} bytes",
+                f"text, a name in it is over {NAME_MAX} bytes, or the path is over "
+                f"{_MAX_PATH_BYTES} bytes",
+            )
+        if scan.reason == "truncated":
+            notices += self._once(
+                ("truncated", environment_id),
+                "shared/ in this environment holds more than one scan reports (20,000 files, "
+                "or 4 MiB of paths), so files deleted there are not deleted in the project's "
+                "other environments",
+            )
+        elif scan.reason == "partial":
+            notices += self._once(
+                ("partial", environment_id),
+                "parts of shared/ in this environment could not be read, so files deleted "
+                "there are not deleted in the project's other environments",
             )
         return scan, notices
 
@@ -542,36 +676,66 @@ class SharedSync:
         session_id: str,
         channel: Channel,
         scan: _Scan,
-    ) -> tuple[list[str], _Scan]:
-        """``up`` with both locks held; returns its notices and the latest scan."""
+        deadline: float,
+    ) -> tuple[list[str], set[str]]:
+        """``up`` with both locks held: its notices, and the paths moved to conflict copies."""
         state = await asyncio.to_thread(self.records.state, project_id, environment_id)
         copies = state.copies
         large = self._large.get(environment_id, {})
+        missing = self._missing.get(project_id, set())
         candidates: list[str] = []
         for path, (stamp, _) in scan.files.items():
-            if large.get(path) == stamp:
-                continue  # too large, and unchanged
+            if large.get(_key(path)) == stamp:
+                continue  # not to be read again until it changes
             copy = copies.get(path)
-            if copy is None or copy.stamp != stamp or stamp[0] >= scan.now - RACY_NS:
+            if (
+                copy is None
+                or copy.stamp != stamp
+                or stamp[0] >= scan.now - RACY_NS
+                or copy.sha256 in missing
+            ):
                 candidates.append(path)
-        if not candidates and (scan.incomplete or copies.keys() <= scan.files.keys()):
-            return [], scan
         if candidates:
             scan = await self._scan(channel, candidates)
+        self._note_scan(environment_id, scan)
+        removed = (
+            []
+            if scan.incomplete
+            else [path for path, copy in copies.items() if copy.verified and path not in scan.files]
+        )
+        if not candidates and not removed:
+            await self._settle_project(project_id)
+            return [], set()
         files = dict(state.files)
         counter = state.version
-        held = {f.sha256: f.size for f in files.values()}
+        held = {f.sha256: f.size for f in files.values() if f.sha256 not in missing}
         total = sum(f.size for f in files.values())
         taken = set(files) | set(scan.files)
-        batch = _Batch(project_id, environment_id)
         notices: list[str] = []
-        fetched: set[str] = set()
+        moved: set[str] = set()
+        batch = _Batch(project_id, environment_id)
+        read = unrecorded = 0
         try:
+            for path in removed:
+                current = files.get(path)
+                # A file another environment changed meanwhile stays: the change wins
+                # over the deletion, and ``down`` brings it back here.
+                if current is not None and current.version <= copies[path].version:
+                    counter += 1
+                    batch.delete(path)
+                    batch.released.add(current.sha256)
+                    del files[path]
+                    total -= current.size
+                batch.drop(path)
             for path in candidates:
+                if time.monotonic() > deadline or read > self.step_bytes:
+                    break  # the rest at the next step
                 entry = scan.files.get(path)
                 if entry is None:
                     continue  # gone since
                 stamp, executable = entry
+                # Changed within a clock tick of the scan, it may change again unseen.
+                recorded = _STALE if stamp[0] >= scan.now - RACY_NS else stamp
                 if path in scan.too_large:
                     self._remember(self._large, environment_id, path, stamp)
                     notices += self._too_large(project_id, path, stamp[1])
@@ -579,28 +743,49 @@ class SharedSync:
                 sha256 = scan.sha256.get(path)
                 if sha256 is None:
                     continue  # changing, or past the hash budget: at a later scan
+                if sha256 in missing:
+                    # The project lost these bytes; this environment still has them.
+                    size = await self._fetch(project_id, channel, session_id, path, sha256)
+                    if size is None:
+                        continue
+                    read += size
+                    unrecorded += size
+                    missing.discard(sha256)
+                    held[sha256] = size
                 copy, current = copies.get(path), files.get(path)
                 if copy is not None and copy.sha256 == sha256:
-                    batch.keep(path, Copy(sha256, copy.version, stamp))
+                    batch.keep(path, Copy(sha256, copy.version, recorded))
+                    self._settle(environment_id, path)
                     continue
                 if current is not None and current.sha256 == sha256:
                     # The project already has this content, from another environment.
-                    batch.keep(path, Copy(sha256, current.version, stamp))
+                    batch.keep(path, Copy(sha256, current.version, recorded))
+                    self._settle(environment_id, path)
                     continue
                 base = copy.version if copy is not None else 0
                 conflict = current is not None and current.version > base
                 target = _conflict_name(path, environment_id, taken) if conflict else path
                 replaced = files.get(target)
+                room = self.max_project_bytes - total + (replaced.size if replaced else 0)
                 if replaced is None and len(files) >= self.max_project_files:
                     notices += self._full(project_id, path)
                     continue
                 size = held.get(sha256)
                 if size is None:
+                    if stamp[1] > room:  # by the size the scan reports, before reading it
+                        notices += self._full(project_id, path)
+                        continue
                     size = await self._fetch(project_id, channel, session_id, path, sha256)
                     if size is None:
                         continue  # it changed while it was read: at a later scan
-                    fetched.add(sha256)
-                if total - (replaced.size if replaced else 0) + size > self.max_project_bytes:
+                    read += size
+                    unrecorded += size
+                    if size > room:  # larger than the scan said: not read again unchanged
+                        self._remember(self._large, environment_id, path, stamp)
+                        notices += self._full(project_id, path)
+                        await asyncio.to_thread(self._discard, project_id, {sha256})
+                        continue
+                elif size > room:
                     notices += self._full(project_id, path)
                     continue
                 counter += 1
@@ -614,35 +799,36 @@ class SharedSync:
                 total += size
                 batch.put(new)
                 if conflict:
-                    # The copy stays at the version it matched, so ``down`` replaces it with
-                    # the project's.
-                    batch.keep(path, Copy(sha256, base, stamp))
                     notices.append(
                         f"{path} was also changed in another of the project's environments: "
                         f"that version stays as {path}, and this one is kept as {target}"
                     )
+                    if await self._move(channel, path, target):
+                        # The environment's file is the conflict copy now, so a call still
+                        # writing to it goes on writing there; the project's version takes
+                        # the path at once.
+                        batch.keep(target, Copy(sha256, counter, _STALE))
+                        batch.drop(path)
+                        moved.add(path)
+                    else:
+                        # The copy stays at the version it matched, so ``down`` replaces it.
+                        batch.keep(path, Copy(sha256, base, recorded))
                 else:
-                    batch.keep(path, Copy(sha256, counter, stamp))
-            if not scan.incomplete:
-                for path in copies.keys() - scan.files.keys():
-                    current = files.get(path)
-                    # A file another environment changed meanwhile stays: the change wins
-                    # over the deletion, and ``down`` brings it back here.
-                    if current is not None and current.version <= copies[path].version:
-                        counter += 1
-                        batch.delete(path)
-                        batch.released.add(current.sha256)
-                        del files[path]
-                        total -= current.size
-                    batch.drop(path)
+                    batch.keep(path, Copy(sha256, counter, recorded))
+                self._settle(environment_id, path)
+                if len(batch.files) >= COMMIT_FILES or unrecorded >= COMMIT_BYTES:
+                    batch.counter = counter
+                    await self._apply(project_id, batch)
+                    batch = _Batch(project_id, environment_id)
+                    unrecorded = 0
             batch.counter = counter
-            batch.released |= fetched
             await self._apply(project_id, batch)
         except BaseException:
-            # Blobs read for changes that were not recorded.
-            self._discard(project_id, fetched)
+            if unrecorded:
+                self._dirty.add(project_id)  # its blobs go at the project's next step
             raise
-        return notices, scan
+        await self._settle_project(project_id)
+        return notices, moved
 
     async def _down(
         self,
@@ -650,93 +836,145 @@ class SharedSync:
         environment_id: str,
         session_id: str,
         channel: Channel,
-        scan: _Scan,
+        deadline: float,
+        *,
+        only: Collection[str] | None = None,
     ) -> list[str]:
-        """``down`` with the environment's lock held, once its own changes went up."""
+        """``down`` with the environment's lock held, once its own changes went up.
+
+        With ``only``, just those paths, and the environment is not recorded as up to date.
+        """
         state = await asyncio.to_thread(self.records.state, project_id, environment_id)
+        files, copies = state.files, state.copies
         failing = self._failing.setdefault(environment_id, {})
         now = time.monotonic()
-        for path in failing.keys() - state.files.keys() - state.copies.keys():
-            del failing[path]  # nothing left to bring
-        if state.seen == state.version and all(now < until for _, until in failing.values()):
+        if failing:
+            known = {_key(path) for path in files.keys() | copies.keys()}
+            for key in failing.keys() - known:
+                del failing[key]  # nothing left to bring
+        if (
+            only is None
+            and state.seen == state.version
+            and all(now < until for _, until in failing.values())
+        ):
             return []
-        files, copies = state.files, state.copies
-        store = self.blobs(project_id)
+        paths = files.keys() | copies.keys()
+        if only is not None:
+            paths &= set(only)
+        work = [path for path in paths if not _current(files.get(path), copies.get(path))]
         batch = _Batch(project_id, environment_id)
         notices: list[str] = []
         complete = True
         try:
-            # Deletions first: a directory they empty may be where a file is to be written.
-            for path in sorted(files.keys() | copies.keys(), key=lambda p: (p in files, p)):
-                current, copy = files.get(path), copies.get(path)
-                if current is not None and copy is not None and copy.version >= current.version:
-                    continue
-                version = current.version if current is not None else -1
-                failed = failing.get(path)
-                if failed is not None and failed[0] == version and now < failed[1]:
-                    continue
-                try:
-                    if current is None:
-                        # Deleted in the project: the environment's copy goes if unchanged.
-                        if copy is not None and (path in scan.files or scan.incomplete):
-                            await channel.request(
-                                "remove", session=session_id, path=path, expected_sha256=copy.sha256
-                            )
-                        batch.drop(path)
-                    elif copy is not None and copy.sha256 == current.sha256:
-                        # The same bytes: the version moves on, and the stamp stays as hashed.
-                        batch.keep(path, Copy(copy.sha256, current.version, copy.stamp))
-                    elif copy is None and path in scan.files:
-                        continue  # the environment's own file there, which ``up`` decides
-                    else:
-                        data = await asyncio.to_thread(store.path(current.sha256).read_bytes)
-                        precondition: dict[str, Any] = (
-                            {"expected_sha256": copy.sha256}
-                            if copy is not None
-                            else {"create_only": True}
-                        )
-                        reply = await channel.request(
-                            "write",
-                            session=session_id,
-                            path=path,
-                            content_b64=base64.b64encode(data).decode(),
-                            executable=current.executable,
-                            **precondition,
-                        )
-                        stamp = _stamp(reply.get("stamp"))
-                        batch.keep(path, Copy(current.sha256, current.version, stamp))
-                        self._note_written(environment_id, path)
-                    failing.pop(path, None)
-                except WorkerError as error:
-                    if error.kind not in _FILE_ERRORS:
-                        raise
-                    if error.kind is ErrorKind.NOT_FOUND and current is None:
-                        batch.drop(path)  # already gone
-                    elif error.kind is ErrorKind.CONFLICT:
-                        # Changed in the environment since its last sync: ``up`` hashes it
-                        # again and decides. Until it does, this version is not sent again.
-                        if copy is not None:
-                            batch.keep(path, Copy(copy.sha256, copy.version, _STALE))
-                        self._fail(environment_id, path, version)
+            if work:
+                # Which files are there now, and which a process has open.
+                scan = await self._scan(channel, (), open_files=True)
+                store = self.blobs(project_id)
+                # Deletions first: a directory they empty may be where a file is to go.
+                for path in sorted(work, key=lambda p: (p in files, p)):
+                    if time.monotonic() > deadline:
                         complete = False
-                    else:
+                        break
+                    current, copy = files.get(path), copies.get(path)
+                    if copy is not None and not copy.verified:
+                        if path not in scan.files:
+                            copy = None  # the environment's directory does not have it
+                        elif current is not None:
+                            complete = False
+                            continue  # ``up`` has not hashed it yet
+                    version = current.version if current is not None else -1
+                    failed = failing.get(_key(path))
+                    if failed is not None and failed[0] == version and now < failed[1]:
+                        continue
+                    try:
+                        if current is None:
+                            # Deleted in the project: the environment's copy goes if unchanged.
+                            if copy is not None and (path in scan.files or scan.incomplete):
+                                if path in scan.open:
+                                    complete = False
+                                    continue  # removed once nothing has it open
+                                await channel.request(
+                                    "remove",
+                                    session=session_id,
+                                    path=path,
+                                    expected_sha256=copy.sha256,
+                                )
+                            batch.drop(path)
+                        elif copy is not None and copy.sha256 == current.sha256:
+                            # The same bytes: the version moves on, and the stamp stays.
+                            batch.keep(path, dataclasses.replace(copy, version=current.version))
+                        elif copy is None and path in scan.files:
+                            continue  # the environment's own file there, which ``up`` decides
+                        elif copy is not None and path not in scan.files:
+                            complete = False
+                            continue  # past a scan cut short: whether it is there is unknown
+                        elif copy is not None and path in scan.open:
+                            complete = False
+                            continue  # replaced once nothing has it open
+                        else:
+                            content = await asyncio.to_thread(_encoded, store, current.sha256)
+                            precondition: dict[str, Any] = (
+                                {"expected_sha256": copy.sha256}
+                                if copy is not None
+                                else {"create_only": True}
+                            )
+                            reply = await channel.request(
+                                "write",
+                                session=session_id,
+                                path=path,
+                                content_b64=content,
+                                executable=current.executable,
+                                **precondition,
+                            )
+                            stamp = _stamp(reply.get("stamp"))
+                            batch.keep(path, Copy(current.sha256, current.version, stamp))
+                            self._wrote(environment_id, path, stamp)
+                        failing.pop(_key(path), None)
+                    except WorkerError as error:
+                        if error.kind in _STOP:
+                            raise
+                        if error.kind is ErrorKind.NOT_FOUND and current is None:
+                            batch.drop(path)  # already gone
+                        elif error.kind is ErrorKind.CONFLICT:
+                            complete = False
+                            if copy is not None:
+                                # Changed since its last sync: ``up`` hashes it and decides.
+                                batch.keep(path, dataclasses.replace(copy, stamp=_STALE))
+                            else:
+                                # A file of the environment's own is there now.
+                                self._fail(environment_id, path, version)
+                        else:
+                            self._fail(environment_id, path, version)
+                            notices += self._once(
+                                ("failed", environment_id, path, str(version)),
+                                f"{path} could not be brought into this environment: "
+                                f"{_shown(error.message)}",
+                            )
+                    except _BlobError as error:
+                        complete = False
                         self._fail(environment_id, path, version)
-                        notices += self._once(
-                            ("failed", environment_id, path, str(version)),
-                            f"{path} could not be brought into this environment: "
-                            f"{_shown(error.message)}",
-                        )
-                except (OSError, ValueError) as error:  # a blob that cannot be read
-                    self._fail(environment_id, path, version)
-                    complete = False
-                    _log.warning("shared blob of %s for %s unreadable: %s", project_id, path, error)
-            if complete:
+                        if current is not None:
+                            await self._lost(project_id, current.sha256)
+                        _log.warning("shared files of %s: %s", project_id, error)
+            if complete and only is None:
                 batch.seen = state.version
         finally:
             # What was written stays recorded, even if the step was cut short.
             if not batch.empty:
                 await asyncio.shield(self._apply(project_id, batch))
         return notices
+
+    async def _check_current(self, project_id: str, environment_id: str, path: str) -> None:
+        """Refuse a write to a file the sync could not bring up to date in the environment."""
+        if not path.startswith(SHARED):
+            return
+        state = await asyncio.to_thread(self.records.state, project_id, environment_id)
+        if not _current(state.files.get(path), state.copies.get(path)):
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                f"{_shown(path)} could not be brought up to date in this environment, so the "
+                "write was not made; try again",
+            )
 
     async def _apply(self, project_id: str, batch: _Batch) -> None:
         unused = await asyncio.to_thread(self.records.apply, batch)
@@ -748,10 +986,28 @@ class SharedSync:
             unused = set(digests) - self.records.used(project_id, digests)
             _unlink(self.blobs(project_id), unused)
 
+    async def _settle_project(self, project_id: str) -> None:
+        """With the project's lock held: delete blobs a cut-short step left unrecorded."""
+        if project_id in self._dirty:
+            used = await asyncio.to_thread(self.records.project_digests, project_id)
+            await asyncio.to_thread(_sweep_store, self.blobs(project_id).root, used)
+            self._dirty.discard(project_id)
+
+    async def _lost(self, project_id: str, sha256: str) -> None:
+        """A blob is gone or damaged: read it again from an environment that has it."""
+        self._missing.setdefault(project_id, set()).add(sha256)
+        await asyncio.to_thread(_unlink, self.blobs(project_id), (sha256,))
+        await asyncio.to_thread(self.records.unverify, project_id, sha256)
+
     # The executor's replies.
 
     async def _scan(
-        self, channel: Channel, hashed: Sequence[str], mark: str | None = None
+        self,
+        channel: Channel,
+        hashed: Sequence[str],
+        mark: str | None = None,
+        *,
+        open_files: bool = False,
     ) -> _Scan:
         fields: dict[str, Any] = {
             "hash": list(hashed),
@@ -760,29 +1016,44 @@ class SharedSync:
         }
         if mark is not None:
             fields["mark"] = mark
+        if open_files:
+            fields["open"] = True
         reply = await channel.request("shared", **fields)
         files: dict[str, tuple[Stamp, bool]] = {}
         refused: list[str] = []
-        incomplete = reply.get("truncated") is not False or reply.get("partial") is not False
+        malformed = False
         raw_files = reply.get("files")
         if isinstance(raw_files, dict):
             for path, raw in cast(dict[object, object], raw_files).items():
+                if not isinstance(path, str):
+                    malformed = True
+                    continue
+                if not _valid_path(path):
+                    # Never a synced path, so its presence proves nothing either way.
+                    if len(refused) < 10:
+                        refused.append(path)
+                    continue
                 values = cast(list[object], raw) if isinstance(raw, list) else []
                 if (
-                    isinstance(path, str)
-                    and _valid_path(path)
-                    and len(values) == 4
+                    len(values) == 4
                     and all(type(v) is int and 0 <= v <= _MAX_INT for v in values)
                     and values[3] in (0, 1)
                 ):
                     numbers = cast(list[int], values)
                     files[path] = ((numbers[0], numbers[1], numbers[2]), numbers[3] == 1)
                 else:
-                    incomplete = True  # something there that cannot be accounted for
-                    if isinstance(path, str) and len(refused) < 10:
-                        refused.append(path)
+                    malformed = True  # something there that cannot be accounted for
         else:
-            incomplete = True
+            malformed = True
+        reason = (
+            "truncated"
+            if reply.get("truncated") is not False
+            else "partial"
+            if reply.get("partial") is not False
+            else "malformed"
+            if malformed
+            else None
+        )
         digests: dict[str, str] = {}
         raw_digests = reply.get("sha256")
         if isinstance(raw_digests, dict):
@@ -794,30 +1065,23 @@ class SharedSync:
                     and _DIGEST.fullmatch(digest)
                 ):
                     digests[path] = digest
-        raw_large = reply.get("too_large")
         too_large = frozenset(
-            path
-            for path in (cast(list[object], raw_large) if isinstance(raw_large, list) else [])
-            if isinstance(path, str) and path in files
+            path for path in _strings(reply.get("too_large"), len(files)) if path in files
         )
-        raw_odd = reply.get("odd")
-        odd = tuple(
-            _shown(name)
-            for name in [
-                *(cast(list[object], raw_odd) if isinstance(raw_odd, list) else [])[:10],
-                *refused,
-            ]
-            if isinstance(name, str)
+        opened = frozenset(
+            path for path in _strings(reply.get("open"), 20_000) if path.startswith(SHARED)
         )
+        odd = tuple(_shown(name) for name in [*_strings(reply.get("odd"), 10), *refused])
         mark, now = reply.get("mark"), reply.get("now")
         return _Scan(
             files=files,
             sha256=digests,
             too_large=too_large,
-            incomplete=incomplete,
+            reason=reason,
             odd=odd,
             mark=mark if isinstance(mark, str) else None,
             now=now if type(now) is int and 0 <= now <= _MAX_INT else 0,
+            open=opened,
         )
 
     async def _fetch(
@@ -835,9 +1099,9 @@ class SharedSync:
                         length=READ_BYTES, hash=offset == 0,
                     )  # fmt: skip
                 except WorkerError as error:
-                    if error.kind not in _FILE_ERRORS:
+                    if error.kind in _STOP:
                         raise
-                    return None
+                    return None  # gone or unreadable: at a later scan
                 raw = reply.get("content_b64")
                 if not isinstance(raw, str):
                     return None
@@ -860,12 +1124,23 @@ class SharedSync:
             if not stored:
                 writer.discard()
 
+    async def _move(self, channel: Channel, path: str, target: str) -> bool:
+        """Give the environment's file ``path`` the free name ``target``; whether it did."""
+        try:
+            await channel.request("move", path=path, target=target)
+        except WorkerError as error:
+            if error.kind in _STOP:
+                raise
+            return False  # the name is taken there, or the file went: as before moving
+        return True
+
     # Bookkeeping.
 
     def _once(self, key: tuple[str, ...], text: str) -> list[str]:
-        if key in self._told:
+        digest = hashlib.blake2b(repr(key).encode(), digest_size=16).digest()
+        if digest in self._told:
             return []
-        self._told[key] = None
+        self._told[digest] = None
         while len(self._told) > MAX_REMEMBERED:
             self._told.popitem(last=False)
         return [text]
@@ -891,25 +1166,38 @@ class SharedSync:
         until = time.monotonic() + self.failure_backoff
         self._remember(self._failing, environment_id, path, (version, until))
 
+    def _settle(self, environment_id: str, path: str) -> None:
+        """The environment's file at ``path`` was recorded: nothing about it is failing."""
+        failing = self._failing.get(environment_id)
+        if failing:
+            failing.pop(_key(path), None)
+
     @staticmethod
     def _remember[T](
-        table: dict[str, dict[str, T]], environment_id: str, path: str, value: T
+        table: dict[str, dict[bytes, T]], environment_id: str, path: str, value: T
     ) -> None:
         entries = table.setdefault(environment_id, {})
-        entries[path] = value
+        entries[_key(path)] = value
         while len(entries) > MAX_REMEMBERED:
             del entries[next(iter(entries))]
+
+    def _wrote(self, environment_id: str, path: str, stamp: Stamp) -> None:
+        recent = self._recent.get(environment_id)
+        if recent is None:
+            recent = self._recent[environment_id] = _Recent()
+        recent.add(time.monotonic(), path, stamp)
+
+    def _note_scan(self, environment_id: str, scan: _Scan) -> None:
+        recent = self._recent.get(environment_id)
+        if recent is not None:
+            recent.latest = {
+                path: scan.files[path][0] for _, path, _ in recent.writes if path in scan.files
+            }
 
     def _reset(self, environment_id: str) -> None:
         self._failing.pop(environment_id, None)
         self._large.pop(environment_id, None)
-        self._wrote.pop(environment_id, None)
-
-    def _note_written(self, environment_id: str, path: str) -> None:
-        wrote = self._wrote.get(environment_id)
-        if wrote is None:
-            wrote = self._wrote[environment_id] = deque(maxlen=MAX_WROTE)
-        wrote.append((time.monotonic(), path))
+        self._recent.pop(environment_id, None)
 
     @staticmethod
     @contextlib.asynccontextmanager
@@ -924,13 +1212,23 @@ class SharedSync:
             yield
 
 
+def _current(file: ProjectFile | None, copy: Copy | None) -> bool:
+    """Whether an environment's copy is the project's version of a file, or both are absent."""
+    if file is None:
+        return copy is None
+    return copy is not None and copy.verified and copy.version >= file.version
+
+
 def _valid_path(path: str) -> bool:
     """A path the executor may report: below ``shared/``, plain, printable and not too long."""
     if not path.startswith(SHARED) or path.endswith("/") or not path.isprintable():
         return False
     if len(path.encode("utf-8", "surrogateescape")) > _MAX_PATH_BYTES:
         return False
-    return all(part not in ("", ".", "..") for part in path[len(SHARED) :].split("/"))
+    return all(
+        part not in ("", ".", "..") and len(part.encode("utf-8", "surrogateescape")) <= NAME_MAX
+        for part in path[len(SHARED) :].split("/")
+    )
 
 
 def _stamp(raw: object) -> Stamp:
@@ -941,20 +1239,39 @@ def _stamp(raw: object) -> Stamp:
     return _STALE
 
 
+def _strings(raw: object, limit: int) -> list[str]:
+    items = cast(list[object], raw) if isinstance(raw, list) else []
+    return [item for item in items[:limit] if isinstance(item, str)]
+
+
 def _conflict_name(path: str, environment_id: str, taken: Collection[str]) -> str:
-    """``shared/results.csv`` -> ``shared/results.conflict-<environment>.csv``, then ``-2``…"""
+    """``shared/results.csv`` -> ``shared/results.conflict-<environment>.csv``, then ``-2``…
+
+    The name stays within ``NAME_MAX`` bytes, by shortening the original stem.
+    """
     directory, name = posixpath.split(path)
     stem, dot, suffix = name.rpartition(".")
     if not stem:  # no suffix, or a dot file
         stem, dot, suffix = name, "", ""
     label = "".join(c if c.isalnum() or c in "-_" else "-" for c in environment_id)[:40] or "env"
-    for count in range(1, 100):
-        tail = label if count == 1 else f"{label}-{count}"
-        candidate = posixpath.join(directory, f"{stem}.conflict-{tail}{dot}{suffix}")
+    tails = [label, *(f"{label}-{count}" for count in range(2, 100))]
+    for tail in [*tails, f"{label}-{secrets.token_hex(4)}"]:
+        candidate = posixpath.join(directory, _fitted(stem, f".conflict-{tail}{dot}{suffix}"))
+        if len(candidate.encode()) > _MAX_PATH_BYTES:  # a deep directory: at the top instead
+            candidate = SHARED + posixpath.basename(candidate)
         if candidate not in taken:
             return candidate
-    tail = f"{label}-{secrets.token_hex(4)}"
-    return posixpath.join(directory, f"{stem}.conflict-{tail}{dot}{suffix}")
+    raise AssertionError("unreachable: the random name is free")
+
+
+def _fitted(stem: str, ending: str) -> str:
+    """``stem + ending``, the stem shortened to keep the name within ``NAME_MAX`` bytes."""
+    if len(ending.encode()) >= NAME_MAX:
+        # A suffix too long to keep: the name ends with the conflict label alone.
+        ending = ending[: ending.index(".", 1)]
+    room = NAME_MAX - len(ending.encode())
+    shortened = stem.encode()[:room].decode("utf-8", "ignore")
+    return (shortened or "file") + ending
 
 
 def _bounded(notices: list[str]) -> list[str]:
@@ -968,8 +1285,24 @@ def _shown(text: str) -> str:
     return "".join(c if c.isprintable() else "?" for c in text[:300])
 
 
+def _key(path: str) -> bytes:
+    """A path's fixed-size key for the memory tables, whatever the path's length."""
+    return hashlib.blake2b(path.encode("utf-8", "surrogateescape"), digest_size=16).digest()
+
+
 def _store_name(project_id: str) -> str:
     return hashlib.sha256(project_id.encode("utf-8", "surrogateescape")).hexdigest()[:32]
+
+
+def _encoded(store: Blobs, sha256: str) -> str:
+    """A blob's content in base64, once it is checked against its digest."""
+    try:
+        data = store.path(sha256).read_bytes()
+    except OSError as exc:
+        raise _BlobError(f"blob {sha256} cannot be read: {exc}") from exc
+    if hashlib.sha256(data).hexdigest() != sha256:
+        raise _BlobError(f"blob {sha256} does not match its digest")
+    return base64.b64encode(data).decode()
 
 
 def _unlink(store: Blobs, digests: Collection[str]) -> None:
@@ -989,16 +1322,22 @@ def _sweep(root: Path, used: dict[str, set[str]]) -> int:
         for leftover in (store / "tmp").glob("*"):
             with contextlib.suppress(OSError):
                 leftover.unlink()  # a blob being written when the worker stopped
-        keep = used.get(store.name, set())
-        blobs = store / "blobs"
-        if blobs.is_symlink() or not blobs.is_dir():
+        removed += _sweep_store(store, used.get(store.name, set()))
+    return removed
+
+
+def _sweep_store(store: Path, keep: set[str]) -> int:
+    """Delete the blobs in one project's store that ``keep`` does not name."""
+    removed = 0
+    blobs = store / "blobs"
+    if blobs.is_symlink() or not blobs.is_dir():
+        return 0
+    for directory in blobs.iterdir():
+        if directory.is_symlink() or not directory.is_dir():
             continue
-        for directory in blobs.iterdir():
-            if directory.is_symlink() or not directory.is_dir():
-                continue
-            for blob in directory.iterdir():
-                if blob.name not in keep:
-                    with contextlib.suppress(OSError):
-                        blob.unlink()
-                        removed += 1
+        for blob in directory.iterdir():
+            if blob.name not in keep:
+                with contextlib.suppress(OSError):
+                    blob.unlink()
+                    removed += 1
     return removed

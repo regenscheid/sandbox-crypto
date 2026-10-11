@@ -778,3 +778,70 @@ async def test_files_the_sync_brings_are_not_a_calls_own(synced: Worker) -> None
     await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
     done = await synced.finish(long["execution_id"])
     assert done["result"]["written_files"] == []
+
+
+async def test_a_conflict_found_for_a_file_request_reaches_the_running_call(
+    synced: Worker,
+) -> None:
+    a, b = _in("env1", "s1"), _in("env2", "s2")
+    await _shell(synced, "op-1", a, 'echo a > "$PROJECT_SHARED/notes.md"')
+    await _shell(synced, "op-2", b, "true")  # env2 has it
+    status, long = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-3",
+            "context": b,
+            "kind": "shell",
+            "script": 'echo b > "$PROJECT_SHARED/notes.md"; until [ -f go ]; do sleep 0.05; done',
+        },
+    )
+    assert status == 201
+    await synced.wait_running(long["execution_id"])
+    await _shell(synced, "op-4", a, 'echo a2 > "$PROJECT_SHARED/notes.md"')
+    # Another session lists shared/ in env2 while the call runs: the sync finds the conflict.
+    status, _ = await synced.post(
+        "/v1/files/list", {"context": _in("env2", "s3"), "path": "shared"}
+    )
+    assert status == 200
+    status, _ = await synced.post(
+        "/v1/files/write", {"context": b, "path": "go", "content_b64": "", "create_only": True}
+    )
+    assert status == 200
+    done = await synced.finish(long["execution_id"])
+    [notice] = [n for n in done["result"]["notices"] if "conflict" in n]
+    assert "shared/notes.conflict-env2.md" in notice
+
+
+async def test_a_calls_own_write_after_the_sync_wrote_the_file_is_its_own(synced: Worker) -> None:
+    b = _in("env2", "s2")
+    status, long = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-l",
+            "context": b,
+            "kind": "shell",
+            "script": 'until [ -f go ]; do sleep 0.05; done; echo mine > "$PROJECT_SHARED/r.txt"',
+        },
+    )
+    assert status == 201
+    await synced.wait_running(long["execution_id"])
+    await _shell(synced, "op-1", _in("env1", "s1"), 'echo r > "$PROJECT_SHARED/r.txt"')
+    await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
+    status, _ = await synced.post(
+        "/v1/files/write", {"context": b, "path": "go", "content_b64": "", "create_only": True}
+    )
+    assert status == 200
+    done = await synced.finish(long["execution_id"])
+    assert "shared/r.txt" in done["result"]["written_files"]
+
+
+async def test_a_result_that_cannot_be_stored_still_ends_the_attempt(
+    synced: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(*args: Any) -> None:
+        raise RuntimeError("test: the store is full")
+
+    monkeypatch.setattr(synced.manager, "_complete", broken)
+    done = await _shell(synced, "op-1", _in("env1", "s1"), "echo hi")
+    assert done["state"] == "failed"
+    assert done["result"]["error"]["message"] == "the attempt's result could not be stored"

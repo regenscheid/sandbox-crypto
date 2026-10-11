@@ -42,7 +42,7 @@ import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Final, cast
 
 PROTOCOL = 1
 MAX_LINE = 16 * 1024 * 1024
@@ -313,8 +313,8 @@ def scan_shared(directory: int) -> tuple[dict[str, list[int]], bool, bool, list[
                 for entry in listing:
                     name = entry.name
                     if not name.isprintable():
+                        # Never a synced path, so its absence proves nothing: no partial scan.
                         odd.append(relative + name.encode("utf-8", "replace").decode())
-                        partial = True
                         continue
                     try:
                         if entry.is_dir(follow_symlinks=False):
@@ -330,7 +330,7 @@ def scan_shared(directory: int) -> tuple[dict[str, list[int]], bool, bool, list[
                         partial = True
                         continue
                     path = relative + name
-                    reported += len(path.encode())
+                    reported += len(json.dumps(path, ensure_ascii=False).encode())
                     if len(files) >= MAX_SNAPSHOT or reported > SHARED_REPLY_BYTES:
                         truncated = True
                         return files, truncated, partial, odd[:10]
@@ -401,10 +401,11 @@ def write_file(
             raise ToolError("invalid_request", f"{path!r} is a directory")
         if create_only and info is not None:
             raise ToolError("conflict", f"{path!r} already exists")
+        checked: os.stat_result | None = None
         if expected is not None:
             if info is None:
                 raise ToolError("conflict", f"{path!r} does not exist")
-            current = _file_sha256(parent, name, path)
+            current, checked = _hashed(parent, name, path)
             if current != expected:
                 raise ToolError("conflict", f"{path!r} changed: its SHA-256 is {current}")
         temporary = f".write-{secrets.token_hex(8)}"
@@ -417,7 +418,17 @@ def write_file(
                     os.fchmod(handle.fileno(), 0o755 if executable else 0o644)
                 handle.flush()
                 written = os.fstat(handle.fileno())
-            os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
+            if checked is not None and _exchange(parent, temporary, name):
+                # Swapped at once: the file that was there is at the temporary name now,
+                # and if it changed since it was checked, it goes back.
+                if _changed_since(parent, temporary, checked):
+                    _exchange(parent, temporary, name)
+                    raise ToolError("conflict", f"{path!r} changed while it was written")
+                os.unlink(temporary, dir_fd=parent)
+            else:
+                if checked is not None and _changed_since(parent, name, checked):
+                    raise ToolError("conflict", f"{path!r} changed while it was written")
+                os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(temporary, dir_fd=parent)
@@ -429,6 +440,130 @@ def write_file(
         "size": len(content),
         "stamp": [written.st_mtime_ns, written.st_size, written.st_ino],
     }
+
+
+_RENAME_EXCHANGE: Final = 2
+
+
+def _exchange(parent: int, first: str, second: str) -> bool:
+    """Swap two names in ``parent`` at once (renameat2); False where that is unavailable."""
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        renameat2 = libc.renameat2
+    except (ImportError, OSError, AttributeError):
+        return False
+    renameat2.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
+    ]  # fmt: skip
+    if renameat2(parent, os.fsencode(first), parent, os.fsencode(second), _RENAME_EXCHANGE) == 0:
+        return True
+    code = ctypes.get_errno()
+    if code in (errno.EINVAL, errno.ENOSYS, errno.EPERM, errno.EOPNOTSUPP):
+        return False  # not on this file system, or refused by the sandbox
+    raise OSError(code, os.strerror(code), second)
+
+
+def _changed_since(parent: int, name: str, before: os.stat_result) -> bool:
+    """Whether ``name`` is no longer the file ``before`` described."""
+    try:
+        now = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        return True
+    return (now.st_ino, now.st_mtime_ns, now.st_size) != (
+        before.st_ino,
+        before.st_mtime_ns,
+        before.st_size,
+    )
+
+
+def _move_file(source: int, name: str, destination: int, target: str, path: str) -> list[int]:
+    """Give the regular file ``name`` the free name ``target``; return its new stamp."""
+    info = os.stat(name, dir_fd=source, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode):
+        raise ToolError("invalid_request", f"{path!r} is not a regular file")
+    try:
+        # A hard link never replaces an existing file, and the inode stays the same.
+        os.link(name, target, src_dir_fd=source, dst_dir_fd=destination, follow_symlinks=False)
+        os.unlink(name, dir_fd=source)
+    except FileExistsError:
+        raise ToolError("conflict", f"the new name for {path!r} is taken") from None
+    except OSError as exc:
+        if exc.errno not in (errno.EPERM, errno.EXDEV, errno.EMLINK, errno.EOPNOTSUPP):
+            raise
+        # No hard links here: a rename, after checking the name is free.
+        try:
+            os.stat(target, dir_fd=destination, follow_symlinks=False)
+        except FileNotFoundError:
+            os.rename(name, target, src_dir_fd=source, dst_dir_fd=destination)
+        else:
+            raise ToolError("conflict", f"the new name for {path!r} is taken") from None
+    moved = os.stat(target, dir_fd=destination, follow_symlinks=False)
+    return [moved.st_mtime_ns, moved.st_size, moved.st_ino]
+
+
+def _file_error(exc: OSError, path: str) -> ToolError:
+    """A failure on one file, by kind; a full or failing disk stops the sync instead."""
+    if exc.errno in (errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EROFS):
+        return ToolError("unavailable", f"cannot change {path!r}: {exc.strerror}")
+    if exc.errno in (errno.EACCES, errno.EPERM):
+        return ToolError("policy_denied", f"cannot change {path!r}: {exc.strerror}")
+    return ToolError("invalid_request", f"cannot change {path!r}: {exc.strerror}")
+
+
+def _read_mark(root: Path) -> str | None:
+    """The sync's mark, read without following a link or waiting on a pipe."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        descriptor = os.open(root / SYNC_MARK, flags)
+    except OSError:
+        return None
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return None
+        try:
+            return handle.read(257).decode()[:256]
+        except UnicodeDecodeError:
+            return None
+
+
+def _write_mark(root: Path, mark: str) -> None:
+    temporary = root / f".write-{secrets.token_hex(8)}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    with os.fdopen(os.open(temporary, flags, 0o600), "w") as handle:
+        handle.write(mark)
+    os.replace(temporary, root / SYNC_MARK)
+
+
+def open_shared_files(shared: Path, limit: int = 10_000) -> list[str]:
+    """The files in the shared area that some other process has open, as ``shared/`` paths.
+
+    Read from ``/proc``. Processes it may not inspect are left out, so a file missing
+    from the list can still be open.
+    """
+    prefix = os.path.realpath(shared) + os.sep
+    found: set[str] = set()
+    own = str(os.getpid())
+    try:
+        processes = [entry for entry in os.listdir("/proc") if entry.isdigit() and entry != own]
+    except OSError:
+        return []
+    for process in processes:
+        try:
+            descriptors = os.listdir(f"/proc/{process}/fd")
+        except OSError:
+            continue
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(f"/proc/{process}/fd/{descriptor}")
+            except OSError:
+                continue
+            if target.startswith(prefix):
+                found.add(SHARED + "/" + target[len(prefix) :])
+                if len(found) >= limit:
+                    return sorted(found)
+    return sorted(found)
 
 
 def _remove_checked(parent: int, name: str, expected: str, path: str) -> None:
@@ -474,15 +609,17 @@ def _stamped_sha256(parent: int, name: str, stamp: Sequence[int]) -> str | None:
     return digest.hexdigest()
 
 
-def _file_sha256(parent: int, name: str, path: str) -> str:
+def _hashed(parent: int, name: str, path: str) -> tuple[str, os.stat_result]:
+    """A file's SHA-256, and its status as it was before it was read."""
     flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
     with os.fdopen(os.open(name, flags, dir_fd=parent), "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+        before = os.fstat(handle.fileno())
+        if not stat.S_ISREG(before.st_mode):
             raise ToolError("invalid_request", f"{path!r} is not a regular file")
         digest = hashlib.sha256()
         while block := handle.read(1024 * 1024):
             digest.update(block)
-    return digest.hexdigest()
+    return digest.hexdigest(), before
 
 
 def list_directory(directory: int, limit: int) -> tuple[list[Message], bool]:
@@ -1003,6 +1140,7 @@ class Executor:
             "list": self.op_list,
             "shared": self.op_shared,
             "remove": self.op_remove,
+            "move": self.op_move,
         }
         handler = handlers.get(str(request.get("op")))
         try:
@@ -1717,17 +1855,20 @@ class Executor:
                 "invalid_request", "writes to the shared area need expected_sha256 or create_only"
             )
         executable = request.get("executable")
-        parent = _walk(self.open_base(base), rest[:-1], str(path), create=True)
-        reply = await asyncio.to_thread(
-            write_file,
-            parent,
-            rest[-1],
-            content,
-            expected,
-            create_only,
-            str(path),
-            executable if isinstance(executable, bool) else None,
-        )
+        try:
+            parent = _walk(self.open_base(base), rest[:-1], str(path), create=True)
+            reply = await asyncio.to_thread(
+                write_file,
+                parent,
+                rest[-1],
+                content,
+                expected,
+                create_only,
+                str(path),
+                executable if isinstance(executable, bool) else None,
+            )
+        except OSError as exc:
+            raise _file_error(exc, str(path)) from exc
         await self.reply(request, **reply)
 
     async def op_shared(self, request: Message) -> None:
@@ -1744,22 +1885,26 @@ class Executor:
         budget = max(0, int(request.get("hash_budget", 0)))
         mark = request.get("mark")
         reply = await asyncio.to_thread(
-            self.shared_state, wanted, limit, budget, mark if isinstance(mark, str) else None
+            self.shared_state,
+            wanted,
+            limit,
+            budget,
+            mark if isinstance(mark, str) else None,
+            request.get("open") is True,
         )
         await self.reply(request, **reply)
 
     def shared_state(
-        self, wanted: Sequence[str], limit: int, budget: int, mark: str | None
+        self,
+        wanted: Sequence[str],
+        limit: int,
+        budget: int,
+        mark: str | None,
+        open_files: bool = False,
     ) -> Message:
-        marker = self.root / SYNC_MARK
         if mark is not None:
-            temporary = self.root / f".write-{secrets.token_hex(8)}"
-            temporary.write_text(mark[:256])
-            os.replace(temporary, marker)
-        try:
-            current = marker.read_text()[:256]
-        except (OSError, UnicodeDecodeError):
-            current = None
+            _write_mark(self.root, mark[:256])
+        current = _read_mark(self.root)
         files, truncated, partial, odd = scan_shared(self.open_base([SHARED]))
         digests: dict[str, str] = {}
         too_large: list[str] = []
@@ -1786,7 +1931,7 @@ class Executor:
             if digest is not None:
                 digests[path] = digest
                 budget -= stamp[1]
-        return {
+        reply: Message = {
             "files": files,
             "truncated": truncated,
             "partial": partial,
@@ -1796,6 +1941,9 @@ class Executor:
             "mark": current,
             "now": time.time_ns(),
         }
+        if open_files:
+            reply["open"] = open_shared_files(self.root / SHARED)
+        return reply
 
     async def op_remove(self, request: Message) -> None:
         """Remove a regular file in the shared area if it still has the expected SHA-256.
@@ -1819,10 +1967,40 @@ class Executor:
                     os.rmdir(rest[depth - 1], dir_fd=directories[depth - 1])
                 except OSError:
                     break  # not empty, or not ours to remove
+        except OSError as exc:
+            raise _file_error(exc, str(path)) from exc
         finally:
             for directory in directories:
                 os.close(directory)
         await self.reply(request, removed=True)
+
+    async def op_move(self, request: Message) -> None:
+        """Give a file in the shared area another name there, which must be free (D79).
+
+        The file keeps its inode, so a process still writing to it writes under the new
+        name: the sync moves an environment's version of a file to its conflict copy.
+        """
+        path, target = request.get("path"), request.get("target")
+        base, rest = self.split(None, path)
+        target_base, target_rest = self.split(None, target)
+        if base != [SHARED] or target_base != [SHARED] or not rest or not target_rest:
+            raise ToolError("invalid_request", "only files in the shared area are moved")
+        source = _walk(self.open_base(base), rest[:-1], str(path), create=False)
+        try:
+            destination = _walk(
+                self.open_base(target_base), target_rest[:-1], str(target), create=True
+            )
+            try:
+                stamp = await asyncio.to_thread(
+                    _move_file, source, rest[-1], destination, target_rest[-1], str(path)
+                )
+            except OSError as exc:
+                raise _file_error(exc, str(path)) from exc
+            finally:
+                os.close(destination)
+        finally:
+            os.close(source)
+        await self.reply(request, stamp=stamp)
 
     async def op_list(self, request: Message) -> None:
         path = request.get("path", ".")
