@@ -22,12 +22,12 @@ flowchart LR
 
 ## Worker API
 
-Every route needs `Authorization: Bearer <token>`. Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution or an artifact take an optional `project_id` query parameter; when it is given, an execution or artifact of another project is `not_found`.
+Every route needs `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution or an artifact take an optional `project_id` query parameter; when it is given, an execution or artifact of another project is `not_found`.
 
 | Route | Request → response |
 | --- | --- |
 | `GET /v1/capabilities?environment_id=…` | → `Capabilities`: kernel languages, features (`pdf` where the environment has pdf_oxide) and the location (pool, backend, sandbox, host, and the [isolation tier](#isolation-tiers) in effect, declared and probed). The ID must be an identifier |
-| `POST /v1/executions` | `ShellRequest`, `CellRequest` or `PdfRequest` ([PDFs](#pdfs)) → `Execution`. Status is 201 when created, 200 when the operation ID already exists with the same request, and 409 when it exists with a different one |
+| `POST /v1/executions` | `ShellRequest`, `CellRequest` or `PdfRequest` ([PDFs](#pdfs)) → `Execution`. Status is 201 when created, 200 when the project already has the operation ID with the same request, and 409 when it has it with a different one. Operation IDs are kept per project |
 | `GET /v1/executions/{id}` | → `Execution`, with its result once terminal |
 | `GET /v1/executions/{id}/events?after=N` | → NDJSON stream of `Event`s after sequence number `N`, ending with a `result` event, or at once if the execution has ended and `N` is its last event. While nothing happens, an empty line comes every 15 seconds. No line is longer than `MAX_EVENT_BYTES` (32 MiB) |
 | `POST /v1/executions/{id}/cancel` | → `Execution`. A running shell call gets SIGTERM, then SIGKILL; a running cell is interrupted; a queued cell is dropped |
@@ -40,6 +40,20 @@ Every route needs `Authorization: Bearer <token>`. Bodies are the JSON forms of 
 | `GET /v1/environments/{id}` | → `EnvironmentInfo` |
 | `POST /v1/environments/{id}/policy` | `PolicyRevisionRequest` → `EnvironmentInfo` under the new revision |
 | `DELETE /v1/environments/{id}` | → `EnvironmentInfo` in state `deleted` |
+
+### Clients limited to projects
+
+A pool can serve several orchestrators, each with a token of its own that acts only for some projects (D78). The settings name each client's token by its SHA-256 in a `[[clients]]` entry, never the token itself. `sandbox-science-worker token --out FILE` writes a new token and prints the line the entry takes; `token --sha256 FILE` prints it for an existing token. The pool's own token acts for every project, and no client may have it.
+
+For such a client:
+
+- A request that names another project, in its context or body, is `policy_denied`.
+- An execution, artifact or environment of another project is `not_found`, whatever the route: its state, events, results, files and policy are out of reach, and so is cancelling it.
+- The client may use only the environments the worker created for its projects. An environment of another project, or a sandbox made by hand, is `not_found`. Clients therefore need `[openshell.environments]`: only the environments the worker creates are known to belong to a project.
+
+For every caller, an environment the worker created belongs to its project: a request that names it with another project is a `conflict`. Operation IDs are kept per project, so no project meets, or takes, another's.
+
+Environment IDs are still shared by the whole pool. A client can tell that an ID is taken (creating it again is a `conflict`, which does not name the project), and it can take an ID before the project that would use it. The harness names environments after their project (`p1-default`), so one client could hold up another project's first run that way; it learns nothing and changes nothing of that project. Keeping environment IDs per project is in the backlog.
 
 ## Behavior worth knowing
 
@@ -237,7 +251,7 @@ The worker sends one JSON object per line; each carries an `id` and an `op`. The
 
 ```toml
 listen = "127.0.0.1:8100"
-token_file = "worker.token"          # sandbox-science-worker token --out worker.token
+token_file = "worker.token"          # the pool's own token: sandbox-science-worker token --out worker.token
 state_dir = "state"
 pool_id = "babbage"
 kernel_idle_timeout = 28800          # optional: stop kernels unused for 8 hours
@@ -263,6 +277,11 @@ admin_hosts = ["10.0.0.2", "gateway.lab.internal"]   # the policy middleware's a
 admission_interval = 3               # seconds between checks of each environment's drafts
 max_admitted_hosts = 64              # hosts admitted on demand per environment
 suspend_after = 3600                 # optional: stop sandboxes idle for an hour (W3)
+
+[[clients]]                          # optional: tokens limited to some projects (needs [openshell.environments])
+name = "orchestrator-p1"
+token_sha256 = "<64 hex digits>"     # printed by sandbox-science-worker token --out client.token
+projects = ["p1"]
 ```
 
 Run it with `sandbox-science-worker serve --settings worker.toml`. The sandbox's environment needs Python with `ipykernel` and `jupyter_client`. On babbage they come from conda-forge through the [package cache](PACKAGE-CACHE.md), like any other tool.
@@ -298,6 +317,6 @@ The local runs are then skipped; setting only some of the variables is an error.
 - **Environment lifecycle.** The worker creates, revises and deletes sandboxes ([environments](#environments)). Suspending and restoring them, and provisioning their tools, belong to the environment manager (W3). Policy revisions enter the store only through the operator's command; an approval path from the GUI, with re-authentication for widening (D54), comes later.
 - **Data grants.** Scoped grants of project data, and session containers beside the project container.
 - **Large outputs.** A rich output over the limit is replaced by a note; the spec's spill to a referenced file is not implemented.
-- **Authentication.** A single bearer token; the outbound, worker-initiated channel for hosted control (architecture) comes later. A request's `project_id` is checked against the execution or artifact it names, but with one token for the whole pool that is a consistency check, not access control: it binds once credentials are per project.
+- **Authentication.** Bearer tokens: the pool's own, and [clients' limited to projects](#clients-limited-to-projects). Environment IDs are still shared by the whole pool (see there). The outbound, worker-initiated channel for hosted control (architecture) comes later.
 - **Monitoring.** No connection yet to the monitor or the event store with a hash chain.
 - **Probes across sandboxes.** Two sandboxes with the same boot ID share a kernel, so neither is tier 3; the worker does not compare sandboxes with each other yet.

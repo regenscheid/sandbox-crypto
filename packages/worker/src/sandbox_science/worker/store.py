@@ -105,19 +105,31 @@ class Store:
 
     # Executions.
 
-    def find_operation(self, operation_id: str) -> tuple[str, str] | None:
-        row = self._db.execute(
-            "SELECT execution_id, request_digest FROM executions WHERE operation_id = ?",
-            (operation_id,),
-        ).fetchone()
-        return (str(row[0]), str(row[1])) if row else None
+    def find_operation(self, project_id: str, operation_id: str) -> tuple[str, str] | None:
+        """The execution and request digest of a project's operation.
+
+        Operations are keyed by project, so that no project meets, or takes, another's
+        operation IDs. Records stored before then carry the bare operation ID.
+        """
+        rows = self._db.execute(
+            "SELECT operation_id, execution_id, request_digest, record FROM executions"
+            " WHERE operation_id IN (?, ?)",
+            (_operation_key(project_id, operation_id), operation_id),
+        ).fetchall()
+        for key, execution_id, digest, record in rows:
+            if key == operation_id:
+                execution = _readable(str(execution_id), record)
+                if execution is None or execution.context.project_id != project_id:
+                    continue
+            return str(execution_id), str(digest)
+        return None
 
     def insert_execution(self, execution: Execution, digest: str) -> None:
         self._db.execute(
             "INSERT INTO executions VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 execution.execution_id,
-                execution.operation_id,
+                _operation_key(execution.context.project_id, execution.operation_id),
                 digest,
                 execution.context.environment_id,
                 execution.context.session_id,
@@ -254,3 +266,8 @@ def _readable(execution_id: str, record: object) -> Execution | None:
     except ValidationError:
         _log.error("the stored record of execution %s does not validate", execution_id)
         return None
+
+
+def _operation_key(project_id: str, operation_id: str) -> str:
+    # Identifiers have no slash, so no key can be read two ways.
+    return f"{project_id}/{operation_id}"

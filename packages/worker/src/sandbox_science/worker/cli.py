@@ -3,7 +3,8 @@
 
 ```
 sandbox-science-worker serve --settings worker.toml [--log-level info]
-sandbox-science-worker token --out worker.token
+sandbox-science-worker token --out worker.token     # prints the new token's SHA-256
+sandbox-science-worker token --sha256 client.token  # the SHA-256 of an existing token
 sandbox-science-worker policy add --settings worker.toml policy.yaml
 ```
 
@@ -35,7 +36,7 @@ from .environments import EnvironmentRecords, Environments, printable
 from .errors import WorkerError
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
-from .settings import Settings, SettingsError, load_settings
+from .settings import Settings, SettingsError, load_settings, token_digest
 from .store import Store
 from .suspend import Suspender
 
@@ -106,7 +107,9 @@ async def serve(settings: Settings) -> None:
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
-    runner = web.AppRunner(create_app(manager, token, environments), access_log=None)
+    runner = web.AppRunner(
+        create_app(manager, token, environments, settings.clients), access_log=None
+    )
     background: list[asyncio.Task[None]] = []
     try:
         await manager.start()
@@ -204,8 +207,14 @@ def main(argv: list[str] | None = None) -> int:
     serve_parser.add_argument(
         "--log-level", default="info", choices=["debug", "info", "warning", "error"]
     )
-    token_parser = commands.add_parser("token", help="write a new random bearer token")
-    token_parser.add_argument("--out", type=Path, required=True)
+    token_parser = commands.add_parser(
+        "token", help="write a new random bearer token, or print a token's SHA-256"
+    )
+    which = token_parser.add_mutually_exclusive_group(required=True)
+    which.add_argument("--out", type=Path, help="write a new token here and print its SHA-256")
+    which.add_argument(
+        "--sha256", type=Path, metavar="FILE", help="print the SHA-256 of the token in FILE"
+    )
     policy_parser = commands.add_parser("policy", help="manage the pool's policy store")
     policy_commands = policy_parser.add_subparsers(dest="policy_command", required=True)
     add_parser = policy_commands.add_parser("add", help="store project policy revisions")
@@ -218,9 +227,19 @@ def main(argv: list[str] | None = None) -> int:
     admissions_parser.add_argument("--environment", required=True)
     args = parser.parse_args(argv)
     if args.command == "token":
-        descriptor = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(descriptor, "w") as handle:
-            handle.write(secrets.token_urlsafe(32) + "\n")
+        if args.out is not None:
+            token = secrets.token_urlsafe(32)
+            descriptor = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w") as handle:
+                handle.write(token + "\n")
+        else:
+            try:
+                token = args.sha256.read_text().strip()
+            except OSError as exc:
+                print(f"error: cannot read {args.sha256}: {exc}", file=sys.stderr)
+                return 1
+        # The line a [[clients]] entry takes; the digest names the token without revealing it.
+        print(f'token_sha256 = "{token_digest(token)}"')
         return 0
     if args.command in ("policy", "admissions"):
         try:

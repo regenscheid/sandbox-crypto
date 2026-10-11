@@ -502,3 +502,24 @@ async def test_a_session_sees_each_admission_notice_once(worker: Worker) -> None
     assert status == 201, execution
     fourth = await worker.finish(execution["execution_id"])
     assert fourth["result"]["notices"] == []
+
+
+async def test_operation_ids_are_kept_per_project(worker: Worker) -> None:
+    first = await worker.run("op-shared", kind="shell", script="echo one")
+    other = {**CONTEXT, "project_id": "p2", "environment_id": "env2"}
+    request = {"operation_id": "op-shared", "kind": "shell", "script": "echo two"}
+    status, second = await worker.post("/v1/executions", {**request, "context": other})
+    assert status == 201, second
+    assert second["execution_id"] != first["execution_id"]
+    # A record stored before operations were kept per project has the bare operation ID:
+    # its own project still finds it, and other projects do not meet it.
+    worker.manager.store._db.execute(  # pyright: ignore[reportPrivateUsage]
+        "UPDATE executions SET operation_id = 'op-shared' WHERE execution_id = ?",
+        (first["execution_id"],),
+    )
+    again = await worker.submit("op-shared", kind="shell", script="echo one")
+    assert again["execution_id"] == first["execution_id"]
+    third = {**CONTEXT, "project_id": "p3", "environment_id": "env3"}
+    status, execution = await worker.post("/v1/executions", {**request, "context": third})
+    assert status == 201, execution
+    assert execution["execution_id"] not in (first["execution_id"], second["execution_id"])
