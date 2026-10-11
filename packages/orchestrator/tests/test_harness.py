@@ -13,6 +13,7 @@ import base64
 import contextlib
 import hashlib
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -54,10 +55,14 @@ def worker_url(tmp_path: Path) -> Iterator[str]:
     )
     command = Path(sys.executable).parent / "sandbox-science-worker"
     log = (tmp_path / "worker.log").open("w")
+    # The host's own kernelspecs (a real SageMath, say) stay out of the tests.
+    env = {**os.environ, "JUPYTER_DATA_DIR": str(tmp_path / "jupyter-data")}
+    env.pop("JUPYTER_PATH", None)
     process = subprocess.Popen(  # noqa: S603 - our own command
         [str(command), "serve", "--settings", str(tmp_path / "worker.toml")],
         stdout=log,
         stderr=subprocess.STDOUT,
+        env=env,
     )
     try:
         for _ in range(100):
@@ -178,6 +183,34 @@ async def test_the_cli_refuses_an_unisolated_worker(worker_url: str, tmp_path: P
     )
     assert allowed == 0
     assert json.loads((tmp_path / "t.json").read_text())["stopped"] == "answered"
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
+def test_the_toolbox_offers_the_kernels_the_environment_has() -> None:
+    client = WorkerClient("http://127.0.0.1:9", TOKEN)
+    names = {spec.name for spec in Toolbox(client, CONTEXT).specs}
+    assert {"python", "restart_kernel"} <= names
+    assert "sage" not in names
+    both = Toolbox(client, CONTEXT, languages=("python", "sage"))
+    assert "sage" in {spec.name for spec in both.specs}
+    (restart,) = [spec for spec in both.specs if spec.name == "restart_kernel"]
+    assert restart.parameters["properties"]["language"]["enum"] == ["python", "sage"]
+    none = {spec.name for spec in Toolbox(client, CONTEXT, languages=()).specs}
+    assert not none & {"python", "sage", "restart_kernel"}
+
+
+async def test_a_tool_the_environment_lacks_is_refused() -> None:
+    async with WorkerClient("http://127.0.0.1:9", TOKEN) as client:
+        toolbox = Toolbox(client, CONTEXT)
+        (call,) = (
+            ScriptedModel.from_json(
+                [{"tool_calls": [{"name": "sage", "arguments": {"code": "1"}}]}]
+            )
+            ._turns[0]
+            .tool_calls
+        )  # pyright: ignore[reportPrivateUsage]
+        outcome = json.loads((await toolbox.call(call, "op-sage")).text)
+    assert outcome["error"]["message"] == "there is no tool named 'sage'"
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")
