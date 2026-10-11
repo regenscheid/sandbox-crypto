@@ -1538,6 +1538,39 @@ async def test_a_new_environment_starts_a_history_of_its_own(
         manager.store.close()
 
 
+async def test_review2_m1_a_deleted_environment_takes_its_revisions_and_lockfiles_along(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    # Second review of package commands (2026-10-11), M1: revisions were forgotten only
+    # when an ID was created again, so each environment ever created kept up to 64 MiB of
+    # lockfiles and 500 revisions.
+    api, manager = await start_api(setup, aiohttp_client, tmp_path / "worker-api")
+    blobs = tmp_path / "worker-api" / "lockfiles" / "blobs"
+    try:
+        setup.environments.records.grant("p1", setup.policy)
+        for environment in ("env-a", "env-b"):
+            status, created = await api.call(
+                "POST", "/v1/environments", A_TOKEN, api.environment(environment)
+            )
+            assert status == 201, created
+            for index in range(3):
+                lockfile = manager.revisions.prepare(
+                    {"pip": [{"name": f"{environment}-p{index}", "version": "1.0"}]}
+                )
+                assert lockfile is not None
+                manager.revisions.observe(environment, f"{index + 1:032x}", lockfile=lockfile)
+        assert len(list(blobs.glob("*/*"))) == 6
+        status, deleted = await api.call("DELETE", "/v1/environments/env-a", A_TOKEN)
+        assert (status, deleted["state"]) == (200, "deleted"), deleted
+        assert manager.revisions.history("env-a").revisions == ()
+        assert manager.store.lockfiles("env-a") == []
+        assert len(list(blobs.glob("*/*"))) == 3  # env-b's stay
+        assert len(manager.revisions.history("env-b").revisions) == 3
+    finally:
+        await manager.close()
+        manager.store.close()
+
+
 async def test_a_known_environment_never_falls_back_to_a_sandbox_made_by_hand(
     tmp_path: Path,
 ) -> None:

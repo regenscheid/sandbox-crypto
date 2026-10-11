@@ -357,8 +357,12 @@ async def revise_environment(request: web.Request) -> web.Response:
 
 
 async def delete_environment(request: web.Request) -> web.Response:
+    """Delete the environment, and its revisions and lockfiles with it."""
     environments = _environments(request)
-    return _json(await environments.delete(_environment(request, environments)))
+    environment_id = _environment(request, environments)
+    info = await environments.delete(environment_id)
+    request.app[MANAGER].revisions.forget(environment_id)
+    return _json(info)
 
 
 async def admit_hosts(request: web.Request) -> web.Response:

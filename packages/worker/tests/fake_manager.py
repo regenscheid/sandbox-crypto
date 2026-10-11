@@ -9,10 +9,13 @@ each install starts and ends to the file ``FAKEPM_LOG`` names. It never reaches 
 network.
 
 Some package names do more: ``broken`` fails with exit code 3, ``sleepy`` waits for
-SIGTERM, ``counting`` logs each SIGTERM and ends half a second after the first,
-``killed`` ends by SIGKILL, ``nested`` and ``orphan`` install ``inner`` with
-``python -m pip`` first (the second with a cleared environment), and ``--echo`` prints
-the arguments and stdin.
+SIGTERM, ``counting`` logs each SIGTERM and SIGINT and ends half a second after the
+first, ``rollback`` takes half a second to roll back on SIGTERM, ``killed`` ends by
+SIGKILL, ``spawning`` starts a step (as a post-link script is) that installs
+``<name>-step`` after ``FAKEPM_STEP`` seconds and waits for it, ``detaching`` leaves
+such a step running, ``withscript`` installs a program too, ``nested`` and ``orphan``
+install ``inner`` with ``python -m pip`` first (the second with a cleared environment),
+and ``--echo`` prints the arguments and stdin.
 """
 
 from __future__ import annotations
@@ -28,6 +31,16 @@ import time
 from pathlib import Path
 
 CACHE = "http://host.openshell.internal:8090"
+STEP = """
+import pathlib, sys, time
+time.sleep(float(sys.argv[1]))
+info = pathlib.Path(sys.argv[2]) / (sys.argv[3] + "-step-1.0.dist-info")
+info.mkdir(exist_ok=True)
+(info / "METADATA").write_text("Metadata-Version: 2.1\\nName: x\\nVersion: 1.0\\n\\n")
+if sys.argv[4]:
+    with open(sys.argv[4], "a") as handle:
+        handle.write("step wrote " + sys.argv[3] + "\\n")
+"""
 
 
 def log(*words: object) -> None:
@@ -69,10 +82,11 @@ def special(name: str) -> None:
         first: list[float] = []
 
         def counted(signum: int, frame: object) -> None:
-            log("got", "TERM")
+            log("got", "INT" if signum == signal.SIGINT else "TERM")
             first.append(time.monotonic())
 
         signal.signal(signal.SIGTERM, counted)
+        signal.signal(signal.SIGINT, counted)
         log("ready", "counting", os.getpid())
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline and not (first and time.monotonic() > first[0] + 0.5):
@@ -80,6 +94,25 @@ def special(name: str) -> None:
         sys.exit(143)
     if name == "killed":  # as the kernel's OOM killer ends a process
         os.kill(os.getpid(), signal.SIGKILL)
+    if name == "rollback":  # as conda puts the prefix back on SIGTERM
+
+        def rolled(signum: int, frame: object) -> None:
+            log("got", "TERM")
+            time.sleep(0.5)
+            log("rolled", "back")
+            sys.exit(1)
+
+        signal.signal(signal.SIGTERM, rolled)
+        log("ready", "rollback", os.getpid())
+        time.sleep(60)
+    if name in ("spawning", "detaching"):
+        site = sysconfig.get_paths()["purelib"]
+        wait = os.environ.get("FAKEPM_STEP", "30")
+        where = os.environ.get("FAKEPM_LOG", "")
+        step = subprocess.Popen([sys.executable, "-c", STEP, wait, site, name, where])  # noqa: S603
+        log("ready", name, os.getpid(), step.pid)
+        if name == "spawning":
+            step.wait()
     if name in ("nested", "orphan"):
         env = None
         if name == "orphan":  # a step that lost the turn's mark
@@ -115,6 +148,10 @@ def pip(args: list[str]) -> int:
         info.mkdir(exist_ok=True)
         (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: 1.0\n\n")
         (info / "INSTALLER").write_text("pip\n")
+        if name == "withscript":  # a distribution with a program of its own
+            program = Path(sys.prefix) / "bin" / name
+            program.write_text(f"#!/bin/sh\necho ran-{name}\n")
+            program.chmod(0o755)
         log("end", name, time.time())
     return 0
 

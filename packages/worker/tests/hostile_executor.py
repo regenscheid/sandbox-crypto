@@ -61,7 +61,33 @@ BAD_LINES = [
 ]
 
 
+seen: list[str] = []
+
+
+def unknown_keys() -> dict[str, int]:
+    """A lockfile of HOSTILE_ENTRIES keys no lockfile has (second review, M3 and L1)."""
+    return {f"k{index:x}": 0 for index in range(ENTRIES)}
+
+
 def run(execution: str) -> None:
+    if MODE == "lockfile_requests":
+        # Every fingerprint new, so that the worker keeps asking for the current lockfile;
+        # revision events credited to this attempt and earlier ones of the environment
+        # (second review, L1).
+        seen.append(execution)
+        event(execution, "state", state="running", environment=os.urandom(16).hex())
+        for cause in seen[-6:]:
+            event(
+                execution,
+                "revision",
+                fingerprint=os.urandom(16).hex(),
+                managed=False,
+                cause=cause,
+                lockfile=unknown_keys(),
+            )
+        time.sleep(0.3)
+        end(execution, environment=os.urandom(16).hex())
+        return
     event(execution, "state", state="running")
     if MODE == "inf":
         end(execution, elapsed_seconds=float("inf"))  # json.dumps writes Infinity
@@ -211,7 +237,12 @@ for line in sys.stdin.buffer:
         location: object = {"hostname": "hostile"}
         if MODE == "hello_bad":
             location = "not-an-object"
-        reply(request["id"], protocol=1, languages=["python"], location=location)
+        fields: dict[str, Any] = {}
+        if MODE == "lockfile_requests":
+            fields["environment"] = os.urandom(16).hex()
+        reply(request["id"], protocol=1, languages=["python"], location=location, **fields)
+    elif op == "lockfile" and MODE == "lockfile_requests":
+        reply(request["id"], fingerprint=os.urandom(16).hex(), lockfile=unknown_keys())
     elif op == "usage":
         cpu = 10**400 if MODE == "huge_cpu" else 1.5
         reply(request["id"], cpu_seconds=cpu, kernels=0, running=0)

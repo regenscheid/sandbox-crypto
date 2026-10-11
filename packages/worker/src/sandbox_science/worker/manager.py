@@ -569,12 +569,12 @@ class ExecutionManager:
             environment.languages = languages
             environment.features = features
             environment.channel = channel
-            self._want_lockfile(environment_id)
 
     def _want_lockfile(self, environment_id: str) -> bool:
         """Ask the executor for the current lockfile if the current revision has none, as
         revision 0 has none at first; return whether it was asked. One request at a time
-        for each environment, and nothing waits for it."""
+        for each environment, and nothing waits for it. Executions ask (_ask_lockfile),
+        each within its budget: revision 0 gets its lockfile as the first one starts."""
         environment = self._environments.get(environment_id)
         channel = environment.channel if environment is not None else None
         if (
@@ -863,7 +863,7 @@ class ExecutionManager:
                 live.execution = live.execution.model_copy(update=update)
                 self._state(live, ExecutionState.RUNNING)
                 self.store.update_execution(live.execution)
-                self._want_lockfile(environment_id)
+                self._ask_lockfile(environment_id, live)
         elif kind == "stream":
             name = "stderr" if message.get("name") == "stderr" else "stdout"
             text = message.get("text")
@@ -1129,7 +1129,7 @@ class ExecutionManager:
     def _revision_after(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> str | None:
         """The environment's revision once the attempt's fingerprint is counted."""
         revision = self._observe(environment_id, raw.get("environment"), live.execution.attempt_id)
-        self._want_lockfile(environment_id)
+        self._ask_lockfile(environment_id, live)
         return None if revision is None else str(revision)
 
     def _observe(self, environment_id: str, fingerprint: object, changed_by: str) -> int | None:
@@ -1190,6 +1190,11 @@ class ExecutionManager:
             omitted=omitted,
             lockfile=prepared,
         )
+        self._ask_lockfile(environment_id, live)
+
+    def _ask_lockfile(self, environment_id: str, live: _Live) -> None:
+        """Ask for the current lockfile on behalf of ``live``, within its budget: every
+        lockfile checked counts, those an execution's start and end ask for too."""
         if live.lockfiles < MAX_EXECUTION_LOCKFILES and self._want_lockfile(environment_id):
             live.lockfiles += 1
 

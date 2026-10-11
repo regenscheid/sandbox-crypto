@@ -12,9 +12,11 @@ The executor is untrusted: research code shares its sandbox, and can change only
 own environment's records. Every lockfile field must match its pattern; channels and
 URLs are named again as CP-18 asks, by the package cache's own URL, whatever the
 executor wrote; and a lockfile that still names the cache is refused. That work runs in
-a thread (``prepare``), never on the event loop. An environment keeps its newest 500
+a thread (``prepare``), never on the event loop, an entry at a time, after the lockfile's
+shape and keys are checked, so that a hostile one costs little memory and holds the
+interpreter (CPython's GIL) only briefly at a time. An environment keeps its newest 500
 revisions, and lockfiles for its newest 50, in 64 MiB at most; a lockfile no revision
-names any more is deleted.
+names any more is deleted, and so are an environment's when it is deleted.
 """
 
 from __future__ import annotations
@@ -65,6 +67,11 @@ MAX_LOCKFILES: Final = 50
 MAX_LOCKFILE_STORE: Final = 64 * 1024 * 1024
 """Bytes of lockfiles kept for each environment."""
 _FINGERPRINT: Final = re.compile(r"[0-9a-f]{32}")
+_LOCKFILE_KEYS: Final = frozenset(Lockfile.model_fields)
+_SECTIONS: Final = (
+    ("conda", frozenset(CondaPackage.model_fields)),
+    ("pip", frozenset(PipDistribution.model_fields)),
+)
 _PAGE_FRAME: Final = 1024
 """Bytes of a page's JSON besides its revisions, and more."""
 
@@ -93,6 +100,7 @@ class Revisions:
         self.store = store
         self.blobs = blobs
         self.cache = cache
+        self._host = provisioning.url_host(cache) if cache is not None else None
         self._mark = _address(cache) if cache is not None else None
         self._sweep()
 
@@ -110,23 +118,30 @@ class Revisions:
     def prepare(self, raw: object) -> Prepared | None:
         """Check a lockfile from the executor, name its channels and URLs, and store it;
         None if it is no lockfile the worker keeps. Runs in a thread: it can take a while.
+
+        Its shape comes first: known keys only, at most MAX_LOCKFILE_ENTRIES entries in
+        each section, each entry an object of known keys. Only then are values checked,
+        an entry at a time.
         """
-        if not isinstance(raw, dict):
+        shape = _shape(raw)
+        if shape is None:
+            _log.warning("a lockfile from the executor does not have a lockfile's shape")
             return None
-        fields = cast(dict[str, Any], raw)
-        for section in ("conda", "pip"):
-            entries = fields.get(section)
-            if (
-                isinstance(entries, list)
-                and len(cast(list[object], entries)) > MAX_LOCKFILE_ENTRIES
-            ):
-                _log.warning("a lockfile from the executor has too many entries")
-                return None
+        head, sections = shape
         try:
-            lockfile = canonical(Lockfile.model_validate(fields), self.cache)
-        except ValidationError as exc:
-            _log.warning("a lockfile from the executor does not validate: %s", str(exc)[:300])
+            top = _valid(Lockfile, head, "the lockfile")
+            conda = [
+                _valid(CondaPackage, entry, f"conda[{index}]")
+                for index, entry in enumerate(sections[0])
+            ]
+            pip = [
+                _valid(PipDistribution, entry, f"pip[{index}]")
+                for index, entry in enumerate(sections[1])
+            ]
+        except _InvalidError as exc:
+            _log.warning("a lockfile from the executor does not validate: %s", exc)
             return None
+        lockfile = canonical(top, conda, pip, self.cache, self._host)
         if lockfile is None:
             _log.warning("a lockfile from the executor names the package cache or a bad URL")
             return None
@@ -293,7 +308,8 @@ class Revisions:
                     self.blobs.path(sha256).unlink()
 
     def forget(self, environment_id: str) -> None:
-        """Forget an environment's revisions, as a new environment takes its ID (D78)."""
+        """Forget an environment's revisions, and delete the lockfiles only they named: when
+        the environment is deleted, and when a new environment takes its ID (D78)."""
         self._collect(self.store.forget_revisions(environment_id))
 
     # Reading.
@@ -343,60 +359,119 @@ class Revisions:
         return path, entry.lockfile
 
 
-def canonical(lockfile: Lockfile, cache: str | None) -> Lockfile | None:
-    """``lockfile`` with its channels and URLs named as CP-18 asks, and its entries sorted;
-    None if a channel or URL cannot be named safely, or still names the package cache.
+def _shape(raw: object) -> tuple[dict[str, Any], tuple[list[Any], list[Any]]] | None:
+    """A lockfile's own fields and its two sections' entries, if it has a lockfile's
+    shape: known keys only, at most MAX_LOCKFILE_ENTRIES entries in each section, each an
+    object of known keys. Nothing is copied or validated yet, so a hostile lockfile costs
+    no more than reading it."""
+    if not isinstance(raw, dict):
+        return None
+    fields = cast(dict[str, Any], raw)
+    if len(fields) > len(_LOCKFILE_KEYS) or any(key not in _LOCKFILE_KEYS for key in fields):
+        return None
+    sections: list[list[Any]] = []
+    for name, keys in _SECTIONS:
+        entries: object = fields.get(name, [])
+        if not isinstance(entries, list):
+            return None
+        items = cast(list[object], entries)
+        if len(items) > MAX_LOCKFILE_ENTRIES:
+            return None
+        for entry in items:
+            if not isinstance(entry, dict):
+                return None
+            entry_fields = cast(dict[str, Any], entry)
+            if len(entry_fields) > len(keys) or any(key not in keys for key in entry_fields):
+                return None
+        sections.append(items)
+    head = {key: value for key, value in fields.items() if key not in ("conda", "pip")}
+    return head, (sections[0], sections[1])
+
+
+class _InvalidError(Exception):
+    """A part of a lockfile that does not validate."""
+
+
+def _valid[Model: (Lockfile, CondaPackage, PipDistribution)](
+    model: type[Model], value: object, where: str
+) -> Model:
+    """``value`` as ``model``. A failure is told by its count and its first finding, never
+    its value: formatting every finding of a large hostile value would take far more
+    memory than the value."""
+    try:
+        return model.model_validate(value)
+    except ValidationError as exc:
+        first = exc.errors(include_url=False, include_context=False, include_input=False)[0]
+        field = ".".join(str(part) for part in first["loc"])
+        raise _InvalidError(
+            f"{where}: {exc.error_count()} errors, the first in {field or 'it'}: "
+            f"{first['msg'][:200]}"
+        ) from None
+
+
+def canonical(
+    head: Lockfile,
+    conda: Sequence[CondaPackage],
+    pip: Sequence[PipDistribution],
+    cache: str | None,
+    cache_host: str | None = None,
+) -> Lockfile | None:
+    """The lockfile of ``head``'s own fields and these entries, with its channels and URLs
+    named as CP-18 asks and its entries sorted; None if a channel or URL cannot be named
+    safely, or still names the package cache.
 
     Only conda.anaconda.org and the cache's own URL are renamed: a channel or file on any
-    other host, laid out like the cache or not, keeps its URL.
+    other host, laid out like the cache or not, keeps its URL. Hosts compare in one
+    spelling (provisioning.canonical_host). Each renamed entry is checked again, one at a
+    time.
     """
-    host = _hostname(cache) if cache is not None else None
-    conda: list[CondaPackage] = []
-    for package in lockfile.conda:
+    host = cache_host if cache_host is not None else _host(cache)
+    named: list[CondaPackage] = []
+    for package in conda:
         channel = package.channel
         if channel is not None:
             channel = provisioning.canonical_channel(channel, cache)
-            if channel is None or (host is not None and _hostname(channel) == host):
+            if channel is None or (host is not None and provisioning.url_host(channel) == host):
                 return None
-        conda.append(package.model_copy(update={"channel": channel}))
-    pip: list[PipDistribution] = []
-    for item in lockfile.pip:
+        named.append(_again(CondaPackage, package, {"channel": channel}))
+    kept: list[PipDistribution] = []
+    for item in pip:
         url, sha256 = item.url, item.sha256
         if url is not None:
-            kept = provisioning.canonical_url(url, cache)
-            if kept is None or (host is not None and _hostname(kept[0]) == host):
+            source = provisioning.canonical_url(url, cache)
+            if source is None or (host is not None and provisioning.url_host(source[0]) == host):
                 return None
-            url, sha256 = kept[0], sha256 or kept[1]
-        pip.append(item.model_copy(update={"url": url, "sha256": sha256}))
-    conda.sort(key=lambda p: (p.name, p.version, p.build, p.subdir or "", p.file or ""))
-    pip.sort(key=lambda d: (d.name.lower(), d.version, d.location, d.url or ""))
-    # Built again from plain values, so that each renamed value passes the patterns too.
-    return Lockfile.model_validate(
-        lockfile.model_copy(update={"conda": tuple(conda), "pip": tuple(pip)}).model_dump()
-    )
+            url, sha256 = source[0], sha256 or source[1]
+        kept.append(_again(PipDistribution, item, {"url": url, "sha256": sha256}))
+    named.sort(key=lambda p: (p.name, p.version, p.build, p.subdir or "", p.file or ""))
+    kept.sort(key=lambda d: (d.name.lower(), d.version, d.location, d.url or ""))
+    return head.model_copy(update={"conda": tuple(named), "pip": tuple(kept)})
+
+
+def _again[Entry: (CondaPackage, PipDistribution)](
+    model: type[Entry], entry: Entry, update: dict[str, Any]
+) -> Entry:
+    """``entry`` with ``update``, built again from plain values so that each renamed value
+    passes the patterns too."""
+    return model.model_validate({**entry.model_dump(), **update})
+
+
+def _host(cache: str | None) -> str | None:
+    return provisioning.url_host(cache) if cache is not None else None
 
 
 def _address(cache: str) -> bytes | None:
-    """The package cache's host and port as a lockfile would name them, lower case: no
-    field of a kept lockfile holds them."""
+    """The package cache's host and port as a lockfile would write them, lower case: no
+    field of a kept lockfile holds them. None when the cache's URL names no port: a bare
+    host name could be part of a package's name."""
     try:
-        parts = urllib.parse.urlsplit(cache)
-        port = parts.port
+        port = urllib.parse.urlsplit(cache).port
     except ValueError:
         return None
-    if not parts.hostname:
+    host = provisioning.url_host(cache)
+    if host is None or port is None:
         return None
-    host = parts.hostname.lower()
-    return (f"{host}:{port}" if port is not None else host).encode()
-
-
-def _hostname(value: str) -> str | None:
-    """The host a URL names, lower case; None for a channel name, or no URL."""
-    try:
-        host = urllib.parse.urlsplit(value).hostname
-    except ValueError:
-        return None
-    return host.lower() if host else None
+    return f"{host}:{port}".encode()
 
 
 def package_commands(raw: object, omitted: object) -> tuple[tuple[PackageCommand, ...], int]:
