@@ -6,11 +6,13 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
-- **Math repairs in the workspace** ([workspace](../docs/WORKSPACE.md#math-repairs)), adapted from the user's own `cscience-crypto`, which the user contributed under MIT.
-  - The renderer reads `\(…\)`, `\[…\]` and bare display environments as math, by rules that follow dollar math's. Code stays as written, and displayed math stays in its list item or quote; the original's conversion before parsing rewrote both.
+- **Math repairs in the workspace** ([workspace](../docs/WORKSPACE.md#math-repairs)), adapted from the user's own `cscience-crypto`, which the user contributed under MIT. The draft [living documents](../docs/specs/living-documents.md) spec describes the same behavior (LD-41 to LD-47).
+  - The renderer reads `\(…\)`, `\[…\]` and bare display environments as math, by rules that follow dollar math's. Code stays as written, and displayed math stays in its list item or quote; the original's conversion before parsing rewrote both. LD-41 drafts that conversion; which to keep is for the user.
   - What KaTeX rejects is repaired by rules where it can be, else by the reviewer model, else approximated in Unicode. Each is marked, with KaTeX's error and the LaTeX as written behind the mark; the text never changes.
   - `POST /api/v0/math-repair` asks only the configured reviewer alias, through the model gateway, within the original's limits, and at most 60 times an hour for each browser session. The gateway is the server's only outbound connection, and only when configured.
   - Tested with a scripted model and a fake gateway, and in a browser against the fake gateway. No real model or key yet.
+- **Shared data across a project's environments** (D79, [lab 16](docs/agent-reports/babbage-openshell-lab-16-2026-10-11.md)). The worker keeps a project's `shared/` area in step across its environments, before and after every call. A dedicated session now sees the shared results of the project's other sessions, and two environments changing one file leave a conflict copy, of which the agent is told. An adversarial review found that a reported digest was used as a host path, that naming another project's digest got its content, and that a sandbox made again looked as if all its files were deleted; the reworked sync checks what executors report, keeps each project's blobs apart and marks each environment's directory. On babbage, across two VMs, a call that changes nothing costs 0.03 s.
+- **Specs for living documents and the project ledger** (W0, drafts to review with the user). [Living documents](../docs/specs/living-documents.md): block and math-span IDs kept across edits, agent patches that name their base and blocks and are rebased or refused, never overwriting a newer edit, comments that carry work requests to agents, and the user's CScience math handling: dollar delimiters on save, and LaTeX that KaTeX rejects repaired for display by rules, the reviewer model or a Unicode approximation. [Ledger](../docs/specs/ledger.md): typed entries with evidence types apart from status, a frontier compared within a category and its conditions, flags after assumption changes, and the external pack's board records. Every W4 feature now has a spec, apart from the GUI's PDF viewer.
 - **The workspace GUI, first slice** (W4, D80; [workspace](../docs/WORKSPACE.md)). A Svelte app, built into static files, and an aiohttp server, `sandbox-science-workspace`, show the harness's projects, sessions and runs, read-only: the agent's messages, its tool calls with their arguments and results, and the LaTeX in them, rendered by KaTeX.
   - Login works like Jupyter's: a token printed once opens an HttpOnly, SameSite=Strict session. Changes need the server's own origin, a loopback server answers only to its own names, and the content policy admits no inline script.
   - One component shows all text: raw HTML stays text, links only for http, https and mailto, images never load, KaTeX in its untrusted mode. A formula KaTeX cannot parse shows as written, beside its error.
@@ -78,7 +80,7 @@ Updated: 2026-10-11.
 
 ## Next
 
-- M2 (W3): shared data across a project's environments by worker-synced copies (D79), and the Conda provisioning spec: installs queued, recorded with lockfiles and probed. The read-only root filesystem is deferred (D48).
+- M2 (W3): the Conda provisioning spec (installs queued, recorded with lockfiles and probed). The read-only root filesystem is deferred (D48).
 - M2 (W4): the research workspace (living documents, ledger and board, comments, automatic consistency review), which the M2 exit run needs.
 - MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
 - Worker: environment IDs per project, and limits per client.
@@ -102,7 +104,7 @@ Questions with a recommendation, waiting for the user:
   - Keep binary results withheld until artifact references exist.
   - Keep `max_argument_bytes` in the policy.
   - Decide whether worker code may use `resources/read`, `prompts/get` and `completion/complete`, which `worker_tools` does not restrict.
-- **The W0 specs** still in draft (tools, skills, plans and delegation, PDF sources), each with its open questions; the Conda provisioning, research-artifacts and consistency-review specs are approved. The consistency review's trigger defaults wait for the user's own CScience settings. Living documents and the ledger, board and frontier have no spec yet.
+- **The W0 specs** still in draft (tools, skills, plans and delegation, PDF sources, living documents, and the project ledger, board and frontier), each with its open questions; the Conda provisioning, research-artifacts and consistency-review specs are approved. The consistency review's trigger defaults wait for the user's own CScience settings.
 - **A real model.** The first slice with a real model needs the user's LiteLLM gateway and a virtual key.
 - **Upstream.** Whether to file the OpenShell and libzmq descriptions in `.agents/upstream/`.
 - **Workspace GUI.**
