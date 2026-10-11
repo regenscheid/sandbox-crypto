@@ -45,6 +45,7 @@ from markdown_it.rules_inline import StateInline
 from markdown_it.token import Token
 from mdit_py_plugins.container import container_plugin
 from mdit_py_plugins.dollarmath import dollarmath_plugin
+from mdit_py_plugins.dollarmath.index import is_escaped as _escaped_like_dollars
 from mdit_py_plugins.front_matter import front_matter_plugin
 
 PROFILE: Final = "ss-markdown-1"
@@ -97,6 +98,8 @@ MAX_NESTING: Final = 100
 
 _LINK: Final = re.compile(r"(?:https?://|mailto:)", re.IGNORECASE)
 _ENVIRONMENT: Final = re.compile(r"\\begin\{([A-Za-z*]+)\}")
+_ESCAPED_BRACKETS: Final = re.compile(r"[0-9]+|[A-Za-z]+")
+"""What Markdown writers put between escaped brackets: a number, or a word."""
 _JS_SPACE: Final = (
     "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009"
     "\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
@@ -130,10 +133,13 @@ def _validate_link(url: str) -> bool:
 
 # LaTeX's own delimiters: a port of the browser's mathdelimiters.ts, which is the
 # reference. Its rules follow dollar math's: a delimiter after an odd number of
-# backslashes is escaped; inline, a formula ends at the first closing delimiter in its
-# paragraph, and one of only whitespace is not math; a block begins a line and its
-# closing delimiter ends one, within MAX_BLOCK_LINES lines and without a blank line
-# between. A `\[` or `\begin{…}` line may begin a block after a line of a paragraph.
+# backslashes is escaped, counted as dollar math counts them; inline, a formula ends at
+# the first closing delimiter in its paragraph, and one of only (Python's) whitespace is
+# not math; a block begins a line and its closing delimiter ends one, within
+# MAX_BLOCK_LINES lines, without a blank line between and inside the block's list item or
+# quote. A `\[` or `\begin{…}` line may begin a block after a line of a paragraph. Within
+# a paragraph, `\[…\]` around only a number or only letters stays text, as Markdown
+# writers escape brackets (`\[1\]`, `- \[x\] done`).
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,10 +220,12 @@ def _first_from(positions: list[int], start: int) -> int | None:
 def _backslash_inline(state: StateInline, silent: bool) -> bool:
     src = state.src
     start = state.pos
-    if src[start] != "\\" or _is_escaped(src, start):
+    if src[start] != "\\":
         return False
+    # The opener first: counting the backslashes before every backslash of a long run of
+    # them would take time quadratic in its length.
     opener = _opener_at(src, start)
-    if opener is None:
+    if opener is None or _escaped_like_dollars(state, start):
         return False
     close = _first_from(_closers(state.env, src, opener.close), opener.body)
     if close is None:
@@ -226,7 +234,9 @@ def _backslash_inline(state: StateInline, silent: bool) -> bool:
     if end > state.posMax:
         return False
     content = src[start:end] if opener.kept else src[opener.body : close]
-    if not js_trim(content):
+    if _is_blank(content, 0, len(content)):
+        return False
+    if opener.markup == "\\[" and _ESCAPED_BRACKETS.fullmatch(content):
         return False
     if not silent:
         token = state.push("math_inline_double" if opener.display else "math_inline", "math", 0)
@@ -260,6 +270,9 @@ def _backslash_block(state: StateBlock, start_line: int, end_line: int, silent: 
         line += 1
         if line >= end_line or line - start_line > MAX_BLOCK_LINES:
             return False
+        # Inside the list item or quote, as a fence's lines are (a lazy line's is -1).
+        if state.sCount[line] < state.blkIndent:
+            return False
         if _is_blank(src, state.bMarks[line] + state.tShift[line], state.eMarks[line]):
             return False
     # The line must end with it; more text after it is read within a paragraph.
@@ -273,7 +286,7 @@ def _backslash_block(state: StateBlock, start_line: int, end_line: int, silent: 
         middle = state.getLines(start_line + 1, line, state.blkIndent, True)
         last = src[state.bMarks[line] + state.tShift[line] : finish]
         content = f"{first}\n{middle}{last}"
-    if not js_trim(content):
+    if _is_blank(content, 0, len(content)):
         return False
     if silent:
         return True
