@@ -22,13 +22,13 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from sandbox_science.contracts import (
     ArtifactRef,
     Capabilities,
-    CellRequest,
     EnvironmentInfo,
     EnvironmentRequest,
     ErrorKind,
     Event,
     Execution,
     ExecutionContext,
+    ExecutionRequest,
     FileContent,
     FileListing,
     KernelInfo,
@@ -40,7 +40,6 @@ from sandbox_science.contracts import (
     ResultEvent,
     SessionClosed,
     SessionCloseRequest,
-    ShellRequest,
     WorkerErrorResponse,
     WriteFileRequest,
     WriteFileResult,
@@ -164,7 +163,7 @@ class WorkerClient:
 
     # Executions.
 
-    async def submit(self, request: ShellRequest | CellRequest) -> Execution:
+    async def submit(self, request: ExecutionRequest) -> Execution:
         return await self._call("POST", "/v1/executions", Execution, request)
 
     async def get(self, execution_id: str, *, project_id: str | None = None) -> Execution:
@@ -231,7 +230,7 @@ class WorkerClient:
 
     async def run(
         self,
-        request: ShellRequest | CellRequest,
+        request: ExecutionRequest,
         on_event: Callable[[Event], Awaitable[None]] | None = None,
         *,
         on_submitted: Callable[[Execution, bool], None] | None = None,
