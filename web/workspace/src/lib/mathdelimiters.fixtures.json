@@ -53,6 +53,7 @@
     {"name": "the trade-off: unpadded math within a sentence with nothing of the rule is text", "markdown": "Let \\[f(x)\\] be \\[a - b\\], or \\[|x|\\].", "math": []},
     {"name": "a block of one letter is math", "markdown": "\\[x\\]", "math": [["math_block", "x", "\\[", "\\]"]]},
     {"name": "a formula that opens before a code span takes its backtick, as dollar math does", "markdown": "\\(a `b \\) c` d", "math": [["math_inline", "a `b ", "\\(", "\\)"]]},
+    {"name": "an image's description is not stripped: LaTeX's delimiters read escapes in it as dollars do", "markdown": "![  \\[d^2\\]\\\\](https://e.org) and ![\\(e\\)\\\\](https://e.org)", "math": [["math_inline_double", "d^2", "\\[", "\\]"]]},
     {"name": "both forms","markdown": "Key: \\(h = gf^{-1}\\).\n\\[\nfG - gF = q\n\\]\n", "math": [["math_inline", "h = gf^{-1}", "\\(", "\\)"], ["math_block", "\nfG - gF = q\n", "\\[", "\\]"]]}
   ]
 }

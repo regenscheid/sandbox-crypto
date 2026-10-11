@@ -12,7 +12,8 @@
  * - lengths are counted, and positions moved, in code points;
  * - a read before the start of the text wraps to its end, as Python's index -1 does;
  * - the text is as markdown-it-py gives it, stripped of all Python whitespace, where
- *   markdown-it trims only ASCII whitespace.
+ *   markdown-it trims only ASCII whitespace. An image's description is parsed apart, as
+ *   written, and neither side strips it.
  *
  * One rule is this project's own, and the server's parser must apply it too: a `$$`
  * block looks for its end in at most `MAX_BLOCK_LINES` lines. The plugin looks to the
@@ -126,8 +127,11 @@ function backCodePoints(text: string, from: number, count: number): number {
 
 /** The inline text's ends as markdown-it-py has them, kept for the text being parsed. */
 let ends: { text: string; first: number; end: number } | null = null;
+/** Images whose descriptions are being parsed: a description is not stripped. */
+let descriptions = 0;
 
 function pythonEnds(text: string): { first: number; end: number } {
+  if (descriptions > 0) return { first: 0, end: text.length };
   if (ends?.text !== text) {
     const [first, end] = pyTrim(text, 0, text.length);
     ends = { text, first, end };
@@ -267,8 +271,31 @@ function mathBlock(options: DollarMathOptions) {
   };
 }
 
+type InlineRule = (state: StateInline, silent: boolean) => boolean;
+
+/**
+ * The image rule, noting while it runs that the text being parsed is an image's
+ * description, which markdown-it-py does not strip either (`pythonEnds`).
+ */
+function noteDescriptions(md: MarkdownIt): void {
+  // markdown-it keeps its rules in `__rules__`, with each rule's function in `fn`.
+  const rules = (md.inline.ruler as unknown as { __rules__: { name: string; fn: InlineRule }[] })
+    .__rules__;
+  const image = rules.find((rule) => rule.name === 'image')?.fn;
+  if (image === undefined) return;
+  md.inline.ruler.at('image', (state, silent) => {
+    descriptions += 1;
+    try {
+      return image(state, silent);
+    } finally {
+      descriptions -= 1;
+    }
+  });
+}
+
 /** Add the dollar math rules, before the escape and fence rules as the original does. */
 export function dollarMath(md: MarkdownIt, options: DollarMathOptions): void {
   md.inline.ruler.before('escape', 'math_inline', mathInline(md, options));
   md.block.ruler.before('fence', 'math_block', mathBlock(options));
+  noteDescriptions(md);
 }
