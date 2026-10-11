@@ -37,6 +37,7 @@ from .manager import ExecutionManager
 from .package_clients import cache_endpoint
 from .settings import Settings, SettingsError, load_settings
 from .store import Store
+from .suspend import Suspender
 
 _log = logging.getLogger("sandbox_science.worker")
 
@@ -70,9 +71,12 @@ def _environments(settings: Settings) -> Environments | None:
 
 def _backend(settings: Settings, environments: Environments | None) -> Backend:
     if settings.openshell is not None:
-        resolve = environments.sandbox if environments is not None else None
         return OpenShellBackend(
-            settings.openshell, settings.state_dir, resolve, executor_args=_executor_args(settings)
+            settings.openshell,
+            settings.state_dir,
+            environments.sandbox if environments is not None else None,
+            executor_args=_executor_args(settings),
+            prepare=environments.resume if environments is not None else None,
         )
     if settings.local is None:
         raise SettingsError("no backend is configured")
@@ -94,6 +98,7 @@ async def serve(settings: Settings) -> None:
     )
     if environments is not None:
         environments.release = manager.release
+        environments.release_idle = manager.release_if_idle
     # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
     # attempts still running are stored as lost.
     stopping = asyncio.Event()
@@ -101,7 +106,7 @@ async def serve(settings: Settings) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
     runner = web.AppRunner(create_app(manager, token, environments), access_log=None)
-    watcher: asyncio.Task[None] | None = None
+    background: list[asyncio.Task[None]] = []
     try:
         await manager.start()
         await runner.setup()
@@ -110,18 +115,21 @@ async def serve(settings: Settings) -> None:
         _log.info("worker API on %s (%s backend)", settings.listen, manager.backend.name)
         if environments is not None and environments.settings.admission:
             interval = environments.settings.admission_interval
-            watcher = asyncio.create_task(DraftWatcher(environments, interval).run())
+            background.append(asyncio.create_task(DraftWatcher(environments, interval).run()))
+        if environments is not None and environments.settings.suspend_after is not None:
+            suspender = Suspender(environments, manager, environments.settings.suspend_after)
+            background.append(asyncio.create_task(suspender.run()))
         await stopping.wait()
         _log.info("stopping")
     finally:
-        if watcher is not None:
-            watcher.cancel()
+        for task in background:
+            task.cancel()
             try:
-                await watcher
+                await task
             except asyncio.CancelledError:
                 pass
             except Exception:
-                _log.exception("the admission watcher failed")
+                _log.exception("a background task failed")
         await runner.cleanup()
         await manager.close()
         store.close()

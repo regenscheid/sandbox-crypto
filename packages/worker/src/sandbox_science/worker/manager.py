@@ -18,6 +18,7 @@ import hashlib
 import logging
 import math
 import mimetypes
+import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -160,6 +161,22 @@ class _Environment:
     languages: tuple[str, ...] = ()
     features: tuple[str, ...] = ()
     running: set[str] = field(default_factory=set[str])
+    last_used: float = field(default_factory=time.monotonic)
+    """When the worker last asked anything of the environment, by the monotonic clock."""
+
+
+@dataclass(frozen=True)
+class Activity:
+    """What an environment is doing, as the worker sees it, for idle suspension (W3)."""
+
+    last_used: float | None
+    """When the worker last asked anything of it (monotonic clock); None if never since it
+    started."""
+    running: int
+    cpu_seconds: float | None
+    """CPU time used below its executor so far; None without an executor, when no research
+    code runs there."""
+    kernels: int
 
 
 @dataclass(frozen=True)
@@ -242,6 +259,46 @@ class ExecutionManager:
                 self._channels.discard(environment.channel)
             self._environments.pop(environment_id, None)
 
+    async def activity(self, environment_id: str) -> Activity | None:
+        """What an environment is doing now; None when its executor cannot say."""
+        environment = self._environments.get(environment_id)
+        if environment is None:
+            return Activity(last_used=None, running=0, cpu_seconds=None, kernels=0)
+        channel = environment.channel
+        if channel is None or channel.closed:
+            return Activity(environment.last_used, len(environment.running), None, 0)
+        try:
+            reply = await channel.request("usage", reply_timeout=30)
+        except WorkerError:
+            return None
+        cpu, kernels = reply.get("cpu_seconds"), reply.get("kernels")
+        if (
+            not isinstance(cpu, int | float)
+            or isinstance(cpu, bool)
+            or not math.isfinite(cpu)
+            or cpu < 0
+            or not isinstance(kernels, int)
+        ):
+            return None
+        return Activity(environment.last_used, len(environment.running), float(cpu), kernels)
+
+    async def release_if_idle(self, environment_id: str, idle_since: float) -> bool:
+        """Stop an environment's executor if nothing ran in it or used it since ``idle_since``.
+
+        Returns whether it did (or there was none), so that its sandbox may stop.
+        """
+        environment = self._environments.get(environment_id)
+        if environment is None:
+            return True
+        async with environment.lock:
+            if environment.running or environment.last_used > idle_since:
+                return False
+            if environment.channel is not None:
+                await environment.channel.close()
+                self._channels.discard(environment.channel)
+            self._environments.pop(environment_id, None)
+        return True
+
     async def close(self) -> None:
         """Stop every executor. Attempts still running are reported lost."""
         self._closing = True
@@ -318,6 +375,7 @@ class ExecutionManager:
         environment = self._environments.get(live.environment_id)
         if environment is not None:
             environment.running.discard(execution_id)
+            environment.last_used = time.monotonic()
         if live.watchdog is not None and live.watchdog is not asyncio.current_task():
             live.watchdog.cancel()
         asyncio.get_running_loop().call_later(RETAIN_LIVE, self._live.pop, execution_id, None)
@@ -378,6 +436,12 @@ class ExecutionManager:
 
     async def _environment(self, environment_id: str) -> _Environment:
         environment = self._environments.setdefault(environment_id, _Environment())
+        # Marked used before anything waits, so that suspension leaves it alone.
+        environment.last_used = time.monotonic()
+        if environment.channel is None or environment.channel.closed:
+            # Outside the lock: preparing may start a stopped sandbox under the
+            # environments' own lock, which suspension holds while it takes this one.
+            await self.backend.prepare(environment_id)
         async with environment.lock:
             if environment.channel is None or environment.channel.closed:
                 channel = await self.backend.open(
@@ -518,6 +582,7 @@ class ExecutionManager:
         environment = self._environments.get(live.environment_id)
         if environment is not None:
             environment.running.discard(live.execution.execution_id)
+            environment.last_used = time.monotonic()
         self._finish(live, ExecutionState.FAILED, Result(error=error))
 
     async def _send(self, live: _Live, request: ExecutionRequest) -> None:
