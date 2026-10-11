@@ -433,6 +433,8 @@ class McpProxyTarget(StrictModel):
     binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
     versions: tuple[McpVersion, ...] = Field(default=("2025-11-25",), min_length=1)
     max_body_bytes: Annotated[int, Field(gt=0)] | None = None
+    filesystem: SandboxFilesystem = SandboxFilesystem()
+    """Paths the proxy's image provides outside the workdir, such as its interpreter's prefix."""
 
 
 class OrchestratorTarget(StrictModel):
@@ -444,6 +446,8 @@ class OrchestratorTarget(StrictModel):
 
     worker_api: ServiceEndpoint
     model_gateway: ServiceEndpoint | None = None
+    mcp_proxy: ServiceEndpoint | None = None
+    """Where the harness reaches the MCP proxy for the agent's MCP tool calls (D67)."""
     binaries: tuple[BinaryPattern, ...] = Field(min_length=1)
     filesystem: SandboxFilesystem = SandboxFilesystem()
     """Paths the harness's image provides outside the workdir, such as its interpreter's prefix."""
@@ -526,12 +530,38 @@ def admission_ranges(
     host names, so these ranges, as ``allowed_ips``, are what keeps a name that
     resolves to such an address from reaching it.
     """
-    addresses = set(floor_addresses())
-    hosts = [
+    return _public_ranges_less(
+        [
+            *_denied_hosts(ceiling, floor),
+            *(server.host for server in policy.policy.mcp.servers.values()),
+        ]
+    )
+
+
+def mcp_server_ranges(ceiling: PoolCeiling, floor: HardFloor = DEFAULT_FLOOR) -> tuple[str, ...]:
+    """The addresses an MCP server's name may resolve to, as the proxy sandbox's fence checks.
+
+    The public address ranges, less the floor's metadata addresses, the deployment's
+    administration endpoints and the pool ceiling's denied addresses. Inside OpenShell
+    the MCP proxy resolves every name to a synthetic address, so its own check cannot
+    see where a name leads; these ranges, as ``allowed_ips``, apply the floor and the
+    ceiling to the addresses OpenShell dials (lab 13).
+    """
+    return _public_ranges_less(_denied_hosts(ceiling, floor))
+
+
+def _denied_hosts(ceiling: PoolCeiling, floor: HardFloor) -> list[str]:
+    """Hosts the floor or the ceiling denies by name; the addresses among them matter here."""
+    return [
         *floor.admin_hosts,
         *(p.value for p in ceiling.network.deny_hosts if p.kind is HostKind.EXACT),
-        *(server.host for server in policy.policy.mcp.servers.values()),
     ]
+
+
+def _public_ranges_less(hosts: Sequence[str]) -> tuple[str, ...]:
+    """The public address ranges, less the floor's metadata addresses and the IP addresses
+    among ``hosts``, with the IPv4 addresses each embeds."""
+    addresses = set(floor_addresses())
     for host in hosts:
         address = parse_ip(host)
         if address is not None:
@@ -1038,17 +1068,21 @@ def _sandbox_filesystem(extra: SandboxFilesystem) -> FilesystemPolicy:
 
 
 def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
-    """Compile the orchestrator sandbox's policy: the worker API and the model gateway only.
+    """Compile the orchestrator sandbox's policy: the worker API, the model gateway and the
+    MCP proxy only.
 
     The orchestrator is semi-trusted (Z2 in the threat model): it chooses actions but
-    holds no engine credentials, and its egress goes only to platform services. Both
+    holds no engine credentials, and its egress goes only to platform services. They
     are inspected HTTP endpoints, with no policy middleware, since no project policy
-    governs the orchestrator itself. Raises CompileError when they share an endpoint.
+    governs the orchestrator itself; the MCP proxy decides each MCP call. Raises
+    CompileError when two services share an endpoint.
     """
     binaries = tuple(Binary(path=path) for path in target.binaries)
     services = {"worker-api": ("Sandbox Science worker API", target.worker_api)}
     if target.model_gateway is not None:
         services["model-gateway"] = ("Sandbox Science model gateway", target.model_gateway)
+    if target.mcp_proxy is not None:
+        services["mcp-proxy"] = ("Sandbox Science MCP proxy", target.mcp_proxy)
     seen: dict[tuple[str, int], str] = {}
     network_policies: dict[str, NetworkPolicy] = {}
     for key, (name, service) in services.items():
@@ -1071,15 +1105,17 @@ def compile_orchestrator(target: OrchestratorTarget) -> OpenShellPolicy:
             ),
             binaries=binaries,
         )
-    extra = target.filesystem
-    read_write = tuple(dict.fromkeys(extra.read_write))
-    read_only = tuple(path for path in dict.fromkeys(extra.read_only) if path not in read_write)
     return OpenShellPolicy(
-        filesystem_policy=FilesystemPolicy(
-            include_workdir=True, read_only=read_only, read_write=read_write
-        ),
+        filesystem_policy=_service_filesystem(target.filesystem),
         network_policies=network_policies,
     )
+
+
+def _service_filesystem(extra: SandboxFilesystem) -> FilesystemPolicy:
+    """The filesystem of a platform service's sandbox: the workdir and its image's paths."""
+    read_write = tuple(dict.fromkeys(extra.read_write))
+    read_only = tuple(path for path in dict.fromkeys(extra.read_only) if path not in read_write)
+    return FilesystemPolicy(include_workdir=True, read_only=read_only, read_write=read_write)
 
 
 def _bound_hosts(
@@ -1166,12 +1202,15 @@ def compile_mcp_proxy(
 ) -> Compiled:
     """Compile the MCP proxy sandbox's policy: one inspected endpoint per declared server.
 
-    Servers the floor or the pool ceiling rule out are left out and reported.
-    Raises CompileError when two servers would share an endpoint.
+    Servers the floor or the pool ceiling rule out are left out and reported. A server
+    named by host name may resolve only to public addresses, less those the floor and
+    the ceiling deny (``mcp_server_ranges``). Raises CompileError when two servers
+    would share an endpoint.
     """
     project = policy.policy
     findings: list[Finding] = []
     binaries = tuple(Binary(path=path) for path in target.binaries)
+    ranges = mcp_server_ranges(ceiling, floor)
     network_policies: dict[str, NetworkPolicy] = {}
     endpoints_seen: dict[tuple[str, int, str], str] = {}
     bindings_by_host: dict[tuple[str, int], set[str | None]] = {}
@@ -1221,6 +1260,8 @@ def compile_mcp_proxy(
                 versions=_versions(server, target, subject, findings),
                 max_body_bytes=target.max_body_bytes,
             ),
+            # An address literal is its own limit; a name could lead anywhere.
+            allowed_ips=None if parse_ip(server.host) is not None else ranges,
             credential_binding=binding,
         )
         network_policies[f"mcp-{name}"] = NetworkPolicy(
@@ -1241,8 +1282,9 @@ def compile_mcp_proxy(
             Finding(
                 Severity.INFO,
                 "mcp.servers",
-                "the fence checks servers by name; address-based floor and ceiling entries are "
-                "applied by the MCP proxy, which checks the addresses it connects to",
+                "servers named by host name may resolve only to public addresses, less those "
+                "the floor and the pool ceiling deny: the fence checks the addresses, since the "
+                "MCP proxy sees only OpenShell's synthetic ones",
             )
         )
     if "2025-03-26" in target.versions:
@@ -1264,7 +1306,10 @@ def compile_mcp_proxy(
             )
         )
     return Compiled(
-        policy=OpenShellPolicy(network_policies=network_policies),
+        policy=OpenShellPolicy(
+            filesystem_policy=_service_filesystem(target.filesystem),
+            network_policies=network_policies,
+        ),
         findings=tuple(findings),
         policy_digest=policy.digest,
     )

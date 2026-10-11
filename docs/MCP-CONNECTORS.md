@@ -63,7 +63,7 @@ The alternative of running the orchestrator itself as an OpenShell sandbox (D47)
 
 ## The MCP proxy as built
 
-Date: 2026-10-11. The first version is in `packages/mcp-proxy` (`sandbox_science.mcp_proxy`, command `sandbox-science-mcp-proxy`; D75, proposed). Its tests run it against a fake server. It has not run in its OpenShell sandbox yet.
+Date: 2026-10-11. The first version is in `packages/mcp-proxy` (`sandbox_science.mcp_proxy`, command `sandbox-science-mcp-proxy`; D75, proposed). Its tests run it against a fake server. [Lab 13](../.agents/docs/agent-reports/babbage-openshell-lab-13-2026-10-11.md) ran it in its own OpenShell VM sandbox, against DeepWiki's public server and a fake one on the host. There, OpenShell substituted the provider's token in its headers, its version header and its replies to server requests passed the fence, and callers reached it from the host and from an orchestrator sandbox.
 
 Checked by hand on 2026-10-11 with the MCP Python SDK 2.2.0 on both sides, its client calling the proxy and its server behind it: the client's `server/discover` probe (MCP 2026-07-28) is refused, the client falls back to `initialize`, and listing tools, an allowed call and an escalated one behave as below, over the server's event streams.
 
@@ -93,12 +93,12 @@ A caller holds at most `max_sessions_per_caller` sessions; its next one ends its
 | For `tools/call`, a name in the server's latest complete `tools/list`, compared exactly. The proxy lists the tools itself when it has no complete listing, and again after the server reports a change; the caller's own listings count once their last page arrives | `tool_not_advertised` |
 | An escalation is a permission request (D76), as in the middleware. Its first occurrence is recorded with its key: project, caller, policy revision, server, method, tool and a digest of the parameters, never the parameters. The refusal's `data.request` names the request; retries wait on it without new records. An approval covers the call or, with `--scope tool`, the tool with any arguments; a denial refuses; unanswered past the timeout, the call is refused as timed out. If the record cannot be stored, there is no request to approve | `approval_required`, `approval_denied`, `escalation_timed_out`, `audit_unavailable` |
 | An alert proceeds only once its record is stored | `audit_unavailable` |
-| The server's resolved addresses pass the hard floor and the pool ceiling, checked before each new connection | `destination_forbidden`, `pool_ceiling_denied` |
+| The server's resolved addresses pass the hard floor and the pool ceiling, checked before each new connection. Inside an OpenShell sandbox every name resolves to a synthetic address (`198.18.0.0/15`), so there the fence checks the real ones: the compiled endpoint for a server named by host name carries `allowed_ips`, the public ranges less the floor's and the ceiling's addresses (lab 13) | `destination_forbidden`, `pool_ceiling_denied` |
 
-A refusal is a JSON-RPC error with code -31001, meaning nothing was sent, and the reason code in `data.reason`. Its message is fixed text for the code; the rule that matched stays in the proxy's log and the event store, as for the middleware. A refused notification gets an HTTP error status instead. A call that was sent but brought no usable answer gets code -31002 and `upstream_error` (a malformed answer, an error status, a timeout, a redirect), `upstream_unauthorized` (401), `upstream_unavailable` or `result_too_large`. The server's own JSON-RPC errors are passed on, except ones that use the proxy's codes, which become `upstream_error`: a server may not speak with the proxy's voice.
+A refusal is a JSON-RPC error with code -31001, meaning nothing was sent, and the reason code in `data.reason`. Its message is fixed text for the code; the rule that matched stays in the proxy's log and the event store, as for the middleware. A refused notification gets an HTTP error status instead. A call that was sent but brought no usable answer gets code -31002 and `upstream_error` (a malformed answer, an error status, a timeout, a redirect), `upstream_unauthorized` (401), `upstream_unavailable`, `result_too_large` or `fence_denied`. The last is OpenShell's refusal at the proxy sandbox's fence (403 with a body naming the policy and the layer), which means the compiled policy is narrower than the project's; a server could send the same body, so the call still counts as sent. The server's own JSON-RPC errors are passed on, except ones that use the proxy's codes, which become `upstream_error`: a server may not speak with the proxy's voice.
 
 **What goes upstream.** Only what the proxy builds:
-- Its own headers: `Content-Type`, `Accept`, `Accept-Encoding: identity`, `MCP-Protocol-Version`, `Mcp-Session-Id` and the credential headers. Nothing a caller sends in headers reaches a server.
+- Its own headers: `Content-Type`, `Accept`, `Accept-Encoding: identity`, `User-Agent: sandbox-science-mcp-proxy/0.1`, `MCP-Protocol-Version`, `Mcp-Session-Id` and the credential headers. Nothing a caller sends in headers reaches a server.
 - The parameters MCP defines for the method, serialized again by the proxy, and nothing else. A server whose JSON decoder ignores the case of keys, as Go's does, would otherwise read a `NAME` member as the tool name the policy never saw.
 - Credentials only as headers that hold OpenShell placeholders, read from the proxy's environment: `Authorization: Bearer <placeholder>` for `bearer` and `oauth` servers, and the entry's headers for `headers` servers. A variable that holds anything but a placeholder is refused, so the proxy never sends a credential it holds itself.
 - No cookies and no redirects.
@@ -162,11 +162,16 @@ uv run sandbox-science-mcp-proxy bind --state-dir state --project crypto --polic
 uv run sandbox-science-mcp-proxy serve --settings proxy.toml
 ```
 
-Callers send `Authorization: Bearer <token>` to `http://<listen>/mcp/<server>`; the MCP Python SDK's Streamable HTTP client takes it in `headers`. In production the proxy runs in its own OpenShell sandbox: OpenShell sets the credential variables to placeholders, and the compiled policy (`compile_mcp_proxy`) re-enforces the declared servers, methods and tools.
+Callers send `Authorization: Bearer <token>` to `http://<listen>/mcp/<server>`; the MCP Python SDK's Streamable HTTP client takes it in `headers`. In production the proxy runs in its own OpenShell sandbox: OpenShell sets the credential variables to placeholders, and the compiled policy (`compile_mcp_proxy`) re-enforces the declared servers, methods and tools. As lab 13 ran it:
+
+- The targets file's `mcp_proxy` names the interpreter as the binary (`/opt/sandbox-science/bin/python*`), since OpenShell sees the interpreter that runs a Python entry point, and its `filesystem` the image's prefix, read-only.
+- The proxy listens on the sandbox's loopback, and `openshell forward service --target-port 8080 --local 127.0.0.1:8080 <sandbox>` exposes it on the pool host. Other sandboxes then reach it as `host.openshell.internal`; the orchestrator's compiled policy admits it as `orchestrator.mcp_proxy` in the targets file.
+- Its state directory, with the policy store and the event store, is on the sandbox's disk. It survives `sandbox stop` and `start`. The operator's commands (`bind`, `pending`, `approve`, `deny`) run in the sandbox through `openshell sandbox exec`.
 
 ### Not built yet
 
-- Running in its OpenShell sandbox (a lab): the placeholders in its environment and their substitution in headers, `MCP-Protocol-Version` at the fence, replies to server requests through the fence, which addresses the proxy sees for server names, and where a process in a VM sandbox keeps the policy store and the event store.
+- An image for the proxy, so that it runs as its sandbox's command and comes back when the sandbox starts again; lab 13 ran it through `openshell sandbox exec` from the orchestrator image.
+- Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
 - The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand.
 - Binary results as artifact references; they are withheld for now.
 - Rate and spend limits per project and server.
@@ -174,7 +179,6 @@ Callers send `Authorization: Bearer <token>` to `http://<listen>/mcp/<server>`; 
 - Passing server notifications (progress, logging, list changes) to callers, and resuming interrupted event streams.
 - Caller identity from the platform rather than per-sandbox tokens, since the middleware knows which sandbox sent a request, and `process`-level attribution.
 - Approved tools are not compiled into the proxy sandbox's fence, so OpenShell still refuses an escalated tool there; until they are, the fence has to allow escalated tools for approvals to take effect (backlog).
-- The orchestrator's sandbox policy admits only the worker API and the model gateway; it must admit the MCP proxy too.
 - `Basic` credentials in `headers` servers: how OpenShell expects a placeholder inside one is unchecked.
 - A test against crypto-research-mcp, which needs OAuth.
 - The policy store code is a copy of the middleware's; a shared library would serve the middleware, the worker and the proxy.
