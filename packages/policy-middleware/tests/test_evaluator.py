@@ -739,6 +739,12 @@ def cache_facts(
         ("/npm/files/-/lodash/-/lodash-4.17.21.tgz", "packages.npm"),
         ("/cargo/index/se/rd/serde", "packages.cargo"),
         ("/go/golang.org/x/mod/@v/v0.20.0.zip", "packages.go"),
+        ("/opam/index.tar.gz", "packages.opam"),
+        (f"/opam/cache/sha256/aa/{'a' * 64}", "packages.opam"),
+        (f"/opam/cache/md5/cc/{'c' * 32}", "packages.opam"),
+        ("/hackage/timestamp.json", "packages.hackage"),
+        ("/hackage/01-index.tar.gz", "packages.hackage"),
+        ("/hackage/package/cryptol-3.6.0.tar.gz", "packages.hackage"),
     ],
 )
 def test_requests_to_the_package_cache_are_package_operations(
@@ -764,6 +770,16 @@ def test_requests_to_the_package_cache_are_package_operations(
         pytest.param({"path": "/npm/lodash", "query": "write=true"}, id="query"),
         pytest.param({"path": "/pypi/simple/"}, id="pypi-root"),
         pytest.param({"path": "/maven/org/x"}, id="unknown-ecosystem"),
+        pytest.param({"path": "/opam/repo"}, id="opam-repo-file"),
+        pytest.param({"path": f"/opam/cache/sha256/ab/{'a' * 64}"}, id="opam-wrong-directory"),
+        pytest.param({"path": "/hackage/01-index.tar"}, id="hackage-uncompressed-index"),
+        pytest.param(
+            {"path": "/hackage/package/split-0.2.5/evil-0.2.5.tar.gz"}, id="hackage-other-file"
+        ),
+        pytest.param(
+            {"path": "/hackage/01-index.tar.gz", "method": "POST", "body": b"x"},
+            id="hackage-post",
+        ),
     ],
 )
 def test_other_requests_to_the_package_cache_are_refused(
@@ -775,6 +791,28 @@ def test_other_requests_to_the_package_cache_are_refused(
     path = cast("str", overrides.pop("path"))
     verdict = middleware.evaluate_http(cache_facts(make_facts, example, path, **overrides))
     assert verdict.reason_code == evaluator.REQUEST_UNCLASSIFIABLE
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        (("range", "bytes=139211934-139277469"),),
+        (("range", "bytes=0-1,5-6"), ("if-range", '"x"')),
+        (("cache-control", "max-age=0"),),
+    ],
+)
+def test_range_requests_to_the_cache_are_decided_by_path(
+    middleware: PolicyMiddleware,
+    make_facts: FactsFactory,
+    example: LoadedPolicy,
+    headers: tuple[tuple[str, str], ...],
+) -> None:
+    # cabal updates Hackage's index with a range request: a read like any other GET.
+    path = "/hackage/01-index.tar.gz"
+    plain = middleware.evaluate_http(cache_facts(make_facts, example, path))
+    ranged = middleware.evaluate_http(cache_facts(make_facts, example, path, headers=headers))
+    assert ranged.allowed
+    assert ranged.decision == plain.decision
 
 
 def test_only_the_cache_port_is_the_package_cache(
