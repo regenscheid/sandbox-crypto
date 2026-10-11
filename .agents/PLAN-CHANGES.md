@@ -4,6 +4,10 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **Lab 5 on babbage** ([lab report](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)). A real SageMath 10.9 from conda-forge ran in OpenShell VM sandboxes through the worker and the harness.
+  - The OpenShell compiler now gives each research sandbox a filesystem section. OpenShell's Landlock baseline had blocked pseudo-terminals (Sage's pexpect interfaces) and `/dev/shm` (Python's `multiprocessing`). The targets file can add the image's own paths (D48). Revisions to a running sandbox carry only network sections, since OpenShell fixes the filesystem section at creation.
+  - The executor puts the environment's tools first on `PATH`, as the tools spec already required.
+  - Tier 3 costs 0–7% on single-threaded mathematics against the same build on the host.
 - **Lab 4 on babbage** ([lab report](docs/agent-reports/babbage-openshell-lab-4-2026-10-11.md)). The first slice ran in an OpenShell VM sandbox. OpenShell v0.1.3's seccomp filter refuses `pthread_setschedparam` on a thread, which aborts libzmq and hence every Jupyter kernel. It also refuses signals to process groups. The worker now preloads a scheduler shim, built on the worker host, and signals group members one at a time.
   - Results list the files each attempt wrote, and publication names the last attempt that wrote the file. File modification times could not do this: the guest's coarse clock gave consecutive attempts the same time.
   - Upstream descriptions for OpenShell and libzmq are in `.agents/upstream/`.
