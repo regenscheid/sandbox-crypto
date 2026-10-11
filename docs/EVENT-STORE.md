@@ -1,6 +1,6 @@
 # Event store
 
-The event store keeps monitor evidence in an append-only SQLite database. Each record carries the hash of the record before it, so a record changed, removed, inserted or moved later breaks the chain, and checkpoints kept elsewhere also show records removed from its end (D73, proposed). The code is in `packages/event-store` (`sandbox_science.event_store`), standard library only, with the command `sandbox-science-events`.
+The event store keeps monitor evidence in an append-only SQLite database. Each record carries the hash of the record before it, so a record changed, removed, inserted or moved later breaks the chain, and checkpoints kept elsewhere also show records removed from its end (D74, proposed). The code is in `packages/event-store` (`sandbox_science.event_store`), standard library only, with the command `sandbox-science-events`.
 
 The [policy middleware](POLICY-MIDDLEWARE.md) writes its escalations, alerts and monitor findings here. The behavior monitor, the worker service and the orchestrator's own requests (D47) are to follow.
 

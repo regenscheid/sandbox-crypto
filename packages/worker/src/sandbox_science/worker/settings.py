@@ -17,6 +17,12 @@ isolation_tier = 3               # required: the tier the driver gives (3 for th
 env = {XDG_CONFIG_HOME = "~/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}   # logical environment -> sandbox name
 
+[openshell.environments]         # optional: the worker creates sandboxes itself (D73)
+policy_store = "/var/lib/sandbox-science/middleware"   # the policy middleware's state_dir
+targets = "targets.yaml"         # where the platform services run (OpenShell targets)
+ceiling = "pool-ceiling.yaml"    # the same pool ceiling the middleware applies
+profiles = {minimal = "docker.io/library/buildpack-deps:noble-scm"}   # profile -> image
+
 [local]                          # development and tests only: no isolation
 python = "/usr/bin/python3"      # default: the worker's own interpreter
 ```
@@ -29,7 +35,7 @@ from __future__ import annotations
 import sys
 import tomllib
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -50,6 +56,21 @@ class LocalBackendSettings(_Model):
     python: str = sys.executable
 
 
+class EnvironmentSettings(_Model):
+    """How the worker creates research sandboxes: policies, targets and images (D73)."""
+
+    policy_store: Path
+    """The policy middleware's state directory: stored policies and sandbox bindings."""
+    targets: Path
+    """The OpenShell targets file the compiler uses (docs/POLICY.md)."""
+    ceiling: Path
+    """The pool ceiling, the same file the policy middleware applies."""
+    profiles: dict[Identifier, str] = Field(min_length=1)
+    """Base profile (D46) to image reference. The orchestrator picks a profile, not an image."""
+    create_timeout: Annotated[float, Field(gt=0, le=3600)] = 600.0
+    """How long a sandbox may take to become ready."""
+
+
 class OpenShellBackendSettings(_Model):
     """Runs the executor in OpenShell sandboxes through the ``openshell`` CLI."""
 
@@ -67,7 +88,9 @@ class OpenShellBackendSettings(_Model):
     env: dict[str, str] = Field(default_factory=dict[str, str])
     """Extra environment for the CLI, such as XDG overrides naming the gateway."""
     sandboxes: dict[Identifier, str] = Field(default_factory=dict[str, str])
-    """Logical environment ID to sandbox name."""
+    """Logical environment ID to sandbox name, for sandboxes made outside the worker."""
+    environments: EnvironmentSettings | None = None
+    """Lets the worker create, revise and delete research sandboxes itself (D73)."""
 
 
 class Settings(_Model):
@@ -118,6 +141,15 @@ def load_settings(path: Path) -> Settings:
         value = data.get(key)
         if isinstance(value, str) and value:
             data[key] = base / value
+    openshell: object = data.get("openshell")
+    if isinstance(openshell, dict):
+        environments: object = cast(dict[str, object], openshell).get("environments")
+        if isinstance(environments, dict):
+            table = cast(dict[str, object], environments)
+            for key in ("policy_store", "targets", "ceiling"):
+                value = table.get(key)
+                if isinstance(value, str) and value:
+                    table[key] = base / value
     try:
         return Settings.model_validate(data)
     except ValidationError as exc:
