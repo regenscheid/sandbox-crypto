@@ -1,7 +1,7 @@
 # Example deployment targets for compiling examples/policy.yaml to OpenShell.
 # scripts/render_openshell_examples.py renders the policies beside this file.
 # Hosts are placeholders for platform services (trust zone Z1); they must have
-# private addresses, so that the public-internet endpoint never admits them. A
+# private addresses, so that no endpoint for a public host reaches them. A
 # single-host deployment (the VM driver on babbage) uses host.openshell.internal.
 
 apiVersion: sandbox-science/v0alpha1

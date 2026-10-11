@@ -27,6 +27,7 @@ from aiohttp import web
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy_middleware.errors import StoreError
 
+from .admission import DraftWatcher
 from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
@@ -100,15 +101,27 @@ async def serve(settings: Settings) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
     runner = web.AppRunner(create_app(manager, token, environments), access_log=None)
+    watcher: asyncio.Task[None] | None = None
     try:
         await manager.start()
         await runner.setup()
         site = web.TCPSite(runner, settings.listen_host, settings.listen_port)
         await site.start()
         _log.info("worker API on %s (%s backend)", settings.listen, manager.backend.name)
+        if environments is not None and environments.settings.admission:
+            interval = environments.settings.admission_interval
+            watcher = asyncio.create_task(DraftWatcher(environments, interval).run())
         await stopping.wait()
         _log.info("stopping")
     finally:
+        if watcher is not None:
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                _log.exception("the admission watcher failed")
         await runner.cleanup()
         await manager.close()
         store.close()
@@ -133,7 +146,10 @@ def add_policies(settings: Settings, paths: list[Path]) -> int:
             try:
                 loaded = environments.store.add_policy(path.read_bytes())
                 compiled = compile_sandbox(
-                    loaded, environments.targets.sandbox, ceiling=environments.ceiling
+                    loaded,
+                    environments.targets.sandbox,
+                    ceiling=environments.ceiling,
+                    floor=environments.floor,
                 )
             except (OSError, StoreError, CompileError) as exc:
                 print(f"error: {path}: {exc}", file=sys.stderr)

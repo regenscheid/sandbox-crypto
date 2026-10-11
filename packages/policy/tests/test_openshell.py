@@ -16,6 +16,7 @@ from pydantic import ValidationError
 
 from sandbox_science.policy import (
     Action,
+    HardFloor,
     LoadedPolicy,
     McpOperation,
     PolicyLoadError,
@@ -41,6 +42,8 @@ from sandbox_science.policy.openshell import (
     SandboxTarget,
     ServiceEndpoint,
     Severity,
+    admission_ranges,
+    admission_refusal,
     compile_mcp_proxy,
     compile_orchestrator,
     compile_sandbox,
@@ -51,9 +54,12 @@ from sandbox_science.policy.openshell import (
 
 ROOT = Path(__file__).resolve().parents[3]
 EXAMPLE = load_policy(ROOT / "examples" / "policy.yaml")
+EXAMPLE_TEXT = (ROOT / "examples" / "policy.yaml").read_text()
 TARGETS = load_targets(ROOT / "examples" / "openshell" / "targets.yaml")
 FIXTURE = Path(__file__).parent / "fixtures" / "crypto-research-mcp-tools.json"
 OPEN = PoolCeiling.unrestricted()
+RANGES = admission_ranges(EXAMPLE, OPEN)
+"""The public ranges less the floor's public metadata address, as compiled for EXAMPLE."""
 HEADER = "apiVersion: sandbox-science/v0alpha1\nkind: ProjectPolicy\nmetadata: {name: test}\n"
 
 # Fields of OpenShell's authored schema (v0.1.3) that the compiler may emit. OpenShell
@@ -198,12 +204,9 @@ def test_example_sandbox_policy() -> None:
         "sandbox-science-mcp-proxy",
         "sandbox-science-credentials",
     ]
-    public, *named = entries["sandbox-science-egress"].endpoints
-    assert public.host is None
-    assert (public.protocol, public.enforcement, public.access) == ("rest", "enforce", "full")
-    assert public.ports == (80, 443)
-    assert public.allowed_ips == public_address_ranges()
-    # The source-download and git-fetch rules name their hosts, so the sandbox can resolve them.
+    named = entries["sandbox-science-egress"].endpoints
+    # The source-download and git-fetch rules name their hosts, so the sandbox can resolve
+    # them; the '*' rules reach other hosts once the worker admits them on demand.
     assert [endpoint.host for endpoint in named] == [
         "codeberg.org",
         "codeload.github.com",
@@ -214,9 +217,12 @@ def test_example_sandbox_policy() -> None:
         "release-assets.githubusercontent.com",
     ]
     for endpoint in named:
-        assert endpoint.model_dump(exclude={"host", "ports"}) == public.model_dump(
-            exclude={"host", "ports"}
+        assert (endpoint.protocol, endpoint.enforcement, endpoint.access) == (
+            "rest",
+            "enforce",
+            "full",
         )
+        assert endpoint.allowed_ips == RANGES
         # github.com's HTTPS traffic belongs to its credential endpoint.
         assert endpoint.ports == ((80,) if endpoint.host == "github.com" else (80, 443))
     credentials = entries["sandbox-science-credentials"]
@@ -225,7 +231,7 @@ def test_example_sandbox_policy() -> None:
     for endpoint in credentials.endpoints:
         assert (endpoint.ports, endpoint.path, endpoint.protocol) == ((443,), "/**", "rest")
         assert (endpoint.enforcement, endpoint.access) == ("enforce", "full")
-        assert endpoint.allowed_ips == public.allowed_ips
+        assert endpoint.allowed_ips == RANGES
         assert endpoint.credential_binding is not None
         assert endpoint.credential_binding.provider == "github-readonly"
     (cache,) = entries["sandbox-science-package-cache"].endpoints
@@ -293,25 +299,28 @@ def test_a_policy_admitting_nothing_has_no_egress_endpoints() -> None:
     assert compiled.policy.network_middlewares is not None
 
 
-def test_lan_addresses_join_the_public_endpoint_and_lan_names_are_refused() -> None:
+def test_lan_hosts_a_rule_names_get_endpoints_without_the_public_ranges() -> None:
+    # The library lets a rule naming a host exactly reach it at a private address.
     policy = network_policy(
         "network:\n  rules:\n"
         "    - {name: web, operation: http, match: {hosts: ['*'], methods: [GET]}, action: allow}\n"
-        "    - {name: lan, operation: http, match: {hosts: [10.0.0.5, nas.local]}, "
-        "action: allow}\n"
+        "    - {name: lan, operation: http, match: {hosts: [10.0.0.5, nas.local, "
+        "93.184.215.14]}, action: allow}\n"
     )
     compiled = compile_research(policy)
-    (public,) = compiled.policy.network_policies["sandbox-science-egress"].endpoints
-    assert public.allowed_ips is not None
-    assert public.allowed_ips[-1] == "10.0.0.5"
-    refused = [finding for finding in compiled.findings if finding.subject == "hosts.nas.local"]
-    assert refused
-    assert refused[0].severity is Severity.WARNING
+    endpoints = compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    ranges = {endpoint.host: endpoint.allowed_ips for endpoint in endpoints}
+    assert ranges == {
+        "10.0.0.5": None,
+        "93.184.215.14": RANGES,
+        "nas.local": None,
+    }
+    assert not any(finding.subject.startswith("hosts.") for finding in compiled.findings)
 
 
-def test_named_public_hosts_get_endpoints_beside_the_host_less_one() -> None:
-    # OpenShell's policy DNS answers only for hosts an endpoint names, so a
-    # sandbox could not resolve these names through the host-less endpoint.
+def test_named_public_hosts_get_endpoints_limited_to_public_ranges() -> None:
+    # OpenShell's policy DNS answers only for hosts an endpoint names, so every host
+    # a rule names gets one; '*' reaches other hosts through admission on demand.
     policy = network_policy(
         "network:\n  rules:\n"
         "    - {name: web, operation: http, match: {hosts: ['*'], methods: [GET]}, action: allow}\n"
@@ -320,19 +329,18 @@ def test_named_public_hosts_get_endpoints_beside_the_host_less_one() -> None:
         "    - {name: blocked, operation: http, match: {hosts: [bad.example.org]}, action: deny}\n"
     )
     compiled = compile_research(policy)
-    public, *named = compiled.policy.network_policies["sandbox-science-egress"].endpoints
-    assert public.host is None
-    assert [endpoint.host for endpoint in named] == ["api.example.org"]
-    (api,) = named
-    assert api.allowed_ips == public.allowed_ips
-    assert (api.ports, api.protocol, api.enforcement, api.access) == (
-        public.ports,
-        "rest",
-        "enforce",
-        "full",
-    )
+    named = compiled.policy.network_policies["sandbox-science-egress"].endpoints
+    assert [endpoint.host for endpoint in named] == ["93.184.215.14", "api.example.org"]
+    for endpoint in named:
+        assert endpoint.allowed_ips == RANGES
+        assert (endpoint.ports, endpoint.protocol, endpoint.enforcement, endpoint.access) == (
+            (80, 443),
+            "rest",
+            "enforce",
+            "full",
+        )
     warnings = [f.message for f in compiled.findings if f.severity is Severity.WARNING]
-    assert any("reach only the hosts this policy names" in message for message in warnings)
+    assert any("admitted them on demand" in message for message in warnings)
 
 
 def test_wildcard_rules_become_openshell_subdomain_wildcards() -> None:
@@ -343,30 +351,211 @@ def test_wildcard_rules_become_openshell_subdomain_wildcards() -> None:
         default="deny",
     )
     compiled = compile_research(policy)
-    public, *named = compiled.policy.network_policies["sandbox-science-egress"].endpoints
-    assert public.host is None
+    named = compiled.policy.network_policies["sandbox-science-egress"].endpoints
     # The library's *.suffix matches any depth below the suffix: OpenShell's **.
     assert [endpoint.host for endpoint in named] == ["**.arxiv.org"]
-    assert named[0].allowed_ips == public.allowed_ips
+    assert named[0].allowed_ips == RANGES
     tld = [f for f in compiled.findings if f.subject == "hosts.*.org"]
     assert len(tld) == 1
     assert tld[0].severity is Severity.WARNING
     assert "three labels" in tld[0].message
     # Wildcards never grant non-public names, so none is admitted or reported.
     assert not any("corp.internal" in f.subject for f in compiled.findings)
-    # Defaults deny and no rule is for '*': nothing is limited to named hosts.
-    assert not any("reach only the hosts" in f.message for f in compiled.findings)
+    # Defaults deny and no rule is for '*': nothing waits for admission on demand.
+    assert not any("on demand" in f.message for f in compiled.findings)
 
 
-def test_floor_hosts_are_not_named_beside_the_host_less_endpoint() -> None:
+READ_ANYWHERE = (
+    "network:\n  rules:\n"
+    "    - {name: web, operation: http, match: {hosts: ['*'], methods: [GET]}, action: allow}\n"
+)
+
+
+def test_hosts_admitted_on_demand_get_endpoints_like_named_hosts() -> None:
+    compiled = compile_sandbox(
+        network_policy(READ_ANYWHERE, default="deny"),
+        TARGETS.sandbox,
+        ceiling=OPEN,
+        admitted=["papers.example.net", "API.Example.org", "papers.example.net"],
+    )
+    assert "sandbox-science-egress" not in compiled.policy.network_policies
+    admitted = compiled.policy.network_policies["sandbox-science-admitted"].endpoints
+    assert [endpoint.host for endpoint in admitted] == ["api.example.org", "papers.example.net"]
+    for endpoint in admitted:
+        # The ranges keep names that resolve to private addresses out.
+        assert endpoint.allowed_ips == RANGES
+        assert (endpoint.ports, endpoint.protocol, endpoint.enforcement, endpoint.access) == (
+            (80, 443),
+            "rest",
+            "enforce",
+            "full",
+        )
+    assert any("2 hosts admitted on demand" in finding.message for finding in compiled.findings)
+
+
+def test_hosts_the_policy_cannot_reach_are_not_admitted_on_demand() -> None:
+    policy = network_policy(
+        READ_ANYWHERE
+        + "    - {name: blocked, operation: http, match: {hosts: [blocked.example.org]}, "
+        "action: deny}\n",
+        default="deny",
+    )
+    refused = [
+        "blocked.example.org",
+        "pypi.org",
+        "metadata.goog",
+        "printer.local",
+        "203.0.113.7",
+        TARGETS.sandbox.package_cache.host,
+        "not a host",
+    ]
+    compiled = compile_sandbox(policy, TARGETS.sandbox, ceiling=OPEN, admitted=refused)
+    assert "sandbox-science-admitted" not in compiled.policy.network_policies
+    reported = [f for f in compiled.findings if "not admitted on demand" in f.message]
+    assert len(reported) == len(refused)
+    assert all(finding.severity is Severity.WARNING for finding in reported)
+
+
+def test_hosts_the_policy_names_are_not_admitted_twice() -> None:
+    policy = network_policy(
+        READ_ANYWHERE
+        + "    - {name: api, operation: http, match: {hosts: [api.example.org, '*.arxiv.org']}, "
+        "action: allow}\n",
+        default="deny",
+    )
+    compiled = compile_sandbox(
+        policy, TARGETS.sandbox, ceiling=OPEN, admitted=["api.example.org", "export.arxiv.org"]
+    )
+    assert "sandbox-science-admitted" not in compiled.policy.network_policies
+
+
+def test_a_closed_policy_admits_nothing_on_demand() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: api, operation: http, match: {hosts: [api.example.org]}, action: allow}\n",
+        default="deny",
+    )
+    compiled = compile_sandbox(policy, TARGETS.sandbox, ceiling=OPEN, admitted=["x.example.org"])
+    assert "sandbox-science-admitted" not in compiled.policy.network_policies
+    assert any(
+        f.subject == "hosts.x.example.org" and "reaches only the hosts it names" in f.message
+        for f in compiled.findings
+    )
+
+
+def test_the_example_policy_admits_unnamed_public_hosts_on_demand() -> None:
+    def refusal(host: str, port: int = 443) -> str | None:
+        return admission_refusal(EXAMPLE, TARGETS.sandbox, host, port, ceiling=OPEN)
+
+    assert refusal("eprint.iacr.org") is None
+    assert refusal("eprint.iacr.org", 80) is None
+    assert refusal("EPRINT.IACR.ORG.") is None
+    assert "port 8443 is not admitted" in (refusal("eprint.iacr.org", 8443) or "")
+    assert "package registry" in (refusal("pypi.org") or "")
+    assert refusal("github.com") is None
+    compiled = compile_research(EXAMPLE)
+    assert compiled.names("github.com")
+    assert compiled.names("GitHub.com.")
+    assert not compiled.names("eprint.iacr.org")
+    # Addresses are admitted on demand too, when public.
+    assert refusal("93.184.215.14") is None
+    assert "not public" in (refusal("203.0.113.7") or "")
+    assert "not public" in (refusal("printer.local") or "")
+    assert "not a host name" in (refusal("bad host") or "")
+    assert refusal("metadata.goog") is not None
+
+
+def test_admission_ranges_leave_out_addresses_the_library_always_denies() -> None:
+    # The middleware sees names only, so a name the sandbox picks (such as
+    # 168-63-129-16.sslip.io) must not reach these through allowed_ips.
+    policy = parse_policy(
+        HEADER + "mcp:\n  servers:\n    tools:\n      url: https://52.1.2.3/mcp\n"
+        "      revision: '2025-11-25'\n      auth: {mode: none}\n      tools: {allow: [search]}\n"
+    )
+    ceiling = PoolCeiling.model_validate({"network": {"deny_hosts": ["1.2.3.4"]}})
+    floor = HardFloor(admin_hosts=frozenset({"34.120.1.2", "admin.example.org"}))
+    ranges = [ipaddress.ip_network(block) for block in admission_ranges(policy, ceiling, floor)]
+
+    def covered(address: str) -> bool:
+        return any(ipaddress.ip_address(address) in network for network in ranges)
+
+    for denied in ("168.63.129.16", "1.2.3.4", "34.120.1.2", "52.1.2.3"):
+        assert not covered(denied), denied
+    for ordinary in ("8.8.8.8", "1.2.3.5", "168.63.129.17", "2606:4700:4700::1111"):
+        assert covered(ordinary), ordinary
+    assert not covered("10.0.0.5")
+
+
+def test_compiled_names_are_exactly_its_endpoints() -> None:
+    policy = network_policy(
+        READ_ANYWHERE
+        + "    - {name: named, operation: http, match: {hosts: [api.example.org, '*.arxiv.org', "
+        "'*.pypi.org', '*.org']}, action: allow}\n",
+        default="deny",
+    )
+    compiled = compile_sandbox(policy, TARGETS.sandbox, ceiling=OPEN, admitted=["x.example.net"])
+    assert compiled.names("api.example.org")
+    assert compiled.names("export.arxiv.org")
+    assert compiled.names("x.example.net")
+    assert compiled.admitted == ("x.example.net",)
+    assert compiled.names(TARGETS.sandbox.package_cache.host)
+    # Wildcards the compiler cannot emit name nothing (review L3).
+    assert not compiled.names("docs.pypi.org")
+    assert not compiled.names("example.org")
+    assert not compiled.names("bad host")
+
+
+def test_a_service_under_a_wildcard_on_an_admitted_port_is_a_compile_error() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: lab, operation: http, match: {hosts: ['*.example.org']}, action: allow}\n",
+        default="deny",
+    )
+    target = TARGETS.sandbox.model_copy(
+        update={
+            "package_cache": ServiceEndpoint.model_validate(
+                {"host": "cache.lab.example.org", "port": 443}
+            )
+        }
+    )
+    with pytest.raises(CompileError, match="under the wildcard"):
+        compile_sandbox(policy, target, ceiling=OPEN)
+
+
+def test_a_closed_policy_refuses_every_admission() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: api, operation: http, match: {hosts: [api.example.org]}, action: allow}\n",
+        default="deny",
+    )
+    refusal = admission_refusal(policy, TARGETS.sandbox, "x.example.org", 443, ceiling=OPEN)
+    assert refusal is not None
+    assert "reaches only the hosts it names" in refusal
+
+
+def test_admission_follows_the_most_specific_rule() -> None:
+    policy = network_policy(
+        READ_ANYWHERE
+        + "    - {name: blocked, operation: http, match: {hosts: [blocked.example.org]}, "
+        "action: deny}\n",
+        default="deny",
+    )
+    refusal = admission_refusal(policy, TARGETS.sandbox, "blocked.example.org", 443, ceiling=OPEN)
+    assert refusal is not None
+    assert "allows no request to blocked.example.org" in refusal
+    assert admission_refusal(policy, TARGETS.sandbox, "ok.example.org", 443, ceiling=OPEN) is None
+
+
+def test_floor_hosts_are_not_named_in_an_open_policy() -> None:
     policy = network_policy(
         "network:\n  rules:\n"
         "    - {name: web, operation: http, match: {hosts: ['*', metadata.goog, "
         "blocked.example.org]}, action: allow}\n"
     )
     compiled = compile_research(policy, network={"deny_hosts": ["blocked.example.org"]})
-    (public,) = compiled.policy.network_policies["sandbox-science-egress"].endpoints
-    assert public.host is None
+    assert "sandbox-science-egress" not in compiled.policy.network_policies
+    subjects = {f.subject for f in compiled.findings if "not admitted" in f.message}
+    assert subjects == {"hosts.metadata.goog", "hosts.blocked.example.org"}
 
 
 def test_floor_and_ceiling_hosts_are_not_admitted() -> None:
@@ -391,20 +580,23 @@ def test_control_plane_ports_are_reported_and_left_out() -> None:
         "    - {name: k8s, operation: http, match: {hosts: ['*'], ports: [6443, 9443]}, "
         "action: allow}\n"
     )
-    compiled = compile_research(policy)
-    (public,) = compiled.policy.network_policies["sandbox-science-egress"].endpoints
-    assert public.ports == (80, 443, 9443)
+    compiled = compile_sandbox(policy, TARGETS.sandbox, ceiling=OPEN, admitted=["k8s.example.org"])
+    (endpoint,) = compiled.policy.network_policies["sandbox-science-admitted"].endpoints
+    assert endpoint.ports == (80, 443, 9443)
     assert any("control-plane" in finding.message for finding in compiled.findings)
 
 
-def test_a_service_on_an_admitted_port_is_a_compile_error() -> None:
+def test_a_service_may_use_a_port_egress_endpoints_admit() -> None:
+    # No endpoint admits every host any more, so nothing overlaps the service's.
     target = TARGETS.sandbox.model_copy(
         update={
             "package_cache": ServiceEndpoint.model_validate({"host": "cache.internal", "port": 443})
         }
     )
-    with pytest.raises(CompileError, match="port 443"):
-        compile_sandbox(EXAMPLE, target, ceiling=OPEN)
+    compiled = compile_sandbox(EXAMPLE, target, ceiling=OPEN)
+    (cache,) = compiled.policy.network_policies["sandbox-science-package-cache"].endpoints
+    assert (cache.host, cache.ports) == ("cache.internal", (443,))
+    assert openshell_ambiguities(compiled.policy) == []
 
 
 def single_host_target() -> SandboxTarget:
@@ -1071,7 +1263,7 @@ def test_the_host_overlap_port_matches_openshell(
 
 
 def test_the_ambiguity_port_reproduces_the_lab_refusal() -> None:
-    # Lab 2, variant A1: a provider profile's endpoint beside the host-less one.
+    # Lab 2, variant A1: a provider profile's endpoint beside the compiled ones.
     compiled = compile_research(EXAMPLE)
     rules = dict(compiled.policy.network_policies)
     rules["_provider_gh"] = rules["sandbox-science-egress"].model_copy(
@@ -1085,8 +1277,19 @@ def test_the_ambiguity_port_reproduces_the_lab_refusal() -> None:
     )
     composed = compiled.policy.model_copy(update={"network_policies": rules})
     assert any("allowed_ips" in conflict for conflict in openshell_ambiguities(composed))
-    # Without its path selector, a credential endpoint would compete with the host-less one.
-    credentials = rules["sandbox-science-credentials"]
+    # Without its path selector, a credential endpoint would compete with a wildcard's.
+    compiled = compile_research(
+        parse_policy(
+            EXAMPLE_TEXT.replace(
+                "    - name: read-only-web\n",
+                "    - name: github-wildcard\n      operation: http\n"
+                "      match: { hosts: ['*.github.com'], methods: [GET] }\n      action: allow\n"
+                "    - name: read-only-web\n",
+                1,
+            )
+        )
+    )
+    credentials = compiled.policy.network_policies["sandbox-science-credentials"]
     unpathed = tuple(e.model_copy(update={"path": None}) for e in credentials.endpoints)
     rules = dict(compiled.policy.network_policies)
     rules["sandbox-science-credentials"] = credentials.model_copy(update={"endpoints": unpathed})

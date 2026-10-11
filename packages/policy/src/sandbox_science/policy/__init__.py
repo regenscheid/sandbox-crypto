@@ -14,6 +14,7 @@ from .evaluate import (
     evaluate_mcp_message,
     evaluate_monitors,
     evaluate_request,
+    host_reach,
 )
 from .floor import HardFloor
 from .hosts import HostKind, HostPattern, is_public, normalize_host
@@ -69,6 +70,7 @@ __all__ = [
     "evaluate_mcp_message",
     "evaluate_monitors",
     "evaluate_request",
+    "host_reach",
     "is_public",
     "load_ceiling",
     "load_policy",

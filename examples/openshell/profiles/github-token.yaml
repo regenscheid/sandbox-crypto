@@ -3,8 +3,8 @@
 # It has no endpoints: the project policy's credentials.providers entry names the
 # hosts the token may reach, and the compiled sandbox policy binds it there with
 # credential_binding. OpenShell refuses a binding to a provider whose profile has
-# endpoints, and a profile endpoint beside the compiled policy's host-less
-# endpoint would need its exact address ranges (docs/POLICY.md, "Provider
+# endpoints, and a profile endpoint beside the compiled endpoints for its host
+# would need their exact address ranges (docs/POLICY.md, "Provider
 # credentials"). Import it, then create the provider from the token in $GITHUB_TOKEN:
 #
 #   openshell provider profile import -f examples/openshell/profiles/github-token.yaml

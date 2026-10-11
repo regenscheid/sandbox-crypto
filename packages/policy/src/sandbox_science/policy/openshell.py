@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from os import PathLike
@@ -51,11 +51,20 @@ from .evaluate import (
     DEFAULT_FLOOR,
     MCP_PROTOCOL_METHODS,
     evaluate_request,
+    host_reach,
     registry_reason,
     reserved_host_reason,
 )
 from .floor import HardFloor
-from .hosts import HostKind, floor_reason, is_public, normalize_host, parse_ip
+from .hosts import (
+    HostKind,
+    address_variants,
+    floor_addresses,
+    floor_reason,
+    is_public,
+    normalize_host,
+    parse_ip,
+)
 from .loader import LoadedPolicy, parse_model, read_limited
 from .model import (
     API_VERSION,
@@ -67,6 +76,7 @@ from .model import (
     NoAuth,
     OAuthAuth,
     Port,
+    ProjectPolicy,
     StrictModel,
 )
 from .operations import HttpRequest
@@ -302,12 +312,26 @@ class CompileError(ValueError):
 class Compiled:
     """A compiled OpenShell policy with its findings.
 
-    ``policy_digest`` identifies the project policy revision it came from.
+    ``policy_digest`` identifies the project policy revision it came from. For a
+    research sandbox, ``hosts`` and ``suffixes`` are the host names its endpoints
+    name, exactly and as ``**.suffix``, and ``admitted`` the hosts admitted on demand
+    among them.
     """
 
     policy: OpenShellPolicy
     findings: tuple[Finding, ...]
     policy_digest: str
+    hosts: frozenset[str] = frozenset()
+    suffixes: tuple[str, ...] = ()
+    admitted: tuple[str, ...] = ()
+
+    def names(self, host: str) -> bool:
+        """Whether a sandbox under this policy can resolve ``host``: an endpoint names it."""
+        try:
+            name = normalize_host(host)
+        except ValueError:
+            return False
+        return name in self.hosts or any(name.endswith(f".{suffix}") for suffix in self.suffixes)
 
 
 # Targets: where the platform services run, and what may use them.
@@ -491,8 +515,44 @@ def _without[N: (ipaddress.IPv4Network, ipaddress.IPv6Network)](
     return sorted(ipaddress.collapse_addresses(remaining))
 
 
+def admission_ranges(
+    policy: LoadedPolicy, ceiling: PoolCeiling, floor: HardFloor = DEFAULT_FLOOR
+) -> tuple[str, ...]:
+    """The public address ranges, less every address the library denies whatever the name.
+
+    Those are the floor's metadata addresses, the deployment's administration
+    endpoints, the pool ceiling's denied addresses and MCP servers declared by
+    address, with the IPv4 addresses each embeds. The policy middleware sees only
+    host names, so these ranges, as ``allowed_ips``, are what keeps a name that
+    resolves to such an address from reaching it.
+    """
+    addresses = set(floor_addresses())
+    hosts = [
+        *floor.admin_hosts,
+        *(p.value for p in ceiling.network.deny_hosts if p.kind is HostKind.EXACT),
+        *(server.host for server in policy.policy.mcp.servers.values()),
+    ]
+    for host in hosts:
+        address = parse_ip(host)
+        if address is not None:
+            addresses.update(address_variants(address))
+    ipv4 = tuple(
+        ipaddress.IPv4Network(a) for a in addresses if isinstance(a, ipaddress.IPv4Address)
+    )
+    ipv6 = tuple(
+        ipaddress.IPv6Network(a) for a in addresses if isinstance(a, ipaddress.IPv6Address)
+    )
+    return tuple(
+        str(network)
+        for network in (
+            *_without(ipaddress.IPv4Network("0.0.0.0/0"), (*_NON_PUBLIC_IPV4, *sorted(ipv4))),
+            *_without(ipaddress.IPv6Network("2000::/3"), (*_NON_PUBLIC_IPV6, *sorted(ipv6))),
+        )
+    )
+
+
 def public_address_ranges() -> tuple[str, ...]:
-    """Public unicast address space, for a host-less endpoint's ``allowed_ips``.
+    """Public unicast address space, for the ``allowed_ips`` of endpoints for public hosts.
 
     IPv4 without its special-purpose blocks, and IPv6 global unicast
     (``2000::/3``) without documentation, 6to4 and IETF protocol assignments.
@@ -539,25 +599,106 @@ def _wildcard_hosts(rules: Sequence[HttpRule | GitRule], findings: list[Finding]
     return sorted(hosts)
 
 
+def _reachable(project: ProjectPolicy) -> list[HttpRule | GitRule]:
+    return [rule for rule in project.network.rules if rule.action is not Action.DENY]
+
+
+def _ports(reachable: Sequence[HttpRule | GitRule]) -> set[int]:
+    """The ports requests can use: the schemes' defaults and every port a rule names."""
+    return {80, 443} | {port for rule in reachable for port in rule.match.ports}
+
+
+def _open_internet(project: ProjectPolicy, reachable: Sequence[HttpRule | GitRule]) -> bool:
+    """Whether requests can reach hosts the policy does not name.
+
+    Unmatched requests take defaults.action, so anything but deny does, as does
+    every wildcard rule.
+    """
+    return project.defaults.action is not Action.DENY or any(
+        pattern.kind is not HostKind.EXACT for rule in reachable for pattern in rule.match.hosts
+    )
+
+
+def _admission_refusal(
+    policy: LoadedPolicy,
+    host: str,
+    ports: Iterable[int],
+    service_hosts: set[str],
+    *,
+    ceiling: PoolCeiling,
+    floor: HardFloor,
+) -> str | None:
+    """Why a normalized host must not be admitted on demand on any of ``ports``, or None."""
+    if not is_public(host):
+        return f"{host} is not public; only a rule naming it exactly can reach it"
+    if host in service_hosts:
+        return f"{host} is a platform service host"
+    refusal: str | None = None
+    for port in ports:
+        decision = host_reach(host, port, policy, ceiling=ceiling, floor=floor)
+        if decision.action is not Action.DENY:
+            return None
+        refusal = refusal or decision.reason
+    return f"the policy allows no request to {host}: {refusal}"
+
+
+def admission_refusal(
+    policy: LoadedPolicy,
+    target: SandboxTarget,
+    host: str,
+    port: int,
+    *,
+    ceiling: PoolCeiling,
+    floor: HardFloor = DEFAULT_FLOOR,
+) -> str | None:
+    """Why on-demand admission must not name ``host`` after a refused connection to ``port``.
+
+    Returns None when it may (D69). A sandbox resolves only the host names its
+    compiled policy names, so OpenShell refuses a connection to any other host and
+    drafts a proposal for it. The worker then admits the host by compiling it into
+    ``compile_sandbox``'s ``admitted`` hosts, when the policy reaches hosts it does
+    not name (through a wildcard rule or a non-deny default), the port is one the
+    compiled policy admits, and some request to the host there could be allowed or
+    escalated. The policy middleware still decides every request. A host the policy
+    names (``names_host``) passes too; admitting it changes nothing.
+    """
+    try:
+        name = normalize_host(host)
+    except ValueError as exc:
+        return f"{host!r} is not a host name: {exc}"
+    project = policy.policy
+    reachable = _reachable(project)
+    if not _open_internet(project, reachable):
+        return "the policy reaches only the hosts it names, which are admitted already"
+    ports = sorted(_ports(reachable) - CONTROL_PLANE_PORTS)
+    if port not in ports:
+        return f"port {port} is not admitted; the policy admits ports {', '.join(map(str, ports))}"
+    service_hosts = {target.package_cache.host, target.mcp_proxy.host}
+    return _admission_refusal(policy, name, (port,), service_hosts, ceiling=ceiling, floor=floor)
+
+
 def compile_sandbox(
     policy: LoadedPolicy,
     target: SandboxTarget,
     *,
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
+    admitted: Iterable[str] = (),
 ) -> Compiled:
     """Compile a research sandbox's policy: admission endpoints plus the policy middleware.
 
     OpenShell admits the destinations the project could ever reach and calls the
     policy middleware for every admitted request; the middleware decides with
-    this library. Raises CompileError when the result would not load.
+    this library. ``admitted`` names hosts the worker admitted on demand
+    (``admission_refusal``); they are checked again and get endpoints like the
+    hosts the policy names. Raises CompileError when the result would not load.
     """
     project = policy.policy
     findings: list[Finding] = []
     binaries = tuple(Binary(path=path) for path in target.binaries)
-    reachable = [rule for rule in project.network.rules if rule.action is not Action.DENY]
+    reachable = _reachable(project)
 
-    ports = {80, 443} | {port for rule in reachable for port in rule.match.ports}
+    ports = _ports(reachable)
     blocked = sorted(ports & CONTROL_PLANE_PORTS)
     if blocked:
         findings.append(
@@ -570,11 +711,7 @@ def compile_sandbox(
         )
     admitted_ports = tuple(sorted(ports - CONTROL_PLANE_PORTS))
 
-    # Unmatched requests take defaults.action, so anything but deny must reach the
-    # middleware too, as must every wildcard rule.
-    open_internet = project.defaults.action is not Action.DENY or any(
-        pattern.kind is not HostKind.EXACT for rule in reachable for pattern in rule.match.hosts
-    )
+    open_internet = _open_internet(project, reachable)
     exact_hosts = sorted(
         {
             pattern.value
@@ -584,12 +721,12 @@ def compile_sandbox(
         }
     )
     endpoints: list[Endpoint] = []
-    private_addresses: list[str] = []
-    # OpenShell's policy DNS answers only for host names that an endpoint names;
-    # a sandbox cannot resolve any other name, so the host-less endpoint admits
-    # only requests to addresses. Public names the rules mention get endpoints of
-    # their own, beside it.
-    named_hosts: list[str] = []
+    # OpenShell's policy DNS answers only for host names that an endpoint names,
+    # and a VM sandbox has no other route, so every reachable host needs an
+    # endpoint. Public hosts get the public address ranges, as the library's
+    # wildcard rule allows only public destinations; hosts a rule names exactly
+    # may be private, as in the library.
+    allowed_ips = admission_ranges(policy, ceiling, floor) if open_internet else None
     service_hosts = {target.package_cache.host, target.mcp_proxy.host}
     # A closed policy admits only hosts its rules name, so it binds only those.
     bound = _bound_hosts(
@@ -609,6 +746,17 @@ def compile_sandbox(
             return tuple(port for port in admitted_ports if port != CREDENTIAL_PORT)
         return admitted_ports
 
+    def egress(host: str) -> Endpoint:
+        return Endpoint(
+            host=host,
+            ports=egress_ports(host),
+            protocol="rest",
+            enforcement="enforce",
+            access="full",
+            allowed_ips=allowed_ips if is_public(host) else None,
+        )
+
+    named_hosts: list[str] = []
     for host in exact_hosts:
         # Hosts the library always denies are not admitted either, so that the
         # middleware is never the only thing standing between them and a sandbox.
@@ -621,74 +769,22 @@ def compile_sandbox(
         if reason is not None:
             findings.append(Finding(Severity.WARNING, f"hosts.{host}", f"not admitted: {reason}"))
             continue
-        if open_internet and is_public(host):
-            if parse_ip(host) is None:
-                named_hosts.append(host)
-            continue  # addresses: admitted by the host-less endpoint
-        if not open_internet:
-            endpoints.append(
-                Endpoint(
-                    host=host,
-                    ports=egress_ports(host),
-                    protocol="rest",
-                    enforcement="enforce",
-                    access="full",
-                )
-            )
-        elif parse_ip(host) is not None:
-            private_addresses.append(host)
-            findings.append(
-                Finding(
-                    Severity.INFO,
-                    f"hosts.{host}",
-                    "admitted through the host-less endpoint's allowed_ips, so any name that "
-                    "resolves to this address reaches the middleware, which sees only the name",
-                )
-            )
-        else:
-            findings.append(
-                Finding(
-                    Severity.WARNING,
-                    f"hosts.{host}",
-                    "not admitted: a non-public host name cannot sit beside the host-less "
-                    "endpoint, because overlapping OpenShell endpoints must agree on "
-                    "allowed_ips; name its IP address in the rule instead (stricter)",
-                )
-            )
-    allowed_ips: tuple[str, ...] | None = None
+        named_hosts.append(host)
+        endpoints.append(egress(host))
+    wildcards = _wildcard_hosts(reachable, findings) if open_internet else []
+    suffixes = tuple(host.removeprefix("**.") for host in wildcards)
     if open_internet:
-        allowed_ips = (*public_address_ranges(), *private_addresses)
-        endpoints.insert(
-            0,
-            Endpoint(
-                ports=admitted_ports,
-                protocol="rest",
-                enforcement="enforce",
-                access="full",
-                allowed_ips=allowed_ips,
-            ),
-        )
-        # Overlapping OpenShell endpoints must agree on allowed_ips, so the named
-        # endpoints repeat the host-less endpoint's ranges.
-        for host in [*named_hosts, *_wildcard_hosts(reachable, findings)]:
-            endpoints.append(
-                Endpoint(
-                    host=host,
-                    ports=egress_ports(host),
-                    protocol="rest",
-                    enforcement="enforce",
-                    access="full",
-                    allowed_ips=allowed_ips,
-                )
-            )
+        # Overlapping OpenShell endpoints must agree on allowed_ips: a wildcard's
+        # endpoint and those of the public hosts under it carry the same ranges.
+        endpoints += [egress(host) for host in wildcards]
         findings.append(
             Finding(
                 Severity.INFO,
                 "network",
-                "public destinations are admitted by a host-less endpoint limited to public "
-                "address ranges, so OpenShell refuses private and special addresses, as the "
-                "library's wildcard rule does; host names reach it only when an endpoint names "
-                "them, because OpenShell's policy DNS answers only for named hosts",
+                "endpoints for public hosts are limited to public address ranges, less the "
+                "addresses the library always denies (cloud metadata, administration "
+                "endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses "
+                "names that resolve to them, as the library's wildcard rule does",
             )
         )
         if project.defaults.action is not Action.DENY or any(
@@ -698,11 +794,48 @@ def compile_sandbox(
                 Finding(
                     Severity.WARNING,
                     "network",
-                    "rules for '*' and the default action reach only the hosts this policy "
-                    "names and IP addresses: a sandbox cannot resolve other names until "
-                    "on-demand admission approves them (stricter)",
+                    "rules for '*' and the default action reach other hosts and addresses only "
+                    "once the worker has admitted them on demand: OpenShell refuses the first "
+                    "connection to one and drafts a proposal, which the worker answers (D69, "
+                    "stricter)",
                 )
             )
+
+    # Hosts the worker admitted on demand: hosts the policy reaches without naming them.
+    on_demand: list[str] = []
+    for raw in sorted(set(admitted)):
+        try:
+            host = normalize_host(raw)
+        except ValueError as exc:
+            findings.append(
+                Finding(Severity.WARNING, f"hosts.{raw}", f"not admitted on demand: {exc}")
+            )
+            continue
+        if not open_internet:
+            reason: str | None = "the policy reaches only the hosts it names"
+        else:
+            reason = _admission_refusal(
+                policy, host, admitted_ports, service_hosts, ceiling=ceiling, floor=floor
+            )
+        if reason is not None:
+            findings.append(
+                Finding(Severity.WARNING, f"hosts.{host}", f"not admitted on demand: {reason}")
+            )
+        elif (
+            host not in on_demand
+            and host not in named_hosts
+            and not any(host.endswith(f".{suffix}") for suffix in suffixes)
+        ):
+            on_demand.append(host)
+    if on_demand:
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "network",
+                f"{len(on_demand)} hosts admitted on demand, limited to public address ranges: "
+                + ", ".join(on_demand),
+            )
+        )
 
     cache = target.package_cache
     proxy = target.mcp_proxy
@@ -723,22 +856,29 @@ def compile_sandbox(
         Finding(
             Severity.WARNING,
             "services",
-            "platform services must have private addresses, so that the host-less endpoint "
-            "never admits them",
+            "platform services must have private addresses, so that no endpoint for a public "
+            "host reaches them",
         )
     )
     for _, label, service in services:
-        if open_internet and service.port in admitted_ports:
+        under = [s for s in suffixes if service.host.endswith(f".{s}")]
+        if under and service.port in admitted_ports:
             raise CompileError(
-                f"the {label} uses port {service.port}, which the host-less endpoint also "
-                "admits; OpenShell rejects overlapping endpoints that differ, so move the "
-                "service to another port"
+                f"the {label} at {service.host}:{service.port} is under the wildcard "
+                f"**.{under[0]} on a port it admits; OpenShell rejects overlapping endpoints "
+                "that differ, so move the service to another port or name"
             )
 
     network_policies: dict[str, NetworkPolicy] = {}
     if endpoints:
         network_policies["sandbox-science-egress"] = NetworkPolicy(
             name="Sandbox Science egress", endpoints=tuple(endpoints), binaries=binaries
+        )
+    if on_demand:
+        network_policies["sandbox-science-admitted"] = NetworkPolicy(
+            name="Sandbox Science hosts admitted on demand",
+            endpoints=tuple(egress(host) for host in on_demand),
+            binaries=binaries,
         )
     # The package cache is inspected: the middleware sees every package request
     # and applies the packages section. OpenShell itself admits only reads.
@@ -778,11 +918,11 @@ def compile_sandbox(
         )
         config["mcp_proxy"] = {"host": proxy.host, "port": proxy.port}
     if bound:
-        # The path selector makes each endpoint more specific than the host-less
-        # and wildcard endpoints that also admit its host on this port, so that
-        # OpenShell does not require them to agree on the binding, and selects
-        # this endpoint for the host's requests there. Overlapping endpoints must
-        # agree on allowed_ips.
+        # The path selector makes each endpoint more specific than the wildcard
+        # endpoints that also admit its host on this port, so that OpenShell does
+        # not require them to agree on the binding, and selects this endpoint for
+        # the host's requests there. Overlapping endpoints must agree on
+        # allowed_ips.
         network_policies["sandbox-science-credentials"] = NetworkPolicy(
             name="Sandbox Science credentials",
             endpoints=tuple(
@@ -867,6 +1007,14 @@ def compile_sandbox(
         ),
         findings=tuple(findings),
         policy_digest=policy.digest,
+        hosts=frozenset(
+            endpoint.host
+            for entry in network_policies.values()
+            for endpoint in entry.endpoints
+            if endpoint.host is not None and not endpoint.host.startswith("**.")
+        ),
+        suffixes=suffixes,
+        admitted=tuple(on_demand),
     )
 
 
@@ -945,9 +1093,8 @@ def _bound_hosts(
     """Map each host a provider credential may be bound to onto its provider.
 
     Hosts the floor, the pool ceiling or a platform route rules out are left
-    unbound and reported, as are hosts that are not public: an endpoint for
-    them could not share the host-less endpoint's address ranges. When
-    ``named`` is given (a closed policy), so are hosts outside it.
+    unbound and reported, as are hosts that are not public. When ``named`` is
+    given (a closed policy), so are hosts outside it.
     """
     bound: dict[str, str] = {}
     for provider in policy.policy.credentials.providers:

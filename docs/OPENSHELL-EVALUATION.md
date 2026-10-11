@@ -29,7 +29,7 @@ Decision (D52, revised after review): prove OpenShell first and keep it the sing
 - **Hosted reference:** Kubernetes with a Kata or gVisor RuntimeClass on a dedicated worker node pool, default-deny NetworkPolicy (Cilium where L7 rules help), an Envoy egress proxy and package mirror, and Tetragon or Falco for process, file and network telemetry.
 - **Local reference:** rootless Podman or Docker with `runsc`, an internal-only network, and the same proxies.
 
-All of these components are Apache-2.0 or MIT. eBPF telemetry may arrive earlier than the rest if a phase 1 check needs a monitor signal independent of OpenShell middleware. Wildcard-host read rules no longer need an upstream egress proxy: the compiler admits them with a host-less endpoint and the policy middleware decides them (D69).
+All of these components are Apache-2.0 or MIT. eBPF telemetry may arrive earlier than the rest if a phase 1 check needs a monitor signal independent of OpenShell middleware. Wildcard-host read rules no longer need an upstream egress proxy: the worker admits the hosts they reach on demand, and the policy middleware decides every request (D69).
 
 ## What the workbench must supply
 
