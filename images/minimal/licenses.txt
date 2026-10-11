@@ -1,0 +1,26 @@
+# The licenses in the minimal image, one SPDX expression per line: its Conda packages and the
+# Ubuntu packages (LicenseRef-Ubuntu-archive). build.sh joins them into the image's
+# org.opencontainers.image.licenses label; the build fails when they differ from the image's.
+# Not permissive, and accepted as the base distribution's runtime libraries (docs/IMAGES.md):
+# GPL-3.0-only (readline, ld_impl), GPL-3.0-only WITH GCC-exception-3.1 (the GCC runtime) and
+# LGPL-2.1-or-later (keyutils).
+0BSD
+Apache-2.0
+Apache-2.0 AND MIT
+BSD-2-Clause
+BSD-3-Clause
+GPL-3.0-only
+GPL-3.0-only WITH GCC-exception-3.1
+ISC
+LGPL-2.1-or-later
+LicenseRef-Public-Domain
+LicenseRef-Ubuntu-archive
+MIT
+MPL-2.0
+PSF-2.0
+Python-2.0
+TCL
+X11 AND BSD-3-Clause
+Zlib
+blessing
+bzip2-1.0.6

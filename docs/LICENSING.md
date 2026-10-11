@@ -9,7 +9,7 @@ License facts below were read from each project's published license file on 2026
 | Tier | Contents | Allowed licenses | Rule |
 | --- | --- | --- | --- |
 | 1. Platform code | Web GUI, the reimplemented orchestrator/harness (D11), worker service, adapters, proxies/mirror configuration, monitor, environment manager | MIT, MIT-0, BSD, ISC, Apache-2.0, PSF-2.0, PostgreSQL, public domain, MPL-2.0 (file-level, unmodified) | No GPL/LGPL linking or importing. No AGPL anywhere. Proprietary code cannot be included. |
-| 2. Published base worker image (`minimal`) | Minimal runtime: micromamba, Python, jupyter_client/ipykernel, probe and stub scripts | Same as tier 1, plus the system libraries the base distribution requires | Keep thin. No GPL research tools baked in. Generate an SBOM and license report on every build. |
+| 2. Published base worker image (`minimal`) | Minimal runtime: micromamba, Python, jupyter_client/ipykernel, probe and stub scripts | Same as tier 1, plus the system libraries the base distribution requires: Ubuntu's packages, and the GCC runtime, readline, GNU ld and keyutils that conda-forge's Python and ZeroMQ need ([images](IMAGES.md#licensing)) | Keep thin. No GPL research tools baked in. Every build records each package's license and fails on any other license; a standard-format SBOM is still to do. |
 | 3. Runtime-installed research dependencies | Sage, fpylll, G6K, PARI/GP, lattice-estimator, FLINT, Poppler, TeX, anything Conda installs on request | Any license the user accepts by installing, **except AGPL by default** | Installed by the user's environment from conda-forge through the mirror into the environment volume. The project does not distribute these binaries. Record each package's license in the environment record. |
 | `crypto-base` profile image | Tier 2 plus a pinned set of tier-3 packages (Sage, fpylll, PARI, lattice-estimator, FLINT, TeX, pdf tools, G6K from source) | As tier 3 | The **recipe** (Containerfile and lockfiles) is published under MIT. The **image** is built privately (user's machines or CI), stored in a private registry and never published, because it contains GPL tools. It is the normal base for crypto projects (D46). |
 
@@ -30,7 +30,10 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | Envoy | Apache-2.0 | Egress proxy candidate |
 | mitmproxy | MIT | Inspection candidate |
 | devpi | MIT | PyPI mirror candidate |
-| quetz, mamba/micromamba | BSD-3-Clause | Conda mirror and installer candidates |
+| quetz, mamba/micromamba | BSD-3-Clause | Conda mirror and installer candidates; micromamba installs the base images' environments and runtime packages |
+| Ubuntu 24.04 (Docker Hub `ubuntu`) | Each package's own (GPL, LGPL and permissive) | Base distribution of both base profile images ([images](IMAGES.md)) |
+| conda-lock | MIT | Development only: solves the base images' Conda lockfiles, run with `uvx` |
+| TeX Live (Ubuntu packages), qpdf | LPPL-1.3c, GPL and others; Apache-2.0 | Tier 3, in the `crypto-base` image |
 | miniforge installer | BSD-3-Clause (bundled packages carry their own licenses) | Use conda-forge only; avoid Anaconda `defaults` (commercial terms) |
 | jupyter_client, ipykernel | BSD-3-Clause | Kernel protocol |
 | KaTeX | MIT | Math rendering |
@@ -93,6 +96,6 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 ## Enforcement
 
 - CI runs `scripts/check_licenses.py`, which fails when an installed distribution's license is undeclared or outside the tier 1 allowlist (so GPL/LGPL/AGPL/SSPL/BUSL fail).
-- Generate an SBOM for the shipped base image and fail the build on AGPL/GPL findings outside an explicit allowlist of base-OS packages.
+- The base image builds record every package and its license (`/usr/share/sandbox-science/image.json`). The `minimal` build fails on any license that is not permissive, outside an explicit allowlist of the base distribution's runtime libraries ([images](IMAGES.md#licensing)). A standard-format SBOM for the published image is still to do.
 - Record tier 3 package licenses in each environment record (conda `info/licenses`, PyPI metadata). Show AGPL packages in the GUI when they are installed at runtime.
 - Before copying any code from a reuse source, record its license and revision in the commit.
