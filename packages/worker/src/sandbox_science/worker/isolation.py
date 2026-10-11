@@ -7,8 +7,9 @@ The worker compares the answer with the same facts about its own host. Evidence
 only lowers the declared tier, never raises it:
 
 - the worker host's boot ID (the same running kernel), or a boot ID either side
-  cannot read, allows tier 1 at most, and only with a seccomp filter and
-  no-new-privs; otherwise the tier is 0;
+  cannot read, allows tier 1 at most, and only with a seccomp filter,
+  no-new-privs and no effective capabilities (the threat model's hardened
+  container); otherwise the tier is 0;
 - a visible sentinel, or one the executor cannot check, means tier 0;
 - a failed probe means tier 0.
 
@@ -77,6 +78,13 @@ def assess(
         if sandbox.no_new_privs is not True:
             findings.append("the executor runs without no-new-privs")
             tier = 0
+        if not _no_capabilities(sandbox.capabilities):
+            findings.append(
+                f"the executor runs with capabilities {sandbox.capabilities}"
+                if sandbox.capabilities
+                else "the executor's capabilities are unknown"
+            )
+            tier = 0
     if sentinel == "visible":
         findings.append("a file the worker wrote in its state directory is visible in the sandbox")
         tier = 0
@@ -87,6 +95,14 @@ def assess(
         kernel=kernel, sentinel=sentinel, findings=tuple(findings), sandbox=sandbox
     )
     return Assessment(tier, evidence)
+
+
+def _no_capabilities(capabilities: str | None) -> bool:
+    """Whether ``CapEff`` (hex) is readable and empty."""
+    try:
+        return capabilities is not None and int(capabilities, 16) == 0
+    except ValueError:
+        return False
 
 
 def failed(error: str) -> Assessment:

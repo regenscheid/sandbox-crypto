@@ -59,7 +59,7 @@ Each backend declares an isolation tier ([threat model](THREAT-MODEL.md#isolatio
 - The worker reads the same facts on its own host. It also writes a file with a random name in its state directory, and the executor looks for it at the same path.
 
 Evidence only lowers the declared tier, never raises it:
-- **Kernel.** The worker host's boot ID means the same running kernel: tier 1 at most, and 1 only if the executor runs under a seccomp filter with no-new-privs, else 0. A boot ID that either side cannot read counts the same way, so tiers 2 and 3 need a kernel of their own.
+- **Kernel.** The worker host's boot ID means the same running kernel: tier 1 at most, and 1 only if the executor runs under a seccomp filter with no-new-privs and no effective capabilities (the threat model's hardened container), else 0. A boot ID that either side cannot read counts the same way, so tiers 2 and 3 need a kernel of their own.
 - **Files.** A sentinel file the sandbox can see, or one it cannot check for, means tier 0.
 - **Failure.** If the probe fails, the tier is 0, never the declared one.
 
