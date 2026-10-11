@@ -1009,6 +1009,8 @@ export interface RecoverOptions {
   repairs?: ModelRepairs | null;
   /** Renders a model's repair to check it; by default the renderer the ladder uses. */
   check?: MathRenderer;
+  /** The key of the macros the expression renders with (macros.ts); none by default. */
+  macros?: string;
 }
 
 function cut(text: string, length: number): string {
@@ -1025,9 +1027,13 @@ export function describeError(error: unknown): string {
   return cut(brief, MAX_ERROR_LENGTH);
 }
 
-/** The page's key for an expression's model repair. */
-export function repairKey(tex: string, displayMode: boolean): string {
-  return `${displayMode ? 'display' : 'inline'}\u0000${tex}`;
+/**
+ * The page's key for an expression's model repair, and for KaTeX's results: under
+ * `macros`, the key of the macros in force (macros.ts), a formula renders otherwise.
+ */
+export function repairKey(tex: string, displayMode: boolean, macros = ''): string {
+  const key = `${displayMode ? 'display' : 'inline'}\u0000${tex}`;
+  return macros ? `${macros}\u0000${key}` : key;
 }
 
 /**
@@ -1062,7 +1068,7 @@ export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOp
   }
 
   const repairs = options.repairs ?? null;
-  const key = repairKey(tex, displayMode);
+  const key = repairKey(tex, displayMode, options.macros);
   const known = repairs?.get(key);
   if (known?.tex && safeRepair(tex, known.tex)) {
     // Not renderable here, or beyond this text's budget, it falls through.
