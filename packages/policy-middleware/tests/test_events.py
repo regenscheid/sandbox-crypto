@@ -105,6 +105,15 @@ def test_escalations_alerts_and_monitor_findings_are_stored(
             "query_bytes": len(PRIVATE_QUERY),
         },
         "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+        # What an answer to this permission request covers (approvals.py).
+        "target": {
+            "sandbox_id": "sbx-0001",
+            "policy_digest": loaded.digest,
+            "method": "POST",
+            "host": "example.org",
+            "port": 443,
+            "path": "/v1/items",
+        },
     }
     assert records[1][2]["rule"] == "watched"
     assert records[2][2] == {

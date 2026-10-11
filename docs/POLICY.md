@@ -140,7 +140,7 @@ credentials:
 
 `escalation.timeout` sets how long a request waits for an answer (default `30m`). When it expires, the request is denied: the policy-wide `escalation.on_timeout` must be `deny`. A rule can override the timeout for itself. A rule that only reads, meaning an `http` rule whose `methods` are all `GET` or `HEAD`, or a `git` rule for `upload-pack`, may also set `on_timeout: allow`. A timed-out request under such a rule proceeds as an `alert`, with a recorded finding, never silently. A request whose URL exceeds a limit is denied on timeout regardless. So is a request to a host that a provider credential is bound to ("Credentials"), unless the rule also sets `allow_credentialed: true`: a credentialed read acts with the user's identity, so it proceeds unanswered only where the policy says so, endpoint by endpoint. When escalate rules tie, the request proceeds as an alert only if every one of them permits it, including `allow_credentialed` for a credentialed request. MCP tool escalations use the policy-wide setting.
 
-Other work continues while a request waits (`hold_scope: operation`). A denied or timed-out request is not retried automatically.
+Other work continues while a request waits (`hold_scope: operation`). A denied or timed-out request is not retried automatically. The policy middleware keeps each escalation as a permission request that an operator approves or denies, and applies the timeout when the request is retried ([policy middleware](POLICY-MIDDLEWARE.md#permission-requests)).
 
 ### Policy file format
 

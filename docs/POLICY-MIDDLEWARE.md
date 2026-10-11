@@ -24,7 +24,7 @@ The middleware runs before OpenShell injects credentials and cannot tell which r
 | --- | --- | --- | --- |
 | `allow` | allow | | |
 | `alert` | allow, with a finding | | `alert` (if it cannot be recorded, the request is denied with `audit_unavailable`) |
-| `escalate` | deny | `approval_required` | `escalation`: a pending permission request; the agent retries after approval. If it cannot be recorded, there is no request to approve, so the request is denied with `audit_unavailable` instead |
+| `escalate` | deny, until answered ([permission requests](#permission-requests)) | `approval_required`, `approval_denied` or `escalation_timed_out` | `escalation` on the first occurrence: a permission request, which the reason names. If it cannot be recorded, there is no request to approve, so the request is denied with `audit_unavailable` instead |
 | `deny` by a rule or the default | deny | `policy_denied` | |
 | `deny` by the pool ceiling | deny | `pool_ceiling_denied` | |
 | `deny` by the hard floor | deny | `destination_forbidden` | |
@@ -36,7 +36,24 @@ The middleware itself can also deny: `git_request_invalid` (a fetch body that is
 
 **Monitors.** The middleware counts the bytes each sandbox sends in allowed requests (request line, visible headers and body) over a sliding hour and reports a monitor as a finding and a `monitor` record, at most once an hour per sandbox. Response bytes are not counted. Monitors never change a decision.
 
-**Records.** Escalations, alerts and monitor findings go to the [event store](EVENT-STORE.md), whose hash chain makes later changes evident: `events.db` in the state directory, unless the settings name another file (`event_store`). Each record has the kind `escalation`, `alert` or `monitor`, the source `policy-middleware`, the store's time, and a payload with the sandbox, request id, policy revision, rule and reason. Escalations and alerts add the request's method, scheme, host, port and path, and only the size of its query string, which can hold data and credential placeholders; bodies are never recorded. An append returns once its record is on disk, which on babbage adds about 2 ms (median; p99 about 8 ms) to a request that is escalated or alerted, and nothing to the others. It waits at most 250 ms for the store, so keep the registration's `timeout` above that. An alert whose record cannot be stored is denied (`audit_unavailable`); an escalation is denied anyway, and a monitor finding is still returned.
+**Records.** Escalations, alerts and monitor findings go to the [event store](EVENT-STORE.md), whose hash chain makes later changes evident: `events.db` in the state directory, unless the settings name another file (`event_store`). Each record the middleware writes has the kind `escalation`, `approved`, `alert` or `monitor`, the source `policy-middleware`, the store's time, and a payload with the sandbox, request id, policy revision, rule and reason. Escalations and alerts add the request's method, scheme, host, port and path, and only the size of its query string, which can hold data and credential placeholders; bodies are never recorded. An append returns once its record is on disk, which on babbage adds about 2 ms (median; p99 about 8 ms) to a request that is escalated or alerted, and nothing to the others. It waits at most 250 ms for the store, so keep the registration's `timeout` above that. An alert whose record cannot be stored is denied (`audit_unavailable`); an escalation is denied anyway, and a monitor finding is still returned.
+
+## Permission requests
+
+An escalated request becomes a permission request (`approvals.py`, D76).
+- **Recording.** Its first occurrence is recorded as an `escalation`, whose sequence number identifies the request; the denial's reason names it ("permission request 12"). The record's `target` is what an answer covers: the sandbox, policy revision, method, host, port and path. Retries of the same request share its fingerprint and are not recorded again, so a sandbox retrying a denied write does not grow the store.
+- **Answering.** An operator answers on the pool host, until the GUI does it with re-authentication (D54):
+
+  ```bash
+  uv run sandbox-science-policy-middleware pending --settings middleware.toml
+  uv run sandbox-science-policy-middleware approve --settings middleware.toml --request 12 [--scope host] [--for 8]
+  uv run sandbox-science-policy-middleware deny --settings middleware.toml --request 12
+  ```
+
+  The answer is an `approval` or `denial` record from the source `operator`, in the same hash-chained store.
+- **Approvals.** An approval covers the request itself, or with `--scope host` every path on that host and port with that method. It lasts `--for` hours (8 by default, 720 at most). Matching retries are allowed with a `policy_approval` finding and an `approved` record; if that record cannot be written, they are denied with `audit_unavailable`. A denial refuses them with `approval_denied`. The newest answer decides.
+- **Scope.** Answers apply only to the sandbox and policy revision of the request, so another sandbox, or a new revision, asks again.
+- **Timeouts.** A request nobody answers within its rule's escalation timeout follows `on_timeout` ([policy](POLICY.md), "Escalation timeout"). A read whose rule allows it proceeds as an alert, recorded with `timed_out_request`; anything else is denied with `escalation_timed_out`. The middleware decides this when the request is retried; it does not hold requests open.
 
 **opam archives.** opam fetches archives from the package cache by digest, so the request names no package. The payload of an escalated or alerted archive's record therefore has `opam_archive`: the digest (`"md5:ca77…"`) and, when `package_cache_url` is set, the packages that the cache's copy of the opam index lists for it (`"packages": ["ocamlfind.1.9.8"]`, at most 100, with `more_packages` counting the rest). The middleware asks the cache's `GET /-/opam/archives/<algorithm>/<hex>` ([package cache](PACKAGE-CACHE.md), "URL layout"), waiting at most 50 ms for each step, so that the lookup and the record's append fit the 500 ms OpenShell gives an evaluation. When the cache cannot answer, the record keeps only the digest. An empty list means that no opam file in the index lists the digest. The answer never changes a decision. Such an escalation holds an install back only if the network rules also stop opam's own downloads ([policy](POLICY.md), "Packages").
 
