@@ -1719,3 +1719,71 @@ async def test_hosts_are_admitted_ahead_of_use(api: Api) -> None:
     assert resumed["decisions"][0]["admitted"]
     environments.settings = environments.settings.model_copy(update={"admission": False})
     assert await api.refused("POST", path, A_TOKEN, body) == (422, "unsupported")
+
+
+async def test_a_client_has_at_most_its_limit_of_environments(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    limited = (
+        ClientSettings(
+            name="client-a",
+            token_sha256=token_digest(A_TOKEN),
+            projects=("p1", "p3"),
+            max_environments=2,
+        ),
+    )
+    manager = idle_manager(tmp_path)
+    api = Api(await aiohttp_client(create_app(manager, TOKEN, setup.environments, limited)), setup)
+    for project in ("p1", "p3"):
+        setup.environments.records.grant(project, setup.policy)
+    # The fake CLI keeps its state in one file, which concurrent calls would garble; the
+    # requests still race through the worker's check of the limit.
+    cli, serial = setup.environments.cli, asyncio.Lock()
+    run = cli.run
+
+    async def run_serially(*args: str, timeout: float = 120.0) -> str:
+        async with serial:  # every CLI call, sandbox() included, goes through run()
+            return await run(*args, timeout=timeout)
+
+    cli.run = run_serially  # type: ignore[method-assign]
+    try:
+        # Concurrent requests across the client's projects: exactly its limit succeed.
+        results = await asyncio.gather(
+            *(
+                api.call(
+                    "POST",
+                    "/v1/environments",
+                    A_TOKEN,
+                    api.environment(f"env-{index}", "p1" if index % 2 else "p3"),
+                )
+                for index in range(4)
+            )
+        )
+        assert sorted(status for status, _ in results) == [201, 201, 403, 403]
+        made = [body for status, body in results if status == 201]
+        refused = [body for status, body in results if status == 403]
+        assert "limit" in refused[0]["error"]["message"]
+        # Asking again for one it has is no new environment.
+        again = api.environment(made[0]["environment_id"], made[0]["project_id"])
+        assert (await api.call("POST", "/v1/environments", A_TOKEN, again))[0] == 200
+        assert await api.refused("POST", "/v1/environments", A_TOKEN, api.environment("env-9")) == (
+            403,
+            "policy_denied",
+        )
+        # Deleting one makes room.
+        path = f"/v1/environments/{made[0]['environment_id']}"
+        assert (await api.call("DELETE", path, A_TOKEN))[0] == 200
+        assert (await api.call("POST", "/v1/environments", A_TOKEN, api.environment("env-9")))[
+            0
+        ] == 201
+        # The pool's own token has no such limit.
+        status, _ = await api.call(
+            "POST", "/v1/environments", TOKEN, api.environment("env-pool", "p9")
+        )
+        assert status == 201
+        assert (
+            ClientSettings(name="c", token_sha256="0" * 64, projects=("p1",)).max_environments == 8
+        )
+    finally:
+        await manager.close()
+        manager.store.close()

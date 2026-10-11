@@ -57,6 +57,8 @@ _log = logging.getLogger(__name__)
 
 MANAGER: Final = web.AppKey("manager", ExecutionManager)
 ENVIRONMENTS: Final = web.AppKey("environments", Environments)
+CREATING: Final = web.AppKey("creating", dict[str, set[str]])
+"""The environments each limited client is creating right now, which its limit counts too."""
 MAX_BODY: Final = 16 * 1024 * 1024
 _REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
 _EVENT = TypeAdapter[Event](Event)
@@ -76,6 +78,7 @@ class Client:
 
     name: str
     projects: frozenset[str] | None
+    max_environments: int | None = None
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -100,7 +103,9 @@ def create_app(
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
     pool = Client("pool", None)
-    by_digest = {c.token_sha256: Client(c.name, frozenset(c.projects)) for c in clients}
+    by_digest = {
+        c.token_sha256: Client(c.name, frozenset(c.projects), c.max_environments) for c in clients
+    }
     if token_digest(token) in by_digest:
         raise ValueError("a client has the pool's own token")
 
@@ -138,6 +143,7 @@ def create_app(
 
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app[MANAGER] = manager
+    app[CREATING] = {}
     if environments is not None:
         app[ENVIRONMENTS] = environments
     app.add_routes(
@@ -277,8 +283,32 @@ async def create_environment(request: web.Request) -> web.Response:
     _allowed(request, body.project_id)
     environments = _environments(request)
     _revision(request, environments, body.project_id, body.policy)
-    # An environment of another project is a conflict that does not name the project.
-    info, created = await environments.create(body)
+    client = _client(request)
+    if client.projects is None or client.max_environments is None:
+        # An environment of another project is a conflict that does not name the project.
+        info, created = await environments.create(body)
+        return _json(info, 201 if created else 200)
+    # Counted and reserved with no await between, so concurrent requests cannot both pass.
+    # A reservation is the ID itself, so one being created is not counted twice.
+    live = set(environments.records.live(client.projects))
+    creating = request.app[CREATING]
+    pending = creating.setdefault(client.name, set())
+    reserve = body.environment_id not in live | pending
+    if reserve:
+        if len(live | pending) >= client.max_environments:
+            raise WorkerError(
+                ErrorKind.POLICY_DENIED,
+                f"this client's projects have {client.max_environments} environments, its "
+                "limit; delete one first",
+            )
+        pending.add(body.environment_id)
+    try:
+        info, created = await environments.create(body)
+    finally:
+        if reserve:
+            pending.discard(body.environment_id)
+        if not pending and creating.get(client.name) is pending:
+            del creating[client.name]
     return _json(info, 201 if created else 200)
 
 
