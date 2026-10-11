@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: MIT
+[project]
+name = "sandbox-science-orchestrator"
+version = "0.1.0"
+description = "The Sandbox Science orchestrator and research harness"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "sandbox-science-contracts",
+    "aiohttp>=3.10",
+]
+
+[project.scripts]
+sandbox-science-harness = "sandbox_science.orchestrator.cli:main"
+
+[tool.uv.sources]
+sandbox-science-contracts = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sandbox_science"]
