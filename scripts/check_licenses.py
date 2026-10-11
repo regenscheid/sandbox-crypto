@@ -60,6 +60,8 @@ def license_of(dist: Distribution) -> str | None:
     field = (metadata.get("License") or "").strip()
     if field in LICENSE_FIELD:
         return LICENSE_FIELD[field]
+    if field in ALLOWED:
+        return field  # already an SPDX identifier, as psutil writes it
     for classifier in metadata.get_all("Classifier") or []:
         if classifier in CLASSIFIERS:
             return CLASSIFIERS[classifier]
