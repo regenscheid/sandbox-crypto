@@ -6,6 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **Admission ahead of use** (D69). The agent can name the sites its code will contact before running it (`admit_hosts`), and the worker admits the allowed ones in one policy reload, so the first connection need not fail and no transfer is cut. Still to run on babbage.
 - **Per-project worker credentials** (D78, proposed). Besides the pool's own token, the worker accepts client tokens that act only for the projects the settings list.
   - For such a client, other projects' executions, artifacts and environments do not exist. It can use only environments the worker created for its projects, under policy revisions an operator granted to them.
   - Two adversarial reviews found three ways around the checks, all closed:

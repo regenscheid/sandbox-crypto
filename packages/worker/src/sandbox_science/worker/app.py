@@ -23,6 +23,9 @@ from aiohttp import web
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
+    AdmissionDecision,
+    AdmissionRequest,
+    AdmissionResult,
     ArtifactRef,
     EnvironmentRequest,
     EnvironmentState,
@@ -143,6 +146,7 @@ def create_app(
             web.get("/v1/environments/{environment_id}", get_environment),
             web.post("/v1/environments/{environment_id}/policy", revise_environment),
             web.delete("/v1/environments/{environment_id}", delete_environment),
+            web.post("/v1/environments/{environment_id}/admissions", admit_hosts),
             web.get("/v1/capabilities", capabilities),
             web.post("/v1/executions", submit),
             web.get("/v1/executions/{execution_id}", get_execution),
@@ -305,6 +309,30 @@ async def delete_environment(request: web.Request) -> web.Response:
     return _json(await environments.delete(_environment(request, environments)))
 
 
+async def admit_hosts(request: web.Request) -> web.Response:
+    """Admit hosts before code contacts them, so its first connection need not fail (D69)."""
+    body = AdmissionRequest.model_validate_json(await _body(request))
+    environments = _environments(request)
+    environment_id = _environment(request, environments)
+    if not environments.settings.admission:
+        raise WorkerError(ErrorKind.UNSUPPORTED, "this pool does not admit hosts on demand")
+    await environments.resume(environment_id)
+    decided = await environments.admit(
+        environment_id, [(entry.host, entry.port) for entry in body.hosts]
+    )
+    if decided is None:  # admit waits for the environment's lock, so this cannot happen
+        raise WorkerError(ErrorKind.UNAVAILABLE, f"environment {environment_id!r} is busy")
+    return _json(
+        AdmissionResult(
+            decisions=tuple(
+                AdmissionDecision(host=d.host, port=d.port, admitted=d.admitted, reason=d.reason)
+                for d in decided
+            ),
+            environment=environments.get(environment_id),
+        )
+    )
+
+
 async def capabilities(request: web.Request) -> web.Response:
     environment_id = request.query.get("environment_id", "")
     if not environment_id:
@@ -316,7 +344,14 @@ async def capabilities(request: web.Request) -> web.Response:
         if info is None or info.state is EnvironmentState.DELETED:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
         _visible(request, info.project_id, f"environment {environment_id!r}")
-    return _json(await request.app[MANAGER].capabilities(environment_id))
+    offered = await request.app[MANAGER].capabilities(environment_id)
+    if environments is not None and environments.settings.admission:
+        info = environments.records.get(environment_id)
+        if info is not None and info.state is not EnvironmentState.DELETED:
+            # Hosts can be admitted ahead of use (POST .../admissions).
+            features = tuple(dict.fromkeys([*offered.features, "admission"]))
+            offered = offered.model_copy(update={"features": features})
+    return _json(offered)
 
 
 async def submit(request: web.Request) -> web.Response:

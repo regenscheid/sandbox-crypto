@@ -8,6 +8,7 @@ This spec covers the agent's execution tools and the worker API operations behin
 - shell commands;
 - persistent kernels: Python and Sage now, R later, all through the Jupyter protocol (D41);
 - file handoff between the session workspace and the agent;
+- admitting network hosts ahead of use;
 - errors, cancellation and reconnection.
 
 These belong to other specs: Conda provisioning ([conda-provisioning](conda-provisioning.md)), artifact versioning beyond publication ([research-artifacts](research-artifacts.md)), and documents.
@@ -60,6 +61,12 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 4. **List** returns up to a bounded number of entries. Each gives its name, type, size and modification time; symlinks are reported as links and not followed.
 5. **Publish** copies a workspace file into the project's artifact store as an immutable revision. It returns an `ArtifactRef` carrying the content hash, the media type and the producing attempt: the last finished attempt that wrote the file.
 6. **Written files.** Each attempt's result lists the files in the session workspace and the shared area that it created or changed, as the worker observed them. An attempt running at the same time in the session may contribute some of them.
+
+## Network
+
+1. **Admission ahead of use.** Where the worker admits hosts on demand (D69), an environment's capabilities list `admission`, and the agent can name the hosts its code will contact before running it: `admit_hosts`, with host names or `host:port` (443 unless given), at most 32. The worker decides each host with the project policy, as it decides a host a sandbox could not reach, and names the admissible ones in one new compilation of the environment's policy. The result lists each host as reachable or refused, with the reason.
+2. **Reachable is not allowed.** Admission lets code connect to a host; the policy still decides each request.
+3. **Without it**, the first connection to a host the policy reaches without naming fails, and the host becomes reachable some seconds later. A later result's notices say which hosts were admitted or refused.
 
 ## Errors
 

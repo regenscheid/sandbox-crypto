@@ -113,9 +113,11 @@ class CellRequest(Contract):
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
 
 
-Feature = Literal["pdf"]
-"""Capabilities beyond kernels that an environment can offer; ``pdf`` needs pdf_oxide (D59)."""
+Feature = Literal["pdf", "admission"]
+"""Capabilities beyond kernels that an environment can offer. ``pdf`` needs pdf_oxide (D59);
+``admission`` means the worker admits hosts ahead of use (D69, ``AdmissionRequest``)."""
 FEATURES: Final[tuple[Feature, ...]] = ("pdf",)
+"""The features an executor may report; the worker adds ``admission`` itself."""
 PdfOperation = Literal["info", "pages", "search", "render"]
 PageList = Annotated[
     str, StringConstraints(pattern=r"^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$", max_length=200)
