@@ -174,6 +174,7 @@ listen = "127.0.0.1:8100"
 token_file = "worker.token"          # sandbox-science-worker token --out worker.token
 state_dir = "state"
 pool_id = "babbage"
+kernel_idle_timeout = 28800          # optional: stop kernels unused for 8 hours
 
 [openshell]
 cli = "/home/andy/.local/opt/openshell-0.1.3/bin/openshell"

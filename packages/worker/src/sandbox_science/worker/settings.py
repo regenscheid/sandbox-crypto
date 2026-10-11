@@ -105,6 +105,9 @@ class Settings(_Model):
     state_dir: Path
     pool_id: Identifier = "local"
     max_artifact_size: Annotated[int, Field(gt=0)] = 1 << 30
+    kernel_idle_timeout: Annotated[float, Field(gt=0)] | None = None
+    """Stop a kernel nobody has used for this many seconds; its session's next cell reports
+    the lost state. Unset keeps kernels until they are closed, restarted or die."""
     local: LocalBackendSettings | None = None
     openshell: OpenShellBackendSettings | None = None
 
