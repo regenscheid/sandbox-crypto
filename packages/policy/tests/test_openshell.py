@@ -522,6 +522,79 @@ def test_without_worker_access_no_endpoint_admits_the_mcp_proxy() -> None:
     assert any(finding.subject == "mcp.proxy.worker_access" for finding in compiled.findings)
 
 
+EXAMPLE_OPAM = "  opam:                     # OCaml: EasyCrypt, Jasmin\n    action: allow\n"
+
+
+def example_with_opam(action: str) -> LoadedPolicy:
+    text = (ROOT / "examples" / "policy.yaml").read_text()
+    assert EXAMPLE_OPAM in text
+    return parse_policy(text.replace(EXAMPLE_OPAM, EXAMPLE_OPAM.replace("allow", action)))
+
+
+def opam_findings(compiled: Compiled) -> list[str]:
+    return [
+        finding.message
+        for finding in compiled.findings
+        if finding.subject == "packages.opam" and finding.severity is Severity.WARNING
+    ]
+
+
+@pytest.mark.parametrize("action", ["escalate", "deny", "alert"])
+def test_an_opam_action_the_network_rules_undo_is_reported(action: str) -> None:
+    # opam downloads an archive from the package's own URL whenever the cache does not
+    # deliver it, and the example's source-downloads rule allows GitHub.
+    (message,) = opam_findings(compile_research(example_with_opam(action)))
+    assert message.startswith(f"packages.opam is {action}, which does not hold")
+    assert "rule source-downloads allows that (GET https://github.com/" in message
+
+
+def test_an_allowed_opam_is_not_reported() -> None:
+    assert opam_findings(compile_research(EXAMPLE)) == []
+
+
+def test_an_unset_opam_is_reported_with_the_default_it_takes() -> None:
+    policy = network_policy(
+        "network:\n  rules:\n"
+        "    - {name: reads, operation: http, match: {hosts: ['*'], methods: [GET]}, "
+        "action: allow}\n"
+    )
+    (message,) = opam_findings(compile_research(policy))
+    assert message.startswith("packages.opam is unset, so opam archives take defaults.action")
+    assert "rule reads allows that" in message
+
+
+@pytest.mark.parametrize(
+    "network",
+    [
+        pytest.param("", id="nothing-allowed"),
+        pytest.param(
+            "network:\n  rules:\n"
+            "    - {name: api, operation: http, match: {hosts: [api.example.org], "
+            "methods: [GET]}, action: allow}\n",
+            id="unrelated-host",
+        ),
+        pytest.param(
+            "network:\n  rules:\n"
+            "    - {name: reads, operation: http, match: {hosts: ['*'], methods: [GET]}, "
+            "action: escalate}\n",
+            id="downloads-escalate",
+        ),
+    ],
+)
+def test_an_opam_action_holds_when_the_rules_stop_the_downloads(network: str) -> None:
+    for default in ("deny", "escalate"):
+        policy = network_policy(network + "packages:\n  opam: {action: escalate}\n", default)
+        assert opam_findings(compile_research(policy)) == []
+
+
+def test_the_pool_ceiling_counts_when_opam_downloads_are_checked() -> None:
+    # A pool that reaches only the registries stops opam's own downloads as well.
+    compiled = compile_research(
+        example_with_opam("escalate"), network={"allow_hosts": ["opam.ocaml.org"]}
+    )
+    assert opam_findings(compiled) == []
+
+
 # MCP proxy sandbox.
 
 

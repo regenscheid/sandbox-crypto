@@ -1,0 +1,46 @@
+{
+  "about": "Files from opam.ocaml.org captured on 2026-10-11 (UTC), byte for byte: the repository's repo file and the opam files of a few packages, taken from index.tar.gz. test_adapter_opam.py derives archive cache paths from their url and extra-source sections the way opam does; the cache does not parse them.",
+  "fixtures": [
+    {
+      "file": "repo",
+      "source": "https://opam.ocaml.org/repo",
+      "date": "Sun, 11 Oct 2026 05:01:55 GMT",
+      "note": "the repo file"
+    },
+    {
+      "file": "ocamlfind.1.9.8.opam",
+      "source": "https://opam.ocaml.org/index.tar.gz, packages/ocamlfind/ocamlfind.1.9.8/opam",
+      "date": "Sun, 11 Oct 2026 04:41:29 GMT",
+      "package": "ocamlfind.1.9.8",
+      "note": "the first checksum is MD5"
+    },
+    {
+      "file": "ocaml-base-compiler.5.2.1.opam",
+      "source": "https://opam.ocaml.org/index.tar.gz, packages/ocaml-base-compiler/ocaml-base-compiler.5.2.1/opam",
+      "date": "Sun, 11 Oct 2026 04:41:29 GMT",
+      "package": "ocaml-base-compiler.5.2.1",
+      "note": "the compiler's source archive, by SHA-256"
+    },
+    {
+      "file": "zed.3.2.3.opam",
+      "source": "https://opam.ocaml.org/index.tar.gz, packages/zed/zed.3.2.3/opam",
+      "date": "Sun, 11 Oct 2026 04:41:29 GMT",
+      "package": "zed.3.2.3",
+      "note": "the first checksum is SHA-512"
+    },
+    {
+      "file": "ocaml-config.3.opam",
+      "source": "https://opam.ocaml.org/index.tar.gz, packages/ocaml-config/ocaml-config.3/opam",
+      "date": "Sun, 11 Oct 2026 04:41:29 GMT",
+      "package": "ocaml-config.3",
+      "note": "two extra sources, by SHA-256"
+    },
+    {
+      "file": "jasmin.2026.09.0.opam",
+      "source": "https://opam.ocaml.org/index.tar.gz, packages/jasmin/jasmin.2026.09.0/opam",
+      "date": "Sun, 11 Oct 2026 04:41:29 GMT",
+      "package": "jasmin.2026.09.0",
+      "note": "Jasmin, the newest version in opam-repository"
+    }
+  ]
+}

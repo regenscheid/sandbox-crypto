@@ -80,6 +80,22 @@ _NPM_FILE_RE: Final = re.compile(rf"files/(?:[0-9a-f]{{128}}|-)/({_NPM_NAME})/-/
 # integrity, so these carry no digest.
 _NPM_LOCKFILE_RE: Final = re.compile(rf"({_NPM_NAME})/-/({_NPM_TARBALL})")
 _NPM_INDEX_RE: Final = re.compile(_NPM_NAME)
+# opam fetches archives from the repository's content-addressed cache by the
+# first checksum an opam file lists; the directory is the digest's first two digits.
+_OPAM_ARCHIVE_RE: Final = re.compile(r"cache/(md5|sha256|sha512)/([0-9a-f]{2})/([0-9a-f]+)")
+_OPAM_DIGEST_LENGTHS: Final = {"md5": 32, "sha256": 64, "sha512": 128}
+# Hackage: hackage-security's signed metadata and index, and source distributions
+# named <name>-<version> (Cabal names: words with a letter; versions: numbers).
+_HACKAGE_INDEX_FILES: Final = frozenset(
+    {"root.json", "timestamp.json", "snapshot.json", "mirrors.json", "01-index.tar.gz"}
+)
+_HACKAGE_NAME: Final = r"[0-9]*[A-Za-z][A-Za-z0-9]*(?:-[0-9]*[A-Za-z][A-Za-z0-9]*)*"
+# Numbers within Cabal's Int, at most 32 of them, as the cache's adapter accepts them.
+_HACKAGE_VERSION: Final = r"(?:0|[1-9][0-9]{0,17})(?:\.(?:0|[1-9][0-9]{0,17})){0,31}"
+# Cabal's form, package/<id>.tar.gz, or Hackage's, package/<id>/<id>.tar.gz.
+_HACKAGE_SDIST_RE: Final = re.compile(
+    rf"package/(?P<id>(?P<name>{_HACKAGE_NAME})-{_HACKAGE_VERSION})(?:/(?P=id))?\.tar\.gz"
+)
 
 
 def classify_package_request(method: str, path: str) -> PackageOperation:
@@ -203,10 +219,30 @@ def _npm_file_belongs(name: str, filename: str) -> bool:
     )
 
 
+def _opam(rest: str) -> PackageOperation | None:
+    if rest == "index.tar.gz":
+        return PackageOperation("opam", None, kind="index")
+    match = _OPAM_ARCHIVE_RE.fullmatch(rest)
+    if match and len(match[3]) == _OPAM_DIGEST_LENGTHS[match[1]] and match[3][:2] == match[2]:
+        # Content-addressed: the path names a digest, not a package.
+        return PackageOperation("opam", None, kind="artifact", digest=f"{match[1]}:{match[3]}")
+    return None
+
+
+def _hackage(rest: str) -> PackageOperation | None:
+    if rest in _HACKAGE_INDEX_FILES:
+        return PackageOperation("hackage", None, kind="index")
+    if match := _HACKAGE_SDIST_RE.fullmatch(rest):
+        return PackageOperation("hackage", match["name"])
+    return None
+
+
 _CLASSIFIERS: Final[dict[str, Callable[[str], PackageOperation | None]]] = {
     "pypi": _pypi,
     "conda": _conda,
     "cargo": _cargo,
     "go": _go,
     "npm": _npm,
+    "opam": _opam,
+    "hackage": _hackage,
 }

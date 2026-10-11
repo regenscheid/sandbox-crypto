@@ -173,6 +173,11 @@ def test_external_writes_wait_thirty_minutes_then_deny(policy: LoadedPolicy) -> 
         (PackageOperation("conda", "sagelib", channel="conda-forge"), Action.ALLOW),
         (PackageOperation("conda", "something", channel="bioconda"), Action.DENY),
         (PackageOperation("pypi", "Lattice_Estimator"), Action.ALLOW),
+        # EasyCrypt and Jasmin come from opam, Cryptol and Tamarin from Hackage.
+        (PackageOperation("opam", None, digest=f"sha256:{'a' * 64}"), Action.ALLOW),
+        (PackageOperation("opam", None, kind="index"), Action.ALLOW),
+        (PackageOperation("hackage", "cryptol"), Action.ALLOW),
+        (PackageOperation("hackage", None, kind="index"), Action.ALLOW),
     ],
 )
 def test_example_packages(
