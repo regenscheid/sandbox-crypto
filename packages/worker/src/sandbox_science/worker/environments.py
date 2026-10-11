@@ -375,8 +375,10 @@ class Environments:
         """Stops the environment's executor; the execution manager sets it."""
         self.release_idle: ReleaseIdle | None = None
         """Stops the executor unless the environment was used since a time; the manager sets it."""
-        self.deleted: Release | None = None
-        """Told of each environment deleted, so the shared files' sync forgets it (D79)."""
+        self.deleted: list[Release] = []
+        """Told of each environment deleted, by a client or given up by the worker, in
+        turn: the shared files' sync forgets it (D79), and the execution manager its
+        revisions."""
         self._locks: dict[str, asyncio.Lock] = {}
         self._users: dict[str, int] = {}
         """Callers holding or waiting for each environment's lock."""
@@ -616,12 +618,16 @@ class Environments:
             )
             self.records.save(deleted)
             _log.info("deleted sandbox %s of environment %s", info.sandbox, environment_id)
-            if self.deleted is not None:
-                try:
-                    await self.deleted(environment_id)
-                except Exception:
-                    _log.exception("forgetting environment %s failed", environment_id)
+            await self._forget(environment_id)
             return deleted
+
+    async def _forget(self, environment_id: str) -> None:
+        """Tell each of ``deleted`` that the environment is deleted."""
+        for told in self.deleted:
+            try:
+                await told(environment_id)
+            except Exception:
+                _log.exception("forgetting environment %s failed", environment_id)
 
     def notices(self, environment_id: str, since: datetime) -> list[tuple[datetime, str]]:
         """What admission decided for the environment after ``since``, for the agent (D69).
@@ -751,6 +757,7 @@ class Environments:
                 update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
             )
         )
+        await self._forget(info.environment_id)
         raise WorkerError(ErrorKind.UNAVAILABLE, f"{reason}; create the environment again")
 
     def _policy(self, revision: str) -> LoadedPolicy:
