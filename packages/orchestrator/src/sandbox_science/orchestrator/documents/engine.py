@@ -343,6 +343,9 @@ def attach(parsed: Parsed, stored: Json) -> Mapped:
 def written(parent: Mapped | None, child: Mapped, changes: Changes) -> int:
     """Characters of text a revision added or changed, in blocks without blocks inside."""
     total = 0
+    before = (
+        {} if parent is None else dict(zip(parent.block_ids, parent.parsed.blocks, strict=True))
+    )
     for index, block in enumerate(child.parsed.blocks):
         if block.children:
             continue
@@ -350,8 +353,8 @@ def written(parent: Mapped | None, child: Mapped, changes: Changes) -> int:
         if status == "added" or parent is None:
             total += len(block.text)
         elif status == "changed":
-            old_index = parent.index(child.block_ids[index])
-            old = parent.parsed.blocks[old_index].text if old_index is not None else ""
+            found = before.get(child.block_ids[index])
+            old = found.text if found is not None else ""
             junk = len(old) + len(block.text) > MAX_COMPARED
             matcher = SequenceMatcher(None, old, block.text, autojunk=junk)
             total += sum(
