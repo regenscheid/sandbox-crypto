@@ -48,7 +48,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Event store with an append-only hash chain (`packages/event-store`, D73): SQLite with durable, group commits; SHA-256 chain; `sandbox-science-events verify`, `checkpoint` and `export`. The policy middleware records there instead of `events.jsonl`
 - [ ] Event store checkpoints: take them regularly and keep them where the store's writers cannot change them (orchestrator or a timer)
 - [ ] Adversarial fixture suite
-- [ ] Isolation-tier probes (D43)
+- [x] Isolation-tier probes (D43): the worker probes each executor it starts and reports the tier in effect beside the declared one; evidence only lowers it, and the OpenShell backend must declare its tier ([worker](../docs/WORKER.md#isolation-tiers))
+  - [x] Backend conformance suite (D52): the execution-tools fixtures through the worker API (`packages/worker/tests/test_conformance.py`), against the local backend in CI or a running worker named by `SS_CONFORMANCE_*` ([worker](../docs/WORKER.md#conformance-suite))
+  - [ ] Run the suite, and with it the probe, against an OpenShell sandbox on babbage (lab)
 - [ ] Multi-arch base images: `minimal` and the `crypto-base` recipe (D46); babbage MicroVM gateway configuration (D63)
 - [ ] Secrets through OpenShell providers (D57); MCP endpoint policies (D58); connector auth service and MCP proxy (D66, D67)
 
