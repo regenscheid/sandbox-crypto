@@ -7,8 +7,10 @@ from datetime import timedelta
 from textwrap import dedent, indent
 
 import pytest
+from pydantic import ValidationError
 
 from sandbox_science.policy import Action, PolicyLoadError, parse_policy
+from sandbox_science.policy.model import ProviderRef
 
 HEADER = dedent(
     """\
@@ -263,9 +265,60 @@ def test_worker_tools_must_be_inherit_or_patterns() -> None:
 
 def test_provider_names_are_unique() -> None:
     text = policy_text(
-        "credentials: {providers: [{name: gh, profile: github}, {name: gh, profile: github}]}\n"
+        "credentials: {providers: [{name: gh, profile: github, hosts: [api.github.com]}, "
+        "{name: gh, profile: github, hosts: [github.com]}]}\n"
     )
     with pytest.raises(PolicyLoadError, match="provider names must be unique"):
+        parse_policy(text)
+
+
+def provider(hosts: str) -> str:
+    return policy_text(
+        f"credentials: {{providers: [{{name: gh, profile: token, hosts: {hosts}}}]}}\n"
+    )
+
+
+def test_providers_name_the_hosts_their_credential_may_reach() -> None:
+    policy = parse_policy(provider("['API.GitHub.com.', github.com]")).policy
+    assert policy.credentials.providers[0].hosts == ("api.github.com", "github.com")
+    assert policy.credentials.hosts == frozenset({"api.github.com", "github.com"})
+    assert parse_policy(HEADER).policy.credentials.hosts == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("hosts", "message"),
+    [
+        ("[]", "at least 1 item"),
+        ("['*.github.com']", "name each host exactly"),
+        ("['*']", "name each host exactly"),
+        ("[140.82.112.3]", "name the host, not an address"),
+        ("['[2606:4700::1111]']", "name the host, not an address"),
+        ("[github.com, GitHub.com]", "lists a host twice"),
+        ("[42]", "must be strings"),
+    ],
+)
+def test_provider_hosts_are_exact_names(hosts: str, message: str) -> None:
+    with pytest.raises(PolicyLoadError, match=message):
+        parse_policy(provider(hosts))
+
+
+def test_provider_hosts_must_be_ascii() -> None:
+    # Policy files are ASCII already; the model also refuses other sources.
+    with pytest.raises(ValidationError, match="ASCII"):
+        ProviderRef.model_validate({"name": "gh", "profile": "token", "hosts": ["bücher.example"]})
+
+
+def test_providers_need_hosts() -> None:
+    with pytest.raises(PolicyLoadError, match="hosts"):
+        parse_policy(policy_text("credentials: {providers: [{name: gh, profile: token}]}\n"))
+
+
+def test_a_host_is_bound_to_one_provider() -> None:
+    text = policy_text(
+        "credentials: {providers: [{name: a, profile: token, hosts: [api.github.com]}, "
+        "{name: b, profile: token, hosts: [github.com, api.github.com]}]}\n"
+    )
+    with pytest.raises(PolicyLoadError, match=r"more than one provider: api\.github\.com"):
         parse_policy(text)
 
 

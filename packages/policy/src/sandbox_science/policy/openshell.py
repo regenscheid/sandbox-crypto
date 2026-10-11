@@ -11,7 +11,9 @@ Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
   with this library. The platform services (the package cache and, with worker
   access, the MCP proxy) are inspected endpoints too; the middleware recognizes
   them by host and port. Nothing is excluded from the middleware, because
-  OpenShell selects middleware by host alone.
+  OpenShell selects middleware by host alone. Provider credentials are bound
+  here too, to the hosts the project names for each provider, so that OpenShell
+  substitutes them nowhere else.
 * The MCP proxy sandbox reaches the declared MCP servers. Its policy re-enforces
   the tool rules as OpenShell ``protocol: mcp`` endpoints.
 
@@ -54,6 +56,10 @@ from .model import (
 
 CONTROL_PLANE_PORTS: Final = frozenset({2379, 2380, 6443, 10250, 10255})
 """Ports OpenShell blocks on exact-host endpoints (etcd, Kubernetes API, kubelet)."""
+
+CREDENTIAL_PORT: Final = 443
+"""The only port credentials are bound to. OpenShell substitutes them there whatever the
+transport, so the policy middleware refuses requests OpenShell reports as plain HTTP."""
 
 _PLACEHOLDER_PROVIDER_RE: Final = re.compile(
     r"\$\{provider:([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\."
@@ -470,6 +476,24 @@ def compile_sandbox(
     # their own, beside it.
     named_hosts: list[str] = []
     service_hosts = {target.package_cache.host, target.mcp_proxy.host}
+    # A closed policy admits only hosts its rules name, so it binds only those.
+    bound = _bound_hosts(
+        policy,
+        ceiling,
+        floor,
+        service_hosts,
+        None if open_internet else set(exact_hosts),
+        findings,
+    )
+
+    def egress_ports(host: str) -> tuple[int, ...]:
+        # A bound host's other endpoints leave the credential port out, so that
+        # none competes with its credential endpoint at equal path specificity.
+        # Port 80 is always admitted, so some port remains.
+        if host in bound:
+            return tuple(port for port in admitted_ports if port != CREDENTIAL_PORT)
+        return admitted_ports
+
     for host in exact_hosts:
         # Hosts the library always denies are not admitted either, so that the
         # middleware is never the only thing standing between them and a sandbox.
@@ -490,7 +514,7 @@ def compile_sandbox(
             endpoints.append(
                 Endpoint(
                     host=host,
-                    ports=admitted_ports,
+                    ports=egress_ports(host),
                     protocol="rest",
                     enforcement="enforce",
                     access="full",
@@ -516,6 +540,7 @@ def compile_sandbox(
                     "allowed_ips; name its IP address in the rule instead (stricter)",
                 )
             )
+    allowed_ips: tuple[str, ...] | None = None
     if open_internet:
         allowed_ips = (*public_address_ranges(), *private_addresses)
         endpoints.insert(
@@ -534,7 +559,7 @@ def compile_sandbox(
             endpoints.append(
                 Endpoint(
                     host=host,
-                    ports=admitted_ports,
+                    ports=egress_ports(host),
                     protocol="rest",
                     enforcement="enforce",
                     access="full",
@@ -637,6 +662,39 @@ def compile_sandbox(
             binaries=binaries,
         )
         config["mcp_proxy"] = {"host": proxy.host, "port": proxy.port}
+    if bound:
+        # The path selector makes each endpoint more specific than the host-less
+        # and wildcard endpoints that also admit its host on this port, so that
+        # OpenShell does not require them to agree on the binding, and selects
+        # this endpoint for the host's requests there. Overlapping endpoints must
+        # agree on allowed_ips.
+        network_policies["sandbox-science-credentials"] = NetworkPolicy(
+            name="Sandbox Science credentials",
+            endpoints=tuple(
+                Endpoint(
+                    host=host,
+                    ports=(CREDENTIAL_PORT,),
+                    path="/**",
+                    protocol="rest",
+                    enforcement="enforce",
+                    access="full",
+                    allowed_ips=allowed_ips,
+                    credential_binding=CredentialBinding(provider=provider),
+                )
+                for host, provider in sorted(bound.items())
+            ),
+            binaries=binaries,
+        )
+        findings.append(
+            Finding(
+                Severity.INFO,
+                "credentials.providers",
+                f"each provider's credential is bound to its hosts on port {CREDENTIAL_PORT}; "
+                "OpenShell substitutes it there only, after the middleware has decided, and "
+                "refuses requests that carry its placeholder anywhere else. Providers named here "
+                "need profiles without endpoints",
+            )
+        )
     # OpenShell selects middleware by host alone, never by port: excluding a
     # service host would take every port on that host out of the middleware.
     middleware = NetworkMiddleware(
@@ -650,9 +708,9 @@ def compile_sandbox(
         Finding(
             Severity.INFO,
             "network_middlewares",
-            "every admitted HTTP request, including those to hosts that providers admit, is "
-            "decided by the policy middleware before OpenShell injects credentials; if the "
-            "middleware fails or times out, OpenShell blocks the request",
+            "every admitted HTTP request, including those to hosts bound to provider "
+            "credentials, is decided by the policy middleware before OpenShell injects "
+            "credentials; if the middleware fails or times out, OpenShell blocks the request",
         )
     )
     findings.append(
@@ -691,6 +749,49 @@ def compile_sandbox(
         findings=tuple(findings),
         policy_digest=policy.digest,
     )
+
+
+def _bound_hosts(
+    policy: LoadedPolicy,
+    ceiling: PoolCeiling,
+    floor: HardFloor,
+    service_hosts: set[str],
+    named: set[str] | None,
+    findings: list[Finding],
+) -> dict[str, str]:
+    """Map each host a provider credential may be bound to onto its provider.
+
+    Hosts the floor, the pool ceiling or a platform route rules out are left
+    unbound and reported, as are hosts that are not public: an endpoint for
+    them could not share the host-less endpoint's address ranges. When
+    ``named`` is given (a closed policy), so are hosts outside it.
+    """
+    bound: dict[str, str] = {}
+    for provider in policy.policy.credentials.providers:
+        for host in provider.hosts:
+            reason = (
+                floor.check_host(host)
+                or ceiling.check_host(host)
+                or reserved_host_reason(host, policy)
+                or (f"{host} is a platform service host" if host in service_hosts else None)
+                or (None if is_public(host) else f"{host} is not a public host")
+                or (
+                    f"no rule that could allow a request names {host}"
+                    if named is not None and host not in named
+                    else None
+                )
+            )
+            if reason is not None:
+                findings.append(
+                    Finding(
+                        Severity.WARNING,
+                        f"credentials.providers.{provider.name}",
+                        f"credential not bound to {host}: {reason} (stricter)",
+                    )
+                )
+                continue
+            bound[host] = provider.name
+    return bound
 
 
 def compile_mcp_proxy(

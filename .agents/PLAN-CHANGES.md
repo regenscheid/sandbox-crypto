@@ -4,6 +4,11 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-10
 
+- **Provider credentials bound by the compiled policy (D57 amended, chosen by the user).** Lab 2 showed that a provider whose profile names a host cannot sit beside the compiled policy's host-less endpoint. The user chose the arrangement where the project policy names the hosts each provider's credential may reach (`credentials.providers[].hosts`, required, exact names only), over profiles that repeat the compiler's address ranges.
+  - The compiler binds each credential with `credential_binding` on port 443 and path `/**`. Other endpoints for the host leave port 443 out, and in a closed policy only hosts its rules name are bound.
+  - Providers use profiles without endpoints; an example is in `examples/openshell/profiles/`.
+  - The middleware counts only requests to those hosts as credentialed, so `on_timeout: allow` rules no longer need `allow_credentialed` for other hosts. This relies on the orchestrator attaching exactly the listed providers (backlog).
+  - An adversarial review found nothing critical. Its main finding: OpenShell substitutes a bound credential into plain HTTP sent to port 443 and forwards it unencrypted. The middleware now refuses such requests where OpenShell reports them as plain HTTP (`credential_unencrypted`). Through a tunnel the request is labelled `https`, so that route is a residual risk and a possible upstream report (the user's call).
 - **Lab 2 on babbage** ([lab report](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)).
   - Real clients installed through the middleware and the package cache in a sandbox.
   - Cargo needs `http.multiplexing = false` while the cache is plain HTTP. The client configuration now says so.
