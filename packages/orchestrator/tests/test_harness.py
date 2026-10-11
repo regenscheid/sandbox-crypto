@@ -653,3 +653,62 @@ async def test_the_pdf_tools_read_cite_and_render_in_the_sandbox(client: WorkerC
 def test_the_pdf_tools_need_the_feature() -> None:
     client = WorkerClient("http://127.0.0.1:9", TOKEN)
     assert not {"pdf_pages", "pdf_render"} & {s.name for s in Toolbox(client, CONTEXT).specs}
+
+
+async def test_projects_give_sessions_their_environments(
+    worker_url: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # W3: two workbooks share the project's default environment, each with its own
+    # kernel and workspace; a third gets an environment of its own.
+    state, token = tmp_path / "harness-state", tmp_path / "token"
+    token.write_text(TOKEN)
+    policy = "sha256:" + "c" * 64
+    created = await asyncio.to_thread(
+        cli.main,
+        ["project", "create", "--state-dir", str(state), "--project", "p1",
+         "--profile", "minimal", "--policy", policy],
+    )  # fmt: skip
+    assert created == 0
+
+    async def run(session: str, turns: list[dict[str, Any]], *extra: str) -> list[str]:
+        script, transcript = tmp_path / f"{session}.json", tmp_path / f"{session}-t.json"
+        script.write_text(json.dumps([*turns, {"text": "done"}]))
+        status = await asyncio.to_thread(
+            cli.main,
+            ["run", "--worker", worker_url, "--token-file", str(token), "--project", "p1",
+             "--session", session, "--state-dir", str(state), "--allow-unisolated",
+             "--script", str(script), "--transcript", str(transcript), *extra, "task"],
+        )  # fmt: skip
+        assert status == 0
+        recorded = json.loads(transcript.read_text())
+        assert recorded["context"]["policy_revision"] == policy
+        return [m["content"] for m in recorded["messages"] if m["role"] == "tool"]
+
+    def shell(script: str) -> dict[str, Any]:
+        return {"tool_calls": [{"name": "shell", "arguments": {"script": script}}]}
+
+    def python(code: str) -> dict[str, Any]:
+        return {"tool_calls": [{"name": "python", "arguments": {"code": code}}]}
+
+    await run("a", [shell("echo from-a > marker.txt"), python("x = 'a'")])
+    b = await run("b", [shell("cat ../a/marker.txt"), python("x")])
+    assert "from-a" in b[0]
+    assert "NameError" in b[1]
+    c = await run("c", [shell("ls ../a/marker.txt || echo absent")], "--dedicated")
+    assert "absent" in c[0]
+    capsys.readouterr()
+    closed = await asyncio.to_thread(
+        cli.main,
+        ["session", "close", "--state-dir", str(state), "--project", "p1", "--session", "a",
+         "--worker", worker_url, "--token-file", str(token)],
+    )  # fmt: skip
+    assert closed == 0
+    assert "kernels stopped: python" in capsys.readouterr().out
+    shown = await asyncio.to_thread(
+        cli.main, ["project", "show", "--state-dir", str(state), "--project", "p1"]
+    )
+    assert shown == 0
+    record = json.loads(capsys.readouterr().out)
+    environments = {name: s["environment_id"] for name, s in record["sessions"].items()}
+    assert environments == {"a": "p1-default", "b": "p1-default", "c": "p1-c"}
+    assert record["sessions"]["a"]["closed_at"] is not None
