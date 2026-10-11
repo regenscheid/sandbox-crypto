@@ -125,6 +125,20 @@ def test_replacing_a_body_deletes_the_old_blob_once_unused(store: Store, root: P
     assert store.total_size == store.stats().bytes == len(b"two") + len(b"three")
 
 
+def test_forget_drops_one_entry_and_its_unshared_blob(store: Store, root: Path) -> None:
+    put(store, "hackage:bad.tar.gz", b"a bad copy")
+    put(store, "a", b"shared")
+    put(store, "b", b"shared")
+    assert store.forget("hackage:bad.tar.gz") == Removal(entries=1, blobs=1, bytes=10)
+    assert store.get("hackage:bad.tar.gz") is None
+    # A blob another entry still uses stays.
+    assert store.forget("a") == Removal(entries=1)
+    assert lookup(store, "b").size == 6
+    assert blob_names(root) == {sha(b"shared")}
+    assert store.forget("missing") == Removal()
+    assert store.stats() == StoreStats(entries=1, bytes=6)
+
+
 def test_negative_entries_keep_their_status(store: Store) -> None:
     put(store, "k", b"not found", kind=Kind.METADATA, status=404)
     entry = store.get("k")

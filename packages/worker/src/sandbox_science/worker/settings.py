@@ -14,6 +14,7 @@ python = "/sandbox/mamba/envs/tools/bin/python"
 project_root = "/sandbox/project"
 executor_dir = "/sandbox/.sandbox-science"
 isolation_tier = 3               # required: the tier the driver gives (3 for the VM driver)
+package_cache = "http://host.openshell.internal:8090"   # the cache as sandboxes reach it
 env = {XDG_CONFIG_HOME = "/home/andy/.local/state/openshell-lab/config"}
 sandboxes = {"env-1" = "research-1"}   # logical environment -> sandbox name
 
@@ -37,9 +38,11 @@ import tomllib
 from pathlib import Path
 from typing import Annotated, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from sandbox_science.contracts import Identifier
+
+from .package_clients import check_cache_url
 
 
 class SettingsError(Exception):
@@ -85,6 +88,9 @@ class OpenShellBackendSettings(_Model):
     """Preload a shim that lets libzmq (Jupyter) start under OpenShell's seccomp filter."""
     cc: str = "cc"
     """The C compiler that builds the shim on the worker host."""
+    package_cache: Annotated[str, AfterValidator(check_cache_url)] | None = None
+    """The package cache's URL as sandboxes reach it; the package clients are pointed at it.
+    With ``environments``, it must name the host and port the targets file gives the cache."""
     env: dict[str, str] = Field(default_factory=dict[str, str])
     """Extra environment for the CLI, such as XDG overrides naming the gateway."""
     sandboxes: dict[Identifier, str] = Field(default_factory=dict[str, str])
