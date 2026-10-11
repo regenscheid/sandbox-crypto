@@ -1,0 +1,12 @@
+# Keeps the MCP proxy in sandbox %i reachable on the pool host (docs/MCP-CONNECTORS.md).
+# `openshell forward service` ends when its sandbox stops, and fails while the sandbox is
+# down, so systemd starts it again every two seconds until the sandbox is back.
+# Replace the path to openshell; the local address is the one the orchestrator's targets name.
+[Unit]
+Description=Forward to the MCP proxy in sandbox %i
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/path/to/openshell forward service --target-port 8080 --local 127.0.0.1:8080 %i
+Restart=always
+RestartSec=2s
