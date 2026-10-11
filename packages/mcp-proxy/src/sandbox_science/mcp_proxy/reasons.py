@@ -46,6 +46,8 @@ CREDENTIAL_IN_BODY: Final = "credential_in_body"
 PROXY_BUSY: Final = "proxy_busy"
 
 # The server's side.
+FENCE_DENIED: Final = "fence_denied"
+"""The proxy sandbox's OpenShell fence refused the call: its compiled policy is narrower."""
 RESULT_TOO_LARGE: Final = "result_too_large"
 UPSTREAM_ERROR: Final = "upstream_error"
 UPSTREAM_UNAUTHORIZED: Final = "upstream_unauthorized"
@@ -82,6 +84,7 @@ MESSAGES: Final[Mapping[str, str]] = {
     CREDENTIAL_UNAVAILABLE: "the proxy has no credential placeholder for this server",
     CREDENTIAL_IN_BODY: "the request contains a credential placeholder",
     PROXY_BUSY: "the proxy has too many sessions; retry later",
+    FENCE_DENIED: "the MCP proxy sandbox's fence refused the call; its policy is narrower",
     RESULT_TOO_LARGE: "the server's answer is larger than the project allows",
     UPSTREAM_ERROR: "the server's answer was malformed or an error",
     UPSTREAM_UNAUTHORIZED: "the server refused the proxy's credentials",

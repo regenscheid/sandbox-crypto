@@ -6,6 +6,11 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
+- **The MCP proxy in its own sandbox** ([lab 13](docs/agent-reports/babbage-openshell-lab-13-2026-10-11.md)).
+  - The proxy ran in an OpenShell VM sandbox for the first time. It was reached from the host and from an orchestrator sandbox, and called DeepWiki's public MCP server and a fake one on the host.
+  - OpenShell put the provider's token into the proxy's requests at the bound server only. The proxy's version header and its replies to the server's requests passed the fence.
+  - Inside a sandbox every name resolves to a stand-in address, so the proxy could not check where a server's name leads. The compiled fence now checks the real addresses.
+  - The proxy's sandbox policy now covers its image's prefix, and the orchestrator's admits the proxy. The proxy reports the fence's refusals as `fence_denied`.
 - **Idle suspension** (W3; [lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md)). The worker can stop the sandbox of an environment nobody is using, and start it again on the next use, which then takes about 7 s. Files, installed tools and the policy survive; kernels are reported lost. A computation in a kernel keeps its environment up.
 - **Admission on demand** (D69, amended; [lab 10](docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md)).
   - A sandbox now reaches hosts its policy allows but does not name. The first connection fails. The worker then reads OpenShell's draft for it, checks the host against the policy, and names it in a new compilation. On a real gateway the host was reachable 9 to 20 s later.
