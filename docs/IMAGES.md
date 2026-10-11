@@ -141,7 +141,7 @@ Built on babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `do
 | --- | --- | --- | --- |
 | `sandbox-science/minimal:02f85b3` | `sha256:88fab78766c9828abed9ea0198edae6513955fd22287f95819685ad5291eb9c6` | 135 MB | 374 MB |
 | `sandbox-science/crypto-base:02f85b3` | `sha256:cb12bbbe588f20e555d39385ffd56f7b45312fdd69b3bd8030278db555d0df4b` | 2.34 GB | 6.2 GB |
-| `sandbox-science/orchestrator:b41f547` | `sha256:875e4b17221f23b0c606c6695e8117fba3848567d5e8ca8882cb1c0d653005c7` | 127 MB | 364 MB |
+| `sandbox-science/orchestrator:174e72e` | `sha256:f82026af2e22e20b6245475ee72e04cda134bccc7bebdf96e1d083987c8342e9` | 127 MB | 364 MB |
 
 Build times from empty caches depend mostly on snapshot.ubuntu.com, which served several MB/s for the first builds and 0.25 MB/s half an hour later:
 
@@ -213,8 +213,8 @@ Results on babbage, 2026-10-11, for the images above:
 - **minimal** passed all 17 checks (8 as a container, 9 under the Landlock ruleset) in 12 s.
 - **crypto-base** passed all 35 (17 and 18) in 45 s. The first Sage cell, with the kernel's start, took 2.3 s; the primal uSVP estimate for Kyber512 came out at 2^143.8, as lattice-estimator's documentation gives.
 - **pytest** ran the same as 52 tests in 56 s.
-- **orchestrator** (`b41f547`) passed all 17 checks (8 as a container, 9 under the Landlock ruleset) in 5 s, with and without a network (`NETWORK=0`). `run` against the stub worker took 0.6 s, most of it Python's start and the imports. pytest ran them as 17 tests, beside the 46 recipe tests, in 6 s.
-- **The research images with the profile-aware scripts.** `test.sh` and the checks of `b41f547` passed all 17 checks on `minimal:02f85b3` and all 35 on `crypto-base:02f85b3`.
+- **orchestrator** (`174e72e`) passed all 17 checks (8 as a container, 9 under the Landlock ruleset) in 5 s, with and without a network (`NETWORK=0`). `run` against the stub worker took 0.6 s, most of it Python's start and the imports. pytest ran them as 17 tests, beside the 46 recipe tests, in 6 s.
+- **The research images with the profile-aware scripts.** `test.sh` and the checks of `174e72e` passed all 17 checks on `minimal:02f85b3` and all 35 on `crypto-base:02f85b3`.
 - **Under the ruleset without `/var/lib/texmf`**, pdflatex could not find its format file, so that path stays in the section. Nothing beyond OpenShell's baseline, the compiler's devices and the two declared paths was needed: Sage's pseudo-terminal interfaces, `multiprocessing`, runtime installs and the PDF tools all worked.
 - **Under the orchestrator's ruleset without `/opt/sandbox-science`** (an empty section in `FILESYSTEM`), Landlock refused to start the prefix's interpreter. With it, the harness needed nothing else beyond OpenShell's baseline: no devices, and no `/dev/shm`.
 
