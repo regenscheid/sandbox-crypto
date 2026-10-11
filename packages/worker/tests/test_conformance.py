@@ -32,6 +32,7 @@ import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import Capabilities, Execution, Location, new_id
+from sandbox_science.contracts.worker import MAX_EVENT_BYTES
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
@@ -100,8 +101,9 @@ class Target:
             timeout=aiohttp.ClientTimeout(total=None),
         ) as response:
             assert response.status == 200
-            async for line in response.content:
-                if line.strip():
+            # A result event can be longer than aiohttp's own line limit.
+            while line := await response.content.readline(max_line_length=MAX_EVENT_BYTES):
+                if line.strip():  # an empty line is a heartbeat
                     yield json.loads(line)
 
     async def finish(self, execution_id: str, timeout: float = 180) -> dict[str, Any]:
@@ -302,15 +304,17 @@ async def test_cancelling_a_shell_call_stops_its_processes(worker: Target) -> No
 
 
 async def test_output_bounds(worker: Target) -> None:
+    # At the default limit, so the result event is longer than an HTTP client's usual
+    # line limit (review H1).
     script = "printf 'HEAD\\n'; yes a | head -c 5242870; printf 'TAIL\\n'"
-    execution = await worker.run(kind="shell", script=script, output_limit_bytes=65536)
+    execution = await worker.run(kind="shell", script=script)
     stdout = execution["result"]["stdout"]
     assert stdout["truncated"] is True
     assert stdout["total_bytes"] == 5242880
     assert stdout["text"].startswith("HEAD\na\n")
     assert stdout["text"].endswith("a\nTAIL\n")
     assert "bytes omitted" in stdout["text"]
-    assert len(stdout["text"]) < 70000
+    assert 1000000 < len(stdout["text"]) < 1100000
 
 
 async def test_timeouts(worker: Target) -> None:
@@ -361,6 +365,10 @@ async def test_interrupting_a_cell_keeps_its_state(worker: Target) -> None:
     cancelled = await worker.finish(sleeping["execution_id"])
     assert cancelled["state"] == "cancelled"
     assert asyncio.get_running_loop().time() - started < 5
+    # Fixture 4: the cell ends with the kernel's KeyboardInterrupt.
+    error = cancelled["result"]["error"]
+    assert (error["kind"], error["name"]) == ("cancelled", "KeyboardInterrupt")
+    assert any("KeyboardInterrupt" in line for line in error["traceback"])
     after = await worker.run(kind="cell", code="x")
     assert after["result"]["outputs"][0]["data"]["text/plain"] == "41"
     assert after["result"]["state_lost"] is False

@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: MIT
-"""A connection to one executor process: requests, replies and events."""
+"""A connection to one executor process: requests, replies and events.
+
+Everything an executor sends is untrusted: research code shares its sandbox
+and can take it over. Each line is decoded on its own and within bounds; a
+line that does not decode is dropped, and the connection carries on.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +13,8 @@ import contextlib
 import itertools
 import json
 import logging
+import math
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast
 
@@ -17,18 +24,78 @@ from .errors import WorkerError
 
 _log = logging.getLogger(__name__)
 
-MAX_LINE = 64 * 1024 * 1024
+MAX_LINE = 16 * 1024 * 1024
+"""The longest line accepted from an executor. The executor keeps its own lines shorter."""
+MAX_CONTAINERS = 100_000
+"""Objects and arrays one line may hold, so a line cannot expand into millions of objects."""
 REPLY_TIMEOUT = 120.0
+CLOSE_GRACE = 15.0
+"""Seconds an executor gets to stop its commands and kernels once its stdin closes."""
+MAX_ERROR_MESSAGE = 2000
+
+_STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
+_SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 Message = dict[str, Any]
 EventHandler = Callable[[Message], Awaitable[None]]
+
+
+class ProtocolError(ValueError):
+    """A line from the executor that is not a usable message."""
+
+
+def decode_line(line: bytes) -> Message:
+    """Decode one line from an executor into a message, or raise ProtocolError.
+
+    Invalid UTF-8 and lone surrogates become U+FFFD, and non-finite numbers
+    become None, so that every value can be stored and sent on as JSON.
+    """
+    if line.count(b"{") + line.count(b"[") > MAX_CONTAINERS:
+        # Brackets inside strings counted too: count again without the strings.
+        outside = _STRING.sub(b"", line)
+        if outside.count(b"{") + outside.count(b"[") > MAX_CONTAINERS:
+            raise ProtocolError(f"more than {MAX_CONTAINERS} objects and arrays")
+    text = line.decode("utf-8", "replace")
+    try:
+        decoded: object = json.loads(text, parse_constant=_no_constant, parse_float=_finite)
+        if _SURROGATE_ESCAPE.search(text):
+            decoded = _without_surrogates(decoded)
+    except (ValueError, RecursionError) as exc:  # JSONDecodeError, long integers, deep nesting
+        raise ProtocolError(f"not JSON: {str(exc)[:200]}") from exc
+    if not isinstance(decoded, dict):
+        raise ProtocolError("not a JSON object")
+    return cast(Message, decoded)
+
+
+def _no_constant(_: str) -> None:
+    """NaN and Infinity, which JSON does not have, become null."""
+
+
+def _finite(text: str) -> float | None:
+    value = float(text)
+    return value if math.isfinite(value) else None
+
+
+def _without_surrogates(value: object) -> object:
+    if isinstance(value, str):
+        return _SURROGATE.sub("�", value)
+    if isinstance(value, list):
+        return [_without_surrogates(item) for item in cast(list[object], value)]
+    if isinstance(value, dict):
+        return {
+            _without_surrogates(key): _without_surrogates(item)
+            for key, item in cast(dict[object, object], value).items()
+        }
+    return value
 
 
 class ExecutorChannel:
     """Runs ``argv`` (an executor speaking JSON lines on stdio) and talks to it.
 
     Every executor process gets a new ``incarnation``: kernels do not survive
-    from one incarnation to the next.
+    from one incarnation to the next. Whenever reading from the executor ends,
+    for whatever reason, the process is stopped too.
     """
 
     def __init__(
@@ -49,6 +116,8 @@ class ExecutorChannel:
         self._ids = itertools.count(1)
         self._write_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
+        self._stopping: asyncio.Future[None] | None = None
+        self._dropped = 0
         self.closed = False
         self.hello: Message = {}
 
@@ -70,7 +139,11 @@ class ExecutorChannel:
             asyncio.ensure_future(self._read_stdout()),
             asyncio.ensure_future(self._read_stderr()),
         ]
-        self.hello = await self.request("hello", reply_timeout=REPLY_TIMEOUT)
+        try:
+            self.hello = await self.request("hello", reply_timeout=REPLY_TIMEOUT)
+        except BaseException:
+            await self.close()
+            raise
         return self.hello
 
     async def request(
@@ -95,54 +168,64 @@ class ExecutorChannel:
             raise WorkerError(ErrorKind.UNAVAILABLE, f"the executor did not answer {op!r}") from exc
         finally:
             self._pending.pop(request_id, None)
-        if not reply.get("ok"):
-            error = cast(dict[str, Any], reply.get("error") or {})
+        if reply.get("ok") is not True:
+            raw = reply.get("error")
+            error = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
             try:
                 kind = ErrorKind(str(error.get("kind")))
             except ValueError:
                 kind = ErrorKind.INTERNAL
-            raise WorkerError(kind, str(error.get("message", "the executor refused the request")))
+            message = str(error.get("message", "the executor refused the request"))
+            raise WorkerError(kind, message[:MAX_ERROR_MESSAGE])
         return reply
 
     async def close(self) -> None:
+        """Stop the executor: close its stdin, and kill it if it does not exit in time."""
+        self.closed = True
+        await self._stop()
+        if self._tasks:
+            # Orphaned kernels could hold stderr open: do not wait for them.
+            _, pending = await asyncio.wait(self._tasks, timeout=5)
+            for task in pending:
+                task.cancel()
+
+    async def _stop(self) -> None:
+        if self._stopping is None:
+            self._stopping = asyncio.ensure_future(self._terminate())
+        await asyncio.shield(self._stopping)
+
+    async def _terminate(self) -> None:
         process = self._process
-        if process is not None and process.returncode is None:
-            if process.stdin is not None:
-                with contextlib.suppress(Exception):
-                    process.stdin.close()
-            try:
-                await asyncio.wait_for(process.wait(), 15)
-            except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    process.kill()
-                await process.wait()
-        for task in self._tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        if process is None or process.returncode is not None:
+            return
+        if process.stdin is not None:
+            with contextlib.suppress(Exception):
+                process.stdin.close()
+        try:
+            await asyncio.wait_for(process.wait(), CLOSE_GRACE)
+        except TimeoutError:
+            _log.warning("the executor did not exit within %g s; killing it", CLOSE_GRACE)
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
 
     async def _read_stdout(self) -> None:
         process = self._process
         if process is None or process.stdout is None:
             return
         try:
-            while line := await process.stdout.readline():
+            while True:
                 try:
-                    decoded: object = json.loads(line)
-                except json.JSONDecodeError:
-                    _log.warning("executor sent a line that is not JSON: %.200r", line)
+                    line = await process.stdout.readline()
+                except ValueError:
+                    # Over MAX_LINE: asyncio has discarded what it buffered of the line.
+                    self._drop(f"a line over {MAX_LINE} bytes", b"")
                     continue
-                if not isinstance(decoded, dict):
-                    continue
-                message = cast(Message, decoded)
-                if message.get("type") == "reply":
-                    future = self._pending.get(int(message.get("id") or 0))
-                    if future is not None and not future.done():
-                        future.set_result(message)
-                elif message.get("type") == "event":
-                    try:
-                        await self._on_event(message)
-                    except Exception:
-                        _log.exception("handling an executor event failed")
+                if not line:
+                    break
+                await self._receive(line)
+        except Exception:
+            _log.exception("reading from the executor failed")
         finally:
             self.closed = True
             for future in self._pending.values():
@@ -150,11 +233,54 @@ class ExecutorChannel:
                     future.set_exception(
                         WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
                     )
-            await self._on_closed(self)
+            try:
+                await self._on_closed(self)
+            finally:
+                await self._stop()
+
+    async def _receive(self, line: bytes) -> None:
+        try:
+            message = decode_line(line)
+        except ProtocolError as exc:
+            self._drop(str(exc), line)
+            return
+        kind = message.get("type")
+        if kind == "reply":
+            request_id = message.get("id")
+            if not isinstance(request_id, int) or isinstance(request_id, bool):
+                self._drop("a reply without an integer id", line)
+                return
+            future = self._pending.get(request_id)
+            if future is not None and not future.done():
+                future.set_result(message)
+        elif kind == "event":
+            try:
+                await self._on_event(message)
+            except Exception:
+                _log.exception("handling an executor event failed")
+
+    def _drop(self, reason: str, line: bytes) -> None:
+        self._dropped += 1
+        if self._dropped <= 10 or self._dropped % 1000 == 0:
+            _log.warning(
+                "dropped %s from the executor (%d so far): %r",
+                reason,
+                self._dropped,
+                line[:200],
+            )
 
     async def _read_stderr(self) -> None:
         process = self._process
         if process is None or process.stderr is None:
             return
-        while line := await process.stderr.readline():
-            _log.debug("executor: %s", line.decode("utf-8", "replace").rstrip())
+        while True:
+            try:
+                line = await process.stderr.readline()
+            except ValueError:
+                continue  # a line over the limit, already discarded
+            except Exception:
+                _log.exception("reading the executor's stderr failed")
+                return
+            if not line:
+                return
+            _log.debug("executor: %s", line[:2000].decode("utf-8", "replace").rstrip())
