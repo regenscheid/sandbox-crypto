@@ -174,17 +174,28 @@ class CondaPackages(StrictModel):
     action: Action = Action.ALLOW
 
 
-class PypiPackages(StrictModel):
-    """PyPI installs through the mirror."""
+class RegistryPackages(StrictModel):
+    """Installs from one package registry through the package cache."""
 
     action: Action = Action.ALLOW
 
 
+PypiPackages = RegistryPackages
+"""PyPI installs (kept as a name for existing users of the model)."""
+
+
 class Packages(StrictModel):
-    """Package installation. An ecosystem that is not configured takes ``defaults.action``."""
+    """Package installation through the package cache (docs/PACKAGE-CACHE.md).
+
+    An ecosystem that is not configured takes ``defaults.action``. The action
+    applies to package files; index lookups are allowed unless it is ``deny``.
+    """
 
     conda: CondaPackages | None = None
-    pypi: PypiPackages | None = None
+    pypi: RegistryPackages | None = None
+    cargo: RegistryPackages | None = None
+    go: RegistryPackages | None = None
+    npm: RegistryPackages | None = None
     system_packages: Literal["deny"] = "deny"
 
 

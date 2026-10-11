@@ -8,8 +8,9 @@ Two sandboxes need OpenShell policy (docs/POLICY.md, "Mapping to enforcement"):
   policy admits the destinations the project could ever reach, and attaches the
   platform's policy middleware to every host: OpenShell calls it for each
   admitted request, before injecting credentials, and the middleware decides
-  with this library. Platform services (the package mirror and, with worker
-  access, the MCP proxy) are raw TCP endpoints outside the middleware.
+  with this library. The package cache is an inspected endpoint too, and the
+  middleware applies the policy's packages section to it. The MCP proxy (with
+  worker access) is a raw TCP endpoint outside the middleware.
 * The MCP proxy sandbox reaches the declared MCP servers. Its policy re-enforces
   the tool rules as OpenShell ``protocol: mcp`` endpoints.
 
@@ -123,7 +124,9 @@ class Endpoint(_OpenShellModel):
     path: str | None = None
     protocol: Literal["tcp", "rest", "mcp"]
     enforcement: Literal["enforce"] | None = None
-    access: Literal["full"] | None = None
+    access: Literal["full", "read-only"] | None = None
+    allow_encoded_slash: bool | None = None
+    """Accept ``%2F`` in paths, as npm's scoped package names need."""
     allowed_ips: tuple[str, ...] | None = None
     rules: tuple[Rule, ...] | None = None
     deny_rules: tuple[DenyEntry, ...] | None = None
@@ -153,7 +156,7 @@ class NetworkMiddleware(_OpenShellModel):
     order: int
     on_error: Literal["fail_closed"]
     endpoints: MiddlewareSelector
-    config: dict[str, dict[str, str]]
+    config: dict[str, dict[str, str | int]]
 
 
 class OpenShellPolicy(_OpenShellModel):
@@ -236,13 +239,19 @@ class Compiled:
 # Targets: where the platform services run, and what may use them.
 
 
+HOST_GATEWAY_ALIAS: Final = "host.openshell.internal"
+"""OpenShell's name for the gateway host, where a single-host deployment runs its services."""
+
+
 def _service_host(value: str) -> str:
     host = normalize_host(value)
     if parse_ip(host) is not None:
         raise ValueError(
             "address platform services by DNS name; OpenShell tcp endpoints reject IP literals"
         )
-    reason = floor_reason(host)
+    # The floor keeps project rules away from the gateway host; the operator may
+    # still run platform services there (the VM driver on babbage).
+    reason = None if host == HOST_GATEWAY_ALIAS else floor_reason(host)
     if reason is not None:
         raise ValueError(f"{host} is on the hard floor: {reason}")
     return host
@@ -277,7 +286,7 @@ class SandboxTarget(StrictModel):
     """
 
     middleware: Name
-    package_mirror: ServiceEndpoint
+    package_cache: ServiceEndpoint
     mcp_proxy: ServiceEndpoint
     binaries: tuple[BinaryPattern, ...] = Field(default=("/**",), min_length=1)
 
@@ -540,7 +549,8 @@ def compile_sandbox(
                 )
             )
 
-    services = [("package-mirror", "package mirror", target.package_mirror)]
+    cache = target.package_cache
+    services = [("package-cache", "package cache", cache)]
     if project.mcp.proxy.worker_access:
         services.append(("mcp-proxy", "MCP proxy", target.mcp_proxy))
     else:
@@ -555,8 +565,8 @@ def compile_sandbox(
         Finding(
             Severity.WARNING,
             "services",
-            "platform services must have private addresses: they are outside the middleware, "
-            "and the host-less endpoint would admit a public address on its ports",
+            "platform services must have private addresses, so that the host-less endpoint "
+            "never admits them; the MCP proxy is outside the middleware",
         )
     )
     for _, label, service in services:
@@ -572,7 +582,24 @@ def compile_sandbox(
         network_policies["sandbox-science-egress"] = NetworkPolicy(
             name="Sandbox Science egress", endpoints=tuple(endpoints), binaries=binaries
         )
-    for key, label, service in services:
+    # The package cache is inspected: the middleware sees every package request
+    # and applies the packages section. OpenShell itself admits only reads.
+    network_policies["sandbox-science-package-cache"] = NetworkPolicy(
+        name="Sandbox Science package cache",
+        endpoints=(
+            Endpoint(
+                host=cache.host,
+                ports=(cache.port,),
+                protocol="rest",
+                enforcement="enforce",
+                access="read-only",
+                allow_encoded_slash=True,
+            ),
+        ),
+        binaries=binaries,
+    )
+    raw_services = [(key, label, service) for key, label, service in services if service != cache]
+    for key, label, service in raw_services:
         network_policies[f"sandbox-science-{key}"] = NetworkPolicy(
             name=f"Sandbox Science {label}",
             endpoints=(Endpoint(host=service.host, ports=(service.port,), protocol="tcp"),),
@@ -584,9 +611,12 @@ def compile_sandbox(
         on_error="fail_closed",
         endpoints=MiddlewareSelector(
             include=("**",),
-            exclude=tuple(sorted(service.host for _, _, service in services)) or None,
+            exclude=tuple(sorted(service.host for _, _, service in raw_services)) or None,
         ),
-        config={"policy": {"name": project.metadata.name, "digest": policy.digest}},
+        config={
+            "policy": {"name": project.metadata.name, "digest": policy.digest},
+            "package_cache": {"host": cache.host, "port": cache.port},
+        },
     )
     findings.append(
         Finding(

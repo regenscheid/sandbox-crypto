@@ -29,7 +29,11 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Read-only-rootfs environment layout, lockfile capture and rebuild (D48)
 - [x] Policy middleware service (`packages/policy-middleware`, D70): an OpenShell supervisor middleware (gRPC) that decides each request under the revision its sandbox is bound to, verifies extension tokens, classifies requests with the library (Content-Type, body presence, upgrades), checks git fetch bodies, denies WebSockets at preflight, returns reason codes (`approval_required` for escalations) and records escalations, alerts and monitor findings. Checked only against the vendored contract so far
 - [ ] Orchestrator: write the middleware's policy store and sandbox bindings when it creates sandboxes and revises policies (the `bind` command stands in until then)
-- [ ] Package mirror (D44), the only route to package indexes
+- [x] Package policy (D71): `packages` covers PyPI, conda, Cargo, Go and npm; the library classifies requests to the package cache; the compiler puts the cache behind the policy middleware; registries are on the floor for generic HTTP
+- [ ] Package cache service (`packages/package-cache`, D71): pull-through, size-capped, verifying, for the five ecosystems ([package cache](../docs/PACKAGE-CACHE.md))
+- [ ] Package cache: opam and Hackage adapters (EasyCrypt, Jasmin, ProVerif, Cryptol, Tamarin)
+- [ ] Package cache: a cooling-off period for new releases, keeping lockfile files from eviction, TLS between OpenShell and the cache
+- [ ] Environment layer: write the package clients' configuration (pip, conda, Cargo, Go, npm) into each sandbox
 - [x] On babbage: verify the middleware path. Done 2026-10-10 against a real gateway: registration, tokens, reads, escalations, WebSockets, git, bodies over the limit, failing closed, latency ([lab report](docs/agent-reports/babbage-openshell-lab-2026-10-10.md)). Provider-admitted traffic is still to check
 - [ ] MCP proxy: forward only tool names the server advertises, exactly as advertised; bound argument sizes
 - [ ] Event store with an append-only hash chain

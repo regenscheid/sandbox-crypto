@@ -20,15 +20,18 @@ from .hosts import HostKind, HostPattern, is_public, normalize_host
 from .loader import LoadedPolicy, load_ceiling, load_policy, parse_ceiling, parse_policy
 from .model import API_VERSION, ProjectPolicy, Resources
 from .operations import (
+    Ecosystem,
     GitOperation,
     HttpOperation,
     HttpRequest,
     McpOperation,
     Operation,
+    PackageKind,
     PackageOperation,
     classify_http_request,
     classify_mcp_message,
 )
+from .package_requests import classify_package_request
 
 __all__ = [
     "API_VERSION",
@@ -38,6 +41,7 @@ __all__ = [
     "CeilingNetwork",
     "ClassificationError",
     "Decision",
+    "Ecosystem",
     "EgressUsage",
     "EscalationTerms",
     "GitOperation",
@@ -50,6 +54,7 @@ __all__ = [
     "LoadedPolicy",
     "McpOperation",
     "Operation",
+    "PackageKind",
     "PackageOperation",
     "PolicyError",
     "PolicyLoadError",
@@ -58,6 +63,7 @@ __all__ = [
     "Resources",
     "classify_http_request",
     "classify_mcp_message",
+    "classify_package_request",
     "effective_resources",
     "evaluate",
     "evaluate_mcp_message",
