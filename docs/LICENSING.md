@@ -64,7 +64,7 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | LiteLLM | MIT core (enterprise directory under separate terms) | **Model gateway (D61)**: run the proxy; use only MIT-licensed features |
 | sparfenyuk/mcp-proxy, docker/mcp-gateway | MIT | MCP proxy references/possible bases (D67) |
 | IBM mcp-context-forge | Apache-2.0 | MCP proxy reference/possible base (D67) |
-| markdown-it-py, mdit-py-plugins, markdown-it | MIT | Living-document parsing (D65); markdown-it renders the workspace GUI's text (D80). The GUI's math rules are a port of mdit-py-plugins' `dollarmath` (MIT, Copyright (c) 2020 ExecutableBookProject, v0.6.1 at `da70e05`), credited in the ported file |
+| markdown-it-py, mdit-py-plugins, mdurl, markdown-it | MIT | Living-document parsing (D65): the orchestrator parses documents with markdown-it-py 4.2.0 and mdit-py-plugins 0.6.1, pinned exactly, and mdurl, which markdown-it-py requires; markdown-it renders the workspace GUI's text (D80). The GUI's math rules are a port of mdit-py-plugins' `dollarmath` (MIT, Copyright (c) 2020 ExecutableBookProject, v0.6.1 at `da70e05`), credited in the ported file. The rules for LaTeX's own delimiters, on both sides, are adapted from the user's `cscience-crypto`, contributed under the MIT License |
 | Svelte | MIT | Workspace GUI framework (D80); its runtime is compiled into the app |
 | Vite, @sveltejs/vite-plugin-svelte, rolldown | MIT | Build only: bundle the workspace app |
 | lightningcss | MPL-2.0 | Build only: Vite's CSS processing, unmodified |
@@ -73,7 +73,7 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | The workspace app's other npm packages | MIT, except entities (BSD-2-Clause), argparse (PSF-2.0; markdown-it's command line only), aria-query, axobject-query, detect-libc and expect-type (Apache-2.0), picocolors (ISC) and source-map-js (BSD-3-Clause) | Dependencies of the above, pinned by `web/workspace/package-lock.json` and checked one by one in CI |
 | pydantic, pydantic-core, annotated-types, typing-inspection | MIT | Policy and API schemas (`packages/policy`) |
 | typing-extensions | PSF-2.0 | Required by pydantic; PSF-2.0 is permissive and GPL-compatible |
-| PyYAML | MIT | Policy file parsing |
+| PyYAML | MIT | Policy file parsing; living documents' front matter |
 | OpenShell protobuf contracts (`supervisor_middleware.proto`, `extension.proto`, v0.1.3) | Apache-2.0 | Vendored unmodified in `packages/policy-middleware/proto` with the upstream license; the generated Python code carries the same license |
 | grpcio | Apache-2.0 | Policy middleware gRPC server |
 | protobuf | BSD-3-Clause | Policy middleware messages |

@@ -5,8 +5,8 @@ When a revision is saved, its new and changed blocks are checked for:
 
 - ``unbalanced_dollar``: outside formulas, code and automatic links, a ``$`` that does
   not escape anything and opens no formula, when a letter, a backslash or another symbol
-  follows it (``$x`` with no closing dollar; a ``$`` before a digit or a space is taken
-  for an amount and left alone), or a ``$$`` that opens or closes nothing;
+  follows it (``$x`` with no closing dollar; a ``$`` before a digit or a space is left
+  alone, as amounts are written), or a ``$$`` that opens or closes nothing;
 - ``definition_in_math``: ``\\def``, ``\\gdef``, ``\\newcommand`` and the like inside a
   formula. The GUI applies such a definition to that formula alone, while TeX can make it
   apply to the rest of an exported document;
