@@ -30,7 +30,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Identifier
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
-from sandbox_science.policy_middleware.errors import StoreError
+from sandbox_science.policy.store import StoreError
 
 from .admission import DraftWatcher
 from .app import create_app

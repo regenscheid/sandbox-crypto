@@ -51,7 +51,7 @@ from .auth import (
     default_audience,
     load_public_key,
 )
-from .errors import MiddlewareError, SettingsError
+from .errors import MiddlewareError, SettingsError, StoreError
 from .evaluator import PolicyMiddleware
 from .events import OPERATOR, STORE_TIMEOUT, StoreSink
 from .service import MiddlewareService, build_server
@@ -124,7 +124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return _answer(
                     path, args.command, args.request, getattr(args, "scope", "request"), hours
                 )
-    except (MiddlewareError, PolicyLoadError, EventStoreError, OSError) as exc:
+    except (MiddlewareError, StoreError, PolicyLoadError, EventStoreError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
