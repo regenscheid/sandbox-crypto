@@ -15,6 +15,8 @@ from sandbox_science.policy_middleware.archives import CacheArchiveLookup
 
 DIGEST = "md5:ca770e5806032a96131b670f6e07f146"
 PATH = "/-/opam/archives/md5/ca770e5806032a96131b670f6e07f146"
+PATIENT = 5.0
+"""A timeout for tests about the answers, so that a busy machine does not fail them."""
 
 
 @dataclass
@@ -67,11 +69,17 @@ def cache() -> Iterator[tuple[str, Answer]]:
 def test_the_packages_come_from_the_caches_route(cache: tuple[str, Answer]) -> None:
     url, answer = cache
     answer.body = answer_json(["ocamlfind.1.9.8", "findlib.1.9.8"])
-    assert CacheArchiveLookup(url).packages(DIGEST) == ("findlib.1.9.8", "ocamlfind.1.9.8")
-    assert CacheArchiveLookup(url + "/").packages(DIGEST) == ("findlib.1.9.8", "ocamlfind.1.9.8")
+    assert CacheArchiveLookup(url, timeout=PATIENT).packages(DIGEST) == (
+        "findlib.1.9.8",
+        "ocamlfind.1.9.8",
+    )
+    assert CacheArchiveLookup(url + "/", timeout=PATIENT).packages(DIGEST) == (
+        "findlib.1.9.8",
+        "ocamlfind.1.9.8",
+    )
     assert answer.paths == [PATH, PATH]
     answer.body = answer_json([])
-    assert CacheArchiveLookup(url).packages(DIGEST) == ()
+    assert CacheArchiveLookup(url, timeout=PATIENT).packages(DIGEST) == ()
 
 
 def test_proxies_from_the_environment_are_ignored(
@@ -83,7 +91,7 @@ def test_proxies_from_the_environment_are_ignored(
         monkeypatch.setenv(name, "http://127.0.0.1:9")
     monkeypatch.delenv("no_proxy", raising=False)
     monkeypatch.delenv("NO_PROXY", raising=False)
-    assert CacheArchiveLookup(url).packages(DIGEST) == ("ocamlfind.1.9.8",)
+    assert CacheArchiveLookup(url, timeout=PATIENT).packages(DIGEST) == ("ocamlfind.1.9.8",)
 
 
 @pytest.mark.parametrize(
@@ -108,7 +116,7 @@ def test_anything_but_a_well_formed_answer_names_nothing(
 ) -> None:
     url, answer = cache
     answer.status, answer.body, answer.headers = status, body, headers
-    assert CacheArchiveLookup(url).packages(DIGEST) is None
+    assert CacheArchiveLookup(url, timeout=PATIENT).packages(DIGEST) is None
 
 
 def test_a_slow_cache_names_nothing_and_does_not_hold_the_decision(
@@ -143,5 +151,5 @@ def test_a_cache_that_does_not_speak_http_names_nothing() -> None:
         thread = threading.Thread(target=answer, daemon=True)
         thread.start()
         url = f"http://127.0.0.1:{listener.getsockname()[1]}"
-        assert CacheArchiveLookup(url).packages(DIGEST) is None
+        assert CacheArchiveLookup(url, timeout=PATIENT).packages(DIGEST) is None
         thread.join(timeout=5)

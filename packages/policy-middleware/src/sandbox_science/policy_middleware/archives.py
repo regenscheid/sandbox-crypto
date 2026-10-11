@@ -23,9 +23,10 @@ from typing import IO, Final, Protocol, cast
 
 _log = logging.getLogger(__name__)
 
-LOOKUP_TIMEOUT: Final = 0.2
-"""Seconds a lookup may wait for each step (connecting, each read); OpenShell gives the
-whole evaluation 500 ms."""
+LOOKUP_TIMEOUT: Final = 0.05
+"""Seconds a lookup may wait for each step (connecting, each read). OpenShell gives the
+whole evaluation 500 ms, and appending the record may take up to ``events.STORE_TIMEOUT``;
+the cache answers from memory in a few milliseconds."""
 
 MAX_PACKAGES: Final = 100
 """Packages kept in a record; opam-repository's most shared archive belongs to 108."""
