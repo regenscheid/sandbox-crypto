@@ -172,13 +172,14 @@ images/build.sh mcp-proxy
 - **Options.** Further arguments go to `docker buildx build`, such as `--no-cache` or `--build-arg G6K_MARCH_AMD64=x86-64-v2`. `PLATFORM` sets the platform (default `linux/amd64`) and `BUILDER` a buildx builder.
 - **Rebuilds** install the same packages; they are not bit-for-bit identical.
 
-Built on babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `docker` driver) on 2026-10-11, each from the recipe revision its tag names; all three are in babbage's local image store:
+Built on babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `docker` driver) on 2026-10-11, each from the recipe revision its tag names; all four are in babbage's local image store:
 
 | Image | Digest | Compressed | Unpacked |
 | --- | --- | --- | --- |
 | `sandbox-science/minimal:02f85b3` | `sha256:88fab78766c9828abed9ea0198edae6513955fd22287f95819685ad5291eb9c6` | 135 MB | 374 MB |
 | `sandbox-science/crypto-base:02f85b3` | `sha256:cb12bbbe588f20e555d39385ffd56f7b45312fdd69b3bd8030278db555d0df4b` | 2.34 GB | 6.2 GB |
 | `sandbox-science/orchestrator:174e72e` | `sha256:f82026af2e22e20b6245475ee72e04cda134bccc7bebdf96e1d083987c8342e9` | 127 MB | 364 MB |
+| `sandbox-science/mcp-proxy:d27e41a` | `sha256:91d94e8e351584f25d4a90d9371450436a203966e373384a2fd5037d639cb84a` | 128 MB | 366 MB |
 
 Build times from empty caches depend mostly on snapshot.ubuntu.com, which served several MB/s for the first builds and 0.25 MB/s half an hour later:
 
@@ -189,13 +190,15 @@ Build times from empty caches depend mostly on snapshot.ubuntu.com, which served
 | crypto-base's 125 Ubuntu packages (264 MB, mostly TeX) | 2 min to 19 min |
 | crypto-base's 393 Conda packages (1.44 GB) | 23 s |
 | orchestrator's 39 Conda packages (about 63 MB to download) | 2 s |
+| mcp-proxy's 41 Conda packages | 2 s |
 | G6K | 30 s |
 | Writing crypto-base into the local image store | 2.5 min |
 | **minimal in all** | 2.4 min measured at 0.25 MB/s; about 30 s at the faster rate |
 | **crypto-base in all** | 25 min at 0.25 MB/s (22.6 min measured with the shared steps cached); about 6 min at the faster rate |
 | **orchestrator in all** | 71 s with `--no-cache`, 54 s of it for Ubuntu's indexes and `ca-certificates`; 8 s with the shared base stage cached, including the two wheels |
+| **mcp-proxy in all** | 11 s with the shared base stage cached, including the four wheels; its Ubuntu steps are the orchestrator's |
 
-In the orchestrator image the Conda prefix takes 239 MB, mostly Python itself; the harness and its contracts take 0.3 MB. In crypto-base the Conda prefix takes 5.2 GB, of which the compilers take 0.76 GB, GAP's data 0.39 GB and OpenJDK 0.3 GB (for Jmol, which the `sage` package brings); TeX takes 0.57 GB.
+In the orchestrator image the Conda prefix takes 239 MB, mostly Python itself; the harness and its contracts take 0.3 MB. In the mcp-proxy image it takes 241 MB; the proxy and the three packages it imports take 1.2 MB, PyYAML and LibYAML 1.1 MB. In crypto-base the Conda prefix takes 5.2 GB, of which the compilers take 0.76 GB, GAP's data 0.39 GB and OpenJDK 0.3 GB (for Jmol, which the `sage` package brings); TeX takes 0.57 GB.
 
 ## Lockfiles
 
@@ -266,6 +269,10 @@ Results on babbage, 2026-10-11, for the images above:
 - **The research images with the profile-aware scripts.** `test.sh` and the checks of `174e72e` passed all 17 checks on `minimal:02f85b3` and all 35 on `crypto-base:02f85b3`.
 - **Under the ruleset without `/var/lib/texmf`**, pdflatex could not find its format file, so that path stays in the section. Nothing beyond OpenShell's baseline, the compiler's devices and the two declared paths was needed: Sage's pseudo-terminal interfaces, `multiprocessing`, runtime installs and the PDF tools all worked.
 - **Under the orchestrator's ruleset without `/opt/sandbox-science`** (an empty section in `FILESYSTEM`), Landlock refused to start the prefix's interpreter. With it, the harness needed nothing else beyond OpenShell's baseline: no devices, and no `/dev/shm`.
+- **mcp-proxy** (`d27e41a`) passed all 19 checks (9 as a container, 10 under the Landlock ruleset) in 15 s, with and without a network. The proxy answered about 1.7 s after the settings were written, of which up to 1 s is the launcher's wait between looks, and about 1.5 s after it was killed, of which 1 s is the first pause. pytest ran them as 19 tests, beside the 59 recipe tests, in 17 s.
+- **The other images with the scripts of `d27e41a`.** `test.sh` and the checks passed all 17 checks on `orchestrator:174e72e`, and without a network all 15 on `minimal:02f85b3` and all 33 on `crypto-base:02f85b3`.
+- **Under the proxy's ruleset without `/opt/sandbox-science`**, Landlock refused to start the prefix's interpreter, as for the orchestrator. With it, the launcher and the proxy needed nothing else beyond OpenShell's baseline: no devices.
+- **As a container's own command**, the launcher ran as PID 1 and waited for the settings; `docker stop` ended it in 0.1 s.
 
 ## arm64
 
