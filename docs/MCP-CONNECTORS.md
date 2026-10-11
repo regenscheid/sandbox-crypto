@@ -162,15 +162,37 @@ uv run sandbox-science-mcp-proxy bind --state-dir state --project crypto --polic
 uv run sandbox-science-mcp-proxy serve --settings proxy.toml
 ```
 
-Callers send `Authorization: Bearer <token>` to `http://<listen>/mcp/<server>`; the MCP Python SDK's Streamable HTTP client takes it in `headers`. In production the proxy runs in its own OpenShell sandbox: OpenShell sets the credential variables to placeholders, and the compiled policy (`compile_mcp_proxy`) re-enforces the declared servers, methods and tools. As lab 13 ran it:
+Callers send `Authorization: Bearer <token>` to `http://<listen>/mcp/<server>`; the MCP Python SDK's Streamable HTTP client takes it in `headers`.
 
-- The targets file's `mcp_proxy` names the interpreter as the binary (`/opt/sandbox-science/bin/python*`), since OpenShell sees the interpreter that runs a Python entry point, and its `filesystem` the image's prefix, read-only.
-- The proxy listens on the sandbox's loopback, and `openshell forward service --target-port 8080 --local 127.0.0.1:8080 <sandbox>` exposes it on the pool host. Other sandboxes then reach it as `host.openshell.internal`; the orchestrator's compiled policy admits it as `orchestrator.mcp_proxy` in the targets file.
-- Its state directory, with the policy store and the event store, is on the sandbox's disk. It survives `sandbox stop` and `start`. The operator's commands (`bind`, `pending`, `approve`, `deny`) run in the sandbox through `openshell sandbox exec`.
+**In its own sandbox.** In production the proxy runs in its own OpenShell sandbox, from the `mcp-proxy` image ([images](IMAGES.md#the-mcp-proxy-image)): OpenShell sets the credential variables to placeholders, and the compiled policy (`compile_mcp_proxy`) re-enforces the declared servers, methods and tools. The image's command, `/opt/sandbox-science/bin/mcp-proxy-run`, waits until the settings exist at `/sandbox/mcp-proxy/proxy.toml`, runs the proxy, and starts it again whenever it exits. The operator:
+
+1. compiles the sandbox's policy with `compile_mcp_proxy()`. The targets file's `mcp_proxy` names the interpreter as the binary (`/opt/sandbox-science/bin/python*`), since OpenShell sees the interpreter that runs a Python entry point (lab 13), and in `filesystem` the image's prefix, read-only;
+2. creates the sandbox from the image, with the providers the compiled policy binds and the launcher as its command;
+3. uploads the pool ceiling and the project policies into `/sandbox/mcp-proxy/`, then the settings (`listen = "127.0.0.1:8080"`, `state_dir = "state"`), since the launcher starts the proxy once they are there;
+4. binds each project to its policy with `bind`, through `openshell sandbox exec`;
+5. exposes the proxy, which listens on the sandbox's loopback, on the pool host with `openshell forward service`. Other sandboxes then reach it as `host.openshell.internal`; the orchestrator's compiled policy admits it as `orchestrator.mcp_proxy` in the targets file.
+
+```bash
+openshell sandbox create --name mcp-proxy --from sandbox-science/mcp-proxy:<tag> \
+  --policy mcp-proxy-policy.yaml --provider crypto-research-mcp --no-auto-providers --detach \
+  -- /opt/sandbox-science/bin/mcp-proxy-run
+openshell sandbox exec -n mcp-proxy --no-tty --no-login-shell -- mkdir -p /sandbox/mcp-proxy
+for file in pool-ceiling.yaml policy.yaml proxy.toml; do   # the settings last
+  openshell sandbox upload --no-git-ignore mcp-proxy "$file" /sandbox/mcp-proxy/
+done
+openshell sandbox exec -n mcp-proxy --no-tty --no-login-shell -- \
+  /opt/sandbox-science/bin/sandbox-science-mcp-proxy bind \
+  --state-dir /sandbox/mcp-proxy/state --project crypto --policy /sandbox/mcp-proxy/policy.yaml
+openshell forward service --target-port 8080 --local 127.0.0.1:8080 mcp-proxy
+```
+
+- Commands in the sandbox take full paths, since OpenShell's VM driver does not apply the image's `PATH`. `pending`, `approve` and `deny` run the same way, with `--settings /sandbox/mcp-proxy/proxy.toml`, and `/opt/sandbox-science/bin/sandbox-science-events export /sandbox/mcp-proxy/state/events.db` copies the records out.
+- Until a project is bound, its calls get 503 `project_unbound`. A binding, or a new revision bound later, applies from the next call, without a restart.
+- The state directory, with the policy store and the event store, is on the sandbox's disk, which survives `sandbox stop` and `start` (lab 13). As the sandbox's command, the launcher should start the proxy again with the sandbox; no lab has shown that yet.
 
 ### Not built yet
 
-- An image for the proxy, so that it runs as its sandbox's command and comes back when the sandbox starts again; lab 13 ran it through `openshell sandbox exec` from the orchestrator image.
+- The `mcp-proxy` image in an OpenShell sandbox (a lab): the providers' placeholders in the environment of the sandbox's command, and the proxy coming back after `sandbox stop` and `start`. Lab 13 ran the proxy through `openshell sandbox exec` from the orchestrator image.
 - Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
 - The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand.
 - Binary results as artifact references; they are withheld for now.

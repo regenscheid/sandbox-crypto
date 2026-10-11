@@ -1,0 +1,24 @@
+# The licenses in the mcp-proxy image, one SPDX expression per line: its Conda packages, the
+# proxy's own packages (MIT) and the Ubuntu packages (LicenseRef-Ubuntu-archive). build.sh
+# joins them into the image's org.opencontainers.image.licenses label; the build fails when they
+# differ from the image's.
+# Not permissive, and accepted as the base distribution's runtime libraries (docs/IMAGES.md):
+# GPL-3.0-only (readline, ld_impl) and GPL-3.0-only WITH GCC-exception-3.1 (the GCC runtime).
+0BSD
+Apache-2.0
+BSD-2-Clause
+BSD-3-Clause
+GPL-3.0-only
+GPL-3.0-only WITH GCC-exception-3.1
+ISC
+LicenseRef-Public-Domain
+LicenseRef-Ubuntu-archive
+MIT
+MIT AND Apache-2.0
+PSF-2.0
+Python-2.0
+TCL
+X11 AND BSD-3-Clause
+Zlib
+blessing
+bzip2-1.0.6
