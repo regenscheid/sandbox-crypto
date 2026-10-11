@@ -19,7 +19,8 @@ Keys come in three kinds, each with the scopes an answer can take:
   policy revision, operation and a digest of an exact set of package files, which the
   request's record lists by their paths at the package cache. ``files`` covers exactly
   those files: the middleware allows their downloads to that sandbox under that revision,
-  and nothing else.
+  and nothing else. When its operation ends, the worker withdraws the request (a denial
+  marked ``withdrawn``), and nothing can grant its files again.
 
 Records are read through a small protocol, so this module needs no event store.
 """
@@ -57,7 +58,10 @@ MAX_GRANT_FILES: Final = 2000
 """Package files one ``packages`` request may list."""
 MAX_GRANT_PATH: Final = 2048
 LISTED_FILES: Final = 20
-"""Files of a ``packages`` request that ``pending`` lists before it counts the rest."""
+"""Files of a ``packages`` request that ``pending`` lists before it counts the rest;
+``pending --request`` lists them all."""
+WITHDRAWN: Final = "withdrawn"
+"""Marks the denial with which the worker closes a ``packages`` request for good."""
 
 
 def files_digest(paths: Iterable[str]) -> str:
@@ -242,7 +246,35 @@ def pending_lines(approvals: Approvals) -> list[str]:
             files = approvals.files(request.seq)
             lines += [f"      {path}" for path in files[:LISTED_FILES]]
             if len(files) > LISTED_FILES:
-                lines.append(f"      … {len(files) - LISTED_FILES} more")
+                lines.append(
+                    f"      … {len(files) - LISTED_FILES} more: pending --request {request.seq} "
+                    "lists them all"
+                )
+    return lines
+
+
+def request_lines(approvals: Approvals, seq: int) -> list[str] | None:
+    """Request ``seq`` in full, for ``pending --request``: what it asks, how it stands,
+    and every file of a ``packages`` request. None if there is no such request."""
+    request = approvals.request(seq)
+    if request is None:
+        return None
+    answer = approvals.answer_to(seq)
+    if approvals.withdrawn(seq):
+        state = "withdrawn: its operation has ended"
+    elif answer is None:
+        state = f"waiting (after {request.timeout.total_seconds() / 60:.0f} min: "
+        state += f"{request.on_timeout})"
+    else:
+        state = f"{'approved' if answer.kind == APPROVAL else 'denied'} by record {answer.seq}"
+        if answer.expires is not None:
+            state += f", until {answer.expires:%Y-%m-%d %H:%M:%S}"
+    lines = [f"{request.seq}  {request.recorded:%Y-%m-%d %H:%M:%S}  {describe(request.key)}"]
+    lines.append(f"      {state}")
+    files = approvals.files(seq)
+    if files:
+        lines.append(f"      {len(files)} package files:")
+        lines += [f"      {path}" for path in files]
     return lines
 
 
@@ -265,6 +297,11 @@ def prepare_answer(
     request = approvals.request(seq)
     if request is None:
         raise ValueError(f"no permission request {seq}")
+    if approvals.withdrawn(seq):
+        raise ValueError(
+            f"permission request {seq} was withdrawn: its provisioning operation has ended, "
+            "and its files can no longer be granted"
+        )
     scope = scope or DEFAULT_SCOPES[request.key.kind]
     problem = check_scope(request.key.kind, scope)
     if problem is not None:
@@ -305,6 +342,8 @@ class Approvals:
         self._answered: set[int] = set()
         self._files: dict[int, frozenset[str]] = {}
         """The package cache paths each ``packages`` request lists."""
+        self._withdrawn: set[int] = set()
+        """The ``packages`` requests the worker withdrew: closed for good."""
 
     @property
     def last_seq(self) -> int:
@@ -360,6 +399,15 @@ class Approvals:
         kind: Literal["approval", "denial"] = "approval" if record.kind == APPROVAL else "denial"
         self._answers.append(Answer(record.seq, request_seq, kind, key, scope, expires))
         self._answered.add(request_seq)
+        request = self._requests.get(request_seq)
+        if (
+            kind == "denial"
+            and data.get(WITHDRAWN) is True
+            and request is not None
+            and request.key == key
+            and key.kind == "packages"
+        ):
+            self._withdrawn.add(request_seq)
 
     def answer(self, key: RequestKey, now: datetime) -> Answer | None:
         """The newest live answer that covers ``key``: a later answer replaces an earlier one."""
@@ -389,6 +437,23 @@ class Approvals:
         with self._lock:
             return tuple(sorted(self._files.get(seq, ())))
 
+    def withdrawn(self, seq: int) -> bool:
+        """Whether the worker withdrew ``packages`` request ``seq``: nothing grants it again."""
+        with self._lock:
+            return seq in self._withdrawn
+
+    def packages_requests(self, operations: Iterable[str]) -> list[int]:
+        """The ``packages`` requests of these provisioning operations not yet withdrawn."""
+        wanted = set(operations)
+        with self._lock:
+            return [
+                seq
+                for seq, request in sorted(self._requests.items())
+                if request.key.kind == "packages"
+                and request.key.fields()["operation"] in wanted
+                and seq not in self._withdrawn
+            ]
+
     def answer_to(self, seq: int) -> Answer | None:
         """The newest answer to request ``seq`` itself, expired or not: a later answer
         replaces an earlier one. An answer whose target is not the request's key does not
@@ -410,8 +475,9 @@ class Approvals:
 
         A ``packages`` request's newest answer decides it, as for other requests: an
         approval grants the files the request lists, until it expires; a later denial
-        withdraws them. Among the requests that list the file, the newest live approval is
-        returned.
+        withdraws them. A request the worker withdrew, as its operation ended, grants
+        nothing, whatever answers it later. Among the requests that list the file, the
+        newest live approval is returned.
         """
         with self._lock:
             newest: dict[int, Answer] = {}
@@ -421,6 +487,7 @@ class Approvals:
                     answer.key.kind != "packages"
                     or request is None
                     or request.key != answer.key
+                    or answer.request_seq in self._withdrawn
                     or path not in self._files.get(answer.request_seq, frozenset())
                 ):
                     continue
