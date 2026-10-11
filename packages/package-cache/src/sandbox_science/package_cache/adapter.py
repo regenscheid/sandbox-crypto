@@ -9,13 +9,14 @@ does all I/O, so adapters are tested without a network (docs/PACKAGE-CACHE.md).
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, Literal, Protocol
 
-_HEX_LENGTHS: Final = {"sha256": 64, "sha512": 128}
+_HEX_LENGTHS: Final = {"md5": 32, "sha256": 64, "sha512": 128}
 _HEX_RE: Final = re.compile(r"[0-9a-f]+")
 
 
@@ -28,9 +29,14 @@ class Kind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Digest:
-    """The digest an upstream body must have, as lowercase hex."""
+    """The digest an upstream body must have, as lowercase hex.
 
-    algorithm: Literal["sha256", "sha512"]
+    MD5 is accepted because opam addresses archives by the first checksum an opam
+    file lists, which is MD5 for about a quarter of opam-repository; opam then
+    checks every listed checksum itself, a stronger one included.
+    """
+
+    algorithm: Literal["md5", "sha256", "sha512"]
     hex: str
 
     def __post_init__(self) -> None:
@@ -72,12 +78,25 @@ class Fetch:
     rewrite: Rewrite | None = None
     content_type: str | None = None
     """Override the content type served to clients (default: upstream's)."""
+    max_age: float | None = None
+    """Seconds a stored copy of mutable index data is served without asking upstream.
+
+    At most the cache's ``metadata_ttl``, which applies when this is None. With 0
+    the cache revalidates the copy on every request (a conditional request,
+    answered 304 while it is unchanged), for files that clients check against
+    each other, such as Hackage's signed metadata.
+    """
 
     def __post_init__(self) -> None:
         if not self.url.startswith("https://"):
             raise ValueError("upstream URLs must use https")
         if self.rewrite is not None and self.kind is not Kind.METADATA:
             raise ValueError("only index data may be rewritten")
+        if self.max_age is not None:
+            if self.kind is not Kind.METADATA or self.immutable:
+                raise ValueError("max_age applies to mutable index data only")
+            if not math.isfinite(self.max_age) or self.max_age < 0:
+                raise ValueError("max_age must be a finite number of seconds, at least 0")
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,14 +16,17 @@ answering None, is a 404; a ``Static`` answer is served as given.
 
 For a ``Fetch``, the stored copy is served while it is fresh: artifacts and
 immutable index files until they are evicted, other index data for
-``metadata_ttl``, negative (404/410) entries for a minute. Otherwise the cache
+``metadata_ttl`` (or the fetch's shorter ``max_age``), negative (404/410)
+entries for a minute at most. Otherwise the cache
 fetches it, or revalidates it with its stored validators; concurrent requests
 for one key share one fetch. If the fetch fails, a stale copy at most
 ``stale_if_error`` old is served; without one the answer is 502 (503 with
 ``Retry-After`` when the cache is busy: the upstream rate limit, download
 slots, temp space or upstream connections). Upstream 404 and 410 pass
 through, and are cached briefly for index data. HEAD is answered like GET
-without the body, and populates the cache the same way.
+without the body, and populates the cache the same way. A GET asking for one
+byte range of a stored body is answered 206 with that range, or 416 when it
+lies beyond the body (``ranges``).
 
 Load is bounded so that one client cannot degrade the cache for the others:
 
@@ -57,6 +60,7 @@ from aiohttp import web
 
 from .adapter import Adapter, Fetch, Kind, Rewrite, Static
 from .errors import PackageCacheError, RewriteError, StoreError, UpstreamError
+from .ranges import UNSATISFIABLE, select_range, unsatisfied_range
 from .settings import Settings
 from .store import Entry, Store, TempBlob
 from .upstream import (
@@ -354,21 +358,44 @@ class PackageCache:
         log: _RequestLog,
         result: CacheResult,
     ) -> web.StreamResponse:
-        """Serve a stored entry from its open blob, which this closes."""
+        """Serve a stored entry, or the byte range a GET asks for, from its open blob.
+
+        The blob is closed when this returns.
+        """
         self._record(log, result)
         try:
-            response = web.StreamResponse(status=entry.status)
+            selected = None
+            if request.method == "GET" and entry.status == 200:
+                selected = select_range(
+                    request.headers.getall("Range", []),
+                    if_range="If-Range" in request.headers,
+                    size=entry.size,
+                )
+            if selected is UNSATISFIABLE:
+                log.status = 416
+                return _text(
+                    416,
+                    "range not satisfiable",
+                    headers={"Content-Range": unsatisfied_range(entry.size)},
+                )
+            offset, count = 0, entry.size
+            status = entry.status
+            if selected is not None:
+                offset, count, status = selected.first, selected.length, 206
+            response = web.StreamResponse(status=status)
             content_type = entry.content_type
             if fetch.content_type is not None and entry.status == 200:
                 content_type = fetch.content_type
             response.headers["Content-Type"] = content_type
-            response.content_length = entry.size
+            if selected is not None:
+                response.headers["Content-Range"] = selected.content_range(entry.size)
+            response.content_length = count
             await response.prepare(request)
             log.status = response.status
-            if request.method == "GET" and entry.size > 0:
+            if request.method == "GET" and count > 0:
                 try:
                     await _send_file(
-                        request, response, file, entry.size, timeout=self._send_timeout
+                        request, response, file, offset, count, timeout=self._send_timeout
                     )
                 except ConnectionError as exc:
                     # The client went away mid-body (an interrupted install): not an error.
@@ -385,7 +412,7 @@ class PackageCache:
                     if request.transport is not None:
                         request.transport.abort()
                     return response
-                log.bytes = entry.size
+                log.bytes = count
             await response.write_eof()
             return response
         finally:
@@ -505,11 +532,12 @@ class PackageCache:
         age = self._clock() - entry.fetched
         if age < 0:
             return False  # fetched "in the future": the clock went back, so check again
+        ttl = self._ttl if fetch.max_age is None else min(fetch.max_age, self._ttl)
         if entry.status != 200:
-            return age < self._negative_ttl
+            return age < min(self._negative_ttl, ttl)
         if fetch.kind is Kind.ARTIFACT or fetch.immutable:
             return True
-        return age < self._ttl
+        return age < ttl
 
     def _record(self, log: _RequestLog, result: CacheResult) -> None:
         log.result = result
@@ -695,23 +723,26 @@ async def _send_file(
     request: web.Request,
     response: web.StreamResponse,
     file: BinaryIO,
+    start: int,
     size: int,
     *,
     timeout: float,
 ) -> None:
-    """Send a blob's ``size`` bytes, each ``SEND_CHUNK`` of them within ``timeout`` seconds.
+    """Send ``size`` bytes of a blob from ``start``.
 
-    Raises ConnectionResetError when the client goes away, and TimeoutError
-    when it stops accepting the body.
+    Each ``SEND_CHUNK`` must go out within ``timeout`` seconds. Raises
+    ConnectionResetError when the client goes away, and TimeoutError when it
+    stops accepting the body.
     """
     loop = asyncio.get_running_loop()
     native = True
-    offset = 0
-    while offset < size:
+    offset = start
+    end = start + size
+    while offset < end:
         transport = request.transport
         if transport is None or transport.is_closing():
             raise ConnectionResetError("the client went away")
-        count = min(SEND_CHUNK, size - offset)
+        count = min(SEND_CHUNK, end - offset)
         async with asyncio.timeout(timeout):
             if native:
                 try:
@@ -719,17 +750,17 @@ async def _send_file(
                 except NotImplementedError:
                     native = False  # event loops without sendfile (uvloop): copy instead
             if not native:
-                count = await _copy(response, file, offset, count, size)
+                count = await _copy(response, file, offset, count, end)
         offset += count
 
 
 async def _copy(
-    response: web.StreamResponse, file: BinaryIO, offset: int, count: int, size: int
+    response: web.StreamResponse, file: BinaryIO, offset: int, count: int, end: int
 ) -> int:
     """Write up to ``count`` bytes of ``file`` from ``offset``; return how many."""
     chunk = await asyncio.to_thread(os.pread, file.fileno(), count, offset)
     if not chunk:
-        raise StoreError(f"blob {file.name!r} ended at {offset} of {size} bytes")
+        raise StoreError(f"blob {file.name!r} ended at {offset}, before byte {end}")
     await response.write(chunk)
     return len(chunk)
 
