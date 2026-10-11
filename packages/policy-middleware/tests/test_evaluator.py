@@ -109,7 +109,7 @@ def test_an_escalation_is_denied_as_approval_required_and_recorded(
         "path": "/v1/items",
         "query_bytes": len("token=secret-ish"),
     }
-    # The example policy has providers, so the request may be credentialed: deny on timeout.
+    # external-writes sets no on_timeout of its own, so the policy-wide deny applies.
     assert event["escalation"] == {"timeout_seconds": 1800, "on_timeout": "deny"}
     assert "secret-ish" not in repr(event)
 
@@ -510,33 +510,44 @@ network:
 """
 
 
+PROVIDER = "credentials: {providers: [{name: gh, profile: token, hosts: [example.org]}]}\n"
+
+
 @pytest.mark.parametrize(
-    ("providers", "on_timeout"),
+    ("providers", "host", "port", "allow_credentialed", "on_timeout"),
     [
-        pytest.param("", Action.ALERT.value, id="no-providers"),
+        pytest.param("", "example.org", 443, False, Action.ALERT.value, id="no-providers"),
+        pytest.param(PROVIDER, "example.org", 443, False, Action.DENY.value, id="bound-host"),
         pytest.param(
-            "credentials: {providers: [{name: gh, profile: github}]}\n",
-            Action.DENY.value,
-            id="providers",
+            PROVIDER, "EXAMPLE.org.", 443, False, Action.DENY.value, id="bound-host-normalized"
+        ),
+        # OpenShell binds credentials to HTTPS only; counting every port is conservative.
+        pytest.param(
+            PROVIDER, "example.org", 80, False, Action.DENY.value, id="bound-host-port-80"
         ),
         pytest.param(
-            "credentials: {providers: [{name: gh, profile: github}]}\n",
-            Action.ALERT.value,
-            id="providers-and-allow-credentialed",
+            PROVIDER, "example.org", 443, True, Action.ALERT.value, id="allow-credentialed"
         ),
+        pytest.param(
+            PROVIDER, "www.example.org", 443, False, Action.ALERT.value, id="unbound-subdomain"
+        ),
+        pytest.param(PROVIDER, "example.net", 443, False, Action.ALERT.value, id="unbound-host"),
     ],
 )
-def test_requests_count_as_credentialed_when_the_project_has_providers(
+def test_requests_to_hosts_with_a_bound_credential_count_as_credentialed(
     store: PolicyStore,
     sandbox_id: str,
     sink: Sink,
     make_facts: FactsFactory,
     policy_config: Callable[[LoadedPolicy], dict[str, object]],
     providers: str,
+    host: str,
+    port: int,
+    allow_credentialed: bool,
     on_timeout: str,
 ) -> None:
     escalation = READ_ESCALATION
-    if on_timeout == Action.ALERT.value and providers:
+    if allow_credentialed:
         escalation = escalation.replace(
             "escalation: {on_timeout: allow}",
             "escalation: {on_timeout: allow, allow_credentialed: true}",
@@ -545,7 +556,8 @@ def test_requests_count_as_credentialed_when_the_project_has_providers(
     middleware = PolicyMiddleware(
         store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=sink
     )
-    verdict = middleware.evaluate_http(make_facts(config=policy_config(loaded)))
+    facts = make_facts(config=policy_config(loaded), host=host, port=port)
+    verdict = middleware.evaluate_http(facts)
     assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
     assert sink.events[0]["escalation"] == {"timeout_seconds": 1800, "on_timeout": on_timeout}
 

@@ -107,10 +107,10 @@ class HttpRequest:
     """A request as the egress proxy sees it.
 
     The proxy fills in the header-derived fields from the actual request:
-    ``credentialed`` when it injected a provider credential, ``content_type``
-    from Content-Type, ``has_body`` when the request carries at least one body
-    byte (not merely a Content-Length or chunked header), and ``upgrade`` from
-    the Upgrade header.
+    ``credentialed`` when the request may carry a provider credential (its host
+    is one a credential is bound to), ``content_type`` from Content-Type,
+    ``has_body`` when the request carries at least one body byte (not merely a
+    Content-Length or chunked header), and ``upgrade`` from the Upgrade header.
     """
 
     method: str
