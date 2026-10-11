@@ -8,8 +8,9 @@ When a revision is saved, its new and changed blocks are checked for:
   another symbol follows it (``$x`` with no closing dollar; a ``$`` before a digit or a
   space is left alone, as amounts are written), or a ``$$`` that opens or closes nothing;
 - ``definition_in_math``: ``\\def``, ``\\gdef``, ``\\newcommand`` and the like inside a
-  formula. The GUI applies such a definition to that formula alone, while TeX can make it
-  apply to the rest of an exported document;
+  formula. The GUI shows such a formula as written, since a definition can make KaTeX's
+  work grow far beyond the formula's length, while TeX can make it apply to the rest of
+  an exported document;
 - ``display_swallows_text``: a displayed formula holding a ``$``, or a line that reads as
   Markdown or prose, as when a ``$$`` that did not close where it should took the lines
   after it;
@@ -30,6 +31,7 @@ from pydantic import JsonValue
 
 from .blocks import Block, InlineText, Span, merged, overlaps
 from .identity import Mapped
+from .operations import unlay
 
 _DEFINITION: Final = re.compile(
     r"\\(?:def|gdef|edef|xdef|let|newcommand|renewcommand|providecommand|DeclareMathOperator)"
@@ -70,9 +72,8 @@ def _stray_dollars(inline: InlineText) -> list[str]:
     return found
 
 
-def _swallowed(span: Span) -> str | None:
+def _swallowed(tex: str) -> str | None:
     """Why a displayed formula looks as if it took text that was not meant as math."""
-    tex = span.tex
     for position, character in enumerate(tex):
         if character == "$" and not _escaped(tex, position):
             return "it contains a $, so it may have taken the end of another formula"
@@ -113,18 +114,20 @@ def warnings(mapped: Mapped, blocks: Iterable[int]) -> list[dict[str, JsonValue]
                 add("unbalanced_dollar", block, message)
         for span_index in block.spans:
             span = parsed.spans[span_index]
-            definition = _DEFINITION.search(span.tex)
+            # A $$ block's TeX keeps the markers of the quote it is in.
+            tex = unlay(span.tex, block.continuation)
+            definition = _DEFINITION.search(tex)
             if definition is not None:
                 add(
                     "definition_in_math",
                     block,
-                    f"{definition[0]} inside a formula: the workspace applies it to this "
-                    "formula alone, while TeX may apply it to the rest of an exported "
-                    "document. Define macros in the front matter",
+                    f"{definition[0]} inside a formula: the workspace shows a formula that "
+                    "defines macros as written, and TeX may apply the definition to the rest "
+                    "of an exported document. Define macros in the front matter",
                     span,
                 )
             if span.kind == "display":
-                why = _swallowed(span)
+                why = _swallowed(tex)
                 if why is not None:
                     add("display_swallows_text", block, f"this displayed formula: {why}", span)
     return found

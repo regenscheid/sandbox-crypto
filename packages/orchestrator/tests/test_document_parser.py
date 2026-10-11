@@ -248,6 +248,43 @@ def test_link_addresses_and_images_are_not_text() -> None:
     assert [span.tex for span in parsed.spans] == ["x"]
 
 
+def test_macros_that_could_expand_without_bound_are_left_out() -> None:
+    # KaTeX expands macros as it renders: a few short ones that use one another can expand
+    # into a great many characters, and freeze the page.
+    yaml = "\n".join(
+        [
+            "macros:",
+            "  \\F: \\mathbb{F}",
+            "  \\Fp: \\F_p",
+            "  \\abs: \\left|#1\\right|",
+            "  \\hash: '##1 #1'",
+            "  \\defines: \\def\\x{1}",
+            "  \\sq: '#1 \\cdot #1'",
+            "  \\loop: \\loop x",
+            "  \\ping: \\pong",
+            "  \\pong: \\ping",
+            "  \\wide: " + "x" * 900,
+            "  \\wider: \\wide\\wide\\wide",
+        ]
+    )
+    found = read_front_matter(yaml)
+    assert found.macros == {
+        "\\F": "\\mathbb{F}",
+        "\\Fp": "\\F_p",
+        "\\abs": "\\left|#1\\right|",
+        "\\hash": "##1 #1",
+        "\\wide": "x" * 900,
+    }
+    assert found.problems == (
+        "macro \\defines defines another (\\def): it is left out",
+        "macro \\sq uses #1 more than once: it is left out",
+        "macro \\loop expands into itself: it is left out",
+        "macro \\ping expands into itself: it is left out",
+        "macro \\pong expands into itself: it is left out",
+        "macro \\wider expands to more than 2000 characters: it is left out",
+    )
+
+
 def test_front_matter_is_limited_in_size() -> None:
     found = read_front_matter("title: " + "x" * MAX_FRONT_MATTER)
     assert found.title is None
