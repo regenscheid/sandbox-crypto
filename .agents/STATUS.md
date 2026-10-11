@@ -8,7 +8,10 @@ Updated: 2026-10-11.
 
 - **Per-project worker credentials** (D78, proposed). Besides the pool's own token, the worker accepts client tokens that act only for the projects the settings list.
   - For such a client, other projects' executions, artifacts and environments do not exist. It can use only environments the worker created for its projects, under policy revisions an operator granted to them.
-  - An adversarial review found two ways around the checks, and both are closed. An environment deleted and created again for another project while a request waited could receive that request; IDs now stay with their first project. A sandbox made by hand could be reached through a deleted environment of the same name; those are now the pool token's alone.
+  - Two adversarial reviews found three ways around the checks, all closed:
+    - An environment deleted and created again for another project while a request waited could receive that request. IDs now stay with their first project.
+    - A sandbox made by hand could be reached through a deleted environment of the same name. Those sandboxes are now the pool token's alone.
+    - Sandbox names derived from IDs could be shared by a crafted ID, which then took over another project's sandbox. Names are now random, and the worker checks a sandbox's identity before running code in it.
   - Operation IDs are kept per project, and the harness's environment IDs end with a random tag.
 - **Idle suspension** (W3; [lab 11](docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md)). The worker can stop the sandbox of an environment nobody is using, and start it again on the next use, which then takes about 7 s. Files, installed tools and the policy survive; kernels are reported lost. A computation in a kernel keeps its environment up.
 - **Admission on demand** (D69, amended; [lab 10](docs/agent-reports/babbage-openshell-lab-10-2026-10-11.md)).

@@ -38,6 +38,7 @@ from sandbox_science.contracts import (
     PolicyRevisionRequest,
     PublishRequest,
     ReadFileRequest,
+    SessionClosed,
     SessionCloseRequest,
     WorkerErrorResponse,
     WriteFileRequest,
@@ -117,19 +118,20 @@ def create_app(
         if client is None:
             return _error(ErrorKind.POLICY_DENIED, "missing or wrong bearer token", 401)
         request[_CLIENT] = client
-        if request.method != "GET" and request.path not in _READS:
-            _log.info("%s %s by %s", request.method, request.path, client.name)
         try:
-            return await handler(request)
+            response = await handler(request)
         except WorkerError as error:
-            return _error(error.kind, error.message, error.status)
+            response = _error(error.kind, error.message, error.status)
         except ValidationError as exc:
-            return _error(ErrorKind.INVALID_REQUEST, _summary(exc), 400)
-        except web.HTTPException:
+            response = _error(ErrorKind.INVALID_REQUEST, _summary(exc), 400)
+        except web.HTTPException as exc:
+            _audit(request, client, exc.status)
             raise
         except Exception:
             _log.exception("worker API request failed")
-            return _error(ErrorKind.INTERNAL, "internal worker error", 500)
+            response = _error(ErrorKind.INTERNAL, "internal worker error", 500)
+        _audit(request, client, response.status)
+        return response
 
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app[MANAGER] = manager
@@ -170,6 +172,17 @@ def _identifier(value: str, what: str) -> str:
         return _IDENTIFIER.validate_python(value)
     except ValidationError as exc:
         raise WorkerError(ErrorKind.INVALID_REQUEST, f"{what} is not a valid identifier") from exc
+
+
+def _audit(request: web.Request, client: Client, status: int) -> None:
+    """Log a change a caller asked for, by route, never by the path it sent (review of D78)."""
+    if request.method == "GET":
+        return
+    route = request.match_info.route.resource
+    template = route.canonical if route is not None else "an unknown route"
+    if template in _READS:
+        return
+    _log.info("%s %s by %s: %d", request.method, template, client.name, status)
 
 
 def _client(request: web.Request) -> Client:
@@ -358,7 +371,13 @@ async def cancel(request: web.Request) -> web.Response:
 
 async def close_session(request: web.Request) -> web.Response:
     body = SessionCloseRequest.model_validate_json(await _body(request))
-    _context(request, body.context)
+    try:
+        _context(request, body.context)
+    except WorkerError as error:
+        if error.kind is not ErrorKind.NOT_FOUND:
+            raise
+        # No environment, so no kernels to stop: the session is closed as it is.
+        return _json(SessionClosed())
     return _json(await request.app[MANAGER].close_session(body))
 
 

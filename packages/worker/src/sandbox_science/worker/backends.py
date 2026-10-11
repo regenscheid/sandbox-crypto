@@ -134,6 +134,9 @@ class OpenShellBackend:
         prepare: Callable[[str], Awaitable[None]] | None = None,
         manages: Callable[[str], bool] | None = None,
     ) -> None:
+        if (resolve is None) != (manages is None):
+            # Without ``manages``, a deleted environment would fall back to the static map.
+            raise ValueError("resolve and manages go together")
         self.settings = settings
         self.state_dir = state_dir
         self.resolve = resolve
