@@ -8,7 +8,7 @@ These specifications state what the new harness must do for the CScience feature
 
 | Spec | Covers | Main decisions |
 | --- | --- | --- |
-| [Tools](tools.md) | Shell, persistent kernels, file handoff, errors, cancellation, reconnect | Written separately |
+| [Tools](tools.md) | Shell, background jobs, persistent kernels, file handoff, errors, cancellation, reconnect | Written separately; D83 |
 | [Skills](skills.md) | Skill sources and pinning, discovery, on-demand loading, resources, helper code, load evidence, the external crypto-analysis-skills pack | D04, D29–D32 |
 | [Plans and delegation](plans-and-delegation.md) | Versioned plans, progress, tracks, delegated agents and their outcomes, questions to the user, role-specific model settings | D04, D61 |
 | [Consistency review](consistency-review.md) | Checkpoint and terminal triggers, reviewer scope, evidence snapshots, findings and severity, author response, claimed-fix confirmation, bounded completion, outcomes, and `math` findings with their mechanical confirmation | D27, D28, D35, D82 |
@@ -89,6 +89,7 @@ Each spec lists its own. These need the user first:
 13. **Theorem-like blocks.** Settled 2026-10-11: fenced containers such as `::: lemma` (LD-4).
 14. **Math normalization and repair.** Settled 2026-10-11: math is rewritten on save only in documents, direct edits of their files included, and in ledger entries; other Markdown keeps its bytes. Failed model repairs are retried after an hour, with the cache per project (LD-42, LD-46). Formulas KaTeX rejects in an agent's durable text also go back to that agent as `math` findings, delivered at the end of the turn and confirmed by the check itself (D82; LD-53 to LD-55, CR-36 to CR-38).
 15. **Document files: what the file design leaves.** Drafted: deleting or renaming a document's file is undone, and new files under `documents/` are never adopted as documents (LD-51); during overlapping calls, a direct edit is based on the oldest revision any of them could have read, so it may conflict needlessly, and two calls editing one file in one environment cannot be told apart (LD-50); the helper answers only while a call is running (LD-52). Recommended: as drafted.
+16. **Background jobs.** Settled 2026-10-11: long computations run as background jobs that do not hold the agent's turn, survive restarts of the orchestrator and, once the executor outlives the worker's connection, of the worker (D83; [tools](tools.md)). Drafted, for the user: a job's limits (24 hours by default, up to 7 days; 4 at once in a session, 8 in an environment); a notice at the next turn by default, with resuming the session a per-job choice within the model budget; closing a session cancels its jobs; no background cells.
 
 ## Sources
 
