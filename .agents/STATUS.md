@@ -6,7 +6,7 @@ Updated: 2026-10-11.
 
 ## Recent progress
 
-- **Conda provisioning: the provisioning tool** (W3, D83 proposed; [worker](../docs/WORKER.md#provisioning-operations)). An agent asks for a capability of a reviewed catalog (gp, gap, sage, sympy, fpylll, python-flint and others) or for package specs with `provision`, and the worker runs it as an operation, one at a time in each environment, in request order, with the queue visible through its API.
+- **Conda provisioning: the provisioning tool** (W3, D84 proposed; [worker](../docs/WORKER.md#provisioning-operations)). An agent asks for a capability of a reviewed catalog (gp, gap, sage, sympy, fpylll, python-flint and others) or for package specs with `provision`, and the worker runs it as an operation, one at a time in each environment, in request order, with the queue visible through its API.
   - A capability whose probe passes at the current revision is `already_satisfied`. Otherwise dry runs in the sandbox resolve the exact files, and each is decided with the policy library as the policy middleware will decide its download.
   - AGPL packages are refused, naming the package and its license, unless the policy's new `packages.agpl_exceptions` names them.
   - When the policy escalates, the operation asks once for the whole resolved set, as a permission request the operator reviews with the middleware's `pending --request` and answers with `approve`; the middleware then lets exactly those files download while the operation lasts, and nothing else that escalates.
@@ -88,11 +88,12 @@ Updated: 2026-10-11.
 - M2 (W3): Conda provisioning on babbage (a lab with a real gateway, middleware and cache), then restoring a revision after a failed install (CP-13), disk limits and uninstalls (CP-14, CP-20). The read-only root filesystem is deferred (D48).
 - M2 (W4): the research workspace (living documents, ledger and board, comments, automatic consistency review), which the M2 exit run needs.
 - MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
+- Background jobs (D83): long computations that run without holding the agent's turn, and the executor daemon in the sandbox that lets them survive worker restarts.
 - Worker: environment IDs per project, and limits per client.
 
 ## Blockers and open questions
 
-Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning, research-artifacts and consistency-review specs approved as drafted, with the artifacts spec's shared-file rule amended for D79; the workspace GUI as a Svelte web app (D80); delegated agents are runs in their session's environment, not sessions, with an environment of their own as a later opt-in (D81); living documents as files in every environment with merged edits (D65 amended); math findings for the agents that wrote the math (D82); and the other main questions of the living-documents and ledger drafts as drafted, with RA-1, RA-24, CR-10 and CR-28 amended.
+Decided by the user on 2026-10-11: D68–D78 confirmed; shared data across a project's environments by worker-synced copies (D79); the read-only root filesystem deferred (D48); the Conda provisioning, research-artifacts and consistency-review specs approved as drafted, with the artifacts spec's shared-file rule amended for D79; the workspace GUI as a Svelte web app (D80); delegated agents are runs in their session's environment, not sessions, with an environment of their own as a later opt-in (D81); living documents as files in every environment with merged edits (D65 amended); math findings for the agents that wrote the math (D82); and the other main questions of the living-documents and ledger drafts as drafted, with RA-1, RA-24, CR-10 and CR-28 amended; and long computations as background jobs (D83).
 
 Decisions to confirm: PSF-2.0 and MIT-0 in tier 1.
 
@@ -111,7 +112,7 @@ Questions with a recommendation, waiting for the user:
   - Decide whether worker code may use `resources/read`, `prompts/get` and `completion/complete`, which `worker_tools` does not restrict.
 - **The W0 specs** still in draft (tools, skills, plans and delegation, PDF sources, living documents, and the project ledger, board and frontier), each with its open questions; the last two record the user's decisions on their main questions, and the spec index's question 15 asks about stray files under `documents/` and edits from overlapping calls; the Conda provisioning, research-artifacts and consistency-review specs are approved. The consistency review's trigger defaults wait for the user's own CScience settings.
 - **A real model.** The first slice with a real model needs the user's LiteLLM gateway and a virtual key.
-- **Conda provisioning** (D83, proposed). Settled in implementation, to confirm:
+- **Conda provisioning** (D84, proposed). Settled in implementation, to confirm:
   - one permission request per resolved install, for its whole file set, which the middleware honors as a grant of exactly those files until the operation ends (open question 3); an operation that waits for an answer keeps its environment's turn, so later operations there wait too;
   - Conda and pip packages in separate requests, and pip from wheels only, so a PyPI package with no wheel cannot be installed through the tool yet;
   - AGPL exceptions in the policy's `packages.agpl_exceptions`, per ecosystem (open question 5);
