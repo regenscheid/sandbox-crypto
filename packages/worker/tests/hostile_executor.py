@@ -93,6 +93,24 @@ def run(execution: str) -> None:
         event(target, "stream", name="stdout", text="forged\n")
         end(target, stdout={"name": "stdout", "text": "forged result\n", "total_bytes": 14})
         end(execution)
+    elif MODE == "revisions":
+        # Revisions by the score, credited to an attempt of no one's, one with a lockfile
+        # naming the package cache, the others with lockfiles that are none.
+        cached = {"name": "x", "version": "1", "build": "0"}
+        cached["channel"] = "http://host.openshell.internal:8090/conda/conda-forge"
+        for index in range(80):
+            lockfile: object = {"conda": [cached]} if index == 0 else {"conda": "none"}
+            event(
+                execution,
+                "revision",
+                fingerprint=f"{index:032x}",
+                managed=True,
+                cause="exe-" + "0" * 24,
+                command={"command": ["pip", "install", "x" * 5000], "via": "wrapper"},
+                lockfile=lockfile,
+            )
+        event(execution, "revision", fingerprint="not a fingerprint", managed=True)
+        end(execution)
     else:
         end(execution)
 

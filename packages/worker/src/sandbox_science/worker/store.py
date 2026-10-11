@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Durable worker state in SQLite: executions, their events, kernels and artifacts."""
+"""Durable worker state in SQLite: executions, their events, kernels, environment revisions
+and artifacts."""
 
 from __future__ import annotations
 
@@ -12,7 +13,13 @@ from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import TERMINAL_STATES, ArtifactRef, Event, Execution
+from sandbox_science.contracts import (
+    TERMINAL_STATES,
+    ArtifactRef,
+    EnvironmentRevision,
+    Event,
+    Execution,
+)
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -48,6 +55,12 @@ CREATE TABLE IF NOT EXISTS environment_revisions (
     revision INTEGER NOT NULL,
     fingerprint TEXT NOT NULL,
     changed_by TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS revision_history (
+    environment_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (environment_id, revision)
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
@@ -213,7 +226,7 @@ class Store:
         ).fetchall()
         return [_EVENT.validate_json(row[0]) for row in rows]
 
-    # Kernels.
+    # Environment revisions: the current one, and a history with lockfiles.
 
     def revision(self, environment_id: str) -> RevisionRecord | None:
         row = self._db.execute(
@@ -228,6 +241,37 @@ class Store:
             "INSERT OR REPLACE INTO environment_revisions VALUES (?, ?, ?, ?)",
             (environment_id, record.revision, record.fingerprint, record.changed_by),
         )
+
+    def add_revision(
+        self, environment_id: str, record: RevisionRecord, entry: EnvironmentRevision
+    ) -> None:
+        """Make ``record`` the environment's revision and add it to the history, together."""
+        with self._transaction():
+            self.save_revision(environment_id, record)
+            self.save_revision_entry(environment_id, entry)
+
+    def save_revision_entry(self, environment_id: str, entry: EnvironmentRevision) -> None:
+        self._db.execute(
+            "INSERT OR REPLACE INTO revision_history VALUES (?, ?, ?)",
+            (environment_id, entry.revision, entry.model_dump_json()),
+        )
+
+    def revision_entry(self, environment_id: str, revision: int) -> EnvironmentRevision | None:
+        row = self._db.execute(
+            "SELECT record FROM revision_history WHERE environment_id = ? AND revision = ?",
+            (environment_id, revision),
+        ).fetchone()
+        return _revision(environment_id, row[0]) if row else None
+
+    def revision_history(self, environment_id: str) -> list[EnvironmentRevision]:
+        """The environment's recorded revisions, oldest first; an unreadable one is skipped."""
+        rows = self._db.execute(
+            "SELECT record FROM revision_history WHERE environment_id = ? ORDER BY revision",
+            (environment_id,),
+        ).fetchall()
+        return [found for row in rows if (found := _revision(environment_id, row[0])) is not None]
+
+    # Kernels.
 
     def kernel(self, environment_id: str, session_id: str, language: str) -> KernelRecord | None:
         row = self._db.execute(
@@ -265,6 +309,14 @@ def _readable(execution_id: str, record: object) -> Execution | None:
         return Execution.model_validate_json(str(record))
     except ValidationError:
         _log.error("the stored record of execution %s does not validate", execution_id)
+        return None
+
+
+def _revision(environment_id: str, record: object) -> EnvironmentRevision | None:
+    try:
+        return EnvironmentRevision.model_validate_json(str(record))
+    except ValidationError:
+        _log.error("a stored revision of environment %s does not validate", environment_id)
         return None
 
 

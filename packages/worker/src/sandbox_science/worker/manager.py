@@ -82,8 +82,9 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import WorkerError
 from .isolation import probe
+from .revisions import Revisions, package_command
 from .shared_sync import SharedSync
-from .store import KernelRecord, RevisionRecord, Store
+from .store import KernelRecord, Store
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -118,7 +119,11 @@ MAX_TRACEBACK_LINE = 8 * 1024
 MAX_WRITTEN = 1000
 MAX_LIST = 5000
 MAX_HOSTNAME = 255
-_FINGERPRINT = re.compile(r"[0-9a-f]{32}")
+MAX_REVISIONS = 64
+"""``revision`` events one execution may report; later ones are dropped."""
+LOCKFILE_TIMEOUT = 120.0
+"""Seconds the executor gets to send the current revision's lockfile."""
+_EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
 
 
 def _now() -> datetime:
@@ -177,6 +182,8 @@ class _Live:
     """The executor's outcome, held while the shared files sync after it (D79)."""
     ended_at: float = 0.0
     """When the executor reported the outcome, by the monotonic clock."""
+    revisions: int = 0
+    """``revision`` events it carried."""
 
 
 @dataclass
@@ -243,6 +250,8 @@ class ExecutionManager:
         self.blobs = blobs
         self.shared = shared
         """Keeps the project's shared files in step across its environments (D79)."""
+        self.revisions = Revisions(store, blobs)
+        """Each environment's revisions, with their lockfiles (Conda provisioning, W3)."""
         self.pool_id = pool_id
         self.max_artifact_size = max_artifact_size
         # The isolation probe's sentinel goes here, among the worker's own files.
@@ -545,6 +554,21 @@ class ExecutionManager:
             environment.languages = languages
             environment.features = features
             environment.channel = channel
+            if self.revisions.needs_lockfile(environment_id):
+                self._spawn(self._fetch_lockfile(environment_id, channel))
+
+    async def _fetch_lockfile(self, environment_id: str, channel: ExecutorChannel) -> None:
+        """Ask the executor for the current revision's lockfile, which revision 0 and a change
+        found as an executor starts lack. Nothing waits for it."""
+        try:
+            reply = await channel.request("lockfile", reply_timeout=LOCKFILE_TIMEOUT)
+        except WorkerError as error:
+            _log.info("environment %s: no lockfile from its executor: %s", environment_id, error)
+            return
+        if not self.revisions.attach(
+            environment_id, reply.get("fingerprint"), reply.get("lockfile")
+        ):
+            _log.info("environment %s: the executor's lockfile was not kept", environment_id)
 
     def _describe(
         self, environment_id: str, hello: Message
@@ -777,11 +801,20 @@ class ExecutionManager:
         kind = message.get("event")
         if kind == "state" and message.get("state") == "running":
             if live.execution.state is ExecutionState.QUEUED:
-                live.execution = live.execution.model_copy(
-                    update={"state": ExecutionState.RUNNING, "started_at": _now()}
-                )
+                update: dict[str, Any] = {"state": ExecutionState.RUNNING, "started_at": _now()}
+                # The revision as it started, which waiting for a package command can change.
+                location = live.execution.location
+                if location is not None and "environment" in message:
+                    revision = self._observe(environment_id, message.get("environment"), "")
+                    if revision is not None:
+                        update["location"] = location.model_copy(
+                            update={"environment_revision": str(revision)}
+                        )
+                live.execution = live.execution.model_copy(update=update)
                 self._state(live, ExecutionState.RUNNING)
                 self.store.update_execution(live.execution)
+        elif kind == "revision":
+            self._revised(environment_id, live, message)
         elif kind == "stream":
             name = "stderr" if message.get("name") == "stderr" else "stdout"
             text = message.get("text")
@@ -993,6 +1026,9 @@ class ExecutionManager:
             and path
             and len(path.encode("utf-8", "replace")) <= MAX_PATH_BYTES
         ]
+        location = live.execution.location
+        before = location.environment_revision if location is not None else None
+        after = self._revision_after(environment_id, live, raw)
         return Result(
             exit_code=_integer(raw.get("exit_code")),
             signal=_integer(raw.get("signal"), 1, 255),
@@ -1010,7 +1046,9 @@ class ExecutionManager:
             written_files=tuple(paths[:MAX_WRITTEN]),
             written_files_truncated=raw.get("written_files_truncated") is True
             or len(paths) > MAX_WRITTEN,
-            environment_revision=self._revision_after(environment_id, live, raw),
+            environment_revision=after,
+            overlapping_change=raw.get("environment_changing") is True
+            or (before is not None and after is not None and before != after),
             notices=self._notices(environment_id, live),
         )
 
@@ -1049,26 +1087,50 @@ class ExecutionManager:
 
         The first fingerprint is revision 0, and each different one counts one up,
         recorded against the attempt that reported it (empty between executors). The
-        executor is untrusted: research code can only make its own environment's
-        revisions count up.
+        executor reports each change in a ``revision`` event first, so a new fingerprint
+        here is one it could not account for. The executor is untrusted: research code
+        can only make its own environment's revisions count up.
         """
-        record = self.store.revision(environment_id)
-        if not isinstance(fingerprint, str) or not _FINGERPRINT.fullmatch(fingerprint):
-            return None if record is None else record.revision
-        if record is None:
-            self.store.save_revision(environment_id, RevisionRecord(0, fingerprint, changed_by))
-            return 0
-        if record.fingerprint == fingerprint:
-            return record.revision
-        changed = RevisionRecord(record.revision + 1, fingerprint, changed_by)
-        self.store.save_revision(environment_id, changed)
-        _log.info(
-            "environment %s is at revision %d: its installed packages changed (%s)",
+        return self.revisions.observe(environment_id, fingerprint, changed_by)
+
+    def _revised(self, environment_id: str, live: _Live, message: Message) -> None:
+        """A change to the environment's packages that the executor saw (CP-4, CP-16).
+
+        A managed change names the attempt that ran its package command, which must be
+        one of this environment's; an unmanaged one, the attempt after which it was seen.
+        """
+        live.revisions += 1
+        if live.revisions > MAX_REVISIONS:
+            if live.revisions == MAX_REVISIONS + 1:
+                _log.warning(
+                    "execution %s: over %d revisions; dropping the rest",
+                    live.execution.execution_id,
+                    MAX_REVISIONS,
+                )
+            return
+        managed = message.get("managed")
+        cause = message.get("cause")
+        self.revisions.observe(
             environment_id,
-            changed.revision,
-            changed_by or "between executors",
+            message.get("fingerprint"),
+            self._attempt(environment_id, cause) if isinstance(cause, str) else "",
+            managed=managed if isinstance(managed, bool) else None,
+            command=package_command(message.get("command")) if managed is True else None,
+            lockfile=message.get("lockfile"),
         )
-        return changed.revision
+
+    def _attempt(self, environment_id: str, execution_id: str) -> str:
+        """The current attempt of one of the environment's executions; empty for any other."""
+        if not _EXECUTION.fullmatch(execution_id):
+            return ""
+        live = self._live.get(execution_id)
+        try:
+            execution = live.execution if live is not None else self.store.execution(execution_id)
+        except ValidationError:
+            return ""
+        if execution is None or execution.context.environment_id != environment_id:
+            return ""
+        return execution.attempt_id
 
     def _kernel(
         self, environment_id: str, session_id: str, raw: object, state_lost: bool
