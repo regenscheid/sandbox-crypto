@@ -235,6 +235,20 @@ Environments persist, but need not keep running ([projects and sessions](PROJECT
   - each sample has a 15 s limit, and environments are sampled eight at a time;
   - a request waits at most 30 s to be written, so an executor that stopped reading its requests holds up no other environment.
 
+## Shared data across environments
+
+Each environment is its own sandbox, so the `shared/` area of a project's sessions is a separate directory in each of the project's environments. The worker keeps them in step (D79): it holds the project's copy of every shared file, under its SHA-256 in the artifact store, and syncs each environment with it.
+
+- **After every call** in an environment (a shell call, a cell, a PDF operation), it copies the files that changed in that environment's `shared/` into the project's copy, before the call's result is reported. A later call anywhere in the project then sees them. Files the call deleted are deleted in the project's copy.
+- **Before every call**, it copies into the environment the files whose project version is newer than the environment's, and removes the ones the project deleted. The environment's own unsynced changes go up first.
+- **File requests** that touch `shared/` sync the same way: reads and listings bring the environment up to date first, and a write goes up at once. So the `expected_sha256` of a write names the project's version.
+- **Conflicts.** Every change to a file gives the project a new version, and each environment's record says which version its copy matches. A change an environment makes to a file another environment changed since, is a conflict. The project's file keeps the version that arrived first, and the later one is kept beside it as a conflict copy, `results.conflict-<session>.csv`. The call's result tells the agent (`notices`, which the harness passes on as `platform_notices`), and the environment gets the project's version at its next call. A deletion that meets a change loses to it.
+- **Cost.** The executor reports the stamps of the files in `shared/` (modification time, size, inode); only the files whose stamps changed are hashed and copied. A call that changes nothing there costs two scans.
+- **Limits.** Files over 32 MiB are not copied, and neither is anything that would take the project's copy over 2 GiB; the agent is told once for each. Publish large files as artifacts.
+- **What it does not do.** It copies at call boundaries, so a file another session in the same environment is still writing can be copied in part, and is copied again when that session's call ends. An environment serves one project; a sandbox made by hand that several projects use (with the pool's own token) shares one `shared/` directory among them.
+
+A failed sync never fails the call: the call runs with `shared/` as it is, and its result says the sync failed. The setting `shared_sync = false` turns it off. The records are in `shared.sqlite3` in the state directory.
+
 ## PDFs
 
 A `PdfRequest` runs one operation of the [PDF sources spec](specs/pdf-sources.md): `info`, `pages`, `search` or `render`.
@@ -262,6 +276,7 @@ token_file = "worker.token"          # the pool's own token: sandbox-science-wor
 state_dir = "state"
 pool_id = "babbage"
 kernel_idle_timeout = 28800          # optional: stop kernels unused for 8 hours
+shared_sync = true                   # keep each project's shared/ in step across its environments (D79)
 
 [openshell]
 cli = "/home/andy/.local/opt/openshell-0.1.3/bin/openshell"

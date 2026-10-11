@@ -32,6 +32,7 @@ from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import Activity, ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
+from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
 
 TOKEN = "t" * 40
@@ -103,15 +104,31 @@ async def start_worker(
     root: Path,
     python: str = sys.executable,
     backend: Backend | None = None,
+    *,
+    shared_bytes: int | None = None,
+    shared_total: int = 1 << 30,
 ) -> tuple[Worker, Store]:
+    """A worker on the local backend; with ``shared_bytes``, it syncs shared/ (D79)."""
     store = Store(root / "worker.sqlite3")
+    blobs = Blobs(root / "artifacts")
+    shared = (
+        None
+        if shared_bytes is None
+        else SharedSync(
+            SharedRecords(root / "shared.sqlite3"),
+            blobs,
+            max_file_bytes=shared_bytes,
+            max_project_bytes=shared_total,
+        )
+    )
     manager = ExecutionManager(
         store,
         backend or LocalBackend(LocalBackendSettings(python=python), root),
-        Blobs(root / "artifacts"),
+        blobs,
         pool_id="test-pool",
         max_artifact_size=1 << 20,
         state_dir=root,
+        shared=shared,
     )
     await manager.start()
     client = await aiohttp_client(create_app(manager, TOKEN))
@@ -523,3 +540,113 @@ async def test_operation_ids_are_kept_per_project(worker: Worker) -> None:
     status, execution = await worker.post("/v1/executions", {**request, "context": third})
     assert status == 201, execution
     assert execution["execution_id"] not in (first["execution_id"], second["execution_id"])
+
+
+# Shared project data across a project's environments (D79). On the local backend each
+# environment has a directory of its own, as each OpenShell environment has a sandbox.
+
+
+@pytest_asyncio.fixture
+async def synced(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Worker]:
+    started, store = await start_worker(aiohttp_client, tmp_path, shared_bytes=64)
+    yield started
+    await started.manager.close()
+    store.close()
+    if started.manager.shared is not None:
+        started.manager.shared.records.close()
+
+
+def _in(environment: str, session: str) -> dict[str, str]:
+    return {"project_id": "p1", "session_id": session, "environment_id": environment}
+
+
+async def _shell(
+    worker: Worker, operation: str, where: dict[str, str], script: str
+) -> dict[str, Any]:
+    status, execution = await worker.post(
+        "/v1/executions",
+        {"operation_id": operation, "context": where, "kind": "shell", "script": script},
+    )
+    assert status == 201, execution
+    return await worker.finish(execution["execution_id"])
+
+
+async def test_shared_files_reach_the_projects_other_environments(synced: Worker) -> None:
+    a, c = _in("env1", "s1"), _in("env2", "s3")
+    await _shell(synced, "op-w", a, 'printf "1,2\\n" > "$PROJECT_SHARED/results.csv"')
+    seen = await _shell(synced, "op-r", c, 'cat "$PROJECT_SHARED/results.csv"')
+    assert seen["result"]["stdout"]["text"] == "1,2\n"
+    # A deletion goes the same way.
+    await _shell(synced, "op-d", a, 'rm "$PROJECT_SHARED/results.csv"')
+    gone = await _shell(synced, "op-g", c, 'ls "$PROJECT_SHARED"; echo end')
+    assert gone["result"]["stdout"]["text"] == "end\n"
+    # The files API sees the project's copy too: a write in one environment, a read in another.
+    status, written = await synced.post(
+        "/v1/files/write",
+        {"context": a, "path": "shared/notes.md", "content_b64": "bm90ZXMK", "create_only": True},
+    )
+    assert status == 200, written
+    status, read = await synced.post("/v1/files/read", {"context": c, "path": "shared/notes.md"})
+    assert (status, read["content_b64"]) == (200, "bm90ZXMK")
+
+
+async def test_concurrent_changes_keep_a_conflict_copy(synced: Worker) -> None:
+    a, c = _in("env1", "s1"), _in("env2", "s3")
+    await _shell(synced, "op-1", a, 'echo a > "$PROJECT_SHARED/notes.md"')
+    await _shell(synced, "op-2", c, 'cat "$PROJECT_SHARED/notes.md"')
+    # env2 changes the file while env1 changes it and finishes first.
+    status, slow = await synced.post(
+        "/v1/executions",
+        {
+            "operation_id": "op-3",
+            "context": c,
+            "kind": "shell",
+            "script": 'sleep 2; echo c > "$PROJECT_SHARED/notes.md"',
+        },
+    )
+    assert status == 201
+    await _shell(synced, "op-4", a, 'echo b > "$PROJECT_SHARED/notes.md"')
+    late = await synced.finish(slow["execution_id"])
+    [notice] = [n for n in late["result"]["notices"] if "conflict" in n]
+    assert "shared/notes.conflict-s3.md" in notice
+    after = await _shell(
+        synced,
+        "op-5",
+        c,
+        'cat "$PROJECT_SHARED/notes.md" "$PROJECT_SHARED/notes.conflict-s3.md"',
+    )
+    assert after["result"]["stdout"]["text"] == "b\nc\n"
+    elsewhere = await _shell(synced, "op-6", a, 'cat "$PROJECT_SHARED/notes.conflict-s3.md"')
+    assert elsewhere["result"]["stdout"]["text"] == "c\n"
+
+
+async def test_files_over_the_limit_stay_where_they_are(synced: Worker) -> None:
+    a, c = _in("env1", "s1"), _in("env2", "s3")
+    wrote = await _shell(synced, "op-1", a, 'head -c 100 /dev/zero > "$PROJECT_SHARED/big.bin"')
+    [notice] = wrote["result"]["notices"]
+    assert "shared/big.bin" in notice
+    assert "publish it as an artifact" in notice
+    absent = await _shell(synced, "op-2", c, 'ls "$PROJECT_SHARED"; echo end')
+    assert absent["result"]["stdout"]["text"] == "end\n"
+    again = await _shell(synced, "op-3", a, "true")
+    assert again["result"]["notices"] == []  # told once
+
+
+async def test_the_projects_shared_files_have_a_total_limit(
+    aiohttp_client: ClientFactory, tmp_path: Path
+) -> None:
+    capped, store = await start_worker(aiohttp_client, tmp_path, shared_bytes=100, shared_total=150)
+    try:
+        a, c = _in("env1", "s1"), _in("env2", "s3")
+        first = await _shell(capped, "op-1", a, 'head -c 100 /dev/zero > "$PROJECT_SHARED/a.bin"')
+        assert first["result"]["notices"] == []
+        second = await _shell(capped, "op-2", a, 'head -c 90 /dev/zero > "$PROJECT_SHARED/b.bin"')
+        [notice] = second["result"]["notices"]
+        assert "their limit" in notice
+        listing = await _shell(capped, "op-3", c, 'cd "$PROJECT_SHARED" && ls')
+        assert listing["result"]["stdout"]["text"] == "a.bin\n"
+    finally:
+        await capped.manager.close()
+        store.close()
+        if capped.manager.shared is not None:
+            capped.manager.shared.records.close()

@@ -872,6 +872,8 @@ class Executor:
             "read": self.op_read,
             "write": self.op_write,
             "list": self.op_list,
+            "shared": self.op_shared,
+            "remove": self.op_remove,
         }
         handler = handlers.get(str(request.get("op")))
         try:
@@ -1590,6 +1592,62 @@ class Executor:
             write_file, parent, rest[-1], content, expected, create_only, str(path)
         )
         await self.reply(request, **reply)
+
+    async def op_shared(self, request: Message) -> None:
+        """The shared area's regular files with their stamps, and the SHA-256 of some (D79).
+
+        ``hash`` names the files whose contents the worker needs to compare; the rest are
+        compared by modification time, size and inode alone.
+        """
+        raw: object = request.get("hash", [])
+        wanted = [path for path in cast(list[object], raw) if isinstance(path, str)][:MAX_SNAPSHOT]
+        reply = await asyncio.to_thread(self.shared_state, wanted)
+        await self.reply(request, **reply)
+
+    def shared_state(self, wanted: Sequence[str]) -> Message:
+        files: dict[str, tuple[int, int, int]] = {}
+        truncated = scan_files(self.open_base([SHARED]), SHARED + "/", files)
+        digests: dict[str, str] = {}
+        for path in wanted:
+            if path not in files:
+                continue
+            _, rest = self.split(None, path)
+            try:
+                parent = _walk(self.open_base([SHARED]), rest[:-1], path, create=False)
+            except ToolError:
+                continue
+            try:
+                digests[path] = _file_sha256(parent, rest[-1], path)
+            except (OSError, ToolError):
+                continue  # gone or replaced meanwhile: compared again next time
+            finally:
+                os.close(parent)
+        return {
+            "files": {path: list(stamp) for path, stamp in files.items()},
+            "truncated": truncated,
+            "sha256": digests,
+        }
+
+    async def op_remove(self, request: Message) -> None:
+        """Remove a regular file in the shared area if it still has the expected SHA-256."""
+        path = request.get("path")
+        base, rest = self.split(request.get("session"), path)
+        if base != [SHARED] or not rest:
+            raise ToolError("invalid_request", "only files in the shared area are removed")
+        expected = request.get("expected_sha256")
+        if not isinstance(expected, str):
+            raise ToolError("invalid_request", "removing a shared file needs expected_sha256")
+        parent = _walk(self.open_base(base), rest[:-1], str(path), create=False)
+        try:
+            current = await asyncio.to_thread(_file_sha256, parent, rest[-1], str(path))
+            if current != expected:
+                raise ToolError("conflict", f"{path!r} changed: its SHA-256 is {current}")
+            os.unlink(rest[-1], dir_fd=parent)
+        except FileNotFoundError:
+            raise ToolError("not_found", f"no file {path!r}") from None
+        finally:
+            os.close(parent)
+        await self.reply(request, removed=True)
 
     async def op_list(self, request: Message) -> None:
         path = request.get("path", ".")

@@ -41,6 +41,7 @@ from .errors import WorkerError
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
 from .settings import MIN_TOKEN, Settings, SettingsError, load_settings, token_digest
+from .shared_sync import SharedRecords, SharedSync
 from .store import Store
 from .suspend import Suspender
 
@@ -94,13 +95,20 @@ async def serve(settings: Settings) -> None:
     token = settings.token()
     environments = _environments(settings)
     store = Store(settings.state_dir / "worker.sqlite3")
+    blobs = Blobs(settings.state_dir / "artifacts")
+    shared = (
+        SharedSync(SharedRecords(settings.state_dir / "shared.sqlite3"), blobs)
+        if settings.shared_sync
+        else None
+    )
     manager = ExecutionManager(
         store,
         _backend(settings, environments),
-        Blobs(settings.state_dir / "artifacts"),
+        blobs,
         pool_id=settings.pool_id,
         max_artifact_size=settings.max_artifact_size,
         state_dir=settings.state_dir,
+        shared=shared,
     )
     if environments is not None:
         environments.release = manager.release
@@ -142,6 +150,8 @@ async def serve(settings: Settings) -> None:
         await runner.cleanup()
         await manager.close()
         store.close()
+        if shared is not None:
+            shared.records.close()
         if environments is not None:
             environments.close()
 

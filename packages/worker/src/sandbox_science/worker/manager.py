@@ -20,7 +20,7 @@ import math
 import mimetypes
 import re
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
@@ -38,6 +38,7 @@ from sandbox_science.contracts import (
     ErrorKind,
     Event,
     Execution,
+    ExecutionContext,
     ExecutionRequest,
     ExecutionState,
     FileContent,
@@ -79,11 +80,14 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import WorkerError
 from .isolation import probe
+from .shared_sync import SharedSync
 from .store import KernelRecord, RevisionRecord, Store
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
 
+SHARED_TIMEOUT = 300.0
+"""The longest a sync of the project's shared files may take around an execution (D79)."""
 WATCHDOG_GRACE = 30.0
 """Seconds past an execution's own limit before the worker cancels it itself."""
 LOST_GRACE = 60.0
@@ -155,6 +159,8 @@ class _Live:
     overflowed: bool = False
     channel: ExecutorChannel | None = None
     """The executor the execution was sent to: only it may cancel or lose it."""
+    notices: list[str] = field(default_factory=list[str])
+    """What syncing the project's shared files told before the execution ran (D79)."""
 
 
 @dataclass
@@ -214,10 +220,13 @@ class ExecutionManager:
         pool_id: str,
         max_artifact_size: int,
         state_dir: Path,
+        shared: SharedSync | None = None,
     ) -> None:
         self.store = store
         self.backend = backend
         self.blobs = blobs
+        self.shared = shared
+        """Keeps the project's shared files in step across its environments (D79)."""
         self.pool_id = pool_id
         self.max_artifact_size = max_artifact_size
         # The isolation probe's sentinel goes here, among the worker's own files.
@@ -675,6 +684,8 @@ class ExecutionManager:
         if channel is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         environment.running.add(execution_id)
+        if self.shared is not None:
+            live.notices += await self._sync(self.shared.down, request.context, channel)
         live.dispatched = True
         live.channel = channel
         await channel.request(request.kind, **fields)
@@ -785,7 +796,63 @@ class ExecutionManager:
                         )
                     }
                 )
-            self._finish(live, state, result)
+            if self.shared is None or live.channel is None:
+                self._finish(live, state, result)
+            else:
+                if live.watchdog is not None:
+                    live.watchdog.cancel()  # the attempt is over; only the sync is left
+                    live.watchdog = None
+                self._spawn(self._end(live, live.channel, state, result))
+
+    async def _end(
+        self, live: _Live, channel: ExecutorChannel, state: ExecutionState, result: Result
+    ) -> None:
+        """Copy the shared files the attempt changed into the project's copy, then end it (D79).
+
+        A later call in another environment of the project then finds them there.
+        """
+        if self.shared is not None:
+            notices = [
+                *live.notices,
+                *await self._sync(self.shared.up, live.execution.context, channel),
+            ]
+            if notices:
+                result = result.model_copy(update={"notices": (*result.notices, *notices)})
+        self._finish(live, state, result)
+
+    async def _sync_shared(
+        self, context: ExecutionContext, path: str, channel: ExecutorChannel, step: str
+    ) -> None:
+        """Sync the project's shared files around a file request that touches them (D79)."""
+        if self.shared is None or not (path == "shared" or path.startswith("shared/")):
+            return
+        run = self.shared.down if step == "down" else self.shared.up
+        for notice in await self._sync(run, context, channel):
+            _log.info("%s: %s", context.environment_id, notice)
+
+    async def _sync(
+        self,
+        step: Callable[[str, str, str, ExecutorChannel], Awaitable[list[str]]],
+        context: ExecutionContext,
+        channel: ExecutorChannel,
+    ) -> list[str]:
+        """Run one step of the shared files' sync; its failure never fails the call (D79)."""
+        try:
+            return await asyncio.wait_for(
+                step(context.project_id, context.environment_id, context.session_id, channel),
+                SHARED_TIMEOUT,
+            )
+        except Exception as exc:  # the call goes on with shared/ as it is
+            _log.warning(
+                "syncing the shared files of %s in %s failed: %s",
+                context.project_id,
+                context.environment_id,
+                exc,
+            )
+            return [
+                "the project's shared files could not be synced with this environment just "
+                "now, so shared/ may not show other environments' latest changes"
+            ]
 
     def _admit(self, live: _Live, size: int) -> bool:
         """Charge one stream or output event to the execution's budget; False once spent.
@@ -1121,6 +1188,7 @@ class ExecutionManager:
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:
         async with self._using(request.context.environment_id) as channel:
+            await self._sync_shared(request.context, request.path, channel, "down")
             found = await self._read_range(
                 channel, request, request.offset, request.length, hashed=True
             )
@@ -1138,6 +1206,8 @@ class ExecutionManager:
     async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
         context = request.context
         async with self._using(context.environment_id) as channel:
+            # The expected SHA-256 is the version the agent read: the project's, once synced.
+            await self._sync_shared(context, request.path, channel, "down")
             reply = await channel.request(
                 "write",
                 session=context.session_id,
@@ -1146,11 +1216,13 @@ class ExecutionManager:
                 expected_sha256=request.expected_sha256,
                 create_only=request.create_only,
             )
+            await self._sync_shared(context, request.path, channel, "up")
             return _checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         context = request.context
         async with self._using(context.environment_id) as channel:
+            await self._sync_shared(context, request.path, channel, "down")
             reply = await channel.request("list", session=context.session_id, path=request.path)
             raw = reply.get("entries")
             every = cast(list[object], raw) if isinstance(raw, list) else []

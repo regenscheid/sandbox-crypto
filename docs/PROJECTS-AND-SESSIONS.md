@@ -92,11 +92,11 @@ sandbox-science-harness project revise --state-dir state --project p1 --policy s
 - **Shared files.** A write to the shared area names the version it replaces (`expected_sha256`, or `create_only` for a new file). So of two sessions that read the same version, the second writer gets `conflict`, rereads and tries again; nothing is silently overwritten. The conformance suite checks this with two sessions.
 
 - **Environment revisions.** The worker counts changes to an environment's installed packages, and every execution reports the revision it started and ended under ([worker](WORKER.md#behavior-worth-knowing)).
+- **Shared data across environments** (D79). The worker keeps the project's `shared/` in step across its environments, before and after every call, so a dedicated session sees the shared results of the project's other sessions. Concurrent changes to one file leave a conflict copy beside it, and the agent is told ([worker](WORKER.md#shared-data-across-environments)).
 
 Not yet built:
-- shared data across environments, which waits on the user's choice (worker-brokered copies with conflict copies, or explicit transfer);
-- serialized, recorded package installs (the Conda provisioning spec);
-- capture and restore.
+- serialized, recorded package installs (the Conda provisioning spec, approved);
+- capture and restore with a read-only root filesystem (D48, deferred by the user).
 
 ## Backend feasibility checks
 
