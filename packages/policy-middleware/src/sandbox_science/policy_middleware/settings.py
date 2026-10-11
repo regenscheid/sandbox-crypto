@@ -70,6 +70,8 @@ class Settings(_Model):
     registration: _Name = "sandbox-science-policy"
     listen: Annotated[str, StringConstraints(min_length=1)] = "127.0.0.1:50051"
     state_dir: Path
+    event_store: Path | None = None
+    """The event store's database file; by default ``events.db`` in the state directory."""
     ceiling: Path
     admin_hosts: tuple[str, ...] = ()
     max_payload_bytes: Annotated[int, Field(ge=1, le=MAX_PAYLOAD_BYTES)] = MAX_PAYLOAD_BYTES
@@ -78,6 +80,11 @@ class Settings(_Model):
     tokens: TokenSettings | None = None
     allow_unauthenticated: bool = False
     """Accept calls without tokens, for a registration with ``allow_insecure_transport``."""
+
+    @property
+    def event_store_path(self) -> Path:
+        """Where the middleware records escalations, alerts and monitor findings."""
+        return self.event_store if self.event_store is not None else self.state_dir / "events.db"
 
     @model_validator(mode="after")
     def _authentication(self) -> Self:
@@ -101,7 +108,7 @@ def load_settings(path: Path) -> Settings:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise SettingsError(f"cannot read settings {path}: {exc}") from exc
     base = path.parent
-    for key in ("state_dir", "ceiling"):
+    for key in ("state_dir", "event_store", "ceiling"):
         _resolve(data, key, base)
     for section, keys in (("tls", ("certificate", "private_key")), ("tokens", ("public_key",))):
         table = data.get(section)

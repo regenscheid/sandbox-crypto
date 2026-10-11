@@ -36,7 +36,7 @@ The middleware itself can also deny: `git_request_invalid` (a fetch body that is
 
 **Monitors.** The middleware counts the bytes each sandbox sends in allowed requests (request line, visible headers and body) over a sliding hour and reports a monitor as a finding and a `monitor` record, at most once an hour per sandbox. Response bytes are not counted. Monitors never change a decision.
 
-Records are appended to `events.jsonl` in the state directory, one JSON object per line. They keep the request's method, scheme, host, port and path, and only the size of its query string, which can hold data and credential placeholders. The event store with its hash chain will replace this file.
+**Records.** Escalations, alerts and monitor findings go to the [event store](EVENT-STORE.md), whose hash chain makes later changes evident: `events.db` in the state directory, unless the settings name another file (`event_store`). Each record has the kind `escalation`, `alert` or `monitor`, the source `policy-middleware`, the store's time, and a payload with the sandbox, request id, policy revision, rule and reason. Escalations and alerts add the request's method, scheme, host, port and path, and only the size of its query string, which can hold data and credential placeholders; bodies are never recorded. An append returns once its record is on disk, which on babbage adds about 2 ms (median; p99 about 8 ms) to a request that is escalated or alerted, and nothing to the others. It waits at most 250 ms for the store, so keep the registration's `timeout` above that. An alert whose record cannot be stored is denied (`audit_unavailable`); an escalation is denied anyway, and a monitor finding is still returned.
 
 ## Policy store
 
@@ -46,7 +46,7 @@ The worker service writes, and the middleware reads, a state directory ([worker]
 | --- | --- |
 | `policies/<hex>.yaml` | A project policy file, named by the hex SHA-256 of its bytes; a file whose bytes do not match its name is rejected |
 | `sandboxes/<sandbox id>.json` | `{"policy": "sha256:<hex>"}`: the revision an OpenShell sandbox is decided under |
-| `events.jsonl` | The middleware's records |
+| `events.db` | Written by the middleware: its records, in the [event store](EVENT-STORE.md) (with `events.db-wal` and `events.db-shm` while it is open) |
 
 `ValidateConfig` accepts a compiled sandbox policy only when its project policy is already in the store, so the gateway refuses a sandbox policy the middleware could not decide. The gateway asks before it creates the sandbox, so the policy must be stored first, and the sandbox bound once OpenShell has assigned its id. The worker does both for the sandboxes it creates (`sandbox-science-worker policy add` stores a revision). For sandboxes made by hand, the middleware's command line does them:
 
