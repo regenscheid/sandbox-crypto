@@ -1,0 +1,153 @@
+{
+  "about": "Responses from proxy.golang.org and sum.golang.org, captured on 2026-10-11 (UTC) with plain GET requests and stored byte for byte unless 'filter' says otherwise. 'path' is the request path below /go/ that maps to 'url', with module paths and versions case-encoded ('!' and a lowercase letter for an uppercase letter; the go command itself sends '!' as %21). 'module' is the decoded module path; 'date' is the response's Date header (a CDN may have cached it earlier). test_adapter_go.py derives request paths from them; the cache does not parse these bodies.",
+  "fixtures": [
+    {
+      "file": "toml-list.txt",
+      "path": "github.com/!burnt!sushi/toml/@v/list",
+      "url": "https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/list",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "module": "github.com/BurntSushi/toml"
+    },
+    {
+      "file": "toml-latest.json",
+      "path": "github.com/!burnt!sushi/toml/@latest",
+      "url": "https://proxy.golang.org/github.com/!burnt!sushi/toml/@latest",
+      "content_type": "application/json",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "module": "github.com/BurntSushi/toml"
+    },
+    {
+      "file": "toml-v1.4.0.info.json",
+      "path": "github.com/!burnt!sushi/toml/@v/v1.4.0.info",
+      "url": "https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/v1.4.0.info",
+      "content_type": "application/json",
+      "date": "Sat, 10 Oct 2026 23:48:03 GMT",
+      "module": "github.com/BurntSushi/toml",
+      "version": "v1.4.0"
+    },
+    {
+      "file": "toml-v1.4.0.mod",
+      "path": "github.com/!burnt!sushi/toml/@v/v1.4.0.mod",
+      "url": "https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/v1.4.0.mod",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 00:15:59 GMT",
+      "module": "github.com/BurntSushi/toml",
+      "version": "v1.4.0"
+    },
+    {
+      "file": "go-autorest-list.txt",
+      "path": "github.com/!azure/go-autorest/@v/list",
+      "url": "https://proxy.golang.org/github.com/!azure/go-autorest/@v/list",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 01:01:03 GMT",
+      "module": "github.com/Azure/go-autorest",
+      "note": "+incompatible versions"
+    },
+    {
+      "file": "go-autorest-v14.2.0-incompatible.info.json",
+      "path": "github.com/!azure/go-autorest/@v/v14.2.0+incompatible.info",
+      "url": "https://proxy.golang.org/github.com/!azure/go-autorest/@v/v14.2.0+incompatible.info",
+      "content_type": "application/json",
+      "date": "Sat, 10 Oct 2026 22:12:48 GMT",
+      "module": "github.com/Azure/go-autorest",
+      "version": "v14.2.0+incompatible"
+    },
+    {
+      "file": "go-autorest-v14.2.0-incompatible.mod",
+      "path": "github.com/!azure/go-autorest/@v/v14.2.0+incompatible.mod",
+      "url": "https://proxy.golang.org/github.com/!azure/go-autorest/@v/v14.2.0+incompatible.mod",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 01:01:03 GMT",
+      "module": "github.com/Azure/go-autorest",
+      "version": "v14.2.0+incompatible"
+    },
+    {
+      "file": "toolchain-list-linux-amd64.txt",
+      "path": "golang.org/toolchain/@v/list",
+      "url": "https://proxy.golang.org/golang.org/toolchain/@v/list",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 01:00:32 GMT",
+      "module": "golang.org/toolchain",
+      "filter": "only the lines ending in .linux-amd64 (the full list is about 200 KB)"
+    },
+    {
+      "file": "toolchain-latest.json",
+      "path": "golang.org/toolchain/@latest",
+      "url": "https://proxy.golang.org/golang.org/toolchain/@latest",
+      "content_type": "application/json",
+      "date": "Sun, 11 Oct 2026 01:01:03 GMT",
+      "module": "golang.org/toolchain"
+    },
+    {
+      "file": "toolchain-v0.0.1-go1.21.0.linux-amd64.info.json",
+      "path": "golang.org/toolchain/@v/v0.0.1-go1.21.0.linux-amd64.info",
+      "url": "https://proxy.golang.org/golang.org/toolchain/@v/v0.0.1-go1.21.0.linux-amd64.info",
+      "content_type": "application/json",
+      "date": "Sun, 11 Oct 2026 01:01:03 GMT",
+      "module": "golang.org/toolchain",
+      "version": "v0.0.1-go1.21.0.linux-amd64"
+    },
+    {
+      "file": "toolchain-v0.0.1-go1.21.0.linux-amd64.mod",
+      "path": "golang.org/toolchain/@v/v0.0.1-go1.21.0.linux-amd64.mod",
+      "url": "https://proxy.golang.org/golang.org/toolchain/@v/v0.0.1-go1.21.0.linux-amd64.mod",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 01:01:03 GMT",
+      "module": "golang.org/toolchain",
+      "version": "v0.0.1-go1.21.0.linux-amd64"
+    },
+    {
+      "file": "x-net-v0.0.0-20191109021931-daa7c04131f5.info.json",
+      "path": "golang.org/x/net/@v/v0.0.0-20191109021931-daa7c04131f5.info",
+      "url": "https://proxy.golang.org/golang.org/x/net/@v/v0.0.0-20191109021931-daa7c04131f5.info",
+      "content_type": "application/json",
+      "date": "Sun, 11 Oct 2026 00:59:29 GMT",
+      "module": "golang.org/x/net",
+      "version": "v0.0.0-20191109021931-daa7c04131f5",
+      "note": "pseudo-version"
+    },
+    {
+      "file": "yaml.v3-list.txt",
+      "path": "gopkg.in/yaml.v3/@v/list",
+      "url": "https://proxy.golang.org/gopkg.in/yaml.v3/@v/list",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 01:00:29 GMT",
+      "module": "gopkg.in/yaml.v3"
+    },
+    {
+      "file": "sumdb-latest.txt",
+      "path": "sumdb/sum.golang.org/latest",
+      "url": "https://sum.golang.org/latest",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 00:59:03 GMT"
+    },
+    {
+      "file": "sumdb-lookup-toml.txt",
+      "path": "sumdb/sum.golang.org/lookup/github.com/!burnt!sushi/toml@v1.4.0",
+      "url": "https://sum.golang.org/lookup/github.com/!burnt!sushi/toml@v1.4.0",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 00:08:10 GMT",
+      "module": "github.com/BurntSushi/toml",
+      "version": "v1.4.0"
+    },
+    {
+      "file": "sumdb-lookup-go-autorest.txt",
+      "path": "sumdb/sum.golang.org/lookup/github.com/!azure/go-autorest@v14.2.0+incompatible",
+      "url": "https://sum.golang.org/lookup/github.com/!azure/go-autorest@v14.2.0+incompatible",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 00:05:43 GMT",
+      "module": "github.com/Azure/go-autorest",
+      "version": "v14.2.0+incompatible"
+    },
+    {
+      "file": "sumdb-lookup-toolchain.txt",
+      "path": "sumdb/sum.golang.org/lookup/golang.org/toolchain@v0.0.1-go1.21.0.linux-amd64",
+      "url": "https://sum.golang.org/lookup/golang.org/toolchain@v0.0.1-go1.21.0.linux-amd64",
+      "content_type": "text/plain; charset=UTF-8",
+      "date": "Sun, 11 Oct 2026 01:01:03 GMT",
+      "module": "golang.org/toolchain",
+      "version": "v0.0.1-go1.21.0.linux-amd64"
+    }
+  ]
+}

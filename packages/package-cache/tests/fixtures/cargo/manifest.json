@@ -1,0 +1,71 @@
+{
+  "about": "Responses from crates.io's sparse index, captured on 2026-10-11 (UTC) with plain GET requests and stored byte for byte. 'path' is the request path below /cargo/ that maps to 'url'; 'date' is the response's Date header (a CDN may have cached it earlier). test_adapter_cargo.py derives request paths from them; the cache does not parse these bodies.",
+  "fixtures": [
+    {
+      "file": "config.json",
+      "path": "index/config.json",
+      "url": "https://index.crates.io/config.json",
+      "content_type": "application/octet-stream",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT"
+    },
+    {
+      "file": "index-z.jsonl",
+      "path": "index/1/z",
+      "url": "https://index.crates.io/1/z",
+      "content_type": "text/plain",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "crate": "z"
+    },
+    {
+      "file": "index-md.jsonl",
+      "path": "index/2/md",
+      "url": "https://index.crates.io/2/md",
+      "content_type": "text/plain",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "crate": "md"
+    },
+    {
+      "file": "index-fnv.jsonl",
+      "path": "index/3/f/fnv",
+      "url": "https://index.crates.io/3/f/fnv",
+      "content_type": "text/plain",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "crate": "fnv"
+    },
+    {
+      "file": "index-cfg-if.jsonl",
+      "path": "index/cf/g-/cfg-if",
+      "url": "https://index.crates.io/cf/g-/cfg-if",
+      "content_type": "text/plain",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "crate": "cfg-if"
+    },
+    {
+      "file": "index-inflector.jsonl",
+      "path": "index/in/fl/inflector",
+      "url": "https://index.crates.io/in/fl/inflector",
+      "content_type": "text/plain",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "crate": "inflector",
+      "note": "the crate is named Inflector: index paths are lowercase, dl keeps the case"
+    },
+    {
+      "file": "index-rand_core.jsonl",
+      "path": "index/ra/nd/rand_core",
+      "url": "https://index.crates.io/ra/nd/rand_core",
+      "content_type": "text/plain",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "crate": "rand_core",
+      "note": "pre-release versions"
+    },
+    {
+      "file": "index-wasi.jsonl",
+      "path": "index/wa/si/wasi",
+      "url": "https://index.crates.io/wa/si/wasi",
+      "content_type": "text/plain",
+      "date": "Sun, 11 Oct 2026 01:01:02 GMT",
+      "crate": "wasi",
+      "note": "versions with build metadata"
+    }
+  ]
+}

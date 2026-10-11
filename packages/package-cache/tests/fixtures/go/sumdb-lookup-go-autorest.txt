@@ -1,0 +1,9 @@
+1350399
+github.com/Azure/go-autorest v14.2.0+incompatible h1:V5VMDjClD3GiElqLWO7mz2MxNAK/vTfRHdAubSIPRgs=
+github.com/Azure/go-autorest v14.2.0+incompatible/go.mod h1:r+4oMnoxhatjLLJ6zxSWATqVooLgysK6ZNox3g/xq24=
+
+go.sum database tree
+68047077
+YfQtpwc20OA3XNBP5say+muUZpOHSP6wsFlrTcTpGVE=
+
+— sum.golang.org Az3grjoR+5KL47Joiqy6aPXbNolwvlxF1qOBNziaWqwg1ZNYkRrOpVQe34NhU8IuADDN29hDSbsP7hxkTnLqTkuR9A0=
