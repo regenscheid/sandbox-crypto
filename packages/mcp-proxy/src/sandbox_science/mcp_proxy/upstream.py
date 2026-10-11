@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import json
 import logging
 import socket
 import ssl
@@ -51,6 +52,7 @@ from .jsonrpc import JsonObject, Notification, Request, Response
 from .reasons import (
     CREDENTIAL_IN_BODY,
     DESTINATION_FORBIDDEN,
+    FENCE_DENIED,
     POOL_CEILING_DENIED,
     RESULT_TOO_LARGE,
     UPSTREAM_ERROR,
@@ -59,6 +61,8 @@ from .reasons import (
 )
 
 USER_AGENT: Final = "sandbox-science-mcp-proxy/0.1"
+FENCE_ANSWER_LIMIT: Final = 8192
+"""The most of a 403 answer read to tell the sandbox's fence from the server."""
 ACCEPT: Final = "application/json, text/event-stream"
 CONNECT_TIMEOUT: Final = 10.0
 MAX_SERVER_REQUESTS: Final = 16
@@ -230,6 +234,10 @@ class Upstream:
             async with self._http.post(
                 target.url, data=body, headers=headers, allow_redirects=False
             ) as response:
+                if response.status == 403:
+                    refusal = await _fence_refusal(response)
+                    if refusal is not None:
+                        raise UpstreamError(FENCE_DENIED, refusal, status=403)
                 _check_status(target, response.status)
                 yield response
         except aiohttp.ClientConnectorDNSError as exc:
@@ -355,6 +363,40 @@ def _events(parse: Callable[[], list[jsonrpc.Event]]) -> list[jsonrpc.Event]:
         return parse()
     except MessageError as exc:
         raise UpstreamError(UPSTREAM_ERROR, str(exc)) from exc
+
+
+async def _fence_refusal(response: aiohttp.ClientResponse) -> str | None:
+    """What OpenShell's fence said, when a 403 is its refusal rather than the server's.
+
+    Its MCP inspection refuses a call the proxy sandbox's compiled policy does not
+    allow with a JSON body naming the policy and the layer (lab 13), before the call
+    reaches the server. A server could send the same body, so the call still counts as
+    sent: the reason only says where to look.
+    """
+    if response.content_type != "application/json":
+        return None
+    data = b""
+    try:
+        while len(data) < FENCE_ANSWER_LIMIT:
+            chunk = await response.content.read(FENCE_ANSWER_LIMIT - len(data))
+            if not chunk:
+                break
+            data += chunk
+        body: object = json.loads(data)
+    except (ValueError, aiohttp.ClientError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    fields = cast(dict[str, object], body)
+    policy, detail = fields.get("policy"), fields.get("detail")
+    if (
+        fields.get("error") != "policy_denied"
+        or "layer" not in fields
+        or not isinstance(policy, str)
+    ):
+        return None
+    said = f"the fence's policy {policy}: {detail if isinstance(detail, str) else 'refused'}"
+    return "".join(c if c.isprintable() else "?" for c in said)[:300]
 
 
 def _check_status(target: Target, status: int) -> None:
