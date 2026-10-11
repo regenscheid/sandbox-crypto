@@ -17,6 +17,7 @@ from sandbox_science.contracts import (
     ExecutionRequest,
     ExecutionState,
     PdfRequest,
+    ProvisionRequest,
     ReadFileRequest,
     ShellRequest,
     WriteFileRequest,
@@ -173,3 +174,55 @@ def test_pdf_requests_are_execution_requests() -> None:
     )
     assert isinstance(request, PdfRequest)
     assert (request.dpi, request.include_artifacts) == (150, False)
+
+
+# Provisioning requests (Conda provisioning, CP-1): specs reach package managers only as
+# packages, never as options, files or URLs.
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"capability": "gp"},
+        {"conda": ["pari>=2.15", "conda-forge::fpylll", "pari 2.15.4 h0_0", "numpy=1.26"]},
+        {"conda": ["conda-forge/linux-64::python-flint >=0.6,<1"]},
+        {"pip": ["pdf_oxide>=0.3", "requests[socks]==2.32.0"], "pip_reason": "not on conda-forge"},
+        {"system": ["libgmp-dev"]},
+        {"conda": ["pari"], "system": ["texlive-latex-extra"]},
+    ],
+)
+def test_provisioning_requests_name_a_capability_or_specs(fields: dict[str, Any]) -> None:
+    ProvisionRequest.model_validate(
+        {"operation_id": "op", "context": CONTEXT, "purpose": "factor\twith\nPARI", **fields}
+    )
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({}, "name a capability"),
+        ({"capability": "gp", "conda": ["pari"]}, "name a capability"),
+        ({"conda": ["-c bioconda"]}, "pattern"),
+        ({"conda": ["--override-channels"]}, "pattern"),
+        ({"conda": ["pari;rm -rf /"]}, "pattern"),
+        ({"conda": ["https://example.org/x.conda"]}, "pattern"),
+        ({"conda": ["./x.conda"]}, "pattern"),
+        ({"conda": ["numpy[version='1']"]}, "pattern"),
+        ({"conda": ["Pari"]}, "pattern"),
+        ({"pip": ["x @ https://example.org/x.whl"], "pip_reason": "r"}, "pattern"),
+        ({"pip": ["x; python_version<'3'"], "pip_reason": "r"}, "pattern"),
+        ({"pip": ["--index-url=https://example.org"], "pip_reason": "r"}, "pattern"),
+        ({"pip": ["x"]}, "pip_reason"),
+        ({"conda": ["x"], "pip_reason": "r"}, "pip_reason"),
+        ({"system": ["-y"]}, "pattern"),
+        ({"capability": "Not A Name"}, "pattern"),
+        ({"capability": "gp", "purpose": "a\x00b"}, "pattern"),
+        ({"conda": [f"p{index}" for index in range(33)]}, "at most 32"),
+    ],
+)
+def test_provisioning_requests_refuse_what_is_no_package(
+    fields: dict[str, Any], message: str
+) -> None:
+    request = {"operation_id": "op", "context": CONTEXT, "purpose": "x", **fields}
+    with pytest.raises(ValidationError, match=message):
+        ProvisionRequest.model_validate(request)

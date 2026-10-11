@@ -90,7 +90,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             answer.add_argument(
                 "--scope",
                 choices=ALL_SCOPES,
-                help="request (the default), or host: any path on its host with its method",
+                help="request (the default), or host: any path on its host with its method; "
+                "a provisioning operation's request takes files, its exact file set",
             )
             answer.add_argument("--for", dest="hours", type=float, default=8.0, help="hours")
     args = parser.parse_args(argv)
@@ -122,7 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 path = load_settings(args.settings).event_store_path
                 hours = getattr(args, "hours", None)
                 return _answer(
-                    path, args.command, args.request, getattr(args, "scope", "request"), hours
+                    path, args.command, args.request, getattr(args, "scope", None), hours
                 )
     except (MiddlewareError, StoreError, PolicyLoadError, EventStoreError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)

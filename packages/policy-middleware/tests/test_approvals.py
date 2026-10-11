@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -267,3 +268,90 @@ def test_without_a_record_reader_every_escalation_is_recorded(
     plain.evaluate_http(facts())
     plain.evaluate_http(facts(request_id="req-2"))
     assert kinds(events) == ["escalation", "escalation"]
+
+
+# A provisioning operation's request for an exact set of package files (Conda provisioning).
+
+PACKAGES_POLICY = """\
+apiVersion: sandbox-science/v0alpha1
+kind: ProjectPolicy
+metadata:
+  name: packages
+packages:
+  conda: {channels: [conda-forge], action: escalate}
+  pypi: {action: allow}
+"""
+PARI = "/conda/conda-forge/linux-64/pari-2.15.4-h0_0.conda"
+GMP = "/conda/conda-forge/linux-64/gmp-6.3.0-h0_1.conda"
+FLINT = "/conda/conda-forge/linux-64/flint-3.1.0-h0_0.conda"
+
+
+def test_an_approved_file_set_downloads_and_nothing_else(
+    store: PolicyStore,
+    sandbox_id: str,
+    events: EventStore,
+    clock: Clock,
+    make_facts: FactsFactory,
+    settings: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    policy = store.add_policy(PACKAGES_POLICY.encode())
+    store.bind(sandbox_id, policy.digest)
+    store.bind("sbx-0002", policy.digest)
+    middleware = PolicyMiddleware(
+        store,
+        ceiling=PoolCeiling.unrestricted(),
+        floor=HardFloor(),
+        events=StoreSink(events),
+        now=clock,
+        requests=partial(_read_records, events.path),
+    )
+    config = {
+        "policy": {"name": "packages", "digest": policy.digest},
+        "package_cache": {"host": "cache.internal", "port": 8090},
+    }
+
+    def fetch(path: str, sandbox: str = sandbox_id) -> evaluator.Verdict:
+        facts = make_facts(
+            sandbox_id=sandbox, host="cache.internal", port=8090, scheme="http", path=path
+        )
+        return middleware.evaluate_http(dataclasses.replace(facts, config=config))
+
+    # The worker asks once for the files a resolved install would download.
+    key = RequestKey.packages(sandbox_id, policy.digest, "prv-1", [PARI, GMP])
+    payload: dict[str, object] = {
+        "target": key.payload(),
+        "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
+        "files": [{"path": PARI, "name": "pari"}, {"path": GMP, "name": "gmp"}],
+    }
+    seq = events.append("escalation", "worker", payload).seq
+    assert main(["pending", "--settings", str(settings)]) == 0
+    out = capsys.readouterr().out
+    assert listed(out) == [seq]
+    assert PARI in out
+    assert GMP in out
+    # Unanswered, its files wait like any escalated download; index reads go on.
+    assert fetch(PARI).reason_code == evaluator.APPROVAL_REQUIRED
+    assert fetch("/conda/conda-forge/linux-64/repodata.json").allowed
+    assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 0
+    for path in (PARI, GMP):
+        allowed = fetch(path)
+        assert allowed.allowed, path
+        assert [finding.type for finding in allowed.findings] == ["policy_approval"]
+    with StoreReader(events.path) as reader:
+        approved = [record for record in reader.records() if record.kind == "approved"]
+    assert [record.data()["grant"] for record in approved] == ["packages", "packages"]
+    assert {record.data()["request_seq"] for record in approved} == {seq}
+    # Nothing else: another file, another sandbox, or once a denial withdraws the set.
+    assert fetch(FLINT).reason_code == evaluator.APPROVAL_REQUIRED
+    assert fetch(PARI, "sbx-0002").reason_code == evaluator.APPROVAL_REQUIRED
+    assert main(["deny", "--settings", str(settings), "--request", str(seq)]) == 0
+    assert fetch(GMP).reason_code == evaluator.APPROVAL_REQUIRED
+    # And not once the approval expires.
+    second = RequestKey.packages(sandbox_id, policy.digest, "prv-2", [FLINT])
+    payload = {**payload, "target": second.payload(), "files": [{"path": FLINT}]}
+    seq = events.append("escalation", "worker", payload).seq
+    assert main(["approve", "--settings", str(settings), "--request", str(seq), "--for", "1"]) == 0
+    assert fetch(FLINT).allowed
+    clock.offset = timedelta(hours=2)
+    assert not fetch(FLINT).allowed

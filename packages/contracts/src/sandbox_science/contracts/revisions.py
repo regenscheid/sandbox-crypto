@@ -73,6 +73,40 @@ Argument = Annotated[str, StringConstraints(max_length=512, pattern=r"^[^\x00-\x
 Fingerprint = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
 """The executor's digest of an environment's package records, which tells revisions apart."""
 Md5 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{32}$")]
+CapabilityName = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")]
+"""A capability of the catalog, such as ``gp`` or ``sage`` (Conda provisioning, CP-3)."""
+ProbeId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9:._-]{0,127}$")]
+"""A probe of the catalog, such as ``gp-factor``, or a version check, ``installed:conda:pari``."""
+MAX_PROBES: Final = 64
+"""Probe results a revision keeps: the newest of each probe."""
+MAX_PROBE_OUTPUT: Final = 2000
+"""Characters of a probe's output a result keeps."""
+
+
+class ProbeResult(Contract):
+    """A probe's result at one environment revision (CP-21 to CP-24).
+
+    A capability's status belongs to the revision its probes ran at. A version check,
+    which finds a requested package in the revision's lockfile, is ``import_check``: it
+    shows the package is installed, not that it works (CP-22).
+    """
+
+    capability: CapabilityName | None = None
+    """None for the version check of a package requested outside the catalog."""
+    probe: ProbeId
+    version: Annotated[int, Field(ge=1)] = 1
+    kind: Literal["functional", "import_check"]
+    status: Literal["passed", "failed", "error"]
+    """``failed``: it ran and the result was wrong; ``error``: it could not run to an end,
+    such as a timeout."""
+    revision: Annotated[int, Field(ge=0)]
+    execution_id: Identifier | None = None
+    """The execution that ran it; None for a check of the lockfile."""
+    output: Annotated[str, StringConstraints(max_length=MAX_PROBE_OUTPUT)] = ""
+    duration_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
+    operation: Identifier | None = None
+    """The provisioning operation that ran it."""
+    recorded_at: datetime
 
 
 class CondaPackage(Contract):
@@ -172,6 +206,11 @@ class EnvironmentRevision(Contract):
     lockfile: LockfileRef | None = None
     """None until the worker has it. A revision that changed again before its lockfile
     was taken has none, and the worker keeps only the newest lockfiles of an environment."""
+    operation: Identifier | None = None
+    """The provisioning operation whose install made the change, when one did."""
+    probes: tuple[ProbeResult, ...] = Field(default=(), max_length=MAX_PROBES)
+    """The probes that ran at this revision, the newest of each: the status of the
+    capabilities at this revision (CP-24)."""
     recorded_at: datetime
 
 
