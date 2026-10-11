@@ -33,7 +33,7 @@ Proposed by the plan review (D57, D58), following the user's requirement that a 
 - The sandbox environment holds only opaque placeholders. The proxy substitutes the real value immediately before forwarding, and only when both the network policy (calling binary and destination) and the credential's endpoint binding (host, port, path) allow the request.
 - An unbound destination, or an unknown or expired placeholder, fails closed with `credential_endpoint_mismatch` and a secret-free security finding.
 - Gateway-managed refresh (OAuth2 refresh/client credentials, Google service accounts, AWS STS) keeps sandbox-visible tokens short-lived. Long-lived secret material stays in the gateway.
-- Storage: the gateway encrypts credentials (AES-256-GCM) in its own database by default. Hosted gateways can use the `kubernetes-secrets` driver, or the `vault` driver. HashiCorp Vault is BUSL-1.1, so under the [licensing policy](LICENSING.md) prefer Kubernetes Secrets or OpenBao (MPL-2.0); OpenBao compatibility with the vault driver needs testing. Single-user babbage can start with the default encrypted store.
+- Storage: the gateway encrypts credentials (AES-256-GCM) in its own database by default. Hosted gateways can use the `kubernetes-secrets` driver, or the `vault` driver. HashiCorp Vault is BUSL-1.1, so under the [licensing policy](LICENSING.md) prefer Kubernetes Secrets or OpenBao (MPL-2.0); OpenBao compatibility with the vault driver needs testing. Single-user babbage can start with the default encrypted store. Its key-encryption key is a file beside the database, so the whole gateway state directory is secret.
 
 Limits to design around (as documented for v0.1.3):
 
@@ -42,11 +42,13 @@ Limits to design around (as documented for v0.1.3):
 - Credentials are rewritten only in headers, query parameters, URL paths, opted-in request bodies and WebSocket text. Cookies, unsupported bodies, binary frames, `tls: skip` and non-HTTP tunnels get no injection. Those protocols need a different design rather than a raw key.
 - Responses are not rewritten, so an endpoint that echoes its credential would reveal it. Test each provider for this.
 
+Observed on babbage ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)): the environment held only placeholders; substitution reached only bound endpoints, from any program; an unbound destination got `credential_endpoint_mismatch` and received nothing; and the policy middleware decided each request before substitution.
+
 **MCP.** Authentication modes, the OAuth flow, the connector auth service and the MCP proxy (all MCP traffic, including from workers) are in [MCP connectors](MCP-CONNECTORS.md) (D66, D67). Declare each MCP server as a `protocol: mcp` endpoint with explicit method and tool-name allowlists (`allow_all_known_mcp_methods` off unless deliberately needed; extension methods need exact rules) and attach its credentials as a provider. Prefer read-only tools and tokens. A project grant then reads as "these tools on these servers", which is easy to review and to show in approval prompts.
 
 The orchestrator also calls MCP servers and the model API. Evaluate running the orchestrator itself as an OpenShell sandbox with model and MCP providers attached, so that it too holds only placeholders and its egress follows policy (D47).
 
-**Policy changes.** OpenShell's policy advisor lets an agent propose a new network rule; its prover flags risky changes such as new credentialed reach. Keep automatic approval **off**, route proposals into the shared permission workflow, and note that v0.1.3 does not yet run the prover automatically at sandbox startup.
+**Policy changes.** OpenShell's policy advisor lets an agent propose a new network rule; its prover flags risky changes such as new credentialed reach. Keep automatic approval **off**, route proposals into the shared permission workflow, and note that v0.1.3 does not yet run the prover automatically at sandbox startup. The v0.1.3 prover also reports any policy that uses a middleware or a `protocol: mcp` endpoint as unsupported, which covers every research sandbox and the MCP proxy. For those, the compiler and the orchestrator must check new credentialed reach themselves ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)).
 
 ## Proposed layers
 

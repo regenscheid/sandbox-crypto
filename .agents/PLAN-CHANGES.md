@@ -4,6 +4,13 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-10
 
+- **Lab 2 on babbage** ([lab report](docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)).
+  - Real clients installed through the middleware and the package cache in a sandbox.
+  - Cargo needs `http.multiplexing = false` while the cache is plain HTTP. The client configuration now says so.
+  - Lockfiles written in a sandbox name the cache (backlog).
+  - OpenShell refuses overlapping endpoints whose address ranges differ, so a provider whose profile names a host cannot be attached to a research sandbox as it stands. Two arrangements work; the user will choose.
+  - The MCP proxy's policy loaded and its rules held.
+  - The v0.1.3 prover reports policies with middleware or MCP endpoints as unsupported. The threat model (A3) and monitoring no longer rely on it for those policies.
 - **Package cache review.** An independent review of the cache found no way to poison it, get a file past its digest check, or make it fetch from anything but its configured registries. Across about 300,000 generated paths, the cache and the policy classifier never disagreed about a path's ecosystem, kind or package. It did find availability problems that let one sandbox degrade the shared cache for every project:
   - downloads repeated for wrong digests;
   - a shared connection pool with no wait limit;
