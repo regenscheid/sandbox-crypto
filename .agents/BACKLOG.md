@@ -75,7 +75,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Sage through SageMath's own Jupyter kernel (`sagemath` kernelspec): the worker offers it when the environment has it, and the harness gives the agent a `sage` tool. Tested with a stand-in kernelspec
 - [x] Real SageMath from conda-forge in an OpenShell sandbox ([lab 5](docs/agent-reports/babbage-openshell-lab-5-2026-10-11.md)): preparsing, finite fields, polynomial rings, Gröbner bases, exact matrices, LaTeX, GAP, Maxima, PARI and fpylll, interrupt, timeout, restart and kernel death. SageMath 10.9 installs in about 30 s through the cache; the VM costs 0–7% on single-threaded mathematics. Needed two fixes: the compiled policy now allows pseudo-terminals and `/dev/shm`, and the executor puts the environment's tools on `PATH`
 - [ ] `crypto-base` profile with Sage present at session start (D46)
-- [ ] PDF extraction and rendering in the worker (pdf_oxide, D59)
+- [ ] PDF extraction and rendering in the worker (pdf_oxide, D59): the in-sandbox helper and the [spec](../docs/specs/pdf-sources.md) are done; the worker request kind, the agent's tools and a lab remain
 
 ## babbage
 
