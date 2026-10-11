@@ -1,6 +1,6 @@
 # Automatic consistency review
 
-Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user).** Open questions 2–5 and 7 are settled as proposed. The CR-10 defaults stand until the user's own CScience settings are known (question 1); questions 6 and 8 remain open. W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11. **Status: Approved as drafted (2026-10-11, by the user), with CR-10 and CR-28 amended for living documents and the ledger, and `math` findings added (CR-36 to CR-38, D82), later the same day.** Open questions 2–5 and 7 are settled as proposed. The CR-10 defaults stand until the user's own CScience settings are known (question 1); questions 6 and 8 remain open. W0 behavior specification; conventions in the [index](README.md).
 
 ## Scope
 
@@ -43,13 +43,15 @@ Terms:
 
 - CR-9. Triggers come from durable events: artifact revisions, including files written by shell commands and reported by the worker ([research artifacts](research-artifacts.md)), executions, document and ledger changes, and transcript entries. Agent narration and GUI callbacks are not triggers (feature plan; OpenScience Desktop misses shell-written files).
 - CR-10. A checkpoint review is due during a turn when the minimum interval since the session's last dispatch has passed and, since the watermark, any of these holds (CScience has these kinds of triggers):
-  - at least 3 new artifact revisions;
+  - at least 3 new artifact revisions, not counting revisions of documents and ledger entries, which count through the next two predicates;
   - at least 2,000 characters of agent-written durable text (documents, reports, ledger entries, plan text);
   - a new structural block in a durable document (proposed meaning: a section, table, figure, theorem or claim);
   - kernel work: 40 cells, with a 30-minute interval (the inspected source pairs these two values; how they combine needs checking);
   - the user asks for a review.
 
   The minimum interval is 120 seconds. All values are project settings; the defaults are the inspected CScience source defaults, pending the user's actual settings.
+
+  *Amended 2026-10-11: an agent's edits to a document or a ledger entry count as text toward the 2,000-character trigger, and its new structural blocks toward the third, not as artifact revisions, so that a few small edits do not dispatch a review by themselves ([living documents](living-documents.md), LD-40; [ledger](ledger.md), LG-33).*
 - CR-11. A terminal review is due when the main agent ends a turn that produced artifacts or executions with effects, left findings `open` or `claimed fixed`, or ends by claiming the work is complete. A classifier labels the final message, and its label and version are recorded (CScience). Other turns get no terminal review.
 - CR-12. Reviewer runs never trigger reviews. A turn the user interrupted, or that failed, gets no terminal review; its work stays after the watermark for the next review (OpenScience Desktop skips such turns, and Claude Code's stop hooks do not fire on interrupts).
 
@@ -62,7 +64,7 @@ Terms:
 
 ### Findings
 
-- CR-17. A finding records: ID; review ID and type; the reviewer run (alias, resolved model, rubric version); severity; category (CR-4); a statement in Markdown with LaTeX (D25); one or more anchors (transcript entry, execution log range, artifact revision and block, source page or region); pinned evidence references; an optional suggested remedy; status; and every transition with actor, time and reason.
+- CR-17. A finding records: ID; review ID and type; the reviewer run (alias, resolved model, rubric version), or for a `math` finding the math check; severity; category (CR-4, or `math`, CR-36; *amended 2026-10-11*); a statement in Markdown with LaTeX (D25); one or more anchors (transcript entry, execution log range, artifact revision and block, source page or region); pinned evidence references; an optional suggested remedy; status; and every transition with actor, time and reason.
 - CR-18. Severity is `fail` for a materially false or unsupported durable claim or a claimed action without a record, `warn` for a claim that needs correction or qualification, and `note` for information (new names; CScience separates fail-level findings from warnings).
 - CR-19. A review reports at most 10 findings. With more candidates it reports the most severe and records that the cap was reached (new; OpenScience Desktop caps at 8).
 - CR-20. The reviewer sees the open findings and re-flags one instead of duplicating it. A new finding with the same category and anchors as an open one is turned into a re-flag (new).
@@ -73,7 +75,7 @@ Terms:
 - CR-22. The author or the user responds to a finding with `fix`, which requires an explanation and references to the changed revisions or messages, or with `rebut`, an explanation with evidence. The explanation is shown to the user (CScience).
 - CR-23. Only the main agent and the user can respond. A delegated agent can propose a fix in its outcome, which the main agent then claims (new; CScience likewise keeps finding transitions with the root session).
 - CR-24. A `fix` moves the finding to `claimed fixed` and queues a confirmation review. The reviewer checks the finding, its evidence, the explanation and the referenced revisions, and confirms, rejects or cannot decide (CScience).
-- CR-25. Only a confirmation review or the user can mark a finding `confirmed fixed`, and the record shows which (user confirmation is new). The author MUST NOT be able to.
+- CR-25. Only a confirmation review or the user can mark a finding `confirmed fixed`, and the record shows which (user confirmation is new). The author MUST NOT be able to. *Amended 2026-10-11: for a `math` finding, the math check does it too, and the record says so (CR-38).*
 - CR-26. The next review evaluates a rebuttal. If it accepts it, the finding becomes `withdrawn`; if not, the finding stays `open` with the reviewer's reason and one more re-flag (new).
 
 ### Outcomes
@@ -91,11 +93,13 @@ Terms:
   | `withdrawn` | A rebuttal was accepted, or the user dismissed it | Reviewer, user |
 
   Only `confirmed fixed` and `withdrawn` are resolved; the rest stay visible as unresolved. The user, or a later review with new evidence, can re-open `unaddressed`, `superseded` and `inconclusive` findings, and the author can still fix `open` and `unaddressed` ones in a later turn.
-- CR-28. Supersession is not a fix. When every artifact revision a finding is anchored to has a newer revision and no fix is claimed, the finding becomes `superseded`, linked to the new revisions, and the next review checks whether the problem persists in them; if it does, the new finding links to the old one. A finding anchored only to transcript entries is never superseded (new; CScience closes such findings automatically, which D28 asks to distinguish from confirmation).
+
+  *Amended 2026-10-11: for `math` findings, the math check sets `open` and `confirmed fixed` (CR-36, CR-38), and they are never `superseded`.*
+- CR-28. Supersession is not a fix. When every artifact revision a finding is anchored to has a newer revision and no fix is claimed, the finding becomes `superseded`, linked to the new revisions, and the next review checks whether the problem persists in them; if it does, the new finding links to the old one. A finding anchored only to transcript entries is never superseded (new; CScience closes such findings automatically, which D28 asks to distinguish from confirmation). *Amended 2026-10-11: an anchor on a block of a living document, or on a field of a ledger entry, counts as replaced only when a later revision changes or removes that block or field, not on every new revision; supersession is decided when the next review is dispatched, so that an author can change the block and then claim the fix ([living documents](living-documents.md), LD-25; [ledger](ledger.md), LG-25).*
 
 ### Bounded completion
 
-- CR-29. After a terminal review with `fail` findings, the author is resumed for a response round, followed by confirmation of claimed fixes; at most 2 rounds per turn (new defaults; CScience bounds its loop, and Claude Code caps consecutive stop-hook continuations).
+- CR-29. After a terminal review with `fail` findings, the author is resumed for a response round, followed by confirmation of claimed fixes; at most 2 rounds per turn (new defaults; CScience bounds its loop, and Claude Code caps consecutive stop-hook continuations). *Amended 2026-10-11: open `math` findings for the turn's work also start a response round, which hands them over together with the terminal review's findings (CR-37).*
 - CR-30. A finding is re-flagged to the author at most twice; then it becomes `unaddressed` instead of being injected again (CScience keeps a re-flag count).
 - CR-31. Each review has a turn, time and cost budget. A review that reaches it ends `capped` and keeps the findings it recorded.
 - CR-32. When the bound is reached, `open` findings become `unaddressed`, `claimed fixed` findings stay unconfirmed, and the turn completes with a summary of findings by status and severity.
@@ -106,11 +110,24 @@ Terms:
 - CR-34. An orchestrator restart drops the reviews in progress. A review that fails or is dropped is dispatched again with its window, at most twice; after the third failure the window is listed in the session as unreviewed and the watermark moves past it (CScience reconciles dropped reviews with bounded recovery).
 - CR-35. Automatic review is on by default (D04, D35). Per project: thresholds, minimum interval, the hold of CR-15, bounds and the severity that interrupts. Each review records the configuration revision it ran under ([product](../PRODUCT.md): record the active configuration).
 
+### Math findings
+
+*Added 2026-10-11 (D82).* A formula that KaTeX rejects goes back to the agent that wrote it as a finding, while the GUI shows its automatic repair meanwhile. These findings come from a mechanical check, not from a reviewer; they share the findings' records and lifecycle, with the differences below.
+
+- CR-36. When durable text an agent wrote is saved, the platform checks its math with the GUI's KaTeX ([living documents](living-documents.md), LD-53, LD-54). A span KaTeX rejects becomes a finding of category `math` and severity `warn`, anchored to the span, with KaTeX's error, and with the repair the display found as its suggested remedy (CR-17). It is addressed to the agent run that last changed the block holding the span, and the session's main agent answers it (CR-23). Text the user wrote, a reviewer's own statements and chat messages get the display repair only. The check is the platform's observation and needs no model.
+- CR-37. Math findings never interrupt the author (CR-21). The platform collects them during the turn and hands them to the author in the turn's closing response round, together with any findings of its terminal review (CR-15, CR-29). Math in text saved outside a turn reaches the session's main agent at its next turn.
+- CR-38. The author fixes the source with an ordinary patch; no `fix` response is needed. The check runs again on each new revision of the block holding the span:
+  - if KaTeX accepts the span, the finding becomes `confirmed fixed`, recorded as confirmed by the math check;
+  - if the span still fails, the finding is re-flagged, and after two re-flags it becomes `unaddressed` (CR-30), so the loop is bounded;
+  - if the formula is gone, the finding is resolved as `confirmed fixed`, and its history notes that the formula was removed rather than repaired.
+
+  A `math` finding is never `superseded` (CR-28): the check decides instead.
+
 ## Contracts used
 
 - `ArtifactRef`: snapshot contents and evidence references are pinned.
-- `Anchor`: transcript entries, execution log ranges, artifact blocks and source pages or regions; transcript and log anchors are proposed additions ([index](README.md#proposed-contract-additions-new)).
-- `Event`: triggers consume artifact, execution, document and transcript events. Reviews emit `review.dispatched`, `review.ended` (with outcome), `finding.created` and `finding.transitioned`. Findings are the reviewer run's assertions; transitions record who made them.
+- `Anchor`: transcript entries, execution log ranges, artifact blocks and source pages or regions; transcript and log anchors are proposed additions ([index](README.md#proposed-contract-additions-new)). `math` findings anchor to a math span in a document block, a ledger entry's field or a comment (proposed addition 7).
+- `Event`: triggers consume artifact, execution, document and transcript events. Reviews emit `review.dispatched`, `review.ended` (with outcome), `finding.created` and `finding.transitioned`. Findings are the reviewer run's assertions; transitions record who made them. `math` findings and their mechanical transitions are the platform's observations.
 - `Mutation`: a finding transition names the status it expects, so concurrent responses conflict instead of overwriting.
 - `ExecutionContext`: findings cite attempts by their context; the reviewer starts none.
 - `EnvironmentRecord`: the snapshot names the environment revisions of the executions it covers.
@@ -174,6 +191,14 @@ All fixtures are `scripted`: the author's and the reviewer's model output is scr
 - *When* the user sends a message while a terminal review is pending, and the review then reports a `fail` finding.
 - *Then* the new turn starts at once, and the finding reaches the author at the first safe point of that turn.
 
+**CR-F14 Math findings** (CR-36 to CR-38; added 2026-10-11)
+- *Given* a turn in which the author's patch saves a document revision containing `$\frac{a}{$`, and the user's save adds `$\sqrt{$` to the same document.
+- *Then* exactly one `math` finding exists: `warn`, for the author's run, anchored to the span, with KaTeX's error and the suggested remedy `\frac{a}{}`. The user's formula has none. The GUI has shown the span repaired, marked as such, since the save. The finding never interrupted the turn; when the turn ends, the author is resumed for a response round that hands it over with the terminal review's findings.
+- *When* the author patches the span to `\frac{a}{b}`.
+- *Then* the finding is `confirmed fixed`, recorded as confirmed by the math check, and no confirmation review ran.
+- *When*, in a later turn, the author writes another broken formula, and two patches in a row leave it failing.
+- *Then* the first re-flags its finding; after the second it is `unaddressed`, and the turn completes without a third round.
+
 ## Open questions
 
 1. Which review settings does the user's CScience actually run with? The defaults in CR-10 are inspected source defaults. How the two kernel-work values combine, and what counts as a structural block, also need checking against the user's experience.
@@ -187,4 +212,4 @@ All fixtures are `scripted`: the author's and the reviewer's model output is scr
 
 ## Sources
 
-[Feature plan](../FEATURE-PLAN.md) (reviews need distinct roles), [product](../PRODUCT.md) (automatic reviews), [execution plan](../EXECUTION-PLAN.md) (automatic review behavior), [implementation plan](../IMPLEMENTATION-PLAN.md) (W4), [external skills](../EXTERNAL-SKILLS.md), decisions D04, D25, D27–D29, D35, D56. Behavior evidence: the [Claude Science](../../.agents/docs/agent-reports/claude-science.md) report (reviewer scope, triggers, findings and confirmation lifecycle), the [OpenScience Desktop](../../.agents/docs/agent-reports/openscience-desktop.md) report and its pinned `autoReview.ts` and `reviewer.md` (MIT), and the [Claude Code and Desktop](../../.agents/docs/agent-reports/claude-code-desktop.md) report. Public: Claude Code's [hooks documentation](https://code.claude.com/docs/en/hooks) (stop hooks and their loop bound).
+[Feature plan](../FEATURE-PLAN.md) (reviews need distinct roles), [product](../PRODUCT.md) (automatic reviews), [execution plan](../EXECUTION-PLAN.md) (automatic review behavior), [implementation plan](../IMPLEMENTATION-PLAN.md) (W4), [external skills](../EXTERNAL-SKILLS.md), [living documents](living-documents.md) and [ledger](ledger.md) (the amendments of 2026-10-11), decisions D04, D25, D27–D29, D35, D56, D82. Behavior evidence: the [Claude Science](../../.agents/docs/agent-reports/claude-science.md) report (reviewer scope, triggers, findings and confirmation lifecycle), the [OpenScience Desktop](../../.agents/docs/agent-reports/openscience-desktop.md) report and its pinned `autoReview.ts` and `reviewer.md` (MIT), and the [Claude Code and Desktop](../../.agents/docs/agent-reports/claude-code-desktop.md) report. Public: Claude Code's [hooks documentation](https://code.claude.com/docs/en/hooks) (stop hooks and their loop bound).
