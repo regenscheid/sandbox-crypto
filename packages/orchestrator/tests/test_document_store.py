@@ -872,3 +872,16 @@ def test_ld_39_events_report_what_changed_and_who_wrote_it(store: DocumentStore)
         "container",
         "table",
     }
+
+
+def test_the_platform_and_imports_are_authors_of_their_own(store: DocumentStore) -> None:
+    importer = Author(kind="import", user="user", import_id="import-1")
+    created = store.create("p1", name="ff", title="F", text="x\n", author=importer)
+    repair = Author(kind="platform", service="math-repair")
+    saved = store.save_text("p1", "ff", base=1, text="y\n", author=repair, reason="repair")
+    assert (created.revision, saved.revision) == (1, 2)
+    authors = [info.author for info in store.revisions("p1", "ff")]
+    assert authors == [importer, repair]
+    assert (importer.actor, repair.actor) == ("user:user", "platform:math-repair")
+    with pytest.raises(ValueError, match="needs service"):
+        Author(kind="platform")
