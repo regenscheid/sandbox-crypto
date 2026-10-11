@@ -1,0 +1,13 @@
+{
+  "about": "conda-forge on https://conda.anaconda.org, observed on 2026-10-10. The cache does not parse conda bodies, so these fixtures record request paths, not response bodies. test_adapter_conda.py routes every path below /conda/conda-forge/.",
+  "fixtures": [
+    {
+      "file": "conda-forge-layout.json",
+      "about": "Which channel paths exist upstream (HEAD) and how the adapter must answer them, including where content-addressed shards really live"
+    },
+    {
+      "file": "filenames.txt",
+      "about": "Real package file names as <subdir>/<file name>, taken from the 'packages' and 'packages.conda' keys of noarch, linux-64 and linux-aarch64 repodata.json.zst (1,536,350 names in all). The sample covers every name led by an underscore, versions with !, + and upper case letters, build strings with upper case letters, names with dots and digits, the longest name, and both archive formats. Every name in the three subdirs matches the adapter's grammar except 11 whose build strings contain '* *' (code-aster 17.3.16 and groundingdino-py-cuda 0.4.1/0.4.2), which the adapter refuses."
+    }
+  ]
+}

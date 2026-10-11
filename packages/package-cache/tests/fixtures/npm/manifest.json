@@ -1,0 +1,110 @@
+{
+  "about": "npm package metadata for test_adapter_npm.py, saved byte for byte from https://registry.npmjs.org on 2026-10-10 with one GET each (curl, no compression) and the Accept header shown; 'content_type' is the registry's answer. Untrusted data: the tests only parse it. Unmodified and untrimmed. 'covers' says why each was chosen.",
+  "fixtures": [
+    {
+      "file": "tiny-tarball.abbreviated.json",
+      "package": "tiny-tarball",
+      "accept": "application/vnd.npm.install-v1+json",
+      "content_type": "application/vnd.npm.install-v1+json",
+      "covers": "unscoped, one version (the registry's own example)"
+    },
+    {
+      "file": "tiny-tarball.full.json",
+      "package": "tiny-tarball",
+      "accept": "application/json",
+      "content_type": "application/json",
+      "covers": "unscoped, one version (the registry's own example)"
+    },
+    {
+      "file": "isaacs__string-locale-compare.abbreviated.json",
+      "package": "@isaacs/string-locale-compare",
+      "accept": "application/vnd.npm.install-v1+json",
+      "content_type": "application/vnd.npm.install-v1+json",
+      "covers": "scoped package"
+    },
+    {
+      "file": "isaacs__string-locale-compare.full.json",
+      "package": "@isaacs/string-locale-compare",
+      "accept": "application/json",
+      "content_type": "application/json",
+      "covers": "scoped package"
+    },
+    {
+      "file": "Base64.abbreviated.json",
+      "package": "Base64",
+      "accept": "application/vnd.npm.install-v1+json",
+      "content_type": "application/vnd.npm.install-v1+json",
+      "covers": "legacy name with capital letters"
+    },
+    {
+      "file": "Base64.full.json",
+      "package": "Base64",
+      "accept": "application/json",
+      "content_type": "application/json",
+      "covers": "legacy name with capital letters; non-ASCII text"
+    },
+    {
+      "file": "left-pad.abbreviated.json",
+      "package": "left-pad",
+      "accept": "application/vnd.npm.install-v1+json",
+      "content_type": "application/vnd.npm.install-v1+json",
+      "covers": "every version deprecated"
+    },
+    {
+      "file": "left-pad.full.json",
+      "package": "left-pad",
+      "accept": "application/json",
+      "content_type": "application/json",
+      "covers": "every version deprecated"
+    },
+    {
+      "file": "thirty-two.abbreviated.json",
+      "package": "thirty-two",
+      "accept": "application/vnd.npm.install-v1+json",
+      "content_type": "application/vnd.npm.install-v1+json",
+      "covers": "legacy tarball name with '@' (thirty-two@0.0.1.tgz)"
+    },
+    {
+      "file": "thirty-two.full.json",
+      "package": "thirty-two",
+      "accept": "application/json",
+      "content_type": "application/json",
+      "covers": "legacy tarball name with '@' (thirty-two@0.0.1.tgz)"
+    },
+    {
+      "file": "riak-js.abbreviated.json",
+      "package": "riak-js",
+      "accept": "application/vnd.npm.install-v1+json",
+      "content_type": "application/vnd.npm.install-v1+json",
+      "covers": "loose versions in keys and tarball names (0.2.2f, 0.3.0beta)"
+    },
+    {
+      "file": "riak-js.full.json",
+      "package": "riak-js",
+      "accept": "application/json",
+      "content_type": "application/json",
+      "covers": "loose versions in keys and tarball names (0.2.2f, 0.3.0beta); non-ASCII text"
+    },
+    {
+      "file": "http-shutdown.abbreviated.json",
+      "package": "http-shutdown",
+      "accept": "application/vnd.npm.install-v1+json",
+      "content_type": "application/vnd.npm.install-v1+json",
+      "covers": "versions without dist.integrity (1.0.1, 1.0.2)"
+    },
+    {
+      "file": "http-shutdown.full.json",
+      "package": "http-shutdown",
+      "accept": "application/json",
+      "content_type": "application/json",
+      "covers": "versions without dist.integrity (1.0.1, 1.0.2)"
+    },
+    {
+      "file": "underscore.string.abbreviated.json",
+      "package": "underscore.string",
+      "accept": "application/vnd.npm.install-v1+json",
+      "content_type": "application/vnd.npm.install-v1+json",
+      "covers": "tarball name differs from the version key (2.2.0-rc in underscore.string-2.2.0rc.tgz)"
+    }
+  ]
+}

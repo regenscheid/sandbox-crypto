@@ -128,6 +128,16 @@ The environment layer writes these into each sandbox, where `<cache>` is the cac
 | npm, pnpm, yarn 1 | `registry=<cache>/npm/`, `audit=false`, `fund=false` in `.npmrc` |
 | yarn 2+ | `npmRegistryServer: <cache>/npm` and `unsafeHttpWhitelist` for the cache's host in `.yarnrc.yml` (yarn ignores `.npmrc`) |
 
+## Running it
+
+```bash
+uv run sandbox-science-package-cache serve --settings cache.toml
+```
+
+- **On babbage (VM driver).** Each sandbox's supervisor runs on the host, so the cache listens on loopback (`listen = "127.0.0.1:8090"`). Sandboxes reach it as `host.openshell.internal:8090`, which is also its `public_url`. Name it that way in the OpenShell targets (`package_cache: {host: host.openshell.internal, port: 8090}`). The traffic never leaves the host, so plain HTTP is acceptable there.
+- **Inspecting and pruning.** `stats` prints the counters and store size as JSON. `prune` evicts down to the cap now. Both run beside a serving cache.
+- **Real clients.** `SS_INTEGRATION=1 uv run pytest packages/package-cache/tests/test_clients_integration.py` installs a small package with pip, uv, mamba, cargo, go and npm through a cache it starts on loopback. It needs access to the public registries.
+
 ## Adapters
 
 Each ecosystem is an adapter (`sandbox_science.package_cache.adapter`). Given the request path below its prefix, it returns one of three answers:

@@ -4,6 +4,7 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-10
 
+- **Package cache service built** ([package cache](../docs/PACKAGE-CACHE.md), D71). It has a core (aiohttp server, content-addressed store with LRU eviction, verified streaming fetches, revalidation, a rate limit) and an adapter for each of PyPI, conda, Cargo, Go and npm. Four agents built it in parallel against a written contract. Along the way they found two gaps, now fixed: lockfile installs (npm, pnpm and yarn fetch `<name>/-/<file>.tgz`) and the real conda shard path. Real pip, uv, mamba, cargo, go and npm clients install through it.
 - **Package policy review.** An adversarial review of the package policy found one critical problem, now fixed. OpenShell selects middleware by host alone, so excluding the raw MCP proxy's host also took the package cache out of the middleware whenever both ran on `host.openshell.internal`, the single-host setup the docs recommended. The services are now inspected endpoints, and nothing is excluded. Also fixed:
   - the pool ceiling applies to package registries;
   - registry aliases and mirrors are on the floor;

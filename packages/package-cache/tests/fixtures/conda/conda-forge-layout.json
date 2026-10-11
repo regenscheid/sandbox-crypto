@@ -1,0 +1,66 @@
+{
+  "source": "https://conda.anaconda.org/conda-forge",
+  "captured": "2026-10-10",
+  "method": "HEAD requests to the paths below; shard hashes from GET of each subdir's repodata_shards.msgpack.zst, whose info.base_url and info.shards_base_url are empty strings, so clients resolve packages and shards against the subdir URL",
+  "routed": [
+    "channeldata.json",
+    "linux-64/repodata.json",
+    "linux-64/repodata.json.zst",
+    "linux-64/repodata.json.bz2",
+    "linux-64/current_repodata.json",
+    "linux-64/current_repodata.json.zst",
+    "linux-64/current_repodata.json.bz2",
+    "linux-64/repodata_shards.msgpack.zst",
+    "linux-aarch64/repodata.json",
+    "linux-aarch64/repodata.json.zst",
+    "linux-aarch64/repodata.json.bz2",
+    "linux-aarch64/current_repodata.json",
+    "linux-aarch64/current_repodata.json.zst",
+    "linux-aarch64/current_repodata.json.bz2",
+    "linux-aarch64/repodata_shards.msgpack.zst",
+    "noarch/repodata.json",
+    "noarch/repodata.json.zst",
+    "noarch/repodata.json.bz2",
+    "noarch/current_repodata.json",
+    "noarch/current_repodata.json.zst",
+    "noarch/current_repodata.json.bz2",
+    "noarch/repodata_shards.msgpack.zst",
+    "linux-64/05bbaf9856796dfd80ae041444a7adf9a8556fcfbd9653e43eb514bc42843d36.msgpack.zst",
+    "noarch/eb66076ab6428bdb9093fd1524266c6f6da0933bcabc1719b668eb5aa254a848.msgpack.zst",
+    "noarch/95f5d933b0b2eb6b655f89936ae28ffc2f2f4b90f0365b773d09e4562f25a233.msgpack.zst",
+    "linux-64/_libgcc_mutex-0.1-conda_forge.tar.bz2",
+    "linux-64/esmp-ESMF_6_3_0rp1_ESMP_01-py27_0.tar.bz2",
+    "linux-aarch64/_openmp_mutex-4.5-2_gnu.tar.bz2",
+    "noarch/requests-2.32.3-pyhd8ed1ab_1.conda",
+    "noarch/tzdata-2024a-h0c530f3_0.conda",
+    "noarch/dagster-airbyte-1!0.26.10-pyh29332c3_0.conda",
+    "noarch/py-sirius-ms-2.1+sirius6.0.3-pyhd8ed1ab_0.conda"
+  ],
+  "routed_percent_encoded": {
+    "noarch/dagster-airbyte-1%210.26.10-pyh29332c3_0.conda": "noarch/dagster-airbyte-1!0.26.10-pyh29332c3_0.conda",
+    "noarch/py-sirius-ms-2.1%2Bsirius6.0.3-pyhd8ed1ab_0.conda": "noarch/py-sirius-ms-2.1+sirius6.0.3-pyhd8ed1ab_0.conda"
+  },
+  "routed_absent_upstream": [
+    "noarch/shards/95f5d933b0b2eb6b655f89936ae28ffc2f2f4b90f0365b773d09e4562f25a233.msgpack.zst",
+    "linux-64/shards/05bbaf9856796dfd80ae041444a7adf9a8556fcfbd9653e43eb514bc42843d36.msgpack.zst"
+  ],
+  "refused_present_upstream": [
+    "linux-64/repodata_from_packages.json",
+    "linux-64/repodata_from_packages.json.zst",
+    "linux-64/repodata_from_packages.json.bz2",
+    "noarch/repodata_from_packages.json.bz2",
+    "linux-64/run_exports.json",
+    "linux-64/run_exports.json.zst",
+    "noarch/run_exports.json",
+    "label/broken/noarch/repodata.json",
+    "linux-64/code-aster-17.3.16-py310*%20*_cpython_nompi_h76c0163_100.conda"
+  ],
+  "refused_absent_upstream": [
+    "channeldata.json.zst",
+    "channeldata.json.bz2",
+    "linux-64/repodata.json.gz",
+    "linux-64/repodata.json.zck",
+    "linux-64/repodata.jlap",
+    "noarch/repodata.jlap"
+  ]
+}
