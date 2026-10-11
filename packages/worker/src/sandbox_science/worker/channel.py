@@ -29,6 +29,9 @@ MAX_LINE = 16 * 1024 * 1024
 MAX_CONTAINERS = 100_000
 """Objects and arrays one line may hold, so a line cannot expand into millions of objects."""
 REPLY_TIMEOUT = 120.0
+WRITE_TIMEOUT = 30.0
+"""How long a request may wait to be written: an executor that stopped reading its stdin
+(research code can stop it) must not hold up its callers."""
 CLOSE_GRACE = 15.0
 """Seconds an executor gets to stop its commands and kernels once its stdin closes."""
 MAX_ERROR_MESSAGE = 2000
@@ -117,6 +120,7 @@ class ExecutorChannel:
         self._write_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
         self._stopping: asyncio.Future[None] | None = None
+        self._abandoned: asyncio.Task[None] | None = None
         self._dropped = 0
         self.closed = False
         self.hello: Message = {}
@@ -158,9 +162,16 @@ class ExecutorChannel:
         self._pending[request_id] = future
         line = json.dumps({"id": request_id, "op": op, **fields}, separators=(",", ":")) + "\n"
         try:
-            async with self._write_lock:
-                process.stdin.write(line.encode())
-                await process.stdin.drain()
+            try:
+                async with asyncio.timeout(WRITE_TIMEOUT), self._write_lock:
+                    process.stdin.write(line.encode())
+                    await process.stdin.drain()
+            except TimeoutError as exc:
+                # A request half written leaves the stream unusable: this executor is done.
+                self._abandoned = asyncio.ensure_future(self.close())
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "the executor stopped reading its requests"
+                ) from exc
             reply = await asyncio.wait_for(future, reply_timeout)
         except (ConnectionError, BrokenPipeError) as exc:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away") from exc

@@ -9,6 +9,7 @@ refuses a document that removes any filesystem path.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import os
@@ -16,7 +17,7 @@ import re
 import sys
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -28,6 +29,7 @@ from sandbox_science.contracts import EnvironmentRequest, EnvironmentState, Erro
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
 from sandbox_science.worker import environments as environments_module
+from sandbox_science.worker import suspend as suspend_module
 from sandbox_science.worker.admission import (
     MAX_DRAFTS,
     MAX_ENDPOINTS,
@@ -128,7 +130,7 @@ elif command == ["sandbox", "stop"]:
     out = "stopped"
 elif command == ["sandbox", "start"]:
     box = sandboxes[argv[2]]
-    box["phase"] = "Ready"
+    box["phase"] = state.get("phase_on_start", "Ready")
     if state.get("new_id_on_start"):
         box["id"] = str(uuid.uuid4())
     out = "started"
@@ -985,7 +987,21 @@ async def test_a_sandbox_that_comes_back_as_another_is_refused(setup: Setup) -> 
     with pytest.raises(WorkerError, match="came back as") as refused:
         await setup.environments.resume("env-1")
     assert refused.value.kind is ErrorKind.UNAVAILABLE
-    assert setup.environments.get("env-1").state is EnvironmentState.STOPPED
+    assert "create the environment again" in refused.value.message
+    assert setup.environments.get("env-1").state is EnvironmentState.DELETED
+    assert len(setup.fake.calls("sandbox", "stop")) == 2
+    # Creating it again replaces whatever runs under the name.
+    again, created = await setup.environments.create(setup.request())
+    assert created
+    assert again.state is EnvironmentState.READY
+
+
+def age(setup: Setup, environment_id: str, seconds: float) -> None:
+    """Pretend the environment last changed ``seconds`` ago."""
+    info = setup.environments.get(environment_id)
+    setup.environments.records.save(
+        info.model_copy(update={"updated_at": datetime.now(UTC) - timedelta(seconds=seconds)})
+    )
 
 
 class StubManager:
@@ -1001,6 +1017,7 @@ class StubManager:
 async def test_the_suspender_stops_only_idle_environments(setup: Setup) -> None:
     for name in ("idle", "running", "computing", "unknown", "quiet", "recent"):
         await setup.environments.create(setup.request(f"env-{name}"))
+        age(setup, f"env-{name}", 100)
     setup.environments.release_idle = always
     stub = StubManager()
     long_ago = time.monotonic() - 100
@@ -1032,6 +1049,7 @@ async def test_the_suspender_stops_only_idle_environments(setup: Setup) -> None:
 async def test_a_failed_suspension_leaves_the_others_to_go_on(setup: Setup) -> None:
     for name in ("a", "b"):
         await setup.environments.create(setup.request(f"env-{name}"))
+        age(setup, f"env-{name}", 100)
     setup.environments.release_idle = always
     stub = StubManager()
     long_ago = time.monotonic() - 100
@@ -1047,7 +1065,13 @@ async def test_a_failed_suspension_leaves_the_others_to_go_on(setup: Setup) -> N
 
     setup.environments.cli.run = flaky  # type: ignore[method-assign]
     assert await suspender.check() == ["env-b"]
+    # Recorded stopped before the stop failed: its next use finds the sandbox still
+    # ready, and carries on without starting it (review finding 2).
+    assert setup.environments.get("env-a").state is EnvironmentState.STOPPED
+    setup.environments.cli.run = real  # type: ignore[method-assign]
+    await setup.environments.resume("env-a")
     assert setup.environments.get("env-a").state is EnvironmentState.READY
+    assert setup.fake.calls("sandbox", "start") == []
 
 
 async def test_admission_notices_say_what_was_admitted_and_refused(setup: Setup) -> None:
@@ -1086,3 +1110,72 @@ async def test_operators_can_list_an_environments_admissions(
     assert "admitted eprint.iacr.org" in out
     assert "pypi.org:443 refused: " in out
     assert main(["admissions", "--settings", str(settings), "--environment", "nope"]) == 1
+
+
+async def test_a_new_environment_gets_its_full_idle_time(setup: Setup) -> None:
+    # The worker has run for long, but the environment was created just now (review 3).
+    await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    stub = StubManager()
+    long_ago = time.monotonic() - 1000
+    stub.activities = {"env-1": Activity(None, 0, None, 0)}
+    suspender = Suspender(setup.environments, cast(ExecutionManager, stub), 60.0, interval=1)
+    suspender.started = long_ago
+    assert await suspender.check() == []
+    age(setup, "env-1", 120)
+    assert await suspender.check() == ["env-1"]
+
+
+async def test_a_cpu_counter_that_drops_or_restarts_is_no_sign_of_idleness(setup: Setup) -> None:
+    await setup.environments.create(setup.request())
+    age(setup, "env-1", 100)
+    setup.environments.release_idle = always
+    stub = StubManager()
+    long_ago = time.monotonic() - 100
+    suspender = Suspender(setup.environments, cast(ExecutionManager, stub), 10.0, interval=1)
+    suspender.started = long_ago
+    stub.activities = {"env-1": Activity(long_ago, 0, 50.0, 1, "inc-a")}
+    assert await suspender.check() == []  # a first sample
+    stub.activities = {"env-1": Activity(long_ago, 0, 5.0, 1, "inc-a")}
+    assert await suspender.check() == []  # the counter went down
+    stub.activities = {"env-1": Activity(long_ago, 0, 5.0, 1, "inc-b")}
+    assert await suspender.check() == []  # another executor
+    assert await suspender.check() == ["env-1"]  # quiet, and comparable
+
+
+async def test_an_executor_that_does_not_answer_holds_up_no_other(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("frozen", "idle"):
+        await setup.environments.create(setup.request(f"env-{name}"))
+        age(setup, f"env-{name}", 100)
+    setup.environments.release_idle = always
+    long_ago = time.monotonic() - 100
+
+    class Frozen(StubManager):
+        async def activity(self, environment_id: str) -> Activity | None:
+            if environment_id == "env-frozen":
+                await asyncio.sleep(3600)
+            return Activity(long_ago, 0, None, 0)
+
+    monkeypatch.setattr(suspend_module, "SAMPLE_TIMEOUT", 0.2)
+    suspender = Suspender(setup.environments, cast(ExecutionManager, Frozen()), 10.0, interval=1)
+    suspender.started = long_ago
+    started = time.monotonic()
+    assert await suspender.check() == ["env-idle"]
+    assert time.monotonic() - started < 5
+
+
+async def test_a_sandbox_in_a_dead_phase_fails_fast_and_backs_off(setup: Setup) -> None:
+    await setup.environments.create(setup.request())
+    setup.environments.release_idle = always
+    await setup.environments.suspend("env-1", time.monotonic())
+    setup.fake.update(phase_on_start="Error")
+    started = time.monotonic()
+    with pytest.raises(WorkerError, match="is Error"):
+        await setup.environments.resume("env-1")
+    assert time.monotonic() - started < 10
+    # Queued uses fail at once instead of each waiting out a start (review finding 4).
+    with pytest.raises(WorkerError, match="failed to start a moment ago"):
+        await setup.environments.resume("env-1")
+    assert len(setup.fake.calls("sandbox", "start")) == 1
