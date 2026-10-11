@@ -3,14 +3,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import logging
 import sqlite3
+from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import TERMINAL_STATES, ArtifactRef, Event, Execution
 
+_log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
 
 _SCHEMA = """
@@ -70,6 +74,16 @@ class Store:
     def close(self) -> None:
         self._db.close()
 
+    @contextlib.contextmanager
+    def _transaction(self) -> Generator[None, None, None]:
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self._db.execute("ROLLBACK")
+            raise
+        self._db.execute("COMMIT")
+
     # Executions.
 
     def find_operation(self, operation_id: str) -> tuple[str, str] | None:
@@ -109,22 +123,41 @@ class Store:
         ).fetchone()
         return Execution.model_validate_json(row[0]) if row else None
 
-    def unfinished(self) -> list[Execution]:
-        rows = self._db.execute("SELECT record FROM executions WHERE terminal = 0").fetchall()
-        return [Execution.model_validate_json(row[0]) for row in rows]
+    def unfinished(self) -> list[tuple[str, Execution | None]]:
+        """Executions not yet terminal, with ``None`` for a record that no longer validates."""
+        rows = self._db.execute(
+            "SELECT execution_id, record FROM executions WHERE terminal = 0"
+        ).fetchall()
+        return [(str(row[0]), _readable(str(row[0]), row[1])) for row in rows]
+
+    def mark_terminal(self, execution_id: str) -> None:
+        """Stop reporting an unreadable record as unfinished, so it is not retried forever."""
+        self._db.execute(
+            "UPDATE executions SET terminal = 1 WHERE execution_id = ?", (execution_id,)
+        )
 
     def session_executions(self, environment_id: str, session_id: str) -> list[Execution]:
+        """The session's readable executions; one unreadable record does not hide the rest."""
         rows = self._db.execute(
-            "SELECT record FROM executions WHERE environment_id = ? AND session_id = ?",
+            "SELECT execution_id, record FROM executions"
+            " WHERE environment_id = ? AND session_id = ?",
             (environment_id, session_id),
         ).fetchall()
-        return [Execution.model_validate_json(row[0]) for row in rows]
+        return [found for row in rows if (found := _readable(str(row[0]), row[1])) is not None]
 
     def environment_executions(self, environment_id: str) -> list[Execution]:
         rows = self._db.execute(
-            "SELECT record FROM executions WHERE environment_id = ?", (environment_id,)
+            "SELECT execution_id, record FROM executions WHERE environment_id = ?",
+            (environment_id,),
         ).fetchall()
-        return [Execution.model_validate_json(row[0]) for row in rows]
+        return [found for row in rows if (found := _readable(str(row[0]), row[1])) is not None]
+
+    def finish(self, execution: Execution, events: Sequence[Event]) -> None:
+        """Store an execution's last events and its terminal record in one transaction."""
+        with self._transaction():
+            for event in events:
+                self.add_event(event)
+            self.update_execution(execution)
 
     # Events.
 
@@ -134,10 +167,18 @@ class Store:
             (event.execution_id, event.seq, _EVENT.dump_json(event).decode()),
         )
 
-    def events_after(self, execution_id: str, after: int) -> list[Event]:
+    def last_seq(self, execution_id: str) -> int:
+        """The highest stored sequence number: the record's own ``last_seq`` may lag behind it."""
+        row = self._db.execute(
+            "SELECT MAX(seq) FROM events WHERE execution_id = ?", (execution_id,)
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
+    def events_after(self, execution_id: str, after: int, limit: int = -1) -> list[Event]:
+        """Up to ``limit`` events after ``after`` (all of them when ``limit`` is negative)."""
         rows = self._db.execute(
-            "SELECT event FROM events WHERE execution_id = ? AND seq > ? ORDER BY seq",
-            (execution_id, after),
+            "SELECT event FROM events WHERE execution_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+            (execution_id, after, limit),
         ).fetchall()
         return [_EVENT.validate_json(row[0]) for row in rows]
 
@@ -172,3 +213,11 @@ class Store:
             "SELECT record FROM artifacts WHERE artifact_id = ?", (artifact_id,)
         ).fetchone()
         return ArtifactRef.model_validate_json(row[0]) if row else None
+
+
+def _readable(execution_id: str, record: object) -> Execution | None:
+    try:
+        return Execution.model_validate_json(str(record))
+    except ValidationError:
+        _log.error("the stored record of execution %s does not validate", execution_id)
+        return None

@@ -24,6 +24,11 @@ DEFAULT_OUTPUT_LIMIT: Final = 1024 * 1024
 MAX_OUTPUT_LIMIT: Final = 64 * 1024 * 1024
 MAX_PATH_BYTES: Final = 4096
 MAX_READ_BYTES: Final = 8 * 1024 * 1024
+MAX_EVENT_BYTES: Final = 32 * 1024 * 1024
+"""The longest line of an event stream the worker sends; clients must accept lines this long.
+A result too large for it keeps less of its output than ``output_limit_bytes`` allows."""
+EVENT_HEARTBEAT_SECONDS: Final = 15.0
+"""An idle event stream carries an empty line at least this often, so clients can time out."""
 
 
 def validate_relative_path(value: str) -> str:
@@ -45,6 +50,15 @@ def validate_relative_path(value: str) -> str:
 
 
 RelativePath = Annotated[str, AfterValidator(validate_relative_path)]
+MediaType = Annotated[
+    str,
+    StringConstraints(
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9!#$\&^_.+\-]*/[A-Za-z0-9][A-Za-z0-9!#$\&^_.+\-]*"
+        r"(?:; ?[A-Za-z0-9!#$\&^_.+\-]+=[A-Za-z0-9!#$\&^_.+\-]+)*$",
+    ),
+]
+"""``type/subtype`` with optional ``; name=value`` parameters: no spaces, quotes or line breaks."""
 Timeout = Annotated[float, Field(gt=0, le=MAX_TIMEOUT_SECONDS, allow_inf_nan=False)]
 OutputLimit = Annotated[int, Field(ge=1024, le=MAX_OUTPUT_LIMIT)]
 Language = Literal["python", "sage"]
@@ -256,7 +270,7 @@ class Result(Contract):
     kernel: KernelInfo | None = None
     state_lost: bool = False
     """The kernel restarted before this cell, so earlier state is gone."""
-    elapsed_seconds: Annotated[float, Field(ge=0)] = 0.0
+    elapsed_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
     sandbox_started_at: datetime | None = None
     sandbox_ended_at: datetime | None = None
     """When the attempt started and ended, by the sandbox's own clock."""
@@ -347,7 +361,7 @@ class WriteFileResult(Contract):
 class PublishRequest(Contract):
     context: ExecutionContext
     path: RelativePath
-    media_type: str | None = None
+    media_type: MediaType | None = None
 
 
 class Capabilities(Contract):
