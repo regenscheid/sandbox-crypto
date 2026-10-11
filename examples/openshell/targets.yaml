@@ -24,7 +24,7 @@ mcp_proxy:
   # which runs the proxy: lab 13 matched /opt/sandbox-science/bin/python3.14.
   binaries: [/opt/sandbox-science/bin/python*]
   versions: ["2025-11-25"]
-  # The prefix the proxy's image provides, as for the orchestrator.
+  # The prefix of the proxy's image, mcp-proxy (docs/IMAGES.md), as for the orchestrator.
   filesystem: {read_only: [/opt/sandbox-science]}
 
 orchestrator:
