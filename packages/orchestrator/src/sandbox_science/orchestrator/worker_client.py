@@ -37,10 +37,12 @@ from sandbox_science.contracts import (
     KernelInfo,
     KernelRestartRequest,
     ListFilesRequest,
+    Lockfile,
     PolicyRevisionRequest,
     PublishRequest,
     ReadFileRequest,
     ResultEvent,
+    RevisionHistory,
     SessionClosed,
     SessionCloseRequest,
     WorkerErrorResponse,
@@ -171,6 +173,18 @@ class WorkerClient:
             f"/v1/environments/{environment_id}/admissions",
             AdmissionResult,
             AdmissionRequest(hosts=tuple(hosts)),
+        )
+
+    async def revisions(self, environment_id: str) -> RevisionHistory:
+        """The environment's revisions: how each change to its packages came, and its lockfile."""
+        return await self._call(
+            "GET", f"/v1/environments/{environment_id}/revisions", RevisionHistory
+        )
+
+    async def lockfile(self, environment_id: str, revision: int) -> Lockfile:
+        """The packages of one revision of the environment (Conda provisioning, CP-18)."""
+        return await self._call(
+            "GET", f"/v1/environments/{environment_id}/revisions/{revision}/lockfile", Lockfile
         )
 
     # Executions.

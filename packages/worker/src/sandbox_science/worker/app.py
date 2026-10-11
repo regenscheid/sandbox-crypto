@@ -153,6 +153,11 @@ def create_app(
             web.post("/v1/environments/{environment_id}/policy", revise_environment),
             web.delete("/v1/environments/{environment_id}", delete_environment),
             web.post("/v1/environments/{environment_id}/admissions", admit_hosts),
+            web.get("/v1/environments/{environment_id}/revisions", environment_revisions),
+            web.get(
+                "/v1/environments/{environment_id}/revisions/{revision}/lockfile",
+                revision_lockfile,
+            ),
             web.get("/v1/capabilities", capabilities),
             web.post("/v1/executions", submit),
             web.get("/v1/executions/{execution_id}", get_execution),
@@ -360,6 +365,49 @@ async def admit_hosts(request: web.Request) -> web.Response:
             ),
             environment=environments.get(environment_id),
         )
+    )
+
+
+def _revisions_of(request: web.Request) -> str:
+    """The route's environment, once the client may see its revisions (Conda provisioning).
+
+    The worker records revisions for every environment that ran something. Those it
+    created belong to their project; only the pool's own token sees the others, as with
+    executions.
+    """
+    environment_id = _identifier(request.match_info["environment_id"], "environment_id")
+    environments = request.app.get(ENVIRONMENTS)
+    info = environments.records.get(environment_id) if environments is not None else None
+    limited = _client(request).projects is not None
+    if info is None:
+        if limited:
+            raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+        return environment_id
+    _visible(request, info.project_id, f"environment {environment_id!r}")
+    if limited and info.state is EnvironmentState.DELETED:
+        raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
+    return environment_id
+
+
+async def environment_revisions(request: web.Request) -> web.Response:
+    environment_id = _revisions_of(request)
+    return _json(request.app[MANAGER].revisions.history(environment_id))
+
+
+async def revision_lockfile(request: web.Request) -> web.StreamResponse:
+    """A revision's lockfile, as the JSON of a ``Lockfile``, with ``X-Content-SHA256``."""
+    environment_id = _revisions_of(request)
+    text = request.match_info["revision"]
+    if not text.isascii() or not text.isdigit() or len(text) > 18:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "the revision must be a number")
+    path, lockfile = request.app[MANAGER].revisions.lockfile(environment_id, int(text))
+    return web.FileResponse(
+        path,
+        headers={
+            "Content-Type": "application/json",
+            "X-Content-SHA256": lockfile.sha256,
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

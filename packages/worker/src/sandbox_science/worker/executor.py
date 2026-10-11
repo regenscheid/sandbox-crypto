@@ -3,9 +3,9 @@
 
 The trusted worker service starts it inside a research sandbox and speaks
 newline-delimited JSON with it over stdin and stdout. It depends only on the
-standard library and, once a kernel starts, jupyter_client, so the worker
-service can copy this one file into any sandbox that has Python.
-docs/specs/tools.md defines the behavior and docs/WORKER.md the protocol.
+standard library, provisioning.py beside it and, once a kernel starts,
+jupyter_client, so the worker service can copy it into any sandbox that has
+Python. docs/specs/tools.md defines the behavior and docs/WORKER.md the protocol.
 
 Requests carry an ``id`` and an ``op``; each gets one reply
 (``{"type": "reply", "id": …, "ok": …}``). Shell commands and cells reply as
@@ -25,6 +25,7 @@ import codecs
 import contextlib
 import errno
 import hashlib
+import importlib
 import importlib.util
 import json
 import os
@@ -32,17 +33,36 @@ import platform
 import re
 import secrets
 import signal
-import site
 import socket
 import stat
 import sys
-import sysconfig
 import tempfile
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Final, cast
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Final, cast
+
+
+def _sibling(name: str) -> ModuleType:
+    """A module of the worker package; in a sandbox, the copy the worker put beside this file."""
+    if __package__:
+        return importlib.import_module(f"{__package__}.{name}")
+    qualified = f"sandbox_science_{name}"
+    spec = importlib.util.spec_from_file_location(qualified, Path(__file__).with_name(f"{name}.py"))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"no {name}.py beside {__file__}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[qualified] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+if TYPE_CHECKING:
+    from . import provisioning
+else:
+    provisioning = _sibling("provisioning")
 
 PROTOCOL = 1
 MAX_LINE = 16 * 1024 * 1024
@@ -69,9 +89,20 @@ INTERRUPT_GRACE = 5.0
 KERNEL_START_TIMEOUT = 120.0
 KILL_ROUNDS = 5
 KERNEL_NAMES = {"python": "python3", "sage": "sagemath"}
+"""Each language's Jupyter kernelspec; SageMath installs ``sagemath`` beside its Python."""
 PDF_HELPER = Path(__file__).with_name("pdfhelper.py")
 """The PDF helper the worker copies beside this file (docs/specs/pdf-sources.md)."""
-"""Each language's Jupyter kernelspec; SageMath installs ``sagemath`` beside its Python."""
+PROVISIONING = Path(provisioning.__file__)
+"""What the package-command wrappers and hook run (provisioning.py, beside this file)."""
+PACKAGE_POLL = 0.25
+"""The longest pause between looks at the package lock while an attempt waits for it."""
+LOCKFILE_WAIT = 30.0
+"""Seconds ``lockfile`` waits for a package command to finish."""
+MAX_LOCKFILE_EVENT = MAX_LINE // 2
+"""A ``revision`` event carries its lockfile only below this many bytes of JSON."""
+MAX_OWNERS = 4096
+MAX_RUNS = 64
+"""Attempts remembered per call or kernel, to tell which one ran a package command."""
 PROBE_TEXT = 256
 """The longest value the isolation probe reports."""
 MAX_SENTINELS = 8
@@ -106,7 +137,24 @@ class ToolError(Exception):
 
 
 class _NotStartedError(Exception):
-    """A cell cancelled before it reached its kernel."""
+    """An attempt cancelled before it started: a cell before it reached its kernel."""
+
+
+class _BusyError(Exception):
+    """A package command held the environment's lock for an attempt's whole time limit."""
+
+    def __init__(self, waited: float, holder: Message | None) -> None:
+        super().__init__(waited)
+        self.waited = waited
+        self.holder = holder
+
+    def error(self) -> Message:
+        what = provisioning.describe(self.holder)
+        return {
+            "kind": "timed_out",
+            "message": f"waited {self.waited:.0f} s for a package command in this environment "
+            f"to finish ({what}); the attempt did not start",
+        }
 
 
 # Output capture.
@@ -772,34 +820,8 @@ def process_table() -> dict[int, Process]:
 
 
 def environment_fingerprint() -> str:
-    """A digest of the packages installed for this interpreter (W3).
-
-    Conda records each package of the prefix in ``conda-meta``, and pip each
-    distribution in a ``.dist-info`` or ``.egg-info`` directory of the prefix's or the
-    user's site-packages. Installing, removing or upgrading one changes the digest.
-    The files the packages own do not count, which keeps the scan cheap.
-    """
-    paths = sysconfig.get_paths()
-    places = [os.path.join(sys.prefix, "conda-meta"), paths["purelib"], paths["platlib"]]
-    with contextlib.suppress(Exception):
-        places.append(site.getusersitepackages())
-    digest = hashlib.sha256()
-    for place in dict.fromkeys(places):
-        try:
-            with os.scandir(place) as scan:
-                entries = sorted((entry.name, entry) for entry in scan)
-        except OSError:
-            continue
-        for name, entry in entries:
-            if not (name.endswith((".json", ".dist-info", ".egg-info")) or name == "history"):
-                continue
-            try:
-                info = entry.stat(follow_symlinks=False)
-            except OSError:
-                continue
-            line = f"{place}\0{name}\0{info.st_size}\0{info.st_mtime_ns}\n"
-            digest.update(line.encode("utf-8", "surrogateescape"))
-    return digest.hexdigest()[:32]
+    """A digest of the packages installed for this interpreter (W3; provisioning.fingerprint)."""
+    return provisioning.fingerprint(provisioning.Places.here())
 
 
 def cpu_seconds_below(root: int) -> float:
@@ -1027,6 +1049,8 @@ class Running:
     process: asyncio.subprocess.Process | None = None
     leader: Leader | None = None
     kernel: Kernel | None = None
+    waited: float = 0.0
+    """Seconds it waited for package commands before it started; its time limit covers them."""
 
 
 @dataclass
@@ -1164,6 +1188,30 @@ class Executor:
         self.closing = False
         """Shutting down: attempts it stops are not reported as ended. The worker
         reports them lost when this connection closes, since it stopped them."""
+        # Package commands (docs/specs/conda-provisioning.md, CP-4, CP-11, CP-12).
+        self.packages = provisioning.State(root / ".executor" / "provisioning")
+        self.places = provisioning.Places.here()
+        self.provisioning: provisioning.Config | None = None
+        """None when the wrappers could not be written: package commands then run as they are."""
+        self.wrapped: list[str] = []
+        self.observing = asyncio.Lock()
+        """Held while looking at the environment and reporting what changed, so that the
+        worker learns of each revision before any result that shows it."""
+        self.owners: dict[str, list[tuple[float, str]]] = {}
+        """The attempts each call or kernel ran, with when they started, by its OWNER mark."""
+        self.reported = ""
+        """The packages' fingerprint as the worker knows it, from ``hello`` and the
+        ``revision`` events since."""
+        self.pending: list[Message] = []
+        """``revision`` events not sent yet, oldest first."""
+        try:
+            config = provisioning.Config(sys.executable, str(PROVISIONING), sys.prefix, self.places)
+            self.wrapped = provisioning.refresh(self.packages, config, self.tool_path())
+            self.reported = provisioning.baseline(self.packages, self.places)
+            self.provisioning = config
+        except OSError as exc:
+            print(f"executor: package commands run without turns: {exc}", file=sys.stderr)
+            self.reported = provisioning.fingerprint(self.places)
 
     # Plumbing.
 
@@ -1210,6 +1258,7 @@ class Executor:
             "read": self.op_read,
             "write": self.op_write,
             "list": self.op_list,
+            "lockfile": self.op_lockfile,
             "shared": self.op_shared,
             "remove": self.op_remove,
             "move": self.op_move,
@@ -1302,16 +1351,157 @@ class Executor:
         return {
             "written_files": [name for name in names if len(name.encode()) <= MAX_PATH_BYTES],
             "written_files_truncated": before[1] or after[1] or len(changed) > MAX_WRITTEN,
-            # Installed packages, after the attempt: the worker counts their changes.
-            "environment": await asyncio.to_thread(environment_fingerprint),
         }
+
+    def tool_path(self) -> str:
+        """``PATH`` for commands and kernels, before the wrappers join it."""
+        return tool_environment(os.environ, sys.executable, sys.prefix)["PATH"]
 
     def environment(self, session: str) -> dict[str, str]:
         env = tool_environment(os.environ, sys.executable, sys.prefix)
         env.update(self.configured)
+        if self.provisioning is not None:
+            env.update(provisioning.variables(self.packages, env, self.wrapped))
         env["SESSION_WORKSPACE"] = str(self.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
         return env
+
+    # Package commands: attempts wait while one changes the environment, and each change
+    # reaches the worker as a ``revision`` event before any result that shows it.
+
+    async def baseline(self) -> str:
+        """The packages' fingerprint as this executor starts, which ``hello`` reports."""
+        async with self.observing:
+            if self.provisioning is None:
+                self.reported = await asyncio.to_thread(provisioning.fingerprint, self.places)
+            else:
+                self.reported = await asyncio.to_thread(
+                    provisioning.baseline, self.packages, self.places
+                )
+            return self.reported
+
+    async def begin(self, running: Running, timeout: float) -> str | None:
+        """Wait while a package command changes the environment, then look at it (CP-12).
+
+        Returns the packages' fingerprint as the attempt starts, after reporting what
+        changed before it. Attempts already running are not held up. The wait counts
+        against the attempt's time limit (``running.waited``): past it, _BusyError.
+        """
+        if self.provisioning is None:
+            return None
+        started = time.monotonic()
+        delay = 0.02
+        while True:
+            try:
+                held = self.packages.try_lock(exclusive=False)
+            except OSError as exc:  # research code can break the state directory
+                print(f"executor: cannot read the package lock: {exc}", file=sys.stderr)
+                return None
+            if held is not None:
+                break
+            if running.cancel_requested:
+                raise _NotStartedError
+            waited = time.monotonic() - started
+            if waited >= timeout:
+                raise _BusyError(waited, await asyncio.to_thread(self.packages.holding))
+            await asyncio.sleep(min(delay, timeout - waited))
+            delay = min(2 * delay, PACKAGE_POLL)
+        running.waited = time.monotonic() - started
+        try:
+            await self.observing.acquire()
+        except BaseException:
+            os.close(held)
+            raise
+        try:
+            # observe closes the descriptor, in its thread, however this task ends.
+            observed = await asyncio.to_thread(
+                provisioning.observe, self.packages, self.places, self.reported, held
+            )
+            await self.report(running.execution, observed, None)
+        except OSError as exc:
+            print(f"executor: cannot read the package journal: {exc}", file=sys.stderr)
+            return None
+        finally:
+            self.observing.release()
+        # A manager installed since (pip install uv) gets its wrapper.
+        try:
+            self.wrapped = await asyncio.to_thread(
+                provisioning.refresh, self.packages, self.provisioning, self.tool_path()
+            )
+        except OSError as exc:
+            print(f"executor: cannot write the package wrappers: {exc}", file=sys.stderr)
+        return self.reported
+
+    async def settle(self, running: Running) -> Message:
+        """Report what changed while an attempt ran: the result's ``environment`` fields.
+
+        ``environment`` is the packages' fingerprint as the worker now knows them, and
+        ``environment_changing`` says that a package command was still running.
+        """
+        if self.provisioning is None:
+            return {"environment": await asyncio.to_thread(environment_fingerprint)}
+        async with self.observing:
+            try:
+                observed = await asyncio.to_thread(
+                    provisioning.observe, self.packages, self.places, self.reported
+                )
+            except OSError as exc:  # research code can break the state directory
+                print(f"executor: cannot read the package lock: {exc}", file=sys.stderr)
+                return {"environment": await asyncio.to_thread(environment_fingerprint)}
+            await self.report(running.execution, observed, running.execution)
+            return {"environment": self.reported, "environment_changing": observed.busy is not None}
+
+    async def report(
+        self, execution: str, observed: provisioning.Observation, cause: str | None
+    ) -> None:
+        """Send a ``revision`` event, as part of ``execution``, for each change, in order.
+
+        A package command's record makes its change managed, set against the attempt that
+        ran it. A change before a record, or one no record accounts for, is unmanaged
+        (CP-4), set against ``cause``: the attempt after which it was seen, if any. The
+        events queue before any is sent, so those a cancelled attempt did not send go with
+        the next attempt's. Hold ``observing``.
+        """
+        reported = self.reported
+        for record in observed.records:
+            before, after = str(record["before"]), str(record["after"])
+            if before != reported:
+                self.pending.append(_revision(before, record.get("before_lockfile"), False, None))
+                reported = before
+            if after != reported:
+                command = {
+                    key: record.get(key)
+                    for key in ("command", "via", "exit_code", "signal", "started", "ended")
+                }
+                lockfile = record.get("lockfile")
+                self.pending.append(_revision(after, lockfile, True, self.cause(record), command))
+                reported = after
+        if observed.fingerprint is not None and observed.fingerprint != reported:
+            self.pending.append(_revision(observed.fingerprint, observed.lockfile, False, cause))
+            reported = observed.fingerprint
+        self.reported = reported
+        while self.pending:
+            await self.event(execution, "revision", **self.pending[0])
+            self.pending.pop(0)
+
+    def own(self, owner: str, execution: str) -> None:
+        """Remember that ``execution`` runs under ``owner``, a call's or a kernel's mark."""
+        runs = self.owners.pop(owner, [])
+        runs.append((time.time(), execution))
+        self.owners[owner] = runs[-MAX_RUNS:]
+        while len(self.owners) > MAX_OWNERS:
+            del self.owners[next(iter(self.owners))]
+
+    def cause(self, record: Message) -> str | None:
+        """The attempt that ran a package command: the latest of its owner's to start before it."""
+        owner, invoked = record.get("owner"), record.get("invoked")
+        runs = self.owners.get(owner) if isinstance(owner, str) else None
+        if not runs:
+            return None
+        if not isinstance(invoked, int | float) or isinstance(invoked, bool):
+            return runs[-1][1]
+        earlier = [execution for started, execution in runs if started <= invoked]
+        return earlier[-1] if earlier else runs[0][1]
 
     # Operations.
 
@@ -1332,7 +1522,7 @@ class Executor:
             subreaper=self.subreaper,
             not_dumpable=self.protected,
             features=available_features(),
-            environment=await asyncio.to_thread(environment_fingerprint),
+            environment=await self.baseline(),
         )
 
     async def op_probe(self, request: Message) -> None:
@@ -1453,10 +1643,19 @@ class Executor:
             if running.cancel_requested:
                 state, error = "cancelled", not_started
                 return
+            try:
+                start = await self.begin(running, timeout)
+            except _NotStartedError:
+                state, error = "cancelled", not_started
+                return
+            except _BusyError as busy:
+                state, error = "timed_out", busy.error()
+                return
             before = await asyncio.to_thread(self.snapshot, session)
             if running.cancel_requested:
                 state, error = "cancelled", not_started
                 return
+            self.own(running.owner, execution)
             try:
                 process = await asyncio.create_subprocess_exec(
                     *argv,
@@ -1475,7 +1674,7 @@ class Executor:
             running.leader = (process.pid, info.start) if info is not None else None
             running.process = process
             running.started = True
-            await self.event(execution, "state", state="running")
+            await self.event(execution, "state", **_running(start))
             readers = [
                 asyncio.ensure_future(self.pump(execution, process.stdout, captures["stdout"])),
                 asyncio.ensure_future(self.pump(execution, process.stderr, captures["stderr"])),
@@ -1484,7 +1683,7 @@ class Executor:
                 self.spawn(self.terminate(running))
             timed_out = False
             try:
-                await asyncio.wait_for(process.wait(), timeout)
+                await asyncio.wait_for(process.wait(), max(0.0, timeout - running.waited))
             except TimeoutError:
                 timed_out = True
                 await self.terminate(running)
@@ -1494,6 +1693,7 @@ class Executor:
             for reader in pending:
                 reader.cancel()
             written = await self.written(session, before)
+            written.update(await self.settle(running))
             code = process.returncode
             exit_code = code if code is not None and code >= 0 else None
             signal_number = -code if code is not None and code < 0 else None
@@ -1591,24 +1791,31 @@ class Executor:
                 raise _NotStartedError
             running.queued = True
             async with kernel.lock:
+                # Still queued while a package command changes the environment.
+                start = await self.begin(running, timeout)
                 running.queued = False
                 async with kernel.control:
                     await kernel.ensure_started()
                 if running.cancel_requested:  # asked for while the kernel started
                     raise _NotStartedError
                 running.started = True
+                self.own(kernel.owner, execution)
                 ran_on = kernel.info()
                 state_lost, kernel.state_lost = kernel.state_lost, False
                 before = await asyncio.to_thread(self.snapshot, kernel.session)
-                await self.event(execution, "state", state="running")
+                await self.event(execution, "state", **_running(start))
                 state, result = await self.execute(
                     running, kernel, code, timeout, limit, captures, outputs
                 )
                 result["state_lost"] = state_lost or result.get("state_lost", False)
                 result.update(await self.written(kernel.session, before))
+                result.update(await self.settle(running))
         except (asyncio.CancelledError, _NotStartedError):
             state = "cancelled"
             result = {"error": {"kind": "cancelled", "message": "cancelled before it started"}}
+        except _BusyError as busy:
+            state = "timed_out"
+            result = {"error": busy.error()}
         except ToolError as error:
             state = "failed"
             result = {"error": {"kind": error.kind, "message": error.message}}
@@ -1650,7 +1857,7 @@ class Executor:
         # This generation's client and manager, even once a restart replaces the kernel's.
         client, manager = kernel.client, kernel.manager
         msg_id = client.execute(code, store_history=True, allow_stdin=False)
-        deadline = loop.time() + timeout
+        deadline = loop.time() + max(0.0, timeout - running.waited)
         interrupted_at: float | None = None
         timed_out = False
         error: Message | None = None
@@ -2094,6 +2301,25 @@ class Executor:
         entries, truncated = await asyncio.to_thread(list_directory, directory, limit)
         await self.reply(request, entries=entries, truncated=truncated)
 
+    async def op_lockfile(self, request: Message) -> None:
+        """The packages installed now: their fingerprint and lockfile (CP-18).
+
+        The worker asks when its revision has no lockfile, as revision 0 has none at
+        first. A package command still running after 30 s makes it ``unavailable``.
+        """
+        if self.provisioning is None:
+            found = await asyncio.to_thread(
+                lambda: (provisioning.fingerprint(self.places), provisioning.lockfile(self.places))
+            )
+        else:
+            found = await asyncio.to_thread(
+                provisioning.current, self.packages, self.places, LOCKFILE_WAIT
+            )
+        if found is None:
+            raise ToolError("unavailable", "a package command is changing the environment")
+        fingerprint, lockfile = found
+        await self.reply(request, fingerprint=fingerprint, lockfile=lockfile)
+
 
 def tool_environment(base: Mapping[str, str], python: str, prefix: str) -> dict[str, str]:
     """``base`` with the environment's tools first on PATH, as the tools spec requires.
@@ -2307,6 +2533,37 @@ def _replace_file(target: Path, data: bytes) -> None:
 
 def _count(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _running(environment: str | None) -> Message:
+    """A ``state`` event's fields as an attempt starts, with the packages' fingerprint then."""
+    if environment is None:
+        return {"state": "running"}
+    return {"state": "running", "environment": environment}
+
+
+def _revision(
+    fingerprint: str,
+    lockfile: object,
+    managed: bool,
+    cause: str | None,
+    command: Message | None = None,
+) -> Message:
+    """A ``revision`` event's fields; a lockfile too large for one line stays behind."""
+    if isinstance(lockfile, dict):
+        size = len(json.dumps(lockfile, separators=(",", ":")))
+        if size > MAX_LOCKFILE_EVENT:
+            print(f"executor: a lockfile of {size} bytes is too large to send", file=sys.stderr)
+            lockfile = None
+    else:
+        lockfile = None
+    return {
+        "fingerprint": fingerprint,
+        "managed": managed,
+        "cause": cause,
+        "command": command,
+        "lockfile": lockfile,
+    }
 
 
 def _mime_bundle(data: object) -> dict[str, str]:

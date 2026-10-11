@@ -153,6 +153,28 @@ async def test_the_first_slice_through_the_harness(client: WorkerClient) -> None
     assert model.requests[-1][-1]["role"] == "tool"
 
 
+async def test_the_client_reads_revisions_and_their_lockfiles(client: WorkerClient) -> None:
+    toolbox = Toolbox(client, CONTEXT)
+    script = [{"tool_calls": [{"name": "shell", "arguments": {"script": "true"}}]}]
+    (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls  # pyright: ignore[reportPrivateUsage]
+    await toolbox.call(call, "op-revisions")
+    history = await client.revisions("env1")
+    for _ in range(300):  # the worker asks the executor for revision 0's lockfile
+        if history.revisions[0].lockfile is not None:
+            break
+        await asyncio.sleep(0.1)
+        history = await client.revisions("env1")
+    zero = history.revisions[0]
+    assert (zero.revision, zero.managed, zero.changed_by) == (0, None, None)
+    assert zero.lockfile is not None
+    lockfile = await client.lockfile("env1", 0)
+    assert lockfile.python == ".".join(map(str, sys.version_info[:3]))
+    assert len(lockfile.pip) == zero.lockfile.pip_distributions
+    with pytest.raises(WorkerAPIError) as missing:
+        await client.lockfile("env1", 7)
+    assert missing.value.kind is ErrorKind.NOT_FOUND
+
+
 async def test_a_repeated_tool_call_is_one_execution(client: WorkerClient) -> None:
     toolbox = Toolbox(client, CONTEXT)
     (call,) = (
@@ -844,7 +866,7 @@ async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None
     from sandbox_science.contracts import ExecutionState
     from sandbox_science.orchestrator.tools import _describe  # pyright: ignore[reportPrivateUsage]
 
-    def execution(before: str, after: str) -> Execution:
+    def execution(before: str, after: str, overlapping: bool = False) -> Execution:
         return Execution(
             execution_id="exe-1",
             attempt_id="att-1",
@@ -859,9 +881,12 @@ async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None
                 hostname="h",
                 environment_revision=before,
             ),
-            result=Result(exit_code=0, environment_revision=after),
+            result=Result(exit_code=0, environment_revision=after, overlapping_change=overlapping),
         )
 
-    changed = _describe(execution("3", "4"), 1000, replayed=False)
+    changed = _describe(execution("3", "4", overlapping=True), 1000, replayed=False)
     assert "revision 3 to 4" in changed["environment_changed"]
     assert "environment_changed" not in _describe(execution("4", "4"), 1000, replayed=False)
+    # A package command still running at the end: the packages may be half installed.
+    changing = _describe(execution("4", "4", overlapping=True), 1000, replayed=False)
+    assert "still changing" in changing["environment_changed"]
