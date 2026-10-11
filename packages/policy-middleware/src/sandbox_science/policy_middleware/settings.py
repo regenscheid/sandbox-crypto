@@ -9,6 +9,7 @@ listen = "0.0.0.0:50051"
 state_dir = "/var/lib/sandbox-science/policy-middleware"
 ceiling = "/etc/sandbox-science/pool-ceiling.yaml"
 admin_hosts = ["gateway.sandbox-science.internal", "10.0.0.2"]
+package_cache_url = "http://127.0.0.1:8090"   # optional: names opam packages in escalations
 
 [tls]
 certificate = "tls/middleware.pem"
@@ -41,6 +42,10 @@ MAX_PAYLOAD_BYTES: Final = 4 * 1024 * 1024
 """OpenShell's largest inspectable payload."""
 
 _Name = Annotated[str, StringConstraints(pattern=r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")]
+_ServiceUrl = Annotated[
+    str,
+    StringConstraints(pattern=r"^https?://(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$"),
+]
 
 
 class _Model(BaseModel):
@@ -78,6 +83,9 @@ class Settings(_Model):
     tokens: TokenSettings | None = None
     allow_unauthenticated: bool = False
     """Accept calls without tokens, for a registration with ``allow_insecure_transport``."""
+    package_cache_url: _ServiceUrl | None = None
+    """The package cache as this host reaches it, without a path. With it, the record of an
+    escalated opam archive names the packages the cache's opam index lists for its digest."""
 
     @model_validator(mode="after")
     def _authentication(self) -> Self:

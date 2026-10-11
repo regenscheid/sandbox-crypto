@@ -771,6 +771,11 @@ def test_requests_to_the_package_cache_are_package_operations(
         pytest.param({"path": "/pypi/simple/"}, id="pypi-root"),
         pytest.param({"path": "/maven/org/x"}, id="unknown-ecosystem"),
         pytest.param({"path": "/opam/repo"}, id="opam-repo-file"),
+        pytest.param(
+            {"path": "/-/opam/archives/md5/ca770e5806032a96131b670f6e07f146"},
+            id="opam-archive-table",
+        ),
+        pytest.param({"path": "/-/stats"}, id="stats"),
         pytest.param({"path": f"/opam/cache/sha256/ab/{'a' * 64}"}, id="opam-wrong-directory"),
         pytest.param({"path": "/hackage/01-index.tar"}, id="hackage-uncompressed-index"),
         pytest.param(
@@ -850,6 +855,136 @@ def test_package_escalations_ask_for_the_install_not_the_lookup(
     assert sink.events[-1]["rule"] == "packages.cargo"
     denied = middleware.evaluate_http(cache_facts(make_facts, loaded, "/npm/lodash", config=config))
     assert denied.reason_code == evaluator.POLICY_DENIED
+
+
+OCAMLFIND_MD5 = "ca770e5806032a96131b670f6e07f146"
+OCAMLFIND_ARCHIVE = f"/opam/cache/md5/ca/{OCAMLFIND_MD5}"
+
+
+class FakeArchives:
+    """Answers archive lookups from a table and counts them; ``None`` as the answer fails."""
+
+    def __init__(self, packages: tuple[str, ...] | None, *, broken: bool = False) -> None:
+        self.answer = packages
+        self.broken = broken
+        self.asked: list[str] = []
+
+    def packages(self, digest: str) -> tuple[str, ...] | None:
+        self.asked.append(digest)
+        if self.broken:
+            raise RuntimeError("test: the lookup has a bug")
+        return self.answer
+
+
+def opam_middleware(
+    store: PolicyStore,
+    sandbox_id: str,
+    sink: Sink,
+    action: str,
+    archives: FakeArchives | None,
+    default: str = "deny",
+) -> tuple[PolicyMiddleware, LoadedPolicy]:
+    loaded = bind_policy(
+        store,
+        sandbox_id,
+        f"defaults: {{action: {default}}}\npackages:\n  opam: {{action: {action}}}\n",
+    )
+    middleware = PolicyMiddleware(
+        store, ceiling=PoolCeiling.unrestricted(), floor=HardFloor(), events=sink, archives=archives
+    )
+    return middleware, loaded
+
+
+@pytest.mark.parametrize("action", ["escalate", "alert"])
+def test_records_of_opam_archives_name_the_packages_the_cache_lists(
+    store: PolicyStore,
+    sandbox_id: str,
+    sink: Sink,
+    make_facts: FactsFactory,
+    policy_config: Callable[[LoadedPolicy], dict[str, object]],
+    action: str,
+) -> None:
+    # opam fetches archives by digest, so the request names no package; whoever
+    # answers the escalation sees the packages the cache's opam index lists for it.
+    archives = FakeArchives(("ocamlfind.1.9.8",))
+    middleware, loaded = opam_middleware(store, sandbox_id, sink, action, archives)
+    config = with_cache(policy_config(loaded))
+    verdict = middleware.evaluate_http(
+        cache_facts(make_facts, loaded, OCAMLFIND_ARCHIVE, config=config)
+    )
+    assert verdict.allowed is (action == "alert")
+    (event,) = sink.events
+    assert (event["type"], event["rule"]) == (
+        "escalation" if action == "escalate" else "alert",
+        "packages.opam",
+    )
+    assert event["opam_archive"] == {
+        "digest": f"md5:{OCAMLFIND_MD5}",
+        "packages": ["ocamlfind.1.9.8"],
+    }
+    assert archives.asked == [f"md5:{OCAMLFIND_MD5}"]
+
+
+@pytest.mark.parametrize(
+    ("archives", "expected"),
+    [
+        pytest.param(None, {}, id="no-lookup"),
+        pytest.param(FakeArchives(None), {}, id="lookup-failed"),
+        pytest.param(FakeArchives(None, broken=True), {}, id="lookup-raised"),
+        pytest.param(FakeArchives(()), {"packages": []}, id="listed-by-none"),
+        pytest.param(
+            FakeArchives(tuple(f"bap-{number:03}.2.5.0" for number in range(108))),
+            {"packages": [f"bap-{number:03}.2.5.0" for number in range(100)], "more_packages": 8},
+            id="many",
+        ),
+    ],
+)
+def test_an_opam_archive_escalation_is_recorded_whatever_the_cache_says(
+    store: PolicyStore,
+    sandbox_id: str,
+    sink: Sink,
+    make_facts: FactsFactory,
+    policy_config: Callable[[LoadedPolicy], dict[str, object]],
+    archives: FakeArchives | None,
+    expected: dict[str, object],
+) -> None:
+    # The lookup only informs: without an answer, the record keeps the digest.
+    middleware, loaded = opam_middleware(store, sandbox_id, sink, "escalate", archives)
+    config = with_cache(policy_config(loaded))
+    verdict = middleware.evaluate_http(
+        cache_facts(make_facts, loaded, OCAMLFIND_ARCHIVE, config=config)
+    )
+    assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
+    assert sink.events[-1]["opam_archive"] == {"digest": f"md5:{OCAMLFIND_MD5}", **expected}
+
+
+def test_the_cache_is_asked_only_about_recorded_opam_archives(
+    store: PolicyStore,
+    sandbox_id: str,
+    sink: Sink,
+    make_facts: FactsFactory,
+    policy_config: Callable[[LoadedPolicy], dict[str, object]],
+) -> None:
+    archives = FakeArchives(("ocamlfind.1.9.8",))
+    middleware, loaded = opam_middleware(
+        store, sandbox_id, sink, "allow", archives, default="escalate"
+    )
+    config = with_cache(policy_config(loaded))
+    allowed = middleware.evaluate_http(
+        cache_facts(make_facts, loaded, OCAMLFIND_ARCHIVE, config=config)
+    )
+    assert allowed.allowed
+    index = middleware.evaluate_http(
+        cache_facts(make_facts, loaded, "/opam/index.tar.gz", config=config)
+    )
+    assert index.allowed
+    write = middleware.evaluate_http(
+        make_facts(method="POST", path="/v1/items", body=b"{}", config=config)
+    )
+    assert write.reason_code == evaluator.APPROVAL_REQUIRED
+    assert archives.asked == []
+    (event,) = sink.events
+    assert "opam_archive" not in event
 
 
 @pytest.mark.parametrize(
