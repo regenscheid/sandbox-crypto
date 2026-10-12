@@ -18,6 +18,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore, Mapped
+from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.models import NAME, USER
 from sandbox_science.orchestrator.documents.operations import Operation, unlay
 
@@ -79,9 +80,58 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get("/api/v0/projects/{project}/documents", documents)
     app.router.add_get("/api/v0/projects/{project}/documents/{document}", document)
     app.router.add_get("/api/v0/projects/{project}/documents/{document}/history", history)
+    app.router.add_get("/api/v0/projects/{project}/documents/{document}/comments", comments)
+    app.router.add_post("/api/v0/projects/{project}/documents/{document}/comments", comment_change)
+    app.router.add_get(
+        "/api/v0/projects/{project}/documents/{document}/comments/{thread}", comment_thread
+    )
     app.router.add_post("/api/v0/projects/{project}/documents/{document}/changes", change)
     app.router.add_get(
         "/api/v0/projects/{project}/documents/{document}/patches/{patch}/preview", preview
+    )
+
+
+async def comments(request: web.Request) -> web.Response:
+    raw = request.query.get("revision")
+    if raw is not None and _REVISION.fullmatch(raw) is None:
+        return api_error(DocumentError("invalid_request", "invalid document revision"))
+    return await _answer(
+        request,
+        lambda store: Annotations(store).list(
+            request.match_info["project"],
+            request.match_info["document"],
+            revision=int(raw) if raw else None,
+            after=request.query.get("after"),
+        ),
+    )
+
+
+async def comment_thread(request: web.Request) -> web.Response:
+    raw = request.query.get("before")
+    if raw is not None and _REVISION.fullmatch(raw) is None:
+        return api_error(DocumentError("invalid_request", "invalid entry cursor"))
+    return await _answer(
+        request,
+        lambda store: Annotations(store).read_thread(
+            request.match_info["project"],
+            request.match_info["document"],
+            request.match_info["thread"],
+            int(raw) if raw else None,
+        ),
+    )
+
+
+async def comment_change(request: web.Request) -> web.Response:
+    try:
+        raw = await request.json()
+    except (ValueError, UnicodeDecodeError):
+        return api_error(DocumentError("invalid_request", "invalid annotation change"))
+    return await _answer(
+        request,
+        lambda store: Annotations(store).change(
+            request.match_info["project"], request.match_info["document"], raw, USER
+        ),
+        writer=True,
     )
 
 

@@ -81,3 +81,15 @@ workbook promotion. The `record` mode exports token-free revisions and events.
 Close the tab, stop the transient server and remove the fixture directory.
 The [dated report](../docs/agent-reports/document-editing-2026-10-12.md) records
 the interactions and limits.
+
+## Document comments browser acceptance
+
+`uv run python -I .agents/labs/document_comments.py create` prints a fresh marked
+synthetic state directory and document route. Serve that directory with the
+production workspace build on loopback. Post a formula comment addressed to a
+session, then run `respond STATE` for a scripted document-only main run. Keep an
+unsaved reply while `history STATE THREAD_ID` appends 55 entries; verify retained
+base revision, pagination and explicit adoption of the current thread revision.
+`record STATE` exports research records without authentication state. Close the
+tab, stop the transient server and remove the marked directory. The
+[report](../docs/agent-reports/document-comments-2026-10-12.md) records acceptance.
