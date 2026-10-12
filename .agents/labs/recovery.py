@@ -326,6 +326,36 @@ class Checks:
         assert "before timeout" in done["result"]["stdout"]["text"], done
         self.save("timeout_while_offline", done)
 
+    async def kill_daemon(
+        self, environment: str = ENVIRONMENT, *, sandbox: str | None = None
+    ) -> dict[str, Any]:
+        # Only inspect command arguments and process identity: bootstrap tokens are
+        # supplied on stdin and are never read or included in the evidence.
+        kill = """import json,os,pathlib,signal
+found=[]
+for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
+    try:
+        words=path.read_bytes().split(b'\\0')
+        if any(word.endswith(b'/daemon.py') for word in words) and b'--serve' in words:
+            pid=int(path.parent.name)
+            stamp=(path.parent/'stat').read_text().rsplit(')',1)[1].split()[19]
+            found.append((pid,stamp))
+    except (OSError,ValueError):
+        pass
+assert len(found)==1,found
+pid,stamp=found[0]
+assert pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]==stamp
+os.kill(pid,signal.SIGKILL)
+print(json.dumps({'daemon_pid':pid,'start_time':stamp}))
+"""
+        if sandbox is None:
+            sandbox = (await self.api("GET", f"/v1/environments/{environment}"))["sandbox"]
+        return json.loads(
+            await self.operator(
+                "/opt/sandbox-science/bin/python", "-I", "-c", kill, sandbox=sandbox
+            )
+        )
+
     async def daemon_loss(self) -> None:
         before_environment = await self.api("GET", f"/v1/environments/{ENVIRONMENT}")
         marker = f"lab20-preserved-{STAMP}"
@@ -373,28 +403,7 @@ print(MARKER)
             "other-daemon-loss", script="printf 'second job ready\\n'; sleep 180"
         )
         await self.live(other_job, "second job ready")
-        # Only inspect command arguments and process identity: bootstrap tokens are
-        # supplied on stdin and are never read or included in the evidence.
-        kill = """import json,os,pathlib,signal
-found=[]
-for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
-    try:
-        words=path.read_bytes().split(b'\\0')
-        if any(word.endswith(b'/daemon.py') for word in words) and b'--serve' in words:
-            pid=int(path.parent.name)
-            stamp=(path.parent/'stat').read_text().rsplit(')',1)[1].split()[19]
-            found.append((pid,stamp))
-    except (OSError,ValueError):
-        pass
-assert len(found)==1,found
-pid,stamp=found[0]
-assert pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]==stamp
-os.kill(pid,signal.SIGKILL)
-print(json.dumps({'daemon_pid':pid,'start_time':stamp}))
-"""
-        killed = json.loads(
-            await self.operator("/opt/sandbox-science/bin/python", "-I", "-c", kill)
-        )
+        killed = await self.kill_daemon()
         done = await self.finish(job)
         assert done["state"] == "lost", done
         other_done = await self.finish(other_job)
@@ -523,6 +532,80 @@ print(json.dumps({'daemon_pid':pid,'start_time':stamp}))
             },
         )
 
+    async def idle_daemon_loss(self) -> None:
+        environment = "lab20-b"
+        before = await self.api("GET", f"/v1/environments/{environment}")
+        sandbox = before["sandbox"]
+        variable = f"lab20_idle_{STAMP}"
+        seeded = await self.finish(
+            await self.submit(
+                "idle-loss-seed",
+                kind="cell",
+                environment=environment,
+                code=f"{variable} = 42; print({variable})",
+            )
+        )
+        assert seeded["state"] == "succeeded", seeded
+        assert "42" in seeded["result"]["stdout"]["text"], seeded
+        old_boot = (
+            await self.operator(
+                "/opt/sandbox-science/bin/python",
+                "-I",
+                "-c",
+                "import pathlib; print(pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip())",
+                sandbox=sandbox,
+            )
+        ).strip()
+        # All previous executions have completed. Only the remembered endpoint and
+        # idle kernel remain; startup must still detect the changed incarnation.
+        await self.stop()
+        killed = await self.kill_daemon(environment, sandbox=sandbox)
+        await self.start()
+        fresh = await self.finish(
+            await self.submit(
+                "idle-loss-fresh",
+                kind="shell",
+                environment=environment,
+                script="printf ready",
+            )
+        )
+        assert fresh["state"] == "succeeded", fresh
+        after = await self.api("GET", f"/v1/environments/{environment}")
+        assert before["sandbox_id"] == after["sandbox_id"]
+        new_boot = (
+            await self.operator(
+                "/opt/sandbox-science/bin/python",
+                "-I",
+                "-c",
+                "import pathlib; print(pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip())",
+                sandbox=sandbox,
+            )
+        ).strip()
+        assert new_boot != old_boot, {"before": old_boot, "after": new_boot}
+        cell = await self.finish(
+            await self.submit(
+                "idle-loss-kernel",
+                kind="cell",
+                environment=environment,
+                code=f"print({variable})",
+            )
+        )
+        assert cell["state"] == "failed", cell
+        assert "NameError" in json.dumps(cell), cell
+        self.save(
+            "idle_endpoint_loss_without_unfinished_rows",
+            {
+                "environment_before": before,
+                "environment_after": after,
+                "killed": killed,
+                "old_boot": old_boot,
+                "new_boot": new_boot,
+                "fresh": fresh,
+                "seeded_kernel": seeded,
+                "kernel": cell,
+            },
+        )
+
 
 async def main() -> None:
     parts = sys.argv[1:] or [
@@ -537,6 +620,7 @@ async def main() -> None:
         "timeout",
         "daemon_loss",
         "sandbox_loss",
+        "idle_daemon_loss",
     ]
     if set(parts) - {
         "envs",
@@ -550,6 +634,7 @@ async def main() -> None:
         "timeout",
         "daemon_loss",
         "sandbox_loss",
+        "idle_daemon_loss",
     }:
         raise SystemExit("Unknown check; see this file's usage.")
     async with aiohttp.ClientSession(
