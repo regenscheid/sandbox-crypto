@@ -214,7 +214,8 @@ def create_app(
     on loopback, where the names that reach it are not known. Without ``math_repair``,
     the page is told that there is no reviewer model to repair math. Without
     ``document_store``, the documents are read from the control store in the state
-    directory of ``store``, opened read-only."""
+    directory of ``store``, with a read-only connection for views and a separate lazy
+    writer for explicit user changes."""
     sessions = Sessions(login_token)
     files = StaticFiles(static_dir)
     repairs = math_repair if math_repair is not None else MathRepairService()
@@ -310,11 +311,13 @@ def create_app(
 
     async def close_documents(app: web.Application) -> None:
         app[documents.DOCUMENTS].close()
+        app[documents.WRITER].close()
 
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)
     app[api.STORE] = store
     app[api.MAX_RUN] = max_run_bytes
     app[documents.DOCUMENTS] = document_store
+    app[documents.WRITER] = DocumentStore(document_store.path, producer="workspace")
     app.on_response_prepare.append(secure)
     app.on_cleanup.append(close_repairs)
     app.on_cleanup.append(close_documents)
