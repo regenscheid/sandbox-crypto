@@ -110,6 +110,14 @@ Implement retain/suspend or capture/restore using one environment lifecycle comp
 
 ### W4 — Integrate the initial research workspace (M2 → M3)
 
+Document synchronization now has separate [worker catalog](WORKER.md#document-catalog-prerequisite)
+and [control publication outbox](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
+prerequisites. The latter records canonical changes and source events in one transaction
+and exports complete pinned targets, with snapshot recovery across retention/bootstrap
+gaps. Delivery, worker acknowledgement reconciliation, writer-state safety, direct-edit
+capture and `ss-doc` still require implementation and real OpenShell acceptance before
+environment publication is enabled.
+
 Use the shared artifact/revision/anchor contracts for living documents, comments, sources and ledger entries. Keep open questions/issues, scientific findings, results and frontier candidates as typed entries in one project ledger; board/frontier/history are views. Link review findings without merging their resolution lifecycle into scientific result status.
 
 Support attributed user edits and revision-checked agent patches; demonstrate stale-patch reconciliation and orphaned anchors. Use one TeX-preserving renderer across research views. Evaluate PDF.js navigation against exact page/region anchors while retaining worker extraction/rendering. Assumption changes should identify dependent claims/reviews for reconsideration, not silently rewrite conclusions.
