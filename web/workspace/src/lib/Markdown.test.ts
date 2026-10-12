@@ -24,7 +24,13 @@ import { ModelRepairs, repairKey } from './mathrepair';
 beforeEach(() => forgetResults());
 
 function html(source: string): string {
-  return render(Markdown, { props: { source } }).body;
+  return withoutCopySource(render(Markdown, { props: { source } }).body);
+}
+
+/** Existing presentation assertions exclude the copy-only source attribute. Its exact
+ * escaping/delimiters/repairs are separately covered by mathcopy.test.ts. */
+function withoutCopySource(html: string): string {
+  return html.replace(/ data-math-source="[^"]*"/g, '');
 }
 
 function count(text: string, pattern: RegExp): number {
@@ -427,7 +433,7 @@ describe('goes', () => {
       const state = textState();
       const first = renderMarkdown('$a$ $b$ $c$ $d$', null, state);
       expect(first.unfinished).toBe(true);
-      expect(first.html).toContain(
+      expect(withoutCopySource(first.html)).toContain(
         '<span class="math math-skipped"><code class="math-source">$d$</code>' +
           '<span class="math-message">not rendered yet: KaTeX renders a page’s math a part at a time',
       );
