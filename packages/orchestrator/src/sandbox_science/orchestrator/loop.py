@@ -265,34 +265,51 @@ async def run_task(
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes."""
     transcript: Transcript | None = None
+    interrupted: BaseException | None = None
     try:
         async with AsyncExitStack() as stack:
-            if toolbox.jobs is not None:
-                await stack.enter_async_context(toolbox.jobs.active())
-            if toolbox.reviews is not None:
-                await stack.enter_async_context(toolbox.reviews.active())
-            if toolbox.math_checks is not None:
-                await stack.enter_async_context(toolbox.math_checks.active())
-            if toolbox.documents is not None:
-                await stack.enter_async_context(toolbox.documents.active_requests())
-            transcript = Transcript(
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": task}]
-            )
             try:
-                await _run_task(
-                    model, toolbox, transcript, run_id=run_id, max_turns=max_turns, on_tool=on_tool
+                if toolbox.jobs is not None:
+                    await stack.enter_async_context(toolbox.jobs.active())
+                if toolbox.reviews is not None:
+                    await stack.enter_async_context(toolbox.reviews.active())
+                if toolbox.math_checks is not None:
+                    await stack.enter_async_context(toolbox.math_checks.active())
+                if toolbox.documents is not None:
+                    await stack.enter_async_context(toolbox.documents.active_requests())
+                transcript = Transcript(
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": task},
+                    ]
                 )
-            except Exception:
-                # Catch inside the leases: retain only successfully delivered claims
-                # until the caller durably saves this partial record, then ACKs them.
-                transcript.fail(transcript.phase)
-            if toolbox.documents is not None:
-                transcript.work_request_ids = sorted(toolbox.documents.request_delivered)
-            if toolbox.reviews is not None:
-                transcript.review_notice_ids = sorted(toolbox.reviews.delivered)
-            if toolbox.math_checks is not None:
-                transcript.math_notice_ids = sorted(toolbox.math_checks.delivered)
+                try:
+                    await _run_task(
+                        model,
+                        toolbox,
+                        transcript,
+                        run_id=run_id,
+                        max_turns=max_turns,
+                        on_tool=on_tool,
+                    )
+                except Exception:
+                    # Catch inside the leases: retain only successfully delivered claims
+                    # until the caller durably saves this partial record, then ACKs them.
+                    transcript.fail(transcript.phase)
+                if toolbox.documents is not None:
+                    transcript.work_request_ids = sorted(toolbox.documents.request_delivered)
+                if toolbox.reviews is not None:
+                    transcript.review_notice_ids = sorted(toolbox.reviews.delivered)
+                if toolbox.math_checks is not None:
+                    transcript.math_notice_ids = sorted(toolbox.math_checks.delivered)
+            except BaseException as error:
+                # Cleanup must not turn cancellation/exit into a saved run.
+                if not isinstance(error, Exception):
+                    interrupted = error
+                raise
     except Exception:
+        if interrupted is not None:
+            raise interrupted from None
         if transcript is None:
             raise  # Setup did not start a run; there is no observed transcript.
         transcript.fail("cleanup")

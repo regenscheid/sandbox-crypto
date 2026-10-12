@@ -164,14 +164,20 @@ async def test_cancellation_and_setup_do_not_invent_a_record(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_phase", [None, "model", "setup"])
 async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
-    tmp_path: Path, monkeypatch, capsys
+    tmp_path: Path, monkeypatch, capsys, cancel_phase
 ):
     closed = []
 
     class Model(ScriptedModel):
         def __init__(self, *args, **kwargs):
             super().__init__([ModelTurn("Observed answer before cleanup")])
+
+        async def complete(self, messages, tools):
+            if cancel_phase == "model":
+                raise asyncio.CancelledError("model cancelled")
+            return await super().complete(messages, tools)
 
         async def close(self):
             closed.append("model")
@@ -188,6 +194,8 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
 
         async def __aexit__(self, *args):
             closed.append("client")
+            if cancel_phase:
+                raise RuntimeError(HOSTILE)
 
         async def capabilities(self, *args):
             return SimpleNamespace(
@@ -203,6 +211,8 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
             )
 
     async def context(*args):
+        if cancel_phase == "setup":
+            raise asyncio.CancelledError("setup cancelled")
         return CONTEXT.model_copy(
             update={"environment_id": ProjectStore(tmp_path).get("p").default_environment_id}
         )
@@ -243,6 +253,13 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     projects.open_session("p", "s", dedicated=False)
+    if cancel_phase:
+        with pytest.raises(asyncio.CancelledError, match=f"{cancel_phase} cancelled"):
+            await cli._run(args)
+        assert projects.runs("p", "s") == []
+        assert not args.transcript.exists()
+        assert closed == (["client"] if cancel_phase == "setup" else ["store", "model", "client"])
+        return
     assert await cli._run(args) == 1
     assert closed == ["store", "model", "client"]
     kept = projects.run("p", "s", projects.runs("p", "s")[0].name)
@@ -292,3 +309,36 @@ def test_legacy_records_and_failure_classification_are_bounded():
             RunRecord.model_validate({**old, "stopped": "error", "failure": failure})
     with pytest.raises(ValidationError, match="no final answer"):
         RunRecord.model_validate({**old, "failure": "model"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["model", "entry"])
+async def test_cancellation_survives_active_context_cleanup_failure(phase, monkeypatch):
+    class Jobs:
+        @asynccontextmanager
+        async def active(self):
+            try:
+                yield
+            finally:
+                raise RuntimeError(HOSTILE)
+
+        async def notices(self):
+            return []
+
+    class Other:
+        @asynccontextmanager
+        async def active(self):
+            raise asyncio.CancelledError("entry cancelled")
+            yield
+
+    class Model:
+        async def complete(self, messages, tools):
+            raise asyncio.CancelledError("model cancelled")
+
+    async with WorkerClient("http://127.0.0.1:1", "synthetic") as worker:
+        toolbox = Toolbox(worker, CONTEXT)
+        monkeypatch.setattr(toolbox, "jobs", Jobs())
+        if phase == "entry":
+            monkeypatch.setattr(toolbox, "reviews", Other())
+        with pytest.raises(asyncio.CancelledError, match=f"{phase} cancelled"):
+            await run_task(Model(), toolbox, "Continue", run_id="cancelled")
