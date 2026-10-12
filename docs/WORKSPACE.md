@@ -367,3 +367,10 @@ and `sha256`, plus `thread`, its `expected` revision, replacement `body` and
 `operation_id`. A stale body or thread guard refuses the write and retains the
 client draft. This action appends history without altering the original entry or
 any work request already pinned to it.
+
+
+The additive [MAIN explanation math slice](FINDING-PROSE-MATH.md) checks only
+agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the
+original scientific action/evidence, use exact body and finding CAS, and fence
+stale reviewer snapshots independently. The workspace history is read-only;
+ledger and reviewer/USER/platform diagnostic prose remain outside this slice.

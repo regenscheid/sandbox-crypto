@@ -79,6 +79,33 @@ AUTHOR_SPECS = (
         ["finding", "expected", "action", "explanation"],
     ),
     schema("request_review", "Request a review at the next safe point of this live run.", {}, []),
+    schema(
+        "review_response_read",
+        "Read an exact ordinary MAIN explanation source and its body CAS.",
+        {
+            "finding": {"type": "string"},
+            "response_revision": {"type": "integer"},
+            "body_revision": {"type": "integer"},
+            "start": {"type": "integer"},
+            "count": {"type": "integer"},
+        },
+        ["finding", "response_revision"],
+    ),
+    schema(
+        "review_response_edit",
+        "MAIN only: correct its session's explanation source. Original decision/action/evidence "
+        "remain immutable; mechanical acceptance does not resolve the scientific parent.",
+        {
+            "finding": {"type": "string"},
+            "response_revision": {"type": "integer"},
+            "expected": {"type": "integer"},
+            "base": {"type": "integer"},
+            "sha256": {"type": "string"},
+            "body": {"type": "string"},
+            "operation_id": {"type": "string"},
+        },
+        ["finding", "response_revision", "expected", "base", "sha256", "body"],
+    ),
 )
 AUTHOR_NAMES = frozenset(s.name for s in AUTHOR_SPECS)
 _COMPLETE = re.compile(
@@ -462,6 +489,60 @@ class ReviewController:
                 count=count,
                 block=args.get("block"),
             )
+        elif name in ("review_response_read", "review_response_edit"):
+            from sandbox_science.orchestrator.documents.mathjobs import threaded
+
+            from .response_bodies import ResponseBodies
+
+            bodies = ResponseBodies(self.store)
+            if name == "review_response_read":
+                if set(args) - {
+                    "finding",
+                    "response_revision",
+                    "body_revision",
+                    "start",
+                    "count",
+                } or not {"finding", "response_revision"} <= set(args):
+                    raise DocumentError(
+                        "invalid_request", "finding and original response revision are required"
+                    )
+                start, count = args.get("start", 0), args.get("count", 6000)
+                if (
+                    type(start) is not int
+                    or not 0 <= start <= 32768
+                    or type(count) is not int
+                    or not 1 <= count <= 8000
+                ):
+                    raise DocumentError("invalid_request", "invalid response source slice")
+                source = await threaded(
+                    bodies.get,
+                    *self.scope,
+                    args["finding"],
+                    args["response_revision"],
+                    body_revision=args.get("body_revision"),
+                )
+                result = {
+                    **source,
+                    "body": source["body"][start : start + count],
+                    "start": start,
+                    "next_start": start + count if start + count < len(source["body"]) else None,
+                }
+            else:
+                author = Author(
+                    kind="agent",
+                    session_id=self.context.session_id,
+                    run_id=self.run_id,
+                    role=self.role,
+                    model=model,
+                    alias=self.author_alias,
+                )
+                source = await threaded(
+                    bodies.edit,
+                    *self.scope,
+                    {**args, "operation_id": args.get("operation_id", operation)},
+                    author,
+                )
+                result = {k: v for k, v in source.items() if k != "body"}
         elif name == "review_respond":
             author = Author(
                 kind="agent",

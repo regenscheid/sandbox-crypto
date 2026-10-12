@@ -1,5 +1,7 @@
 # Plan changes
 
+- **MAIN finding explanation math** (D82/LD-53–55/CR-36–38; [scope](../docs/FINDING-PROSE-MATH.md)). Extend the accepted document/comment engine only to MAIN-authored fix/rebut explanation fields. Original scientific transitions remain immutable; ordinary same-session MAIN edits require exact finding/body CAS and bounded immutable operation replay. Reviewer confirmation independently pins the current explanation. Source-neutral checks use real finding parents, empty macros, session-private evidence, shared quotas/closing/save-ACK and explicit held unknown legacy proof. No new USER edit authority, recursive diagnostic source, service/provider/runtime pin/security policy, ledger or idle scope. Signed source `eb5a50f`, actual-main union `c509bc1` and replay correction `f7bb0a3` passed independent review and final combined gates (9,730 Python/43 skips/two existing warnings, 443 web/24 math, all required checks/builds). Root-owned [browser acceptance](docs/agent-reports/finding-prose-math-2026-10-12.md) passed independent scientific/mechanical confirmation and session scope; full teardown passed. Fresh PR CI is required before merge.
+
 ## 2026-10-12 — worker-local terminal observation prerequisite
 
 Implement the next approved RA prerequisite without enabling automatic inventory:
@@ -23,8 +25,8 @@ nineteen terminal markers/eighteen bounded reports, raw identities, partial file
 explicit gaps and original-attempt/kernel continuity through worker restart. PDF
 was unavailable. Complete teardown was verified at 14:59:02.325873 UTC. No source,
 helper or assertion changes followed the freeze; inspection hash/CLI/key corrections
-are retained transparently in the report. Acceptance changes are documentation only;
-fresh PR CI remains required before merge.
+are retained transparently in the report. Acceptance changes are documentation only. PR #88 merged at `744d1b5` after
+fresh Python 3.12/3.13/web and security checks passed (run `38268375467`).
 
 ## 2026-10-12 — comment/reply mechanical math
 

@@ -246,3 +246,100 @@ async def test_mechanical_math_evidence_is_scoped_bounded_and_separate_from_revi
     assert (
         await client.get(f"/api/v0/projects/p1/sessions/b/findings/{finding['finding_id']}")
     ).status == 404
+
+
+async def test_main_response_body_read_is_scoped_readonly_and_preserves_original(
+    client, review_data, state_dir: Path
+) -> None:
+    from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
+    from sandbox_science.orchestrator.documents import Author
+
+    _, _, finding = review_data
+    documents = DocumentStore(store_path(state_dir))
+    store = ReviewStore(documents)
+    actor = Author(kind="agent", session_id="a", run_id="original", role="main")
+    Findings(store).respond(
+        "p1",
+        "a",
+        {
+            "finding": finding,
+            "expected": 1,
+            "action": "rebut",
+            "explanation": r"Original $\unknown{x}$",
+            "operation_id": "original",
+        },
+        actor,
+    )
+    current = ResponseBodies(store).get("p1", "a", finding, 2)
+    ResponseBodies(store).edit(
+        "p1",
+        "a",
+        {
+            "finding": finding,
+            "response_revision": 2,
+            "expected": 2,
+            "base": 1,
+            "sha256": current["sha256"],
+            "body": "$x$",
+            "operation_id": "correct",
+        },
+        actor.model_copy(update={"run_id": "corrector"}),
+    )
+    documents.close()
+    path = f"/api/v0/projects/p1/sessions/a/findings/{finding}/responses/2"
+    result = await client.get(path)
+    assert result.status == 200
+    source = await result.json()
+    assert source["revision"] == 2
+    assert source["body"] == "$x$"
+    assert source["original_author"]["run_id"] == "original"
+    assert source["author"]["run_id"] == "corrector"
+    original = await (await client.get(path + "?body_revision=1")).json()
+    assert original["body"] == r"Original $\unknown{x}$"
+    assert (await client.get(path.replace("sessions/a", "sessions/b"))).status == 404
+    assert (await client.get(path.replace("projects/p1", "projects/other"))).status == 404
+    assert (await client.get(path + "?body_revision=-1")).status == 400
+    assert (
+        await client.post(
+            path,
+            json={},
+            headers={
+                "Origin": str(client.make_url("/")).rstrip("/"),
+            },
+        )
+    ).status == 405
+
+
+async def test_explanation_check_evidence_and_queue_never_cross_session(
+    client, review_data, state_dir: Path
+) -> None:
+    from sandbox_science.orchestrator.documents import Author
+    from sandbox_science.orchestrator.documents.mathjobs import MathJobs
+
+    _, _, finding = review_data
+    documents = DocumentStore(store_path(state_dir))
+    store = ReviewStore(documents)
+    Findings(store).respond(
+        "p1",
+        "a",
+        {
+            "finding": finding,
+            "expected": 1,
+            "action": "rebut",
+            "explanation": r"Private $\unknown{x}$",
+            "operation_id": "private",
+        },
+        Author(kind="agent", session_id="a", run_id="main", role="main"),
+    )
+    check = MathJobs(store).claim("p1", "owner")
+    assert check
+    assert await MathJobs(store).step(check, "owner", None)
+    documents.close()
+    own = "/api/v0/projects/p1/sessions/a"
+    other = "/api/v0/projects/p1/sessions/b"
+    assert (await client.get(own + f"/math-checks/{check}")).status == 200
+    assert (await client.get(other + f"/math-checks/{check}")).status == 404
+    assert (await client.get(other + f"/math-checks?after={check}")).status == 404
+    listed = await (await client.get(other + "/math-checks")).json()
+    assert listed["checks"] == []
+    assert listed["queue"] == []
