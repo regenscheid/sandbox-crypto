@@ -67,6 +67,22 @@ def test_ld_f2_blocks_and_spans(case: dict[str, Any]) -> None:
     assert [[span.block, span.kind, span.tex] for span in parsed.spans] == case["math"]
 
 
+@pytest.mark.parametrize("case", _cases("tables.fixtures.json"), ids=lambda case: case["name"])
+def test_unicode_tables_and_exact_math_positions(case: dict[str, Any]) -> None:
+    parsed = parse(case["markdown"])
+    assert [[block.kind, block.depth, *block.lines] for block in parsed.blocks] == case["blocks"]
+    assert [[span.block, span.kind, span.tex] for span in parsed.spans] == case["math"]
+    assert [
+        [span.open_start, span.tex_start, span.tex_end, span.close_end] for span in parsed.spans
+    ] == case["positions"]
+    for span in parsed.spans:
+        assert span.open_start is not None
+        assert span.close_end is not None
+        assert (
+            case["markdown"][span.open_start : span.close_end].replace("\\|", "|") == span.written
+        )
+
+
 def test_the_shared_cases_cover_the_profile() -> None:
     # LD-F2 lists what the cases must cover; the names say where.
     names = " ".join(case["name"] for case in _cases("documents.fixtures.json"))

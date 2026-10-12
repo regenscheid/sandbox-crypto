@@ -614,7 +614,7 @@ class DocumentStore:
             if cached is not None:
                 self._cache.move_to_end(key)
                 return cached
-        mapped = attach(parse(revision.text), revision.block_map)
+        mapped = attach(revision.text, revision.block_map)
         with self._lock:
             self._cache[key] = mapped
             while len(self._cache) > CACHED:
@@ -1825,7 +1825,7 @@ class DocumentStore:
                 _dumps(normalized),
                 _dumps(found),
                 _dumps(stored),
-                _dumps(parser_versions()),
+                _dumps({**parser_versions(), "profile": mapped.parsed.profile}),
             ),
         )
         db.execute(
