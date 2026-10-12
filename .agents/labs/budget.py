@@ -1,4 +1,4 @@
-"""Lab 17: the package cache's per-sandbox budgets, through the policy middleware's header.
+"""The package cache's per-sandbox budgets, through the policy middleware's header.
 
 Usage: budget.py TOKEN_FILE PHASE   (header: one request each, A forging a name;
                                      budget: A spends with C's name forged while C fetches)
@@ -8,10 +8,11 @@ import asyncio
 import json
 import sys
 import time
+from pathlib import Path
 
 import aiohttp
 
-TOKEN = open(sys.argv[1]).read().strip()
+TOKEN = Path(sys.argv[1]).read_text().strip()
 PHASE = sys.argv[2]
 URL = "http://127.0.0.1:8100"
 H = {"Authorization": f"Bearer {TOKEN}"}
@@ -46,7 +47,12 @@ def ctx(env, session):
 
 
 async def run(http, op, env, session, script):
-    body = {"operation_id": f"{op}-{STAMP}", "context": ctx(env, session), "kind": "shell", "script": script}
+    body = {
+        "operation_id": f"{op}-{STAMP}",
+        "context": ctx(env, session),
+        "kind": "shell",
+        "script": script,
+    }
     started = time.monotonic()
     async with http.post(f"{URL}/v1/executions", headers=H, json=body) as r:
         execution = await r.json()
@@ -55,8 +61,11 @@ async def run(http, op, env, session, script):
             if line.strip() and (event := json.loads(line))["type"] == "result":
                 done = event["execution"]
                 result = done.get("result") or {}
-                text = ((result.get("stdout") or {}).get("text") or "") + ((result.get("stderr") or {}).get("text") or "")
+                text = ((result.get("stdout") or {}).get("text") or "") + (
+                    (result.get("stderr") or {}).get("text") or ""
+                )
                 return done["state"], text.strip(), time.monotonic() - started
+    raise RuntimeError(f"no result for {execution['execution_id']}")
 
 
 async def sandbox_id(http, env):
@@ -69,10 +78,27 @@ async def main():
         ids = {env: await sandbox_id(http, env) for env in (A, C)}
         print("sandbox IDs:", ids)
         if PHASE == "header":
-            print("A, forging 'forged-by-a':", await run(http, "h1", A, "a", FETCH + "python3 fetch.py six forged-by-a"))
-            print("C, no header of its own:", await run(http, "h2", C, "c", FETCH + "python3 fetch.py six"))
+            print(
+                "A, forging 'forged-by-a':",
+                await run(http, "h1", A, "a", FETCH + "python3 fetch.py six forged-by-a"),
+            )
+            print(
+                "C, no header of its own:",
+                await run(http, "h2", C, "c", FETCH + "python3 fetch.py six"),
+            )
         else:
-            spender = ",".join(["requests", "flask", "django", "click", "jinja2", "werkzeug", "itsdangerous", "blinker"])
+            spender = ",".join(
+                [
+                    "requests",
+                    "flask",
+                    "django",
+                    "click",
+                    "jinja2",
+                    "werkzeug",
+                    "itsdangerous",
+                    "blinker",
+                ]
+            )
             results = await asyncio.gather(
                 run(http, "b1", A, "a", f"python3 fetch.py {spender} {ids[C]}"),
                 run(http, "b2", C, "c", "sleep 1; python3 fetch.py httpx,anyio,sniffio"),
