@@ -56,6 +56,9 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 
+from .consistency.controller import ReviewController
+from .consistency.notices import FindingNotices
+from .consistency.store import ReviewStore
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
 from .documents.annotations import Annotations
 from .documents.errors import CONFLICT
@@ -168,6 +171,31 @@ async def _run(args: argparse.Namespace) -> int:
                     max_tokens=300,
                     max_response_bytes=16384,
                 )
+        reviewer: ChatModel | None = None
+        if args.reviewer_model is not None:
+            reviewer = (
+                ScriptedModel.from_json(json.loads(args.reviewer_script.read_text()))
+                if args.reviewer_script is not None
+                else OpenAICompatibleModel(
+                    args.model_url,
+                    args.reviewer_model,
+                    _read_secret(args.api_key_file),
+                    max_tokens=2048,
+                    max_response_bytes=65536,
+                )
+            )
+        reviews = (
+            ReviewController(
+                ReviewStore(documents.store),
+                context,
+                run_id=run_id,
+                model=reviewer,
+                alias=args.reviewer_model,
+                author_alias="scripted" if args.script is not None else args.model,
+            )
+            if documents is not None
+            else None
+        )
         jobs = JobTools(
             client,
             context,
@@ -189,6 +217,7 @@ async def _run(args: argparse.Namespace) -> int:
                     features=capabilities.features,
                     documents=documents,
                     jobs=jobs,
+                    reviews=reviews,
                 ),
                 args.task,
                 run_id=run_id,
@@ -196,6 +225,8 @@ async def _run(args: argparse.Namespace) -> int:
                 on_tool=show,
             )
         finally:
+            if isinstance(reviewer, OpenAICompatibleModel):
+                await reviewer.close()
             if isinstance(watcher, OpenAICompatibleModel):
                 await watcher.close()
             if documents is not None:
@@ -215,6 +246,8 @@ async def _run(args: argparse.Namespace) -> int:
         "tools": transcript.tool_records,
         "job_notice_ids": transcript.job_notice_ids,
         "work_request_ids": transcript.work_request_ids,
+        "review_notice_ids": transcript.review_notice_ids,
+        "review_summary": transcript.review_summary,
     }
     return _keep(args, fields, 0 if transcript.stopped == "answered" else 3)
 
@@ -247,6 +280,17 @@ def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> i
             JobState(args.state_dir).acknowledge(
                 record.context, record.run_id, record.job_notice_ids
             )
+            if record.review_notice_ids:
+                review_documents = DocumentStore(store_path(args.state_dir), producer="harness")
+                try:
+                    FindingNotices(ReviewStore(review_documents)).acknowledge(
+                        record.context.project_id,
+                        record.context.session_id,
+                        record.run_id,
+                        record.review_notice_ids,
+                    )
+                finally:
+                    review_documents.close()
             if record.work_request_ids:
                 documents = DocumentStore(store_path(args.state_dir), producer="harness")
                 try:
@@ -502,6 +546,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     run.add_argument("--watcher-first-check", type=float, default=300)
     run.add_argument("--watcher-interval", type=float, default=1800)
+    run.add_argument("--reviewer-model", help="separate consistency reviewer model alias")
+    run.add_argument(
+        "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
+    )
     run.add_argument("--transcript", type=Path)
     run.add_argument("task")
     project = commands.add_parser("project", help="create, show or revise a project")
@@ -545,6 +593,15 @@ def main(argv: list[str] | None = None) -> int:
                     parser.error("--watcher-model must be a separate model alias")
             elif args.watcher_script is not None:
                 parser.error("--watcher-script needs --watcher-model")
+            if args.reviewer_model is not None:
+                if args.state_dir is None:
+                    parser.error("--reviewer-model needs --state-dir for durable snapshots")
+                if args.reviewer_script is None and args.model_url is None:
+                    parser.error("--reviewer-model needs --model-url or --reviewer-script")
+                if args.reviewer_model == args.model:
+                    parser.error("--reviewer-model must be a separate model alias")
+            elif args.reviewer_script is not None:
+                parser.error("--reviewer-script needs --reviewer-model")
             if args.model_url is not None and args.api_key_file is None:
                 parser.error("--model-url needs --api-key-file")
             if args.dedicated and args.state_dir is None:

@@ -44,7 +44,7 @@ Planned members (created when work starts on them):
 
 The browser front end itself is not a member: it lives in `web/workspace/`, with Node's toolchain (D60, D80).
 
-Libraries must not import deployable members. Deployable members may import libraries, never each other. One exception, until the control application has an API of its own (W5): `workspace` reads the harness's records through the orchestrator's `ProjectStore`.
+Libraries must not import deployable members. Deployable members may import libraries, never each other. One temporary W4 exception, until the control application has an API of its own (W5): `workspace` accesses harness records through the orchestrator's scoped project and control stores. This includes reads and explicit authenticated USER changes to documents, annotations and findings, with the existing same-origin write guard and capability checks. It does not grant the workspace worker or agent authority.
 
 ## Language and tooling
 
