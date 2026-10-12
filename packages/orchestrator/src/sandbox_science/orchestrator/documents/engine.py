@@ -382,17 +382,23 @@ def block_map(mapped: Mapped, changes: Changes) -> Json:
     }
 
 
-def attach(parsed: Parsed, stored: Json) -> Mapped:
-    """A stored block map's IDs on a new parse of the same revision's text."""
+def attach(parsed: Parsed | str, stored: Json, *, documents: bool = True) -> Mapped:
+    """A saved map's IDs, read under its own known profile before parsing its text.
+
+    Passing an existing parse remains supported; saved-source readers pass text so
+    another profile's limits or differing blocks cannot prevent a historical read.
+    """
     profile = stored.get("profile")
     if not isinstance(profile, str) or profile not in PROFILES:
         raise DocumentError(
             INTERNAL,
-            f"the block map was made with unsupported profile {profile}",
+            "the block map was made with an unsupported profile",
         )
     # Saved maps are immutable. Read their original parser semantics instead of
     # silently applying a new rule to old IDs (including comment/response bodies).
-    if parsed.profile != profile:
+    if isinstance(parsed, str):
+        parsed = parse(parsed, documents=documents, profile=profile)
+    elif parsed.profile != profile:
         parsed = parse(parsed.text, documents=parsed.documents, profile=profile)
     entries = cast(list[Json], stored.get("blocks", []))
     if len(entries) != len(parsed.blocks) or any(

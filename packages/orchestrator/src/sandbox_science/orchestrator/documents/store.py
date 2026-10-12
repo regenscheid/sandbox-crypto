@@ -614,7 +614,7 @@ class DocumentStore:
             if cached is not None:
                 self._cache.move_to_end(key)
                 return cached
-        mapped = attach(parse(revision.text), revision.block_map)
+        mapped = attach(revision.text, revision.block_map)
         with self._lock:
             self._cache[key] = mapped
             while len(self._cache) > CACHED:
