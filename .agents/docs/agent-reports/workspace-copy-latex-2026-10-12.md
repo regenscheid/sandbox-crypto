@@ -61,14 +61,14 @@ the table selection includes existing outer DOM newline text nodes, and the
 browser's ordinary fenced-code copy omits its terminal newline. The archived
 cases retain these notes. Zero browser warning/error console entries occurred.
 
-The [screenshot](copy-latex-browser-2026-10-12.png) shows the native pasted
+The [screenshot](copy-latex-browser-2026-10-12.jpg) shows the native pasted
 original source above the rendered heuristic, model-repaired, approximated and
 skipped views. The draft was discarded; the document remained at revision 1.
 
 ## Evidence and cleanup
 
 [Evidence archive](workspace-copy-latex-evidence-2026-10-12.json): **40,290 bytes**,
-SHA-256 `46986c076c679d50f8c23707caa345da645a894fbd21708a4ebf878e64997eba`.
+SHA-256 `5f0514b7634172ea69bd0f37cb0f30f6846d307bb8e22c6d1a16411b083c1cb6`.
 Seven exact UTF-8 records retain browser cases, final DOM, both gate logs,
 independent review summary, cleanup and all **70** built-file hash pins. Each
 record carries its byte count and SHA-256. The separate screenshot is 146,494
