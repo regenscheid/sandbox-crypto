@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, cast
 from sandbox_science.contracts import new_id
 
 from . import comment_bodies as bodies
-from .blocks import parse
 from .engine import attach
 from .errors import CONFLICT, INTERNAL, DocumentError
 from .identity import Mapped
@@ -184,7 +183,7 @@ class CommentMath:
             saved = bodies.read(db, job["comment"]["entry_id"], job["revision"])
         if saved["sha256"] != job["source_sha256"]:
             raise DocumentError(INTERNAL, "comment math digest does not bind its body")
-        return attach(parse(saved["body"], documents=False), saved["block_map"])
+        return attach(saved["body"], saved["block_map"], documents=False)
 
     def macros(self, job: Json) -> dict[str, str]:
         # Use the ordinary immutable document loader and integrity check. Comment

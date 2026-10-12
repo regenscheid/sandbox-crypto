@@ -28,7 +28,7 @@ from markdown_it.token import Token
 
 from .errors import INVALID_REQUEST, DocumentError
 from .frontmatter import FrontMatter, read_front_matter
-from .parser import CONTAINER, Provenance, tokens
+from .parser import CONTAINER, PROFILE, Provenance, tokens
 
 MAX_TEXT_BYTES: Final = 1024 * 1024
 """A revision's text, in UTF-8."""
@@ -153,6 +153,8 @@ class Parsed:
     blocks: tuple[Block, ...]
     spans: tuple[Span, ...]
     front_matter: FrontMatter | None
+    profile: str
+    documents: bool
 
     def descendants(self, index: int) -> Iterator[int]:
         for child in self.blocks[index].children:
@@ -445,13 +447,13 @@ def _attrs(token: Token, kind: str) -> dict[str, object]:
     return {}
 
 
-def parse(text: str, *, documents: bool = True) -> Parsed:
+def parse(text: str, *, documents: bool = True, profile: str = PROFILE) -> Parsed:
     """The blocks and spans of ``text``, which must already have ``\\n`` line breaks."""
     check_text(text)
     builder = _Builder(text)
     stack: list[int] = []
     in_table = 0
-    for token in tokens(text, documents=documents):
+    for token in tokens(text, documents=documents, profile=profile):
         if in_table:
             if token.type == "table_open":
                 in_table += 1
@@ -485,4 +487,6 @@ def parse(text: str, *, documents: bool = True) -> Parsed:
         blocks=builder.freeze(),
         spans=tuple(builder.spans),
         front_matter=builder.front_matter,
+        profile=profile,
+        documents=documents,
     )
