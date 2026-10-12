@@ -698,6 +698,19 @@ class Findings:
                     raise DocumentError(
                         CONFLICT, "response explanation changed during confirmation"
                     )
+                from sandbox_science.orchestrator.documents.project_macros import exists
+
+                if exists(db):
+                    macro = current_body["macro_context"]
+                    pinned_macro = db.execute(
+                        "SELECT revision,substr(CAST(sha256 AS BLOB),1,65) FROM review_macro_pins "
+                        "WHERE review_id=? AND finding_id=?",
+                        (review, value.finding),
+                    ).fetchone()
+                    if pinned_macro != (macro["revision"], macro["sha256"].encode()):
+                        raise DocumentError(
+                            CONFLICT, "response macro context changed during confirmation"
+                        )
             config = ReviewConfig.model_validate_json(run["config"])
             if value.decision in ("confirm", "reject"):
                 self.confirmation_reads(db, review, json.loads(pinned[0]), pinned[1])

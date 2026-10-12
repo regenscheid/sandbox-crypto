@@ -39,6 +39,11 @@ export interface Project {
   environments: { environment_id: string; default: boolean; sessions: string[] }[];
 }
 
+export interface MacroContext {
+  project: string; revision: number; sha256: string; macros: Record<string,string>;
+  known?: boolean; key?: string; problems?: string[];
+}
+
 export interface RunEntry {
   name: string;
   run_id: string;
@@ -148,6 +153,8 @@ export interface MathRepairRequest {
   display: boolean;
   /** KaTeX's error. */
   error: string;
+  project?: string;
+  macro_context?: string;
 }
 
 /** The server's answer: `enabled` false when it has no reviewer model to ask. */
@@ -230,6 +237,7 @@ export interface DocumentRevision {
   /** The front matter's title and macros, as the server read them. */
   title: string | null;
   macros: Record<string, string>;
+  macro_context?: MacroContext;
   /** False when the server could not parse the revision as its block map was made. */
   matched: boolean;
   blocks: (ServerBlock & {
@@ -384,6 +392,8 @@ export async function post<T>(path: string, body: unknown): Promise<T> {
 const part = encodeURIComponent;
 
 export const api = {
+  projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
+  changeMacros: (project: string, value: Record<string, unknown>) => post<MacroContext>(`/projects/${part(project)}/macros`, value),
   projects: () => get<{ projects: ProjectSummary[] }>('/projects'),
   project: (project: string) =>
     get<{ project: Project }>(`/projects/${part(project)}`).then((found) => found.project),

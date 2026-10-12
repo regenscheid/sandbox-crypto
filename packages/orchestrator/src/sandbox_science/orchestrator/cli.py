@@ -421,6 +421,40 @@ async def _project(args: argparse.Namespace) -> int:
             print(f"{'created' if created else 'exists'}: {record.model_dump_json(indent=2)}")
         case "show":
             print(store.get(args.project).model_dump_json(indent=2))
+        case "macros":
+            from .documents import USER, DocumentStore, store_path
+            from .documents.project_macros import ProjectMacros
+
+            store.get(args.project)
+            documents = DocumentStore(store_path(args.state_dir), producer="user-cli")
+            try:
+                macros = ProjectMacros(documents)
+                if args.macros_file is None:
+                    result = macros.get(args.project)
+                else:
+                    if args.expected is None or args.operation_id is None:
+                        raise ValueError("macro changes need --expected and --operation-id")
+                    with args.macros_file.open("rb") as source:
+                        raw = source.read(16385)
+                    if len(raw) > 16384:
+                        raise ValueError("macro JSON exceeds 16384 bytes")
+                    result = macros.change(
+                        args.project,
+                        {
+                            "macros": json.loads(raw),
+                            "expected": args.expected,
+                            "operation_id": args.operation_id,
+                        },
+                        USER,
+                    )
+                print(json.dumps(result, ensure_ascii=False))
+            except (DocumentError, ValueError, OSError, RecursionError):
+                print(
+                    "error: project macro request is invalid, stale or unavailable", file=sys.stderr
+                )
+                return 1
+            finally:
+                documents.close()
         case _:
             record = store.set_policy(args.project, args.policy)
             print(f"project {record.project_id} now uses {record.policy}")
@@ -660,13 +694,18 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--transcript", type=Path)
     run.add_argument("task")
     project = commands.add_parser("project", help="create, show or revise a project")
-    project.add_argument("action", choices=("create", "show", "revise"))
+    project.add_argument("action", choices=("create", "show", "revise", "macros"))
     project.add_argument("--state-dir", type=Path, required=True)
     project.add_argument("--project", required=True)
     project.add_argument("--profile", help="create: the base profile, such as minimal")
     project.add_argument("--policy", help="create, revise: the policy revision (sha256:...)")
     project.add_argument("--worker", help="revise: also revise the project's environments")
     project.add_argument("--token-file", type=Path)
+    project.add_argument(
+        "--macros-file", type=Path, help="macros: bounded JSON definitions; omitted to read"
+    )
+    project.add_argument("--expected", type=int, help="macros: exact current settings revision")
+    project.add_argument("--operation-id", help="macros: stable retry identity")
     session = commands.add_parser("session", help="close a session: stop its kernels")
     session.add_argument("action", choices=("close",))
     session.add_argument("--state-dir", type=Path, required=True)

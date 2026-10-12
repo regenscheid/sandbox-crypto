@@ -47,7 +47,7 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from . import api, documents, jobs, reviews
+from . import api, documents, jobs, project_settings, reviews
 from .mathrepair import (
     MathRepairService,
     RepairRequestError,
@@ -291,6 +291,8 @@ def create_app(
             wanted = parse_request(payload)
         except RepairRequestError as error:
             return json_error(400, ErrorKind.INVALID_REQUEST, str(error))
+        if wanted.project:
+            store.get(wanted.project)
         # The guard checked the session; its cookie's digest names it to the service.
         session = _digest(request.cookies.get(cookie_name(request), "")).hex()
         try:
@@ -324,6 +326,7 @@ def create_app(
     app.on_cleanup.append(close_job_worker)
     api.add_routes(app)
     documents.add_routes(app)
+    project_settings.add_routes(app)
     reviews.add_routes(app)
     jobs.add_routes(app, job_worker, job_state)
     app.router.add_post("/api/v0/logout", logout)

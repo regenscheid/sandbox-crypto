@@ -4,11 +4,13 @@
   import { Preview } from '../lib/preview';
   import Markdown from '../lib/Markdown.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import { macroSet } from '../lib/macros';
   let { projectId, sessionId, source }: { projectId: string; sessionId: string; source: ResponseBody } = $props();
   let viewed = $state<ResponseBody | null>(null), error = $state<unknown>(null);
   const preview = new Preview();
   $effect(() => { source.sha256; projectId; sessionId; preview.invalidate(); viewed = null; error = null; });
   const body = $derived(viewed ?? source);
+  const macros = $derived(macroSet(body.macro_context?.macros ?? {},`${projectId}:${body.macro_context?.key ?? 'unknown-response'}`));
   async function earlier() {
     const current = preview.begin(`${projectId}/${sessionId}/${source.source}`);
     const revision = body.revision - 1;
@@ -19,8 +21,9 @@
 </script>
 <section aria-label="Explanation source">
   <p>MAIN explanation source · original decision revision {source.response_revision} · body revision {body.revision}.</p>
-  <p class="muted">Original author {String(body.original_author.run_id ?? '')}; correcting author {String(body.author?.run_id ?? 'unknown')}. Ordinary Markdown with empty macros.</p>
-  <Markdown source={body.body} />
+  <p class="muted">Original author {String(body.original_author.run_id ?? '')}; correcting author {String(body.author?.run_id ?? 'unknown')}. Ordinary Markdown with its pinned source context and project settings.</p>
+  {#each body.macro_context?.problems ?? [] as problem}<p role="status">{problem} Display uses a diagnostic context.</p>{/each}
+  <Markdown source={body.body} {macros} />
   {#if body.held}<p role="status">{body.held}</p>{/if}
   <details><summary>Exact explanation source and attribution</summary><pre>{JSON.stringify(body,null,2)}</pre></details>
   <button disabled={body.revision <= 1} onclick={earlier}>Read previous explanation body</button>
