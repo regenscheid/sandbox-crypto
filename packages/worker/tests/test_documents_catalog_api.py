@@ -56,7 +56,12 @@ async def api(
         max_artifact_size=1024,
         state_dir=tmp_path,
     )
-    environments = cast(Environments, SimpleNamespace(deleted=[]))
+    environments = cast(
+        Environments,
+        SimpleNamespace(
+            deleted=[], required_deleted=[], required_deleting=[], confirmed_deleted=[], reusing=[]
+        ),
+    )
     settings = [
         ClientSettings(name="ordinary", token_sha256=token_digest(ORDINARY), projects=("p1",)),
         ClientSettings(
