@@ -3,9 +3,10 @@
 Project macros are a versioned USER setting in the shared control store. A
 document's YAML front matter overrides project definitions of the same name.
 Comments use their parent document's effective context; other project text uses
-project definitions. This implements the setting, rendering and existing
-mechanical-check paths. Export staging, the ledger and additional D82 prose
-sources remain separate work.
+project definitions. This implements the setting, Markdown/KaTeX rendering and
+existing mechanical-check paths. Entire-LaTeX documents and export staging are
+separate from this setting. The ledger and additional D82 prose sources remain
+separate work.
 
 ## Changing the setting
 
@@ -68,9 +69,9 @@ Comment attempts retain their existing exact body and parent document macro
 revision pins. Thread history is explicitly displayed under the selected
 document's diagnostic context, not claimed as its original render; exact checked
 context remains in check evidence. MAIN fix/rebut explanation sources pin their
-original finding's document anchors at source creation, keeping those anchors through subsequent
-body corrections. Their current check combines those immutable anchors with
-the attempt's pinned project setting. Body history also retains its save-time
+original finding's document anchors at source creation, keeping those anchors
+through subsequent body corrections. Their current check combines those immutable
+anchors with the attempt's pinned project setting. Body history also retains its save-time
 project revision. Sources with no document anchors use the project setting.
 
 When several finding document anchors resolve to the same effective definitions,
@@ -84,9 +85,9 @@ unknown context. Explicit USER decisions remain available, and mechanical child
 findings never resolve the scientific parent.
 
 Reviewer explanation confirmations fence exact body revision/digest, effective
-context identity and project setting revision/digest. A setting change during review makes that
-confirmation stale. Confirmation eligibility and retry identity include the
-new setting revision, so an ended old-context review does not prevent a fresh
+context identity and project setting revision/digest. A setting change during
+review makes that confirmation stale. Confirmation eligibility and retry identity
+include the new setting revision, so an ended old-context review does not prevent a fresh
 confirmation. No new reviewer tool category or source editing privilege is
 introduced.
 
@@ -121,8 +122,7 @@ document overrides, comment and explanation inputs, historical unknown state,
 lazy refresh, stale renderer/confirmation/closing ACK races, dependency-only
 budgets, ambiguous anchors, context quotas and corrupt retained-state reads.
 Frontend fixtures cover cache/request identity and visible ambiguity warnings.
-Native browser acceptance and final combined gates remain required before
-delivery; no live provider or service is exercised by these fixtures.
+These fixtures make no live provider calls.
 
 The preliminary source milestone passed 219 affected Python cases and 128
 focused frontend cases, with Ruff, formatting, Pyright and Svelte/TypeScript
@@ -133,3 +133,20 @@ The confirmation correction passed 228 affected Python cases, including
 contradictory, agreed and legacy-unknown explanation contexts, allowed
 inconclusive outcomes and independent explicit USER decisions. The effective
 context guard is separate from overall snapshot coverage.
+
+Final combined validation on product union `8797a55` passed 9,852 Python tests
+on Python 3.13.15 (43 opt-in skips, two existing Pydantic serializer warnings),
+575 web tests and 24 post-build math checks. Locked Python/npm installs,
+formatting, lint, strict Python/Svelte/TypeScript checks, license checks,
+protocol generation and both GUI/math builds passed. The supported Python 3.12
+matrix is unchanged; fresh PR CI and merge remain separate delivery gates.
+
+Root-owned [native browser acceptance](../.agents/docs/agent-reports/project-macros-2026-10-12.md)
+used the frozen product and helper-only child `0489692`, actual local KaTeX
+0.18.9 and Node 24.20.0, with synthetic projects and no model or worker calls.
+It exercised setting conflicts and retained drafts, document overrides,
+current versus saved numbered contexts, inherited-context refresh, project
+isolation and exact mechanical evidence without dependency-only reflags.
+The tab, helper/listeners, marked state and private login file were removed;
+complete teardown was verified at 20:45:41.981467 UTC on 2026-10-12. Source,
+helper and build bytes stayed frozen throughout acceptance.
