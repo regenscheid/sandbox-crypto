@@ -2,7 +2,7 @@
 
 The workspace is the research GUI (W4, D80). It shows the harness's records: the projects, their sessions and environments, and each session's runs, with the agent's messages, its tool calls and their results, and the LaTeX in them rendered; and the project's living documents, each revision with the server's block IDs, and who changed what ([living documents](#living-documents)). LaTeX that KaTeX rejects is repaired where it can be, by rules or by the reviewer model, and marked ([math repairs](#math-repairs)). It has two parts:
 
-- `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static files: an `index.html`, one script, one stylesheet and KaTeX's fonts.
+- `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static HTML, scripts, stylesheets, KaTeX's fonts and distribution notices.
 - `packages/workspace` (`sandbox_science.workspace`): the server, in the project's Python on aiohttp, with the command `sandbox-science-workspace`. It serves the built files and a JSON API, handles login, and asks the reviewer model for math repairs when it is configured to.
 
 Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Documents can be edited as Markdown source or by block, with conflicts and retained patches reviewed explicitly. Document comments, addressed work requests and consistency findings are available. The ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
@@ -16,6 +16,20 @@ npm run build                # writes dist/
 cd ../..
 uv run sandbox-science-workspace serve --state-dir harness-state --static web/workspace/dist
 ```
+
+Distribute the complete `dist/` directory, including `THIRD-PARTY-NOTICES.txt`,
+`LICENSE-Sandbox-Science.txt` and `license-manifest.json`. The build collects actual
+emitted package/helper origins and ships their complete primary local notices,
+plus precise embedded-component attribution and pinned primary license text for
+React-derived Apache 2 helpers, the MIT is-promise adaptation, and the existing
+OFL fonts/glyph-derived SVG assets.
+The manifest records the notices and each distributed file's SHA-256, excluding
+the manifest itself. Unknown origins/assets, missing or changed notices, font
+changes and lock/install version or license mismatches fail the build. Public
+directory copying is refused until explicitly covered. These files use the
+existing authenticated static text/JSON serving behavior; no new route or UI is
+required. See [notice inputs and update procedure](../web/workspace/licenses/README.md)
+and [licensing](LICENSING.md). The isolated math-check distribution is unchanged.
 
 The server prints a login URL once:
 
@@ -285,7 +299,7 @@ Hash routes, without a router library: `#/`, `#/projects/<project>`, `#/projects
 - **Projects:** each project's base profile, policy revision, number of sessions and last change.
 - **Project:** its facts; its sessions, each with its environment (the project's default or its own), number of runs, and whether it is open; its documents, the project's and its sessions' workbooks'; and its environments with the sessions in each. These are the harness's records; the environments' live state is on the worker, which the workspace does not ask yet.
 - **Session:** its environment and state, and its runs, oldest first. The newest is open; the others are fetched when opened.
-- **Run:** when it ran and for how long, its environment and policy revision, and whether it answered. Then the system prompt (folded), the task, and the agent's messages, each with its tool calls: the arguments (code as a block), and the result the model read, laid out: state and exit code, stdout, stderr, outputs, the error and its traceback, platform notices, and where the call ran, with the isolation tier in effect. Anything else in the result shows as JSON, and the call's full record opens on request. The last message is the answer.
+- **Run:** when it ran and for how long, its environment and policy revision, and whether it answered. Then the system prompt (folded), the task, and the agent's messages, each with its tool calls: the arguments (code as a block), and the result the model read, laid out: state and exit code, stdout, stderr, outputs, the error and its traceback, platform notices, and where the call ran, with the isolation tier in effect. Anything else in the result shows as JSON, and the call's full record opens on request. Successful runs show their final answer. Failed runs show the retained partial transcript and fixed failure phase, without an Answer heading.
 - **Document:** a revision, the current one unless the address names another: its title, name and scope, its number with links to the revisions before and after it and to the history, its author (with the user who accepted it when it was a suggestion), when it was made and why, whether its delimiters were saved in the dollar form, and its warnings (LD-30). Then where the browser's parse and the server's block map disagree, if they do, and the text, rendered with the server's IDs ([living documents](#living-documents)). A revision that deleted the document says so.
 - **History:** the revisions, newest first, each with its author, reason and the blocks it changed; the revisions that changed each block, folded; and the agents' patches with their states, and the revisions they made.
 
@@ -302,6 +316,15 @@ npm run build
 ```
 
 CI runs these in the `web` job. The license check reads the lockfile before anything is installed: a version 3 lockfile, in which every package must declare a tier 1 license ([licensing](LICENSING.md)), come from the npm registry with a SHA-512 integrity hash, and, unless it is optional, need no install script. License expressions are read with their precedence, so `(MIT OR Apache-2.0) AND GPL-3.0-only` fails. After `npm ci`, `--installed` also checks each installed package's own `package.json`, which the integrity hashes cover, against the lockfile's license and version.
+
+The production notice tests compare two actual builds byte for byte, verify every
+emitted file against the notice manifest, and check complete primary notice text,
+runtime helpers, all sixty fonts and embedded copyright/reserved names. Negative
+cases cover missing/changed licenses, lock/install mismatches, unknown
+modules/helpers/styles/assets, modified fonts, external/outside origins and
+public-directory copying. The existing license allowlist remains unchanged;
+SIL OFL applies to the existing unmodified font assets and embedded glyph-derived
+SVG assets; Apache 2/MIT embedded helpers already fit the platform-code allowlist.
 
 The tests cover the shared document cases through the document parser, which also gives every dollar and delimiter case the text parser gives; the server's IDs attached to the browser's parse, the disagreements reported and the parts they concern left without IDs; a document's macros (rendering, the bounds, and KaTeX's results kept apart by the macros in force); a quoted equation rendered without the quote's markers; the routes; and the Markdown component (HTML escaped, links other than absolute http and https and mailto dropped, images never loaded, inline and displayed math, repaired and approximated math with its source behind the mark, KaTeX's untrusted commands and limits, the math budgets, goes in which texts take turns until the time is spent, those after them waiting as last rendered, each starting where it stopped and each go getting further, no model asked for a formula whose rules had no time, formulas that define macros, read token by token as KaTeX's lexer reads them, with KaTeX's own token pattern as the reference in the review's fuzz, KaTeX's results kept for the page, texts that used to take quadratic time or many seconds, bidirectional controls in code, in formulas shown as written and in KaTeX's errors), the math spans of both kinds of delimiters and how they combine (the dollar cases unchanged, the 200-line limit alike, escaped brackets), the repairs (escapes kept, no commands joined or brought in), the approximation, the caches (a count and a size; an entry heavier than the limit not kept), and the page's requests for model repairs (one until the server has a model, then two; dropped at once when it has none; told once a frame; `busy` asked again, but not once repairs are off; at most 2,000 kept), the routes and the transcript's layout. Clipping a text to its box is a stylesheet rule, so it was checked in a browser, against a formula that drew fake code over a tool call. The server's tests (`packages/workspace/tests`) cover the document routes against a control store the orchestrator's own store wrote (the documents of a project only, revisions by number, history, errors, the session they need, a revision another parser's version mapped, and the store never written), login and sessions, the cookie's name per port, the session on every spelling of `/api`, the origin and host checks, the headers, paths that try to leave the build directory, the API's answers from a state directory the harness's own store wrote, the math repair service against a scripted model and a fake gateway (the request it sends, cleaning answers quickly and of a fence's info string, the cache, two at a time and `busy`, timeouts, any failure kept for the hour, each session's limit, redirects not followed and answers read within a limit, the key kept out of answers and the log, and refused when it is not one line) and its endpoint and settings, the npm check, and the command end to end. Math repairs were also checked in a browser, against a fake gateway: formulas approximated while their repairs were pending, then rendered as the answers came. After the review, 300 and 800 broken formulas with no model on the server made one request and one render again, with the page's thread never held more than 70 ms, and a mark stayed above the box a formula drew over it. After the second, the review's page of 30 texts of four of the slowest formulas showed its first view after a task of 331 ms, rendered all 120 formulas in 9.9 s over 31 goes, none of them longer than 340 ms, and escaped brackets around `1` and `...` read as text. After the third, with Svelte's runtime in Node, the same texts with 150,000 characters of Markdown each finished in 12 s with no task over 340 ms. The document views were checked in a browser against a state directory the orchestrator's store wrote: the IDs shown over each block, the blocks a revision changed, the front matter's macros, a quoted equation, repaired formulas, a table the two parsers read otherwise shown as a mismatch, and the history, with no content-policy error in the console.
 

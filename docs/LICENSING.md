@@ -19,6 +19,11 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 
 ## Known components
 
+The GUI distribution includes checked complete local package notices and pinned
+primary embedded-component notices ([build inputs](../web/workspace/licenses/README.md)).
+This includes Svelte's MIT is-promise adaptation. Package metadata alone is not
+the authority for embedded subcomponents.
+
 | Component | License | Tier / action |
 | --- | --- | --- |
 | OpenShell | Apache-2.0 | Tier 1 dependency candidate |
@@ -36,7 +41,8 @@ MIT is GPL-compatible, so MIT-licensed helper scripts and skills that import a G
 | TeX Live (Ubuntu packages), qpdf | LPPL-1.3c, GPL and others; Apache-2.0 | Tier 3, in the `crypto-base` image |
 | miniforge installer | BSD-3-Clause (bundled packages carry their own licenses) | Use conda-forge only; avoid Anaconda `defaults` (commercial terms) |
 | jupyter_client, ipykernel | BSD-3-Clause | Kernel protocol |
-| KaTeX | MIT | Math rendering in the workspace GUI (D65, D80) and the isolated math-check bundle (D82); its fonts ship in the GUI build, and its license accompanies the checker bundle |
+| KaTeX code/CSS | MIT, with React-derived Apache-2.0 helpers | Math rendering in the workspace GUI (D65, D80) and the isolated math-check bundle (D82). Complete checked embedded notices accompany the GUI; the unchanged isolated copier includes only root KaTeX/project MIT text and needs a separate embedded-notice follow-on before distribution |
+| Existing unmodified KaTeX fonts and glyph-derived SVG assets | SIL OFL-1.1, as recorded in the distributed fonts and KaTeX source | Asset-only terms: the GUI ships the exact font bytes and embedded glyph paths with their precise copyright/reserved-name statements and complete pinned official OFL text. This does not add OFL to the platform-code dependency allowlist |
 | Node.js | MIT, with bundled components' notices in the [upstream license](https://github.com/nodejs/node/blob/v24.20.0/LICENSE) | Operator-provided process runtime for the isolated math checker; not bundled in Python wheels or the orchestrator image yet |
 | PDF.js | Apache-2.0 | PDF viewer |
 | **pdf_oxide** (`yfedoseev/pdf_oxide`) | MIT OR Apache-2.0 | **Primary PDF extraction candidate** (D59; already used by the user). Permissive enough for tier 1 or 2. Optional OCR features pull ONNX runtimes (`ort`, `tract-onnx`) and models; check their licenses separately before enabling |

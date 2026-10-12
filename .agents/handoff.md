@@ -4,6 +4,16 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 
 ## Where things stand
 
+- **GUI license notices, 2026-10-12:** `impl/workspace-license-notices` in
+  `~/.codex/worktrees/background-worker/sandbox-crypto` branches from
+  `3c91c303`. The build emits complete checked notices for actual npm/runtime-helper
+  origins, project MIT and precise embedded-component/font
+  attribution with pinned primary Apache/MIT/OFL texts, plus deterministic file coverage. Initial build/check and
+  27 focused cases pass. Independent review is underway. Await the failed-run
+  slice's actual-main merge before final union/gates; root owns publication/CI.
+  No dependency, server/UI/service or math-check copier change; the platform-code
+  allowlist is unchanged. See [distribution](../docs/WORKSPACE.md#building-and-running).
+
 - **Current MAIN finding-prose continuation, 2026-10-12:** `impl/finding-prose-math` in `~/.codex/worktrees/background-harness/sandbox-crypto` preserves prior refs. Signed source `eb5a50f`, actual-main union `c509bc1` and final bounded replay correction `f7bb0a3` implement only MAIN fix/rebut explanation fields ([scope](../docs/FINDING-PROSE-MATH.md)). Independent exact-head review passed. Original scientific action/evidence/actor and parent CAS stay unchanged on ordinary body correction; reviewer decisions independently pin the explanation. Shared quotas/checks/closing/save-ACK, empty macros, session-private evidence and held unknown legacy work are covered. Final combined gates pass: 9,730 Python tests (43 opt-in skips, two existing warnings), 443 web tests, 24 post-build math checks and all required checks/builds. The Python predecessor run was deliberately interrupted for the replay correction and is not final evidence; final Python passed on `f7bb0a3`, with unchanged completed web/helper/assets reused. Root-owned [browser acceptance](docs/agent-reports/finding-prose-math-2026-10-12.md) passed exact original/current provenance, six child states, separate mechanical/scientific confirmation and session isolation; overall fixture review remains explicitly inconclusive. Full teardown was independently verified at 15:37:06.734290 UTC. Helper SHA-256 `7bc82ebf57e01b7905327dabdd2cc558896b94374ea97db06c4f8ec08a92d94b`. Product/helper/assets are frozen. Root owns final archive/review/PR; fresh PR CI is required before merge. No author-started services/models or push. Ledger and excluded prose, model repairs and idle work remain open.
 
 - **Worker observation acceptance, 2026-10-12:** `impl/output-observations` has
