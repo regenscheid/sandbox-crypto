@@ -114,7 +114,7 @@ Use the shared artifact/revision/anchor contracts for living documents, comments
 
 Support attributed user edits and revision-checked agent patches; demonstrate stale-patch reconciliation and orphaned anchors. Use one TeX-preserving renderer across research views. Evaluate PDF.js navigation against exact page/region anchors while retaining worker extraction/rendering. Assumption changes should identify dependent claims/reviews for reconsideration, not silently rewrite conclusions.
 
-Implement Science-style automatic consistency review to its behavior spec, including checkpoint/terminal triggers. Write the reviewer rubric and prompts independently (D56). Persist exact evidence revisions, author responses, claimed fixes and confirmation/supersession outcomes. Drive triggers from durable events, including published shell-created files. Published frontier results enter from their citations without reproduction gates.
+Implement Science-style automatic consistency review to its behavior spec, including checkpoint/terminal triggers. Write the reviewer rubric and prompts independently (D56). Persist exact evidence revisions, author responses, claimed fixes and confirmation/supersession outcomes. The isolated [KaTeX checker](MATH-CHECKS.md) supplies mechanical observations; save scheduling and D82 finding delivery remain integration work. Drive triggers from durable events, including published shell-created files. Published frontier results enter from their citations without reproduction gates.
 
 Register the external crypto skill pack through a common platform binding, recording effective revision and actual loading. Adapt its tools to the shared project resources and typed outcomes; keep the catalog external and one authoritative project history.
 
