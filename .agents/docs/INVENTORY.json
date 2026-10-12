@@ -462,8 +462,8 @@
     {
       "path": "agent-reports/document-export-inputs-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 3330,
-      "sha256": "752a8cd7cc1b498387ac6b485cb4a2ca4f42ba1308039ae8de303cb4536fc914"
+      "bytes": 3581,
+      "sha256": "21f5301fc5bf8a7c5f642124a507099d19d9ade51c7e452ae6b6054e333c833c"
     },
     {
       "path": "agent-reports/document-export-inputs-evidence-2026-10-12.json",

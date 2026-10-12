@@ -12,7 +12,9 @@ kernel observer and test-readiness correction. All six export paths match the
 author source byte for byte; all observer product/test paths match `89bd8a7`.
 Later observer helper/docs commits change no gated package, web or configuration
 bytes. Final delivery includes accepted helper `a6bb469` and reviewed observer
-report correction `8fd62e8`; Lab26 remains separate observer acceptance.
+report correction `8fd62e8`; actual observer main `d61e4adf183866d66a50c8103645bb5714657ce6`
+is integrated without package, web or configuration changes. Lab26 remains separate
+observer acceptance. PR #97 merged at `d61e4ad` on independently reviewed signed `8fd62e8` after all four fresh checks passed (run `38315213515`).
 
 The [exact local evidence](document-export-inputs-evidence-2026-10-12.json)
 retains author and root gate logs and independent source/union review, each with
