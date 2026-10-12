@@ -85,7 +85,15 @@ CREATE TABLE IF NOT EXISTS provisions (
 CREATE INDEX IF NOT EXISTS provisions_environment ON provisions (environment_id, finished);
 CREATE TABLE IF NOT EXISTS executor_endpoints (
     environment_id TEXT PRIMARY KEY,
-    incarnation TEXT NOT NULL
+    incarnation TEXT NOT NULL,
+    sandbox TEXT NOT NULL DEFAULT '',
+    sandbox_id TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS executor_recycles (
+    environment_id TEXT PRIMARY KEY,
+    incarnation TEXT NOT NULL,
+    sandbox TEXT NOT NULL DEFAULT '',
+    sandbox_id TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS execution_recovery (
     execution_id TEXT PRIMARY KEY,
@@ -136,6 +144,13 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.executescript(_SCHEMA)
+        for table in ("executor_endpoints", "executor_recycles"):
+            columns = {str(row[1]) for row in self._db.execute(f"PRAGMA table_info({table})")}
+            for name in ("sandbox", "sandbox_id"):
+                if name not in columns:
+                    self._db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                    )
 
     def close(self) -> None:
         self._db.close()
@@ -279,17 +294,69 @@ class Store:
             str(row[0]) for row in self._db.execute("SELECT environment_id FROM executor_endpoints")
         )
 
-    def remember_endpoint(self, environment_id: str, incarnation: str) -> None:
+    def endpoint_incarnation(self, environment_id: str) -> str | None:
+        row = self._db.execute(
+            "SELECT incarnation FROM executor_endpoints WHERE environment_id = ?",
+            (environment_id,),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def endpoint_binding(self, environment_id: str) -> tuple[str, str] | None:
+        return self._executor_binding("executor_endpoints", environment_id)
+
+    def recycle_binding(self, environment_id: str) -> tuple[str, str] | None:
+        return self._executor_binding("executor_recycles", environment_id)
+
+    def _executor_binding(self, table: str, environment_id: str) -> tuple[str, str] | None:
+        query = (
+            "SELECT sandbox, sandbox_id FROM executor_endpoints WHERE environment_id = ?"
+            if table == "executor_endpoints"
+            else "SELECT sandbox, sandbox_id FROM executor_recycles WHERE environment_id = ?"
+        )
+        row = self._db.execute(query, (environment_id,)).fetchone()
+        return (str(row[0]), str(row[1])) if row and row[0] and row[1] else None
+
+    def pending_recycles(self) -> tuple[str, ...]:
+        return tuple(
+            str(row[0]) for row in self._db.execute("SELECT environment_id FROM executor_recycles")
+        )
+
+    def recycle_needed(self, environment_id: str) -> bool:
+        return (
+            self._db.execute(
+                "SELECT 1 FROM executor_recycles WHERE environment_id = ?", (environment_id,)
+            ).fetchone()
+            is not None
+        )
+
+    def require_recycle(self, environment_id: str, incarnation: str) -> None:
+        binding = self.endpoint_binding(environment_id) or ("", "")
         self._db.execute(
-            "INSERT INTO executor_endpoints VALUES (?, ?) "
-            "ON CONFLICT(environment_id) DO UPDATE SET incarnation=excluded.incarnation",
-            (environment_id, incarnation),
+            "INSERT OR IGNORE INTO executor_recycles VALUES (?, ?, ?, ?)",
+            (environment_id, incarnation, *binding),
+        )
+
+    def finish_recycle(self, environment_id: str) -> None:
+        with self._transaction():
+            self._db.execute(
+                "DELETE FROM executor_endpoints WHERE environment_id = ?", (environment_id,)
+            )
+            self._db.execute(
+                "DELETE FROM executor_recycles WHERE environment_id = ?", (environment_id,)
+            )
+
+    def remember_endpoint(
+        self, environment_id: str, incarnation: str, binding: tuple[str, str] | None = None
+    ) -> None:
+        self._db.execute(
+            "INSERT INTO executor_endpoints VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(environment_id) DO UPDATE SET incarnation=excluded.incarnation, "
+            "sandbox=excluded.sandbox, sandbox_id=excluded.sandbox_id",
+            (environment_id, incarnation, *(binding or ("", ""))),
         )
 
     def forget_endpoint(self, environment_id: str) -> None:
-        self._db.execute(
-            "DELETE FROM executor_endpoints WHERE environment_id = ?", (environment_id,)
-        )
+        self.finish_recycle(environment_id)
 
     def remember_request(self, execution_id: str, request: str) -> None:
         self._db.execute(

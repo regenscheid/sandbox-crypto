@@ -412,6 +412,29 @@ Disabling daemon transport while remembered endpoints remain also refuses startu
 Explicitly release those environments or recycle their sandboxes through the daemon
 transport first, so an old installer cannot continue beside a new stdio executor.
 
+An authenticated new daemon incarnation in an existing OpenShell environment fences
+the whole managed sandbox before replacement work can run. OpenShell may deny a peer's
+`/proc/<pid>/environ` after the ancestor daemon dies, so owner-mark scans cannot prove
+escaped children stopped. The worker persists recycle intent, refuses new submissions,
+stops the same sandbox, confirms its unchanged identity and `Stopped` phase, then starts
+it and waits for `Ready`. Stop/start preserves its writable disk, packages and policy
+binding; attempts with unknown outcomes and kernel state are lost. Concurrent opens
+share that lifecycle fence. The endpoint records the original sandbox name and immutable
+ID; recycle intent copies that binding, and the lifecycle lock checks it again before
+touching the VM. A concurrent delete/recreate cannot redirect cleanup to another healthy
+sandbox. Its intent survives worker crashes and is cleared only after the lifecycle
+fence completes or the original VM is independently confirmed stopped or absent;
+intent alone never proves processes already died. Failure keeps replacement work refused.
+An unmanaged static binding has no managed lifecycle hook: an operator must confirm
+cleanup of its original sandbox and retire its obsolete worker recovery records before
+replacement work resumes. Same-incarnation
+worker or bridge reconnects do not stop the sandbox. Transport/authentication failures
+alone do not establish incarnation loss and never initiate this recycle.
+Legacy endpoints can learn their original binding on a same-incarnation reconnect.
+If their incarnation changed before that binding was recorded, automatic replacement
+refuses until an operator confirms cleanup of the original sandbox and removes its
+obsolete worker recovery records; the current environment binding is insufficient proof.
+
 The daemon adds `source_seq` to each execution event. `replay` reads bounded pages after
 a source cursor; `active` lists at most 128 accepted unfinished requests. Admission
 reserves capacity before asynchronous dispatch. A definite refusal has a retained
