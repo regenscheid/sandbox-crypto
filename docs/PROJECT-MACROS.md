@@ -161,4 +161,4 @@ combined gates also passed 575 web tests, 24 post-build math checks, both builds
 and all required locked/static/license/protocol checks. All 76 archived build-file
 hashes and the helper hash remained identical after this rebuild, so native
 acceptance is reused for those unchanged artifacts with its original source pin.
-Fresh delivery CI and eventual actual-main ancestry remain separate gates.
+Actual-main ancestry is integrated at signed `18ae9ba`, whose tree is identical to `e6eeed3`, after CP-12 PR #95 merged at `4b3a7e7` with all four fresh checks passed. Macro delivery retains its own fresh exact-head CI and merge gates.

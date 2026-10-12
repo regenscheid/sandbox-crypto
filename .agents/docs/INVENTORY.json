@@ -1,19 +1,25 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-five OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-five OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
       "category": "implementation-boundary",
-      "bytes": 6021,
-      "sha256": "2eec34497011779518753ecf463bc416da230df15f3c6c7a08702b8c2310ae32"
+      "bytes": 7327,
+      "sha256": "55126b3baf4eec548b8321689a69c6667de3a34a641c62009ac1f64620b34c9c"
+    },
+    {
+      "path": "../../docs/PROJECT-MACROS.md",
+      "category": "implementation-boundary",
+      "bytes": 9694,
+      "sha256": "d006c2d65a672273417d83f18164f4e2007e400f3c8ae65cfde4a2eca627c415"
     },
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 19107,
-      "sha256": "5219e462d7d5bad2b922263d2334e1a9e14eb409b79b4851f16eaeb68fe29152"
+      "bytes": 19905,
+      "sha256": "62a8f85e27b4195807d870b2207b5678ff394367a8d0e13ae66b1e50fbe8a41c"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -554,6 +560,42 @@
       "category": "agent-source-investigation",
       "bytes": 56150,
       "sha256": "0bc2cfc76ed52eea7a6b96cd966a17bd28d8083d5f95adfbca6b169fa9fb7be3"
+    },
+    {
+      "path": "agent-reports/project-macros-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 8003,
+      "sha256": "8e4c952f156f64b8155bfba819e78f142a161ef1e68a206d97ed0a1b6515ff69"
+    },
+    {
+      "path": "agent-reports/project-macros-confirm-saved-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 55954,
+      "sha256": "2b28a75e0e1e09aa0cee743d7c52137e467e9b6eda4cb8f725cdc2f8a1b2c7f9"
+    },
+    {
+      "path": "agent-reports/project-macros-conflict-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 56737,
+      "sha256": "c8702b9f80f6897908318a06a5ed23003ec3fb11d470764f0e6a0676f3ac9445"
+    },
+    {
+      "path": "agent-reports/project-macros-document-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 44376,
+      "sha256": "53190980eafa59c6a26cdd42c646cce330898fe658f93616400b59aec95a4495"
+    },
+    {
+      "path": "agent-reports/project-macros-evidence-2026-10-12.json",
+      "category": "browser-evidence",
+      "bytes": 467301,
+      "sha256": "fcbf29ebee0d088d0c7117561ab747ca01fe067815279fb775904f2cd89b9e50"
+    },
+    {
+      "path": "agent-reports/project-macros-saved-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 59555,
+      "sha256": "85d85837cb82abcf4f43183f0550a57bcb062961bd8f616a9386f8be25afcac6"
     },
     {
       "path": "agent-reports/workspace-copy-latex-2026-10-12.md",
