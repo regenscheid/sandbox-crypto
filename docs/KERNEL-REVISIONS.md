@@ -42,9 +42,14 @@ allocated in Python. Corrupt birth history stays unknown rather than being
 silently reconstructed.
 
 `Execution.kernel` records the cell's kernel at its observed start, before the
-state event's durable source acknowledgement. `Result.kernel` retains that start
+state event's durable source acknowledgement, in one transaction with generation
+mapping, the execution record and state event. Status and running-kernel summaries
+only read these pins, so seeing a new kernel before its owning start event cannot
+freeze a provisional unknown or consume its state-loss notice. `Result.kernel` retains that start
 pin even if an explicit restart replaced the kernel during the cell, and compares
-it with the revision recorded at completion. The existing execution start revision
+it with the revision recorded at completion. `Execution.kernel_state_lost` retains
+the start observation's loss indication so generation mapping, terminal replay or
+worker restart cannot erase it before `Result.state_lost`. The existing execution start revision
 and overlap fields remain in `Location` and `Result`. This is package-state
 observation, not proof of actual imported modules, producer identity or input
 lineage. Direct arbitrary writes to package records can bypass the managed lock.
@@ -68,7 +73,8 @@ GUI broadcast or cross-session notification transport in this slice.
 The authenticated project/environment checks are the existing worker checks. The
 response names that environment and session, its current revision, and only that
 session's running kernels. The typed `WorkerClient.kernel_status(context)` uses
-this route. It starts no research command or kernel and changes no package gate;
+this route and refuses mismatched response scopes or incoherent kernel lists.
+It starts no research command or kernel and changes no package gate;
 opening its executor connection uses the normal managed environment lifecycle.
 An empty session returns an empty list. A legacy executor without the scoped
 status protocol, or an invalid/oversized kernel reply, fails visibly.

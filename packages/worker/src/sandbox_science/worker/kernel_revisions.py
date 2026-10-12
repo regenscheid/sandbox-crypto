@@ -136,7 +136,12 @@ class KernelStarts:
         return None
 
     def observe(
-        self, birth: KernelBirth, info: KernelInfo, current_revision: int | None
+        self,
+        birth: KernelBirth,
+        info: KernelInfo,
+        current_revision: int | None,
+        *,
+        remember: bool = True,
     ) -> KernelInfo:
         """Retain the first exact birth pin; never rebase one onto today's packages."""
         row = self.db.execute(
@@ -173,10 +178,16 @@ class KernelStarts:
             revision = None
         else:
             revision = birth.start_revision
-            self.db.execute(
-                "INSERT OR REPLACE INTO kernel_start_revisions VALUES(?,?,?,?)",
-                (birth.environment_id, birth.session_id, birth.language, birth.model_dump_json()),
-            )
+            if remember:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO kernel_start_revisions VALUES(?,?,?,?)",
+                    (
+                        birth.environment_id,
+                        birth.session_id,
+                        birth.language,
+                        birth.model_dump_json(),
+                    ),
+                )
         if revision is not None and current_revision is not None and revision > current_revision:
             revision = None  # revision history was reset or is incoherent; never claim current
         status = "unknown"
