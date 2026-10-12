@@ -1521,17 +1521,18 @@ async def test_a_client_acts_for_its_own_projects_only(api: Api) -> None:
     context_a = {"project_id": "p1", "session_id": "s1", "environment_id": "env-a"}
     # Observation inherits exact project/environment scope, before any channel lookup.
     observation = {"context": context_a}
-    assert await api.refused("POST", "/v1/kernels/observe", B_TOKEN, observation) == (
-        403,
-        "policy_denied",
-    )
     foreign = {"context": {**context_a, "project_id": "p2"}}
-    assert await api.refused("POST", "/v1/kernels/observe", B_TOKEN, foreign) == (404, "not_found")
-    assert await api.refused("POST", "/v1/kernels/observe", TOKEN, foreign) == (404, "not_found")
-    assert await api.refused("POST", "/v1/kernels/observe", A_TOKEN, observation) == (
-        503,
-        "unavailable",
-    )
+    for route in ("/v1/kernels/observe", "/v1/kernels/lineage"):
+        assert await api.refused("POST", route, B_TOKEN, observation) == (
+            403,
+            "policy_denied",
+        )
+        assert await api.refused("POST", route, B_TOKEN, foreign) == (404, "not_found")
+        assert await api.refused("POST", route, TOKEN, foreign) == (404, "not_found")
+        assert await api.refused("POST", route, A_TOKEN, observation) == (
+            503,
+            "unavailable",
+        )
     shell = {"kind": "shell", "operation_id": "op-1", "script": "echo hi | tee note.txt"}
     status, started = await api.call(
         "POST", "/v1/executions", A_TOKEN, {**shell, "context": context_a}

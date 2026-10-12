@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
@@ -53,6 +53,8 @@ from sandbox_science.contracts import (
     JobRequest,
     JobStatus,
     KernelInfo,
+    KernelLineageEntry,
+    KernelLineageObservation,
     KernelListing,
     KernelObservation,
     KernelRestartRequest,
@@ -252,6 +254,8 @@ KERNEL_OBSERVATION_TIMEOUT = 2.0
 MAX_KERNEL_OBSERVATIONS = 8
 """No queued observers, and at most one in flight for each environment."""
 
+
+_Observation = TypeVar("_Observation")
 
 Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
 
@@ -2214,8 +2218,9 @@ class ExecutionManager:
         if project_id is not None and channel is not None and not channel.closed:
             binding = None
             if channel.daemon_token is not None:
-                if self.store.endpoint_incarnation(environment_id) == incarnation:
-                    binding = self.store.endpoint_binding(environment_id)
+                endpoint = self.store.lineage_endpoint(environment_id)
+                if endpoint is not None and endpoint[0] == incarnation:
+                    binding = endpoint[1:]
                 if binding is None and self.daemon_identity is not None:
                     can_pin = False  # a managed VM's original binding must be known
             try:
@@ -2343,6 +2348,91 @@ class ExecutionManager:
 
     async def observe_kernels(self, request: KernelStatusRequest) -> KernelObservation:
         """Read an existing channel without keeping it alive or waiting on its lifecycle."""
+        return await self._passive_kernels(request, self._kernel_observation)
+
+    def _kernel_observation(
+        self, context: ExecutionContext, channel: ExecutorChannel, raw: object
+    ) -> KernelObservation:
+        listing = self._kernel_listing(context, channel, raw)
+        return KernelObservation(**listing.model_dump(), observed_at=_now())
+
+    async def observe_kernel_lineage(
+        self, request: KernelStatusRequest
+    ) -> KernelLineageObservation:
+        """Passive original-birth evidence; missing history is unknown, never backfilled."""
+        return await self._passive_kernels(request, self._kernel_lineage)
+
+    def _kernel_lineage(
+        self, context: ExecutionContext, channel: ExecutorChannel, raw: object
+    ) -> KernelLineageObservation:
+        listing = self._kernel_listing(context, channel, raw)
+        endpoint = self.store.lineage_endpoint(context.environment_id)
+        managed = self.daemon_identity(context.environment_id) if self.daemon_identity else None
+        entries: list[KernelLineageEntry] = []
+        # _kernel_listing already validates raw shape, languages and generation.
+        by_language = {item["language"]: item for item in cast(list[dict[str, object]], raw)}
+        for kernel in listing.kernels:
+            birth, reason = self.store.kernel_starts.retained(
+                context.environment_id, context.session_id, kernel.language
+            )
+            if birth is not None:
+                item = by_language[kernel.language]
+                if (
+                    birth.project_id != context.project_id
+                    or birth.incarnation != channel.incarnation
+                    or (birth.kernel_id, birth.generation, birth.birth_id)
+                    != (item.get("kernel_id"), item.get("generation"), item.get("birth_id"))
+                ):
+                    reason = "identity_mismatch"
+                elif (
+                    channel.daemon_token is None
+                    or birth.sandbox is None
+                    or endpoint != (birth.incarnation, birth.sandbox, birth.sandbox_id)
+                    or managed != (birth.sandbox, birth.sandbox_id)
+                ):
+                    reason = "binding_unavailable"
+                else:
+                    try:
+                        generation = self.store.kernel(
+                            context.environment_id, context.session_id, kernel.language
+                        )
+                    except ValueError:
+                        generation = None
+                    if (
+                        generation is None
+                        or generation.incarnation != birth.incarnation
+                        or generation.base + birth.generation != kernel.generation
+                        or generation.last < kernel.generation
+                    ):
+                        reason = "generation_unavailable"
+                    elif (
+                        birth.start_revision is None
+                        or birth.start_revision != kernel.start_revision
+                    ):
+                        reason = "unknown_start_revision"
+            entries.append(
+                KernelLineageEntry(
+                    kernel=kernel,
+                    birth=birth if reason is None else None,
+                    lineage_status="proved" if reason is None else "unknown",
+                    unknown_reason=reason,
+                )
+            )
+        return KernelLineageObservation(
+            project_id=context.project_id,
+            environment_id=context.environment_id,
+            session_id=context.session_id,
+            current_revision=listing.current_revision,
+            kernels=tuple(entries),
+            observed_at=_now(),
+        )
+
+    async def _passive_kernels(
+        self,
+        request: KernelStatusRequest,
+        build: Callable[[ExecutionContext, ExecutorChannel, object], _Observation],
+    ) -> _Observation:
+        """One bounded admission lane and close token for every passive kernel consumer."""
         context = request.context
         environment_id = context.environment_id
         environment, channel = self._observed_environment(context)
@@ -2379,8 +2469,12 @@ class ExecutionManager:
                 or channel.incarnation != incarnation
             ):
                 raise WorkerError(ErrorKind.UNAVAILABLE, "kernel observation connection changed")
-            listing = self._kernel_listing(context, channel, reply.get("kernels"))
-            return KernelObservation(**listing.model_dump(), observed_at=_now())
+            try:
+                return build(context, channel, reply.get("kernels"))
+            except ValidationError as exc:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "executor sent incoherent kernel observation"
+                ) from exc
         finally:
             self._kernel_observations.pop(environment_id)
 
