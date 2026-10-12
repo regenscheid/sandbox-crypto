@@ -11,6 +11,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 ## Runtime validation
 
+- [OpenShell v0.1.3 lab 19 on babbage, 2026-10-12](agent-reports/babbage-openshell-lab-19-2026-10-12.md): background jobs, policy quotas, full logs, event reconnection, cancellation and lifecycle cleanup; real browser waits, watcher notes and cancellation; durable completion notices after a harness process restart. [Recorded evidence](agent-reports/babbage-openshell-lab-19-evidence-2026-10-12.json), [GUI view](agent-reports/babbage-openshell-lab-19-gui-2026-10-12.jpg).
+
 - [OpenShell v0.1.3 lab 18 on babbage, 2026-10-12](agent-reports/babbage-openshell-lab-18-2026-10-12.md): the provisioning tool with real dry runs and pinned installs, exact file-set grants and withdrawal, independent environments, all nine catalog probes, and cancellation and worker restart after linking began. [Recorded evidence](agent-reports/babbage-openshell-lab-18-evidence-2026-10-12.json).
 
 - [OpenShell v0.1.3 lab on babbage, 2026-10-10](agent-reports/babbage-openshell-lab-2026-10-10.md): the policy middleware against a real gateway with the VM driver, and what the lab changed (D69, D70).

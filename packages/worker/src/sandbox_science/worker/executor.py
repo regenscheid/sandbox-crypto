@@ -224,6 +224,33 @@ class Capture:
         }
 
 
+def write_log(descriptor: int, data: bytes) -> None:
+    """Write a bounded chunk completely; propagate ENOSPC/EDQUOT to end the job."""
+    view = memoryview(data)
+    while view:
+        count = os.write(descriptor, view)
+        if count <= 0:
+            raise OSError("job log write made no progress")
+        view = view[count:]
+
+
+def job_usage(owner: str, leader: Leader | None) -> tuple[float, int]:
+    """Observed CPU and resident memory of processes belonging to one job."""
+    ticks, pages = 0, 0
+    for process in owned_processes(owner, leader):
+        try:
+            with open(f"/proc/{process.pid}/stat", "rb") as handle:
+                data = handle.read(65536)
+            fields = data[data.rfind(b")") + 2 :].split()
+            if int(fields[19]) != process.start:
+                continue
+            ticks += sum(int(fields[i]) for i in (11, 12, 13, 14))
+            pages += max(0, int(fields[21]))
+        except (OSError, ValueError, IndexError):
+            continue
+    return ticks / os.sysconf("SC_CLK_TCK"), pages * os.sysconf("SC_PAGE_SIZE")
+
+
 def bounded(text: str, limit: int) -> str:
     """``text``, keeping its head and tail if it is longer than ``limit`` characters."""
     if len(text) <= limit:
@@ -1093,6 +1120,9 @@ class Running:
     process: asyncio.subprocess.Process | None = None
     leader: Leader | None = None
     kernel: Kernel | None = None
+    session: str = ""
+    captures: dict[str, Capture] = field(default_factory=dict[str, Capture])
+    log_error: str | None = None
     waited: float = 0.0
     """Seconds it waited for package commands before it started; its time limit covers them."""
 
@@ -1291,6 +1321,8 @@ class Executor:
             "probe": self.op_probe,
             "configure": self.op_configure,
             "shell": self.op_shell,
+            "job": self.op_shell,
+            "job_status": self.op_job_status,
             "cell": self.op_cell,
             "pdf": self.op_pdf,
             "cancel": self.op_cancel,
@@ -1712,7 +1744,12 @@ class Executor:
         argv = [item for item in cast(list[object], raw_argv) if isinstance(item, str)]
         if not argv or len(argv) != len(cast(list[object], raw_argv)):
             raise ToolError("invalid_request", "argv must be a non-empty list of strings")
-        running = self.accept(request, "shell")
+        is_job = request.get("op") == "job"
+        execution = str(request.get("execution", ""))
+        if is_job and re.fullmatch(r"exe-[0-9a-f]{24}", execution) is None:
+            raise ToolError("invalid_request", "invalid job execution id")
+        running = self.accept(request, "job" if is_job else "shell")
+        running.session = session
         await self.reply(request)
         running.task = self.spawn(
             self.run_shell(
@@ -1738,6 +1775,9 @@ class Executor:
         started = time.monotonic()
         wall_started = time.time()
         captures = {name: Capture(name, limit) for name in ("stdout", "stderr")}
+        running.captures = captures
+        logs: dict[str, int] = {}
+        readers: list[asyncio.Task[None]] = []
         state, error, exit_code, signal_number = "failed", None, None, None
         written: Message = {}
         session = env["SESSION_WORKSPACE"].rsplit("/", 1)[-1]
@@ -1758,6 +1798,8 @@ class Executor:
             if running.cancel_requested:
                 state, error = "cancelled", not_started
                 return
+            if running.kind == "job":
+                logs = await asyncio.to_thread(self.job_logs, session, execution)
             self.own(running.owner, execution)
             try:
                 process = await asyncio.create_subprocess_exec(
@@ -1779,9 +1821,15 @@ class Executor:
             running.started = True
             await self.event(execution, "state", **_running(start))
             readers = [
-                asyncio.ensure_future(self.pump(execution, process.stdout, captures["stdout"])),
-                asyncio.ensure_future(self.pump(execution, process.stderr, captures["stderr"])),
+                asyncio.ensure_future(
+                    self.pump(execution, process.stdout, captures["stdout"], logs.get("stdout"))
+                ),
+                asyncio.ensure_future(
+                    self.pump(execution, process.stderr, captures["stderr"], logs.get("stderr"))
+                ),
             ]
+            for reader in readers:
+                reader.add_done_callback(functools.partial(self.log_done, running))
             if running.cancel_requested:  # asked for while the command was starting
                 self.spawn(self.terminate(running))
             timed_out = False
@@ -1795,12 +1843,16 @@ class Executor:
             _, pending = await asyncio.wait(readers, timeout=5)
             for reader in pending:
                 reader.cancel()
+            await asyncio.gather(*readers, return_exceptions=True)
             written = await self.written(session, before)
             written.update(await self.settle(running))
             code = process.returncode
             exit_code = code if code is not None and code >= 0 else None
             signal_number = -code if code is not None and code < 0 else None
-            if running.cancel_requested:
+            if running.log_error is not None:
+                state = "failed"
+                error = {"kind": "internal", "message": running.log_error}
+            elif running.cancel_requested:
                 state = "cancelled"
                 error = {"kind": "cancelled", "message": "cancelled on request"}
             elif timed_out:
@@ -1808,7 +1860,23 @@ class Executor:
                 error = {"kind": "timed_out", "message": f"exceeded the {timeout:g} s limit"}
             else:
                 state = "succeeded" if code == 0 else "failed"
+        except (OSError, ToolError) as exc:
+            error = {
+                "kind": "internal",
+                "message": f"job output could not be saved ({type(exc).__name__}); "
+                "whole logs may be incomplete",
+            }
+            if running.process is not None:
+                await self.terminate(running)
+                await asyncio.to_thread(end_owned, running.owner, running.leader)
         finally:
+            for reader in readers:
+                if not reader.done():
+                    reader.cancel()
+            if readers:
+                await asyncio.gather(*readers, return_exceptions=True)
+            for descriptor in logs.values():
+                os.close(descriptor)
             if running.process is not None:
                 _spawned.discard(running.process.pid)
             self.running.pop(execution, None)
@@ -1827,13 +1895,81 @@ class Executor:
                 await self.event(execution, "end", state=state, result=result)
 
     async def pump(
-        self, execution: str, stream: asyncio.StreamReader | None, capture: Capture
+        self,
+        execution: str,
+        stream: asyncio.StreamReader | None,
+        capture: Capture,
+        log: int | None = None,
     ) -> None:
         if stream is None:
             return
         while chunk := await stream.read(65536):
-            if text := capture.feed(chunk):
+            text = capture.feed(chunk)
+            if log is not None:
+                write = asyncio.create_task(asyncio.to_thread(write_log, log, chunk))
+                try:
+                    await asyncio.shield(write)
+                except asyncio.CancelledError:
+                    await write
+                    raise
+            if text:
                 await self.stream(execution, capture.name, text)
+
+    def job_logs(self, session: str, execution: str) -> dict[str, int]:
+        """Create two private regular files through held, symlink-free directory FDs."""
+        parent = _walk(self.open_base(["sessions", session]), [".jobs"], ".jobs", create=True)
+        descriptors: dict[str, int] = {}
+        try:
+            # A preexisting job path is never reused, even if research code planted it.
+            os.mkdir(execution, mode=0o700, dir_fd=parent)
+            directory = os.open(execution, _DIRECTORY, dir_fd=parent)
+            try:
+                for name in ("stdout", "stderr"):
+                    flags = (
+                        os.O_WRONLY
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | os.O_NOFOLLOW
+                        | os.O_NONBLOCK
+                        | os.O_CLOEXEC
+                    )
+                    descriptor = os.open(f"{name}.log", flags, 0o600, dir_fd=directory)
+                    descriptors[name] = descriptor
+                    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                        raise OSError("job log is not a regular file")
+            finally:
+                os.close(directory)
+        except BaseException:
+            for descriptor in descriptors.values():
+                os.close(descriptor)
+            raise
+        finally:
+            os.close(parent)
+        return descriptors
+
+    def log_done(self, running: Running, task: asyncio.Task[None]) -> None:
+        """An exhausted disk ends the command promptly instead of abandoning its pipes."""
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None and running.log_error is None:
+            running.log_error = "job output could not be saved; whole logs may be incomplete"
+            self.spawn(self.terminate(running))
+
+    async def op_job_status(self, request: Message) -> None:
+        running = self.running.get(str(request.get("execution")))
+        if running is None or running.kind != "job":
+            await self.reply(request, found=False)
+            return
+        cpu, memory = await asyncio.to_thread(job_usage, running.owner, running.leader)
+        streams: dict[str, Message] = {}
+        for name, capture in running.captures.items():
+            summary = capture.summary()
+            text = str(summary["text"])
+            summary["text"] = bounded(text, 16384)
+            summary["truncated"] = bool(summary["truncated"]) or len(text) > 16384
+            streams[name] = summary
+        await self.reply(request, found=True, cpu_seconds=cpu, memory_bytes=memory, **streams)
 
     async def terminate(self, running: Running) -> None:
         """SIGTERM to the command and what it started, then SIGKILL after a grace period.
@@ -2139,7 +2275,7 @@ class Executor:
             return
         running.cancel_requested = True
         await self.reply(request, found=True)
-        if running.kind == "shell":
+        if running.kind in ("shell", "job"):
             if running.process is not None:
                 self.spawn(self.terminate(running))
             # Before then, run_shell sees cancel_requested and never starts the command.
@@ -2192,6 +2328,19 @@ class Executor:
         """
         session = self.session(request)
         stopped: list[Message] = []
+        jobs = [
+            running
+            for running in self.running.values()
+            if running.kind == "job" and running.session == session
+        ]
+        for running in jobs:
+            running.cancel_requested = True
+        await asyncio.gather(
+            *(self.terminate(running) for running in jobs if running.process is not None)
+        )
+        await asyncio.gather(
+            *(running.task for running in jobs if running.task is not None), return_exceptions=True
+        )
         for (owner, _), kernel in list(self.kernels.items()):
             if owner != session:
                 continue
@@ -2463,7 +2612,7 @@ def tool_environment(base: Mapping[str, str], python: str, prefix: str) -> dict[
 
 def available_features() -> list[str]:
     """What this environment offers beyond kernels: ``pdf`` with the helper and pdf_oxide."""
-    features: list[str] = []
+    features: list[str] = ["jobs"]
     if PDF_HELPER.is_file() and importlib.util.find_spec("pdf_oxide") is not None:
         features.append("pdf")
     return features

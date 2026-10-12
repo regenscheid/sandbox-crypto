@@ -46,6 +46,10 @@ from sandbox_science.contracts import (
     FileContent,
     FileEntry,
     FileListing,
+    JobDetails,
+    JobListing,
+    JobRequest,
+    JobStatus,
     KernelInfo,
     KernelRestartRequest,
     ListFilesRequest,
@@ -76,6 +80,7 @@ from sandbox_science.contracts.worker import (
     MAX_READ_BYTES,
     PROTOCOL_VERSION,
 )
+from sandbox_science.policy.model import Resources
 
 from .artifacts import Blobs
 from .backends import Backend
@@ -101,6 +106,8 @@ _UNSYNCED = (
 )
 WATCHDOG_GRACE = 30.0
 """Seconds past an execution's own limit before the worker cancels it itself."""
+CANCEL_GRACE = 30.0
+"""Seconds to confirm job cancellation before abandoning its executor connection."""
 LOST_GRACE = 60.0
 """Seconds after that cancel before the worker gives the attempt up as lost."""
 RETAIN_LIVE = 600.0
@@ -172,6 +179,7 @@ class _Live:
     cancel_requested: bool = False
     dispatched: bool = False
     watchdog: asyncio.Task[None] | None = None
+    cancel_watchdog: asyncio.Task[None] | None = None
     stored: int = 0
     """Bytes of stream text and rich output stored as events."""
     events: int = 0
@@ -279,6 +287,9 @@ class ExecutionManager:
         self._channels: set[ExecutorChannel] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closing = False
+        self.job_resources: Callable[[str], Resources] | None = None
+        self._closing_sessions: dict[tuple[str, str, str], int] = {}
+        self._released_environments: dict[str, int] = {}
         self.notices: Notices | None = None
         """Admission notices for an environment since a time; the environments set it."""
         self._noticed: dict[tuple[str, str], datetime] = {}
@@ -317,6 +328,20 @@ class ExecutionManager:
 
         Attempts still running there end as the executor's channel closes.
         """
+        self._released_environments[environment_id] = (
+            self._released_environments.get(environment_id, 0) + 1
+        )
+        try:
+            await self._release(environment_id)
+        finally:
+            if self._released_environments[environment_id] == 1:
+                self._released_environments.pop(environment_id)
+            else:
+                self._released_environments[environment_id] -= 1
+
+    async def _release(self, environment_id: str) -> None:
+        jobs = self._running_jobs(environment_id)
+        await self._cancel_jobs(jobs)
         environment = self._environments.get(environment_id)
         if environment is None:
             return
@@ -340,8 +365,18 @@ class ExecutionManager:
         """What an environment is doing now; None when its executor cannot say."""
         environment = self._environments.get(environment_id)
         if environment is None:
-            return Activity(last_used=None, running=0, cpu_seconds=None, kernels=0)
+            return Activity(
+                last_used=None,
+                running=len(self._running_jobs(environment_id)),
+                cpu_seconds=None,
+                kernels=0,
+            )
         busy = len(environment.running) + environment.requests
+        busy += sum(
+            1
+            for job in self._running_jobs(environment_id)
+            if job.execution_id not in environment.running
+        )
         channel = environment.channel
         if channel is None or channel.closed:
             return Activity(environment.last_used, busy, None, 0)
@@ -369,6 +404,8 @@ class ExecutionManager:
 
         Returns whether it did (or there was none), so that its sandbox may stop.
         """
+        if self._running_jobs(environment_id):
+            return False
         environment = self._environments.get(environment_id)
         if environment is None:
             return True
@@ -391,6 +428,13 @@ class ExecutionManager:
     def _lose(self, live: _Live, what: str) -> None:
         """End an attempt whose outcome is unknown, because ``what`` stopped during it."""
         message = f"{what} stopped during this attempt; its outcome is unknown"
+        if live.execution.job is not None:
+            message += (
+                "; partial whole logs remain at "
+                + live.execution.job.stdout_path
+                + " and "
+                + live.execution.job.stderr_path
+            )
         try:
             if live.final is not None:
                 # The outcome is known; only the shared files' sync after it was cut short.
@@ -461,6 +505,8 @@ class ExecutionManager:
             environment.last_used = time.monotonic()
         if live.watchdog is not None and live.watchdog is not asyncio.current_task():
             live.watchdog.cancel()
+        if live.cancel_watchdog is not None and live.cancel_watchdog is not asyncio.current_task():
+            live.cancel_watchdog.cancel()
         asyncio.get_running_loop().call_later(RETAIN_LIVE, self._live.pop, execution_id, None)
 
     def _final(
@@ -691,7 +737,14 @@ class ExecutionManager:
         ``origin`` names the provisioning operation the execution is an install step of: a
         managed change its package commands make is recorded as that operation's.
         """
-        digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+        if self._closing:
+            raise WorkerError(ErrorKind.UNAVAILABLE, "the worker is closing")
+        encoded = request.model_dump_json()
+        if isinstance(request, JobRequest):
+            # Omitting a timeout selects policy defaults; explicitly requesting 24h does
+            # not. Keep the original semantic request stable across policy changes.
+            encoded += ":explicit_timeout=" + str("timeout_seconds" in request.model_fields_set)
+        digest = hashlib.sha256(encoded.encode()).hexdigest()
         found = self.store.find_operation(request.context.project_id, request.operation_id)
         if found is not None:
             execution_id, existing = found
@@ -701,8 +754,70 @@ class ExecutionManager:
                     f"operation {request.operation_id} was submitted with a different request",
                 )
             return self.get(execution_id), False
+        job: JobDetails | None = None
+        execution_id = new_id("exe")
+        if isinstance(request, JobRequest):
+            context = request.context
+            if (
+                context.environment_id in self._released_environments
+                or (context.project_id, context.environment_id, context.session_id)
+                in self._closing_sessions
+            ):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "the job's session or environment is closing"
+                )
+            resources = (
+                self.job_resources(context.environment_id) if self.job_resources else Resources()
+            )
+            maximum = min(
+                604800.0,
+                resources.job_wall_time_max.total_seconds()
+                if resources.job_wall_time_max
+                else 604800.0,
+            )
+            default = min(
+                maximum,
+                resources.job_wall_time_default.total_seconds()
+                if resources.job_wall_time_default
+                else 86400.0,
+            )
+            timeout = (
+                request.timeout_seconds
+                if "timeout_seconds" in request.model_fields_set
+                else default
+            )
+            if timeout > maximum:
+                raise WorkerError(
+                    ErrorKind.POLICY_DENIED,
+                    f"job time limit exceeds the policy maximum of {maximum:g} s",
+                )
+            running = self._running_jobs(context.environment_id)
+            session = [
+                live.execution
+                for live in self._live.values()
+                if live.execution.kind == "job"
+                and live.execution.state not in TERMINAL_STATES
+                and live.execution.context.project_id == context.project_id
+                and live.execution.context.session_id == context.session_id
+            ]
+            if len(running) >= (resources.jobs_per_environment or 8) or len(session) >= (
+                resources.jobs_per_session or 4
+            ):
+                ids = ", ".join(dict.fromkeys(job.execution_id for job in [*running, *session]))
+                raise WorkerError(
+                    ErrorKind.POLICY_DENIED, f"job concurrency limit reached; active jobs: {ids}"
+                )
+            request = request.model_copy(update={"timeout_seconds": timeout})
+            job = JobDetails(
+                purpose=request.purpose,
+                expected_progress=request.expected_progress,
+                wake_session=request.wake_session,
+                timeout_seconds=timeout,
+                stdout_path=f".jobs/{execution_id}/stdout.log",
+                stderr_path=f".jobs/{execution_id}/stderr.log",
+            )
         execution = Execution(
-            execution_id=new_id("exe"),
+            execution_id=execution_id,
             attempt_id=new_id("att"),
             operation_id=request.operation_id,
             kind=request.kind,
@@ -710,6 +825,7 @@ class ExecutionManager:
             state=ExecutionState.QUEUED,
             submitted_at=_now(),
             origin=origin,
+            job=job,
         )
         self.store.insert_execution(execution, digest)
         live = self._track(execution, request.output_limit_bytes)
@@ -743,8 +859,7 @@ class ExecutionManager:
 
     async def _send(self, live: _Live, request: ExecutionRequest) -> None:
         execution_id = live.execution.execution_id
-        environment = await self._environment(request.context.environment_id)
-        if live.cancel_requested:
+        if live.cancel_requested or live.execution.state in TERMINAL_STATES:
             self._finish(
                 live,
                 ExecutionState.CANCELLED,
@@ -753,6 +868,20 @@ class ExecutionManager:
                 ),
             )
             return
+        environment = await self._environment(request.context.environment_id)
+        if live.cancel_requested or live.execution.state in TERMINAL_STATES:
+            self._finish(
+                live,
+                ExecutionState.CANCELLED,
+                Result(
+                    error=ErrorInfo(kind=ErrorKind.CANCELLED, message="cancelled before it started")
+                ),
+            )
+            return
+        if isinstance(request, JobRequest) and "jobs" not in environment.features:
+            raise WorkerError(
+                ErrorKind.UNSUPPORTED, "this executor does not support background jobs"
+            )
         if isinstance(request, PdfRequest) and "pdf" not in environment.features:
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, "this environment cannot read PDFs (it lacks pdf_oxide)"
@@ -768,7 +897,7 @@ class ExecutionManager:
             "timeout": request.timeout_seconds,
             "limit": request.output_limit_bytes,
         }
-        if isinstance(request, ShellRequest):
+        if isinstance(request, ShellRequest | JobRequest):
             fields.update(cwd=request.cwd)
             if request.argv is not None:
                 fields["argv"] = list(request.argv)
@@ -928,6 +1057,8 @@ class ExecutionManager:
                     }
                 )
             live.final = (state, result)
+            if live.cancel_watchdog is not None:
+                live.cancel_watchdog.cancel()
             live.ended_at = time.monotonic()
             if self.shared is None or live.channel is None:
                 self._complete(live, live.notices)
@@ -1288,6 +1419,112 @@ class ExecutionManager:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no execution {execution_id}")
         return execution
 
+    async def _cancel_jobs(self, jobs: list[Execution]) -> None:
+        """Bound cancel acknowledgments and process completion together, including broken peers."""
+        if not jobs:
+            return
+
+        async def cancel_all() -> None:
+            await asyncio.gather(*(self.cancel(job.execution_id) for job in jobs))
+            await asyncio.gather(*(self.wait(job.execution_id) for job in jobs))
+
+        try:
+            await asyncio.wait_for(cancel_all(), CANCEL_GRACE)
+        except (TimeoutError, WorkerError):
+            channels: set[ExecutorChannel] = set()
+            for job in jobs:
+                live = self._live.get(job.execution_id)
+                if live is not None and live.execution.state not in TERMINAL_STATES:
+                    if live.channel is not None:
+                        channels.add(live.channel)
+                    self._lose(live, "the executor that did not confirm job cancellation")
+            await asyncio.gather(*(channel.close() for channel in channels))
+
+    def _running_jobs(self, environment_id: str) -> list[Execution]:
+        return [
+            live.execution
+            for live in self._live.values()
+            if live.environment_id == environment_id
+            and live.execution.kind == "job"
+            and live.execution.state not in TERMINAL_STATES
+        ]
+
+    def jobs(
+        self, context: ExecutionContext, limit: int = 100, after: str | None = None
+    ) -> JobListing:
+        """List only the requested session's jobs, including recently ended attempts."""
+        if not 1 <= limit <= 500:
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST, "job listing limit must be between 1 and 500"
+            )
+        try:
+            jobs = self.store.session_jobs(context, limit + 1, after)
+        except LookupError as exc:
+            raise WorkerError(
+                ErrorKind.NOT_FOUND, "no job listing cursor for this session"
+            ) from exc
+        selected: list[Execution] = []
+        total = 0
+        for job in jobs[:limit]:
+            size = len(job.model_dump_json().encode())
+            if total + size > 1024 * 1024:
+                break
+            selected.append(job)
+            total += size
+        return JobListing(
+            jobs=tuple(selected),
+            truncated=len(jobs) > len(selected),
+            next_after=selected[-1].execution_id if selected else after,
+        )
+
+    async def job_status(self, execution_id: str, project_id: str | None = None) -> JobStatus:
+        """Read bounded live output without opening a new executor or waiting for the job."""
+        execution = self.get(execution_id, project_id)
+        if execution.kind != "job":
+            raise WorkerError(ErrorKind.NOT_FOUND, f"no job {execution_id}")
+        result = execution.result
+        if result is not None:
+            error = result.error
+            if error is not None:
+                error = ErrorInfo(kind=error.kind, message=_text(error.message, 4096) or "")
+            compact = result.model_copy(
+                update={
+                    "stdout": None,
+                    "stderr": None,
+                    "outputs": (),
+                    "written_files": (),
+                    "notices": (),
+                    "error": error,
+                }
+            )
+            return JobStatus(
+                execution=execution.model_copy(update={"result": compact}),
+                stdout=_job_stream(result.stdout),
+                stderr=_job_stream(result.stderr),
+            )
+        live = self._live.get(execution_id)
+        channel = live.channel if live is not None else None
+        if live is None or channel is None or channel.closed:
+            return JobStatus(execution=execution)
+        reply = await channel.request("job_status", execution=execution_id, reply_timeout=10)
+        cpu = reply.get("cpu_seconds")
+        cpu = (
+            float(cpu)
+            if isinstance(cpu, int | float) and not isinstance(cpu, bool) and 0 <= cpu <= 1e15
+            else None
+        )
+        memory = _integer(reply.get("memory_bytes"), 0, 2**62)
+        execution = self.get(execution_id)
+        if execution.result is not None:
+            return await self.job_status(execution_id, project_id)
+        return JobStatus(
+            execution=execution,
+            stdout=_stream(reply.get("stdout"), "stdout", min(live.limit, 16384)),
+            stderr=_stream(reply.get("stderr"), "stderr", min(live.limit, 16384)),
+            cpu_seconds=cpu,
+            memory_bytes=memory,
+        )
+
     async def events(
         self, execution_id: str, after: int, *, heartbeat: float | None = None
     ) -> AsyncGenerator[Event | None, None]:
@@ -1342,10 +1579,35 @@ class ExecutionManager:
         live = self._live.get(execution_id)
         if live is None or live.execution.state in TERMINAL_STATES:
             return execution
+        already_requested = live.cancel_requested
         live.cancel_requested = True
-        if live.dispatched:
-            await self._send_cancel(live)
+        if live.dispatched and not already_requested:
+            if execution.kind == "job":
+                live.cancel_watchdog = self._spawn(self._watch_cancel(live))
+            try:
+                await self._send_cancel(live)
+            except WorkerError:
+                if live.execution.state not in TERMINAL_STATES:
+                    raise
+        elif not live.dispatched and execution.kind == "job":
+            self._finish(
+                live,
+                ExecutionState.CANCELLED,
+                Result(
+                    error=ErrorInfo(kind=ErrorKind.CANCELLED, message="cancelled before it started")
+                ),
+            )
         return live.execution
+
+    async def _watch_cancel(self, live: _Live) -> None:
+        """A direct job cancel has its own deadline, independent of the wall-time limit."""
+        await asyncio.sleep(CANCEL_GRACE)
+        if live.execution.state in TERMINAL_STATES or live.final is not None:
+            return
+        channel = live.channel
+        self._lose(live, "the executor that did not confirm job cancellation")
+        if channel is not None:
+            await channel.close()
 
     async def _send_cancel(self, live: _Live) -> None:
         if live.execution.state not in (ExecutionState.CANCELLING, *TERMINAL_STATES):
@@ -1372,7 +1634,26 @@ class ExecutionManager:
             return kernel
 
     async def close_session(self, request: SessionCloseRequest) -> SessionClosed:
-        """Stop a session's kernels where its environment has an executor; start nothing."""
+        """Cancel and reap jobs, then stop kernels. Starts racing the close are refused."""
+        context = request.context
+        key = (context.project_id, context.environment_id, context.session_id)
+        self._closing_sessions[key] = self._closing_sessions.get(key, 0) + 1
+        try:
+            jobs = [
+                job
+                for job in self._running_jobs(context.environment_id)
+                if job.context.project_id == context.project_id
+                and job.context.session_id == context.session_id
+            ]
+            await self._cancel_jobs(jobs)
+            return await self._close_session(request)
+        finally:
+            if self._closing_sessions[key] == 1:
+                self._closing_sessions.pop(key)
+            else:
+                self._closing_sessions[key] -= 1
+
+    async def _close_session(self, request: SessionCloseRequest) -> SessionClosed:
         context = request.context
         environment = self._environments.get(context.environment_id)
         channel = environment.channel if environment is not None else None
@@ -1650,6 +1931,15 @@ def _checked[Model: BaseModel](model: type[Model], **fields: Any) -> Model:
         raise WorkerError(
             ErrorKind.INTERNAL, f"the executor sent a malformed reply ({model.__name__})"
         ) from exc
+
+
+def _job_stream(stream: StreamOutput | None) -> StreamOutput | None:
+    if stream is None:
+        return None
+    text = _text(stream.text, 16384) or ""
+    return stream.model_copy(
+        update={"text": text, "truncated": stream.truncated or text != stream.text}
+    )
 
 
 def _stream(raw: object, name: str, limit: int) -> StreamOutput | None:

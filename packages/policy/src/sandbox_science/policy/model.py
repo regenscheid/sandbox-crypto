@@ -163,6 +163,10 @@ class Resources(StrictModel):
     pids: Annotated[StrictInt, Field(gt=0)] | None = None
     workspace_disk: Annotated[ByteSize, Field(gt=0)] | None = None
     wall_time: Duration | None = None
+    job_wall_time_default: Annotated[Duration, Field(le=timedelta(days=7))] | None = None
+    job_wall_time_max: Annotated[Duration, Field(le=timedelta(days=7))] | None = None
+    jobs_per_session: Annotated[StrictInt, Field(gt=0, le=1024)] | None = None
+    jobs_per_environment: Annotated[StrictInt, Field(gt=0, le=1024)] | None = None
     model_budget_usd_per_day: Annotated[StrictFloat, Field(ge=0, allow_inf_nan=False)] | None = None
 
 

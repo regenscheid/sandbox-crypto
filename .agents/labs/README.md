@@ -52,6 +52,19 @@ observations needed for the report before `lab_down.sh` removes that directory. 
 be selected separately; `verify` resumes checks after the two initial capability installs.
 The full sequence expects fresh environments. Tear the lab down as above after finishing.
 
+## Background jobs (lab 19)
+
+Start a fresh lab with `PROJECT=lab19 bash worker_up.sh`. Set `suspend_after = 3`
+in the disposable worker settings and restart its unit before the idle check.
+Run `.venv/bin/python -I .agents/labs/jobs.py envs basics output limits close delete idle restart`
+from the branch under test. The last part deliberately restarts the lab worker.
+For harness/browser checks, run `.agents/labs/job_harness.py start` with that
+venv, serve `web/workspace/dist` with the workspace CLI pointing to `$LAB/orch`
+and the lab worker, inspect the `lab19/gui` session and cancel its job in the GUI,
+then run `job_harness.py notices` in a fresh process. Evidence is in `$LAB/evidence`;
+copy the token-free records before teardown. The watcher is scripted with shortened
+intervals; this does not test a real model's judgment.
+
 ## Reports
 
 Write the report as `.agents/docs/agent-reports/babbage-openshell-lab-N-<date>.md`, in the style of the earlier ones (what ran where, results tables, findings, cleanup), add a line to `.agents/docs/README.md`, and add the file to `.agents/docs/INVENTORY.json` with its size and SHA-256 (rebuild the README's entry too). Cite the lab where docs state what it showed. Tokens are synthetic and never written to the report or the logs kept.
