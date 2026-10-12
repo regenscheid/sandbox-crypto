@@ -2,7 +2,7 @@
 
 Updated: 2026-10-12. Engineering sequence beneath the milestone [roadmap](ROADMAP.md). Track P has the policy library, OpenShell compiler, policy middleware, package cache and event store. W1/W2 provide the [worker service](WORKER.md), harness and native math execution. M1 passed its babbage exit run; provisioning, background jobs and executor recovery have real OpenShell acceptance. W4 has the [workspace](WORKSPACE.md) GUI with document editing, comments, consistency review and document-only mechanical math findings checked in the browser. Main `999de27` includes PR #69 through #84 with fresh CI green; D82 passed final combined local gates (9,459 Python/434 web tests and all required checks/builds), PR #83 merged after fresh CI passed, and #84 recorded 9,494 Python/436 web tests. The integrated M2 research workflow remains open. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [consistency review](CONSISTENCY-REVIEW.md).
 
-The next approved worker slice is the [CP-13 sticky admission prerequisite](RECOVERY-FENCE.md), locally implemented with final source review/gates and disposable Lab21 still pending. Restoring/clearing package state remains open; no package-list comparison proves recovery.
+The next approved worker slice is the [CP-13 sticky admission prerequisite](RECOVERY-FENCE.md), locally implemented with the first predecessor cancel/restart Lab21 pass complete and removed. Final original-binding proof review/gates and a fresh offline/delete-reuse Lab21 remain pending. Restoring/clearing package state remains open; no package-list comparison proves recovery.
 
 ## First implementation slice
 

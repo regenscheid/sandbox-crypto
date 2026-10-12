@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import time
@@ -273,6 +274,7 @@ class Checks:
             ("shell", {"script": "true"}),
             ("cell", {"language": "python", "code": "1"}),
             ("job", {"script": "true", "purpose": "denied", "expected_progress": "none"}),
+            ("pdf", {"operation": "info", "path": "missing.pdf"}),
         ):
             refused = await self.api(
                 "POST",
@@ -324,12 +326,42 @@ class Checks:
             self.save(f"ended-{name}", done)
             await self.api("POST", f"/v1/executions/{done['execution_id']}/cancel")
         for path in ("forbidden-cell.txt", "forbidden-job.txt"):
-            await self.api(
+            absent = await self.api(
                 "POST",
                 "/v1/files/read",
                 {"context": self.context("failed"), "path": path},
                 status=404,
             )
+            self.save(f"absent-{path}", {"http_status": 404, "result": absent})
+        recovered = await self.api(
+            "POST",
+            "/v1/files/read",
+            {"context": self.context("failed"), "path": "lab21-release.txt"},
+        )
+        assert base64.b64decode(recovered["content_b64"]) == b"release", recovered
+        self.save("recovery-file-read", recovered)
+        self.save("revisions", await self.api("GET", "/v1/environments/lab21-failed/revisions"))
+        operation = self.evidence["needs-recovery"]
+        for revision in {operation["revision_before"], operation["revision_after"]} - {None}:
+            marked()
+            async with self.http.get(
+                URL + f"/v1/environments/lab21-failed/revisions/{revision}/lockfile"
+            ) as response:
+                raw = await response.read()
+                assert response.status == 200, (revision, response.status, raw[:1000])
+                value = json.loads(raw)
+                digest = hashlib.sha256(raw).hexdigest()
+                assert response.headers.get("X-Content-SHA256") == digest
+                self.save(
+                    f"lockfile-{revision}",
+                    {
+                        "http_status": response.status,
+                        "body_bytes": len(raw),
+                        "body_sha256": digest,
+                        "conda_packages": len(value.get("conda", [])),
+                        "pip_packages": len(value.get("pip", [])),
+                    },
+                )
         other = await self.ended(await self.submit("other-healthy", "other", code="print(19)"))
         assert other["state"] == "succeeded", other
         self.save("other-healthy", other)
@@ -338,11 +370,48 @@ class Checks:
         )
         assert self.evidence["queue-sticky"]["status"] == "needs_recovery"
 
+    async def delete_reuse(self) -> None:
+        # This action is selected separately after verify has durably saved its
+        # evidence. It targets only the marked failed environment, never peers.
+        assert self.evidence["queue-sticky"]["status"] == "needs_recovery"
+        before = await self.api("GET", "/v1/environments/lab21-failed")
+        assert before["sandbox_id"] == self.evidence["environment-failed"]["sandbox_id"]
+        self.save("delete-reuse-before", before)
+        for attempt in range(2):
+            deleted = await self.api("DELETE", "/v1/environments/lab21-failed")
+            assert deleted["state"] == "deleted", deleted
+            assert deleted["sandbox_id"] == before["sandbox_id"], deleted
+            self.save(f"delete-reuse-deleted-{attempt + 1}", deleted)
+        replacement = await self.api(
+            "POST",
+            "/v1/environments",
+            {
+                "project_id": PROJECT,
+                "environment_id": "lab21-failed",
+                "profile": "minimal",
+                "policy": (LAB / "policy.digest").read_text().strip(),
+            },
+            status=201,
+        )
+        assert replacement["sandbox_id"]
+        assert replacement["sandbox_id"] != before["sandbox_id"]
+        self.save("delete-reuse-after", replacement)
+        execution = await self.ended(await self.submit("after-reuse", "failed", code="print(23)"))
+        assert execution["state"] == "succeeded", execution
+        assert "23" in execution["result"]["stdout"]["text"], execution
+        self.save("delete-reuse-execution", execution)
+        other = await self.ended(await self.submit("after-reuse-peer", "other", code="print(29)"))
+        assert other["state"] == "succeeded", other
+        assert "29" in other["result"]["stdout"]["text"], other
+        self.save("delete-reuse-other-healthy", other)
+
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "parts", nargs="+", choices=("init", "prepare", "success", "interrupt", "verify")
+        "parts",
+        nargs="+",
+        choices=("init", "prepare", "success", "interrupt", "verify", "delete-reuse"),
     )
     interruption = parser.add_mutually_exclusive_group()
     interruption.add_argument("--restart", action="store_true")
@@ -363,6 +432,8 @@ async def main() -> None:
                 await checks.prepare()
             elif part == "success":
                 await checks.success()
+            elif part == "delete-reuse":
+                await checks.delete_reuse()
             elif part == "interrupt":
                 await checks.interrupt(args.restart, args.offline)
             elif part == "verify":

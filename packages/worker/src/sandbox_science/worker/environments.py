@@ -425,6 +425,8 @@ class Environments:
         """Required drains: failure retains the fence and prevents subsequent cleanup."""
         self.confirmed_deleted: list[Release] = []
         """Required cleanup only for gateway-confirmed deletion of the exact binding."""
+        self.required_deleting: list[Release] = []
+        """Required original-binding proof before any explicit deletion mutation."""
         self.reusing: list[Release] = []
         """Required original-binding checks before allocating a replacement sandbox."""
         self._locks: dict[str, asyncio.Lock] = {}
@@ -675,6 +677,8 @@ class Environments:
 
     async def _delete(self, environment_id: str) -> EnvironmentInfo:
         info = self.get(environment_id)
+        for told in self.required_deleting:
+            await told(environment_id)
         if info.state is EnvironmentState.DELETED and self.records.deletion_confirmed(info):
             await self._forget(environment_id)
             return info

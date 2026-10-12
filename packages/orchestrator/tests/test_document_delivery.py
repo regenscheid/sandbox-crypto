@@ -145,7 +145,16 @@ async def test_actual_authenticated_worker_http_composition_has_no_execution_or_
     app = create_app(
         manager,
         "test-pool-delivery-token-" + "p" * 32,
-        cast(Environments, SimpleNamespace(deleted=[])),
+        cast(
+            Environments,
+            SimpleNamespace(
+                deleted=[],
+                confirmed_deleted=[],
+                required_deleting=[],
+                reusing=[],
+                required_deleted=[],
+            ),
+        ),
         clients,
         document_catalog=catalog,
     )

@@ -165,10 +165,11 @@ def test_legacy_endpoint_proof_is_bounded_and_abandon_does_not_clear_hold(tmp_pa
         store.insert_provision(unfinished, "digest")
         store._db.execute("UPDATE provisions SET record='unreadable'")
         with pytest.raises(WorkerError, match="not durably finished"):
-            store.forget_package_gate("env1")
+            store.forget_package_gate("env1", binding=None)
         assert store.package_gate("env1").mode == "needs_recovery"
         store.update_provision(unfinished.model_copy(update={"state": ProvisionState.FINISHED}))
-        store.forget_package_gate("env1")
+        store.remember_endpoint("env1", "incarnation", ("original-name", "original-id"))
+        store.forget_package_gate("env1", binding=repr(("original-name", "original-id")))
         assert store.package_gate("env1") == PackageGate()
     finally:
         store.close()
@@ -185,7 +186,7 @@ def test_gate_clear_requires_exact_finished_flag_and_canonical_state(
         store._db.execute("UPDATE provisions SET finished=?", (flag,))
         assert not store.provisioning_finished("env1")
         with pytest.raises(WorkerError, match="not durably finished"):
-            store.forget_package_gate("env1")
+            store.forget_package_gate("env1", binding=None)
         assert store.package_gate("env1").mode == "needs_recovery"
     finally:
         store.close()
@@ -203,8 +204,63 @@ async def test_ready_original_binding_requires_confirmed_delete_before_reuse(
         assert store.package_gate("env1").mode == "ready"
         with pytest.raises(WorkerError, match="requires confirmed sandbox deletion"):
             await manager.guard_package_reuse("env1")
-        store.forget_package_gate("env1")  # the confirmed-delete hook's only clearing seam
+        store.forget_package_gate("env1", binding=repr(("original-name", "original-id")))
         await manager.guard_package_reuse("env1")
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("proof", ["missing", "wrong", "bound", "endpoint", "ready"])
+def test_deletion_requires_original_proof_at_both_boundaries(tmp_path: Path, proof: str) -> None:
+    store = Store(tmp_path / "worker.db")
+    binding = repr(("original-name", "original-id"))
+    try:
+        if proof in {"wrong", "bound"}:
+            store.bind_package_gate("env1", "another-binding" if proof == "wrong" else binding)
+        elif proof == "endpoint":
+            store.remember_endpoint("env1", "incarnation", ("original-name", "original-id"))
+        if proof != "ready":
+            store.set_package_status("env1", "needs_recovery", "prv-first", 1)
+        if proof in {"missing", "wrong"}:
+            before = store.package_gate("env1")
+            for action in (
+                lambda: store.guard_package_deletion("env1", binding),
+                lambda: store.forget_package_gate("env1", binding=binding),
+            ):
+                with pytest.raises(WorkerError):
+                    action()
+                assert store.package_gate("env1") == before
+            return
+        store.guard_package_deletion("env1", binding)
+        # The endpoint may disappear during actual executor shutdown. The exact
+        # proof retained before mutation must still support atomic final cleanup.
+        store.forget_endpoint("env1")
+        assert store.package_gate_has_binding("env1")
+        with pytest.raises(WorkerError, match="binding changed"):
+            store.forget_package_gate("env1", binding=repr(("replacement", "new-id")))
+        store.forget_package_gate("env1", binding=binding)
+        assert store.package_gate("env1") == PackageGate()
+        store.forget_package_gate("env1", binding=None)  # ready/empty is compatible
+    finally:
+        store.close()
+
+
+def test_large_corrupt_original_binding_refuses_before_fetch_and_clear(tmp_path: Path) -> None:
+    store = Store(tmp_path / "worker.db")
+    try:
+        store.bind_package_gate("env1", "original")
+        store.set_package_status("env1", "needs_recovery", "prv-first", 1)
+        store._db.execute("UPDATE package_execution_gates SET binding=?", ("x" * 20_000_000,))
+        tracemalloc.start()
+        try:
+            with pytest.raises(WorkerError, match="invalid retained package sandbox binding"):
+                store.guard_package_deletion("env1", "original")
+            with pytest.raises(WorkerError, match="invalid retained package sandbox binding"):
+                store.forget_package_gate("env1", binding="original")
+            assert tracemalloc.get_traced_memory()[1] < 100_000
+        finally:
+            tracemalloc.stop()
+        assert store.package_gate("env1").mode == "needs_recovery"
     finally:
         store.close()
 

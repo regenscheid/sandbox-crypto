@@ -1825,12 +1825,15 @@ async def test_required_delete_drain_owns_double_cancellation_and_name_reuse(
         entered.set()
         await finish.wait()
         # An old delayed classification is still part of the owned drain.
+        store.bind_package_gate(environment_id, repr((original.sandbox, original.sandbox_id)))
         store.set_package_status(environment_id, "needs_recovery", "prv-old", 1)
         order.append("drained")
 
     async def clear(environment_id: str) -> None:
         assert order[-1] == "drained"
-        store.forget_package_gate(environment_id)
+        store.forget_package_gate(
+            environment_id, binding=repr((original.sandbox, original.sandbox_id))
+        )
         order.append("cleared")
 
     setup.environments.required_deleted.append(drain)
@@ -1868,6 +1871,7 @@ async def test_failed_required_delete_cleanup_retains_fence_and_retries_exact_pr
 ) -> None:
     store = Store(tmp_path / "worker.sqlite3")
     original, _ = await setup.environments.create(setup.request())
+    store.bind_package_gate("env-1", repr((original.sandbox, original.sandbox_id)))
     store.set_package_status("env-1", "needs_recovery", "prv-old", 2)
     failed = True
     ordinary: list[str] = []
@@ -1877,7 +1881,9 @@ async def test_failed_required_delete_cleanup_retains_fence_and_retries_exact_pr
             raise WorkerError(ErrorKind.UNAVAILABLE, "classification write failed")
 
     async def clear(environment_id: str) -> None:
-        store.forget_package_gate(environment_id)
+        store.forget_package_gate(
+            environment_id, binding=repr((original.sandbox, original.sandbox_id))
+        )
 
     async def told(environment_id: str) -> None:
         ordinary.append(environment_id)
@@ -2233,13 +2239,16 @@ async def test_explicit_delete_after_abandon_requires_original_absence_before_cl
         state_dir=tmp_path,
     )
     original, _ = await setup.environments.create(setup.request())
+    store.bind_package_gate("env-1", repr((original.sandbox, original.sandbox_id)))
     store.set_package_status("env-1", "needs_recovery", "prv-original", 1)
     state = setup.fake.read()
     state["sandboxes"][original.sandbox]["id"] = "replacement"
     setup.fake.write(state)
 
     async def clear(environment_id: str) -> None:
-        store.forget_package_gate(environment_id)
+        store.forget_package_gate(
+            environment_id, binding=repr((original.sandbox, original.sandbox_id))
+        )
 
     setup.environments.confirmed_deleted.append(clear)
     setup.environments.reusing.append(manager.guard_package_reuse)
@@ -2262,6 +2271,70 @@ async def test_explicit_delete_after_abandon_requires_original_absence_before_cl
         assert store.package_gate("env-1").mode == "ready"
         assert setup.fake.calls("sandbox", "stop") == []
         assert setup.fake.calls("sandbox", "delete") == []
+    finally:
+        await manager.close()
+        store.close()
+
+
+@pytest.mark.parametrize("proof", ["missing", "wrong", "bound", "endpoint", "ready"])
+async def test_required_original_binding_guard_precedes_guest_delete(
+    setup: Setup, tmp_path: Path, proof: str
+) -> None:
+    store = Store(tmp_path / "worker.sqlite3")
+    manager = ExecutionManager(
+        store,
+        LocalBackend(LocalBackendSettings(), tmp_path),
+        Blobs(tmp_path / "artifacts"),
+        pool_id="test",
+        max_artifact_size=1024,
+        state_dir=tmp_path,
+    )
+    original, _ = await setup.environments.create(setup.request())
+
+    def identity(environment_id: str) -> tuple[str, str] | None:
+        info = setup.environments.get(environment_id)
+        return (info.sandbox, info.sandbox_id) if info.sandbox_id is not None else None
+
+    manager.daemon_identity = identity
+    # create_app registers these required guards independently of the optional
+    # executor release callback. Exercise that supported composition directly.
+    setup.environments.release = None
+    setup.environments.required_deleting.append(manager.guard_package_deletion)
+    setup.environments.confirmed_deleted.append(manager.forget_package_gate)
+    setup.environments.reusing.append(manager.guard_package_reuse)
+    binding = repr(identity("env-1"))
+    if proof in {"wrong", "bound"}:
+        store.bind_package_gate("env-1", "another-original" if proof == "wrong" else binding)
+    elif proof == "endpoint":
+        store.remember_endpoint("env-1", "incarnation", identity("env-1"))
+    if proof != "ready":
+        store.set_package_status("env-1", "needs_recovery", "prv-old", 1)
+    try:
+        if proof in {"missing", "wrong"}:
+            with pytest.raises(WorkerError):
+                await setup.environments.delete("env-1")
+            assert setup.environments.get("env-1") == original
+            assert not setup.environments.records.deletion_confirmed(original)
+            assert setup.fake.calls("sandbox", "stop") == []
+            assert setup.fake.calls("sandbox", "delete") == []
+            assert store.package_gate("env-1").mode == "needs_recovery"
+            # Even a stale/direct callback with current metadata proof must not
+            # reset an unproven or differently bound original hold.
+            setup.environments.records.confirm_deletion(original)
+            with pytest.raises(WorkerError):
+                await setup.environments.delete("env-1")
+            with pytest.raises(WorkerError):
+                await manager.forget_package_gate("env-1")
+            assert store.package_gate("env-1").mode == "needs_recovery"
+        else:
+            await setup.environments.delete("env-1")
+            await setup.environments.delete("env-1")
+            assert setup.environments.records.deletion_confirmed(original)
+            assert store.package_gate("env-1").mode == "ready"
+            replacement, created = await setup.environments.create(setup.request())
+            assert created
+            assert replacement.sandbox_id != original.sandbox_id
+            store.bind_package_gate("env-1", repr(identity("env-1")))
     finally:
         await manager.close()
         store.close()

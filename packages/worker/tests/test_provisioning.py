@@ -881,6 +881,7 @@ async def test_a_limited_client_sees_only_its_projects_revisions(
             self.records = Records()
             self.deleted: list[Any] = []
             self.required_deleted: list[Any] = []
+            self.required_deleting: list[Any] = []
             self.confirmed_deleted: list[Any] = []
             self.reusing: list[Any] = []
 
