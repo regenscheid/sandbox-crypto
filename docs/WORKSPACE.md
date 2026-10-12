@@ -29,7 +29,7 @@ changes and lock/install version or license mismatches fail the build. Public
 directory copying is refused until explicitly covered. These files use the
 existing authenticated static text/JSON serving behavior; no new route or UI is
 required. See [notice inputs and update procedure](../web/workspace/licenses/README.md)
-and [licensing](LICENSING.md). The isolated math-check distribution is unchanged.
+and [licensing](LICENSING.md). The [isolated math-check distribution](MATH-CHECKS.md#build-and-configure) uses the same checked primary/embedded notice inputs for its code-only bundle.
 
 The server prints a login URL once:
 

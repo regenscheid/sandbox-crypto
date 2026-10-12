@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
@@ -12,8 +12,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 17676,
-      "sha256": "162abf4a72ebc913d18b4c9fbf03b3003e576b9aaca8dedf0e21daacbe604fa1"
+      "bytes": 18487,
+      "sha256": "2eb08f5f038a94f48426558d509f534c3ee6b1468e31a13e93d88271a72d8f76"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -518,6 +518,18 @@
       "category": "browser-evidence",
       "bytes": 55786,
       "sha256": "2997f53d7ee2d81d27755defa6f4bec8d7cdac8034dff7616a35301543dd2125"
+    },
+    {
+      "path": "agent-reports/math-license-notices-2026-10-12.md",
+      "category": "build-validation",
+      "bytes": 6401,
+      "sha256": "5a47230703542b8502d257121a4358f74c2e7aaddeafa26459ef9f1bbfb51c0f"
+    },
+    {
+      "path": "agent-reports/math-license-notices-evidence-2026-10-12.json",
+      "category": "build-validation",
+      "bytes": 61846,
+      "sha256": "bbe0cead68664f2c734df7ea92b26784e2a16e2f07ed4117183ad2d2649012ff"
     },
     {
       "path": "agent-reports/openscience-desktop.md",

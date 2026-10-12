@@ -25,9 +25,17 @@ unchanged. Model repairs and the shared per-project repair cache remain separate
 From `web/workspace`, install the locked dependencies with
 `npm ci --ignore-scripts`, then run `npm run build:math`. The `dist-math/`
 directory contains the standalone `mathcheck.mjs` bundle, `check-math.mjs`
-launcher and the KaTeX/project license notices. Distribute the directory
-together. It uses the GUI's existing dependency lockfile; no second KaTeX
-installation is introduced.
+launcher, the established `LICENSE-KaTeX.txt` and `LICENSE-Sandbox-Science.txt`,
+complete `THIRD-PARTY-NOTICES.txt` and `license-manifest.json`. Distribute all six
+files together. The shared checked collector retains KaTeX's root MIT, exact
+React-derived Apache helper attribution and glyph-derived SVG attribution with
+the full primary Apache/OFL texts. No external font/CSS assets or Svelte runtime
+are shipped. Missing/changed license inputs, uncovered origins/files or a
+mismatched emitted file fail the build. The manifest hashes all other files;
+the existing copier entry point verifies the final directory. See
+[primary inputs](../web/workspace/licenses/README.md). It uses the GUI's existing
+dependency lockfile; no second KaTeX installation is introduced. Renderer and
+launcher runtime bytes are unchanged by the notice emission.
 
 The service operator supplies absolute paths to Node, the launcher and bundle
 when constructing `MathChecker`. Node 22.12 or newer is required; acceptance

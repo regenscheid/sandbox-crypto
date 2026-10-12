@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT
-import { copyFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import { verifyMathDistribution } from './license-notices.mjs';
 
-// These notices accompany the standalone bundle when it is distributed.
-await copyFile(new URL('../node_modules/katex/LICENSE', import.meta.url),
-  new URL('../dist-math/LICENSE-KaTeX.txt', import.meta.url));
-await copyFile(new URL('../../../LICENSE', import.meta.url),
-  new URL('../dist-math/LICENSE-Sandbox-Science.txt', import.meta.url));
-await copyFile(new URL('check-math.mjs', import.meta.url),
-  new URL('../dist-math/check-math.mjs', import.meta.url));
+// Keep the established build entry point; Vite now emits all checked notices and
+// the unchanged launcher together, and this final step refuses uncovered bytes.
+verifyMathDistribution(fileURLToPath(new URL('..', import.meta.url)));
