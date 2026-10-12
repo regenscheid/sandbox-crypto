@@ -9,38 +9,15 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from typing import Annotated, Self
 
-from pydantic import Field, StringConstraints, ValidationError, model_validator
+from pydantic import ValidationError
 
-from sandbox_science.contracts import Contract, Identifier, KernelInfo
-from sandbox_science.contracts.worker import Language
+from sandbox_science.contracts import KernelInfo
+from sandbox_science.contracts.kernel_lineage import KernelBirthPin, LineageUnknown
 
 _MAX_RECORD = 2048
-BirthId = Annotated[str, StringConstraints(pattern=r"^birth-[0-9a-f]{24}$")]
-Incarnation = Annotated[str, StringConstraints(pattern=r"^inc-[0-9a-f]{24}$")]
-
-
-class KernelBirth(Contract):
-    """Exact worker scope and sandbox lifetime to which a start pin belongs."""
-
-    project_id: Identifier
-    environment_id: Identifier
-    session_id: Identifier
-    language: Language
-    incarnation: Incarnation
-    kernel_id: Identifier
-    sandbox: Identifier | None = None
-    sandbox_id: Identifier | None = None
-    generation: Annotated[int, Field(strict=True, ge=1, le=2**31 - 1)]
-    birth_id: BirthId
-    start_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
-
-    @model_validator(mode="after")
-    def _binding(self) -> Self:
-        if (self.sandbox is None) != (self.sandbox_id is None):
-            raise ValueError("kernel VM binding must be complete")
-        return self
+# Compatibility name: retained JSON and existing start transactions are unchanged.
+KernelBirth = KernelBirthPin
 
 
 class KernelStarts:
@@ -59,6 +36,32 @@ class KernelStarts:
             " incarnation TEXT NOT NULL, epoch INTEGER NOT NULL, revision INTEGER NOT NULL,"
             " fingerprint TEXT NOT NULL)"
         )
+
+    def retained(
+        self, environment_id: str, session_id: str, language: str
+    ) -> tuple[KernelBirth | None, LineageUnknown | None]:
+        """Bounded read of an original birth; observation never creates or repairs it."""
+        row = self.db.execute(
+            "SELECT substr(CAST(record AS BLOB),1,?) FROM kernel_start_revisions"
+            " WHERE environment_id=? AND session_id=? AND language=?",
+            (_MAX_RECORD + 1, environment_id, session_id, language),
+        ).fetchone()
+        if row is None:
+            return None, "missing_birth"
+        raw = row[0]
+        if not isinstance(raw, bytes) or len(raw) > _MAX_RECORD:
+            return None, "corrupt_birth"
+        try:
+            birth = KernelBirth.model_validate_json(raw, strict=True)
+        except (ValueError, ValidationError):
+            return None, "corrupt_birth"
+        if (birth.environment_id, birth.session_id, birth.language) != (
+            environment_id,
+            session_id,
+            language,
+        ):
+            return None, "identity_mismatch"
+        return birth, None
 
     def current(self, environment_id: str) -> tuple[int, str] | None:
         """Bounded current-revision projection; damaged metadata means unknown."""

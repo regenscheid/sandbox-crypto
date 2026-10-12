@@ -743,13 +743,41 @@ class Store:
 
     def endpoint_incarnation(self, environment_id: str) -> str | None:
         row = self._db.execute(
-            "SELECT incarnation FROM executor_endpoints WHERE environment_id = ?",
+            "SELECT substr(CAST(incarnation AS BLOB),1,29)"
+            " FROM executor_endpoints WHERE environment_id = ?",
             (environment_id,),
         ).fetchone()
-        return str(row[0]) if row else None
+        if row is None or not isinstance(row[0], bytes):
+            return None
+        try:
+            incarnation = row[0].decode("ascii")
+        except UnicodeDecodeError:
+            return None
+        return incarnation if re.fullmatch(r"inc-[0-9a-f]{24}", incarnation) else None
 
     def endpoint_binding(self, environment_id: str) -> tuple[str, str] | None:
         return self._executor_binding("executor_endpoints", environment_id)
+
+    def lineage_endpoint(self, environment_id: str) -> tuple[str, str, str] | None:
+        """One bounded incarnation/VM projection; never combine separate generations."""
+        row = self._db.execute(
+            "SELECT substr(CAST(incarnation AS BLOB),1,29),"
+            " substr(CAST(sandbox AS BLOB),1,129), substr(CAST(sandbox_id AS BLOB),1,129)"
+            " FROM executor_endpoints WHERE environment_id=?",
+            (environment_id,),
+        ).fetchone()
+        if row is None or any(not isinstance(value, bytes) for value in row):
+            return None
+        try:
+            incarnation, sandbox, sandbox_id = (value.decode("ascii") for value in row)
+        except UnicodeDecodeError:
+            return None
+        if re.fullmatch(r"inc-[0-9a-f]{24}", incarnation) is None or any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is None
+            for value in (sandbox, sandbox_id)
+        ):
+            return None
+        return incarnation, sandbox, sandbox_id
 
     def recycle_binding(self, environment_id: str) -> tuple[str, str] | None:
         return self._executor_binding("executor_recycles", environment_id)
