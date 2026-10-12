@@ -72,6 +72,20 @@ class _Answer(Contract):
     error: str | None = Field(max_length=300)
     remedy: str | None = Field(max_length=5000)
 
+    @field_validator("protocol", "max_formula", mode="before")
+    @classmethod
+    def exact_integer(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("protocol limits must be JSON integers")
+        return value
+
+    @field_validator("options", mode="before")
+    @classmethod
+    def exact_options(cls, value: object) -> object:
+        if json.dumps(value, sort_keys=True) != json.dumps(OPTIONS, sort_keys=True):
+            raise ValueError("renderer settings mismatch")
+        return value
+
     @model_validator(mode="after")
     def consistent(self) -> Self:
         if self.status == "accepted" and (self.error is not None or self.remedy is not None):
@@ -129,7 +143,7 @@ async def _exchange(process: asyncio.subprocess.Process, data: bytes) -> bytes:
 
 
 async def _reap(process: asyncio.subprocess.Process) -> None:
-    # The child is a session leader: reap even a descendant of a faulty launcher.
+    # Also reap descendants remaining in the launcher's process group.
     with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
     await process.wait()
