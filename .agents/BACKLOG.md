@@ -101,11 +101,11 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Adversarial fixture suite
 - [x] Isolation-tier probes (D43): the worker probes each executor it starts and reports the tier in effect beside the declared one; evidence only lowers it, and the OpenShell backend must declare its tier ([worker](../docs/WORKER.md#isolation-tiers))
   - [x] Backend conformance suite (D52): the execution-tools fixtures through the worker API (`packages/worker/tests/test_conformance.py`), against the local backend in CI or a running worker named by `SS_CONFORMANCE_*` ([worker](../docs/WORKER.md#conformance-suite))
-  - [ ] Run the suite, and with it the probe, against an OpenShell sandbox on babbage (lab)
+  - [x] Run the unchanged suite and probe against real OpenShell sandboxes on babbage: [Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) passed all 23 external cases on each of minimal and crypto-base (linux/amd64), with effective/declared tier 3; 23 local variants per run intentionally skipped; complete teardown independently verified
 - [ ] Multi-arch base images: `minimal` and the `crypto-base` recipe (D46); babbage MicroVM gateway configuration (D63)
   - [x] Recipes for both profiles in `images/` (D77, [images](../docs/IMAGES.md)): pinned sources, Conda lockfiles for linux-64 and linux-aarch64, build and test scripts. Built for linux/amd64 on babbage and checked as plain containers: read-only root, uid 1000, and under a Landlock ruleset like OpenShell's
   - [ ] arm64 images: build and test on an arm64 host; check that the Ubuntu snapshot service covers the ports archive; a registry for multi-platform images (D63)
-  - [ ] Run the images in an OpenShell lab: the worker's profiles, the targets file's `sandbox.filesystem` ([images](../docs/IMAGES.md#openshell-filesystem-paths)) and the conformance suite
+  - [x] Run the linux/amd64 images in OpenShell: worker profiles and compiled `sandbox.filesystem` settings ([images](../docs/IMAGES.md#openshell-filesystem-paths)) passed the unchanged external conformance suite in [Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md); both Python 3.14.8, with no new Sage assertion; arm64/multi-platform acceptance remains open
   - [ ] A private registry for crypto-base (open question), and a standard-format SBOM before `minimal` is published
 - [ ] Secrets through OpenShell providers (D57); MCP endpoint policies (D58); connector auth service and MCP proxy (D66, D67)
 

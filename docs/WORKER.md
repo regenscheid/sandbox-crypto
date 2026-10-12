@@ -623,6 +623,15 @@ sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.t
 
 ## Conformance suite
 
+The unchanged suite passed against both linux/amd64 OpenShell research profiles in
+[Lab23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md), using frozen
+main `73c07aa`: 23 external cases passed per profile, and 23 local variants were
+intentionally skipped per run. Both actual Python 3.14.8 guests retained declared
+and effective tier 3, with separate stable boot IDs and no isolation-probe findings.
+The lab and its owned fixtures were completely removed. Crypto-base advertised
+Sage, but this suite tested Python only. No other architecture/backend or new
+Sage assertion is implied; capture Lab22 used the separate `b535856` source.
+
 `packages/worker/tests/test_conformance.py` runs the [execution-tools fixtures](specs/tools.md#acceptance-fixtures) through the worker API alone, so it checks any backend without the harness (D52). It covers shell calls, the location and the isolation probe, kernels (state, interrupt, restart, death, streaming, reconnection), output bounds, cancellation, the file tools' confinement and publication. A backend passes only if the probe leaves its declared tier standing. CI runs it against a worker with the local backend that the suite starts. To check a worker that is already running, such as one with the OpenShell backend in a lab, set:
 
 | Variable | Value |

@@ -1,5 +1,18 @@
 # Plan changes
 
+## 2026-10-12 — external backend and linux/amd64 profile acceptance
+
+Close the existing OpenShell conformance/probe and research-profile lab acceptance
+checks using the unchanged suite on frozen main `73c07aa`: root-owned
+[Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) passed all 23 external
+cases on each of minimal and crypto-base; the 23 local variants per run were
+intentionally skipped. Both Python 3.14.8 guests retained effective/declared tier 3
+and their original boots. Expected failure/cancellation/timeout cases all passed.
+Four units ran; complete teardown of both VMs and owned fixtures was independently
+verified at 12:46:22 UTC. This is validation only, with no product/image/test or
+timeout changes. It is separate from capture Lab22 on `b535856`; no new Sage
+functional assertion, arm64, Kubernetes or multi-platform parity is claimed.
+
 ## 2026-10-12 — bounded artifact capture prerequisite
 
 Bound the worker's first whole-file hash before enabling automatic execution-output

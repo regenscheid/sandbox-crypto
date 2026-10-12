@@ -84,6 +84,14 @@ Implement the worker API against OpenShell only (D52). Keep it backend-neutral b
 
 **Exit evidence:** the W1 fixture runs through the worker service on OpenShell, with mirror-only egress and the adversarial suite passing; the conformance suite is runnable against a backend adapter without harness changes.
 
+The existing external conformance/probe and linux/amd64 profile acceptance now passed
+in [Lab23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) on frozen
+main `73c07aa`: 23 unchanged external cases per minimal/crypto-base profile, with
+23 local variants intentionally skipped per run. Both Python 3.14.8 guests retained
+effective/declared tier 3 and their original distinct boots. The complete lab and
+owned fixtures were removed. This does not certify Sage-specific functionality,
+arm64, Kubernetes or multi-platform images; it changes no product/image/test code.
+
 ### W2 — Certify babbage execution with math/source capabilities (M1, phase 1)
 
 Map one backend adapter to the selected runtime. If using OpenShell, pin matching components and let its gateway own the chosen driver lifecycle. In phase 1 that is the MicroVM driver on babbage; supporting every local engine is unnecessary. Hosted Kubernetes certification is W2h in phase 2.
