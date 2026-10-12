@@ -1,6 +1,6 @@
 # Detailed implementation plan
 
-Updated: 2026-10-12. Engineering sequence beneath the milestone [roadmap](ROADMAP.md). Track P has the policy library, OpenShell compiler, policy middleware, package cache and event store. W1/W2 provide the [worker service](WORKER.md), harness and native math execution. M1 passed its babbage exit run; provisioning, background jobs and executor recovery have real OpenShell acceptance. W4 has the [workspace](WORKSPACE.md) GUI with document editing, comments, consistency review and mechanical math findings checked in the browser. Main `c6ccce6` includes PR #69 through #90 with fresh CI green; D82 passed final combined local gates (9,459 Python/434 web tests and all required checks/builds), PR #83 merged after fresh CI passed, and #84 recorded 9,494 Python/436 web tests. The integrated M2 research workflow remains open. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [consistency review](CONSISTENCY-REVIEW.md).
+Updated: 2026-10-12. Engineering sequence beneath the milestone [roadmap](ROADMAP.md). Track P has the policy library, OpenShell compiler, policy middleware, package cache and event store. W1/W2 provide the [worker service](WORKER.md), harness and native math execution. M1 passed its babbage exit run; provisioning, background jobs and executor recovery have real OpenShell acceptance. W4 has the [workspace](WORKSPACE.md) GUI with document editing, comments, consistency review and mechanical math findings checked in the browser. Main `05ba353` includes PR #69 through #91 with fresh CI green; D82 passed final combined local gates (9,459 Python/434 web tests and all required checks/builds), PR #83 merged after fresh CI passed, and #84 recorded 9,494 Python/436 web tests. The integrated M2 research workflow remains open. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [consistency review](CONSISTENCY-REVIEW.md).
 
 The [CP-13 sticky admission prerequisite](RECOVERY-FENCE.md) is implemented and independently reviewed at signed `e320236`. Final combined gates passed 9,532 Python tests (43 opt-in skips), 436 web tests, 24 post-build math checks, locked/static/license/protocol checks and both builds. Root-owned [OpenShell Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) passed real linking cancellation, graceful worker-offline/reconnect and explicit confirmed delete/reuse, preserving existing research state and refusing new protected work. Both labs are completely removed; PR #85 merged after all three fresh CI checks passed. Restoring/clearing package state remains open; no package-list comparison proves recovery.
 
@@ -130,9 +130,14 @@ KaTeX fonts/glyph-derived SVG assets and project MIT code, with deterministic fi
 changed or uncovered inputs fail the build. This closes the notice-shipping
 prerequisite locally: independently reviewed signed `1032cd4` passed fresh 472 web
 tests, 24 math checks and all required checks/builds; unchanged full Python 9,749/43
-is explicitly reused. Root-owned [HTTP acceptance](../.agents/docs/agent-reports/workspace-license-notices-2026-10-12.md) served all 70 files exactly with complete teardown. Fresh PR CI remains the merge gate.
-It adds no dependency or platform-code license allowance. The separate isolated
-math-checker embedded-notice follow-on remains open.
+is explicitly reused. Root-owned [HTTP acceptance](../.agents/docs/agent-reports/workspace-license-notices-2026-10-12.md) served all 70 files exactly with complete teardown. PR #91 merged at `05ba353` after all four fresh CI checks passed.
+It adds no dependency or platform-code license allowance. The narrow
+[isolated math distribution](MATH-CHECKS.md#build-and-configure) follow-on reuses
+those pinned primary/embedded inputs for code-only KaTeX MIT, React Apache and
+SVG OFL attribution, without fonts/CSS/Svelte runtime. Six-file verification
+preserves the existing renderer/launcher bytes and filenames; 41 focused notice
+cases pass. Independent review, final gates, copy-main union and fresh PR CI/merge
+remain pending.
 
 The narrow [failed-run record slice](WORKSPACE.md#run-records) retains partial loop observations and fixed failure phases while preserving error exit status, cleanup and delivered-only save-before-ACK. Failed records carry no final answer and cannot finalize staged ignored-math outcomes. Independently reviewed signed source `123b2e6` passed all final gates: 9,749 Python tests (43 opt-in skips, two existing warnings), 445 web tests and 24 post-build math checks. Root-owned [CLI/browser acceptance](../.agents/docs/agent-reports/failed-run-records-2026-10-12.md) and complete cleanup passed; PR #90 merged at `c6ccce6` after all fresh Python 3.12/3.13/web and security checks passed (run `38287920059`). Cancellation propagates through cleanup failures without save or ACK. Cancellation/process-death persistence, live updates and session-end handling remain open.
 

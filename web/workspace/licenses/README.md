@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: MIT -->
-# GUI distribution notices
+# GUI and isolated math distribution notices
 
 `manifest.json` pins the package versions, declared terms and SHA-256 of the
 complete primary notice files read from the locked local npm installation. It
@@ -54,7 +54,17 @@ license allowance. Apache 2 and MIT are already allowed for platform code.
 
 When updating npm packages, review their primary notice files and any bundled
 components before updating these pins. Review any new stylesheet, copied asset,
-virtual runtime helper or public-directory content explicitly. The separate
-`dist-math` notice copier is unchanged: it currently copies only the root KaTeX
-MIT and project MIT files. Complete embedded-component coverage for that separate
-distribution remains a follow-on before it is distributed.
+virtual runtime helper or public-directory content explicitly.
+
+The isolated `dist-math` build uses the same collector and primary inputs, with
+code-only KaTeX attribution: root MIT, React-derived Apache helpers and the
+OFL glyph-derived SVG assets. It ships no external font/CSS files or Svelte
+runtime. Its six files are `mathcheck.mjs`, the unchanged `check-math.mjs`,
+`LICENSE-KaTeX.txt`, `LICENSE-Sandbox-Science.txt`, `THIRD-PARTY-NOTICES.txt`
+and `license-manifest.json`. The manifest hashes every other distributed file;
+the established `copy-math-licenses.mjs` build entry point now verifies exact
+file coverage and bytes after emission. Missing/changed inputs or uncovered
+files fail the build. The checked launcher hash pins its existing external
+`node:path`/`node:url` imports; Node itself is operator-provided and is not copied.
+The renderer and launcher runtime behavior is unchanged. The GUI default
+collector output stays unchanged; no second license-text collection is introduced.
