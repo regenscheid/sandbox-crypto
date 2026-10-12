@@ -132,6 +132,8 @@ export interface RunRecord {
   started_at: string;
   ended_at: string;
   stopped: string;
+  /** Fixed harness phase; older records omit it. No exception or provider text. */
+  failure?: 'model' | 'tool' | 'harness' | 'cleanup' | null;
   final_text: string | null;
   review_notice_ids?: string[];
   math_summary?: { pending?: boolean; renderer?: string; counts?: Record<string, number>; detail?: string };

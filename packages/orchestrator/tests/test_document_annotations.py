@@ -365,10 +365,10 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
                 raise RuntimeError("model failed")
 
         main = DocumentTool(store, context, run_id="failed")
-        with pytest.raises(RuntimeError, match="model failed"):
-            await run_task(
-                Failed(), Toolbox(worker, context, documents=main), "Continue", run_id="failed"
-            )
+        failed = await run_task(
+            Failed(), Toolbox(worker, context, documents=main), "Continue", run_id="failed"
+        )
+        assert (failed.stopped, failed.failure, failed.work_request_ids) == ("error", "model", [])
         main = DocumentTool(store, context, run_id="run-a")
         script = ScriptedModel.from_json([{"text": "Respond"}])
         transcript = await run_task(
@@ -823,3 +823,67 @@ def test_moving_a_child_outside_whole_block_anchor_is_disclosed(store: DocumentS
         "payload"
     ]
     assert "b5" in payload["outside_anchor"]
+
+
+@pytest.mark.asyncio
+async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
+    store: DocumentStore,
+) -> None:
+    from sandbox_science.orchestrator.model import ModelError
+
+    first = create(store, addressed_to="a")
+    second = None
+
+    class Partial:
+        calls = 0
+
+        async def complete(self, messages, tools):
+            nonlocal second
+            self.calls += 1
+            if self.calls == 2:
+                raise ModelError("synthetic failed second response")
+            second = create(store, addressed_to="a", operation_id="second")
+            return ModelTurn("Observed first response")
+
+    context = ExecutionContext(
+        project_id="p",
+        session_id="a",
+        environment_id=ProjectStore(store.path.parent).get("p").default_environment_id,
+    )
+    main = DocumentTool(store, context, run_id="partial")
+    async with WorkerClient("http://127.0.0.1:1", "synthetic") as worker:
+        transcript = await run_task(
+            Partial(), Toolbox(worker, context, documents=main), "Continue", run_id="partial"
+        )
+    assert second is not None
+    assert transcript.failure == "model"
+    assert transcript.work_request_ids == [first["request_id"]]
+    now = datetime.now(UTC)
+    record = RunRecord(
+        run_id="partial",
+        context=context,
+        task="Continue",
+        started_at=now,
+        ended_at=now,
+        stopped="error",
+        failure="model",
+        messages=transcript.messages,
+        tools=[],
+        work_request_ids=transcript.work_request_ids,
+    )
+    assert (
+        cli._keep(
+            argparse.Namespace(state_dir=store.path.parent, transcript=None),
+            record.model_dump(mode="json"),
+            1,
+        )
+        == 1
+    )
+    annotations = Annotations(store)
+    one = annotations.read_thread("p", "ff", first["thread_id"])["requests"][0]
+    two = annotations.read_thread("p", "ff", second["thread_id"])["requests"][0]
+    assert (one["state"], one["delivered_run"]) == ("delivered", "partial")
+    assert (two["state"], two["delivered_run"]) == ("queued", None)
+    assert (
+        annotations.pending("p", "a", "next", seen=set())[0]["request_id"] == second["request_id"]
+    )
