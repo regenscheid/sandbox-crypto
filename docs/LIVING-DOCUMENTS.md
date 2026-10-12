@@ -120,6 +120,9 @@ Focused local acceptance covers actual authenticated worker HTTP composition, lo
 replies/restarts, source advances during a 600,000-byte upload, empty-target deletion only
 at commit, stage expiry, worker resets, ambiguous delta holds, stale lease/endpoint
 replies, corrupt pins, aggregate quotas and acknowledgement transaction failure.
+Independent source review and final combined validation with the worker source adapter
+and atomic synthetic OpenShell fixture passed 9,365 Python tests (43 opt-in skips),
+431 web tests, strict/static/license/protocol checks and both production builds.
 No OpenShell or environment publication is exercised by this prerequisite.
 
 ## Parsing
