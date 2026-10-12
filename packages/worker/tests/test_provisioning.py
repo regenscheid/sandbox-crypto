@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -1830,6 +1831,178 @@ def test_review2_l4_the_executors_look_ends_what_a_killed_wrapper_left(
     provisioning.observe(sandbox.state, sandbox.config.places, known)
     assert not alive(step)
     assert not sandbox.state.holder.exists()
+
+
+def test_cleanup_waits_for_exit_after_the_process_mark_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scans = iter([[(123, 4)], []])
+    pending = [True]
+    signals: list[tuple[int, int]] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(provisioning, "_marked", lambda _: next(scans))
+    monkeypatch.setattr(provisioning, "process_start", lambda _: 4)
+    monkeypatch.setattr(os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    monkeypatch.setattr(provisioning, "_same_running", lambda pid, start: pending[0])
+
+    def finish_exit(delay: float) -> None:
+        sleeps.append(delay)
+        pending[0] = False
+
+    monkeypatch.setattr(time, "sleep", finish_exit)
+    assert provisioning.end_marked("123:4") == 1
+    assert signals == [(123, signal.SIGKILL)]
+    assert sleeps == [0.01]
+
+
+@pytest.mark.parametrize(
+    ("error", "running"),
+    [(FileNotFoundError(), False), (PermissionError(), True), (OSError(), True)],
+)
+def test_cleanup_exit_check_distinguishes_missing_from_unreadable_process(
+    monkeypatch: pytest.MonkeyPatch,
+    error: OSError,
+    running: bool,
+) -> None:
+    def unreadable(*_: object, **__: object) -> None:
+        raise error
+
+    monkeypatch.setattr(provisioning, "open", unreadable, raising=False)
+    assert provisioning._same_running(123, 4) is running
+
+
+def test_cleanup_exit_check_cannot_confirm_exit_from_a_partial_stat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        provisioning, "open", lambda *_: io.BytesIO(b"123 (process)"), raising=False
+    )
+    assert provisioning._same_running(123, 4)
+
+
+@pytest.mark.parametrize("case", ["pending_exit", "denied_signal", "last_round_child"])
+def test_cleanup_cannot_report_success_while_a_package_process_remains_running(
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    scans = iter(
+        [[(123, 4)]] * provisioning.KILL_ROUNDS + [[(456, 4)]]
+        if case == "last_round_child"
+        else [[(123, 4)], []]
+    )
+    clock = [0.0]
+    monkeypatch.setattr(provisioning, "_marked", lambda _: next(scans))
+    monkeypatch.setattr(provisioning, "process_start", lambda _: 4)
+
+    def kill(*_: object) -> None:
+        if case == "denied_signal":
+            raise PermissionError("denied")
+
+    monkeypatch.setattr(os, "kill", kill)
+    monkeypatch.setattr(
+        provisioning, "_same_running", lambda pid, start: case != "last_round_child" or pid == 456
+    )
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
+    with pytest.raises(RuntimeError, match="has not exited"):
+        provisioning.end_marked("123:4")
+    assert clock[0] >= provisioning.KILL_WAIT
+
+
+def test_failed_cleanup_at_turn_start_preserves_holder_and_releases_lock(
+    sandbox: Sandbox,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sandbox.state.holder.write_text('{"pid":123,"start":4}')
+
+    def pending(_: object) -> int:
+        raise provisioning.CleanupPendingError("pending")
+
+    monkeypatch.setattr(provisioning, "end_strays", pending)
+    turn = provisioning.Turn(sandbox.state, sandbox.config, ["pip", "install", "x"], "wrapper")
+    with pytest.raises(provisioning.CleanupPendingError):
+        turn.begin()
+    assert turn.descriptor is None
+    assert sandbox.state.holder.exists()
+    with held(sandbox.state):
+        pass
+
+
+def test_failed_cleanup_at_turn_end_preserves_holder_and_releases_lock(
+    sandbox: Sandbox,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    turn = provisioning.Turn(sandbox.state, sandbox.config, ["pip", "install", "x"], "wrapper")
+    assert turn.begin()
+
+    def pending(*_: object) -> int:
+        raise provisioning.CleanupPendingError("pending")
+
+    monkeypatch.setattr(provisioning, "end_marked", pending)
+    with pytest.raises(provisioning.CleanupPendingError):
+        turn.end(0)
+    assert turn.descriptor is None
+    assert sandbox.state.holder.exists()
+    assert sandbox.records() == []
+    with held(sandbox.state):
+        pass
+
+
+def test_next_turn_retries_cleanup_before_replacing_a_still_live_holder(
+    sandbox: Sandbox,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid, start = os.getpid(), provisioning.process_start(os.getpid())
+    holder = json.dumps({"pid": pid, "start": start})
+    sandbox.state.holder.write_text(holder)
+    retried: list[str] = []
+
+    def pending(marker: str) -> int:
+        retried.append(marker)
+        raise provisioning.CleanupPendingError("pending")
+
+    monkeypatch.setattr(provisioning, "end_marked", pending)
+    turn = provisioning.Turn(sandbox.state, sandbox.config, ["pip", "install", "x"], "wrapper")
+    with pytest.raises(provisioning.CleanupPendingError):
+        turn.begin()
+    assert retried == [f"{pid}:{start}"]
+    assert sandbox.state.holder.read_text() == holder
+    with held(sandbox.state):
+        pass
+
+
+@pytest.mark.parametrize("broken_stderr", [False, True])
+def test_module_hook_exits_instead_of_running_after_failed_cleanup(
+    sandbox: Sandbox,
+    monkeypatch: pytest.MonkeyPatch,
+    broken_stderr: bool,
+) -> None:
+    def pending(_: object) -> int:
+        raise provisioning.CleanupPendingError("pending")
+
+    def exit_now(code: int) -> None:
+        raise SystemExit(code)
+
+    monkeypatch.setattr(provisioning, "end_strays", pending)
+    monkeypatch.setattr(provisioning, "exit_as", exit_now)
+    if broken_stderr:
+
+        class BrokenStderr:
+            def write(self, text: str) -> None:
+                raise OSError("closed output")
+
+        monkeypatch.setattr(sys, "stderr", BrokenStderr())
+    with pytest.raises(SystemExit) as caught:
+        provisioning.hook(
+            str(sandbox.state.directory),
+            "pip",
+            ["python", "-m", "pip", "install", "x"],
+            ["install", "x"],
+        )
+    assert caught.value.code == 1
+    assert not sandbox.prefix.log.exists()
+    with held(sandbox.state):
+        pass
 
 
 def test_review2_l4_what_a_command_leaves_running_ends_with_its_turn(sandbox: Sandbox) -> None:
