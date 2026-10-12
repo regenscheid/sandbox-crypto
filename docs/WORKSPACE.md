@@ -318,7 +318,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 - Approvals in the GUI, with re-authentication for high-risk ones (D54), and policy revisions from the GUI.
 - Previews of rich artifacts on a separate origin (D54), and the PDF viewer.
 - Saving Markdown with its math in the dollar form beyond living documents, which are saved so ([living documents as built](LIVING-DOCUMENTS.md#changes)): ledger entries, and direct edits of document files (LD-41, LD-42, LD-50).
-- Math findings: checking the math of saved text with the GUI's KaTeX, and sending what it rejects back to the agent that wrote it (LD-53 to LD-55, D82).
+- Math findings: checking the math of saved text with the GUI's KaTeX, and sending what it rejects back to the agent that wrote it (LD-53 to LD-55, D82). The [isolated renderer prerequisite](MATH-CHECKS.md) exists; save scheduling, findings and delivery are not connected yet.
 - Copying a rendered formula as its LaTeX (KaTeX's `copy-tex` does this); for now a repaired or approximated formula's LaTeX is copied from behind its mark.
 - KaTeX in a Web Worker, with a time limit that ends a formula's render ([the backlog](../.agents/BACKLOG.md) says why it waits).
 - Live updates while a run is in progress, and the environments' state from the worker.
