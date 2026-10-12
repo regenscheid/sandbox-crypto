@@ -79,3 +79,13 @@ describe('historical profile 1 maps', () => {
     });
   }
 });
+
+it('keeps image-description math escapes untrimmed and outside document anchors', () => {
+  const source = '| ![\x85$x$\\\x85](https://example.org) |\n| --- |\n';
+  const tokens = documentParser.parse(source, {});
+  const image = tokens.find((token) => token.type === 'inline')?.children?.find(
+    (token) => token.type === 'image',
+  );
+  expect(image?.children?.filter((token) => token.type === 'math_inline').map((token) => token.content)).toEqual(['x']);
+  expect(blockMap(source, tokens).spans).toEqual([]);
+});

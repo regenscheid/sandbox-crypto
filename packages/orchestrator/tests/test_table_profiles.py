@@ -149,3 +149,14 @@ def test_the_port_retains_the_upstream_empty_cell_expansion_bound(
     table = next(token for token in tokens(source) if token.type == "table_open")
     assert table.map == [0, 6]  # four rows, each adding one empty second cell
     assert [block.kind for block in parse(source).blocks] == ["table", "paragraph"]
+
+
+def test_image_description_escape_bounds_remain_untrimmed() -> None:
+    source = "| ![\x85$x$\\\x85](https://example.org) |\n| --- |\n"
+    children = next(token for token in tokens(source) if token.type == "inline").children
+    assert children is not None
+    image = next(token for token in children if token.type == "image")
+    assert image.children is not None
+    assert [token.content for token in image.children if token.type == "math_inline"] == ["x"]
+    # Image descriptions never acquire document math anchors.
+    assert parse(source).spans == ()
