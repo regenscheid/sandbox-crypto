@@ -186,7 +186,15 @@ about induced OpenShell failures. No arbitrary stuck filesystem-I/O bound is ass
 
 ## Lab24: worker-local output observations
 
-Runtime acceptance is pending. Root coordinates setup, exact signed-source freeze,
+Root-owned [Lab24 acceptance](../docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md)
+passed on signed `35863776` / helper `bcddecd3`, with nineteen terminal markers,
+eighteen bounded reports, partial outputs, raw path/root identity and same-attempt/
+kernel continuity through graceful worker restart. PDF was unavailable. The
+[archive](../docs/agent-reports/babbage-openshell-lab-24-evidence-2026-10-12.json)
+retains source, gate, API, independent inspection and complete teardown evidence;
+cleanup was independently verified at 14:59:02.325873 UTC.
+
+For a separately coordinated rerun, root owns setup, exact signed-source freeze,
 execution, evidence archiving and full teardown; authors must not start a lab themselves.
 Use `lab_up.sh` and `PROJECT=lab24 worker_up.sh` from the frozen reviewed checkout,
 then run:

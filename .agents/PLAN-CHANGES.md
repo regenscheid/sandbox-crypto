@@ -14,9 +14,17 @@ artifact revision or invented producer/input authority is added. This implements
 existing requirement incrementally; it does not waive every-file-minus-ignore-patterns
 RA-5. The [as-built boundary](../docs/ARTIFACTS.md#worker-local-terminal-observations)
 and [marked Lab24 recipe](labs/README.md#lab24-worker-local-output-observations)
-retain stronger telemetry and one-shot capture receipts as follow-ons. Local tests,
-exact independent review, integrated gates and root-owned OpenShell acceptance remain
-required before merge.
+retain stronger telemetry and one-shot capture receipts as follow-ons. Independent
+review cleared signed `35863776`; all integrated gates passed (83 focused cases,
+9,714 Python/43 opt-in skips/two existing warnings, 441 web/24 post-build math cases,
+locked/static/license/protocol checks and both builds). Root-owned
+[OpenShell Lab24](docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md) passed
+nineteen terminal markers/eighteen bounded reports, raw identities, partial files,
+explicit gaps and original-attempt/kernel continuity through worker restart. PDF
+was unavailable. Complete teardown was verified at 14:59:02.325873 UTC. No source,
+helper or assertion changes followed the freeze; inspection hash/CLI/key corrections
+are retained transparently in the report. Acceptance changes are documentation only;
+fresh PR CI remains required before merge.
 
 ## 2026-10-12 — comment/reply mechanical math
 

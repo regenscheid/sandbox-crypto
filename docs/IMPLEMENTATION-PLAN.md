@@ -163,12 +163,17 @@ healthy publication/read/execution access on Python 3.14.8. Zero capture leases/
 and complete teardown were independently verified. Actual main PR #85 ancestry and
 acceptance docs change no product/test/configuration/helper bytes. PR #86 merged at `9c07725` after all three fresh CI checks passed. This adds no automatic discovery.
 The next [worker-local terminal observation prerequisite](ARTIFACTS.md#worker-local-terminal-observations)
-is implemented for local validation: bounded raw-byte/root stat sidecars, original
-pre-dispatch request/attempt/incarnation/known immutable VM pins, atomic terminal
-detail/gaps and scoped internal replay/retention. Derived invalid/quota/corrupt state
-preserves healthy execution completion and canonical recovery. Exact independent
-review, integrated full gates and root-owned OpenShell Lab24 remain required before
-merge. No public feed, capture, consumer, scheduler or artifact revision is enabled.
+is implemented and independently reviewed at signed `35863776`: bounded raw-byte/root
+stat sidecars, original pre-dispatch request/attempt/incarnation/known immutable VM
+pins, atomic terminal detail/gaps and scoped internal replay/retention. Derived
+invalid/quota/corrupt state preserves healthy execution completion and canonical
+recovery. Integrated gates passed 9,714 Python tests (43 opt-in skips), 441 web tests,
+24 post-build math cases and all required checks/builds. Root-owned
+[OpenShell Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md)
+passed partial outputs, raw identities, gaps and same-attempt/kernel continuity
+through worker restart; complete teardown was verified. PDF was unavailable.
+Fresh PR CI remains required before merge. No public feed, capture, consumer,
+scheduler or artifact revision is enabled.
 Every report remains mutation-incomplete; links/specials are unavailable and
 `not_seen_after` is not deletion. Current `written_files` stat differences cannot prove
 all writes, producer identity, inputs or attempt-end source bytes; RA-5/RA-F2/CR-F6
