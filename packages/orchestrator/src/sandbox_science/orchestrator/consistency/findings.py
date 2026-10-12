@@ -22,29 +22,14 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.models import Author
 
+from .finding_schema import LEGACY_FIELDS, projection
 from .models import ConfirmationInput, EvidenceAnchor, FindingInput, FindingResponse, ReviewConfig
 from .store import ReviewStore, bounded_json, digest, dump, identifier, text
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
 RESOLVED = ("confirmed fixed", "withdrawn")
-FIELDS = (
-    "finding_id",
-    "project",
-    "session",
-    "review_id",
-    "severity",
-    "category",
-    "statement",
-    "anchors",
-    "remedy",
-    "status",
-    "revision",
-    "reflags",
-    "dedupe",
-    "supersedes",
-    "created",
-)
+FIELDS = (*LEGACY_FIELDS, "origin", "math_check_id")
 
 
 class Findings:
@@ -56,13 +41,32 @@ class Findings:
     def _get(self, db: sqlite3.Connection, project: str, session: str, finding: str) -> Json:
         identifier(finding, "finding")
         row = db.execute(
-            "SELECT * FROM review_findings WHERE project=? AND session=? AND finding_id=?",
+            "SELECT "  # noqa: S608 - fixed schema projection, all user values bound
+            + projection(db)
+            + " FROM review_findings WHERE project=? AND session=? AND finding_id=?",
             (project, session, finding),
         ).fetchone()
         if row is None:
             raise DocumentError(NOT_FOUND, "no such scoped finding")
         result: Json = dict(zip(FIELDS, row, strict=True))
         result["anchors"] = json.loads(result["anchors"])
+        result["source"] = (
+            {"kind": "math", "check": result["math_check_id"]}
+            if result["origin"] == "math"
+            else {"kind": "review", "review": result["review_id"]}
+        )
+        if result["origin"] == "math":
+            state = db.execute(
+                "SELECT checked_revision,owner_revision,excluded FROM math_finding_state "
+                "WHERE finding_id=?",
+                (finding,),
+            ).fetchone()
+            if state:
+                result["source"].update(
+                    dict(
+                        zip(("checked_revision", "owner_revision", "excluded"), state, strict=True)
+                    )
+                )
         return result
 
     def get(self, project: str, session: str, finding: str, *, before: int | None = None) -> Json:
@@ -287,7 +291,11 @@ class Findings:
             ReviewConfig.model_validate_json(configuration[0]) if configuration else ReviewConfig()
         ).interrupt_severity
         ranks = {"fail": 0, "warn": 1, "note": 2}
-        if status == "open" and ranks[found["severity"]] <= ranks[threshold]:
+        if (
+            found["origin"] == "review"
+            and status == "open"
+            and ranks[found["severity"]] <= ranks[threshold]
+        ):
             db.execute(
                 (
                     "INSERT OR IGNORE INTO "
@@ -335,7 +343,9 @@ class Findings:
                 db.execute("UPDATE review_runs SET cap_reached=1 WHERE review_id=?", (review,))
                 return {"outcome": "finding_cap", "cap_reached": True}
             if value.supersedes is not None:
-                self._get(db, project, session, value.supersedes)
+                superseded = self._get(db, project, session, value.supersedes)
+                if superseded["origin"] == "math":
+                    raise DocumentError(POLICY_DENIED, "math findings cannot be superseded")
             existing = db.execute(
                 (
                     "SELECT finding_id FROM review_findings WHERE project=? AND "
@@ -438,7 +448,9 @@ class Findings:
             else:
                 finding = new_id("finding")
                 db.execute(
-                    "INSERT INTO review_findings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO review_findings("
+                    + ",".join(LEGACY_FIELDS)
+                    + ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         finding,
                         project,
@@ -569,6 +581,11 @@ class Findings:
             if replay:
                 return replay
             found = self._get(db, project, session, value.finding)
+            if found["origin"] == "math" and author.kind != "user":
+                raise DocumentError(
+                    POLICY_DENIED,
+                    "patch the math source; its mechanical check confirms fixes without a claim",
+                )
             if value.expected != found["revision"]:
                 raise DocumentError(CONFLICT, "finding changed since this response was drafted")
             if value.action in ("fix", "rebut") and found["status"] in RESOLVED:
@@ -623,6 +640,10 @@ class Findings:
                     POLICY_DENIED, "finding response is outside the confirmation snapshot"
                 )
             found = self._get(db, project, session, value.finding)
+            if found["origin"] == "math":
+                raise DocumentError(
+                    POLICY_DENIED, "only the mechanical check decides math findings"
+                )
             if found["revision"] != value.expected:
                 raise DocumentError(CONFLICT, "finding changed during confirmation")
             config = ReviewConfig.model_validate_json(run["config"])
@@ -766,7 +787,7 @@ class Findings:
                 for r in db.execute(
                     (
                         "SELECT finding_id FROM review_findings WHERE project=? AND "
-                        "session=? AND status='open'"
+                        "session=? AND status='open' AND category!='math'"
                     ),
                     (project, session),
                 )
@@ -787,7 +808,7 @@ class Findings:
                 for r in db.execute(
                     (
                         "SELECT finding_id FROM review_findings WHERE project=? AND "
-                        "session=? AND status='open' LIMIT 100"
+                        "session=? AND status='open' AND category!='math' LIMIT 100"
                     ),
                     (project, session),
                 )

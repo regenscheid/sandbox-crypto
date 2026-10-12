@@ -199,6 +199,23 @@ class MathChecker:
         self._slots = asyncio.Semaphore(2)
         self._pending = 0
 
+    def identity(self) -> dict[str, object]:
+        """Pin bounded operator configuration before a durable check dispatch."""
+        return {
+            "bundle_sha256": hashlib.sha256(_code(self.bundle, 8 * 1024 * 1024)).hexdigest(),
+            "launcher_sha256": hashlib.sha256(_code(self.launcher, 65_536)).hexdigest(),
+            "engine": ENGINE,
+            "options": OPTIONS,
+            "node": str(self.node),
+            "node_identity": [
+                self.node.stat().st_dev,
+                self.node.stat().st_ino,
+                self.node.stat().st_size,
+                self.node.stat().st_mtime_ns,
+            ],
+            "timeout": self.timeout,
+        }
+
     async def check_many(self, formulas: list[Formula]) -> list[MathCheck]:
         """Check a bounded batch in input order; duplicate IDs are refused."""
         if len(formulas) > MAX_BATCH or len({item.id for item in formulas}) != len(formulas):
