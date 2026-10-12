@@ -231,6 +231,8 @@ async def test_kernel_globals_survive_worker_restart(worker: Worker) -> None:
     assert ended.state is ExecutionState.SUCCEEDED
     assert ended.result is not None
     kernel = ended.result.kernel
+    assert kernel is not None
+    assert kernel.start_revision == 0
     await worker.restart()
     second, _ = await worker.manager.submit(
         CellRequest(operation_id="kernel2", context=CONTEXT, language="python", code="print(value)")

@@ -161,7 +161,29 @@ class Daemon:
             history.state_seq = history.sequence
             # Pin only bounded lifecycle metadata, even after executor compromise.
             fingerprint = message.get("environment")
+            raw_kernel = message.get("kernel")
+            kernel: Message = {}
+            if isinstance(raw_kernel, dict):
+                raw_kernel = cast(Message, raw_kernel)
+                for key in (
+                    "kernel_id",
+                    "language",
+                    "birth_id",
+                    "start_environment",
+                    "start_execution",
+                ):
+                    value = raw_kernel.get(key)
+                    if isinstance(value, str) and len(value) <= 128:
+                        kernel[key] = value
+                epoch = raw_kernel.get("start_package_epoch")
+                if type(epoch) is int and 0 <= epoch < 2**62:
+                    kernel["start_package_epoch"] = epoch
+                generation = raw_kernel.get("generation")
+                if type(generation) is int and 0 < generation < 2**31:
+                    kernel["generation"] = generation
             message = {key: message[key] for key in ("type", "execution", "event", "source_seq")}
+            if kernel:
+                message["kernel"] = kernel
             message["state"] = "running"
             if isinstance(fingerprint, str) and len(fingerprint) <= 256:
                 message["environment"] = fingerprint

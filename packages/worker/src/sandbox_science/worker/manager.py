@@ -53,7 +53,9 @@ from sandbox_science.contracts import (
     JobRequest,
     JobStatus,
     KernelInfo,
+    KernelListing,
     KernelRestartRequest,
+    KernelStatusRequest,
     ListFilesRequest,
     Location,
     OutputEvent,
@@ -92,6 +94,7 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import ExecutorRefusalError, WorkerError
 from .isolation import probe
+from .kernel_revisions import KernelBirth
 from .output_observations import normalize as normalize_observation
 from .package_gate import PackageGate
 from .package_gate import refusal as recovery_refusal
@@ -196,6 +199,8 @@ class _Live:
     limit: int = DEFAULT_OUTPUT_LIMIT
     cancel_requested: bool = False
     dispatched: bool = False
+    reattached: bool = False
+    """An unseen kernel birth replayed after detach cannot establish a new start pin."""
     watchdog: asyncio.Task[None] | None = None
     cancel_watchdog: asyncio.Task[None] | None = None
     stored: int = 0
@@ -498,6 +503,7 @@ class ExecutionManager:
             # Keep an existing watchdog across reconnects. At startup reconstruct one
             # absolute deadline, including its original grace, rather than refreshing it.
             for live in lives:
+                live.reattached = True
                 if live.execution.state in TERMINAL_STATES:
                     continue
                 saved = self.store.recovery(live.execution.execution_id)
@@ -1104,6 +1110,13 @@ class ExecutionManager:
             try:
                 hostname, languages, features = self._describe(environment_id, channel.hello)
                 self._observe(environment_id, channel.hello.get("environment"), "")
+                self.store.kernel_starts.epoch(
+                    environment_id,
+                    channel.incarnation,
+                    channel.hello.get("package_epoch"),
+                    channel.hello.get("environment"),
+                    remember=True,
+                )
                 declared = self.backend.isolation_tier
                 isolation = await probe(channel, declared, self.state_dir)
             except Exception:
@@ -1137,6 +1150,7 @@ class ExecutionManager:
         """Forget a deleted environment's revisions, and delete the lockfiles only they
         named: environments that are gone keep nothing in the store."""
         self.revisions.forget(environment_id)
+        self.store.kernel_starts.forget(environment_id)
 
     async def confirm_capture_cleanup(
         self, environment_id: str, sandbox: str, sandbox_id: str
@@ -1664,6 +1678,20 @@ class ExecutionManager:
                             update={"environment_revision": str(revision)}
                         )
                 live.execution = live.execution.model_copy(update=update)
+                # Birth persistence precedes source acknowledgement. A crash can
+                # replay the event, never acknowledge away an unretained start pin.
+                kernel, _ = self._kernel(
+                    environment_id,
+                    live.execution.context.session_id,
+                    message.get("kernel"),
+                    False,
+                    project_id=live.execution.context.project_id,
+                    birth_execution=execution_id if not live.reattached else None,
+                    fingerprint=message.get("environment"),
+                    expected_channel=live.channel,
+                )
+                if kernel is not None and live.execution.kind == "cell":
+                    live.execution = live.execution.model_copy(update={"kernel": kernel})
                 self._state(live, ExecutionState.RUNNING)
                 self.store.update_execution(live.execution)
                 self._ask_lockfile(environment_id, live)
@@ -1880,11 +1908,36 @@ class ExecutionManager:
 
     def _result(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> Result:
         """The executor's result, checked and bounded by the attempt's output limit."""
+        after = self._revision_after(environment_id, live, raw)
         kernel, lost = self._kernel(
             environment_id,
             live.execution.context.session_id,
             raw.get("kernel"),
             raw.get("state_lost") is True,
+            project_id=live.execution.context.project_id,
+            expected_channel=live.channel,
+        )
+        pinned = live.execution.kernel
+        if (
+            kernel is not None
+            and pinned is not None
+            and (kernel.kernel_id, kernel.language, kernel.generation)
+            == (pinned.kernel_id, pinned.language, pinned.generation)
+        ):
+            revision = kernel.current_revision
+            start_revision = pinned.start_revision
+            if start_revision is not None and revision is not None and start_revision > revision:
+                start_revision = None
+            status = (
+                "unknown"
+                if start_revision is None or revision is None
+                else ("current" if start_revision == revision else "predates")
+            )
+            kernel = kernel.model_copy(
+                update={"start_revision": start_revision, "revision_status": status}
+            )
+        running = self._session_kernel_info(
+            live.execution.context, raw.get("running_kernels"), expected_channel=live.channel
         )
         written = raw.get("written_files")
         paths = [
@@ -1896,7 +1949,6 @@ class ExecutionManager:
         ]
         location = live.execution.location
         before = location.environment_revision if location is not None else None
-        after = self._revision_after(environment_id, live, raw)
         return Result(
             exit_code=_integer(raw.get("exit_code")),
             signal=_integer(raw.get("signal"), 1, 255),
@@ -1907,6 +1959,7 @@ class ExecutionManager:
             outputs=_outputs(raw.get("outputs"), live.limit),
             error=_error(raw.get("error")),
             kernel=kernel,
+            running_kernels=running,
             state_lost=lost,
             elapsed_seconds=_seconds(raw.get("elapsed_seconds")),
             sandbox_started_at=_epoch(raw.get("sandbox_started")),
@@ -2015,6 +2068,18 @@ class ExecutionManager:
             # Only a change its own package commands made is the operation's.
             operation=origin if managed is True else None,
         )
+        if (
+            live.channel is not None
+            and self._environments.get(environment_id) is not None
+            and self._environments[environment_id].channel is live.channel
+        ):
+            self.store.kernel_starts.epoch(
+                environment_id,
+                live.channel.incarnation,
+                message.get("package_epoch"),
+                message.get("fingerprint"),
+                remember=True,
+            )
         self._ask_lockfile(environment_id, live)
 
     def _ask_lockfile(self, environment_id: str, live: _Live) -> None:
@@ -2038,7 +2103,17 @@ class ExecutionManager:
         return execution.attempt_id, execution.origin
 
     def _kernel(
-        self, environment_id: str, session_id: str, raw: object, state_lost: bool
+        self,
+        environment_id: str,
+        session_id: str,
+        raw: object,
+        state_lost: bool,
+        *,
+        project_id: str | None = None,
+        birth_execution: str | None = None,
+        fingerprint: object = None,
+        restarted: bool = False,
+        expected_channel: ExecutorChannel | None = None,
     ) -> tuple[KernelInfo | None, bool]:
         """Map the executor's kernel generation onto one that never goes back."""
         if not isinstance(raw, dict):
@@ -2050,6 +2125,8 @@ class ExecutionManager:
             return None, state_lost
         environment = self._environments.get(environment_id)
         channel = environment.channel if environment is not None else None
+        if expected_channel is not None and channel is not expected_channel:
+            return None, state_lost  # old bridge cannot rebind a replacement's kernel
         incarnation = channel.incarnation if channel is not None else "unknown"
         record = self.store.kernel(environment_id, session_id, language)
         if record is None:
@@ -2060,7 +2137,10 @@ class ExecutionManager:
         else:
             base = record.base
         self.store.save_kernel(
-            environment_id, session_id, language, KernelRecord(incarnation, base, base + generation)
+            environment_id,
+            session_id,
+            language,
+            KernelRecord(incarnation, base, max(base + generation, record.last if record else 0)),
         )
         info = {
             "kernel_id": raw.get("kernel_id"),
@@ -2068,11 +2148,113 @@ class ExecutionManager:
             "generation": base + generation,
         }
         try:
-            return KernelInfo.model_validate(info), state_lost
+            kernel = KernelInfo.model_validate(info)
         except ValidationError:
             # Not an identifier the worker can report: name the kernel after its session.
             digest = hashlib.sha256(f"{session_id}\0{language}".encode()).hexdigest()[:24]
-            return KernelInfo.model_validate({**info, "kernel_id": f"krn-{digest}"}), state_lost
+            kernel = KernelInfo.model_validate({**info, "kernel_id": f"krn-{digest}"})
+        current = self.store.kernel_starts.current(environment_id)
+        revision = current[0] if current is not None else None
+        kernel = kernel.model_copy(update={"current_revision": revision})
+        start_environment = raw.get("start_environment")
+        can_pin = (
+            current is not None
+            and current[1] == start_environment
+            and self.store.kernel_starts.epoch(
+                environment_id, incarnation, raw.get("start_package_epoch"), start_environment
+            )
+            == revision
+            and (
+                (
+                    birth_execution is not None
+                    and raw.get("start_execution") == birth_execution
+                    and fingerprint == start_environment
+                )
+                or restarted
+            )
+        )
+        if project_id is not None and channel is not None and not channel.closed:
+            binding = None
+            if channel.daemon_token is not None:
+                if self.store.endpoint_incarnation(environment_id) == incarnation:
+                    binding = self.store.endpoint_binding(environment_id)
+                if binding is None and self.daemon_identity is not None:
+                    can_pin = False  # a managed VM's original binding must be known
+            try:
+                birth = KernelBirth.model_validate(
+                    {
+                        "project_id": project_id,
+                        "environment_id": environment_id,
+                        "session_id": session_id,
+                        "language": language,
+                        "incarnation": incarnation,
+                        "kernel_id": kernel.kernel_id,
+                        "sandbox": binding[0] if binding else None,
+                        "sandbox_id": binding[1] if binding else None,
+                        "generation": generation,
+                        "birth_id": raw.get("birth_id"),
+                        "start_revision": revision if can_pin else None,
+                    }
+                )
+            except ValidationError:
+                pass  # legacy or malformed sandbox birth: do not infer it from today's packages
+            else:
+                kernel = self.store.kernel_starts.observe(birth, kernel, revision)
+        return kernel, state_lost
+
+    def _session_kernel_info(
+        self,
+        context: ExecutionContext,
+        raw: object,
+        *,
+        expected_channel: ExecutorChannel | None = None,
+    ) -> tuple[KernelInfo, ...]:
+        if not isinstance(raw, list):
+            return ()
+        raw = cast(list[object], raw)
+        if len(raw) > len(LANGUAGES):
+            return ()
+        found: dict[str, KernelInfo] = {}
+        for item in raw:
+            kernel, _ = self._kernel(
+                context.environment_id,
+                context.session_id,
+                item,
+                False,
+                project_id=context.project_id,
+                expected_channel=expected_channel,
+            )
+            if kernel is not None:
+                found[kernel.language] = kernel
+        return tuple(found.values())
+
+    async def kernel_status(self, request: KernelStatusRequest) -> KernelListing:
+        """Observe only the authenticated context's kernels; admission gates stay unchanged."""
+        context = request.context
+        async with self._using(context.environment_id) as channel:
+            if (
+                type(channel.hello.get("kernel_revision_protocol")) is not int
+                or channel.hello.get("kernel_revision_protocol") != 1
+            ):
+                raise WorkerError(
+                    ErrorKind.UNSUPPORTED, "legacy executor lacks scoped kernel status"
+                )
+            reply = await channel.request("kernels", session=context.session_id)
+            raw = reply.get("kernels")
+            if not isinstance(raw, list) or len(cast(list[object], raw)) > len(LANGUAGES):
+                raise WorkerError(ErrorKind.UNAVAILABLE, "executor sent invalid kernel status")
+            kernels = self._session_kernel_info(
+                context, cast(list[object], raw), expected_channel=channel
+            )
+            if len(kernels) != len(cast(list[object], raw)):
+                raise WorkerError(ErrorKind.UNAVAILABLE, "executor sent invalid kernel identities")
+            current = self.store.kernel_starts.current(context.environment_id)
+            return KernelListing(
+                environment_id=context.environment_id,
+                session_id=context.session_id,
+                current_revision=current[0] if current is not None else None,
+                kernels=kernels,
+            )
 
     # Queries and control.
 
@@ -2310,7 +2492,13 @@ class ExecutionManager:
                 "restart", session=context.session_id, language=request.language, reply_timeout=180
             )
             kernel, _ = self._kernel(
-                context.environment_id, context.session_id, reply.get("kernel"), True
+                context.environment_id,
+                context.session_id,
+                reply.get("kernel"),
+                True,
+                project_id=context.project_id,
+                restarted=True,
+                expected_channel=channel,
             )
             if kernel is None:
                 raise WorkerError(ErrorKind.INTERNAL, "the executor did not describe the kernel")

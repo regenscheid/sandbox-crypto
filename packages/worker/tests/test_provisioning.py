@@ -904,6 +904,23 @@ async def test_a_limited_client_sees_only_its_projects_revisions(
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert response.status == expected, (token[0], environment_id)
+        for token, project, expected in (
+            ("m" * 40, "p1", 200),
+            ("o" * 40, "p2", 404),
+            (TOKEN, "p2", 404),
+        ):
+            response = await client.post(
+                "/v1/kernels/status",
+                json={
+                    "context": {
+                        "project_id": project,
+                        "environment_id": "env-a",
+                        "session_id": "s1",
+                    }
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status == expected
     finally:
         await manager.close()
         store.close()
@@ -2123,3 +2140,102 @@ async def test_lab17_an_install_that_links_nothing_makes_no_revision(worker: Wor
     assert [entry.revision for entry in history] == [0, 1]
     assert again["result"]["environment_revision"] == "1"
     assert again["result"]["overlapping_change"] is False
+
+
+@pytest.mark.asyncio
+async def test_cp12_kernel_birth_stays_at_old_revision_after_package_changes(
+    worker: Worker,
+) -> None:
+    first = await worker.run("cp12-first", kind="cell", code="birth_value = 1729")
+    start = first["result"]["kernel"]
+    assert (start["start_revision"], start["current_revision"], start["revision_status"]) == (
+        0,
+        0,
+        "current",
+    )
+    changed = await worker.run("cp12-install", script="pip install alpha")
+    assert changed["state"] == "succeeded"
+    [stale] = changed["result"]["running_kernels"]
+    assert (stale["start_revision"], stale["current_revision"], stale["revision_status"]) == (
+        0,
+        1,
+        "predates",
+    )
+    again = await worker.run("cp12-again", kind="cell", code="print(birth_value)")
+    assert again["result"]["stdout"]["text"] == "1729\n"
+    assert again["result"]["kernel"] == stale
+    fresh = await worker.run("cp12-new", "s2", kind="cell", code="print(42)")
+    assert fresh["result"]["kernel"]["start_revision"] == 1
+    for session, expected in (("s1", stale), ("s2", fresh["result"]["kernel"])):
+        response = await worker.client.post(
+            "/v1/kernels/status", json={"context": {**CONTEXT, "session_id": session}}, headers=AUTH
+        )
+        assert response.status == 200
+        assert (await response.json())["kernels"] == [expected]
+    response = await worker.client.post(
+        "/v1/kernels/status", json={"context": {**CONTEXT, "session_id": "empty"}}, headers=AUTH
+    )
+    assert response.status == 200
+    assert (await response.json())["kernels"] == []
+    response = await worker.client.post(
+        "/v1/kernels/restart", json={"context": CONTEXT, "language": "python"}, headers=AUTH
+    )
+    restarted = await response.json()
+    assert response.status == 200, restarted
+    assert (
+        restarted["start_revision"],
+        restarted["current_revision"],
+        restarted["revision_status"],
+    ) == (1, 1, "current")
+    assert restarted["generation"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cp12_cell_waiting_for_install_pins_the_revision_after_linking(
+    worker: Worker,
+) -> None:
+    await worker.run("cp12-base", script="true")
+    with held(worker.state):
+        cell = await worker.submit("cp12-wait", kind="cell", code="print('ready')")
+        await asyncio.sleep(0.1)
+        assert worker.prefix.spans() == {}
+        # A completed package record becomes visible before the new kernel starts.
+        (worker.prefix.site / "new-1.0.dist-info").mkdir()
+    ended = await worker.finish(cell)
+    assert ended["state"] == "succeeded", ended["result"]
+    assert ended["result"]["kernel"]["start_revision"] == 1
+    assert ended["location"]["environment_revision"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_cp12_restarted_cell_keeps_the_birth_of_the_kernel_it_used(worker: Worker) -> None:
+    await worker.run("cp12-seed-old", kind="cell", code="value = 1729")
+    cell = await worker.submit("cp12-running-old", kind="cell", code="import time; time.sleep(60)")
+    await worker.until(cell, "running")
+    response = await worker.client.post(
+        "/v1/kernels/restart", json={"context": CONTEXT, "language": "python"}, headers=AUTH
+    )
+    assert response.status == 200
+    ended = await worker.finish(cell)
+    assert ended["state"] == "cancelled"
+    assert ended["kernel"]["generation"] == 1
+    assert ended["result"]["kernel"]["start_revision"] == 0
+    assert ended["result"]["kernel"]["generation"] == 1
+    # The old cell can end while its replacement is still starting.
+    status = await worker.client.post("/v1/kernels/status", json={"context": CONTEXT}, headers=AUTH)
+    assert status.status == 200
+    assert (await status.json())["kernels"][0]["generation"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cp12_lost_legacy_birth_is_not_inferred_from_next_cell(worker: Worker) -> None:
+    await worker.run("cp12-legacy-seed", kind="cell", code="value = 1729")
+    worker.manager.store._db.execute("DELETE FROM kernel_start_revisions")
+    response = await worker.client.post(
+        "/v1/kernels/status", json={"context": CONTEXT}, headers=AUTH
+    )
+    assert response.status == 200
+    assert (await response.json())["kernels"][0]["start_revision"] is None
+    ended = await worker.run("cp12-legacy-next", kind="cell", code="print(value)")
+    assert ended["result"]["stdout"]["text"] == "1729\n"
+    assert ended["result"]["kernel"]["revision_status"] == "unknown"
