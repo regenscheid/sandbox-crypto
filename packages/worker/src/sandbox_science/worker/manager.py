@@ -3,9 +3,9 @@
 
 docs/specs/tools.md defines the behavior. Every execution is persisted before
 it is dispatched, and every event before it is delivered, so a client can
-reconnect and replay, and a restarted worker reports unfinished attempts as
-``lost`` instead of running them again. What an executor sends is untrusted:
-it is checked and bounded before it changes any state, and every execution
+reconnect and replay. A restarted worker reconciles daemon attempts and reports
+unrecoverable attempts as ``lost`` instead of running them again. What an executor
+sends is untrusted: it is checked and bounded before it changes any state, and every execution
 reaches a terminal state whatever the executor does.
 """
 
@@ -304,9 +304,14 @@ class ExecutionManager:
     async def start(self) -> None:
         """Recover known daemon executions without ever resubmitting a command."""
         daemon_enabled = getattr(getattr(self.backend, "settings", None), "daemon", False)
-        recovery: dict[str, list[_Live]] = (
-            {key: [] for key in self.store.endpoints()} if daemon_enabled else {}
-        )
+        endpoints = self.store.endpoints()
+        if endpoints and not daemon_enabled:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "sandbox daemon endpoints remain; explicitly release or recycle their "
+                "sandboxes before disabling daemon transport; startup refused",
+            )
+        recovery: dict[str, list[_Live]] = {key: [] for key in endpoints}
         for execution_id, execution in self.store.unfinished():
             if execution is None:
                 self.store.mark_terminal(execution_id)
