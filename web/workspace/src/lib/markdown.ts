@@ -447,7 +447,19 @@ function renderMath(
   display: boolean,
   rendering: Rendering,
 ): string {
-  return withIds(renderFormula(token, tag, display, rendering), token);
+  const close = (token.meta as MathMeta | null)?.close ?? token.markup;
+  const body = (token.meta as { tex?: string } | null)?.tex ?? token.content;
+  const written = `${token.markup}${body}${close}`;
+  // Copy the source, never KaTeX's annotation: a repair's annotation describes the
+  // display candidate, and an approximation has no MathML at all (LD-44).
+  const html = renderFormula(token, tag, display, rendering).replace(
+    /^<(span|div) /,
+    (_matched, element: string) => `<${element} data-math-source="${escapeHtml(written).replace(
+      /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g,
+      (control) => `&#${control.codePointAt(0)};`,
+    )}" `,
+  );
+  return withIds(html, token);
 }
 
 function renderFormula(
