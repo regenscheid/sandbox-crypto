@@ -71,6 +71,7 @@ LEFTOVER_GRACE: Final = 2.0
 """Seconds a command's own steps get to end after the command did, before its turn ends
 them."""
 KILL_ROUNDS: Final = 5
+KILL_WAIT: Final = 1.0
 
 CHANGING: Final[Mapping[str, frozenset[str]]] = {
     "pip": frozenset({"install", "uninstall"}),
@@ -1221,24 +1222,54 @@ def end_marked(marker: str, grace: float = 0.0) -> int:
     while found and time.monotonic() < deadline:
         time.sleep(0.05)
         found = _marked(marker)
-    killed = 0
+    killed: dict[int, int] = {}
+    observed: set[tuple[int, int]] = set()
     for _ in range(KILL_ROUNDS):
+        observed.update((pid, start) for pid, start in found if start is not None)
         if not found:
             break
         for pid, start in found:
             if start is not None and process_start(pid) == start:  # still the one found
                 with contextlib.suppress(ProcessLookupError, PermissionError):
                     os.kill(pid, signal.SIGKILL)
-                    killed += 1
+                    killed[pid] = start
         found = _marked(marker)
-    return killed
+    observed.update((pid, start) for pid, start in found if start is not None)
+    # SIGKILL returns before the target has exited. Its environment can already
+    # disappear while /proc/stat still reports a running task, so rescanning marks
+    # alone is not an exit barrier. Retain the signalled process identities until
+    # they are gone or zombies, without following a reused PID.
+    deadline = time.monotonic() + KILL_WAIT
+    while any(_same_running(pid, start) for pid, start in observed):
+        if time.monotonic() >= deadline:
+            raise CleanupPendingError("a package process has not exited; retry cleanup")
+        time.sleep(0.01)
+    return len(killed)
+
+
+class CleanupPendingError(RuntimeError):
+    """Observed package processes still run; preserve the holder for another cleanup."""
+
+
+def _same_running(pid: int, start: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            data = handle.read()
+        fields = data[data.rfind(b")") + 2 :].split()
+        return int(fields[19]) == start and fields[0] not in (b"Z", b"X")
+    except (FileNotFoundError, ProcessLookupError):
+        return False
+    except (OSError, IndexError, ValueError):
+        return True  # inability to inspect an observed process does not confirm exit
 
 
 def end_strays(state: State) -> int:
-    """End what a package command whose wrapper died left running, such as the build
-    backend or post-link script its command started: the processes that carry its turn's
-    mark. A wrapper killed with SIGKILL leaves its holder's record behind. Call this
-    holding the lock; returns how many processes were ended."""
+    """End processes a previous package turn left running, including after wrapper death.
+
+    Call this holding the lock. An active turn holds it exclusively, so even a live
+    holder here has relinquished its turn (possibly while reporting failed cleanup).
+    Its retained marker must be cleaned before another turn can replace it.
+    """
     holder = state.holding()
     if holder is None:
         return 0
@@ -1248,7 +1279,6 @@ def end_strays(state: State) -> int:
         or isinstance(pid, bool)
         or not isinstance(start, int)
         or isinstance(start, bool)
-        or process_start(pid) == start  # alive, so not what held the lock
     ):
         return 0
     ended = end_marked(f"{pid}:{start}")
@@ -1395,7 +1425,13 @@ class Turn:
             sys.stderr.flush()
             descriptor = self.state.wait_lock()
         self.descriptor = descriptor
-        if ended := end_strays(self.state):
+        try:
+            ended = end_strays(self.state)
+        except CleanupPendingError:
+            os.close(descriptor)
+            self.descriptor = None
+            raise
+        if ended:
             sys.stderr.write(
                 f"sandbox-science: ended {ended} processes that a killed package command "
                 "left running in this environment\n"
@@ -1418,11 +1454,13 @@ class Turn:
         that cannot be written is lost, never the command's exit status: the executor then
         sees an unmanaged change. The programs the command installed get their links beside
         the wrappers."""
+        cleaned = False
         try:
             if ended := end_marked(_marker(), LEFTOVER_GRACE):
                 sys.stderr.write(
                     f"sandbox-science: ended {ended} processes the package command left running\n"
                 )
+            cleaned = True
             with contextlib.suppress(OSError):
                 _mirror(self.state, Path(self.config.prefix))
             after = fingerprint(self.config.places)
@@ -1445,8 +1483,9 @@ class Turn:
         except (OSError, ValueError) as exc:
             sys.stderr.write(f"sandbox-science: the package command was not recorded: {exc}\n")
         finally:
-            with contextlib.suppress(OSError):
-                self.state.holder.unlink()
+            if cleaned:
+                with contextlib.suppress(OSError):
+                    self.state.holder.unlink()
             if self.descriptor is not None:
                 os.close(self.descriptor)
                 self.descriptor = None
@@ -1556,16 +1595,24 @@ def take_turn(state: State, config: Config, path: str, argv: Sequence[str], via:
     """
     turn = Turn(state, config, [os.path.basename(argv[0]), *argv[1:]], via)
     try:
-        if not turn.begin():
-            return None
-    except KeyboardInterrupt:
-        exit_as(130)
-    code: int | None = None
-    try:
-        code = run(path, argv, {**os.environ, HOLDER: _marker()})
-    finally:
-        turn.end(code)
-    return code
+        try:
+            if not turn.begin():
+                return None
+        except KeyboardInterrupt:
+            exit_as(130)
+        code: int | None = None
+        try:
+            code = run(path, argv, {**os.environ, HOLDER: _marker()})
+        finally:
+            turn.end(code)
+        return code
+    except CleanupPendingError as exc:
+        # Python ignores ordinary sitecustomize exceptions and would run the
+        # requested installer anyway. Exit from both wrapper and module paths.
+        try:
+            sys.stderr.write(f"sandbox-science: package cleanup is incomplete: {exc}\n")
+        finally:
+            exit_as(1)
 
 
 def wrap(directory: str, tool: str, path: str, args: Sequence[str]) -> NoReturn:
