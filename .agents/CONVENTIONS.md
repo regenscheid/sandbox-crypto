@@ -14,6 +14,8 @@ Applies to all code and documentation in this repository. Change this file throu
 | `.agents/critical-review.md`, `.agents/proposed-changes.md` | The 2026-10-10 plan review (historical) |
 | `.agents/docs/` | Agent source investigations (historical evidence) |
 | `.agents/upstream/` | Descriptions of bugs found in upstream projects, one file each, ready to file. Filing is the user's call |
+| `.agents/handoff.md` | Where the last session stopped and how the work has been done, for the next agent |
+| `.agents/labs/` | Scripts for labs on babbage against a real OpenShell gateway, and how to run and report them |
 | `packages/<component>/` | One uv workspace member per deployable or shared component |
 | `web/<app>/` | Browser apps, each an npm project of its own: `web/workspace/` is the research workspace GUI (D80, [workspace](../docs/WORKSPACE.md)). Not uv members, since uv, pyright and pytest search `packages/` |
 | `examples/` | Illustrative configuration (policy, deployment profiles); tests load these to keep them valid |

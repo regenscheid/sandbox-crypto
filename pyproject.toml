@@ -62,6 +62,8 @@ known-first-party = ["sandbox_science"]
 [tool.ruff.lint.per-file-ignores]
 "packages/*/tests/**" = ["S101"]
 "images/tests/**" = ["S101"]
+# Lab scripts send shell and Python sources to sandboxes in strings, kept as written.
+".agents/labs/**" = ["E501"]
 
 [tool.pyright]
 include = ["packages", "scripts", "images"]
