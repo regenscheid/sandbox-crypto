@@ -1,17 +1,42 @@
 """Lab 15 caller: DeepWiki through the proxy, from the host. Usage: caller.py URL TOKEN"""
-import asyncio, json, sys
+
+import asyncio
+import sys
+
 import aiohttp
+
 URL, TOKEN = sys.argv[1], sys.argv[2]
+
+
 async def main() -> None:
-    headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json",
-               "Accept": "application/json, text/event-stream", "Sandbox-Science-Session": "s1"}
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "Sandbox-Science-Session": "s1",
+    }
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=90)) as http:
         session = None
-        for i, (method, params) in enumerate([
-            ("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "lab15", "version": "0"}}),
-            ("notifications/initialized", None),
-            ("tools/call", {"name": "read_wiki_structure", "arguments": {"repoName": "modelcontextprotocol/python-sdk"}}),
-        ]):
+        for i, (method, params) in enumerate(
+            [
+                (
+                    "initialize",
+                    {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": {"name": "lab15", "version": "0"},
+                    },
+                ),
+                ("notifications/initialized", None),
+                (
+                    "tools/call",
+                    {
+                        "name": "read_wiki_structure",
+                        "arguments": {"repoName": "modelcontextprotocol/python-sdk"},
+                    },
+                ),
+            ]
+        ):
             body = {"jsonrpc": "2.0", "method": method}
             if params is not None:
                 body["params"] = params
@@ -24,4 +49,6 @@ async def main() -> None:
                 text = await r.text()
                 session = r.headers.get("Mcp-Session-Id") or session
                 print(f"{method:28s} {r.status} {text[:160]!r}")
+
+
 asyncio.run(main())
