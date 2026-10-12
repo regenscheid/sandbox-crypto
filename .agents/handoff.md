@@ -4,6 +4,17 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 
 ## Where things stand
 
+- **External conformance acceptance, 2026-10-12:** root-owned
+  [Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) passed the unchanged
+  external suite on frozen main `73c07aa`: 23 cases per linux/amd64 profile, minimal
+  and crypto-base; 23 local variants per run were intentionally skipped. Both actual
+  Python 3.14.8 guests retained effective/declared tier 3 and stable distinct boots.
+  Complete teardown and both owned fixture removals were independently verified at
+  12:46:22 UTC. No product/image/assertion/timeout changes; Sage was advertised but
+  not tested by this suite. External conformance/probe and linux/amd64 profile
+  acceptance are complete; arm64, Kubernetes and multi-platform work remain open.
+  Keep this distinct from capture Lab22's source `b535856` and local fault tests.
+
 - **Capture prerequisite accepted locally, 2026-10-12:** the automatic-output readiness
   assessment found the first worker whole-file hash was unbounded. The independent
   bounded helper/ownership slice now preserves ordinary reads, fails visibly on

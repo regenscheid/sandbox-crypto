@@ -183,3 +183,21 @@ Archive `evidence/artifact-capture.json`, worker logs and explicit teardown evid
 then use `lab_down.sh` to remove all Lab22 sandboxes/services/state. Lost-bridge,
 blocked host-thread and corrupt-state tests remain local hostile probes, not claims
 about induced OpenShell failures. No arbitrary stuck filesystem-I/O bound is asserted.
+
+## Lab23: external backend and research-profile conformance
+
+The [Lab23 report](../docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) and
+[exact evidence](../docs/agent-reports/babbage-openshell-lab-23-evidence-2026-10-12.json)
+record root's unchanged conformance suite run on frozen main `73c07aa`. All 23
+external cases passed on each linux/amd64 profile, minimal and crypto-base; the
+23 local variants per run were intentionally skipped. Both actual Python 3.14.8
+guests retained effective/declared tier 3. Root verified full teardown and both
+owned fixture removals at 12:46:22 UTC. The suite tested Python, not Sage.
+
+For a new explicitly coordinated disposable run, create separate worker-managed
+environments for project `conformance`, one per profile, then run the existing
+[`SS_CONFORMANCE_*` recipe](../../docs/WORKER.md#conformance-suite) against each.
+Keep source/tests frozen, retain pytest/JUnit/capability/state records, and remove
+both VMs, services, lab state and only the owned fixture roots afterward. No new
+helper or service setup is introduced here. Lab23 validates old main separately
+from capture Lab22 and adds no capture fault/ownership claim or platform parity.
