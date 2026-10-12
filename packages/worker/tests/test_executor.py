@@ -98,7 +98,7 @@ def test_a_calls_leftovers_end_one_process_at_a_time(
         other.wait()
 
 
-def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup() -> None:
+def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup(tmp_path: Path) -> None:
     # end_owned also scans /proc outside its descendants. Independent pytest suites
     # must never reuse a mark: a sibling cleaner can see and kill that suite's owner.
     owners = [f"test-executor-{uuid4().hex}" for _ in range(2)]
@@ -108,16 +108,24 @@ def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup() -> None:
         "from sandbox_science.worker import executor\n"
         "print(executor.end_owned(sys.argv[1], None))\n"
     )
+    child = (
+        "import os, pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
+        "time.sleep(60)\n"
+    )
     try:
-        for owner in owners:
+        for index, owner in enumerate(owners):
             processes.append(
-                subprocess.Popen(
-                    ["sleep", "60"],  # noqa: S607
+                subprocess.Popen(  # noqa: S603 - fixed readiness child
+                    [sys.executable, "-c", child, str(tmp_path / f"ready-{index}")],
                     env={**os.environ, executor.OWNER: owner},
                     start_new_session=True,
                 )
             )
-        for process, owner in zip(processes, owners, strict=True):
+        for index, (process, owner) in enumerate(zip(processes, owners, strict=True)):
+            # Popen's exec handshake can precede readable /proc environ. Wait for
+            # actual child userspace readiness before asserting cleanup ownership.
+            assert _read_pid(tmp_path / f"ready-{index}") == process.pid
             assert executor.process_owner(process.pid) == owner
         for index, owner in enumerate(owners):
             cleaned = subprocess.run(  # noqa: S603 - fixed trusted cleanup helper
