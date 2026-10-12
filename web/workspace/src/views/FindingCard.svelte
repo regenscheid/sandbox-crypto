@@ -8,9 +8,11 @@
   import Markdown from '../lib/Markdown.svelte';
   import ResponseBody from './ResponseBody.svelte';
   import { Preview } from '../lib/preview';
+  import { macroSet } from '../lib/macros';
   let { projectId, sessionId, finding, changed, read }: { projectId: string; sessionId: string;
     finding: Finding; changed: () => Promise<void>; read: (review: string, evidence: string) => Promise<void> } = $props();
   const initial = untrack(() => finding);
+  const macros = $derived(macroSet(finding.macro_context?.macros ?? {},`${projectId}:${finding.macro_context?.key ?? 'unknown-finding'}`));
   const key = untrack(() => `review:${sessionId}:${initial.finding_id}`);
   const draft = untrack(() => loadDraft(projectId, key));
   let explanation = $state(draft?.text ?? ''), action = $state(draft?.reason ?? 'rebut'), references = $state(draft?.retained ?? '');
@@ -56,11 +58,12 @@
   {#if finding.origin === 'math'}<p>Mechanical math check · <code>{String(finding.source?.check ?? '')}</code>. No reviewer model was used.</p>
     {#if finding.source?.excluded}<p role="status">{String(finding.source.excluded)}</p>{/if}
   {/if}
-  <Markdown source={finding.statement} />{#if finding.remedy}<p>Suggested remedy:</p><Markdown source={finding.remedy} />{/if}
+  {#each finding.macro_context?.problems ?? [] as problem}<p role="status">{problem} Display uses a diagnostic context.</p>{/each}
+  <Markdown source={finding.statement} {macros} />{#if finding.remedy}<p>Suggested remedy:</p><Markdown source={finding.remedy} {macros} />{/if}
   <details><summary>Pinned evidence anchors</summary>{#each finding.anchors as anchor, index (index)}{#if anchor.check}<button onclick={() => mathEvidence(anchor.check!, anchor.math)}>Read mechanical evidence {index + 1}</button>{:else if anchor.review && anchor.evidence}<button onclick={() => read(anchor.review!, anchor.evidence!)}>Read evidence {index + 1}</button>{/if}<pre>{JSON.stringify(anchor, null, 2)}</pre>{/each}</details>
   {#if mechanicalEvidence}<pre aria-label="Mechanical math evidence">{mechanicalEvidence}</pre>{/if}
   <button disabled={busy || (loaded && before === null)} onclick={earlier}>{loaded ? 'Load earlier finding history' : 'Read finding history'}</button>
-  {#each history as entry (entry.revision)}<div class="transition"><p>{entry.revision} · {entry.status} · {entry.actor}</p><Markdown source={entry.reason} /><details><summary>Decision evidence and attribution</summary><pre>{JSON.stringify(entry.payload, null, 2)}</pre></details>{#if entry.response_body}<ResponseBody {projectId} {sessionId} source={entry.response_body}/>{/if}</div>{/each}
+  {#each history as entry (entry.revision)}<div class="transition"><p>{entry.revision} · {entry.status} · {entry.actor}</p>{#each entry.macro_context?.problems ?? [] as problem}<p role="status">{problem}</p>{/each}<Markdown source={entry.reason} macros={macroSet(entry.macro_context?.macros ?? {},`${projectId}:${entry.macro_context?.key ?? 'unknown-history'}`)} /><details><summary>Decision evidence and attribution</summary><pre>{JSON.stringify(entry.payload, null, 2)}</pre></details>{#if entry.response_body}<ResponseBody {projectId} {sessionId} source={entry.response_body}/>{/if}</div>{/each}
   <details><summary>Respond as user</summary>
     <p>{finding.origin === "math" ? "The math checker confirms accepted or removed formulas; unavailable evidence does not resolve a finding." : "A claimed fix stays unconfirmed until a confirmation review."} Confirm and dismiss below are explicit user decisions.</p>
     <fieldset disabled={busy}>

@@ -478,6 +478,9 @@ class DocumentStore:
             from .mathqueue import prepare as prepare_math
 
             prepare_math(db)
+            from .project_macros import prepare as prepare_macros
+
+            prepare_macros(db)
             from .comment_bodies import SCHEMA as COMMENT_BODY_SCHEMA
 
             for statement in COMMENT_BODY_SCHEMA:
@@ -1906,6 +1909,9 @@ class DocumentStore:
         from .mathqueue import record_event as record_math
 
         record_math(db, kind, info.document_id, cursor.lastrowid)
+        from .project_macros import source_saved
+
+        source_saved(db, kind, info.document_id)
 
     def _replay(
         self,

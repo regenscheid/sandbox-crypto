@@ -340,14 +340,35 @@ def projection(value: Json) -> Json:
 
 def pin(db: sqlite3.Connection, finding: str, revision: int) -> Json | None:
     try:
-        return projection(read(db, finding, revision, full=False))
+        body = read(db, finding, revision, full=False)
+        result = projection(body)
+        from sandbox_science.orchestrator.documents.project_macros import (
+            exists,
+            response_anchors,
+        )
+        from sandbox_science.orchestrator.documents.project_macros import (
+            read as macros_read,
+        )
+
+        result["macro_context"] = {
+            **macros_read(db, body["project"]),
+            "anchors": response_anchors(db, body["source"]) if exists(db) else [{"unknown": True}],
+        }
+        return result
     except DocumentError as error:
         if error.kind in (POLICY_DENIED, NOT_FOUND):
             return None
         raise
 
 
-def commit(db: sqlite3.Connection, parent: Json, actor: Author, prepared: PreparedBody) -> None:
+def commit(
+    db: sqlite3.Connection,
+    parent: Json,
+    actor: Author,
+    prepared: PreparedBody,
+    *,
+    legacy: bool = False,
+) -> None:
     current = read(db, parent["finding"], parent["response_revision"], full=False)
     if (current["revision"], current["sha256"]) != (
         prepared.base,
@@ -372,6 +393,9 @@ def commit(db: sqlite3.Connection, parent: Json, actor: Author, prepared: Prepar
             prepared.held,
         ),
     )
+    from sandbox_science.orchestrator.documents.project_macros import response_saved
+
+    response_saved(db, parent, prepared.base + 1, legacy=legacy, unknown_anchors=prepared.base > 0)
     db.execute(
         "INSERT INTO "
         "response_math_sources(source,finding_id,decision_revision,project,session,target,blocked) "
@@ -410,7 +434,7 @@ class ResponseBodies:
         with self.store.documents._read() as db:
             if db is None:
                 raise DocumentError(NOT_FOUND, "no such response source")
-            return projection(
+            result = projection(
                 read(
                     db,
                     finding,
@@ -421,6 +445,12 @@ class ResponseBodies:
                     full=False,
                 )
             )
+        from sandbox_science.orchestrator.documents.project_macros import response_view
+
+        result["macro_context"] = response_view(
+            self.store.documents, project, result["source"], body_revision=body_revision
+        )
+        return result
 
     def _replay(
         self,
@@ -540,7 +570,7 @@ class ResponseBodies:
                     ).fetchone()
                     is None
                 ):
-                    commit(db, parent, actor, prepared)
+                    commit(db, parent, actor, prepared, legacy=True)
 
 
 def legacy_query() -> str:

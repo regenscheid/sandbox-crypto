@@ -114,11 +114,13 @@ class MathController:
 
     def remaining(self) -> bool:
         from .comment_math import remaining
+        from .project_macros import needs_refresh
         from .response_math import remaining as response_remaining
 
         with self.store.documents._read() as db:
             return db is not None and (
-                remaining(db, self.project)
+                needs_refresh(db, self.project)
+                or remaining(db, self.project)
                 or response_remaining(db, self.project)
                 or db.execute(
                     (

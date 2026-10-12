@@ -9,7 +9,7 @@ these slices. The renderer remains unavailable until configured by the
 operator; an unavailable check never establishes rejection or a fix.
 
 `orchestrator.mathcheck.MathChecker` runs one formula in a fresh Node process.
-It imports the same pinned KaTeX 0.18.9, options, bounded front-matter macros
+It imports the same pinned KaTeX 0.18.9, options, bounded effective project/document macros
 and deterministic repair rules as the workspace GUI. Formula text is JSON
 data; it never selects JavaScript, a shell command, a path or a network endpoint.
 The checker makes no model calls and returns no rendered HTML.
@@ -97,7 +97,17 @@ monotonically with authoritative document heads, including revisions written by
 an older writer. Read-only workspace requests never migrate or advance state.
 
 Every parsed span is checked on each saved revision under its effective macros.
-An unchanged formula is therefore checked again after a front-matter macro change.
+Document front matter overrides the bounded [project setting](PROJECT-MACROS.md).
+An unchanged formula is therefore checked again after a front-matter or project
+macro change. A document revision atomically pins its save-time project setting;
+an explicitly numbered history view uses that pin, while a current unnumbered
+view uses the current setting. Legacy history without a pin is explicitly unknown.
+Each check separately retains its exact setting revision/hash, resolved definitions
+and context identity. Current-head setting refresh is lazy and bounded by the
+active controller; changing settings does not fan out unbounded work or start an
+idle scheduler. A late old-context result stays evidence but cannot decide current
+findings, prove removal or finalize closing ACK. Context quota exhaustion visibly
+holds checking without vetoing ordinary source or setting edits.
 Check invalidation and authorship are separate: the last revision that added or
 changed the containing stable block proves its owner. Moves and unrelated edits
 preserve that owner, even across later USER changes. Historical jobs reconstruct
@@ -219,7 +229,8 @@ Final combined validation passed 9,459 Python tests (43 opt-in skips) on Python
 Python/Svelte/TypeScript checks, Python/npm license checks, protocol generation
 and both GUI/math builds. The actual Node boundary runs against the built math
 bundle. The supported Python 3.12 matrix remains unchanged; fresh PR CI and merge
-are separate delivery gates. Comment/reply checks have their own additive [slice and validation boundary](COMMENT-MATH.md). Ledger and remaining finding-prose checks,
+are separate delivery gates. Comment/reply checks have their own additive
+[slice and validation boundary](COMMENT-MATH.md). Ledger, excluded finding prose,
 idle scheduling and automatic history compaction remain open.
 
 The additive comment/reply slice also corrected shared dependency-only reflag
@@ -238,3 +249,11 @@ agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the
 original scientific action/evidence, use exact body and finding CAS, and fence
 stale reviewer snapshots independently. The workspace history is read-only;
 ledger and reviewer/USER/platform diagnostic prose remain outside this slice.
+
+The subsequent [project-macro slice](PROJECT-MACROS.md#verification-boundary)
+pins document/comment effective contexts and MAIN explanations' agreed original
+anchor contexts. Contradictory or unknown explanation contexts stay held and allow
+only an inconclusive reviewer outcome; they cannot prove a mechanical fix or
+scientific confirmation. Exact checked context remains available even where a
+thread history uses explicitly diagnostic rendering. Renderer configuration
+remains operator-owned and unavailable by default.
