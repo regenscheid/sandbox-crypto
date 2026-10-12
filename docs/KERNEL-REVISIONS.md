@@ -172,7 +172,7 @@ Observe repeatedly across a managed idle suspension: ordinary activity/busy coun
 must not advance, suspension must still complete, and subsequent observations must
 remain unavailable without reconnecting. Explicit status may use its existing wake
 path afterward. Retain source and VM/channel identities and complete teardown;
-these runtime checks are pending for the new observer route. Local focused tests
+[OpenShell Lab26](../.agents/docs/agent-reports/babbage-openshell-lab-26-2026-10-12.md) now passes on signed `a6bb469`, including actual gateway-confirmed idle stop during continuous observations, thirty subsequent unavailable reads without wake, same-VM/boot/kernel continuity through startup recovery and ordinary resume with state-loss disclosure. Complete teardown is retained in its archive. Worker startup recovery independently reconnects remembered daemon endpoints before serving the API; restart alone is not a detached-channel probe. Local focused tests
 cover the read-only SQL state, active package hold, paused kernel birth, actual
 write-lock timeout, connection/lifecycle races, cancellation and admission bounds,
 and actual HTTP scope/body/deadline/redirect refusals.

@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-12 — passive kernel observation transport
+
+Separate existing-channel observations from explicit status so future polling cannot open/wake/reconnect an environment or keep it busy. Immediate global/per-environment admission, whole RPC/client deadlines, close/rebind fences and read-only birth/generation mapping preserve CP-13. Signed product `8df49fe` and accepted helper source `a6bb469` pass independent review, [OpenShell Lab26](docs/agent-reports/babbage-openshell-lab-26-2026-10-12.md), complete cleanup and final local gates (9,926 Python/575 web/24 math and required checks/builds). A test-only child readiness correction fixes reproduced transient `/proc` ownership reads; the helper now correctly accounts for eager startup recovery. Both preliminary failures are retained. Host timestamps remain receipt times. GUI/cross-session notification and idle-agent delivery stay open; requirements/decisions are unchanged. Fresh exact-head CI remains required.
+
 ## 2026-10-12 — next kernel-observation and export-input prerequisites
 
 After independently reviewed PR #94/#95/#96 merged with all fresh CI gates, continue two bounded prerequisites from main `6eb9a2c`. Automatic kernel polling first needs an existing-channel observation endpoint that cannot wake/reconnect environments or refresh idle activity; ordinary explicit status remains compatible. LaTeX/PDF export first needs immutable bounded source/parser/original TeX/macro input pins with durable replay, quota refusal and explicit held unknown/unsupported resources. Neither slice enables a GUI polling transport, converter, protected file staging, scheduler or full LaTeX editor. Authors work independently and rotate onto review; root owns central tracking, combined gates and actual runtime acceptance. Requirements and milestone exit criteria are unchanged.
