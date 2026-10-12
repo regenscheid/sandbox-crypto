@@ -329,7 +329,11 @@ class ReviewStore:
                     (project, after, target),
                 ).fetchall()
             for _seq, document, owner, kind, author, number, chars, structural in rows:
-                if kind == "document.revision_created" and owner == session and author == "agent":
+                if (
+                    kind == "document.revision_created"
+                    and owner == session
+                    and author in ("agent", "worker")
+                ):
                     revision = self.documents.revision(project, document, number)
                     self.observe(
                         project,
