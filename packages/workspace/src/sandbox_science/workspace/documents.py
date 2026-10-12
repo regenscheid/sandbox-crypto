@@ -1,25 +1,8 @@
 # SPDX-License-Identifier: MIT
-"""The workspace API's living documents, read-only (living documents, LD-9, LD-11).
+"""Living document views and explicit user changes (LD-13, LD-14, LD-19).
 
-Routes, for GET and HEAD:
-
-- ``/api/v0/projects/{project}/documents``: the project's documents, its own and its
-  sessions' workbooks', without the deleted ones.
-- ``/api/v0/projects/{project}/documents/{document}``: a revision of a document, the
-  current one or ``?revision=N``: its text, its author, reason and warnings, its front
-  matter's title and macros, and its block map, each block with its ID, kind, lines and
-  status and each formula with its ID, kind, status and TeX, for the browser to attach
-  to its own parse (LD-9).
-- ``/api/v0/projects/{project}/documents/{document}/history``: who changed what
-  (LD-11): each revision with its author, reason and the blocks it changed, each block
-  with the revisions that changed it, and the agents' patches with their states.
-
-A document is named by its ID, or by its name for one of the project's own. The
-documents are read from the control store in the harness's state directory, opened
-read-only: the workspace never writes it. The server parses a revision again to give
-its formulas' TeX; when its parse no longer matches the block map stored with the
-revision (a parser of another version made it), the blocks come without their formulas'
-TeX and ``matched`` is false.
+Reads use a read-only store. Writes use a separate lazy writer, strict action schemas,
+server-derived user attribution and the application's authenticated same-origin guard.
 """
 
 from __future__ import annotations
@@ -27,17 +10,21 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
-from typing import Final, cast
+from typing import Annotated, Final, Literal, cast
 
 from aiohttp import hdrs, web
+from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore, Mapped
-from sandbox_science.orchestrator.documents.models import NAME
+from sandbox_science.orchestrator.documents.models import NAME, USER
+from sandbox_science.orchestrator.documents.operations import Operation, unlay
 
 from . import api
 
 DOCUMENTS: Final = web.AppKey("documents", DocumentStore)
+WRITER: Final = web.AppKey("document_writer", DocumentStore)
 
 _DOCUMENT_ID: Final = re.compile(r"doc-[0-9a-f]{24}")
 _REVISION: Final = re.compile(r"[1-9][0-9]{0,8}")
@@ -52,10 +39,126 @@ _STATUS: Final = {
 Json = dict[str, object]
 
 
+class _Change(Contract):
+    base: int = Field(ge=1, le=999999999, strict=True)
+    operation_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class SourceEdit(_Change):
+    action: Literal["source"]
+    text: str
+
+
+class BlockEdit(_Change):
+    action: Literal["patch"]
+    operations: tuple[Operation, ...] = Field(min_length=1, max_length=64)
+
+
+class Revert(_Change):
+    action: Literal["revert"]
+    target: int = Field(ge=1, le=999999999, strict=True)
+
+
+class Promote(_Change):
+    action: Literal["promote"]
+    name: str = Field(min_length=1, max_length=67)
+
+
+class ApplyPatch(_Change):
+    action: Literal["apply_patch"]
+    patch_id: str = Field(pattern=r"^patch-[0-9a-f]{24}$")
+
+
+_CHANGE: Final = TypeAdapter(
+    Annotated[SourceEdit | BlockEdit | Revert | Promote | ApplyPatch, Field(discriminator="action")]
+)
+
+
 def add_routes(app: web.Application) -> None:
     app.router.add_get("/api/v0/projects/{project}/documents", documents)
     app.router.add_get("/api/v0/projects/{project}/documents/{document}", document)
     app.router.add_get("/api/v0/projects/{project}/documents/{document}/history", history)
+    app.router.add_post("/api/v0/projects/{project}/documents/{document}/changes", change)
+    app.router.add_get(
+        "/api/v0/projects/{project}/documents/{document}/patches/{patch}/preview", preview
+    )
+
+
+async def preview(request: web.Request) -> web.Response:
+    return await _answer(
+        request,
+        lambda store: store.preview_patch(
+            request.match_info["project"],
+            request.match_info["document"],
+            request.match_info["patch"],
+        ),
+    )
+
+
+async def change(request: web.Request) -> web.Response:
+    try:
+        # JSON escaping can expand the one-MiB source bound; other routes keep 64 KiB.
+        raw = await request.clone(client_max_size=8 * 1024 * 1024).json()
+        value = _CHANGE.validate_python(raw)
+    except (ValidationError, ValueError, UnicodeDecodeError):
+        return api_error(DocumentError("invalid_request", "invalid document change"))
+    project, reference = request.match_info["project"], request.match_info["document"]
+
+    def write(store: DocumentStore) -> Json:
+        if isinstance(value, SourceEdit):
+            result = store.edit_source(
+                project,
+                reference,
+                text=value.text,
+                base=value.base,
+                author=USER,
+                reason=value.reason,
+                operation_id=value.operation_id,
+            )
+        elif isinstance(value, BlockEdit):
+            result = store.patch(
+                project,
+                reference,
+                operations=[op.model_dump(mode="json", by_alias=True) for op in value.operations],
+                base=value.base,
+                author=USER,
+                reason=value.reason,
+                operation_id=value.operation_id,
+            )
+        elif isinstance(value, Revert):
+            result = store.revert(
+                project,
+                reference,
+                target=value.target,
+                base=value.base,
+                author=USER,
+                reason=value.reason,
+                operation_id=value.operation_id,
+            )
+        elif isinstance(value, Promote):
+            result = store.promote(
+                project,
+                reference,
+                name=value.name,
+                base=value.base,
+                author=USER,
+                reason=value.reason,
+                operation_id=value.operation_id,
+            )
+        else:
+            result = store.apply_patch(
+                project,
+                reference,
+                value.patch_id,
+                base=value.base,
+                author=USER,
+                reason=value.reason,
+                operation_id=value.operation_id,
+            )
+        return result.model_dump(mode="json")
+
+    return await _answer(request, write, writer=True)
 
 
 async def documents(request: web.Request) -> web.Response:
@@ -81,10 +184,12 @@ async def history(request: web.Request) -> web.Response:
     return await _answer(request, lambda store: store.history(project, reference))
 
 
-async def _answer(request: web.Request, view: Callable[[DocumentStore], Json]) -> web.Response:
+async def _answer(
+    request: web.Request, view: Callable[[DocumentStore], Json], *, writer: bool = False
+) -> web.Response:
     """The view as JSON, read and encoded in a thread, once the project is known."""
     projects = request.app[api.STORE]
-    store = request.app[DOCUMENTS]
+    store = request.app[WRITER if writer else DOCUMENTS]
     project = request.match_info["project"]
     reference = request.match_info.get("document")
     if reference is not None and not _reference(reference):
@@ -116,7 +221,7 @@ def api_error(error: DocumentError) -> web.Response:
     status, kind = _STATUS.get(error.kind, (500, ErrorKind.INTERNAL))
     message = error.message if status != 500 else "internal workspace error"
     return web.json_response(
-        {"error": {"kind": kind.value, "message": message}},
+        {"error": {"kind": kind.value, "message": message, "details": error.details}},
         status=status,
         headers={hdrs.CACHE_CONTROL: "no-store"},
     )
@@ -150,6 +255,11 @@ def _revision(store: DocumentStore, project: str, reference: str, number: int | 
             {
                 "id": block_id,
                 "kind": entry["kind"],
+                "source": None
+                if mapped is None
+                else unlay(
+                    mapped.parsed.blocks[index].text, mapped.parsed.blocks[index].continuation
+                ),
                 "parent": parent,
                 "depth": depth[block_id],
                 "lines": entry["lines"],

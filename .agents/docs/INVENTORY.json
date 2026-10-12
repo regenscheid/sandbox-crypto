@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-10",
-  "status": "planning and source inspection, plus nineteen runtime validation records (babbage labs, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, nineteen OpenShell runtime lab records and document editing browser acceptance (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 7707,
-      "sha256": "672d7e3071488c35b79d5f66b4129f91cbaf997fad58cfc8b7d3a367e83027a4"
+      "bytes": 8146,
+      "sha256": "d116c114f57a684d4844cf8dd947e55e948482e04887b6b01eb36afc5015150a"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-2-2026-10-10.md",
@@ -150,8 +150,8 @@
     {
       "path": "agent-reports/babbage-openshell-lab-19-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 7211,
-      "sha256": "ef87c03638f66e0c73f0344930f0a63836b197808f56b1e72457d598674f95e9"
+      "bytes": 8141,
+      "sha256": "4bc0f35cf96bf3486864c740a4f520356f750990135812f01b866c337c803b3e"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-19-evidence-2026-10-12.json",
@@ -164,6 +164,30 @@
       "category": "runtime-validation",
       "bytes": 42764,
       "sha256": "982e2a6f1ae1096444f316169c3a58fe025da03583a065c5a0edaf43468fa48c"
+    },
+    {
+      "path": "agent-reports/document-editing-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 3999,
+      "sha256": "5d548e664d75d616c15fe514176787c2c3fe659f6ceda30137b89c00d401c74e"
+    },
+    {
+      "path": "agent-reports/document-editing-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 35572,
+      "sha256": "1e39f601880f4389863fd7a7d69f14f981b6b7069c8a19497f9ed6fc8fc99294"
+    },
+    {
+      "path": "agent-reports/document-editing-conflict-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 44238,
+      "sha256": "8797f870281653ce86938d3f33ec4f0a6d9e2c84e11c6edf23f57123644952e5"
+    },
+    {
+      "path": "agent-reports/document-editing-accepted-patch-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 44794,
+      "sha256": "13347a429cc53df397771e947729fd3612c949b9aa69fe79ae53c3578bab2d39"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-20-2026-10-12.md",

@@ -94,6 +94,19 @@ static, build, generated-proto and license checks passed again. These follow-up
 checks are local process tests; the OpenShell results above retain their original
 code versions and are not presented as a repeat lab run.
 
+A second CI run passed the process cleanup checks and reproduced the already
+recorded lockfile responsiveness flake on Python 3.12 (0.293 s against 0.25 s).
+The original hostile inputs and bound now run in a fresh interpreter, excluding
+prior tests' heap history. Six deterministic cases check canonical JSON byte
+compatibility, exact framing-inclusive limits, early refusal of many entries and
+refusal of single oversized platform/subdir strings before serialization. The
+worker serializes entries incrementally and retains the final cache-address
+check. Profiling measured only 17 ms in the old whole-model serializer, so this
+change does not establish that serializer as the cause of the timing failure.
+Final local validation passed 8,985 Python tests (43 skips), 408 web tests and all
+static/build/license checks; the nine focused lockfile checks passed on Python
+3.12 and 3.13. Independent review cleared the final change.
+
 ## Cleanup
 
 All sandboxes were deleted (the gateway reported zero). All transient lab units,

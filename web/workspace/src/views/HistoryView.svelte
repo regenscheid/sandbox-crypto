@@ -10,9 +10,11 @@
   import { formatTime } from '../lib/format';
   import { documentHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import PatchReview from './PatchReview.svelte';
 
   let { projectId, documentId }: { projectId: string; documentId: string } = $props();
-  const loading = $derived(api.history(projectId, documentId));
+  let refresh = $state(0);
+  const loading = $derived.by(() => { refresh; return api.history(projectId, documentId); });
 </script>
 
 <nav class="trail">
@@ -118,7 +120,11 @@
                 </span>
               {/if}
             </td>
-            <td>{patch.reason}</td>
+            <td>{patch.reason}
+              {#if ['conflicted', 'refused', 'suggested'].includes(patch.state)}
+                <PatchReview {projectId} documentId={info.document_id} patchId={patch.patch_id} refreshed={() => refresh += 1} />
+              {/if}
+            </td>
           </tr>
         {/each}
       </tbody>

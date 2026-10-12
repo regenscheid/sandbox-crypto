@@ -4,7 +4,7 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 
 ## Where things stand
 
-- **Resume update, 2026-10-12:** the user resumed work here after the pause below. Lab 18 passed and was completely removed; its [report](docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md) and recorded evidence are committed with reusable checks. Background jobs passed independent review and [lab 19](docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md), including live browser controls and once-only notices after a harness process restart; that lab is also completely removed. The executor daemon and GUI document editing are in development in separate worktrees. Main already included PR #68 when this continuation began; lab 18 merged as #69.
+- **Resume update, 2026-10-12:** the user resumed work here after the pause below. Lab 18 passed and was completely removed; its [report](docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md) and recorded evidence are committed with reusable checks. Background jobs passed independent review and [lab 19](docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md), including live browser controls and once-only notices after a harness process restart; that lab is also completely removed. Document editing passed independent review and [browser acceptance](docs/agent-reports/document-editing-2026-10-12.md). The executor daemon is under real OpenShell acceptance; comments, anchors and work requests are in development in a separate worktree. Main already included PR #68 when this continuation began; lab 18 merged as #69.
 - **The user paused new work before a break.** Their words: "don't stop things in process, but start anything new. i want to a take a break soon", read as *don't start anything new*, which they did not correct. Everything in process then finished and merged. **This pause was lifted when the user said "we can continue here" on 2026-10-11.**
 - **Milestones** ([roadmap](../docs/ROADMAP.md), [implementation plan](../docs/IMPLEMENTATION-PLAN.md)):
   - M0: specs and decisions, nearly done. Approved: Conda provisioning, research artifacts, consistency review. Decided on their main questions: living documents, ledger. Still drafts for the user to review: tools, PDF sources, skills, plans and delegation.
@@ -75,7 +75,7 @@ Nothing here blocks the queued work: each item has a default in place.
    Use [`labs/`](labs/README.md).
 2. **Background jobs: first slice complete** (D83; [as built](../docs/BACKGROUND-JOBS.md), [lab 19](docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md)). **The executor daemon** is under lab 20 acceptance: ordinary worker reconnect, offline completion, kernel continuity and bounded replay passed, but the initial daemon-loss probe left an escaped child alive under OpenShell. A verified same-sandbox stop/start fence is being implemented before replacement readiness; the slice remains unmerged. [In-progress report](docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md). Its requirement remains: jobs, and where possible calls and kernels, must survive worker restarts with authoritative replay. Automatic wake-up, the live message inbox, persisted watcher settings and the shared spend ledger remain later control-application work.
 3. **W4, living documents slice 2:**
-   - user edits and conflicts in the GUI (LD-13, LD-14);
+   - user edits and conflicts in the GUI (LD-13, LD-14) — completed with [browser acceptance](docs/agent-reports/document-editing-2026-10-12.md), including reviewed patches, reverts and workbook promotion;
    - comments, anchors and work requests (LD-21 to LD-24), with the research-artifacts spec's annotations;
    - then the files under `documents/` in every environment, direct edits merged, and the `ss-doc` helper (LD-49 to LD-52), which are worker work;
    - then math findings (LD-53 to LD-55, D82), which need KaTeX on the server (Node or an embedded engine, to choose).
@@ -96,7 +96,7 @@ Nothing here blocks the queued work: each item has a default in place.
    - the GUI (CP-26).
 8. **Worker:**
    - environment IDs per project, and limits per client;
-   - a flaky timing test in `packages/worker/tests/test_provisioning.py` (a 0.25 s bound that took 0.298 s once on Python 3.12 in CI).
+   - the recorded lockfile timing flake is addressed: the original hostile inputs and 0.25 s bound run in a fresh interpreter, and deterministic canonical-byte/size-cap checks accompany bounded per-entry serialization. This excludes prior test heap history, while host scheduling remains a limit of timing checks.
 9. **MCP:** connector auth (blocked), the proxy's refinements in the backlog. **A real model** (blocked). Then the **M2 exit run**: paper → Sage → document → the user's feedback → automatic review → board update, on babbage.
 
 ## How the work has been done

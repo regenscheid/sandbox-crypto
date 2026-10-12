@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import math
 import re
@@ -148,12 +149,12 @@ class Revisions:
         if lockfile is None:
             _log.warning("a lockfile from the executor names the package cache or a bad URL")
             return None
-        data = lockfile.model_dump_json().encode()
+        data = _serialize_lockfile(lockfile)
+        if data is None:
+            _log.warning("a lockfile from the executor exceeds %d bytes", MAX_LOCKFILE_BYTES)
+            return None
         if self._mark is not None and self._mark in data.lower():
             _log.warning("a lockfile from the executor names the package cache")
-            return None
-        if len(data) > MAX_LOCKFILE_BYTES:
-            _log.warning("a lockfile of %d bytes from the executor is too large", len(data))
             return None
         ref = LockfileRef(
             sha256=hashlib.sha256(data).hexdigest(),
@@ -406,6 +407,59 @@ class Revisions:
         if not path.is_file():
             raise WorkerError(ErrorKind.INTERNAL, f"the lockfile of revision {revision} is gone")
         return path, entry.lockfile
+
+
+def _serialize_lockfile(lockfile: Lockfile) -> bytes | None:
+    """Canonical JSON with an exact byte cap, serialized one bounded entry at a time.
+
+    Preserve the contract's field order and JSON spelling, including default/null
+    fields. Do not serialize a whole large model before finding that it exceeds the
+    limit: that makes a large allocation and one uninterrupted native-code call.
+    """
+    head = {
+        name: getattr(lockfile, name)
+        for name in Lockfile.model_fields
+        if name not in {"conda", "pip"}
+    }
+    data = bytearray()
+
+    def append(fragment: bytes) -> bool:
+        if len(data) + len(fragment) > MAX_LOCKFILE_BYTES:
+            return False
+        data.extend(fragment)
+        return True
+
+    if not append(b"{"):
+        return None
+    for index, name in enumerate(Lockfile.model_fields):
+        if not append((b"," if index else b"") + json.dumps(name).encode() + b":"):
+            return None
+        if name in {"conda", "pip"}:
+            if not append(b"["):
+                return None
+            entries = lockfile.conda if name == "conda" else lockfile.pip
+            for entry_index, entry in enumerate(entries):
+                # Subdir currently has no character cap. Refuse a string's
+                # unavoidable byte lower bound before allocating its JSON.
+                if sum(len(value) for value in vars(entry).values() if isinstance(value, str)) > (
+                    MAX_LOCKFILE_BYTES - len(data)
+                ):
+                    return None
+                if not append((b"," if entry_index else b"") + entry.model_dump_json().encode()):
+                    return None
+            if not append(b"]"):
+                return None
+        else:
+            value = head[name]
+            if isinstance(value, str) and len(value) + 2 > MAX_LOCKFILE_BYTES - len(data):
+                return None
+            if not append(
+                json.dumps(
+                    value, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+                ).encode()
+            ):
+                return None
+    return bytes(data) if append(b"}") else None
 
 
 def read_lockfile(path: Path) -> Lockfile | None:
