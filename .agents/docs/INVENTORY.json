@@ -1,91 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty OpenShell runtime lab records, document editing and comments browser acceptance and a proposed document mirror interface plan (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty OpenShell runtime lab records, document editing, comments and consistency review browser acceptance and a proposed document mirror interface plan (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 9371,
-      "sha256": "5b1a2063a279e86f96e8595e23c0f5ea7dc5d5118a883a250c2d899d66a2a6b5"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-2-2026-10-10.md",
-      "category": "runtime-validation",
-      "bytes": 12919,
-      "sha256": "bc919c1a7d6a42e6e5f5a76e6ae94e1c4cdba608a3f0f4bef84a8dfa277d44bc"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-2026-10-10.md",
-      "category": "runtime-validation",
-      "bytes": 5977,
-      "sha256": "96639ca8a6e22c4822da8a2fcb7b8c0ee3f7bb43698f4076266cfd0688b344b0"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",
-      "category": "runtime-validation",
-      "bytes": 5100,
-      "sha256": "ecbef5a06fc6611a2e1408d552c7138794b4b6ef1706d22ccdeed4d883b41d74"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-4-2026-10-11.md",
-      "category": "runtime-validation",
-      "bytes": 5897,
-      "sha256": "f164dd256f2742cba5b8eddf5ac85ca7ceb0b2819ee3e09e3136db6e9816dfbd"
-    },
-    {
-      "path": "agent-reports/claude-code-desktop.md",
-      "category": "agent-source-investigation",
-      "bytes": 19090,
-      "sha256": "e016af85524aed033a9307cce639489e2e7edad087a3eee7eadeab236a48caf5"
-    },
-    {
-      "path": "agent-reports/claude-science.md",
-      "category": "agent-source-investigation",
-      "bytes": 18135,
-      "sha256": "2df6e760403cbbb3d21188f7294c660c951b40ac71e8468424f5ee2550b9341e"
-    },
-    {
-      "path": "agent-reports/openscience-desktop.md",
-      "category": "agent-source-investigation",
-      "bytes": 21413,
-      "sha256": "f27ac0838bd3f7d8ca7e4f68e2ab70677a07852c8448e907dc69634d0a9e899a"
-    },
-    {
-      "path": "agent-reports/openshell-policy-v0.1.3.md",
-      "category": "agent-source-investigation",
-      "bytes": 56150,
-      "sha256": "0bc2cfc76ed52eea7a6b96cd966a17bd28d8083d5f95adfbca6b169fa9fb7be3"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-5-2026-10-11.md",
-      "category": "runtime-validation",
-      "bytes": 8973,
-      "sha256": "e98d4f3b87ece04f2aad63d2afc0a706908d1a4cd46ca2d1ada906281199e20f"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-6-2026-10-11.md",
-      "category": "runtime-validation",
-      "bytes": 3062,
-      "sha256": "8db74df3554443cbf0d4f1fd540fb9e4072cd6b2d2fa00484efff91567acb8ea"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-7-2026-10-11.md",
-      "category": "runtime-validation",
-      "bytes": 3744,
-      "sha256": "b261eb0ae7920cff62457800785c7e88ef306ce9e711952b59a8459d16617da6"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-8-2026-10-11.md",
-      "category": "runtime-validation",
-      "bytes": 4401,
-      "sha256": "92b30c5a5882baf966c9ff67173cf00c6f1ba4f956cc7203facc67a5989f2cb9"
-    },
-    {
-      "path": "agent-reports/babbage-openshell-lab-9-2026-10-11.md",
-      "category": "runtime-validation",
-      "bytes": 5291,
-      "sha256": "dd371b2ffe4fa5769f093e36b18b8066354bc94a4390ea5f466de05e94bc9794"
+      "bytes": 9968,
+      "sha256": "c86f8e08a99490306c0cc765dfef50bc3b48aa2c21aea4458027eba5e6a59ed9"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-10-2026-10-11.md",
@@ -166,34 +88,22 @@
       "sha256": "982e2a6f1ae1096444f316169c3a58fe025da03583a065c5a0edaf43468fa48c"
     },
     {
-      "path": "agent-reports/document-editing-2026-10-12.md",
+      "path": "agent-reports/babbage-openshell-lab-2-2026-10-10.md",
       "category": "runtime-validation",
-      "bytes": 3999,
-      "sha256": "5d548e664d75d616c15fe514176787c2c3fe659f6ceda30137b89c00d401c74e"
-    },
-    {
-      "path": "agent-reports/document-editing-evidence-2026-10-12.json",
-      "category": "runtime-validation",
-      "bytes": 35572,
-      "sha256": "1e39f601880f4389863fd7a7d69f14f981b6b7069c8a19497f9ed6fc8fc99294"
-    },
-    {
-      "path": "agent-reports/document-editing-conflict-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 44238,
-      "sha256": "8797f870281653ce86938d3f33ec4f0a6d9e2c84e11c6edf23f57123644952e5"
-    },
-    {
-      "path": "agent-reports/document-editing-accepted-patch-2026-10-12.jpg",
-      "category": "runtime-validation",
-      "bytes": 44794,
-      "sha256": "13347a429cc53df397771e947729fd3612c949b9aa69fe79ae53c3578bab2d39"
+      "bytes": 12919,
+      "sha256": "bc919c1a7d6a42e6e5f5a76e6ae94e1c4cdba608a3f0f4bef84a8dfa277d44bc"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-20-2026-10-12.md",
       "category": "runtime-validation",
       "bytes": 8322,
       "sha256": "f7c531a63833d37f66454f77d107b856c437e20b37b5984f9d04a8f732f205f8"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-20-final-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 99334,
+      "sha256": "18685646cd132b72702a150dbc42030e4cf44e0c1400db6dc9c4a54de7f687a3"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-20-initial-evidence-2026-10-12.json",
@@ -208,16 +118,112 @@
       "sha256": "64ad1ab497490904bc9bbf8984a418f6fd0549592a49dc9a71ce572fbdff33ab"
     },
     {
-      "path": "agent-reports/babbage-openshell-lab-20-final-evidence-2026-10-12.json",
+      "path": "agent-reports/babbage-openshell-lab-2026-10-10.md",
       "category": "runtime-validation",
-      "bytes": 99334,
-      "sha256": "18685646cd132b72702a150dbc42030e4cf44e0c1400db6dc9c4a54de7f687a3"
+      "bytes": 5977,
+      "sha256": "96639ca8a6e22c4822da8a2fcb7b8c0ee3f7bb43698f4076266cfd0688b344b0"
     },
     {
-      "path": "agent-reports/document-mirror-plan-2026-10-12.md",
-      "category": "implementation-plan",
-      "bytes": 7901,
-      "sha256": "485757f81d701e4fe9275134a74ba1b607e226b8b5284344cc6ac39774c12429"
+      "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 5100,
+      "sha256": "ecbef5a06fc6611a2e1408d552c7138794b4b6ef1706d22ccdeed4d883b41d74"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-4-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 5897,
+      "sha256": "f164dd256f2742cba5b8eddf5ac85ca7ceb0b2819ee3e09e3136db6e9816dfbd"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-5-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 8973,
+      "sha256": "e98d4f3b87ece04f2aad63d2afc0a706908d1a4cd46ca2d1ada906281199e20f"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-6-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 3062,
+      "sha256": "8db74df3554443cbf0d4f1fd540fb9e4072cd6b2d2fa00484efff91567acb8ea"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-7-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 3744,
+      "sha256": "b261eb0ae7920cff62457800785c7e88ef306ce9e711952b59a8459d16617da6"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-8-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 4401,
+      "sha256": "92b30c5a5882baf966c9ff67173cf00c6f1ba4f956cc7203facc67a5989f2cb9"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-9-2026-10-11.md",
+      "category": "runtime-validation",
+      "bytes": 5291,
+      "sha256": "dd371b2ffe4fa5769f093e36b18b8066354bc94a4390ea5f466de05e94bc9794"
+    },
+    {
+      "path": "agent-reports/claude-code-desktop.md",
+      "category": "agent-source-investigation",
+      "bytes": 19090,
+      "sha256": "e016af85524aed033a9307cce639489e2e7edad087a3eee7eadeab236a48caf5"
+    },
+    {
+      "path": "agent-reports/claude-science.md",
+      "category": "agent-source-investigation",
+      "bytes": 18135,
+      "sha256": "2df6e760403cbbb3d21188f7294c660c951b40ac71e8468424f5ee2550b9341e"
+    },
+    {
+      "path": "agent-reports/consistency-review-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 5284,
+      "sha256": "cffc24f725cc549452685aa6ac61a79a1c7245d0f2cec0167a4554b6d630a18b"
+    },
+    {
+      "path": "agent-reports/consistency-review-claimed-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 118908,
+      "sha256": "65c4883217a25d6658acd225b03499db0b3474e773fee1c6375d40dd937f022d"
+    },
+    {
+      "path": "agent-reports/consistency-review-confirmed-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 234523,
+      "sha256": "58c75ab568595c1abc9135bac5d8dbebe9b232df148d6d99e8b399b8ee6e84b6"
+    },
+    {
+      "path": "agent-reports/consistency-review-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 68631,
+      "sha256": "c0af16531831b4037c0881f032594b557626224d235e9cd501fc17bf61373179"
+    },
+    {
+      "path": "agent-reports/consistency-review-history-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 252440,
+      "sha256": "5f5e5866cba9f0a6bedc4277f6f1c90374e7fde668ffd29a27af3bdd54a16a53"
+    },
+    {
+      "path": "agent-reports/consistency-review-initial-coverage-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 65623,
+      "sha256": "9cc0b182410e5ae8db410fcfd8e06bfbf26e735179f734250a04a6b26ccbe549"
+    },
+    {
+      "path": "agent-reports/consistency-review-initial-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 75667,
+      "sha256": "b9beff1a65154b550e245359eba918cbdca24dbabc0259146c6c5789d01e2f7a"
+    },
+    {
+      "path": "agent-reports/consistency-review-stale-draft-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 209683,
+      "sha256": "9e59e003657991be608d5667b578e64aa28fcd6526c74f35ec61479fb2209e8f"
     },
     {
       "path": "agent-reports/document-comments-2026-10-12.md",
@@ -248,6 +254,48 @@
       "category": "runtime-validation",
       "bytes": 55614,
       "sha256": "e94e417c9837ff7a5b00db15daa59a25ce9f944f4c1678c0cff30ce2598165fa"
+    },
+    {
+      "path": "agent-reports/document-editing-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 3999,
+      "sha256": "5d548e664d75d616c15fe514176787c2c3fe659f6ceda30137b89c00d401c74e"
+    },
+    {
+      "path": "agent-reports/document-editing-accepted-patch-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 44794,
+      "sha256": "13347a429cc53df397771e947729fd3612c949b9aa69fe79ae53c3578bab2d39"
+    },
+    {
+      "path": "agent-reports/document-editing-conflict-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 44238,
+      "sha256": "8797f870281653ce86938d3f33ec4f0a6d9e2c84e11c6edf23f57123644952e5"
+    },
+    {
+      "path": "agent-reports/document-editing-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 35572,
+      "sha256": "1e39f601880f4389863fd7a7d69f14f981b6b7069c8a19497f9ed6fc8fc99294"
+    },
+    {
+      "path": "agent-reports/document-mirror-plan-2026-10-12.md",
+      "category": "implementation-plan",
+      "bytes": 7901,
+      "sha256": "485757f81d701e4fe9275134a74ba1b607e226b8b5284344cc6ac39774c12429"
+    },
+    {
+      "path": "agent-reports/openscience-desktop.md",
+      "category": "agent-source-investigation",
+      "bytes": 21413,
+      "sha256": "f27ac0838bd3f7d8ca7e4f68e2ab70677a07852c8448e907dc69634d0a9e899a"
+    },
+    {
+      "path": "agent-reports/openshell-policy-v0.1.3.md",
+      "category": "agent-source-investigation",
+      "bytes": 56150,
+      "sha256": "0bc2cfc76ed52eea7a6b96cd966a17bd28d8083d5f95adfbca6b169fa9fb7be3"
     }
   ]
 }

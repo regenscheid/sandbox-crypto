@@ -31,6 +31,9 @@
     {#await load()}
       <p class="muted">Loading…</p>
     {:then found}
+      {#if found.review_summary?.reviews?.length}
+        <p role="status">Consistency review: {found.review_summary.pending ? "pending at the saved run boundary" : found.review_summary.outcome ?? "see session review history"}. {#if found.review_summary.counts}Unresolved counts: {JSON.stringify(found.review_summary.counts)}.{/if}</p>
+      {/if}
       <RunView run={found} />
     {:catch error}
       <ErrorMessage {error} />
