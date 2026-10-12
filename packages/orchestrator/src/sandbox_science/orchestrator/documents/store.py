@@ -35,7 +35,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import new_id
 
-from .blocks import BYTE_ORDER_MARK, check_text, normalize_newlines, parse
+from .blocks import BYTE_ORDER_MARK, Budget, check_text, normalize_newlines, parse
 from .checks import math_check, warnings
 from .engine import (
     Applied,
@@ -955,6 +955,314 @@ class DocumentStore:
             self._remember(db, project_id, author, operation_id, request, result)
             return result
 
+    def edit_source(
+        self,
+        project_id: str,
+        reference: str,
+        *,
+        base: int,
+        text: str,
+        author: Author,
+        reason: str,
+        operation_id: str,
+    ) -> ChangeResult:
+        """Reconcile a user's source draft by the blocks changed from its named base."""
+        self._user(author)
+        from .source import operations as source_operations
+
+        text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
+        check_text(text)
+        mapped = self.mapped(project_id, reference, base)
+        budget = Budget()
+        operations = source_operations(mapped, text, budget)
+        if not operations:
+            # Use a harmless named replacement so retries and stale-base checks take
+            # the same transactional path, even when only separating whitespace changed.
+            if mapped.block_ids:
+                operations = _operations(
+                    [
+                        {
+                            "op": "replace",
+                            "block": mapped.block_ids[0],
+                            "markdown": mapped.parsed.blocks[0].text,
+                        }
+                    ]
+                )
+            else:
+                return self.save_text(
+                    project_id,
+                    reference,
+                    base=base,
+                    text=text,
+                    author=author,
+                    reason=reason,
+                    operation_id=operation_id,
+                )
+        self._operation_id(operation_id)
+        why = _reason(reason)
+        raw = [op.model_dump(mode="json", by_alias=True) for op in operations]
+        request = {"source": reference, "base": base, "text": text, "reason": why}
+        submission = _Submission(new_id("patch"), base, operations, raw, why, author)
+        budget.charge(len(text))
+        made = normalize(parse(text), budget=budget)
+        prepared = self._prepare_patch(project_id, reference, submission, budget)
+        if prepared is not None and prepared.applied is not None and prepared.allocate is not None:
+            if prepared.key[1] == base:
+                # Preserve the user's exact separating whitespace when no rebase
+                # is needed. IDs come from the named operations, including moves.
+                final = carry(prepared.applied.mapped, made.parsed, prepared.allocate)
+                assert prepared.head is not None  # noqa: S101
+                prepared.unnamed = unnamed_changes(
+                    prepared.head, final, [touches(op, mapped) for op in operations]
+                )
+                prepared.applied.mapped = final
+            prepared.applied.converted.update(made.converted)
+            prepared.applied.kept.extend(made.kept)
+        with self._write() as db:
+            replay = self._replay(db, project_id, author, operation_id, request)
+            if replay is not None:
+                return replay
+            row = self._find(db, project_id, reference)
+            if prepared is None or prepared.key != _key(row):
+                raise DocumentError(
+                    BUSY,
+                    "the document changed while preparing this edit; "
+                    "retry with the same operation ID",
+                )
+            assessed = self._assessed(db, row, submission, prepared)
+            result = self._act(db, row, submission, assessed)
+            self._remember(db, project_id, author, operation_id, request, result)
+            return result
+
+    @staticmethod
+    def _user(author: Author) -> None:
+        if author.kind != "user":
+            raise DocumentError(POLICY_DENIED, "only the user may make this document change")
+
+    @staticmethod
+    def _operation_id(operation_id: str) -> None:
+        if OPERATION_ID.fullmatch(operation_id) is None:
+            raise DocumentError(INVALID_REQUEST, "invalid operation_id")
+
+    def promote(
+        self,
+        project_id: str,
+        reference: str,
+        *,
+        base: int,
+        name: str,
+        author: Author,
+        reason: str,
+        operation_id: str,
+    ) -> ChangeResult:
+        """Move a workbook document to project scope, keeping its identity and history."""
+        self._user(author)
+        self._operation_id(operation_id)
+        stem, why = _name(name), _reason(reason)
+        request = {"promote": reference, "base": base, "name": stem, "reason": why}
+        with self._write() as db:
+            replay = self._replay(db, project_id, author, operation_id, request)
+            if replay is not None:
+                return replay
+            row = self._find(db, project_id, reference)
+            self._live(row)
+            self._current(row, base)
+            if row.info.scope != "session":
+                raise DocumentError(INVALID_REQUEST, "this document is already project scoped")
+            collision = db.execute(
+                "SELECT 1 FROM documents WHERE project_id = ? AND session_id IS NULL "
+                "AND name = ? AND deleted = 0",
+                (project_id, stem),
+            ).fetchone()
+            if collision is not None:
+                raise DocumentError(CONFLICT, "the project already has a document with that name")
+            db.execute(
+                "UPDATE documents SET session_id = NULL, name = ? WHERE document_id = ?",
+                (stem, row.info.document_id),
+            )
+            self._event(
+                db,
+                "document.promoted",
+                row.info,
+                author,
+                {
+                    "from_session": row.info.session_id,
+                    "name": stem,
+                    "reason": why,
+                    "author": author.model_dump(mode="json", exclude_none=True),
+                },
+            )
+            result = ChangeResult(
+                outcome="applied",
+                document_id=row.info.document_id,
+                revision=row.info.head,
+                base=base,
+                message="moved to project scope",
+            )
+            self._remember(db, project_id, author, operation_id, request, result)
+            return result
+
+    @staticmethod
+    def _current(row: _Row, base: int) -> None:
+        if row.info.head != base:
+            raise DocumentError(
+                CONFLICT,
+                f"revision {row.info.head} is current, not {base}: review it first",
+                {"current": row.info.head},
+            )
+
+    def revert(
+        self,
+        project_id: str,
+        reference: str,
+        *,
+        base: int,
+        target: int,
+        author: Author,
+        reason: str,
+        operation_id: str,
+    ) -> ChangeResult:
+        """Append a user revision restoring the target's text and block/math IDs."""
+        self._user(author)
+        self._operation_id(operation_id)
+        why = _reason(reason)
+        request = {"revert": reference, "base": base, "target": target, "reason": why}
+        revision = self.revision(project_id, reference, target)
+        if revision.info.tombstone:
+            raise DocumentError(INVALID_REQUEST, "choose a revision containing text")
+        restored = self._mapped(revision)
+        head = self.mapped(project_id, reference, base)
+        with self._write() as db:
+            replay = self._replay(db, project_id, author, operation_id, request)
+            if replay is not None:
+                return replay
+            row = self._find(db, project_id, reference)
+            self._live(row)
+            self._current(row, base)
+            result = self._commit(
+                db,
+                row,
+                restored,
+                head,
+                Allocator(row.next_block, row.next_span),
+                author=author,
+                base=base,
+                reason=why,
+                operations=[{"op": "revert", "revision": target}],
+                normalized={},
+                outcome="applied",
+                force=restored.block_ids != head.block_ids or restored.span_ids != head.span_ids,
+            )
+            self._remember(db, project_id, author, operation_id, request, result)
+            return result
+
+    def _review_patch(self, db: sqlite3.Connection, row: _Row, patch_id: str) -> PatchInfo:
+        found = db.execute(
+            _PATCH + " WHERE document_id = ? AND patch_id = ?", (row.info.document_id, patch_id)
+        ).fetchone()
+        if found is None:
+            raise DocumentError(NOT_FOUND, "no such document patch")
+        patch = _patch(found)
+        if patch.state not in ("conflicted", "refused", "suggested"):
+            raise DocumentError(CONFLICT, "this patch is no longer awaiting application")
+        return patch
+
+    def preview_patch(self, project_id: str, reference: str, patch_id: str) -> Json:
+        """Preview retained operations against the current revision, without writing."""
+        with self._read() as db:
+            row = self._find(db, project_id, reference)
+            assert db is not None  # noqa: S101
+            patch = self._review_patch(db, row, patch_id)
+            submission = _Submission(
+                patch_id,
+                row.info.head,
+                _operations(patch.operations),
+                cast(list[Json], patch.operations),
+                patch.reason,
+                patch.author,
+            )
+            inputs = self._inputs(db, row, row.info.head)
+        assessed = self._assess(row, inputs, submission)
+        allowed = (
+            assessed.error is None
+            and not assessed.deleted
+            and not assessed.unnamed
+            and assessed.applied is not None
+        )
+        return {
+            "patch": patch.model_dump(mode="json"),
+            "base": row.info.head,
+            "current": inputs.head.text,
+            "proposed": assessed.applied.mapped.parsed.text
+            if allowed and assessed.applied
+            else None,
+            "allowed": allowed,
+            "message": None if assessed.error is None else assessed.error.message,
+            "unnamed": assessed.unnamed,
+        }
+
+    def apply_patch(
+        self,
+        project_id: str,
+        reference: str,
+        patch_id: str,
+        *,
+        base: int,
+        author: Author,
+        reason: str,
+        operation_id: str,
+    ) -> ChangeResult:
+        """Deliberately apply reviewed operations, guarded by the preview's exact head."""
+        self._user(author)
+        self._operation_id(operation_id)
+        why = _reason(reason)
+        request = {"apply_patch": reference, "patch": patch_id, "base": base, "reason": why}
+        prepared = None
+        try:
+            with self._read() as reading:
+                row = self._find(reading, project_id, reference)
+                self._current(row, base)
+                assert reading is not None  # noqa: S101
+                patch = self._review_patch(reading, row, patch_id)
+                candidate = _Submission(
+                    patch_id,
+                    base,
+                    _operations(patch.operations),
+                    cast(list[Json], patch.operations),
+                    why,
+                    patch.author,
+                    author,
+                )
+            prepared = self._prepare_patch(project_id, reference, candidate)
+        except DocumentError:
+            # Replay and authoritative errors are checked in the transaction below.
+            pass
+        with self._write() as db:
+            replay = self._replay(db, project_id, author, operation_id, request)
+            if replay is not None:
+                return replay
+            row = self._find(db, project_id, reference)
+            self._current(row, base)
+            patch = self._review_patch(db, row, patch_id)
+            submission = _Submission(
+                patch_id,
+                base,
+                _operations(patch.operations),
+                cast(list[Json], patch.operations),
+                why,
+                patch.author,
+                author,
+            )
+            if prepared is None or prepared.key != _key(row):
+                raise DocumentError(
+                    BUSY,
+                    "the patch could not be prepared; retry after reviewing the current revision",
+                )
+            assessed = self._assessed(db, row, submission, prepared)
+            result = self._act(db, row, submission, assessed)
+            self._remember(db, project_id, author, operation_id, request, result)
+            return result
+
     def _prepare_save(
         self, project_id: str, reference: str, base: int, normalized: Normalized
     ) -> _Carried | None:
@@ -977,7 +1285,7 @@ class DocumentStore:
         return _Carried(_key(row), head, mapped, allocate)
 
     def _prepare_patch(
-        self, project_id: str, reference: str, submission: _Submission
+        self, project_id: str, reference: str, submission: _Submission, budget: Budget | None = None
     ) -> _Assessed | None:
         """A patch checked against the document as it is now, outside the write lock."""
         if self.readonly:
@@ -991,7 +1299,7 @@ class DocumentStore:
         except (DocumentError, sqlite3.Error):
             # The change finds the same error under the lock, in its turn.
             return None
-        return self._assess(row, inputs, submission)
+        return self._assess(row, inputs, submission, budget)
 
     def _assessed(
         self,
@@ -1028,7 +1336,9 @@ class DocumentStore:
             since,
         )
 
-    def _assess(self, row: _Row, inputs: _Inputs, submission: _Submission) -> _Assessed:
+    def _assess(
+        self, row: _Row, inputs: _Inputs, submission: _Submission, budget: Budget | None = None
+    ) -> _Assessed:
         """The patch checked against the inputs, without the database: refused, in
         conflict, or applied, with the revision it makes (LD-17, LD-18)."""
         assessed = _Assessed(inputs.key)
@@ -1051,7 +1361,7 @@ class DocumentStore:
                 if assessed.conflicts:
                     return assessed
             allocate = Allocator(row.next_block, row.next_span)
-            applied = apply_operations(head, operations, allocate)
+            applied = apply_operations(head, operations, allocate, budget)
             named = [touches(operation, base_mapped) for operation in operations]
             assessed.unnamed = unnamed_changes(head, applied.mapped, named)
             if not assessed.unnamed:
@@ -1402,12 +1712,18 @@ class DocumentStore:
         outcome: Outcome,
         submission: _Submission | None = None,
         tombstone: bool = False,
+        force: bool = False,
     ) -> ChangeResult:
         """The next revision, unless the text is unchanged, with its patch and its event."""
         info = row.info
         patch_id = None if submission is None else submission.patch_id
         accepted_by = None if submission is None else submission.accepted_by
-        if head is not None and mapped.parsed.text == head.parsed.text and not tombstone:
+        if (
+            head is not None
+            and mapped.parsed.text == head.parsed.text
+            and not tombstone
+            and not force
+        ):
             if submission is not None:
                 self._keep(db, info, submission, "unchanged", {}, info.head)
             return ChangeResult(

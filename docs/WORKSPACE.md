@@ -5,7 +5,7 @@ The workspace is the research GUI (W4, D80). It shows the harness's records: the
 - `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static files: an `index.html`, one script, one stylesheet and KaTeX's fonts.
 - `packages/workspace` (`sandbox_science.workspace`): the server, in the project's Python on aiohttp, with the command `sandbox-science-workspace`. It serves the built files and a JSON API, handles login, and asks the reviewer model for math repairs when it is configured to.
 
-Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Editing documents, comments, the ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
+Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Documents can be edited as Markdown source or by block, with conflicts and retained patches reviewed explicitly. Comments, the ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
 
 ## Building and running
 
@@ -176,7 +176,11 @@ The [living documents](specs/living-documents.md) spec states this behavior for 
 
 ## Living documents
 
-The project's living documents are shown read-only: the documents of the project and of its sessions' workbooks, each revision of one, and who changed what in it ([views](#views)). Documents live in the harness's control store ([living documents as built](LIVING-DOCUMENTS.md)), which the server opens read-only; it never writes it.
+The project's living documents and its sessions' workbooks show each revision and who changed what ([views](#views)). The current revision offers source and block editing, and workbook documents can move to project scope. Earlier live revisions offer an explicit revert. History previews retained patches against the current text and lets the user apply them with that exact revision as the guard. See [the reconciliation rules](LIVING-DOCUMENTS.md#changes).
+
+Drafts retain their base revision in memory across views and in this browser tab's session storage across reloads. Conflicts show the newer text and author while keeping the draft. Resolving a whole-source conflict starts with the current text and retains the old draft separately; block resolution touches only the named block. A browser without storage retains the in-memory draft and warns before closing. Inputs are disabled while a save is pending.
+
+Documents live in the harness's control store ([living documents as built](LIVING-DOCUMENTS.md)). Reads use a read-only connection; explicit user changes open a separate writable connection lazily. The API derives the user attribution itself; an agent or request body cannot choose it. The existing login cookie, exact same-origin check on writes, project lookup and scoped document lookup protect these routes.
 
 **One parse on both sides** (LD-5, LD-9). A document is parsed by the text renderer's parser with two rules more, as the server parses it: YAML front matter at the very start of the text, and theorem-like containers, `::: lemma (label)` to `:::` (`src/lib/documentrules.ts`, ports of mdit-py-plugins' `front_matter` and `container`, MIT, credited in the file). The rules are registered in the server's order, and each block rule records where the blocks it makes lie and where their own text begins on each line (`src/lib/blockmap.ts`), from which the browser derives its block map as the server does: each block's kind, depth and lines, without trailing blank lines, and each formula's block, kind and TeX. The shared cases in `src/lib/documents.fixtures.json` pin both, and run through both parsers in CI, with the dollar and delimiter cases run through the document parser too. On 2026-10-11, 15,000 random documents built from the profile's constructs gave the same blocks, lines and formulas on both sides.
 
@@ -211,7 +215,9 @@ All routes need the session and answer JSON. The views of the records are GET (a
 | `POST /api/v0/math-repair` | The reviewer model's repair of one formula ([math repairs](#math-repairs)) |
 | `POST /api/v0/logout` | Ends the session: 204, no body |
 
-Errors are `{"error": {"kind", "message"}}` with the worker API's kinds: 400 `invalid_request` for a malformed ID, run name, document name or revision number, or a math repair request that is not one, 401 `policy_denied` without a session, 404 `not_found`, 413 for a request body over 64 KiB, 422 `unsupported` for a record over the size limit, 429 `unavailable` for a session that has asked for as many model repairs as it may for now, and 500 `internal` for a damaged record. The server reads the harness's records through the orchestrator's `ProjectStore`, and the documents through its `DocumentStore`, opened read-only, in a thread. JSON that a record cannot carry, a NaN from a tool's output say, is sent as a string.
+Document writes use `POST /api/v0/projects/{project}/documents/{document}/changes`, with a strict action (`source`, `patch`, `revert`, `promote`, or `apply_patch`), `base`, `reason` and `operation_id`. The action carries respectively `text`, `operations`, `target`, `name`, or `patch_id`; unknown fields are refused. Results include `outcome`, revision, retained patch ID and structured conflicts. `GET /api/v0/projects/{project}/documents/{document}/patches/{patch}/preview` returns the retained operations, exact current `base`, current and proposed source, and whether the named operations can safely apply. A revision's blocks also include their editable Markdown `source`, without their containing block's indentation.
+
+Errors are `{"error": {"kind", "message"}}` (document errors also carry `details`) with the worker API's kinds: 400 `invalid_request` for a malformed ID, run name, document name or revision number, or a math repair request that is not one, 401 `policy_denied` without a session, 404 `not_found`, 413 for a request body over 64 KiB (document changes allow 8 MiB of escaped JSON, while document text remains bounded to 1 MiB of UTF-8), 422 `unsupported` for a record over the size limit, 429 `unavailable` for a session that has asked for as many model repairs as it may for now, and 500 `internal` for a damaged record. The server reads the harness's records through the orchestrator's `ProjectStore`, and the documents through its `DocumentStore`, in a thread. JSON that a record cannot carry, a NaN from a tool's output say, is sent as a string.
 
 Reading the harness's state directory directly is this slice's arrangement: the workspace runs beside the harness and imports the orchestrator's store (the one deployable member importing another, in the [conventions](../.agents/CONVENTIONS.md)). W5 gives the control application an API of its own for the GUI to use.
 
@@ -300,7 +306,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 
 ## Not built yet
 
-- Editing living documents, by block or as source, and deciding on agents' suggestions in the GUI (LD-13, LD-14, LD-20); comments and anchors; the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)); and review findings ([consistency review](specs/consistency-review.md)).
+- Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents; comments and anchors; the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)); and review findings ([consistency review](specs/consistency-review.md)).
 - The project's macros, beneath a document's (LD-28).
 - Approvals in the GUI, with re-authentication for high-risk ones (D54), and policy revisions from the GUI.
 - Previews of rich artifacts on a separate origin (D54), and the PDF viewer.

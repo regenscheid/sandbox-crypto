@@ -68,3 +68,16 @@ intervals; this does not test a real model's judgment.
 ## Reports
 
 Write the report as `.agents/docs/agent-reports/babbage-openshell-lab-N-<date>.md`, in the style of the earlier ones (what ran where, results tables, findings, cleanup), add a line to `.agents/docs/README.md`, and add the file to `.agents/docs/INVENTORY.json` with its size and SHA-256 (rebuild the README's entry too). Cite the lab where docs state what it showed. Tokens are synthetic and never written to the report or the logs kept.
+
+## Document editing browser acceptance
+
+This control-store slice needs no OpenShell VM. Run
+`uv run python .agents/labs/document_editing.py create FRESH_STATE_DIRECTORY`,
+then serve that directory with the production workspace build on loopback.
+In the browser, keep a block or source draft open while running the helper's
+`agent` mode against the same disposable directory; verify conflict retention
+and deliberate resolution, retained-patch preview, historical restore and
+workbook promotion. The `record` mode exports token-free revisions and events.
+Close the tab, stop the transient server and remove the fixture directory.
+The [dated report](../docs/agent-reports/document-editing-2026-10-12.md) records
+the interactions and limits.
