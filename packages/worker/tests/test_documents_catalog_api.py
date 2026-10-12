@@ -58,7 +58,9 @@ async def api(
     )
     environments = cast(
         Environments,
-        SimpleNamespace(deleted=[], required_deleted=[], confirmed_deleted=[], reusing=[]),
+        SimpleNamespace(
+            deleted=[], required_deleted=[], required_deleting=[], confirmed_deleted=[], reusing=[]
+        ),
     )
     settings = [
         ClientSettings(name="ordinary", token_sha256=token_digest(ORDINARY), projects=("p1",)),

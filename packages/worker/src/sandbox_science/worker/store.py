@@ -627,11 +627,12 @@ class Store:
             )
         return [str(found[0]) for found in gone]
 
-    def forget_package_gate(self, environment_id: str) -> None:
+    def forget_package_gate(self, environment_id: str, *, binding: str | None) -> None:
         """Clear only after confirmed sandbox deletion and durable operation drain."""
         with self._transaction():
             if not self.provisioning_finished(environment_id):
                 raise WorkerError(ErrorKind.UNAVAILABLE, "old provisioning is not durably finished")
+            self._guard_package_binding(environment_id, binding)
             self._db.execute("DELETE FROM package_status WHERE environment_id=?", (environment_id,))
             self._db.execute(
                 "DELETE FROM package_execution_gates WHERE environment_id=?", (environment_id,)
@@ -761,34 +762,70 @@ class Store:
             self._gate_write(environment_id, gate)
         return gate
 
+    def _guard_package_binding(self, environment_id: str, binding: str | None) -> None:
+        """Validate bounded original identity inside the caller's SQL transaction."""
+        gate = self.package_gate(environment_id)
+        encoded: bytes | None = None
+        if binding is not None:
+            try:
+                if type(binding) is not str or len(binding) > 4096:
+                    raise ValueError
+                encoded = binding.encode("utf-8")
+                if not encoded or len(encoded) > 4096:
+                    raise ValueError
+            except (UnicodeError, ValueError):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "invalid package sandbox binding"
+                ) from None
+        row = self._db.execute(
+            "SELECT typeof(binding),coalesce(substr(CAST(binding AS BLOB),1,4097),X'')"
+            " FROM package_execution_gates WHERE environment_id=?",
+            (environment_id,),
+        ).fetchone()
+        retained = b"" if row is None else row[1]
+        if row is not None and (row[0] != "text" or len(retained) > 4096):
+            raise WorkerError(ErrorKind.UNAVAILABLE, "invalid retained package sandbox binding")
+        if retained:
+            if encoded is None or retained != encoded:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "package admission sandbox binding changed"
+                )
+        elif gate.mode != "ready":
+            previous = self.endpoint_binding(environment_id)
+            if binding is None or previous is None or repr(previous) != binding:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    "legacy package hold has no proven original sandbox binding",
+                )
+
     def bind_package_gate(self, environment_id: str, binding: str) -> None:
         """Never transfer a retained hold to another immutable sandbox binding."""
         with self._transaction():
-            gate = self.package_gate(environment_id)
+            self._guard_package_binding(environment_id, binding)
             self._db.execute(
                 "INSERT OR IGNORE INTO package_execution_gates VALUES (?,0,'ready','',NULL,?)",
                 (environment_id, binding),
             )
-            row = self._db.execute(
-                "SELECT coalesce(substr(CAST(binding AS BLOB),1,4097),X'')"
-                " FROM package_execution_gates WHERE environment_id=?",
-                (environment_id,),
-            ).fetchone()
-            if row is None or row[0] not in (b"", binding.encode()):
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE, "package admission sandbox binding changed"
-                )
-            if row[0] == b"" and gate.mode != "ready":
-                previous = self.endpoint_binding(environment_id)
-                if previous is None or repr(previous) != binding:
-                    raise WorkerError(
-                        ErrorKind.UNAVAILABLE,
-                        "legacy package hold has no proven original sandbox binding",
-                    )
             self._db.execute(
                 "UPDATE package_execution_gates SET binding=? WHERE environment_id=?",
                 (binding, environment_id),
             )
+
+    def guard_package_deletion(self, environment_id: str, binding: str | None) -> None:
+        """Prove and retain the original binding before any guest lifecycle mutation."""
+        with self._transaction():
+            self._guard_package_binding(environment_id, binding)
+            if binding is not None:
+                # Preserve an exact legacy endpoint proof across executor shutdown,
+                # which normally forgets that endpoint before final gate cleanup.
+                self._db.execute(
+                    "INSERT OR IGNORE INTO package_execution_gates VALUES (?,0,'ready','',NULL,?)",
+                    (environment_id, binding),
+                )
+                self._db.execute(
+                    "UPDATE package_execution_gates SET binding=? WHERE environment_id=?",
+                    (binding, environment_id),
+                )
 
     def package_gate_has_binding(self, environment_id: str) -> bool:
         """Existence projection: ready state does not transfer an original binding."""

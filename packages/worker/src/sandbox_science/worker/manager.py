@@ -663,6 +663,7 @@ class ExecutionManager:
 
         Attempts still running there end as the executor's channel closes.
         """
+        await self.guard_package_deletion(environment_id)
         self._released_environments[environment_id] = (
             self._released_environments.get(environment_id, 0) + 1
         )
@@ -1070,9 +1071,29 @@ class ExecutionManager:
         named: environments that are gone keep nothing in the store."""
         self.revisions.forget(environment_id)
 
+    def _package_deletion_binding(self, environment_id: str) -> str | None:
+        if self.daemon_identity is not None:
+            identity = self.daemon_identity(environment_id)
+            return repr(identity) if identity is not None else None
+        return repr(
+            (
+                self.backend.name,
+                str(getattr(self.backend, "root", "")),
+                self.backend.sandbox_id(environment_id),
+            )
+        )
+
     async def forget_package_gate(self, environment_id: str) -> None:
         """Only confirmed deletion, after provisioning drain, may remove this fence."""
-        self.store.forget_package_gate(environment_id)
+        self.store.forget_package_gate(
+            environment_id, binding=self._package_deletion_binding(environment_id)
+        )
+
+    async def guard_package_deletion(self, environment_id: str) -> None:
+        """Require original-binding proof before any explicit guest teardown."""
+        self.store.guard_package_deletion(
+            environment_id, self._package_deletion_binding(environment_id)
+        )
 
     async def guard_package_reuse(self, environment_id: str) -> None:
         """A new VM cannot replace the unknown original held package binding."""

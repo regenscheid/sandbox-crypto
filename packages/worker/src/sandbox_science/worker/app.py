@@ -192,6 +192,7 @@ def create_app(
     if environments is not None:
         app[ENVIRONMENTS] = environments
         environments.deleted.append(manager.forget_revisions)
+        environments.required_deleting.append(manager.guard_package_deletion)
         environments.confirmed_deleted.append(manager.forget_package_gate)
         environments.reusing.append(manager.guard_package_reuse)
 

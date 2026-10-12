@@ -1467,6 +1467,7 @@ async def test_delete_drain_requires_durable_classification_and_retries_sql_fail
             await asyncio.Event().wait()
 
     world = await make_world(kind=PausedInstall)
+    world.manager.store.bind_package_gate("env1", "original-synthetic-binding")
     submitted = await world.provision("delete-classification", conda=["example"])
     await asyncio.wait_for(entered.wait(), 5)
     store = world.manager.store
@@ -1479,14 +1480,14 @@ async def test_delete_drain_requires_durable_classification_and_retries_sql_fail
     assert not store.provisioning_finished("env1")
     assert store.package_gate("env1").mode == "hold"
     with pytest.raises(WorkerError, match="not durably finished"):
-        store.forget_package_gate("env1")
+        store.forget_package_gate("env1", binding="original-synthetic-binding")
     store._db.execute("DROP TRIGGER fail_classification")
     await world.provisioner.forget("env1")
     assert store.provisioning_finished("env1")
     record = store.provision(submitted["provision_id"])
     assert record is not None
     assert record.state is ProvisionState.FINISHED
-    store.forget_package_gate("env1")
+    store.forget_package_gate("env1", binding="original-synthetic-binding")
     assert store.package_gate("env1").mode == "ready"
 
 
@@ -1525,6 +1526,7 @@ class _Environments:
         )
         self.deleted: list[Any] = []
         self.required_deleted: list[Any] = []
+        self.required_deleting: list[Any] = []
         self.confirmed_deleted: list[Any] = []
         self.reusing: list[Any] = []
 
