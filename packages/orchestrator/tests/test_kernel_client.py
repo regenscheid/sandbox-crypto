@@ -42,3 +42,143 @@ async def test_kernel_status_refuses_foreign_or_incoherent_http_response(
     ):
         with pytest.raises(WorkerAPIError):
             await client.kernel_status(context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"environment_id": "other"},
+        {"session_id": "other"},
+        {"observed_at": None},
+        {"observed_at": "2026-10-12T12:00:00"},
+        {"kernels": [{"kernel_id": "k", "language": "python", "generation": 1}] * 2},
+        {
+            "kernels": [
+                {"kernel_id": "k", "language": "python", "generation": 1, "current_revision": 1}
+            ]
+        },
+    ],
+)
+async def test_kernel_observation_refuses_foreign_or_incoherent_http_response(
+    change: dict[str, object],
+) -> None:
+    context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
+
+    async def observe(request: web.Request) -> web.Response:
+        assert await request.json() == {"context": context.model_dump(mode="json")}
+        return web.json_response(
+            {
+                "environment_id": "e",
+                "session_id": "s",
+                "observed_at": "2026-10-12T12:00:00Z",
+                **change,
+            }
+        )
+
+    app = web.Application()
+    app.router.add_post("/v1/kernels/observe", observe)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
+    ):
+        with pytest.raises(WorkerAPIError):
+            await client.observe_kernels(context)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 503])
+async def test_kernel_observation_bounds_chunked_success_and_error_bodies(status: int) -> None:
+    context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
+
+    async def oversized(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(status=status)
+        await response.prepare(request)
+        await response.write(b" " * (8 * 1024))
+        await response.write(b"x")
+        return response
+
+    app = web.Application()
+    app.router.add_post("/v1/kernels/observe", oversized)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
+    ):
+        with pytest.raises(WorkerAPIError, match="over 8192 bytes"):
+            await client.observe_kernels(context)
+
+
+@pytest.mark.asyncio
+async def test_kernel_observation_does_not_follow_redirect_or_fallback_to_status() -> None:
+    context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
+    targets: list[str] = []
+
+    async def target(request: web.Request) -> web.Response:
+        targets.append(request.path)
+        raise AssertionError("observer followed redirect or opened the explicit status path")
+
+    redirected = web.Application()
+    redirected.router.add_route("*", "/target", target)
+    async with TestServer(redirected) as destination:
+        app = web.Application()
+
+        async def redirect(request: web.Request) -> web.Response:
+            return web.Response(
+                status=307, headers={"Location": str(destination.make_url("/target"))}
+            )
+
+        app.router.add_post("/v1/kernels/observe", redirect)
+        app.router.add_post("/v1/kernels/status", target)
+        async with (
+            TestServer(app) as server,
+            WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
+        ):
+            with pytest.raises(WorkerAPIError) as error:
+                await client.observe_kernels(context)
+            assert error.value.status == 307
+    assert targets == []
+
+    legacy = web.Application()
+    legacy.router.add_post("/v1/kernels/status", target)
+    async with (
+        TestServer(legacy) as server,
+        WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
+    ):
+        with pytest.raises(WorkerAPIError) as error:
+            await client.observe_kernels(context)
+        assert error.value.status == 404
+    assert targets == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("headers_sent", [False, True])
+async def test_kernel_observation_whole_http_deadline_covers_headers_and_body(
+    monkeypatch: pytest.MonkeyPatch, headers_sent: bool
+) -> None:
+    import asyncio
+
+    from sandbox_science.orchestrator import worker_client
+
+    context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
+    release = asyncio.Event()
+    monkeypatch.setattr(worker_client, "KERNEL_OBSERVATION_TIMEOUT", 0.05)
+
+    async def delayed(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse()
+        if headers_sent:
+            await response.prepare(request)
+        await release.wait()
+        return response
+
+    app = web.Application()
+    app.router.add_post("/v1/kernels/observe", delayed)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
+    ):
+        try:
+            with pytest.raises(WorkerAPIError) as error:
+                await asyncio.wait_for(client.observe_kernels(context), 0.5)
+            assert error.value.kind == "unavailable"
+        finally:
+            release.set()
