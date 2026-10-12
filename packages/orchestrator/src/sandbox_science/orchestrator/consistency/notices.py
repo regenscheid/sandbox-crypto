@@ -26,7 +26,7 @@ class FindingNotices:
                 """SELECT n.finding_id,n.revision,f.severity,f.statement,f.review_id
                 FROM review_notices n JOIN review_findings f USING(finding_id)
                 WHERE n.project=? AND n.session=? AND n.delivered_run IS NULL
-                AND n.revision=f.revision AND f.status='open'
+                AND n.revision=f.revision AND f.status='open' AND f.category!='math'
                 AND (n.claimed_run IS NULL OR n.claim_until<=? OR n.claimed_run=?)
                 AND (n.finding_id||'-r'||n.revision) NOT IN (SELECT value FROM json_each(?))
                 ORDER BY n.rowid LIMIT ?""",
@@ -99,7 +99,7 @@ class FindingNotices:
             rows = db.execute(
                 (
                     "SELECT severity,status,count(*) FROM review_findings WHERE "
-                    "project=? AND session=? AND status NOT IN ('confirmed "
+                    "project=? AND session=? AND category!='math' AND status NOT IN ('confirmed "
                     "fixed','withdrawn') GROUP BY severity,status"
                 ),
                 (project, session),

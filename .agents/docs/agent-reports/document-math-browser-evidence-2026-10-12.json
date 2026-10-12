@@ -1,0 +1,1724 @@
+{
+  "scope": "Synthetic documents; actual local KaTeX; no provider or worker calls",
+  "initial_dom": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"math-demo\":\n      - /url: \"#/projects/math-demo\"\n    - text: /\n  - heading \"Session a\" [level=1]\n  - term: Environment\n  - definition:\n    - code: math-demo-default-9842221968fe\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 5:59:01 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - paragraph: No consistency reviews recorded.\n    - list\n    - heading \"Document math checks\" [level=3]\n    - paragraph: Mechanical checks use the operator-configured renderer. Unavailable, queued and quota-held work cannot establish a fix. Checks with no eligible author remain visible here.\n    - list:\n      - button \"Math revision 2 \u00b7 finished \u00b7 0 rejected \u00b7 1 unavailable\"\n      - code: doc-3064257e36e5b63f763ccaf4\n      - button \"Math revision 3 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-6a6695482e3adb9c347961d7\n      - button \"Math revision 2 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-6a6695482e3adb9c347961d7\n      - button \"Math revision 2 \u00b7 finished \u00b7 0 rejected \u00b7 0 unavailable\"\n      - code: doc-fdf4c276553d127f203f9d04\n      - button \"Math revision 2 \u00b7 finished \u00b7 0 rejected \u00b7 0 unavailable\"\n      - code: doc-3ef910faaae2aed91ccd033b\n      - button \"Math revision 2 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-0b3caf8123d912d8dc608cc3\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-6a6695482e3adb9c347961d7\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-3064257e36e5b63f763ccaf4\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-fdf4c276553d127f203f9d04\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-3ef910faaae2aed91ccd033b\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-0b3caf8123d912d8dc608cc3\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-d4006232fcf269ac89de8f7a\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-37fa0c52215e9b83f24dbe8d\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"warn \u00b7 math \u00b7 unaddressed\" [level=3]\n      - paragraph:\n        - code: finding-b2c1418b704832b5b88594c2\n        - text: \u00b7 revision 3 \u00b7 2 reflags\n      - paragraph:\n        - text: Mechanical math check \u00b7\n        - code: math-ea873bd1c3bc9d29f0a03170\n        - text: . No reviewer model was used.\n      - paragraph: \"A saved formula was rejected by the configured math renderer: Undefined control sequence: \\\\thirdUnknown at position 1: \\\\\u0332t\u0332h\u0332i\u0332r\u0332d\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332{x}\"\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: \"\\\\operatorname{thirdUnknown}{x}\"\n      - generic \"Pinned evidence anchors\"\n      - button \"Read finding history\"\n      - generic \"Respond as user\"\n      - option \"Rebut with explanation\" [selected]\n      - option \"Claim fixed\"\n      - option \"Confirm fixed as user\"\n      - option \"Dismiss as user\"\n      - option \"Reopen\"\n    - article:\n      - heading \"warn \u00b7 math \u00b7 open\" [level=3]\n      - paragraph:\n        - code: finding-c77cf412c176bc4697efcf07\n        - text: \u00b7 revision 1 \u00b7 0 reflags\n      - paragraph:\n        - text: Mechanical math check \u00b7\n        - code: math-e55351759472ed2ee6ef94fd\n        - text: . No reviewer model was used.\n      - paragraph: \"A saved formula was rejected by the configured math renderer: Undefined control sequence: \\\\definitelyUnknownCommand at position 1: \\\\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\"\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: \"\\\\operatorname{definitelyUnknownCommand}{x}\"\n      - generic \"Pinned evidence anchors\"\n      - button \"Read finding history\"\n      - generic \"Respond as user\"\n      - option \"Rebut with explanation\" [selected]\n      - option \"Claim fixed\"\n      - option \"Confirm fixed as user\"\n      - option \"Dismiss as user\"\n      - option \"Reopen\"\n    - article:\n      - heading \"warn \u00b7 math \u00b7 confirmed fixed\" [level=3]\n      - paragraph:\n        - code: finding-28395d71a29986392dc05c18\n        - text: \u00b7 revision 2 \u00b7 0 reflags\n      - paragraph:\n        - text: Mechanical math check \u00b7\n        - code: math-526915fe10274366d819ba4b\n        - text: . No reviewer model was used.\n      - paragraph: \"A saved formula was rejected by the configured math renderer: Undefined control sequence: \\\\definitelyUnknownCommand at position 1: \\\\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\"\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: \"\\\\operatorname{definitelyUnknownCommand}{x}\"\n      - generic \"Pinned evidence anchors\"\n      - button \"Read finding history\"\n      - generic \"Respond as user\"\n      - option \"Rebut with explanation\" [selected]\n      - option \"Claim fixed\"\n      - option \"Confirm fixed as user\"\n      - option \"Dismiss as user\"\n      - option \"Reopen\"\n    - article:\n      - heading \"warn \u00b7 math \u00b7 confirmed fixed\" [level=3]\n      - paragraph:\n        - code: finding-60072377ef973c3a18135147\n        - text: \u00b7 revision 2 \u00b7 0 reflags\n      - paragraph:\n        - text: Mechanical math check \u00b7\n        - code: math-3ba6e80c4e69aec87565b870\n        - text: . No reviewer model was used.\n      - paragraph: \"A saved formula was rejected by the configured math renderer: Undefined control sequence: \\\\definitelyUnknownCommand at position 1: \\\\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\"\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: \"\\\\operatorname{definitelyUnknownCommand}{x}\"\n      - generic \"Pinned evidence anchors\"\n      - button \"Read finding history\"\n      - generic \"Respond as user\"\n      - option \"Rebut with explanation\" [selected]\n      - option \"Claim fixed\"\n      - option \"Confirm fixed as user\"\n      - option \"Dismiss as user\"\n      - option \"Reopen\"\n    - article:\n      - heading \"warn \u00b7 math \u00b7 open\" [level=3]\n      - paragraph:\n        - code: finding-0cc5744a5f099ce420037761\n        - text: \u00b7 revision 1 \u00b7 0 reflags\n      - paragraph:\n        - text: Mechanical math check \u00b7\n        - code: math-13d5ddc7a013fe957e7bd3e2\n        - text: . No reviewer model was used.\n      - paragraph: \"A saved formula was rejected by the configured math renderer: Undefined control sequence: \\\\definitelyUnknownCommand at position 1: \\\\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\"\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: \"\\\\operatorname{definitelyUnknownCommand}{x}\"\n      - generic \"Pinned evidence anchors\"\n      - button \"Read finding history\"\n      - generic \"Respond as user\"\n      - option \"Rebut with explanation\" [selected]\n      - option \"Claim fixed\"\n      - option \"Confirm fixed as user\"\n      - option \"Dismiss as user\"\n      - option \"Reopen\"\n    - article:\n      - heading \"warn \u00b7 math \u00b7 open\" [level=3]\n      - paragraph:\n        - code: finding-077dffe3a272cee92d5f7df1\n        - text: \u00b7 revision 1 \u00b7 0 reflags\n      - paragraph:\n        - text: Mechanical math check \u00b7\n        - code: math-8598fb9abd22ae42b9bc5faf\n        - text: . No reviewer model was used.\n      - paragraph: \"A saved formula was rejected by the configured math renderer: Undefined control sequence: \\\\definitelyUnknownCommand at position 1: \\\\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\"\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: \"\\\\operatorname{definitelyUnknownCommand}{x}\"\n      - generic \"Pinned evidence anchors\"\n      - button \"Read finding history\"\n      - generic \"Respond as user\"\n      - option \"Rebut with explanation\" [selected]\n      - option \"Claim fixed\"\n      - option \"Confirm fixed as user\"\n      - option \"Dismiss as user\"\n      - option \"Reopen\"\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: .",
+  "delayed_selection": {
+    "check": {
+      "check_id": "math-8f8f34052669581da4777628",
+      "document": "doc-3064257e36e5b63f763ccaf4",
+      "revision": 2,
+      "source_sha256": "4ded64bfeb7198922454bf5663c52e273bce165d7fb58ebdd18f0730d455dd3f",
+      "state": "finished",
+      "owner": null,
+      "lease_until": null,
+      "cursor": 1,
+      "spans": 1,
+      "available": 0,
+      "rejected": 0,
+      "unavailable": 1,
+      "configuration": "{\"renderer\":\"unavailable\"}",
+      "runtime": null,
+      "reason": null,
+      "attribution_cursor": null,
+      "created": 1791799141.6684568,
+      "ended": 1791799141.6698365,
+      "project": "math-demo"
+    },
+    "observations": [
+      {
+        "ordinal": 0,
+        "block": "b1",
+        "span": "m1",
+        "owner": {
+          "revision": 2,
+          "author": {
+            "kind": "agent",
+            "user": null,
+            "session_id": "a",
+            "run_id": "fixture-author",
+            "role": "main",
+            "model": "fixture",
+            "alias": null,
+            "tool_call": null,
+            "import_id": null,
+            "service": null,
+            "worker_binding": null,
+            "environment_id": null,
+            "incarnation": null,
+            "execution_id": null,
+            "attempt_id": null
+          }
+        },
+        "check": {
+          "id": "m1",
+          "status": "unavailable",
+          "error": "renderer unavailable or its pinned configuration changed",
+          "remedy": null,
+          "input_sha256": "bc5e05b937bfaaf16ff4d13859197a8f7ac325ad8612d9958eb1ddbf1c369a84",
+          "bundle_sha256": null,
+          "launcher_sha256": null,
+          "engine": null,
+          "runtime": null
+        }
+      }
+    ],
+    "next_after": null
+  },
+  "unchanged_block_owner": {
+    "check": {
+      "check_id": "math-2d95c1b74e78977a2393d3c3",
+      "document": "doc-0b3caf8123d912d8dc608cc3",
+      "revision": 2,
+      "source_sha256": "b8f529fb9e56b7b3a401898c49a2374b43b4d643fe950bbaf41a1c0a4e291f1d",
+      "state": "finished",
+      "owner": null,
+      "lease_until": null,
+      "cursor": 1,
+      "spans": 1,
+      "available": 1,
+      "rejected": 1,
+      "unavailable": 0,
+      "configuration": "{\"bundle_sha256\":\"2091762bb88d332906540ef726015221fc839d4d4965652f6c53616cef03478f\",\"launcher_sha256\":\"623911cf4f65425523e07f56f80d86deda1e26aa629ce2c8ae1e363ee61e202b\",\"engine\":\"0.18.9\",\"options\":{\"throwOnError\":true,\"trust\":false,\"strict\":\"ignore\",\"maxSize\":20,\"maxExpand\":1000,\"output\":\"htmlAndMathml\"},\"node\":\"/home/andy/.nvm/versions/node/v24.20.0/bin/node\",\"node_identity\":[66306,3624147339,126458664,1787733738000000000],\"timeout\":2.0}",
+      "runtime": "24.20.0",
+      "reason": null,
+      "attribution_cursor": null,
+      "created": 1791799141.5298598,
+      "ended": 1791799141.5641055,
+      "project": "math-demo"
+    },
+    "observations": [
+      {
+        "ordinal": 0,
+        "block": "b1",
+        "span": "m1",
+        "owner": {
+          "revision": 1,
+          "author": {
+            "kind": "agent",
+            "user": null,
+            "session_id": "a",
+            "run_id": "fixture-author",
+            "role": "main",
+            "model": "fixture",
+            "alias": null,
+            "tool_call": null,
+            "import_id": null,
+            "service": null,
+            "worker_binding": null,
+            "environment_id": null,
+            "incarnation": null,
+            "execution_id": null,
+            "attempt_id": null
+          }
+        },
+        "check": {
+          "id": "m1",
+          "status": "rejected",
+          "error": "Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+          "remedy": "\\operatorname{definitelyUnknownCommand}{x}",
+          "input_sha256": "9b16d88ec7fca8a76eeed81aa4f8c79a0b411dd7cf4ea5e685c85ecadbc96394",
+          "bundle_sha256": "2091762bb88d332906540ef726015221fc839d4d4965652f6c53616cef03478f",
+          "launcher_sha256": "623911cf4f65425523e07f56f80d86deda1e26aa629ce2c8ae1e363ee61e202b",
+          "engine": "0.18.9",
+          "runtime": "24.20.0"
+        }
+      }
+    ],
+    "next_after": null
+  },
+  "user_owned_check": {
+    "check": {
+      "check_id": "math-5ff320da7191f94beca8f093",
+      "document": "doc-d4006232fcf269ac89de8f7a",
+      "revision": 1,
+      "source_sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+      "state": "finished",
+      "owner": null,
+      "lease_until": null,
+      "cursor": 1,
+      "spans": 1,
+      "available": 1,
+      "rejected": 1,
+      "unavailable": 0,
+      "configuration": "{\"bundle_sha256\":\"2091762bb88d332906540ef726015221fc839d4d4965652f6c53616cef03478f\",\"launcher_sha256\":\"623911cf4f65425523e07f56f80d86deda1e26aa629ce2c8ae1e363ee61e202b\",\"engine\":\"0.18.9\",\"options\":{\"throwOnError\":true,\"trust\":false,\"strict\":\"ignore\",\"maxSize\":20,\"maxExpand\":1000,\"output\":\"htmlAndMathml\"},\"node\":\"/home/andy/.nvm/versions/node/v24.20.0/bin/node\",\"node_identity\":[66306,3624147339,126458664,1787733738000000000],\"timeout\":2.0}",
+      "runtime": "24.20.0",
+      "reason": null,
+      "attribution_cursor": null,
+      "created": 1791799141.2650013,
+      "ended": 1791799141.310721,
+      "project": "math-demo"
+    },
+    "observations": [
+      {
+        "ordinal": 0,
+        "block": "b1",
+        "span": "m1",
+        "owner": {
+          "revision": 1,
+          "author": {
+            "kind": "user",
+            "user": "user",
+            "session_id": null,
+            "run_id": null,
+            "role": null,
+            "model": null,
+            "alias": null,
+            "tool_call": null,
+            "import_id": null,
+            "service": null,
+            "worker_binding": null,
+            "environment_id": null,
+            "incarnation": null,
+            "execution_id": null,
+            "attempt_id": null
+          }
+        },
+        "check": {
+          "id": "m1",
+          "status": "rejected",
+          "error": "Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+          "remedy": "\\operatorname{definitelyUnknownCommand}{x}",
+          "input_sha256": "9b16d88ec7fca8a76eeed81aa4f8c79a0b411dd7cf4ea5e685c85ecadbc96394",
+          "bundle_sha256": "2091762bb88d332906540ef726015221fc839d4d4965652f6c53616cef03478f",
+          "launcher_sha256": "623911cf4f65425523e07f56f80d86deda1e26aa629ce2c8ae1e363ee61e202b",
+          "engine": "0.18.9",
+          "runtime": "24.20.0"
+        }
+      }
+    ],
+    "next_after": null
+  },
+  "accepted_history": "WARN \u00b7 MATH \u00b7 CONFIRMED FIXED\n\nfinding-60072377ef973c3a18135147 \u00b7 revision 2 \u00b7 0 reflags\n\nMechanical math check \u00b7 math-3ba6e80c4e69aec87565b870. No reviewer model was used.\n\nA saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\n\nSuggested remedy:\n\n\\operatorname{definitelyUnknownCommand}{x}\n\nPinned evidence anchors\nLoad earlier finding history\n\n1 \u00b7 open \u00b7 platform:math\n\nUndefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\n\nDecision evidence and attribution\n\n2 \u00b7 confirmed fixed \u00b7 platform:math\n\nThe exact current formula was accepted by the configured renderer.\n\nDecision evidence and attribution\nRespond as user",
+  "removed_history": "WARN \u00b7 MATH \u00b7 CONFIRMED FIXED\n\nfinding-28395d71a29986392dc05c18 \u00b7 revision 2 \u00b7 0 reflags\n\nMechanical math check \u00b7 math-526915fe10274366d819ba4b. No reviewer model was used.\n\nA saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\n\nSuggested remedy:\n\n\\operatorname{definitelyUnknownCommand}{x}\n\nPinned evidence anchors\nLoad earlier finding history\n\n1 \u00b7 open \u00b7 platform:math\n\nUndefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\n\nDecision evidence and attribution\n\n2 \u00b7 confirmed fixed \u00b7 platform:math\n\nThe formula was removed from the complete current document revision.\n\nDecision evidence and attribution\nRespond as user",
+  "stale_user_draft": "WARN \u00b7 MATH \u00b7 OPEN\n\nfinding-077dffe3a272cee92d5f7df1 \u00b7 revision 2 \u00b7 0 reflags\n\nMechanical math check \u00b7 math-8598fb9abd22ae42b9bc5faf. No reviewer model was used.\n\nA saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\n\nSuggested remedy:\n\n\\operatorname{definitelyUnknownCommand}{x}\n\nPinned evidence anchors\nRead finding history\nRespond as user\n\nThe math checker confirms accepted or removed formulas; unavailable evidence does not resolve a finding. Confirm and dismiss below are explicit user decisions.\n\nBased on finding revision 1. Use current finding revision Your draft is retained.\n\nDecision \nRebut with explanation\nClaim fixed\nConfirm fixed as user\nDismiss as user\nReopen\nExplanation\nChanged document revisions\nSave user responseDiscard response draft\n\nfinding changed since this response was drafted (conflict)",
+  "explicit_user_history": "WARN \u00b7 MATH \u00b7 WITHDRAWN\n\nfinding-077dffe3a272cee92d5f7df1 \u00b7 revision 3 \u00b7 0 reflags\n\nMechanical math check \u00b7 math-8598fb9abd22ae42b9bc5faf. No reviewer model was used.\n\nA saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\n\nSuggested remedy:\n\n\\operatorname{definitelyUnknownCommand}{x}\n\nPinned evidence anchors\nLoad earlier finding history\n\n1 \u00b7 open \u00b7 platform:math\n\nUndefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}\n\nDecision evidence and attribution\n\n2 \u00b7 open \u00b7 user:user\n\nConcurrent synthetic USER decision; preserve browser draft.\n\nDecision evidence and attribution\n\n3 \u00b7 withdrawn \u00b7 user:user\n\nSynthetic USER draft retained across reload and a concurrent decision.\n\nDecision evidence and attribution\nRespond as user\n\nThe math checker confirms accepted or removed formulas; unavailable evidence does not resolve a finding. Confirm and dismiss below are explicit user decisions.\n\nBased on finding revision 3.\n\nDecision \nRebut with explanation\nClaim fixed\nConfirm fixed as user\nDismiss as user\nReopen\nExplanation\nChanged document revisions\nSave user responseDiscard response draft",
+  "session_b_dom": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"math-demo\":\n      - /url: \"#/projects/math-demo\"\n    - text: /\n  - heading \"Session b\" [level=1]\n  - term: Environment\n  - definition:\n    - code: math-demo-default-9842221968fe\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 5:59:01 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - paragraph: No consistency reviews recorded.\n    - list\n    - heading \"Document math checks\" [level=3]\n    - paragraph: Mechanical checks use the operator-configured renderer. Unavailable, queued and quota-held work cannot establish a fix. Checks with no eligible author remain visible here.\n    - list:\n      - button \"Math revision 2 \u00b7 finished \u00b7 0 rejected \u00b7 1 unavailable\"\n      - code: doc-3064257e36e5b63f763ccaf4\n      - button \"Math revision 3 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-6a6695482e3adb9c347961d7\n      - button \"Math revision 2 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-6a6695482e3adb9c347961d7\n      - button \"Math revision 2 \u00b7 finished \u00b7 0 rejected \u00b7 0 unavailable\"\n      - code: doc-fdf4c276553d127f203f9d04\n      - button \"Math revision 2 \u00b7 finished \u00b7 0 rejected \u00b7 0 unavailable\"\n      - code: doc-3ef910faaae2aed91ccd033b\n      - button \"Math revision 2 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-0b3caf8123d912d8dc608cc3\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-6a6695482e3adb9c347961d7\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-3064257e36e5b63f763ccaf4\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-fdf4c276553d127f203f9d04\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-3ef910faaae2aed91ccd033b\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-0b3caf8123d912d8dc608cc3\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-d4006232fcf269ac89de8f7a\n      - button \"Math revision 1 \u00b7 finished \u00b7 1 rejected \u00b7 0 unavailable\"\n      - code: doc-37fa0c52215e9b83f24dbe8d\n    - heading \"Findings\" [level=3]\n    - paragraph: No consistency findings recorded.\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: .",
+  "marked_repair_dom": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"math-demo\":\n      - /url: \"#/projects/math-demo\"\n    - text: / documents /\n  - heading \"agent invalid\" [level=1]\n  - term: Document\n  - definition:\n    - code: agent-invalid\n    - text: in session a's workbook, doc-37fa0c52215e9b83f24dbe8d\n  - term: Revision\n  - definition:\n    - text: 1 of 1 \u00b7\n    - link \"history\":\n      - /url: \"#/projects/math-demo/documents/doc-37fa0c52215e9b83f24dbe8d/history\"\n  - term: Written by\n  - definition: agent run fixture-author of session a, fixture\n  - term: When\n  - definition: Oct 12, 2026, 5:59:01 AM\n  - term: Reason\n  - definition: created\n  - button \"Edit Markdown source\"\n  - text: Block\n  - combobox \"Block\":\n    - option \"b1 \u00b7 paragraph\" [selected]\n    - option \"b2 \u00b7 paragraph\"\n  - button \"Edit selected block\"\n  - text: Project document name\n  - textbox \"Project document name\": agent-invalid\n  - button \"Move to project\"\n  - article:\n    - paragraph:\n      - math:\n        - generic: definitelyUnknownCommand\n        - generic: \u2061\n        - generic: x\n      - generic: definitelyUnknownCommand\n      - generic: x\n      - button \"auto-repaired\" [expanded] [active]\n      - text: \"Repaired automatically. KaTeX could not render it as written: Undefined control sequence: \\\\definitelyUnknownCommand at position 1: \\\\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}.\"\n      - code: \"$\\\\definitelyUnknownCommand{x}$\"\n      - text: b1\n    - paragraph: Original other paragraph.\n  - region \"Document comments\":\n    - heading \"Comments\" [level=2]\n    - paragraph: Comments keep their original revision and quote. Address a comment to a session to queue a request for its main agent. An active run receives it at its next safe point; an idle session keeps it for its next manually started run.\n    - button \"Refresh comments\"\n    - paragraph: No comments on this revision.\n    - heading \"Add a comment\" [level=3]\n    - paragraph: Anchor revision 1.\n    - text: Anchor block\n    - combobox \"Anchor block\":\n      - option \"b1 \u00b7 paragraph\" [selected]\n      - option \"b2 \u00b7 paragraph\"\n    - text: Anchor kind\n    - combobox \"Anchor kind\":\n      - option \"Whole block\" [selected]\n      - option \"Formula\"\n      - option \"Quoted text range\"\n    - generic \"Selected block source\"\n    - text: Comment Markdown\n    - textbox \"Comment Markdown\"\n    - text: Address to main agent\n    - combobox \"Address to main agent\":\n      - option \"No work request\"\n      - option \"a\" [selected]\n      - option \"b\"\n    - button \"Post comment\" [disabled]\n    - button \"Discard comment draft\"",
+  "console_warnings_errors": [],
+  "canonical_findings": {
+    "agent-invalid": {
+      "finding_id": "finding-077dffe3a272cee92d5f7df1",
+      "project": "math-demo",
+      "session": "a",
+      "review_id": null,
+      "severity": "warn",
+      "category": "math",
+      "statement": "A saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+      "anchors": [
+        {
+          "check": "math-8598fb9abd22ae42b9bc5faf",
+          "locator": {
+            "document": "doc-37fa0c52215e9b83f24dbe8d",
+            "revision": 1
+          },
+          "block": "b1",
+          "math": "m1",
+          "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+          "complete": true
+        }
+      ],
+      "remedy": "\\operatorname{definitelyUnknownCommand}{x}",
+      "status": "withdrawn",
+      "revision": 3,
+      "reflags": 0,
+      "dedupe": "19bd14764625280e473818b92d3c82290ec43607b006c0ef56b2df50ea08303a",
+      "supersedes": null,
+      "created": 1791799141.2642732,
+      "origin": "math",
+      "math_check_id": "math-8598fb9abd22ae42b9bc5faf",
+      "source": {
+        "kind": "math",
+        "check": "math-8598fb9abd22ae42b9bc5faf",
+        "checked_revision": 1,
+        "owner_revision": 1,
+        "excluded": null
+      },
+      "history": [
+        {
+          "revision": 1,
+          "status": "open",
+          "actor": "platform:math",
+          "reason": "Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+          "payload": {
+            "check": "math-8598fb9abd22ae42b9bc5faf",
+            "anchors": [
+              {
+                "check": "math-8598fb9abd22ae42b9bc5faf",
+                "locator": {
+                  "document": "doc-37fa0c52215e9b83f24dbe8d",
+                  "revision": 1
+                },
+                "block": "b1",
+                "math": "m1",
+                "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+                "complete": true
+              }
+            ],
+            "owner": {
+              "revision": 1,
+              "author": {
+                "kind": "agent",
+                "user": null,
+                "session_id": "a",
+                "run_id": "fixture-author",
+                "role": "main",
+                "model": "fixture",
+                "alias": null,
+                "tool_call": null,
+                "import_id": null,
+                "service": null,
+                "worker_binding": null,
+                "environment_id": null,
+                "incarnation": null,
+                "execution_id": null,
+                "attempt_id": null
+              }
+            },
+            "action": "mechanical_rejection"
+          },
+          "created": 1791799141.2646072
+        },
+        {
+          "revision": 2,
+          "status": "open",
+          "actor": "user:user",
+          "reason": "Concurrent synthetic USER decision; preserve browser draft.",
+          "payload": {
+            "action": "reopen",
+            "explanation": "Concurrent synthetic USER decision; preserve browser draft.",
+            "anchors": [],
+            "revisions": [],
+            "author": {
+              "kind": "user",
+              "user": "user",
+              "session_id": null,
+              "run_id": null,
+              "role": null,
+              "model": null,
+              "alias": null,
+              "tool_call": null,
+              "import_id": null,
+              "service": null,
+              "worker_binding": null,
+              "environment_id": null,
+              "incarnation": null,
+              "execution_id": null,
+              "attempt_id": null
+            }
+          },
+          "created": 1791799415.183439
+        },
+        {
+          "revision": 3,
+          "status": "withdrawn",
+          "actor": "user:user",
+          "reason": "Synthetic USER draft retained across reload and a concurrent decision.",
+          "payload": {
+            "action": "dismiss",
+            "explanation": "Synthetic USER draft retained across reload and a concurrent decision.",
+            "anchors": [],
+            "revisions": [],
+            "author": {
+              "kind": "user",
+              "user": "user",
+              "session_id": null,
+              "run_id": null,
+              "role": null,
+              "model": null,
+              "alias": null,
+              "tool_call": null,
+              "import_id": null,
+              "service": null,
+              "worker_binding": null,
+              "environment_id": null,
+              "incarnation": null,
+              "execution_id": null,
+              "attempt_id": null
+            }
+          },
+          "created": 1791799426.0298073
+        }
+      ],
+      "history_before": null
+    },
+    "preserved-owner": {
+      "finding_id": "finding-0cc5744a5f099ce420037761",
+      "project": "math-demo",
+      "session": "a",
+      "review_id": null,
+      "severity": "warn",
+      "category": "math",
+      "statement": "A saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+      "anchors": [
+        {
+          "check": "math-13d5ddc7a013fe957e7bd3e2",
+          "locator": {
+            "document": "doc-0b3caf8123d912d8dc608cc3",
+            "revision": 1
+          },
+          "block": "b1",
+          "math": "m1",
+          "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+          "complete": true
+        }
+      ],
+      "remedy": "\\operatorname{definitelyUnknownCommand}{x}",
+      "status": "open",
+      "revision": 1,
+      "reflags": 0,
+      "dedupe": "8b4c68211101c055b02f89dcba22573a8593e19e1fd57c5ed377d708c35bea97",
+      "supersedes": null,
+      "created": 1791799141.3562186,
+      "origin": "math",
+      "math_check_id": "math-13d5ddc7a013fe957e7bd3e2",
+      "source": {
+        "kind": "math",
+        "check": "math-13d5ddc7a013fe957e7bd3e2",
+        "checked_revision": 2,
+        "owner_revision": 1,
+        "excluded": null
+      },
+      "history": [
+        {
+          "revision": 1,
+          "status": "open",
+          "actor": "platform:math",
+          "reason": "Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+          "payload": {
+            "check": "math-13d5ddc7a013fe957e7bd3e2",
+            "anchors": [
+              {
+                "check": "math-13d5ddc7a013fe957e7bd3e2",
+                "locator": {
+                  "document": "doc-0b3caf8123d912d8dc608cc3",
+                  "revision": 1
+                },
+                "block": "b1",
+                "math": "m1",
+                "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+                "complete": true
+              }
+            ],
+            "owner": {
+              "revision": 1,
+              "author": {
+                "kind": "agent",
+                "user": null,
+                "session_id": "a",
+                "run_id": "fixture-author",
+                "role": "main",
+                "model": "fixture",
+                "alias": null,
+                "tool_call": null,
+                "import_id": null,
+                "service": null,
+                "worker_binding": null,
+                "environment_id": null,
+                "incarnation": null,
+                "execution_id": null,
+                "attempt_id": null
+              }
+            },
+            "action": "mechanical_rejection"
+          },
+          "created": 1791799141.3563292
+        }
+      ],
+      "history_before": null
+    },
+    "accepted": {
+      "finding_id": "finding-60072377ef973c3a18135147",
+      "project": "math-demo",
+      "session": "a",
+      "review_id": null,
+      "severity": "warn",
+      "category": "math",
+      "statement": "A saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+      "anchors": [
+        {
+          "check": "math-3ba6e80c4e69aec87565b870",
+          "locator": {
+            "document": "doc-3ef910faaae2aed91ccd033b",
+            "revision": 1
+          },
+          "block": "b1",
+          "math": "m1",
+          "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+          "complete": true
+        }
+      ],
+      "remedy": "\\operatorname{definitelyUnknownCommand}{x}",
+      "status": "confirmed fixed",
+      "revision": 2,
+      "reflags": 0,
+      "dedupe": "47e5011ee4cbfc1d4b7dbf5287e9e18ae2bccb55367652fa0fe329e63aaac229",
+      "supersedes": null,
+      "created": 1791799141.398466,
+      "origin": "math",
+      "math_check_id": "math-3ba6e80c4e69aec87565b870",
+      "source": {
+        "kind": "math",
+        "check": "math-3ba6e80c4e69aec87565b870",
+        "checked_revision": 2,
+        "owner_revision": 1,
+        "excluded": null
+      },
+      "history": [
+        {
+          "revision": 1,
+          "status": "open",
+          "actor": "platform:math",
+          "reason": "Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+          "payload": {
+            "check": "math-3ba6e80c4e69aec87565b870",
+            "anchors": [
+              {
+                "check": "math-3ba6e80c4e69aec87565b870",
+                "locator": {
+                  "document": "doc-3ef910faaae2aed91ccd033b",
+                  "revision": 1
+                },
+                "block": "b1",
+                "math": "m1",
+                "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+                "complete": true
+              }
+            ],
+            "owner": {
+              "revision": 1,
+              "author": {
+                "kind": "agent",
+                "user": null,
+                "session_id": "a",
+                "run_id": "fixture-author",
+                "role": "main",
+                "model": "fixture",
+                "alias": null,
+                "tool_call": null,
+                "import_id": null,
+                "service": null,
+                "worker_binding": null,
+                "environment_id": null,
+                "incarnation": null,
+                "execution_id": null,
+                "attempt_id": null
+              }
+            },
+            "action": "mechanical_rejection"
+          },
+          "created": 1791799141.3985705
+        },
+        {
+          "revision": 2,
+          "status": "confirmed fixed",
+          "actor": "platform:math",
+          "reason": "The exact current formula was accepted by the configured renderer.",
+          "payload": {
+            "check": "math-6576f9380ec7f0f8479213a1",
+            "document_revision": 2,
+            "action": "mechanical_accept"
+          },
+          "created": 1791799141.597226
+        }
+      ],
+      "history_before": null
+    },
+    "removed": {
+      "finding_id": "finding-28395d71a29986392dc05c18",
+      "project": "math-demo",
+      "session": "a",
+      "review_id": null,
+      "severity": "warn",
+      "category": "math",
+      "statement": "A saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+      "anchors": [
+        {
+          "check": "math-526915fe10274366d819ba4b",
+          "locator": {
+            "document": "doc-fdf4c276553d127f203f9d04",
+            "revision": 1
+          },
+          "block": "b1",
+          "math": "m1",
+          "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+          "complete": true
+        }
+      ],
+      "remedy": "\\operatorname{definitelyUnknownCommand}{x}",
+      "status": "confirmed fixed",
+      "revision": 2,
+      "reflags": 0,
+      "dedupe": "fa989d22b02d6f52bf4dbfc567c80c0dfe8e551cf7808ee850d119a8ecae2254",
+      "supersedes": null,
+      "created": 1791799141.4411087,
+      "origin": "math",
+      "math_check_id": "math-526915fe10274366d819ba4b",
+      "source": {
+        "kind": "math",
+        "check": "math-526915fe10274366d819ba4b",
+        "checked_revision": 2,
+        "owner_revision": 1,
+        "excluded": null
+      },
+      "history": [
+        {
+          "revision": 1,
+          "status": "open",
+          "actor": "platform:math",
+          "reason": "Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+          "payload": {
+            "check": "math-526915fe10274366d819ba4b",
+            "anchors": [
+              {
+                "check": "math-526915fe10274366d819ba4b",
+                "locator": {
+                  "document": "doc-fdf4c276553d127f203f9d04",
+                  "revision": 1
+                },
+                "block": "b1",
+                "math": "m1",
+                "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+                "complete": true
+              }
+            ],
+            "owner": {
+              "revision": 1,
+              "author": {
+                "kind": "agent",
+                "user": null,
+                "session_id": "a",
+                "run_id": "fixture-author",
+                "role": "main",
+                "model": "fixture",
+                "alias": null,
+                "tool_call": null,
+                "import_id": null,
+                "service": null,
+                "worker_binding": null,
+                "environment_id": null,
+                "incarnation": null,
+                "execution_id": null,
+                "attempt_id": null
+              }
+            },
+            "action": "mechanical_rejection"
+          },
+          "created": 1791799141.4412274
+        },
+        {
+          "revision": 2,
+          "status": "confirmed fixed",
+          "actor": "platform:math",
+          "reason": "The formula was removed from the complete current document revision.",
+          "payload": {
+            "check": "math-0cb0228f29902f214bcb5b87",
+            "document_revision": 2,
+            "action": "mechanical_removal"
+          },
+          "created": 1791799141.599611
+        }
+      ],
+      "history_before": null
+    },
+    "unavailable": {
+      "finding_id": "finding-c77cf412c176bc4697efcf07",
+      "project": "math-demo",
+      "session": "a",
+      "review_id": null,
+      "severity": "warn",
+      "category": "math",
+      "statement": "A saved formula was rejected by the configured math renderer: Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+      "anchors": [
+        {
+          "check": "math-e55351759472ed2ee6ef94fd",
+          "locator": {
+            "document": "doc-3064257e36e5b63f763ccaf4",
+            "revision": 1
+          },
+          "block": "b1",
+          "math": "m1",
+          "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+          "complete": true
+        }
+      ],
+      "remedy": "\\operatorname{definitelyUnknownCommand}{x}",
+      "status": "open",
+      "revision": 1,
+      "reflags": 0,
+      "dedupe": "0262fca370c9866c54b06bdf2582d82c549b5ff830f9c2b1bbc159392d049c7d",
+      "supersedes": null,
+      "created": 1791799141.4809525,
+      "origin": "math",
+      "math_check_id": "math-e55351759472ed2ee6ef94fd",
+      "source": {
+        "kind": "math",
+        "check": "math-e55351759472ed2ee6ef94fd",
+        "checked_revision": 2,
+        "owner_revision": 1,
+        "excluded": null
+      },
+      "history": [
+        {
+          "revision": 1,
+          "status": "open",
+          "actor": "platform:math",
+          "reason": "Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+          "payload": {
+            "check": "math-e55351759472ed2ee6ef94fd",
+            "anchors": [
+              {
+                "check": "math-e55351759472ed2ee6ef94fd",
+                "locator": {
+                  "document": "doc-3064257e36e5b63f763ccaf4",
+                  "revision": 1
+                },
+                "block": "b1",
+                "math": "m1",
+                "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+                "complete": true
+              }
+            ],
+            "owner": {
+              "revision": 1,
+              "author": {
+                "kind": "agent",
+                "user": null,
+                "session_id": "a",
+                "run_id": "fixture-author",
+                "role": "main",
+                "model": "fixture",
+                "alias": null,
+                "tool_call": null,
+                "import_id": null,
+                "service": null,
+                "worker_binding": null,
+                "environment_id": null,
+                "incarnation": null,
+                "execution_id": null,
+                "attempt_id": null
+              }
+            },
+            "action": "mechanical_rejection"
+          },
+          "created": 1791799141.4810507
+        }
+      ],
+      "history_before": null
+    },
+    "unaddressed": {
+      "finding_id": "finding-b2c1418b704832b5b88594c2",
+      "project": "math-demo",
+      "session": "a",
+      "review_id": null,
+      "severity": "warn",
+      "category": "math",
+      "statement": "A saved formula was rejected by the configured math renderer: Undefined control sequence: \\thirdUnknown at position 1: \\\u0332t\u0332h\u0332i\u0332r\u0332d\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332{x}",
+      "anchors": [
+        {
+          "check": "math-ea873bd1c3bc9d29f0a03170",
+          "locator": {
+            "document": "doc-6a6695482e3adb9c347961d7",
+            "revision": 3
+          },
+          "block": "b1",
+          "math": "m1",
+          "sha256": "92f059bb4d3e9d763f6e155aa43914db2a9545b131d11439c82e3ba706853987",
+          "complete": true
+        }
+      ],
+      "remedy": "\\operatorname{thirdUnknown}{x}",
+      "status": "unaddressed",
+      "revision": 3,
+      "reflags": 2,
+      "dedupe": "9506777d28953c317e2ac2a4c17e2d540cb2082f848a770f9e297e34cff1d734",
+      "supersedes": null,
+      "created": 1791799141.5190165,
+      "origin": "math",
+      "math_check_id": "math-ea873bd1c3bc9d29f0a03170",
+      "source": {
+        "kind": "math",
+        "check": "math-ea873bd1c3bc9d29f0a03170",
+        "checked_revision": 3,
+        "owner_revision": 3,
+        "excluded": null
+      },
+      "history": [
+        {
+          "revision": 1,
+          "status": "open",
+          "actor": "platform:math",
+          "reason": "Undefined control sequence: \\definitelyUnknownCommand at position 1: \\\u0332d\u0332e\u0332f\u0332i\u0332n\u0332i\u0332t\u0332e\u0332l\u0332y\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332C\u0332o\u0332m\u0332m\u0332a\u0332n\u0332d\u0332{x}",
+          "payload": {
+            "check": "math-05f52071788f72b85e7c5d35",
+            "anchors": [
+              {
+                "check": "math-05f52071788f72b85e7c5d35",
+                "locator": {
+                  "document": "doc-6a6695482e3adb9c347961d7",
+                  "revision": 1
+                },
+                "block": "b1",
+                "math": "m1",
+                "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+                "complete": true
+              }
+            ],
+            "owner": {
+              "revision": 1,
+              "author": {
+                "kind": "agent",
+                "user": null,
+                "session_id": "a",
+                "run_id": "fixture-author",
+                "role": "main",
+                "model": "fixture",
+                "alias": null,
+                "tool_call": null,
+                "import_id": null,
+                "service": null,
+                "worker_binding": null,
+                "environment_id": null,
+                "incarnation": null,
+                "execution_id": null,
+                "attempt_id": null
+              }
+            },
+            "action": "mechanical_rejection"
+          },
+          "created": 1791799141.519127
+        },
+        {
+          "revision": 2,
+          "status": "open",
+          "actor": "platform:math",
+          "reason": "Undefined control sequence: \\otherUnknown at position 1: \\\u0332o\u0332t\u0332h\u0332e\u0332r\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332{x}",
+          "payload": {
+            "check": "math-3b5e629b8298c8d66d62c69c",
+            "anchors": [
+              {
+                "check": "math-3b5e629b8298c8d66d62c69c",
+                "locator": {
+                  "document": "doc-6a6695482e3adb9c347961d7",
+                  "revision": 2
+                },
+                "block": "b1",
+                "math": "m1",
+                "sha256": "ec2e9fa8961714c79de0e4baa172cb2b5c4aa07f8a06f10ca2a2c4a9ebf3f4e1",
+                "complete": true
+              }
+            ],
+            "action": "mechanical_reflag",
+            "previous_session": "a",
+            "owner": {
+              "revision": 2,
+              "author": {
+                "kind": "agent",
+                "user": null,
+                "session_id": "a",
+                "run_id": "fixture-author",
+                "role": "main",
+                "model": "fixture",
+                "alias": null,
+                "tool_call": null,
+                "import_id": null,
+                "service": null,
+                "worker_binding": null,
+                "environment_id": null,
+                "incarnation": null,
+                "execution_id": null,
+                "attempt_id": null
+              }
+            }
+          },
+          "created": 1791799141.632893
+        },
+        {
+          "revision": 3,
+          "status": "unaddressed",
+          "actor": "platform:math",
+          "reason": "Undefined control sequence: \\thirdUnknown at position 1: \\\u0332t\u0332h\u0332i\u0332r\u0332d\u0332U\u0332n\u0332k\u0332n\u0332o\u0332w\u0332n\u0332{x}",
+          "payload": {
+            "check": "math-ea873bd1c3bc9d29f0a03170",
+            "anchors": [
+              {
+                "check": "math-ea873bd1c3bc9d29f0a03170",
+                "locator": {
+                  "document": "doc-6a6695482e3adb9c347961d7",
+                  "revision": 3
+                },
+                "block": "b1",
+                "math": "m1",
+                "sha256": "92f059bb4d3e9d763f6e155aa43914db2a9545b131d11439c82e3ba706853987",
+                "complete": true
+              }
+            ],
+            "action": "mechanical_reflag",
+            "previous_session": "a",
+            "owner": {
+              "revision": 3,
+              "author": {
+                "kind": "agent",
+                "user": null,
+                "session_id": "a",
+                "run_id": "fixture-author",
+                "role": "main",
+                "model": "fixture",
+                "alias": null,
+                "tool_call": null,
+                "import_id": null,
+                "service": null,
+                "worker_binding": null,
+                "environment_id": null,
+                "incarnation": null,
+                "execution_id": null,
+                "attempt_id": null
+              }
+            }
+          },
+          "created": 1791799141.6665864
+        }
+      ],
+      "history_before": null
+    }
+  },
+  "canonical_sources": {
+    "agent-invalid": {
+      "info": {
+        "document_id": "doc-37fa0c52215e9b83f24dbe8d",
+        "number": 1,
+        "created_at": "2026-10-12T09:59:01.197290Z",
+        "author": {
+          "kind": "agent",
+          "user": null,
+          "session_id": "a",
+          "run_id": "fixture-author",
+          "role": "main",
+          "model": "fixture",
+          "alias": null,
+          "tool_call": null,
+          "import_id": null,
+          "service": null,
+          "worker_binding": null,
+          "environment_id": null,
+          "incarnation": null,
+          "execution_id": null,
+          "attempt_id": null
+        },
+        "accepted_by": null,
+        "session_id": "a",
+        "base": null,
+        "parent": null,
+        "reason": "created",
+        "operations": [
+          {
+            "op": "create"
+          }
+        ],
+        "patch_id": null,
+        "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+        "tombstone": false,
+        "normalized": {
+          "converted": {},
+          "kept": []
+        },
+        "warnings": [],
+        "parser": {
+          "profile": "ss-markdown-1",
+          "markdown-it-py": "4.2.0",
+          "mdit-py-plugins": "0.6.1"
+        }
+      },
+      "text": "$\\definitelyUnknownCommand{x}$\n\nOriginal other paragraph.\n",
+      "block_map": {
+        "profile": "ss-markdown-1",
+        "blocks": [
+          {
+            "id": "b1",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              0,
+              1
+            ],
+            "start": 0,
+            "end": 30,
+            "hash": "159219ed55e49a171d5c0055c570c5b4a7fb3f75a2eab0fca0912cb13a1fc4de",
+            "status": "added",
+            "structural": null,
+            "attrs": {},
+            "spans": [
+              {
+                "id": "m1",
+                "kind": "inline",
+                "hash": "fdc82a6c4ad2cc4715abe79e37bd1c180998edbedd6ab907412974557004d1be",
+                "status": "added"
+              }
+            ]
+          },
+          {
+            "id": "b2",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              2,
+              3
+            ],
+            "start": 32,
+            "end": 57,
+            "hash": "8cd4cdd3af740b3010e74de32df6ff9e469cae19dd6065dffdf9548737653cd4",
+            "status": "added",
+            "structural": null,
+            "attrs": {},
+            "spans": []
+          }
+        ],
+        "removed": [],
+        "removed_spans": []
+      }
+    },
+    "user-invalid": {
+      "info": {
+        "document_id": "doc-d4006232fcf269ac89de8f7a",
+        "number": 1,
+        "created_at": "2026-10-12T09:59:01.199498Z",
+        "author": {
+          "kind": "user",
+          "user": "user",
+          "session_id": null,
+          "run_id": null,
+          "role": null,
+          "model": null,
+          "alias": null,
+          "tool_call": null,
+          "import_id": null,
+          "service": null,
+          "worker_binding": null,
+          "environment_id": null,
+          "incarnation": null,
+          "execution_id": null,
+          "attempt_id": null
+        },
+        "accepted_by": null,
+        "session_id": null,
+        "base": null,
+        "parent": null,
+        "reason": "created",
+        "operations": [
+          {
+            "op": "create"
+          }
+        ],
+        "patch_id": null,
+        "sha256": "059b4a1195f591b1f75c8af9a8eed69b473dfc79ebf2d634e51a66e20f2ad81e",
+        "tombstone": false,
+        "normalized": {
+          "converted": {},
+          "kept": []
+        },
+        "warnings": [],
+        "parser": {
+          "profile": "ss-markdown-1",
+          "markdown-it-py": "4.2.0",
+          "mdit-py-plugins": "0.6.1"
+        }
+      },
+      "text": "$\\definitelyUnknownCommand{x}$\n\nOriginal other paragraph.\n",
+      "block_map": {
+        "profile": "ss-markdown-1",
+        "blocks": [
+          {
+            "id": "b1",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              0,
+              1
+            ],
+            "start": 0,
+            "end": 30,
+            "hash": "159219ed55e49a171d5c0055c570c5b4a7fb3f75a2eab0fca0912cb13a1fc4de",
+            "status": "added",
+            "structural": null,
+            "attrs": {},
+            "spans": [
+              {
+                "id": "m1",
+                "kind": "inline",
+                "hash": "fdc82a6c4ad2cc4715abe79e37bd1c180998edbedd6ab907412974557004d1be",
+                "status": "added"
+              }
+            ]
+          },
+          {
+            "id": "b2",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              2,
+              3
+            ],
+            "start": 32,
+            "end": 57,
+            "hash": "8cd4cdd3af740b3010e74de32df6ff9e469cae19dd6065dffdf9548737653cd4",
+            "status": "added",
+            "structural": null,
+            "attrs": {},
+            "spans": []
+          }
+        ],
+        "removed": [],
+        "removed_spans": []
+      }
+    },
+    "preserved-owner": {
+      "info": {
+        "document_id": "doc-0b3caf8123d912d8dc608cc3",
+        "number": 2,
+        "created_at": "2026-10-12T09:59:01.521786Z",
+        "author": {
+          "kind": "user",
+          "user": "user",
+          "session_id": null,
+          "run_id": null,
+          "role": null,
+          "model": null,
+          "alias": null,
+          "tool_call": null,
+          "import_id": null,
+          "service": null,
+          "worker_binding": null,
+          "environment_id": null,
+          "incarnation": null,
+          "execution_id": null,
+          "attempt_id": null
+        },
+        "accepted_by": null,
+        "session_id": null,
+        "base": 1,
+        "parent": 1,
+        "reason": "Synthetic unrelated USER edit",
+        "operations": [
+          {
+            "op": "replace",
+            "block": "b2",
+            "markdown": "USER changed only this other paragraph."
+          }
+        ],
+        "patch_id": "patch-b137d305301b697d67d5f9e9",
+        "sha256": "b8f529fb9e56b7b3a401898c49a2374b43b4d643fe950bbaf41a1c0a4e291f1d",
+        "tombstone": false,
+        "normalized": {
+          "converted": {},
+          "kept": []
+        },
+        "warnings": [],
+        "parser": {
+          "profile": "ss-markdown-1",
+          "markdown-it-py": "4.2.0",
+          "mdit-py-plugins": "0.6.1"
+        }
+      },
+      "text": "$\\definitelyUnknownCommand{x}$\n\nUSER changed only this other paragraph.\n",
+      "block_map": {
+        "profile": "ss-markdown-1",
+        "blocks": [
+          {
+            "id": "b1",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              0,
+              1
+            ],
+            "start": 0,
+            "end": 30,
+            "hash": "159219ed55e49a171d5c0055c570c5b4a7fb3f75a2eab0fca0912cb13a1fc4de",
+            "status": "kept",
+            "structural": null,
+            "attrs": {},
+            "spans": [
+              {
+                "id": "m1",
+                "kind": "inline",
+                "hash": "fdc82a6c4ad2cc4715abe79e37bd1c180998edbedd6ab907412974557004d1be",
+                "status": "kept"
+              }
+            ]
+          },
+          {
+            "id": "b2",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              2,
+              3
+            ],
+            "start": 32,
+            "end": 71,
+            "hash": "6003ebf8a02e3fb8660305b7fa2ea5762da1221220c04cc28e463f357e124173",
+            "status": "changed",
+            "structural": null,
+            "attrs": {},
+            "spans": []
+          }
+        ],
+        "removed": [],
+        "removed_spans": []
+      }
+    },
+    "accepted": {
+      "info": {
+        "document_id": "doc-3ef910faaae2aed91ccd033b",
+        "number": 2,
+        "created_at": "2026-10-12T09:59:01.524852Z",
+        "author": {
+          "kind": "agent",
+          "user": null,
+          "session_id": "a",
+          "run_id": "fixture-author",
+          "role": "main",
+          "model": "fixture",
+          "alias": null,
+          "tool_call": null,
+          "import_id": null,
+          "service": null,
+          "worker_binding": null,
+          "environment_id": null,
+          "incarnation": null,
+          "execution_id": null,
+          "attempt_id": null
+        },
+        "accepted_by": null,
+        "session_id": "a",
+        "base": 1,
+        "parent": 1,
+        "reason": "Synthetic browser formula change",
+        "operations": [
+          {
+            "op": "replace_math",
+            "math": "m1",
+            "tex": "x^2"
+          }
+        ],
+        "patch_id": "patch-b5661da1fc4b1c47a0bbfcc1",
+        "sha256": "21a09c5b6b064b3cfd73c2e5fdd3a2b22a5512bed2d5e5238c2ddf86d2d19dea",
+        "tombstone": false,
+        "normalized": {
+          "converted": {},
+          "kept": []
+        },
+        "warnings": [],
+        "parser": {
+          "profile": "ss-markdown-1",
+          "markdown-it-py": "4.2.0",
+          "mdit-py-plugins": "0.6.1"
+        }
+      },
+      "text": "$x^2$\n\nOriginal other paragraph.\n",
+      "block_map": {
+        "profile": "ss-markdown-1",
+        "blocks": [
+          {
+            "id": "b1",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              0,
+              1
+            ],
+            "start": 0,
+            "end": 5,
+            "hash": "7f408224ea7b716f96b6e639abb58102f790c2a36b6c5293a34cafa0287ab0d7",
+            "status": "changed",
+            "structural": null,
+            "attrs": {},
+            "spans": [
+              {
+                "id": "m1",
+                "kind": "inline",
+                "hash": "5b029881cc5d477a4a820b1c0e64e624919e22ac8d02cfec5da7281c503d08f6",
+                "status": "changed"
+              }
+            ]
+          },
+          {
+            "id": "b2",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              2,
+              3
+            ],
+            "start": 7,
+            "end": 32,
+            "hash": "8cd4cdd3af740b3010e74de32df6ff9e469cae19dd6065dffdf9548737653cd4",
+            "status": "kept",
+            "structural": null,
+            "attrs": {},
+            "spans": []
+          }
+        ],
+        "removed": [],
+        "removed_spans": []
+      }
+    },
+    "removed": {
+      "info": {
+        "document_id": "doc-fdf4c276553d127f203f9d04",
+        "number": 2,
+        "created_at": "2026-10-12T09:59:01.527277Z",
+        "author": {
+          "kind": "user",
+          "user": "user",
+          "session_id": null,
+          "run_id": null,
+          "role": null,
+          "model": null,
+          "alias": null,
+          "tool_call": null,
+          "import_id": null,
+          "service": null,
+          "worker_binding": null,
+          "environment_id": null,
+          "incarnation": null,
+          "execution_id": null,
+          "attempt_id": null
+        },
+        "accepted_by": null,
+        "session_id": null,
+        "base": 1,
+        "parent": 1,
+        "reason": "Synthetic formula removal",
+        "operations": [
+          {
+            "op": "delete",
+            "block": "b1"
+          },
+          {
+            "op": "delete",
+            "block": "b2"
+          },
+          {
+            "op": "insert",
+            "markdown": "Formula removed.",
+            "before": null,
+            "after": null,
+            "at": "end"
+          }
+        ],
+        "patch_id": "patch-f06366bed23d88e039953b37",
+        "sha256": "ced2347f93db2c4b6ff4be7c6dd8c10574404fcfd46472f9897ab0aa2c1588d9",
+        "tombstone": false,
+        "normalized": {
+          "converted": {},
+          "kept": []
+        },
+        "warnings": [],
+        "parser": {
+          "profile": "ss-markdown-1",
+          "markdown-it-py": "4.2.0",
+          "mdit-py-plugins": "0.6.1"
+        }
+      },
+      "text": "Formula removed.\n",
+      "block_map": {
+        "profile": "ss-markdown-1",
+        "blocks": [
+          {
+            "id": "b3",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              0,
+              1
+            ],
+            "start": 0,
+            "end": 16,
+            "hash": "56bbaf3dae6adcaa66f0f4f85268eba89153384011f738797f0991d8326c129a",
+            "status": "added",
+            "structural": null,
+            "attrs": {},
+            "spans": []
+          }
+        ],
+        "removed": [
+          {
+            "id": "b1",
+            "kind": "paragraph"
+          },
+          {
+            "id": "b2",
+            "kind": "paragraph"
+          }
+        ],
+        "removed_spans": [
+          {
+            "id": "m1",
+            "block": "b1"
+          }
+        ]
+      }
+    },
+    "unavailable": {
+      "info": {
+        "document_id": "doc-3064257e36e5b63f763ccaf4",
+        "number": 2,
+        "created_at": "2026-10-12T09:59:01.667472Z",
+        "author": {
+          "kind": "agent",
+          "user": null,
+          "session_id": "a",
+          "run_id": "fixture-author",
+          "role": "main",
+          "model": "fixture",
+          "alias": null,
+          "tool_call": null,
+          "import_id": null,
+          "service": null,
+          "worker_binding": null,
+          "environment_id": null,
+          "incarnation": null,
+          "execution_id": null,
+          "attempt_id": null
+        },
+        "accepted_by": null,
+        "session_id": "a",
+        "base": 1,
+        "parent": 1,
+        "reason": "Synthetic browser formula change",
+        "operations": [
+          {
+            "op": "replace_math",
+            "math": "m1",
+            "tex": "\\missingRenderer{x}"
+          }
+        ],
+        "patch_id": "patch-20ac7152b6c2492ac897ad18",
+        "sha256": "4ded64bfeb7198922454bf5663c52e273bce165d7fb58ebdd18f0730d455dd3f",
+        "tombstone": false,
+        "normalized": {
+          "converted": {},
+          "kept": []
+        },
+        "warnings": [],
+        "parser": {
+          "profile": "ss-markdown-1",
+          "markdown-it-py": "4.2.0",
+          "mdit-py-plugins": "0.6.1"
+        }
+      },
+      "text": "$\\missingRenderer{x}$\n\nOriginal other paragraph.\n",
+      "block_map": {
+        "profile": "ss-markdown-1",
+        "blocks": [
+          {
+            "id": "b1",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              0,
+              1
+            ],
+            "start": 0,
+            "end": 21,
+            "hash": "fb70d56d14688e0c43a9df39be6d7b0d2ed01bf958c716ab0640042604aa3f52",
+            "status": "changed",
+            "structural": null,
+            "attrs": {},
+            "spans": [
+              {
+                "id": "m1",
+                "kind": "inline",
+                "hash": "e75999154767068a7bd5b10622f4ea77778d16bf9643576cab8d987f389f8340",
+                "status": "changed"
+              }
+            ]
+          },
+          {
+            "id": "b2",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              2,
+              3
+            ],
+            "start": 23,
+            "end": 48,
+            "hash": "8cd4cdd3af740b3010e74de32df6ff9e469cae19dd6065dffdf9548737653cd4",
+            "status": "kept",
+            "structural": null,
+            "attrs": {},
+            "spans": []
+          }
+        ],
+        "removed": [],
+        "removed_spans": []
+      }
+    },
+    "unaddressed": {
+      "info": {
+        "document_id": "doc-6a6695482e3adb9c347961d7",
+        "number": 3,
+        "created_at": "2026-10-12T09:59:01.633816Z",
+        "author": {
+          "kind": "agent",
+          "user": null,
+          "session_id": "a",
+          "run_id": "fixture-author",
+          "role": "main",
+          "model": "fixture",
+          "alias": null,
+          "tool_call": null,
+          "import_id": null,
+          "service": null,
+          "worker_binding": null,
+          "environment_id": null,
+          "incarnation": null,
+          "execution_id": null,
+          "attempt_id": null
+        },
+        "accepted_by": null,
+        "session_id": "a",
+        "base": 2,
+        "parent": 2,
+        "reason": "Synthetic browser formula change",
+        "operations": [
+          {
+            "op": "replace_math",
+            "math": "m1",
+            "tex": "\\thirdUnknown{x}"
+          }
+        ],
+        "patch_id": "patch-028f1cbd5d4ea7af4bce263b",
+        "sha256": "92f059bb4d3e9d763f6e155aa43914db2a9545b131d11439c82e3ba706853987",
+        "tombstone": false,
+        "normalized": {
+          "converted": {},
+          "kept": []
+        },
+        "warnings": [],
+        "parser": {
+          "profile": "ss-markdown-1",
+          "markdown-it-py": "4.2.0",
+          "mdit-py-plugins": "0.6.1"
+        }
+      },
+      "text": "$\\thirdUnknown{x}$\n\nOriginal other paragraph.\n",
+      "block_map": {
+        "profile": "ss-markdown-1",
+        "blocks": [
+          {
+            "id": "b1",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              0,
+              1
+            ],
+            "start": 0,
+            "end": 18,
+            "hash": "51cd6780c67717932161ff27caa76ace82100326181c1163016fa9b63e97e3e8",
+            "status": "changed",
+            "structural": null,
+            "attrs": {},
+            "spans": [
+              {
+                "id": "m1",
+                "kind": "inline",
+                "hash": "5e8ef9c35153132ca9001497132a94c35037e692f74e0d502e29c53c71562f84",
+                "status": "changed"
+              }
+            ]
+          },
+          {
+            "id": "b2",
+            "kind": "paragraph",
+            "parent": null,
+            "lines": [
+              2,
+              3
+            ],
+            "start": 20,
+            "end": 45,
+            "hash": "8cd4cdd3af740b3010e74de32df6ff9e469cae19dd6065dffdf9548737653cd4",
+            "status": "kept",
+            "structural": null,
+            "attrs": {},
+            "spans": []
+          }
+        ],
+        "removed": [],
+        "removed_spans": []
+      }
+    }
+  },
+  "canonical_checks": {
+    "checks": [
+      {
+        "check_id": "math-8f8f34052669581da4777628",
+        "document": "doc-3064257e36e5b63f763ccaf4",
+        "revision": 2,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 0,
+        "rejected": 0,
+        "unavailable": 1,
+        "created": 1791799141.6684568
+      },
+      {
+        "check_id": "math-ea873bd1c3bc9d29f0a03170",
+        "document": "doc-6a6695482e3adb9c347961d7",
+        "revision": 3,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.6348372
+      },
+      {
+        "check_id": "math-3b5e629b8298c8d66d62c69c",
+        "document": "doc-6a6695482e3adb9c347961d7",
+        "revision": 2,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.59976
+      },
+      {
+        "check_id": "math-0cb0228f29902f214bcb5b87",
+        "document": "doc-fdf4c276553d127f203f9d04",
+        "revision": 2,
+        "state": "finished",
+        "cursor": 0,
+        "spans": 0,
+        "available": 0,
+        "rejected": 0,
+        "unavailable": 0,
+        "created": 1791799141.597388
+      },
+      {
+        "check_id": "math-6576f9380ec7f0f8479213a1",
+        "document": "doc-3ef910faaae2aed91ccd033b",
+        "revision": 2,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 0,
+        "unavailable": 0,
+        "created": 1791799141.564221
+      },
+      {
+        "check_id": "math-2d95c1b74e78977a2393d3c3",
+        "document": "doc-0b3caf8123d912d8dc608cc3",
+        "revision": 2,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.5298598
+      },
+      {
+        "check_id": "math-05f52071788f72b85e7c5d35",
+        "document": "doc-6a6695482e3adb9c347961d7",
+        "revision": 1,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.481296
+      },
+      {
+        "check_id": "math-e55351759472ed2ee6ef94fd",
+        "document": "doc-3064257e36e5b63f763ccaf4",
+        "revision": 1,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.441444
+      },
+      {
+        "check_id": "math-526915fe10274366d819ba4b",
+        "document": "doc-fdf4c276553d127f203f9d04",
+        "revision": 1,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.3987978
+      },
+      {
+        "check_id": "math-3ba6e80c4e69aec87565b870",
+        "document": "doc-3ef910faaae2aed91ccd033b",
+        "revision": 1,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.3564882
+      },
+      {
+        "check_id": "math-13d5ddc7a013fe957e7bd3e2",
+        "document": "doc-0b3caf8123d912d8dc608cc3",
+        "revision": 1,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.3108187
+      },
+      {
+        "check_id": "math-5ff320da7191f94beca8f093",
+        "document": "doc-d4006232fcf269ac89de8f7a",
+        "revision": 1,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.2650013
+      },
+      {
+        "check_id": "math-8598fb9abd22ae42b9bc5faf",
+        "document": "doc-37fa0c52215e9b83f24dbe8d",
+        "revision": 1,
+        "state": "finished",
+        "cursor": 1,
+        "spans": 1,
+        "available": 1,
+        "rejected": 1,
+        "unavailable": 0,
+        "created": 1791799141.2051365
+      }
+    ],
+    "next_after": null,
+    "queue": [],
+    "queue_more": false
+  },
+  "base_commit": "1e2221af6f3c538d03a972c5a59ffc73b4c9baeb",
+  "gui_asset_hashes": {
+    "web/workspace/dist/assets/DocumentComments-C_s89Zmo.js": "bd8e46729d45b47b9c90172c767f303f12887664ede288c53900c2a44d6b24b5",
+    "web/workspace/dist/assets/ReviewsPanel-BbEHXOCb.js": "3ae8e1e982a71c525638a04a98232c8c2b5944155128fcbebd14319f3ca5f5a5",
+    "web/workspace/dist/assets/index-DpY6ydd3.js": "1cd7c1a27ad19ca2dde97810f8c0c9e2228327e24cb4a9daaae1e7415f8a3c94"
+  },
+  "cleanup": "Browser tab closed; transient loopback server stopped; marked synthetic state removed; port checked separately."
+}

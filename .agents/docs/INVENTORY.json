@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty OpenShell runtime lab records, document editing, comments and consistency review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty OpenShell runtime lab records, document editing, comments, consistency review and document math findings browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 10398,
-      "sha256": "8b51bd6f3f20ee34932b8567a39476ce9f39c8423c4d85512dd2ea979c91179a"
+      "bytes": 10957,
+      "sha256": "9ba3b461d976b8e6f611b4f77d227934b2cb533e0aea9b8c514082cfe15a4c25"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-10-2026-10-11.md",
@@ -278,6 +278,42 @@
       "category": "runtime-validation",
       "bytes": 35572,
       "sha256": "1e39f601880f4389863fd7a7d69f14f981b6b7069c8a19497f9ed6fc8fc99294"
+    },
+    {
+      "path": "agent-reports/document-math-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 4378,
+      "sha256": "2a375e00a6205bafa0cade1ed41500689dbb8ce3b3d1f2d4092def5a98d5b4f4"
+    },
+    {
+      "path": "agent-reports/document-math-browser-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 77016,
+      "sha256": "45b41d5e8e4f51b239fdee3c946695ac1a35e8953584139b17e6c9a838496797"
+    },
+    {
+      "path": "agent-reports/document-math-display-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 49091,
+      "sha256": "b12f0aa731ced624e8d3785fd16b9df761108a2a387668d379d1762f093d120f"
+    },
+    {
+      "path": "agent-reports/document-math-initial-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 56892,
+      "sha256": "8ffeae2d7f43303f37509dbf0a82690618ab335c66467ad3c8a67942d155a32a"
+    },
+    {
+      "path": "agent-reports/document-math-stale-draft-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 55641,
+      "sha256": "b7aeedd4134332ef6be00b9a83bec3fdd64cb3ff9f180ace7871f14a44c111bd"
+    },
+    {
+      "path": "agent-reports/document-math-user-history-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 67854,
+      "sha256": "4ac83b31fa0e8f00b6195d042668c228d67f97b12223fb853961324920057f0a"
     },
     {
       "path": "agent-reports/document-mirror-plan-2026-10-12.md",
