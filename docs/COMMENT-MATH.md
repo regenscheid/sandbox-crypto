@@ -2,9 +2,10 @@
 
 Durable comment openings and replies now share the isolated mechanical checker,
 findings and closing delivery of [document revisions](MATH-CHECKS.md) (D82,
-comment portion of LD-53 to LD-55 and CR-36 to CR-38). Ledger fields, finding
-prose, idle scheduling and model repairs remain outside these slices. The
-renderer stays operator-configured and unavailable by default.
+comment portion of LD-53 to LD-55 and CR-36 to CR-38). Eligible MAIN fix/rebut
+explanations have their own [additive slice](FINDING-PROSE-MATH.md). Ledger fields,
+other excluded prose, idle scheduling and model repair proposals remain open.
+The renderer stays operator-configured and unavailable by default.
 
 ## Immutable source and ordinary corrections
 
@@ -43,14 +44,24 @@ is excluded, never guessed from the latest thread author.
 
 Bodies use ordinary Markdown, matching their GUI renderer. YAML-looking text and
 document containers grant no front matter or macros. Each attempt pins the exact
-body revision/hash, stable block/span, parent document/project and immutable macro
-revision/hash. Every span is rechecked when effective document macros change;
+body revision/hash, stable block/span, parent document/project, immutable parent
+document macro revision/hash and project setting revision/hash. Resolved effective
+definitions and context identity stay with the check. Document definitions override
+the bounded [project setting](PROJECT-MACROS.md). Every span is rechecked when
+effective document or project macros change;
 invalidation remains separate from authorship and the two-reflag budget.
 Only a new proved edit to the failing block consumes a reflag. Repeated macro or
 renderer changes refresh exact assessment/history without consuming either failed
 patch opportunity. Last available immutable ownership proof covers accepted checks
 and older stale owner caches; unavailable or invalid proof cannot spend that budget.
 Dependency refresh preserves unaddressed and explicit USER resolutions.
+
+Thread history renders under the selected document's diagnostic macro context,
+with a visible warning; it does not claim to reproduce each body's save-time
+rendering. Exact mechanical check contexts remain accessible in check evidence.
+Setting changes are discovered lazily by the active controller in bounded steps,
+without an idle scheduler or unbounded work in the settings transaction. A stale
+context cannot decide current findings or acknowledge their closing notices.
 
 Admission, load, lease fence, current-result projection and ordinary reads derive
 scope through the canonical original entry → thread → document/project. A derived
@@ -137,5 +148,8 @@ and confirmed-fixed history, a distinct removal reason and session-b isolation
 passed. Final capture had no warning/error logs. The browser tab, transient server
 and marked state were removed at 13:50:58.272097 UTC. No model, worker or provider
 calls occurred. Source/test/helper/assets stayed frozen through gates and final
-acceptance. PR #87 merged at `d2b133f` after all three fresh CI checks passed; ledger/finding-prose math,
-model repair proposals, idle scheduling and automatic compaction remain open.
+acceptance. PR #87 merged at `d2b133f` after all three fresh CI checks passed.
+The subsequent [project-macro validation](PROJECT-MACROS.md#verification-boundary)
+covers setting inheritance, exact attempt pins and dependency refresh. Ledger,
+excluded prose, model repair proposals, idle scheduling and automatic compaction
+remain open.

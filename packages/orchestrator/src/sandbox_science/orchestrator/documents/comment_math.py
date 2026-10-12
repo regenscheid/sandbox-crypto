@@ -127,6 +127,9 @@ class CommentMath:
             "INSERT INTO math_comment_jobs VALUES(?,?,?,?)",
             (check, entry, macro_revision, hashes[1].decode()),
         )
+        from .project_macros import pin
+
+        pin(db, check, project)
         db.execute(
             "UPDATE comment_math_sources SET retry_requested=0,blocked=NULL WHERE entry_id=?",
             (entry,),

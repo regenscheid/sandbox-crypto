@@ -18,8 +18,12 @@ original response revision and literal `explanation` field. Its action, evidence
 original explanation and original actor remain unchanged. A separate append-only
 body history records every correction, exact SHA-256, stable block/span IDs and
 last-changing MAIN actor. Unchanged blocks retain their proved owner. Ordinary
-Markdown uses empty macros; unrelated anchor documents never supply a parent FK,
-macro configuration or authority.
+Markdown uses the bounded [project macros](PROJECT-MACROS.md), with definitions
+from the original finding's immutable document anchors overriding them when all
+anchors agree on one effective context. The source never borrows a document
+parent FK or read authority. Missing, conflicting or unproved anchor contexts
+hold mechanical checks as unavailable. Project-only diagnostic display carries
+an explicit ambiguity warning and is not authoritative check evidence.
 
 `review_response_read` returns bounded current or historical text with its body
 revision/hash. `review_response_edit` requires that original source identity,
@@ -38,9 +42,12 @@ a scoped read-only route. It adds no USER body-write route.
 
 ## Checks, confirmation and delivery
 
-A check pins the real finding/response source and exact body revision/hash, with
-no fabricated document revision. Admission, load, current-result projection and
-commit fence that canonical parent. Explanation check/evidence/queue views are
+A check pins the real finding/response source and exact body revision/hash,
+project setting revision/hash, original document anchors and resolved effective
+context, with no fabricated document revision. Original anchors survive body
+corrections. Each new body revision also retains its save-time project setting;
+legacy history without a proved pin stays unknown. Admission, load, current-result
+projection and commit fence that canonical parent. Explanation check/evidence/queue views are
 session-private; ordinary document/comment check visibility stays project-wide.
 
 Every saved body revision is durable backlog. The shared worker admits at most
@@ -59,16 +66,21 @@ existing maximum two closing response rounds with reviewer findings and finalize
 only after successful model delivery, durable run save and exact-current ACK.
 No additional polling model or idle scheduler is introduced.
 
-A confirmation snapshot also pins the current explanation body revision/hash.
-Even if the scientific finding CAS is unchanged, a correction makes an older
-reviewer's decision conflict. A fresh reviewer must read the corrected pinned
-source and existing original/fix evidence before deciding. Scientific confirmation
-and mechanical child resolution remain independent.
+A confirmation snapshot also pins the current explanation body revision/hash,
+effective context identity and project setting revision/hash. Even if the
+scientific finding CAS is unchanged, a correction or setting change makes an
+older reviewer's decision stale. A fresh reviewer must read the corrected pinned
+source and existing original/fix evidence before deciding. Held or unknown
+explanation context permits an inconclusive outcome but no reviewer confirmation
+or rejection. This guard is independent of whole-window coverage; explicit USER
+decisions retain their existing authority. Scientific confirmation and mechanical
+child resolution remain independent.
 
 ## Validation and acceptance boundary
 
 Focused fixtures cover source authority, cross-run replay, parent independence,
-body/reviewer races, immutable original history, empty macros, failed-edit budgets,
+body/reviewer races, immutable original history, the initial empty-macro context,
+failed-edit budgets,
 unavailable retries, stale closing ACK, receipt/queue rollback, bounded corrupt
 reads, unknown legacy isolation and populated source-neutral job migration with
 child FKs/rollback. Workspace API and read-only rendering fixtures cover historical
@@ -94,3 +106,9 @@ helper and source were unchanged. Fresh PR CI remains required before merge.
 actual configured local KaTeX without worker or model calls. Root owns the browser
 server, acceptance evidence and complete teardown; the helper provides main-fix
 and confirmation actions for live refresh checks.
+
+The subsequent [project-macro slice](PROJECT-MACROS.md#verification-boundary)
+adds exact project/anchored contexts, ambiguous-context holds and stale setting
+confirmation guards. Its lazy current-head refresh retains source ownership,
+failed-block reflag budgets and the shared closing/save-ACK boundary; it adds no
+idle scheduler, renderer auto-configuration or additional eligible prose.

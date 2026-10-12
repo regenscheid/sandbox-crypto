@@ -41,7 +41,8 @@
 {:then found}
   {@const info = found.document}
   {@const shown = found.revision}
-  {@const macros = macroSet(found.macros)}
+  {@const macros = macroSet(found.macros, `${projectId}:${found.macro_context?.key ?? 'legacy-document'}`)}
+  {#if found.macro_context?.problems?.length}<p role="status">{found.macro_context.problems.join('; ')}</p>{/if}
   <!-- A first revision added every block: marking them all would say nothing. -->
   {@const blocks =
     shown.parent === null ? found.blocks.map((block) => ({ ...block, status: 'kept' })) : found.blocks}

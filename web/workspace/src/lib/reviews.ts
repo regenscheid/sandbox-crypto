@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /** Review text and pinned evidence are untrusted data, never browser HTML. */
-import { get, post, type Json } from './api';
+import { get, post, type Json, type MacroContext } from './api';
 export interface Review { review_id: string; kind: string; state: string; summary: string;
   created: number; alias: string | null; resolved_model: string | null; rubric: string;
   calls: number; input_tokens: number; output_tokens: number; estimated_tokens: number;
@@ -11,12 +11,13 @@ export interface Evidence { evidence: string; ordinal: number; kind: string;
 export interface Finding { finding_id: string; review_id: string | null; origin?: "review" | "math"; source?: Record<string, Json>; severity: string; category: string;
   statement: string; remedy: string | null; status: string; revision: number; reflags: number;
   anchors: ({ evidence?: string; review?: string; check?: string; math?: string; locator: Record<string, Json> } & Record<string, Json>)[];
-  history?: Transition[]; history_before?: number | null; response_generation?: number }
+  history?: Transition[]; history_before?: number | null; response_generation?: number; macro_context?: MacroContext }
 export interface ResponseBody { source: string; finding: string; response_revision: number; revision: number;
-  body: string; sha256: string; original_author: Record<string, Json>; author: Record<string, Json> | null; held?: string | null }
+  body: string; sha256: string; original_author: Record<string, Json>; author: Record<string, Json> | null; held?: string | null; macro_context?: MacroContext }
 export interface Transition { revision: number; status: string; actor: string; reason: string;
-  payload: Json; created: number; response_body?: ResponseBody }
+  payload: Json; created: number; response_body?: ResponseBody; macro_context?: MacroContext }
 export interface MathJob { check_id: string; document: string | null; revision: number; state: string;
+  project_macro_revision?: number; macro_context_status?: string;
   kind?: 'document' | 'comment' | 'response'; comment?: { entry_id: string; macro_revision: number; macro_sha256: string };
   response?: { source: string; finding: string; response_revision: number; session: string };
   cursor: number; spans: number | null; available: number; rejected: number; unavailable: number; created: number }

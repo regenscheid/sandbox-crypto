@@ -128,23 +128,63 @@ async def evidence(request: web.Request) -> web.Response:
 
 
 async def findings(request: web.Request) -> web.Response:
-    return await answer(
-        request, lambda s, p, sid: Findings(s).listing(p, sid, after=request.query.get("after"))
-    )
+    def listing(store: ReviewStore, project: str, session: str) -> Json:
+        result = Findings(store).listing(project, session, after=request.query.get("after"))
+        result["findings"] = [contexts(store, project, f) for f in result["findings"]]
+        return result
+
+    return await answer(request, listing)
 
 
 async def finding(request: web.Request) -> web.Response:
     return await answer(
         request,
-        lambda s, p, sid: Findings(s).get(
+        lambda s, p, sid: contexts(
+            s,
             p,
-            sid,
-            request.match_info["finding"],
-            before=integer(request, "before", 999999999, 999999999)
-            if "before" in request.query
-            else None,
+            Findings(s).get(
+                p,
+                sid,
+                request.match_info["finding"],
+                before=integer(request, "before", 999999999, 999999999)
+                if "before" in request.query
+                else None,
+            ),
         ),
     )
+
+
+def contexts(store: ReviewStore, project: str, finding: Json) -> Json:
+    from sandbox_science.orchestrator.documents.project_macros import (
+        finding_anchors,
+        response_view,
+        view,
+    )
+
+    with store.documents._read() as db:  # pyright: ignore[reportPrivateUsage]
+        anchors = (
+            finding_anchors(db, project, finding["finding_id"])
+            if db is not None
+            else [{"unknown": True}]
+        )
+    if finding["origin"] == "math":
+        job = MathJobs(store).job(finding["math_check_id"])
+        if job["project"] != project:
+            raise DocumentError("internal", "finding check is outside its project")
+        pinned = job.get("effective_macro_context")
+        context = (
+            {**pinned, "macros": pinned["effective"]}
+            if pinned
+            else view(store.documents, project, historical=True)
+        )
+    else:
+        context = view(store.documents, project, anchors=anchors)
+    finding["macro_context"] = context
+    for entry in finding.get("history", []):
+        entry["macro_context"] = view(store.documents, project, historical=True)
+        if body := entry.get("response_body"):
+            body["macro_context"] = response_view(store.documents, project, body["source"])
+    return finding
 
 
 async def respond(request: web.Request) -> web.Response:

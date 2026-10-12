@@ -1012,6 +1012,8 @@ export interface RecoverOptions {
   check?: MathRenderer;
   /** The key of the macros the expression renders with (macros.ts); none by default. */
   macros?: string;
+  /** Exact project/effective context for server-side cache isolation. */
+  scope?: Pick<MathRepairRequest, 'project' | 'macro_context'>;
 }
 
 function cut(text: string, length: number): string {
@@ -1082,7 +1084,7 @@ export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOp
   let state: 'pending' | 'unrepairable' = 'unrepairable';
   if (repairs !== null && known === undefined) {
     const check = options.check ?? katex;
-    repairs.request(key, { tex, display: displayMode, error }, (candidate) => {
+    repairs.request(key, { tex, display: displayMode, error, ...options.scope }, (candidate) => {
       if (!safeRepair(tex, candidate)) throw new Error('it brings in a command that is off here');
       render(check, candidate);
     });

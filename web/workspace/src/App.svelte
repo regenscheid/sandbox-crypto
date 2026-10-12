@@ -7,6 +7,7 @@
   import ProjectList from './views/ProjectList.svelte';
   import ProjectView from './views/ProjectView.svelte';
   import SessionView from './views/SessionView.svelte';
+  import ProjectMath from './views/ProjectMath.svelte';
 
   let hash = $state(window.location.hash);
   const route = $derived(parseRoute(hash));
@@ -34,6 +35,7 @@
 </header>
 
 <main>
+  <ProjectMath projectId={'project' in route ? route.project : null}>
   {#if loggedOut}
     <p>Logged out. To log in again, open the login URL that sandbox-science-workspace printed.</p>
   {:else if route.view === 'projects'}
@@ -61,4 +63,5 @@
   {:else}
     <p>There is nothing at this address. <a href="#/">See the projects.</a></p>
   {/if}
+  </ProjectMath>
 </main>

@@ -540,10 +540,24 @@ class ReviewStore:
         self.scope(project, session)
         with self.documents._read() as db:
             assert db is not None  # noqa: S101
+            from sandbox_science.orchestrator.documents.project_macros import exists, head
+
+            macro_match = (
+                "(NOT EXISTS(SELECT 1 FROM review_response_bodies b WHERE "
+                "b.finding_id=f.finding_id AND b.decision_revision=f.revision) OR EXISTS("
+                "SELECT 1 FROM review_macro_pins m WHERE m.review_id=t.review_id AND "
+                "m.finding_id=f.finding_id AND m.revision=?)) AND "
+                if exists(db)
+                else ""
+            )
+            parameters: tuple[Any, ...] = (project, session)
+            if macro_match:
+                revision = head(db, project)
+                parameters += (revision, revision)
             return [
                 tuple(row)
                 for row in db.execute(
-                    "SELECT f.finding_id,f.revision FROM review_findings f WHERE project=? "
+                    "SELECT f.finding_id,f.revision FROM review_findings f WHERE project=? "  # noqa: S608 - fixed optional schema fragment
                     "AND session=? AND category!='math' AND status='claimed fixed' "
                     "AND NOT EXISTS(SELECT 1 FROM "
                     "review_confirmation_targets t JOIN review_runs r USING(review_id) "
@@ -553,7 +567,8 @@ class ReviewStore:
                     "b.revision "
                     "DESC LIMIT 1),0)=coalesce((SELECT p.body_revision FROM review_response_pins p "
                     "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) AND "
-                    "r.state NOT IN ('running','failed','dropped')) AND (SELECT count(*) FROM "
+                    + macro_match
+                    + "r.state NOT IN ('running','failed','dropped')) AND (SELECT count(*) FROM "
                     "review_confirmation_targets t JOIN review_runs r USING(review_id) "
                     "WHERE t.finding_id=f.finding_id AND t.revision=f.revision AND "
                     "coalesce((SELECT b.revision FROM review_response_bodies b WHERE "
@@ -561,8 +576,9 @@ class ReviewStore:
                     "b.revision "
                     "DESC LIMIT 1),0)=coalesce((SELECT p.body_revision FROM review_response_pins p "
                     "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) AND "
-                    "r.state IN ('failed','dropped'))<3 ORDER BY f.rowid LIMIT 100",
-                    (project, session),
+                    + macro_match
+                    + "r.state IN ('failed','dropped'))<3 ORDER BY f.rowid LIMIT 100",
+                    parameters,
                 )
             ]
 
@@ -696,6 +712,11 @@ class ReviewStore:
             )
             if body_pin is not None and finding["response"] is not None:
                 finding["response"]["body"] = body_pin
+                from sandbox_science.orchestrator.documents.project_macros import response_view
+
+                finding["response"]["macro_context"] = response_view(
+                    self.documents, project, body_pin["source"]
+                )
             payload = dump(finding)
             group: list[tuple[str, str, str, str, int]] = []
             group_grants: dict[str, Json] = {}
@@ -739,7 +760,10 @@ class ReviewStore:
                     dump({"finding": row[0], "revision": row[7]}),
                     payload,
                     digest(payload),
-                    1,
+                    int(
+                        not finding["response"]
+                        or not finding["response"].get("macro_context", {}).get("held", False)
+                    ),
                 )
             )
             added = sum(len(p[1].encode()) + len(p[2].encode()) + 256 for p in group)
@@ -793,7 +817,10 @@ class ReviewStore:
                 dump(
                     [
                         confirmation_targets,
-                        sorted((f, p["revision"], p["sha256"]) for f, p in response_pins.items()),
+                        sorted(
+                            (f, p["revision"], p["sha256"], digest(dump(p["macro_context"])))
+                            for f, p in response_pins.items()
+                        ),
                     ]
                 )
             )
@@ -817,6 +844,8 @@ class ReviewStore:
                     body_pin["revision"],
                     body_pin["sha256"],
                 ):
+                    return None
+                if current_pin["macro_context"] != body_pin["macro_context"]:
                     return None
             if db.execute(
                 "SELECT 1 FROM review_runs WHERE project=? AND session=? AND state='running'",
@@ -884,6 +913,11 @@ class ReviewStore:
                         body_pin["revision"],
                         body_pin["sha256"],
                     ),
+                )
+                macro = body_pin["macro_context"]
+                db.execute(
+                    "INSERT INTO review_macro_pins VALUES(?,?,?,?)",
+                    (review, finding_id, macro["revision"], macro["sha256"]),
                 )
             for ordinal, evidence_id in enumerate(grants, len(prepared) + 1):
                 db.execute(

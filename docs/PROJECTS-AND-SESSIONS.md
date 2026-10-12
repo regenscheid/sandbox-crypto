@@ -79,6 +79,15 @@ The harness keeps a record of each project in its state directory (`packages/orc
 - its default environment, `<project>-default-<tag>`, where the tag is random, so that no other project's client of a shared worker can predict the ID and take it first (D78); records made before keep their untagged IDs;
 - its sessions, each with the environment it runs in and when it was last closed.
 
+A separate versioned USER macro setting lives in the shared control store. It
+supplies bounded definitions for Markdown/KaTeX, beneath a document's front matter;
+it does not change environment packages or grant agents settings authority. Read
+it with `sandbox-science-harness project macros --state-dir state --project p1`.
+Writing requires `--macros-file`, exact `--expected` revision and a stable
+`--operation-id`; the project GUI offers the same guarded action. See
+[project macros](PROJECT-MACROS.md) for bounds, immutable historical/check pins,
+lazy active-run refresh and held ambiguous finding contexts.
+
 ```bash
 sandbox-science-harness project create --state-dir state --project p1 --profile minimal --policy sha256:...
 sandbox-science-harness run --state-dir state --project p1 --session a ... "task"

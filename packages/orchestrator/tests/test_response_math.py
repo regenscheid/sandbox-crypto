@@ -247,7 +247,11 @@ async def test_legacy_proven_original_and_shared_quotas(stores):
         finding, decision = response(reviews)
     assert ResponseBodies(reviews).get("p", "s", finding, decision)["revision"] == 0
     await drain(reviews, ScriptedChecker())
-    assert maths(reviews)[0]["source"]["owner_revision"] == 1
+    # Immutable author proof survives discovery, while the old source has no
+    # proved project/anchor macro pin. It cannot fabricate a mechanical verdict.
+    assert maths(reviews) == []
+    check = MathJobs(reviews).listing("p")["checks"][0]
+    assert check["unavailable"] == 1
     edit(reviews, finding, decision, "$y$")
     jobs = MathJobs(reviews, limits=MathLimits(jobs=1))
     assert jobs.claim("p", "owner") is None

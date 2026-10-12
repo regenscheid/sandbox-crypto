@@ -64,6 +64,7 @@
 <article class="thread">
   <h3>{thread.anchor.block}{thread.anchor.math ? ` / ${thread.anchor.math}` : ''} · {thread.attachment.status} · {thread.status}</h3>
   <p class="muted">Anchored to <a href={documentHref(projectId, documentId, thread.anchor.revision)}>revision {thread.anchor.revision}</a>; thread revision {thread.revision}. {describeAuthor(thread.opener)}</p>
+  <p class="muted">Thread history uses the displayed document's macro context for diagnostic rendering. Immutable math-check evidence retains the exact context checked.</p>
   <details open={thread.attachment.status === 'stale' || thread.attachment.status === 'orphaned'}>
     <summary>Original quoted context{thread.anchor.quote_truncated ? ' (bounded excerpt)' : ''}</summary>
     {#if thread.anchor.before}<pre>{thread.anchor.before}</pre>{/if}<blockquote><pre>{thread.anchor.quote}</pre></blockquote>{#if thread.anchor.after}<pre>{thread.anchor.after}</pre>{/if}

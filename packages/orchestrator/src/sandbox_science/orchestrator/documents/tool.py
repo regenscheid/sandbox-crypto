@@ -419,9 +419,17 @@ class DocumentTool:
         }
         if revision.info.tombstone:
             head["deleted"] = True
-        front = mapped.parsed.front_matter
-        if front is not None and front.macros:
-            head["macros"] = front.macros
+        from .project_macros import view
+
+        context = view(
+            self.store,
+            self.context.project_id,
+            document=info.document_id,
+            revision=revision.info.number,
+            historical=number is not None,
+        )
+        head["macros"] = context["macros"]
+        head["macro_context"] = {k: v for k, v in context.items() if k != "macros"}
         blocks = view_blocks(mapped, start)
         shown = len(blocks)
         while True:

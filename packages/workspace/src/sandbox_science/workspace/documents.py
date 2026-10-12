@@ -328,12 +328,22 @@ def _revision(store: DocumentStore, project: str, reference: str, number: int | 
             }
         )
     front = mapped.parsed.front_matter if mapped is not None else None
+    from sandbox_science.orchestrator.documents.project_macros import view
+
+    context = view(
+        store,
+        project,
+        document=info.document_id,
+        revision=revision.info.number,
+        historical=number is not None,
+    )
     return {
         "document": info.model_dump(mode="json"),
         "revision": revision.info.model_dump(mode="json"),
         "text": revision.text,
         "title": None if front is None else front.title,
-        "macros": {} if front is None else front.macros,
+        "macros": context["macros"],
+        "macro_context": context,
         "matched": mapped is not None,
         "blocks": blocks,
         "removed": stored.get("removed", []),
