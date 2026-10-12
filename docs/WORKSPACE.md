@@ -310,6 +310,8 @@ Hash routes, without a router library: `#/`, `#/projects/<project>`, `#/projects
 - **Document:** a revision, the current one unless the address names another: its title, name and scope, its number with links to the revisions before and after it and to the history, its author (with the user who accepted it when it was a suggestion), when it was made and why, whether its delimiters were saved in the dollar form, and its warnings (LD-30). Then where the browser's parse and the server's block map disagree, if they do, and the text, rendered with the server's IDs ([living documents](#living-documents)). A revision that deleted the document says so.
 - **History:** the revisions, newest first, each with its author, reason and the blocks it changed; the revisions that changed each block, folded; and the agents' patches with their states, and the revisions they made.
 
+The [2026-10-12 distribution acceptance](../.agents/docs/agent-reports/workspace-license-notices-2026-10-12.md) records complete generated notices, all 70 files served byte for byte through the actual workspace HTTP server, final fresh checks, explicit Python-baseline reuse and verified teardown.
+
 ## Checks
 
 ```bash
