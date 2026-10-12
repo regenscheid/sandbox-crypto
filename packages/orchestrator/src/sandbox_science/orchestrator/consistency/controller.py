@@ -11,11 +11,13 @@ from contextlib import asynccontextmanager
 from typing import Literal, cast
 
 from sandbox_science.contracts import ExecutionContext, new_id
+from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore
 
+from .artifacts import ArtifactConsumer
 from .findings import Findings
 from .models import ReviewType
 from .notices import FindingNotices
@@ -67,6 +69,11 @@ AUTHOR_SPECS = (
             "explanation": {"type": "string"},
             "evidence": {"type": "array", "items": {"type": "object"}},
             "revisions": {"type": "array", "items": {"type": "array"}},
+            "artifact_revisions": {
+                "type": "array",
+                "maxItems": 16,
+                "items": ArtifactRevisionRef.model_json_schema(),
+            },
             "operation_id": {"type": "string"},
         },
         ["finding", "expected", "action", "explanation"],
@@ -185,6 +192,10 @@ class ReviewController:
         self.author_alias = author_alias
         self.last_counts: Json | None = None
         self.documents_complete = True
+        self.artifacts_complete = True
+        self.artifact_consumer = (
+            ArtifactConsumer(store, *self.scope) if store.artifacts is not None else None
+        )
         self.owner, self.instance = new_id("review-owner"), new_id("turn")
         self.task: asyncio.Task[None] | None = None
         self.review: str | None = None
@@ -248,7 +259,7 @@ class ReviewController:
                     cells=int(execution.get("kind") == "cell"),
                 )
             raw_artifact = tool.get("artifact")
-            if isinstance(raw_artifact, dict):
+            if isinstance(raw_artifact, dict) and self.artifact_consumer is None:
                 artifact = cast(Json, raw_artifact)
                 encoded = dump(artifact)
                 self.effects = True
@@ -268,6 +279,9 @@ class ReviewController:
                 )
         ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope)
         self.documents_complete = ingestion["complete"]
+        if self.artifact_consumer is not None:
+            artifact_ingestion = await self.artifact_consumer.ingest()
+            self.artifacts_complete = artifact_ingestion["complete"]
 
     async def _dispatch(self, kind: ReviewType, classifier: Json | None = None) -> str | None:
         if self.role != "main":
@@ -281,7 +295,7 @@ class ReviewController:
             owner=self.owner,
             alias=self.alias,
             classifier=classifier,
-            coverage_complete=self.documents_complete,
+            coverage_complete=self.documents_complete and self.artifacts_complete,
         )
         if review is not None:
             self.review = review
@@ -333,6 +347,12 @@ class ReviewController:
         await self.observe(messages)
         ingestion = await asyncio.to_thread(self.store.ingest_documents, *self.scope, drain=True)
         self.documents_complete = ingestion["complete"]
+        artifact_ingestion = (
+            await self.artifact_consumer.ingest(drain=True)
+            if self.artifact_consumer is not None
+            else {"complete": True, "enabled": False}
+        )
+        self.artifacts_complete = artifact_ingestion["complete"]
         states = await asyncio.to_thread(self.store.finding_states, *self.scope)
         effects = await asyncio.to_thread(self.store.run_effects, *self.scope, self.run_id)
         counts = await asyncio.to_thread(self.notice_store.counts, *self.scope)
@@ -342,6 +362,7 @@ class ReviewController:
             unresolved=bool(states.get("open") or states.get("claimed fixed")),
         )
         label["document_ingestion"] = ingestion
+        label["artifact_ingestion"] = artifact_ingestion
         config, _ = self.store.config(self.context.project_id)
         summary: Json = {"classifier": label, "reviews": self.review_ids, "counts": counts}
         if label["label"] == "conversation" or not config.enabled or self.role != "main":
@@ -508,7 +529,11 @@ class ReviewController:
 
     async def close(self) -> None:
         """The persistent host owns shutdown; unfinished reviews retain retry state."""
-        if self.task is not None and not self.task.done():
-            self.task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.task
+        try:
+            if self.task is not None and not self.task.done():
+                self.task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.task
+        finally:
+            if self.artifact_consumer is not None:
+                await self.artifact_consumer.aclose()

@@ -16,7 +16,7 @@ cannot read through a reviewer grant, spend budget, raise a finding or finalize 
 ### Running and scheduling
 
 With `--state-dir`, the harness observes its transcript, canonical execution projections,
-agent-authored document revisions and publication metadata. The reviewer uses a distinct
+agent-authored document revisions and durable explicit-publication artifact events. The reviewer uses a distinct
 `--reviewer-model ALIAS` with the existing model gateway, or `--reviewer-script FILE`
 plus that alias for synthetic validation. The adapter limits each answer to 2,048 tokens
 and 64 KiB before the reviewer applies stricter response bounds. No alias makes zero
@@ -26,7 +26,7 @@ unreviewed. This never becomes a pass.
 Checkpoints start at live safe points after the configured minimum interval and document,
 artifact, kernel-cell or manual-request thresholds. The terminal rule classifier records
 its version, completion-claim match, durable run effects, open/claimed-fixed finding
-states and document ingestion coverage. Ordinary conversation without those triggers
+states and document/artifact ingestion coverage. Ordinary conversation without those triggers
 skips terminal review; failed/interrupted author loops do not run a terminal reviewer.
 
 Terminal holds process at most three bounded windows. Each window pins a contiguous
@@ -54,16 +54,21 @@ A snapshot admits at most 256 items and 8 MiB of retained JSON/locator bytes; on
 at most 256 KiB. Document reads pin an exact immutable revision and verify its digest.
 Execution output is a bounded copied projection; mutable worker paths and job log files
 are references only. Clipped output cannot have physical line-number anchors. Rich
-outputs, file contents and a shell artifact inventory are explicitly omitted and make
+outputs, automatically discovered file contents and a shell artifact inventory are omitted and make
 coverage incomplete. No missing-evidence assessment can become a failing missing-action
 finding, and an incomplete/unchecked window cannot become passed.
 
-The [immutable artifact inventory](ARTIFACTS.md) now provides internal pinned bytes,
-metadata and events for explicit harness publication. Successful tool records retain
-its canonical receipt beside the worker snapshot. This first slice does not connect
-those bytes to reviewer grants or establish automatic shell output coverage; file
-and rich evidence therefore remain omitted by the current feed. Producer and
-observed inputs remain explicitly unknown rather than inferred from a path hint.
+The [immutable artifact inventory](ARTIFACTS.md#explicit-publication-consistency-consumer)
+provides durable explicit-publication events and copied, exact raw UTF-8 source up
+to 64 KiB. Per-session feed/cursor commits are atomic and bounded. Unsupported media,
+non-UTF-8, oversized and unavailable content remain explicitly incomplete; unresolved
+publications contribute one finite uncertainty observation rather than disappearing
+on restart. Only the publishing session gets a source grant. Producer and observed
+inputs remain unknown. Reproductions do not increment the new-revision trigger, and
+legacy live-tool metadata does not duplicate canonical events when the consumer is active.
+`review_read` slices exact decoded source characters with the original byte SHA;
+JSON escaping is not treated as source lines. Empty source remains empty and has an
+explicit audited exposure marker. Artifact anchors initially name the whole revision.
 
 Confirmation snapshots explicitly grant the original finding evidence and response
 anchors under their original evidence IDs, scoped to the same project/session. They
@@ -98,8 +103,11 @@ use strict expected revisions and replay-safe operation IDs. A block's supersess
 links old and replacement revisions and never claims that it fixed the finding.
 Confirmation decisions compare the pinned finding revision and current head before
 writing. Reviewer confirm/reject also requires audited read ranges covering the finding metadata,
-original/response anchored blocks (or whole items) and exact changed revisions. Empty,
-out-of-range and unrelated-prefix reads cannot satisfy that guard. Large evidence may
+original/response anchored blocks (or whole items) and exact changed revisions. Empty slices of a nonempty source,
+out-of-range and unrelated-prefix reads cannot satisfy that guard. Exact empty artifact
+reads have a separate audited exposure marker. Typed changed-artifact references must
+match a relevant logical artifact and an existing canonical session grant; unavailable
+artifact content cannot be confirmed by reading its metadata. Large evidence may
 therefore end capped or inconclusive. This records exposure, not model understanding.
 Rejected fixes/rebuttals and author response rounds stop at configured bounds;
 a claimed fix can remain visibly unconfirmed.
@@ -170,10 +178,44 @@ revision text/digest before confirming. It uses only `ScriptedModel`, reads the 
 evidence, and prints the attributed decision and role usage; it sends no model or worker
 request. The fixture directory and loopback server are disposable acceptance resources.
 
+A separate artifact fixture seeds a new marked directory with exact original and
+corrected synthetic text, without a worker or a real model:
+
+```bash
+uv run python packages/orchestrator/tests/fixtures/artifact_review_browser_fixture.py create /tmp/ss-artifact-review-new
+```
+
+Serve that disposable directory with the workspace command above, replacing its
+state path, then open `/#/projects/artifact-demo/sessions/main`. The old evidence must
+still read `count = 16` even though the current artifact head is the corrected15.
+The creation marker contains `corrected`, the exact canonical reference for a
+same-origin authenticated finding API fix claim under `artifact_revisions: [ref]`.
+The fixture also seeds exact empty UTF8, binary and non-UTF8 evidence, another private
+session and a foreign project for scope checks. Empty source has a separate audited
+exposure and an outside-source GUI label; the source `<pre>` remains empty. The existing
+document-revision GUI field is unchanged. After that explicit claim:
+
+```bash
+uv run python packages/orchestrator/tests/fixtures/artifact_review_browser_fixture.py confirm /tmp/ss-artifact-review-new
+```
+
+The helper refuses unrelated state/claims, verifies both seeded byte hashes, reads
+original and changed grants through ScriptedModel, and records confirmation. It proves
+plumbing and scoped evidence exposure, not model judgment. Remove the disposable
+server and directory after acceptance. The consumer passed 35 new cases, 144 affected
+component/API cases and two raw-preview SSR cases. Its independently reviewed D82/main
+source union passed 9,494 Python tests (43 opt-in skips), 436 web tests, locked/static/
+license/protocol checks and both builds. [Browser/API acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md)
+verified pinned raw reads, empty/incomplete sources, scope, delayed selection and the
+exact attributed fix. The scripted checks establish plumbing and authority; no live
+model, worker or OpenShell VM was used. Disposable state was removed. Fresh PR CI
+remains the merge gate.
+
 Shell-written artifact inventory/revisions (CRF-6), full rich-output/file evidence,
 project spend accounting, ledger-specific evidence, automatic idle turns and a persistent
 chat host/push view remain deferred. Mathematical-renderability findings (CR-36–38 and
-CRF-14) await the separate bounded KaTeX checker integration; browser rendering is not
+CRF-14) have a separate [document-revision integration](MATH-CHECKS.md); comments,
+ledger fields and finding prose remain open. Browser rendering is not
 presented as an automatic review verdict. Historical finding selection and supersession
 inspection are bounded; omitted snapshot context is explicit incomplete coverage.
 
