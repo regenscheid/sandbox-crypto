@@ -4,17 +4,9 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 
 ## Where things stand
 
-- **GUI license notices, 2026-10-12:** `impl/workspace-license-notices` in
-  `/home/andy/.codex/worktrees/background-worker/sandbox-crypto` branches from
-  `3c91c303`, with signed milestone `6b2b6bb` and actual-main #90 `c6ccce6` integrated.
-  The build emits complete checked notices for actual npm/runtime-helper
-  origins, project MIT and precise embedded-component/font
-  attribution with pinned primary Apache/MIT/OFL texts, plus deterministic file coverage. Initial build/check and
-  27 focused cases pass and independent source review is clear. Final integrated
-  web/math and fast Python gates are next; root owns source-identical full-Python
-  proof comparison and publication/CI.
-  No dependency, server/UI/service or math-check copier change; the platform-code
-  allowlist is unchanged. See [distribution](../docs/WORKSPACE.md#building-and-running).
+- **GUI license notices, 2026-10-12:** `impl/workspace-license-notices` in `/home/andy/.codex/worktrees/background-worker/sandbox-crypto` preserves source `6b2b6bb` and independently reviewed signed actual-main union `1032cd4` (parents `6b2b6bb` and `c6ccce6`). Source/test/license/config are frozen. Fresh gates pass 472 web tests (27 notice cases), 24 math cases, both builds and locked/static/license/protocol checks. Full Python 9,749/43/two warnings is explicitly reused from source-identical `123b2e6` plus fresh #90 CI. Root-owned [HTTP acceptance](docs/agent-reports/workspace-license-notices-2026-10-12.md) fetched all 70 files exactly; runner/port/marked-state teardown passed at 18:14:20.931549 UTC. The archive retains 21 exact records, including complete generated notices, file manifest, fresh gates and input-comparison proof. No browser/model/VM/research execution, new dependency or platform-code allowlist expansion. Root owns final docs/archive review, PR and merge after fresh exact-head CI. Separate isolated math-checker embedded-notice coverage remains open.
+
+- **Next active W4 item:** `impl/workspace-copy-latex` reuses the clean catalog-delivery worktree from merged main `c6ccce6`. Original-LaTeX clipboard handling is being implemented and tested; independent source review, actual keyboard copy/paste acceptance, license-main union, final gates and delivery remain pending.
 
 - **Failed-run records, 2026-10-12:** `impl/failed-run-records` in `/home/andy/.codex/worktrees/catalog-delivery/sandbox-crypto`, based on main `3c91c30`, has independently reviewed signed source `123b2e6`. Ordinary loop failures retain partial observations with fixed phase metadata and no final answer; delivered-only save-before-ACK and no failed math finalization preserve lifecycle authority. The first interruption propagates through later cleanup failures without save/ACK. Final gates passed 9,749 Python tests (43 opt-in skips, two existing warnings), 445 web tests, 24 math checks and all required checks/builds. Root-owned [CLI/browser acceptance](docs/agent-reports/failed-run-records-2026-10-12.md) passed, with 22 exact archived text records and one screenshot. Browser acceptance used signed `50e20b1`; GUI/server/helper source and 67 assets are unchanged on final source. Final-source CLI acceptance passed separately. Complete browser and final CLI teardown was verified at 17:39:04.081374 and 17:47:42.873911 UTC. Two interrupted Python predecessors are explicitly incomplete. PR #90 merged at `c6ccce6` after fresh Python 3.12/3.13/web and security checks passed (run `38287920059`). No services/models remain active. Cancellation/process-death persistence, live streaming, session-end semantics and scheduling remain open.
 - **Capacity errors:** the user instructed, "try again after 5 minutes whenever you have a capacity error." Wait five minutes and retry the same task and model; do not change models. This is an agent execution preference, not a new product retry feature.

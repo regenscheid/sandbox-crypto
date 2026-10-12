@@ -2,6 +2,8 @@
 
 ## 2026-10-12 — bundled GUI distribution notices
 
+Independently reviewed signed union `1032cd4` integrates merged main `c6ccce6`. Fresh validation passed 472 web tests (27 notice cases), 24 post-build math cases, both builds and all locked/static/license/protocol checks. Full Python 9,749/43/two warnings is explicitly reused from unchanged signed `123b2e6` and fresh #90 CI. Root-owned [HTTP distribution acceptance](docs/agent-reports/workspace-license-notices-2026-10-12.md) served all 70 built files exactly and verified complete cleanup. Fresh exact-head PR CI remains required before merge. Embedded React and Svelte adaptations and glyph-derived SVG attribution are included; the separate isolated math-checker notice copier remains a tracked follow-on.
+
 Implement the existing W4 notice-shipping backlog item with a production build
 plugin: actual emitted npm module/runtime-helper coverage, complete primary local
 notice text, project MIT, exact KaTeX CSS/font pins and deterministic distribution
@@ -11,9 +13,9 @@ adaptation and OFL glyph-derived SVG assets; distributed fonts also identify OFL
 Retain the exact source/font attribution and pinned primary license text. OFL
 remains the existing font/SVG asset terms; the platform-code allowlist does not
 change. No new dependency, service, route/UI or math-check copier change.
-Initial build/check and 27 focused tests pass; independent source review is clear
-and signed milestone `6b2b6bb` integrates actual-main #90 `c6ccce6`. Final integrated
-gates/exact-head review, fresh PR CI and merge remain required. See
+Signed milestone `6b2b6bb` is preserved by independently reviewed actual-main
+union `1032cd4`; final integrated checks and HTTP acceptance passed as recorded
+above. Fresh PR CI remains the merge gate. See
 [distribution](../docs/WORKSPACE.md#building-and-running) and
 [primary inputs](../web/workspace/licenses/README.md).
 
