@@ -54,7 +54,7 @@ class Worker:
         self.manager = self.new_manager()
 
     def new_manager(self) -> ExecutionManager:
-        return ExecutionManager(
+        manager = ExecutionManager(
             self.store,
             self.backend,
             Blobs(self.root / "blobs"),
@@ -62,6 +62,8 @@ class Worker:
             max_artifact_size=1 << 20,
             state_dir=self.root,
         )
+        manager.daemon_identity = lambda _environment: ("synthetic-sandbox", "synthetic-id")
+        return manager
 
     async def restart(self) -> None:
         await self.manager.close()
@@ -274,6 +276,223 @@ async def test_daemon_incarnation_loss_reaps_escaped_children(worker: Worker) ->
     async with asyncio.timeout(5):
         while (info := executor.process_info(child)) is not None and not info.zombie:
             await asyncio.sleep(0.02)
+
+
+@pytest.mark.asyncio
+async def test_openshell_replacement_waits_for_one_durable_lifecycle_fence(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_science.worker.errors import WorkerError
+
+    monkeypatch.setattr(worker.backend, "name", "openshell")
+    job, _ = await worker.manager.submit(request("fenced-incarnation"))
+    await running(worker.manager, job.execution_id)
+    channel = worker.manager._live[job.execution_id].channel
+    assert channel is not None
+    old = channel.incarnation
+    entered, proceed = asyncio.Event(), asyncio.Event()
+    calls: list[str] = []
+
+    async def recycle(environment: str, sandbox: str, sandbox_id: str) -> None:
+        assert (sandbox, sandbox_id) == ("synthetic-sandbox", "synthetic-id")
+        calls.append(environment)
+        entered.set()
+        await proceed.wait()
+
+    worker.manager.recycle_daemon = recycle
+    os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        assert worker.manager.get(job.execution_id).state is ExecutionState.LOST
+        assert worker.store.recycle_needed("env1")
+        assert worker.store.endpoint_incarnation("env1") == old
+        with pytest.raises(WorkerError, match="fenced until"):
+            await worker.manager.submit(request("must-wait"))
+        with pytest.raises(WorkerError, match="fenced until"):
+            await worker.manager.submit(
+                ShellRequest(operation_id="call-must-wait", context=CONTEXT, script="true")
+            )
+        waiting = [asyncio.create_task(worker.manager.capabilities("env1")) for _ in range(3)]
+        await asyncio.sleep(0.05)
+        assert all(not task.done() for task in waiting)
+        assert calls == ["env1"]
+        proceed.set()
+        await asyncio.wait_for(asyncio.gather(*waiting), 10)
+        assert not worker.store.recycle_needed("env1")
+        assert worker.store.endpoint_incarnation("env1") != old
+    finally:
+        proceed.set()
+
+
+@pytest.mark.asyncio
+async def test_openshell_replacement_fences_endpoint_without_unfinished_jobs(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(worker.backend, "name", "openshell")
+    await worker.manager.capabilities("env1")
+    channel = worker.manager._environments["env1"].channel
+    assert channel is not None
+    old = channel.incarnation
+    await worker.manager.close()
+    os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
+    worker.manager = worker.new_manager()
+    calls: list[str] = []
+
+    async def recycle(environment: str, sandbox: str, sandbox_id: str) -> None:
+        assert (sandbox, sandbox_id) == ("synthetic-sandbox", "synthetic-id")
+        assert worker.store.recycle_needed(environment)
+        assert worker.store.endpoint_incarnation(environment) == old
+        calls.append(environment)
+
+    worker.manager.recycle_daemon = recycle
+    await asyncio.wait_for(worker.manager.start(), 10)
+    assert calls == ["env1"]
+    assert not worker.store.recycle_needed("env1")
+    assert worker.store.endpoint_incarnation("env1") != old
+
+
+@pytest.mark.asyncio
+async def test_recycle_intent_survives_failed_fence_and_worker_restart(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_science.contracts import ErrorKind
+    from sandbox_science.worker.errors import WorkerError
+
+    monkeypatch.setattr(worker.backend, "name", "openshell")
+    await worker.manager.capabilities("env1")
+    channel = worker.manager._environments["env1"].channel
+    assert channel is not None
+    old, pid = channel.incarnation, channel.hello["location"]["pid"]
+    await worker.manager.close()
+    # Crash after durable intent, before the stop command or any replacement open.
+    worker.store.require_recycle("env1", old)
+    worker.manager = worker.new_manager()
+
+    async def failed(_environment: str, _sandbox: str, _sandbox_id: str) -> None:
+        raise WorkerError(ErrorKind.UNAVAILABLE, "synthetic stop failure")
+
+    worker.manager.recycle_daemon = failed
+    with pytest.raises(WorkerError, match="startup refused"):
+        await worker.manager.start()
+    assert worker.store.recycle_needed("env1")
+    assert worker.store.endpoint_incarnation("env1") == old
+    assert worker.manager._environments["env1"].channel is None
+    await worker.manager.close()
+    worker.store.close()
+    worker.store = Store(worker.root / "worker.sqlite")
+    worker.manager = worker.new_manager()
+
+    async def succeeded(environment: str, _sandbox: str, _sandbox_id: str) -> None:
+        assert worker.store.recycle_needed(environment)
+        os.kill(pid, signal.SIGKILL)  # local fixture's stand-in for a confirmed VM stop
+        await asyncio.sleep(0.05)
+
+    worker.manager.recycle_daemon = succeeded
+    await asyncio.wait_for(worker.manager.start(), 10)
+    assert not worker.store.recycle_needed("env1")
+    assert worker.store.endpoint_incarnation("env1") != old
+
+
+@pytest.mark.asyncio
+async def test_transport_or_authentication_failure_never_recycles_sandbox(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_science.contracts import ErrorKind
+    from sandbox_science.worker.errors import WorkerError
+
+    monkeypatch.setattr(worker.backend, "name", "openshell")
+    await worker.manager.capabilities("env1")
+    old = worker.store.endpoint_incarnation("env1")
+    await worker.manager.close()
+    worker.manager = worker.new_manager()
+
+    async def forbidden(_environment: str, _sandbox: str, _sandbox_id: str) -> None:
+        raise AssertionError("transport errors cannot justify recycling")
+
+    async def unavailable(*_args: Any, **_kwargs: Any) -> ExecutorChannel:
+        raise WorkerError(ErrorKind.UNAVAILABLE, "synthetic authentication/transport failure")
+
+    worker.manager.recycle_daemon = forbidden
+    with monkeypatch.context() as patch:
+        patch.setattr(worker.backend, "open", unavailable)
+        with pytest.raises(WorkerError, match="startup refused"):
+            await worker.manager.start()
+    assert not worker.store.recycle_needed("env1")
+    assert worker.store.endpoint_incarnation("env1") == old
+    await worker.manager.close()
+    worker.manager = worker.new_manager()
+    await worker.manager.start()
+
+
+@pytest.mark.asyncio
+async def test_unmanaged_replacement_requires_operator_lifecycle_cleanup(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_science.worker.errors import WorkerError
+
+    monkeypatch.setattr(worker.backend, "name", "openshell")
+    await worker.manager.capabilities("env1")
+    old = worker.store.endpoint_incarnation("env1")
+    assert old is not None
+    await worker.manager.close()
+    worker.store.require_recycle("env1", old)
+    worker.manager = worker.new_manager()
+    try:
+        with pytest.raises(WorkerError, match="replacement refused until the sandbox is recycled"):
+            await worker.manager.capabilities("env1")
+        assert worker.store.recycle_needed("env1")
+        assert worker.store.endpoint_incarnation("env1") == old
+        assert worker.manager._environments["env1"].channel is None
+    finally:
+        # Fixture-only cleanup: reconnect the known local daemon to reap its processes.
+        worker.store.finish_recycle("env1")
+        await worker.manager.close()
+        worker.manager = worker.new_manager()
+        await worker.manager.start()
+
+
+@pytest.mark.asyncio
+async def test_legacy_endpoint_requires_cleanup_if_incarnation_changed_before_binding_known(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_science.worker.errors import WorkerError
+
+    monkeypatch.setattr(worker.backend, "name", "openshell")
+    await worker.manager.capabilities("env1")
+    channel = worker.manager._environments["env1"].channel
+    assert channel is not None
+    old = channel.incarnation
+    worker.store.remember_endpoint("env1", old)  # previous schema has no binding
+    await worker.manager.close()
+    os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
+    worker.manager = worker.new_manager()
+
+    async def forbidden(_environment: str, _sandbox: str, _sandbox_id: str) -> None:
+        raise AssertionError("unknown original identity cannot recycle the current VM")
+
+    worker.manager.recycle_daemon = forbidden
+    try:
+        with pytest.raises(WorkerError, match="identity was not recorded"):
+            await worker.manager.capabilities("env1")
+        assert worker.store.recycle_needed("env1")
+        assert worker.store.recycle_binding("env1") is None
+    finally:
+        worker.store.finish_recycle("env1")  # fixture cleanup after deliberate corrupt history
+        await worker.manager.close()
+        worker.manager = worker.new_manager()
+        await worker.manager.start()
+
+
+@pytest.mark.asyncio
+async def test_same_incarnation_backfills_legacy_endpoint_binding(worker: Worker) -> None:
+    await worker.manager.capabilities("env1")
+    old = worker.store.endpoint_incarnation("env1")
+    assert old is not None
+    worker.store.remember_endpoint("env1", old)
+    assert worker.store.endpoint_binding("env1") is None
+    await worker.restart()
+    assert worker.store.endpoint_incarnation("env1") == old
+    assert worker.store.endpoint_binding("env1") == ("synthetic-sandbox", "synthetic-id")
 
 
 @pytest.mark.asyncio

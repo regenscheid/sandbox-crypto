@@ -23,6 +23,7 @@ import secrets
 import signal
 import sys
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 from aiohttp import web
@@ -144,36 +145,19 @@ async def serve(settings: Settings) -> None:
         if shared is not None:
             environments.deleted.append(shared.forget)
     if settings.openshell is not None:
+        manager.confirmed_daemon_loss = partial(
+            _confirmed_daemon_loss, settings, manager, environments, store
+        )
+        if environments is not None:
+            manager.recycle_daemon = environments.recycle_executor
 
-        async def confirmed_daemon_loss(environment_id: str) -> bool:
-            sandbox = manager.backend.sandbox_id(environment_id)
-            if environments is not None and environments.manages(environment_id):
+            def daemon_identity(environment_id: str) -> tuple[str, str] | None:
+                if not environments.manages(environment_id):
+                    return None
                 info = environments.get(environment_id)
-                if info.state in (EnvironmentState.DELETED, EnvironmentState.STOPPED):
-                    return True  # those lifecycle paths explicitly stopped the executor first
-                sandbox = info.sandbox
-            if sandbox is None:
-                return True
-            openshell = settings.openshell
-            if openshell is None:
-                return False
-            cli = OpenShellCli(openshell, OpenShellBackend(openshell, settings.state_dir).cli_env())
-            try:
-                description = await cli.sandbox(sandbox)
-            except WorkerError:
-                return False  # gateway/transport failure is not evidence of sandbox loss
-            if description is None or description.get("phase") in (
-                "Stopped",
-                "Completed",
-                "Error",
-                "Deleting",
-            ):
-                return True
-            if environments is not None and environments.manages(environment_id):
-                return description.get("id") != environments.get(environment_id).sandbox_id
-            return False
+                return (info.sandbox, info.sandbox_id) if info.sandbox_id else None
 
-        manager.confirmed_daemon_loss = confirmed_daemon_loss
+            manager.daemon_identity = daemon_identity
     provisioner = _provisioner(settings, manager, environments)
     # SIGTERM/SIGINT detach sandbox daemons; the stdio development executor stops.
     stopping = asyncio.Event()
@@ -223,6 +207,56 @@ async def serve(settings: Settings) -> None:
             shared.records.close()
         if environments is not None:
             environments.close()
+
+
+async def _confirmed_daemon_loss(
+    settings: Settings,
+    manager: ExecutionManager,
+    environments: Environments | None,
+    store: Store,
+    environment_id: str,
+) -> bool:
+    """Actual sandbox loss, never a recycle intent or an unreachable gateway."""
+    pending_recycle = store.recycle_needed(environment_id)
+    binding = store.recycle_binding(environment_id) if pending_recycle else None
+    if pending_recycle and binding is None:
+        return False  # legacy identity is unknown; cleanup needs explicit operator evidence
+    sandbox = manager.backend.sandbox_id(environment_id)
+    if environments is not None and environments.manages(environment_id):
+        info = environments.get(environment_id)
+        if info.state is EnvironmentState.DELETED and not pending_recycle:
+            return True
+        if info.state is EnvironmentState.STOPPED and not pending_recycle:
+            return True  # ordinary suspension already shut down its executor
+        sandbox = info.sandbox
+    if binding is not None:
+        sandbox = binding[0]  # prove termination of the original VM, not a new current binding
+    if sandbox is None:
+        return not pending_recycle  # removing a binding cannot prove a fenced VM stopped
+    openshell = settings.openshell
+    if openshell is None:
+        return False
+    cli = OpenShellCli(openshell, OpenShellBackend(openshell, settings.state_dir).cli_env())
+    try:
+        description = await cli.sandbox(sandbox)
+    except WorkerError:
+        return False  # gateway/transport failure is not evidence of sandbox loss
+    if pending_recycle:
+        if description is None:
+            return True
+        if binding is not None and description.get("id") != binding[1]:
+            return False
+        return description.get("phase") == "Stopped"
+    if description is None or description.get("phase") in (
+        "Stopped",
+        "Completed",
+        "Error",
+        "Deleting",
+    ):
+        return True
+    if environments is not None and environments.manages(environment_id):
+        return description.get("id") != environments.get(environment_id).sandbox_id
+    return False
 
 
 def add_policies(settings: Settings, paths: list[Path], projects: Sequence[str] = ()) -> int:

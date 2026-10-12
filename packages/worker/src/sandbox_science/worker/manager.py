@@ -140,6 +140,11 @@ LOCKFILE_TIMEOUT = 120.0
 _EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
 
 
+class _DaemonIncarnationError(WorkerError):
+    def __init__(self) -> None:
+        super().__init__(ErrorKind.UNAVAILABLE, "the sandbox executor incarnation was lost")
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -293,8 +298,12 @@ class ExecutionManager:
         self._closing = False
         self._recovering: set[str] = set()
         self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}
+        self._daemon_fences: dict[str, asyncio.Task[None]] = {}
+        self._quarantined: set[str] = set()
         self.job_resources: Callable[[str], Resources] | None = None
         self.confirmed_daemon_loss: Callable[[str], Awaitable[bool]] | None = None
+        self.daemon_identity: Callable[[str], tuple[str, str] | None] | None = None
+        self.recycle_daemon: Callable[[str, str, str], Awaitable[None]] | None = None
         self._closing_sessions: dict[tuple[str, str, str], int] = {}
         self._released_environments: dict[str, int] = {}
         self.notices: Notices | None = None
@@ -304,7 +313,7 @@ class ExecutionManager:
     async def start(self) -> None:
         """Recover known daemon executions without ever resubmitting a command."""
         daemon_enabled = getattr(getattr(self.backend, "settings", None), "daemon", False)
-        endpoints = self.store.endpoints()
+        endpoints = tuple(set(self.store.endpoints()) | set(self.store.pending_recycles()))
         if endpoints and not daemon_enabled:
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,
@@ -366,6 +375,7 @@ class ExecutionManager:
                 environment_id
             ):
                 self.store.forget_endpoint(environment_id)
+                self._quarantined.discard(environment_id)
                 for live in lives:
                     self._lose(live, "the sandbox that was deleted, stopped or replaced")
                 return
@@ -381,6 +391,7 @@ class ExecutionManager:
                         environment_id
                     ):
                         self.store.forget_endpoint(environment_id)
+                        self._quarantined.discard(environment_id)
                         for live in lives:
                             self._lose(live, "the sandbox that was deleted, stopped or replaced")
                         return
@@ -570,7 +581,8 @@ class ExecutionManager:
         if channel is not None:
             self._channels.discard(channel)
             await channel.shutdown()
-            self.store.forget_endpoint(environment_id)
+            if not self.store.recycle_needed(environment_id):
+                self.store.forget_endpoint(environment_id)
 
     async def activity(self, environment_id: str) -> Activity | None:
         """What an environment is doing now; None when its executor cannot say."""
@@ -798,28 +810,115 @@ class ExecutionManager:
 
     async def _environment(self, environment_id: str) -> _Environment:
         while True:
+            fence = self._daemon_fences.get(environment_id)
+            if fence is not None:
+                await asyncio.shield(fence)
+                continue
             environment = self._environments.setdefault(environment_id, _Environment())
+            if self.store.recycle_needed(environment_id):
+                async with environment.lock:
+                    if not self.store.recycle_needed(environment_id):
+                        continue
+                    fence = self._start_daemon_fence(environment_id)
+                await asyncio.shield(fence)
+                continue
             # Marked used before anything waits, so that suspension leaves it alone.
             environment.last_used = time.monotonic()
             if environment.channel is None or environment.channel.closed:
                 # Outside the lock: preparing may start a stopped sandbox under the
                 # environments' own lock, which suspension holds while it takes this one.
                 await self.backend.prepare(environment_id)
-            async with environment.lock:
-                if self._environments.get(environment_id) is not environment:
-                    continue  # released meanwhile, by a suspension or a deletion: start over
-                await self._open(environment_id, environment)
+            try:
+                async with environment.lock:
+                    if (
+                        self._environments.get(environment_id) is not environment
+                        or environment_id in self._daemon_fences
+                    ):
+                        continue  # released or fenced while this request waited
+                    await self._open(environment_id, environment)
+            except _DaemonIncarnationError:
+                fence = self._start_daemon_fence(environment_id)
+                await asyncio.shield(fence)
+                continue
             return environment
+
+    def _start_daemon_fence(self, environment_id: str) -> asyncio.Task[None]:
+        self._quarantined.add(environment_id)
+        fence = self._daemon_fences.get(environment_id)
+        if fence is None:
+            fence = self._spawn(self._recycle_daemon(environment_id))
+            self._daemon_fences[environment_id] = fence
+            fence.add_done_callback(partial(self._fence_done, environment_id))
+        return fence
+
+    def _fence_done(self, environment_id: str, task: asyncio.Task[None]) -> None:
+        if self._daemon_fences.get(environment_id) is task:
+            self._daemon_fences.pop(environment_id, None)
+
+    async def _recycle_daemon(self, environment_id: str) -> None:
+        """Fence the whole VM, outside the execution lock, before publishing a replacement.
+
+        OpenShell can refuse a peer's /proc/environ after its ancestor daemon dies.
+        Owner-mark scans alone cannot prove its escaped children have stopped. Keep
+        the old endpoint durable until the managed lifecycle confirms stop/start.
+        """
+        if self.recycle_daemon is None:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "executor incarnation lost; replacement refused until the sandbox is recycled",
+            )
+        binding = self.store.recycle_binding(environment_id)
+        if binding is None:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "original sandbox identity was not recorded; replacement refused until "
+                "an operator confirms cleanup of the original sandbox",
+            )
+        await self.recycle_daemon(environment_id, *binding)
+        self.store.finish_recycle(environment_id)
+        self._quarantined.discard(environment_id)
 
     async def _open(self, environment_id: str, environment: _Environment) -> None:
         """Start the environment's executor unless one runs. Hold its lock."""
         if environment.channel is None or environment.channel.closed:
+            identity = self.daemon_identity(environment_id) if self.daemon_identity else None
             channel = await self.backend.open(
                 environment_id,
                 partial(self._on_event, environment_id),
                 partial(self._on_closed, environment_id),
             )
             self._channels.add(channel)
+            if (
+                self.daemon_identity is not None
+                and self.daemon_identity(environment_id) != identity
+            ):
+                await channel.shutdown()
+                raise WorkerError(ErrorKind.UNAVAILABLE, "environment binding changed during open")
+            previous = self.store.endpoint_incarnation(environment_id)
+            previous_binding = self.store.endpoint_binding(environment_id)
+            if (
+                self.backend.name == "openshell"
+                and channel.daemon_token is not None
+                and previous is not None
+                and (
+                    channel.incarnation != previous
+                    or (previous_binding is not None and previous_binding != identity)
+                )
+            ):
+                self.store.require_recycle(environment_id, previous)
+                self._quarantined.add(environment_id)
+                await channel.shutdown()
+                for live in list(self._live.values()):
+                    saved = self.store.recovery(live.execution.execution_id)
+                    if (
+                        live.environment_id == environment_id
+                        and live.dispatched
+                        and saved is not None
+                        and saved[1] == previous
+                        and live.execution.state not in TERMINAL_STATES
+                    ):
+                        self._lose(live, "the sandbox executor incarnation")
+                raise _DaemonIncarnationError()
             try:
                 hostname, languages, features = self._describe(environment_id, channel.hello)
                 self._observe(environment_id, channel.hello.get("environment"), "")
@@ -849,7 +948,7 @@ class ExecutionManager:
             environment.features = features
             environment.channel = channel
             if channel.daemon_token is not None:
-                self.store.remember_endpoint(environment_id, channel.incarnation)
+                self.store.remember_endpoint(environment_id, channel.incarnation, identity)
 
     async def forget_revisions(self, environment_id: str) -> None:
         """Forget a deleted environment's revisions, and delete the lockfiles only they
@@ -1007,6 +1106,15 @@ class ExecutionManager:
                     f"operation {request.operation_id} was submitted with a different request",
                 )
             return self.get(execution_id), False
+        if (
+            request.context.environment_id in self._quarantined
+            or request.context.environment_id in self._daemon_fences
+            or self.store.recycle_needed(request.context.environment_id)
+        ):
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "the environment is fenced until its sandbox executor is safely recycled",
+            )
         job: JobDetails | None = None
         execution_id = new_id("exe")
         if isinstance(request, JobRequest):
