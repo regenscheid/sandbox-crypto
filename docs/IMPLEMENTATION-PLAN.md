@@ -124,6 +124,13 @@ Implement retain/suspend or capture/restore using one environment lifecycle comp
 
 ### W4 — Integrate the initial research workspace (M2 → M3)
 
+The [GUI distribution](WORKSPACE.md#building-and-running) now includes checked
+notices for actual bundled npm modules/runtime helpers, embedded-component notices, the existing unmodified
+KaTeX fonts/glyph-derived SVG assets and project MIT code, with deterministic file coverage. Missing,
+changed or uncovered inputs fail the build. This closes the notice-shipping
+prerequisite locally; final independent review/integrated gates/fresh PR CI and
+merge remain delivery gates. It adds no dependency or platform-code license allowance.
+
 Document synchronization now has separate [worker catalog](WORKER.md#document-catalog-prerequisite)
 and [control publication outbox](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
 prerequisites. The latter records canonical changes and source events in one transaction

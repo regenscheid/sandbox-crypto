@@ -190,7 +190,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Previews of rich artifacts (HTML, SVG, notebook output, PDFs) on a separate origin in sandboxed frames (D54); the PDF viewer
 - [ ] Live updates while a run is in progress; the environments' live state from the worker
 - [ ] Records of runs that end in an error
-- [ ] Ship the bundled npm packages' license notices with the built app before it is distributed: the build drops license comments
+- [ ] Ship the bundled npm packages' license notices with the built app before it is distributed: implemented locally with checked actual module/helper coverage, exact primary notices, project MIT, embedded component notices and unmodified KaTeX font attribution/OFL and deterministic file hashes ([distribution](../docs/WORKSPACE.md#building-and-running)); 27 focused cases and initial build/check pass. Independent review, final main union/gates, fresh PR CI and merge remain required
+- [ ] Isolated math-check distribution: extend its separate root-KaTeX/project-MIT copier with checked notices for its actual embedded components before distribution; the GUI notice work deliberately leaves that copier unchanged
 - [ ] TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5)
 
 ## babbage

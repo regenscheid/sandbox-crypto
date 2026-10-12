@@ -1,5 +1,21 @@
 # Plan changes
 
+## 2026-10-12 — bundled GUI distribution notices
+
+Implement the existing W4 notice-shipping backlog item with a production build
+plugin: actual emitted npm module/runtime-helper coverage, complete primary local
+notice text, project MIT, exact KaTeX CSS/font pins and deterministic distribution
+hashes. Unknown or mismatched inputs and unclassified copied/public assets fail
+the build. Local source identifies React-derived Apache 2 helpers, an MIT is-promise
+adaptation and OFL glyph-derived SVG assets; distributed fonts also identify OFL.
+Retain the exact source/font attribution and pinned primary license text. OFL
+remains the existing font/SVG asset terms; the platform-code allowlist does not
+change. No new dependency, service, route/UI or math-check copier change.
+Initial build/check and 27 focused tests pass; independent review, actual-main
+union/final gates, fresh PR CI and merge remain required. See
+[distribution](../docs/WORKSPACE.md#building-and-running) and
+[primary inputs](../web/workspace/licenses/README.md).
+
 - **MAIN finding explanation math** (D82/LD-53–55/CR-36–38; [scope](../docs/FINDING-PROSE-MATH.md)). Extend the accepted document/comment engine only to MAIN-authored fix/rebut explanation fields. Original scientific transitions remain immutable; ordinary same-session MAIN edits require exact finding/body CAS and bounded immutable operation replay. Reviewer confirmation independently pins the current explanation. Source-neutral checks use real finding parents, empty macros, session-private evidence, shared quotas/closing/save-ACK and explicit held unknown legacy proof. No new USER edit authority, recursive diagnostic source, service/provider/runtime pin/security policy, ledger or idle scope. Signed source `eb5a50f`, actual-main union `c509bc1` and replay correction `f7bb0a3` passed independent review and final combined gates (9,730 Python/43 skips/two existing warnings, 443 web/24 math, all required checks/builds). Root-owned [browser acceptance](docs/agent-reports/finding-prose-math-2026-10-12.md) passed independent scientific/mechanical confirmation and session scope; full teardown passed. Fresh PR CI is required before merge.
 
 ## 2026-10-12 — worker-local terminal observation prerequisite

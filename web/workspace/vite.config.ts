@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vitest/config';
+import { licenseNotices } from './server/license-notices.mjs';
 
 // The server is sandbox-science-workspace; `npm run dev` passes its routes through.
 const server = 'http://127.0.0.1:8200';
 
 export default defineConfig({
-  plugins: [svelte()],
+  plugins: [svelte(), licenseNotices()],
   build: {
     // Every asset is a file of its own: the server's Content-Security-Policy admits no
     // data: URLs, for fonts or anything else.
@@ -20,7 +21,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'server/**/*.test.mjs'],
     environment: 'node',
   },
 });
