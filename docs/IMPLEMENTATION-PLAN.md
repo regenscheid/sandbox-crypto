@@ -132,7 +132,9 @@ trusted publishing attribution, bounded transfer and durable uncertain-outcome
 holds. Internal pinned/latest reads and atomic events are the consumer boundary.
 The bounded explicit-publication reviewer consumer uses durable atomic feed/cursors,
 exact raw UTF-8 source copies and scoped pinned finding/fix grants. Unsupported content
-remains incomplete; no parser or worker authority is added. Automatic execution-output
+remains incomplete; no parser or worker authority is added. Independent review, final
+combined local gates and [browser/API acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md)
+passed; fresh PR CI remains its merge gate. Automatic execution-output
 inventory remains open, alongside imports, observed-input lineage, retention/deletion
 workflows and rich PDF/GUI consumers.
 Actual producer remains unknown; a worker last-writer hint is not provenance proof.

@@ -1,0 +1,716 @@
+{
+  "source": "9995f8a4f7513e1abbd5495d7ad9f2b5c66a6eac",
+  "python": "3.13.15",
+  "fixture": {
+    "fixture": "synthetic-artifact-review-1",
+    "project": "artifact-demo",
+    "session": "main",
+    "review": "rev-f84e4ba16c8d9ef7ef08b0e3",
+    "evidence": "ev-b3dbc6e64162eb021fc0b395",
+    "finding": "finding-8450703ff874979588324284",
+    "availability_review": "rev-02bfb23fa47f9ee33f9a1baa",
+    "empty_evidence": "ev-d454a13de6bf161080287273",
+    "other_session": "other",
+    "other_review": "rev-c9cff5b9e9f9902480cc2d41",
+    "other_evidence": "ev-99b5e22fdc9650d3d44ba935",
+    "foreign_project": "foreign-artifact-demo",
+    "original": {
+      "mode": "pinned",
+      "artifact_id": "artifact-dfc7f5720ae39bd849913af1",
+      "project_id": "artifact-demo",
+      "revision": 1,
+      "sha256": "4bf15947f996cc0157bca364c863a2536564e28f13945deedf7336c0d9f75bea",
+      "size": 35,
+      "media_type": "text/plain"
+    },
+    "corrected": {
+      "mode": "pinned",
+      "artifact_id": "artifact-dfc7f5720ae39bd849913af1",
+      "project_id": "artifact-demo",
+      "revision": 2,
+      "sha256": "0628899f12c17057cfb66a3fee010ea883faf598ef7ae533157797706743b191",
+      "size": 35,
+      "media_type": "text/plain"
+    },
+    "url": "/#/projects/artifact-demo/sessions/main"
+  },
+  "browser": {
+    "original": "count = 16\r\nraw \"quote\" and \\slash\n",
+    "empty": {
+      "label": "Empty source (0 characters).",
+      "text": ""
+    },
+    "binary": {
+      "projection": 1,
+      "reference": {
+        "mode": "pinned",
+        "artifact_id": "artifact-91b2033b66c1c8c6abdd5ec4",
+        "project_id": "artifact-demo",
+        "revision": 1,
+        "sha256": "06eb7d6a69ee19e5fbdf749018d3d2abfa04bcbd1365db312eb86dc7169389b8",
+        "size": 2,
+        "media_type": "application/octet-stream"
+      },
+      "source": {
+        "kind": "agent_publication",
+        "context": {
+          "project_id": "artifact-demo",
+          "session_id": "main",
+          "environment_id": "artifact-demo-default-29b1bd204565",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "run_id": "synthetic-author",
+        "tool_call": "synthetic-publication",
+        "alias": "scripted",
+        "model": "scripted",
+        "worker_endpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "observed_inputs": "unknown",
+        "producer": "unknown"
+      },
+      "availability": "binary",
+      "text": null,
+      "reason": "media type is outside the raw text evidence allowlist"
+    },
+    "nonUtf8": {
+      "projection": 1,
+      "reference": {
+        "mode": "pinned",
+        "artifact_id": "artifact-d80970bc9502f0d50ffdbfe8",
+        "project_id": "artifact-demo",
+        "revision": 1,
+        "sha256": "a8100ae6aa1940d0b663bb31cd466142ebbdbd5187131b92d93818987832eb89",
+        "size": 1,
+        "media_type": "text/plain"
+      },
+      "source": {
+        "kind": "agent_publication",
+        "context": {
+          "project_id": "artifact-demo",
+          "session_id": "main",
+          "environment_id": "artifact-demo-default-29b1bd204565",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "run_id": "synthetic-author",
+        "tool_call": "synthetic-publication",
+        "alias": "scripted",
+        "model": "scripted",
+        "worker_endpoint_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "observed_inputs": "unknown",
+        "producer": "unknown"
+      },
+      "availability": "non_utf8",
+      "text": null,
+      "reason": "source is not strict UTF-8"
+    },
+    "delayedSelection": {
+      "emptyStillVisible": true,
+      "text": ""
+    },
+    "otherSession": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"artifact-demo\":\n      - /url: \"#/projects/artifact-demo\"\n    - text: /\n  - heading \"Session other\" [level=1]\n  - term: Environment\n  - definition:\n    - code: artifact-demo-default-29b1bd204565\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 6:54:06 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - list:\n      - button \"terminal \u00b7 inconclusive \u00b7 10/12/2026, 6:54:07 AM\"\n      - text: Synthetic private evidence.\n    - heading \"Document math checks\" [level=3]\n    - paragraph: Mechanical checks use the operator-configured renderer. Unavailable, queued and quota-held work cannot establish a fix. Checks with no eligible author remain visible here.\n    - paragraph: No document math checks recorded.\n    - list\n    - heading \"Findings\" [level=3]\n    - paragraph: No consistency findings recorded.\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: .",
+    "scope": {
+      "noOriginalFinding": true,
+      "noPreview": true
+    },
+    "corrected": "count = 15\r\nraw \"quote\" and \\slash\n",
+    "confirmed": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"artifact-demo\":\n      - /url: \"#/projects/artifact-demo\"\n    - text: /\n  - heading \"Session main\" [level=1]\n  - term: Environment\n  - definition:\n    - code: artifact-demo-default-29b1bd204565\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 6:54:06 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - list:\n      - button \"confirmation \u00b7 passed \u00b7 10/12/2026, 6:57:48 AM\"\n      - text: Synthetic correction checked.\n      - button \"terminal \u00b7 inconclusive \u00b7 10/12/2026, 6:54:07 AM\"\n      - text: Synthetic binary/non-UTF8 content remains incomplete.\n      - button \"terminal \u00b7 findings \u00b7 10/12/2026, 6:54:07 AM\"\n      - text: Synthetic count mismatch.\n    - heading \"confirmation review \u00b7 passed\" [level=3]\n    - paragraph: Synthetic correction checked.\n    - paragraph: Alias scripted-reviewer \u00b7 model scripted \u00b7 4 model calls \u00b7 0 input / 0 output tokens \u00b7 22426 reserved estimate.\n    - paragraph: Pinned finding and fix scope \u00b7 no author feed consumed \u00b7 coverage complete within available evidence \u00b7 cap not reached \u00b7 rubric sandbox-consistency-1.\n    - generic \"Classifier and configuration identity\"\n    - list:\n      - button \"artifact \u00b7 available\" [active]\n      - code: \"{\\\"artifact\\\":{\\\"mode\\\":\\\"pinned\\\",\\\"artifact_id\\\":\\\"artifact-dfc7f5720ae39bd849913af1\\\",\\\"project_id\\\":\\\"artifact-demo\\\",\\\"revision\\\":2,\\\"sha256\\\":\\\"0628899f12c17057cfb66a3fee010ea883faf598ef7ae533157797706743b191\\\",\\\"size\\\":35,\\\"media_type\\\":\\\"text/plain\\\"},\\\"run\\\":\\\"synthetic-author\\\"}\"\n      - button \"finding \u00b7 available\"\n      - code: \"{\\\"finding\\\":\\\"finding-8450703ff874979588324284\\\",\\\"revision\\\":2}\"\n      - button \"artifact \u00b7 available\"\n      - code: \"{\\\"artifact\\\":{\\\"mode\\\":\\\"pinned\\\",\\\"artifact_id\\\":\\\"artifact-dfc7f5720ae39bd849913af1\\\",\\\"project_id\\\":\\\"artifact-demo\\\",\\\"revision\\\":1,\\\"sha256\\\":\\\"4bf15947f996cc0157bca364c863a2536564e28f13945deedf7336c0d9f75bea\\\",\\\"size\\\":35,\\\"media_type\\\":\\\"text/plain\\\"},\\\"run\\\":\\\"synthetic-author\\\"}\"\n    - button \"Load review audit records\"\n    - heading \"Pinned evidence preview\" [level=3]\n    - generic \"Pinned evidence preview\": count = 15 raw \"quote\" and \\slash\n    - heading \"Document math checks\" [level=3]\n    - paragraph: Mechanical checks use the operator-configured renderer. Unavailable, queued and quota-held work cannot establish a fix. Checks with no eligible author remain visible here.\n    - paragraph: No document math checks recorded.\n    - list\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"fail \u00b7 contradicting_value \u00b7 confirmed fixed\" [level=3]\n      - paragraph:\n        - code: finding-8450703ff874979588324284\n        - text: \u00b7 revision 3 \u00b7 0 reflags\n      - paragraph: Synthetic count16 must be corrected to15. No experiment ran.\n      - generic \"Pinned evidence anchors\"\n      - button \"Load earlier finding history\" [disabled]\n      - paragraph: 1 \u00b7 open \u00b7 review:rev-f84e4ba16c8d9ef7ef08b0e3\n      - paragraph: Reviewer raised this finding.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 2 \u00b7 claimed fixed \u00b7 user:user\n      - paragraph: Synthetic exact count16 to15 correction; no experiment ran.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 3 \u00b7 confirmed fixed \u00b7 review:rev-26a564068f6db755bcea10cc\n      - paragraph: \"Scripted fixture: exact16 to15; synthetic only.\"\n      - generic \"Decision evidence and attribution\"\n      - generic \"Respond as user\"\n      - option \"Rebut with explanation\" [selected]\n      - option \"Claim fixed\"\n      - option \"Confirm fixed as user\"\n      - option \"Dismiss as user\"\n      - option \"Reopen\"\n  - heading \"Runs\" [level=2]\n  - paragraph: Oldest first. The newest is open; open the others to read them.\n  - generic \"Run synthetic-author started Oct 12, 2026, 6:54:07 AM\":\n    - text: Run\n    - code: synthetic-author\n    - text: started Oct 12, 2026, 6:54:07 AM\n  - status: \"Consistency review: findings.\"\n  - term: Ran\n  - definition: Oct 12, 2026, 6:54:07 AM for 0 s, 0 tool calls\n  - term: Environment\n  - definition:\n    - code: artifact-demo-default-29b1bd204565\n  - term: Ended\n  - definition: with an answer\n  - heading \"Answer\" [level=3]\n  - paragraph: Synthetic count16.",
+    "logs": []
+  },
+  "http_api": {
+    "original": {
+      "status": 200,
+      "body": {
+        "evidence": "ev-b3dbc6e64162eb021fc0b395",
+        "sha256": "d40b8037dfbe2b5be045eb1d5fc3880a7e2fd120789b2efdf32514a63345c67b",
+        "locator": {
+          "artifact": {
+            "mode": "pinned",
+            "artifact_id": "artifact-dfc7f5720ae39bd849913af1",
+            "project_id": "artifact-demo",
+            "revision": 1,
+            "sha256": "4bf15947f996cc0157bca364c863a2536564e28f13945deedf7336c0d9f75bea",
+            "size": 35,
+            "media_type": "text/plain"
+          },
+          "run": "synthetic-author",
+          "block": null,
+          "start": 0,
+          "empty_source": false,
+          "returned_characters": 35,
+          "total_characters": 35
+        },
+        "text": "count = 16\r\nraw \"quote\" and \\slash\n",
+        "start": 0,
+        "next_start": null,
+        "total_characters": 35,
+        "complete": true,
+        "source_sha256": "4bf15947f996cc0157bca364c863a2536564e28f13945deedf7336c0d9f75bea",
+        "availability": "text"
+      }
+    },
+    "empty": {
+      "status": 200,
+      "body": {
+        "evidence": "ev-d454a13de6bf161080287273",
+        "sha256": "60ac328eb1d866396aecd6e21aad4bf65fe6e985cb1917aa280c6c7b0cd0f9b1",
+        "locator": {
+          "artifact": {
+            "mode": "pinned",
+            "artifact_id": "artifact-32a07751e4b1c50c983b4fe7",
+            "project_id": "artifact-demo",
+            "revision": 1,
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "size": 0,
+            "media_type": "text/plain"
+          },
+          "run": "synthetic-author",
+          "block": null,
+          "start": 0,
+          "empty_source": true,
+          "returned_characters": 0,
+          "total_characters": 0
+        },
+        "text": "",
+        "start": 0,
+        "next_start": null,
+        "total_characters": 0,
+        "complete": true,
+        "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "availability": "text"
+      }
+    },
+    "other_session": {
+      "status": 404,
+      "body": {
+        "error": {
+          "kind": "not_found",
+          "message": "no such review",
+          "details": {}
+        }
+      }
+    },
+    "foreign_project": {
+      "status": 404,
+      "body": {
+        "error": {
+          "kind": "not_found",
+          "message": "no such review",
+          "details": {}
+        }
+      }
+    },
+    "forged_ref": {
+      "status": 409,
+      "body": {
+        "error": {
+          "kind": "conflict",
+          "message": "claimed artifact reference differs from session evidence",
+          "details": {}
+        }
+      }
+    },
+    "claim": {
+      "status": 200,
+      "body": {
+        "finding_id": "finding-8450703ff874979588324284",
+        "status": "claimed fixed",
+        "revision": 2,
+        "reflags": 0
+      }
+    },
+    "claim_replay": {
+      "status": 200,
+      "body": {
+        "finding_id": "finding-8450703ff874979588324284",
+        "status": "claimed fixed",
+        "revision": 2,
+        "reflags": 0,
+        "replayed": true
+      }
+    }
+  },
+  "confirmation": {
+    "review": {
+      "review_id": "rev-26a564068f6db755bcea10cc",
+      "project": "artifact-demo",
+      "session": "main",
+      "kind": "confirmation",
+      "author_run": "synthetic-confirmation",
+      "state": "passed",
+      "start_seq": 6,
+      "end_seq": 5,
+      "created": 1791802668.488629,
+      "ended": 1791802668.5033972,
+      "alias": "scripted-reviewer",
+      "resolved_model": "scripted",
+      "rubric": "sandbox-consistency-1",
+      "config": {
+        "enabled": true,
+        "min_interval_seconds": 120.0,
+        "text_characters": 2000,
+        "artifact_revisions": 3,
+        "kernel_cells": 40,
+        "kernel_interval_seconds": 1800.0,
+        "terminal_hold": true,
+        "interrupt_severity": "fail",
+        "response_rounds": 2,
+        "max_reflags": 2,
+        "max_findings": 10,
+        "max_turns": 12,
+        "time_seconds": 120.0,
+        "max_input_chars": 150000,
+        "max_output_chars": 16000,
+        "token_budget": 64000,
+        "calls_per_hour": 60
+      },
+      "config_revision": "5c9903ae5c2b60db53d380e7ed642161ee9c2ce7de74065648cbac7ba2dc1b1c",
+      "classifier": {},
+      "summary": "Synthetic correction checked.",
+      "cap_reached": 0,
+      "input_tokens": 0,
+      "output_tokens": 0,
+      "estimated_tokens": 22426,
+      "calls": 4,
+      "coverage_complete": 1,
+      "confirmation_key": "4910e00c9b87b71b6e956e6a42fdb0a447309c9b4763565bccbbd85ea483b32c"
+    },
+    "finding": {
+      "finding_id": "finding-8450703ff874979588324284",
+      "project": "artifact-demo",
+      "session": "main",
+      "review_id": "rev-f84e4ba16c8d9ef7ef08b0e3",
+      "severity": "fail",
+      "category": "contradicting_value",
+      "statement": "Synthetic count16 must be corrected to15. No experiment ran.",
+      "anchors": [
+        {
+          "evidence": "ev-b3dbc6e64162eb021fc0b395",
+          "review": "rev-f84e4ba16c8d9ef7ef08b0e3",
+          "locator": {
+            "artifact": {
+              "mode": "pinned",
+              "artifact_id": "artifact-dfc7f5720ae39bd849913af1",
+              "project_id": "artifact-demo",
+              "revision": 1,
+              "sha256": "4bf15947f996cc0157bca364c863a2536564e28f13945deedf7336c0d9f75bea",
+              "size": 35,
+              "media_type": "text/plain"
+            },
+            "run": "synthetic-author"
+          },
+          "sha256": "d40b8037dfbe2b5be045eb1d5fc3880a7e2fd120789b2efdf32514a63345c67b",
+          "complete": true
+        }
+      ],
+      "remedy": null,
+      "status": "confirmed fixed",
+      "revision": 3,
+      "reflags": 0,
+      "dedupe": "240d76fa3a96f39675d991ef19818141264d4e14e11883d9a579ddc63aea9ebe",
+      "supersedes": null,
+      "created": 1791802447.0020134,
+      "origin": "review",
+      "math_check_id": null,
+      "source": {
+        "kind": "review",
+        "review": "rev-f84e4ba16c8d9ef7ef08b0e3"
+      },
+      "history": [
+        {
+          "revision": 1,
+          "status": "open",
+          "actor": "review:rev-f84e4ba16c8d9ef7ef08b0e3",
+          "reason": "Reviewer raised this finding.",
+          "payload": {
+            "review": "rev-f84e4ba16c8d9ef7ef08b0e3",
+            "assessment": {
+              "review_id": "rev-f84e4ba16c8d9ef7ef08b0e3",
+              "severity": "fail",
+              "category": "contradicting_value",
+              "statement": "Synthetic count16 must be corrected to15. No experiment ran.",
+              "anchors": [
+                {
+                  "evidence": "ev-b3dbc6e64162eb021fc0b395",
+                  "review": "rev-f84e4ba16c8d9ef7ef08b0e3",
+                  "locator": {
+                    "artifact": {
+                      "mode": "pinned",
+                      "artifact_id": "artifact-dfc7f5720ae39bd849913af1",
+                      "project_id": "artifact-demo",
+                      "revision": 1,
+                      "sha256": "4bf15947f996cc0157bca364c863a2536564e28f13945deedf7336c0d9f75bea",
+                      "size": 35,
+                      "media_type": "text/plain"
+                    },
+                    "run": "synthetic-author"
+                  },
+                  "sha256": "d40b8037dfbe2b5be045eb1d5fc3880a7e2fd120789b2efdf32514a63345c67b",
+                  "complete": true
+                }
+              ],
+              "remedy": null
+            }
+          },
+          "created": 1791802447.0021641
+        },
+        {
+          "revision": 2,
+          "status": "claimed fixed",
+          "actor": "user:user",
+          "reason": "Synthetic exact count16 to15 correction; no experiment ran.",
+          "payload": {
+            "action": "fix",
+            "explanation": "Synthetic exact count16 to15 correction; no experiment ran.",
+            "anchors": [],
+            "revisions": [],
+            "artifact_revisions": [
+              {
+                "mode": "pinned",
+                "artifact_id": "artifact-dfc7f5720ae39bd849913af1",
+                "project_id": "artifact-demo",
+                "revision": 2,
+                "sha256": "0628899f12c17057cfb66a3fee010ea883faf598ef7ae533157797706743b191",
+                "size": 35,
+                "media_type": "text/plain"
+              }
+            ],
+            "author": {
+              "kind": "user",
+              "user": "user",
+              "session_id": null,
+              "run_id": null,
+              "role": null,
+              "model": null,
+              "alias": null,
+              "tool_call": null,
+              "import_id": null,
+              "service": null,
+              "worker_binding": null,
+              "environment_id": null,
+              "incarnation": null,
+              "execution_id": null,
+              "attempt_id": null
+            }
+          },
+          "created": 1791802646.5954576
+        },
+        {
+          "revision": 3,
+          "status": "confirmed fixed",
+          "actor": "review:rev-26a564068f6db755bcea10cc",
+          "reason": "Scripted fixture: exact16 to15; synthetic only.",
+          "payload": {
+            "review": "rev-26a564068f6db755bcea10cc",
+            "anchors": [
+              {
+                "evidence": "ev-7a56e0d6c122f82d31719a82",
+                "review": "rev-26a564068f6db755bcea10cc",
+                "locator": {
+                  "artifact": {
+                    "mode": "pinned",
+                    "artifact_id": "artifact-dfc7f5720ae39bd849913af1",
+                    "project_id": "artifact-demo",
+                    "revision": 2,
+                    "sha256": "0628899f12c17057cfb66a3fee010ea883faf598ef7ae533157797706743b191",
+                    "size": 35,
+                    "media_type": "text/plain"
+                  },
+                  "run": "synthetic-author"
+                },
+                "sha256": "f67b5703b52f6a15ff80882883f376355b29964ab164d93cd8f4d80eadc65078",
+                "complete": true
+              }
+            ],
+            "decision": "confirm"
+          },
+          "created": 1791802668.4997845
+        }
+      ],
+      "history_before": null
+    },
+    "audited": [
+      "ev-7a56e0d6c122f82d31719a82",
+      "ev-b3dbc6e64162eb021fc0b395",
+      "ev-df7dccbedf272048fa339de4"
+    ]
+  },
+  "production_assets": {
+    "index.html": {
+      "bytes": 496,
+      "sha256": "819d77f434f30f9cddb59561126ad69528251a59c5c2814487f25e6873316285"
+    },
+    "assets/index-C-8HGPz7.js": {
+      "bytes": 491616,
+      "sha256": "0626a86788cd52c27cb6ec5e351b63581b6dfc5670537ea371f32e5edfb5494f"
+    },
+    "assets/DocumentComments-MeeE8yBo.js": {
+      "bytes": 14296,
+      "sha256": "897e1c529ce8ea4783f4ecbdfb6d1e024a2e10ac7706c356845cda69cb7da282"
+    },
+    "assets/ReviewsPanel-CaJsIet3.js": {
+      "bytes": 17266,
+      "sha256": "acce451d810cf902e11ac25b8a2427018bc38ffd5fac97b63f21420c536cc84b"
+    },
+    "assets/DocumentComments-BHdYafUE.css": {
+      "bytes": 849,
+      "sha256": "f29d4da2d4884579e26c2d2507382d68d6f0d1aed4347bc73227eeca7a654d7a"
+    },
+    "assets/KaTeX_AMS-Regular-BQhdFMY1.woff2": {
+      "bytes": 28076,
+      "sha256": "0cdd387c9590a1a9f9794560022dbb59654a7d86f187aa0c81495ad42d3a7308"
+    },
+    "assets/KaTeX_AMS-Regular-DMm9YOAa.woff": {
+      "bytes": 33516,
+      "sha256": "30da91e84c893f875e252689faebdc590b2871145e8adc7f9a9d4dbd8ce0b251"
+    },
+    "assets/KaTeX_AMS-Regular-DRggAlZN.ttf": {
+      "bytes": 63632,
+      "sha256": "68534840bcfdd2bffb6f0e8deb48684dd01e7f04ea2813267577afb906de1d13"
+    },
+    "assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf": {
+      "bytes": 12368,
+      "sha256": "07d8e303ce4fc12b4bb54f1004170dd190a1f3db45d400fe68060df3e0897268"
+    },
+    "assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff": {
+      "bytes": 7716,
+      "sha256": "1ae6bd7475590e97e7f145a89e09ccde322f7a6bc0b91607b1c8b8ee28290fed"
+    },
+    "assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2": {
+      "bytes": 6912,
+      "sha256": "de7701e42cf1f4cf0b766c03fb27977207eee2f4fd5d76fa82188406da43ea4c"
+    },
+    "assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff": {
+      "bytes": 7656,
+      "sha256": "3398dd02302557a793f2863f88e02d96ce10df2abffa07c8e9fa90775116e65c"
+    },
+    "assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2": {
+      "bytes": 6908,
+      "sha256": "5d53e70ad607c2352162dec9e0923fb54ecdafaccbf604cd8dcf7d00facb989b"
+    },
+    "assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf": {
+      "bytes": 12344,
+      "sha256": "ed0b74372feefcbb9c0666b2e210da37b7e49fa7fbbf3eeb11db5f693dacfbb7"
+    },
+    "assets/KaTeX_Fraktur-Bold-BdnERNNW.ttf": {
+      "bytes": 19584,
+      "sha256": "9163df9c7122432e6495b4229fa9071cf9ae86a758ae5efc4924ec2e1a6dbce1"
+    },
+    "assets/KaTeX_Fraktur-Bold-BsDP51OF.woff": {
+      "bytes": 13296,
+      "sha256": "9be7ceb88004ab8ad124082246fbfcca4091e36385d4ec6ed1df67375dad50fb"
+    },
+    "assets/KaTeX_Fraktur-Bold-CL6g_b3V.woff2": {
+      "bytes": 11348,
+      "sha256": "74444efd593c005e3f4573b44524704c0af0a937fe911cca9e94068d0d140d3f"
+    },
+    "assets/KaTeX_Fraktur-Regular-CB_wures.ttf": {
+      "bytes": 19572,
+      "sha256": "1e6f9579e90e2cac37f8f60a597c436e075c114385652b7cbeb0dec0421291b3"
+    },
+    "assets/KaTeX_Fraktur-Regular-CTYiF6lA.woff2": {
+      "bytes": 11316,
+      "sha256": "51814d270d06ff0255dba0799994fa4d8c84d11f09951d47595f4abb1f3602dc"
+    },
+    "assets/KaTeX_Fraktur-Regular-Dxdc4cR9.woff": {
+      "bytes": 13208,
+      "sha256": "5e28753be717dac97f559f49bc10be9cf3c124ddcabda6659d11cb68febc6463"
+    },
+    "assets/KaTeX_Main-Bold-Cx986IdX.woff2": {
+      "bytes": 25324,
+      "sha256": "0f60d1b897938ec918c8ce073092411baf9438f6739465693ff18b0f9d20b021"
+    },
+    "assets/KaTeX_Main-Bold-Jm3AIy58.woff": {
+      "bytes": 29912,
+      "sha256": "c76c5d696297d51b9cb1639c7da4334f0e7dec81b42b11213b5e25ef671bb822"
+    },
+    "assets/KaTeX_Main-Bold-waoOVXN0.ttf": {
+      "bytes": 51336,
+      "sha256": "138ac28d1663b3037e9c5f52371fa5c63d8324f4a38d22cd573e6ea3a3fd0cf8"
+    },
+    "assets/KaTeX_Main-BoldItalic-DxDJ3AOS.woff2": {
+      "bytes": 16780,
+      "sha256": "99cd42a3c072d918f2f44984a807cf7aa16e13545fd0875fc07c6c65f99e715b"
+    },
+    "assets/KaTeX_Main-BoldItalic-DzxPMmG6.ttf": {
+      "bytes": 32968,
+      "sha256": "70ee1f64a20f2048c21940ef46d0144fd215baa953ca69afd1e31e98544f708f"
+    },
+    "assets/KaTeX_Main-BoldItalic-SpSLRI95.woff": {
+      "bytes": 19412,
+      "sha256": "a6f7ec0d846ac7ad975adb8959c37ed49b94acbc4ae436db9ce9e20287e4a64c"
+    },
+    "assets/KaTeX_Main-Italic-3WenGoN9.ttf": {
+      "bytes": 33580,
+      "sha256": "0d85ae7cc30f23790a7f1a58c4a112fdca8aae769b6ba11429af1d98b1b6cb3a"
+    },
+    "assets/KaTeX_Main-Italic-BMLOBm91.woff": {
+      "bytes": 19676,
+      "sha256": "f1d6ef86f3b11a528bd5185199bd2443ecb2b0dead96d88674b5a2c12be24bdf"
+    },
+    "assets/KaTeX_Main-Italic-NWA7e6Wa.woff2": {
+      "bytes": 16988,
+      "sha256": "97479ca6cce906abc961ecac96faa5f9ca2e61b8e7670d475826bcdee9a7c267"
+    },
+    "assets/KaTeX_Main-Regular-B22Nviop.woff2": {
+      "bytes": 26272,
+      "sha256": "c2342cd8b869e01752a9321dc17213fc40d4d04c79688c1d43f2cf316abd7866"
+    },
+    "assets/KaTeX_Main-Regular-Dr94JaBh.woff": {
+      "bytes": 30772,
+      "sha256": "c6368d87e8a1a3a5d337623d83d8dc4b868f242a9ad476237d6f8d1e0f168cdc"
+    },
+    "assets/KaTeX_Main-Regular-ypZvNtVU.ttf": {
+      "bytes": 53580,
+      "sha256": "d0332f52868370fd83ae7fa46470f90c8f2eab2fcf12bc4f88080b340c95a830"
+    },
+    "assets/KaTeX_Math-BoldItalic-B3XSjfu4.ttf": {
+      "bytes": 31196,
+      "sha256": "f9377ab0271cda59af24bcffbd46a4d0c8a3572ffafdbb38de2ad5ea7b0d5ee5"
+    },
+    "assets/KaTeX_Math-BoldItalic-CZnvNsCZ.woff2": {
+      "bytes": 16400,
+      "sha256": "dc47344dbb6cb5b655c8460d561f4df5f501b90c804ad3c6cec65fe322351ab1"
+    },
+    "assets/KaTeX_Math-BoldItalic-iY-2wyZ7.woff": {
+      "bytes": 18668,
+      "sha256": "850c0af5c2238497febaf5e461d880bf458c341f42f4f330f1b1ab5698b1998e"
+    },
+    "assets/KaTeX_Math-Italic-DA0__PXp.woff": {
+      "bytes": 18748,
+      "sha256": "8a8d244581371912b8f3f5a23e2437cb2a59cd9bcaebb0346e722c05737a2571"
+    },
+    "assets/KaTeX_Math-Italic-flOr_0UB.ttf": {
+      "bytes": 31308,
+      "sha256": "08ce98e51b04d58945a301e639e02b6998af29fdfd61a7b8afdd07bbfc479d4a"
+    },
+    "assets/KaTeX_Math-Italic-t53AETM-.woff2": {
+      "bytes": 16440,
+      "sha256": "7af58c5ec8f132a2ddde9027c6d7814decce4d3b822a11192a42a20e2e973264"
+    },
+    "assets/KaTeX_SansSerif-Bold-CFMepnvq.ttf": {
+      "bytes": 24504,
+      "sha256": "1ece03f79f95277d57dc7f6b435a74e1379b0d46104a8530286b60ff49369ea0"
+    },
+    "assets/KaTeX_SansSerif-Bold-D1sUS0GD.woff2": {
+      "bytes": 12216,
+      "sha256": "e99ae51144bf1232efcc1bfe5add36262c6866b0faab24fa75740e1b98577a62"
+    },
+    "assets/KaTeX_SansSerif-Bold-DbIhKOiC.woff": {
+      "bytes": 14408,
+      "sha256": "ece03cfd83e22c212cdef66feb8442d25a083beb988db3f1883f3f9738d750ba"
+    },
+    "assets/KaTeX_SansSerif-Italic-C3H0VqGB.woff2": {
+      "bytes": 12028,
+      "sha256": "00b26ac825e2095056396e0553b8ac26d3f8ad158c3826e28b4c45b385c4714a"
+    },
+    "assets/KaTeX_SansSerif-Italic-DN2j7dab.woff": {
+      "bytes": 14112,
+      "sha256": "91ee67500cc0129aa0ace3ac5c61ff1692102f0f31d02b69347fba35dcb75bf2"
+    },
+    "assets/KaTeX_SansSerif-Italic-YYjJ1zSn.ttf": {
+      "bytes": 22364,
+      "sha256": "3931dd81faed86ba021bb2bbdc36f5bed9a38d6b4f4077aca59b265aa1b02083"
+    },
+    "assets/KaTeX_SansSerif-Regular-BNo7hRIc.ttf": {
+      "bytes": 19436,
+      "sha256": "f36ea897e19f4a2e571d1e900e4e3710e438deb05a842486045ba0a3e616a4ad"
+    },
+    "assets/KaTeX_SansSerif-Regular-CS6fqUqJ.woff": {
+      "bytes": 12316,
+      "sha256": "11e4dc8a6471ff6d6ee561d53d10fde8f7489e798257ff449c5d37c197435605"
+    },
+    "assets/KaTeX_SansSerif-Regular-DDBCnlJ7.woff2": {
+      "bytes": 10344,
+      "sha256": "68e8c73ef42afd3ccec58bf0fba302cce448938e7fc020a5e31f8a952eee1342"
+    },
+    "assets/KaTeX_Script-Regular-C5JkGWo-.ttf": {
+      "bytes": 16648,
+      "sha256": "1c67f068fea8bb09bf099c088b1cf64bd27516a6e07f4684344873564bb66a67"
+    },
+    "assets/KaTeX_Script-Regular-D3wIWfF6.woff2": {
+      "bytes": 9644,
+      "sha256": "036d4e95149b69ff9bcc0cd55771efeb25ffa3947293e69acd78d5ac328c684b"
+    },
+    "assets/KaTeX_Script-Regular-D5yQViql.woff": {
+      "bytes": 10588,
+      "sha256": "d96cdf2b3bdd4d64a8fd5f74a4c467f123a8a73931cd435889f08ffaf9bf947a"
+    },
+    "assets/KaTeX_Size1-Regular-C195tn64.woff": {
+      "bytes": 6496,
+      "sha256": "c943cc986384f59e86bea5fd7dc50a9c4dfe567a7c05eb40d6790720dead97c9"
+    },
+    "assets/KaTeX_Size1-Regular-Dbsnue_I.ttf": {
+      "bytes": 12228,
+      "sha256": "95b6d2f1a50173bfedb8c63e1d1c99b10427d0a4df4201cb44513b226951a22b"
+    },
+    "assets/KaTeX_Size1-Regular-mCD8mA8B.woff2": {
+      "bytes": 5468,
+      "sha256": "6b47c40166b6dbe21a5dfca7718413f2147fd2399be1ba605d8ad39cedf25dfe"
+    },
+    "assets/KaTeX_Size2-Regular-B7gKUWhC.ttf": {
+      "bytes": 11508,
+      "sha256": "a6b2099fb555c60e3a0db3a08842ebf1d732c6eb4e4bf44913613bed4fc4e39b"
+    },
+    "assets/KaTeX_Size2-Regular-Dy4dx90m.woff2": {
+      "bytes": 5208,
+      "sha256": "d04c54219f9eaec6d4d4fd42dfb28785975a4794d6b2fc71e566b9cd6db842dd"
+    },
+    "assets/KaTeX_Size2-Regular-oD1tc_U0.woff": {
+      "bytes": 6188,
+      "sha256": "2014c523c3210bcc166648c4d4cc57f05b747df07a24277bf71c51e67dc79e3d"
+    },
+    "assets/KaTeX_Size3-Regular-CTq5MqoE.woff": {
+      "bytes": 4420,
+      "sha256": "6ab6b62e9b62dae2c00dd90f791bd10950be0ecc3490d7d6045f51c2e8fe0949"
+    },
+    "assets/KaTeX_Size3-Regular-DgpXs0kz.ttf": {
+      "bytes": 7588,
+      "sha256": "500e04d54f0d51666332c9d2089aa803be22aa878eca539e59fa53c6e522b082"
+    },
+    "assets/KaTeX_Size3-Regular-gV2CO0n9.woff2": {
+      "bytes": 3624,
+      "sha256": "73d591271b1604960cb10bb90fee021670af7297017e0e98480b332d11f51995"
+    },
+    "assets/KaTeX_Size4-Regular-BF-4gkZK.woff": {
+      "bytes": 5980,
+      "sha256": "99f9c6750b489c9462bf04900bd3f939df9b829339daaaaa99ef5495cdddea58"
+    },
+    "assets/KaTeX_Size4-Regular-DWFBv043.ttf": {
+      "bytes": 10364,
+      "sha256": "c647367d1dd4e162468717d020e1fc0f1dc5c26ebfdffbe55261713bf88c5877"
+    },
+    "assets/KaTeX_Size4-Regular-Dl5lxZxV.woff2": {
+      "bytes": 4928,
+      "sha256": "a4af7d414440a1c1790825cfb700cf9cf43b0f2c4b04f0ebc523011ad9853ec0"
+    },
+    "assets/KaTeX_Typewriter-Regular-C0xS9mPB.woff": {
+      "bytes": 16028,
+      "sha256": "e14fed02b1aba7ce9f5afd5844b5d0321b22351febc720e0de8b8723527609f7"
+    },
+    "assets/KaTeX_Typewriter-Regular-CO6r4hn1.woff2": {
+      "bytes": 13568,
+      "sha256": "71d517d67827787cfabdf186914cc3358eda539e37931941f2b2fd4a21f68c0b"
+    },
+    "assets/KaTeX_Typewriter-Regular-D3Ib7_Hf.ttf": {
+      "bytes": 27556,
+      "sha256": "f01f3e87d9c6a61c0c081ceb577abd864eb00a612f7ac1620dd6915fad2ef5aa"
+    },
+    "assets/ReviewsPanel-BuYYCs52.css": {
+      "bytes": 856,
+      "sha256": "c53d556c31a5a22fa9cdfcb8aa4e5ad4cc056b2ed7dc671ab00076a32422db1a"
+    },
+    "assets/index-DSEifLaO.css": {
+      "bytes": 32025,
+      "sha256": "77e4d0be369629f0f1ef24b57db6dc647932fcc5573e833b033a10859410b317"
+    }
+  },
+  "runtime": "actual workspace HTTP/API and production GUI with immutable control bytes; synthetic fixture and ScriptedModel only; no worker/OpenShell or live model requests",
+  "cleanup": {
+    "tab_closed": true,
+    "transient_unit_stopped": true,
+    "marked_state_removed": true,
+    "port_35998_free": true
+  },
+  "archive_boundary": "Browser/HTTP records and exact confirmation read audit are retained. An optional all-table audit export failed before teardown and is not included."
+}
