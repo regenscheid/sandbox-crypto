@@ -27,12 +27,13 @@ from sandbox_science.orchestrator import worker_client
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 TOKEN = "test-secret-catalog-client"  # noqa: S105 - visibly synthetic credential
+CONTENT_SHA = hashlib.sha256(b"x").hexdigest()
 ENTRY = PublicationEntry(
     document_id="doc-one",
     revision=1,
     scope="project",
     name="one",
-    content_sha256=hashlib.sha256(b"x").hexdigest(),
+    content_sha256=CONTENT_SHA,
     content_bytes=1,
 )
 MANIFEST = manifest_sha256("p", 1, [ENTRY])
@@ -53,7 +54,7 @@ DELTA = CatalogDelta(
 CHUNK = CatalogContentChunk(
     project_id="p",
     generation_id=TARGET.generation_id,
-    content_sha256=ENTRY.content_sha256,
+    content_sha256=CONTENT_SHA,
     offset=0,
     content_b64=base64.b64encode(b"x").decode(),
 )
