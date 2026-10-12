@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -182,7 +183,9 @@ def sandbox(tmp_path: Path) -> Sandbox:
     path = hermetic_path(prefix, tmp_path)
     wrapped = provisioning.refresh(state, config, path)
     env = {"PATH": path, "HOME": str(tmp_path), "FAKEPM_LOG": str(prefix.log)}
-    env[provisioning.OWNER] = "call-test"
+    # Executor cleanup scans all readable /proc marks, including another pytest
+    # suite's package wrappers. Each disposable fixture needs its own namespace.
+    env[provisioning.OWNER] = f"test-provisioning-{uuid4().hex}"
     env.update(provisioning.variables(state, env, wrapped))
     provisioning.baseline(state, places)
     return Sandbox(prefix, state, config, env)
@@ -447,7 +450,7 @@ def test_two_installs_take_turns(sandbox: Sandbox) -> None:
     ]
     assert records[0]["after"] == records[1]["before"] != records[0]["before"]
     assert [record["via"] for record in records] == ["wrapper", "wrapper"]
-    assert [record["owner"] for record in records] == ["call-test", "call-test"]
+    assert [record["owner"] for record in records] == [sandbox.env[provisioning.OWNER]] * 2
     assert [item["name"] for item in records[1]["lockfile"]["pip"]] == ["alpha", "beta"]
 
 
