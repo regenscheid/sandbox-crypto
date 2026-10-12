@@ -576,3 +576,9 @@ The local runs are then skipped; setting only some of the variables is an error.
 - **Authentication.** Bearer tokens: the pool's own, and [clients' limited to projects](#clients-limited-to-projects). Environment IDs are still shared by the whole pool (see there). The outbound, worker-initiated channel for hosted control (architecture) comes later.
 - **Monitoring.** No connection yet to the monitor or the event store with a hash chain.
 - **Probes across sandboxes.** Two sandboxes with the same boot ID share a kernel, so neither is tier 3; the worker does not compare sandboxes with each other yet.
+
+Catalog prerequisite acceptance after integrating the math and consistency changes passed
+9,253 Python tests (43 opt-in skips), 429 web tests, strict/static/license/protocol checks
+and both production builds. Independent adversarial review covered retained identities,
+old receipt replay, stage expiry, project/authentication denial and cancellation while SQL
+commits remain owned. These tests establish the catalog boundary, not sandbox publication.
