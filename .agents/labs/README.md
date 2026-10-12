@@ -156,6 +156,13 @@ adversarial local evidence, distinct from the real graceful-stop run.
 
 ## Lab22: bounded artifact capture
 
+The [Lab22 report](../docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md) records
+the successful run on signed `b535856` and Python 3.14.8: exact binary/empty retention,
+twelve prompt oversized/symlink/FIFO refusals, repeated healthy publication and ordinary
+read/execution access. Independent inspection found zero capture leases/helpers; complete
+teardown was verified at 12:36:45 UTC. [Retained evidence](../docs/agent-reports/babbage-openshell-lab-22-evidence-2026-10-12.json)
+keeps 16 exact text records. The following recipe remains reusable for a new disposable run.
+
 Root coordinates the disposable run after exact source review. Start `lab_up.sh`
 and `PROJECT=lab22 worker_up.sh` from the frozen reviewed tree. Stop only its
 transient worker, add top-level `max_artifact_size = 1048576` to that disposable

@@ -1,6 +1,6 @@
 # Sticky package recovery admission (CP-13 prerequisite)
 
-This slice enforces refusal after a managed install leaves uncertain or changed packages. It does not restore packages, detect arbitrary unmanaged failures, or prove recovery by comparing package lists. `Restorer`, an operator clear command, uninstall/upgrade and CP-20 remain open. Independent review and root-owned OpenShell Lab21 passed on signed source `e320236`; both disposable labs are completely removed. Fresh PR CI is required before merge. Local fixtures and actual runtime observations are distinguished below.
+This slice enforces refusal after a managed install leaves uncertain or changed packages. It does not restore packages, detect arbitrary unmanaged failures, or prove recovery by comparing package lists. `Restorer`, an operator clear command, uninstall/upgrade and CP-20 remain open. Independent review and root-owned OpenShell Lab21 passed on signed source `e320236`; both disposable labs are completely removed. PR #85 merged after all three fresh CI checks passed. Local fixtures and actual runtime observations are distinguished below.
 
 ## Durable hold and positive authority
 
@@ -36,7 +36,7 @@ Root's first [Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026
 
 The final fresh Lab21 used exact `e320236`. After three new Conda records appeared, graceful worker stop/reconnect retained the original VM boot and kernel global `1729`, with no installer process left during the offline interval. New shell/cell/job/PDF requests, kernel restart and provisioning refused; queued calls had no `started_at` and their forbidden markers returned actual HTTP 404. Recovery file/status/cancel/history and the known-good lockfile remained available, and the independent environment stayed healthy. Explicit deletion twice retained the old identity; recreation proved a new immutable sandbox/boot, a ready gate and successful fresh/peer cells. Root independently verified complete final teardown at 12:13:54 UTC: all seven owned units inactive, lab directory absent, ports free, no owned VM/process/driver/OpenShell XDG state. Shared images and unrelated services were preserved.
 
-Legacy unknown-binding/replacement, malformed retained state and abrupt-death cases are adversarial local fixtures; the real offline run used graceful worker stop. Unknown post-interruption revision is not a newly captured lockfile. No restoration, unmanaged-failure detection or atomic name-addressed gateway deletion is claimed. Fresh PR CI is required before merge.
+Legacy unknown-binding/replacement, malformed retained state and abrupt-death cases are adversarial local fixtures; the real offline run used graceful worker stop. Unknown post-interruption revision is not a newly captured lockfile. No restoration, unmanaged-failure detection or atomic name-addressed gateway deletion is claimed. PR #85 merged after all three fresh CI checks passed.
 
 Earlier local evidence remains historical: the initial worker suite passed 703 cases with 32 opt-in skips, followed by focused retained-binding checks. The predecessor full run passed 9,520 cases with 43 skips and one older HTTP-composition namespace failure. Its missing hook defaults were corrected without changing assertions/timeouts; the final 9,532-case run passed.
 

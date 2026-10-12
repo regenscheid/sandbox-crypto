@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-one OpenShell runtime lab records, document editing, comments, consistency review and document math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-two OpenShell runtime lab records, document editing, comments, consistency review and document math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 12046,
-      "sha256": "8e142a71de68354ec02270b11c1d2ca61270f03674ae790ff3a123a0720660d2"
+      "bytes": 12608,
+      "sha256": "7733f91b353f6fc877414ca978ff6cbd8d15621cfdfce7741edf53a2ad37a2fe"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -170,6 +170,18 @@
       "category": "runtime-validation",
       "bytes": 595952,
       "sha256": "4529e8576a294b25ee749600435abb714f3358009a674a297a344116ceea5f5b"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-22-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 5900,
+      "sha256": "6ea51e1351c57c678b220781afd4b5b9fdb668ffc3279e8b3532ebf15b86e160"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-22-evidence-2026-10-12.json",
+      "category": "runtime-evidence",
+      "bytes": 103849,
+      "sha256": "3474c2a6577ecd4b6089e4045c038175afae2e580e0fbfe8bb21ce2d1065503d"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",
