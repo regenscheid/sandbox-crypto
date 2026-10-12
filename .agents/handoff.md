@@ -78,7 +78,7 @@ Nothing here blocks the queued work: each item has a default in place.
    - user edits and conflicts in the GUI (LD-13, LD-14) — completed with [browser acceptance](docs/agent-reports/document-editing-2026-10-12.md), including reviewed patches, reverts and workbook promotion;
    - comments, anchors and work requests (LD-21 to LD-24) — completed with [browser acceptance](docs/agent-reports/document-comments-2026-10-12.md); artifact/PDF anchors and annotation export remain open;
    - then the files under `documents/` in every environment, direct edits merged, and the `ss-doc` helper (LD-49 to LD-52), which are worker work;
-   - then math findings (LD-53 to LD-55, D82), which need KaTeX on the server (Node or an embedded engine, to choose).
+   - then math findings (LD-53 to LD-55, D82), which need the isolated Node [renderer prerequisite](../docs/MATH-CHECKS.md), independently reviewed with 9,116 Python and 422 web tests passing; save/finding scheduling and delivery remain open.
 4. **W4, automatic consistency review** (approved spec), built and tested with a scripted reviewer.
 5. **W4, the ledger, board and frontier** ([ledger](../docs/specs/ledger.md)).
 6. **The rest of W4:**
