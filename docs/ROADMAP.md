@@ -1,8 +1,8 @@
 # Implementation roadmap
 
-Date: 2026-10-10. No implementation milestone is complete. The three source investigations are complete as a planning input; nothing has been implemented. These gates combine reimplemented CScience behavior (D03, D11), the requested deployment split, and first-class math/source/document workflows.
+Updated: 2026-10-12. M1 passed its babbage exit run ([lab 9](../.agents/docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M0's behavior specifications and decisions still await the user's review; M2's complete local research workflow remains open. The worker boundary, native math/PDF tools, persistent project records, background jobs, executor recovery and substantial document/review GUI behavior are implemented, with their validation recorded in the [detailed plan](IMPLEMENTATION-PLAN.md). Hosted, multi-architecture, independent-placement and representative cryptography workflow gates remain open. These gates combine reimplemented CScience behavior (D03, D11), the requested deployment split, and first-class math/source/document workflows.
 
-The [detailed implementation plan](IMPLEMENTATION-PLAN.md) defines shared contracts, component ownership and work packages beneath these milestones. The [consistency review](CONSISTENCY-REVIEW.md) records resolved ambiguities and reusable components. Begin with W0/W1: behavior specifications and a minimal new-harness shell/Python worker slice, with infrastructure track P in parallel.
+The [detailed implementation plan](IMPLEMENTATION-PLAN.md) defines shared contracts, component ownership and work packages beneath these milestones. The [consistency review](CONSISTENCY-REVIEW.md) records resolved ambiguities and reusable components. Current implementation focuses on W4's research workspace and remaining M2 integration, alongside unfinished infrastructure work; [.agents/STATUS.md](../.agents/STATUS.md) and the [backlog](../.agents/BACKLOG.md) distinguish accepted slices from open work.
 
 ## M0 — Specify behavior and choose harness components
 
@@ -71,4 +71,4 @@ The user needs the whole initial feature set before the system is useful, so pha
 
 Define `finite-field-identity-v1`: over GF(17), check `a^17 = a` for all 17 elements and `a^16 = 1` for all 16 nonzero elements. Return canonical JSON with field order, counts, and assertion results. Local and cluster runs should agree on exact output while retaining distinct execution evidence. This checks integration and reproduction, not novel cryptographic reasoning.
 
-Keep source layout provisional until W0 settles the harness components.
+Keep the shared component boundaries in the detailed plan; certify each deployment placement through its own recorded evidence.
