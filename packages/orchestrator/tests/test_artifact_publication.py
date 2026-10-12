@@ -82,8 +82,11 @@ async def worker_url(tmp_path: Path) -> AsyncIterator[str]:
         store.close()
 
 
+@pytest.mark.parametrize("media", [None, "application/pdf; charset=utf8"])
 async def test_real_worker_http_publication_and_trusted_gateway_model(
-    worker_url: str, tmp_path: Path
+    worker_url: str,
+    tmp_path: Path,
+    media: str | None,
 ) -> None:
     documents = DocumentStore(tmp_path / "control.sqlite3")
     inventory = ArtifactInventory(documents)
@@ -102,6 +105,7 @@ async def test_real_worker_http_publication_and_trusted_gateway_model(
             arguments=json.dumps(
                 {
                     "path": "out.bin",
+                    "media_type": media,
                     "actor": "USER",
                     "model": "forged",
                     "context": {"project_id": "p2"},
@@ -119,6 +123,7 @@ async def test_real_worker_http_publication_and_trusted_gateway_model(
     assert revision.publication.kind == "agent_publication"
     assert revision.publication.alias == "research"
     assert revision.publication.model == "gateway-model"
+    assert revision.reference.media_type == (media or "application/octet-stream")
     assert revision.publication.producer == "unknown"
     assert revision.worker_last_writer_hint is None
     documents.close()

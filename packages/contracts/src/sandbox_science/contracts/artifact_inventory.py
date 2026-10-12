@@ -12,6 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from .artifacts import ArtifactRef
 from .context import ExecutionContext
 from .model import Contract, Identifier
+from .worker import MediaType
 
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 Counter = Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
@@ -38,7 +39,7 @@ class ArtifactSnapshot(ArtifactRef):
 
     size: Counter
     sha256: Digest
-    media_type: Annotated[str, Field(min_length=1, max_length=255)]
+    media_type: MediaType
     source_path: Annotated[str, Field(min_length=1, max_length=4096)]
 
     _path = field_validator("source_path")(artifact_path)
@@ -53,7 +54,7 @@ class ArtifactSnapshot(ArtifactRef):
     @field_validator("media_type")
     @classmethod
     def _media(cls, value: str) -> str:
-        if re.fullmatch(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+", value) is None:
+        if any(ord(c) < 32 or ord(c) == 127 for c in value):
             raise ValueError("invalid media type")
         return value
 
@@ -74,7 +75,7 @@ class ArtifactRevisionRef(Contract):
     revision: RevisionNumber
     sha256: Digest
     size: Counter
-    media_type: Annotated[str, Field(min_length=1, max_length=255)]
+    media_type: MediaType
 
 
 class ArtifactLink(Contract):
