@@ -120,6 +120,14 @@ environment publication is enabled.
 
 Use the shared artifact/revision/anchor contracts for living documents, comments, sources and ledger entries. Keep open questions/issues, scientific findings, results and frontier candidates as typed entries in one project ledger; board/frontier/history are views. Link review findings without merging their resolution lifecycle into scientific result status.
 
+The [immutable artifact inventory prerequisite](ARTIFACTS.md) retains explicit
+harness publications with stable scoped path IDs, immutable exact bytes/revisions,
+trusted publishing attribution, bounded transfer and durable uncertain-outcome
+holds. Internal pinned/latest reads and atomic events are the consumer boundary.
+Automatic execution-output inventory and reviewer ingestion remain open, alongside
+imports, observed-input lineage, retention/deletion workflows and PDF/GUI consumers.
+Actual producer remains unknown; a worker last-writer hint is not provenance proof.
+
 Support attributed user edits and revision-checked agent patches; demonstrate stale-patch reconciliation and orphaned anchors. Use one TeX-preserving renderer across research views. Evaluate PDF.js navigation against exact page/region anchors while retaining worker extraction/rendering. Assumption changes should identify dependent claims/reviews for reconsideration, not silently rewrite conclusions.
 
 The worker document-catalog prerequisite is implemented, but runtime document publication, direct-edit integration and `ss-doc` remain open (LD-49 to LD-52). Before enabling replacement/removal, complete the [protected-filesystem feasibility prerequisite](../.agents/docs/agent-reports/document-writer-guard-2026-10-12.md): prove arbitrary writable handle/mmap lifetime, namespace exclusion, exact capture/acknowledgement revalidation, bounded admission and monitor/controller failure/restart behavior under OpenShell. FUSE is a proposed boundary requiring implementation and real VM acceptance, not a selected or validated capability. Hold uncertain writer state; helper-only locks and ordinary VM recycling do not satisfy the requirement while preserving healthy kernels. Continue independent control outbox/source adapter/helper-contract work without claiming a runtime mirror.

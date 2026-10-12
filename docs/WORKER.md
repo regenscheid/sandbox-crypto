@@ -51,6 +51,13 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 | `GET /v1/provisioning/{id}?after=N&wait=S` | → `ProvisionOperation`. With `after`, it answers once the record's `seq` passes `N`, the operation finishes, or `S` seconds (at most 60) pass |
 | `POST /v1/provisioning/{id}/cancel` | → `ProvisionOperation`: a waiting operation ends at once; a running step is cancelled like any execution |
 
+The harness can ingest explicit publication into the separate [immutable control
+inventory](ARTIFACTS.md), retaining the worker reference alongside its pinned control
+revision. This adds no worker route or runtime change. The control transfer checks
+exact project/hash/size and keeps unknown publication outcomes held. Worker
+`produced_by` is retained only as an unproven last-writer hint; reading mutable source
+ranges does not establish atomic snapshot or writer-closure semantics.
+
 ### Clients limited to projects
 
 A pool can serve several orchestrators, each with a token of its own that acts only for some projects (D78). The settings name each client's token by its SHA-256 in a `[[clients]]` entry, never the token itself. `sandbox-science-worker token --out FILE` writes a new token and prints the line the entry takes; `token --sha256 FILE` prints it for an existing token. The pool's own token acts for every project, and no client may have it.

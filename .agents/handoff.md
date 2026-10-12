@@ -82,6 +82,7 @@ Nothing here blocks the queued work: each item has a default in place.
    - then math findings (LD-53 to LD-55, D82), which need the isolated Node [renderer prerequisite](../docs/MATH-CHECKS.md), independently reviewed with 9,116 Python and 422 web tests passing; save/finding scheduling and delivery remain open.
 4. **W4, automatic consistency review** (approved spec): implementation, independent review and [browser acceptance](docs/agent-reports/consistency-review-2026-10-12.md) passed, including exact confirmation scope without consuming author-work retries. Scripted fixtures establish plumbing and authority, not real-model judgment. Follow-on work includes immutable shell artifact inventory, live message/final-answer transport, idle scheduling, shared monetary accounting and D82 math finding integration.
 5. **W4, the ledger, board and frontier** ([ledger](../docs/specs/ledger.md)).
+   - The [immutable artifact inventory](../docs/ARTIFACTS.md) first slice implements explicit harness publication, bounded exact worker transfer, immutable control revisions and internal pinned/latest/evidence reads. Durable unknown intents hold rather than republishing mutable paths; known pins survive transfer/retention refusal. Actual producer and observed inputs remain unknown. Independent review/full gates are pending; automatic execution-output inventory, reviewer ingestion, imports/retention and PDF/GUI consumers remain open.
 6. **The rest of W4:**
    - the PDF viewer with anchors;
    - skills and the external crypto skill pack;

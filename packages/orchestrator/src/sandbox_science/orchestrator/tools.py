@@ -40,6 +40,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import Language
 
+from .artifact_publisher import ArtifactPublisher
 from .consistency.controller import AUTHOR_NAMES, ReviewController
 from .documents.errors import DocumentError
 from .documents.tool import NAMES as DOCUMENT_TOOLS
@@ -280,6 +281,7 @@ class Toolbox:
         documents: DocumentTool | None = None,
         jobs: JobTools | None = None,
         reviews: ReviewController | None = None,
+        artifacts: ArtifactPublisher | None = None,
     ) -> None:
         self.client = client
         self.context = context
@@ -288,6 +290,7 @@ class Toolbox:
         self.reviews = reviews
         self.documents = documents
         self.jobs = jobs if BACKGROUND in features else None
+        self.artifacts = artifacts
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
         if "sage" in self.languages:
             specs.append(SAGE)
@@ -414,6 +417,8 @@ class Toolbox:
         if handler is None or call.name not in {spec.name for spec in self.specs}:
             return _failure(ErrorKind.INVALID_REQUEST, f"there is no tool named {call.name!r}")
         try:
+            if call.name == "publish" and self.artifacts is not None:
+                return await self._publish(args, operation, call_id=call.id, model=model)
             return await handler(args, operation)
         except ValidationError as exc:
             first = exc.errors()[0]
@@ -631,10 +636,27 @@ class Toolbox:
         ]
         return ToolOutcome("\n".join(lines), {"admissions": decisions})
 
-    async def _publish(self, args: dict[str, Any], operation: str) -> ToolOutcome:
+    async def _publish(
+        self,
+        args: dict[str, Any],
+        operation: str,
+        *,
+        call_id: str = "publish",
+        model: str | None = None,
+    ) -> ToolOutcome:
         request = PublishRequest.model_validate(
             {"context": self.context, **_known(args, "path", "media_type")}
         )
+        if self.artifacts is not None:
+            result = await self.artifacts.publish(
+                request, operation, tool_call=call_id, model=model
+            )
+            worker = result.worker.model_dump(mode="json") if result.worker is not None else None
+            receipt = result.receipt.model_dump(mode="json")
+            return ToolOutcome(
+                self._bound(dump({"published": worker, "inventory": receipt})),
+                {"artifact": worker, "artifact_inventory": receipt},
+            )
         artifact = await self.client.publish(request)
         record = artifact.model_dump(mode="json")
         return ToolOutcome(dump({"published": record}), {"artifact": record})
