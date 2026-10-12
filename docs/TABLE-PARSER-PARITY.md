@@ -18,7 +18,12 @@ absent from the inline token's content.
 This changes no browser renderer or save normalization. In particular, save still
 normalizes CRLF/CR to LF and removes one leading byte-order mark, while internal
 U+FEFF and other Unicode characters remain in the saved source. Other Markdown and
-math rules keep their existing whitespace behavior.
+math rules keep their existing whitespace definitions. Profile 2 also preserves
+the browser math rules' existing escape boundary in a cell that now retains Python
+whitespace: an opening delimiter reads backward from the first non-Python-space
+character to the last non-Python-space character. This can suppress an apparent
+formula when that last character is a backslash. Image descriptions keep their
+existing untrimmed boundary and remain excluded from document math anchors.
 
 ## Immutable history and identities
 
@@ -42,16 +47,23 @@ response bodies; their document versus ordinary-Markdown mode remains unchanged.
 The shared [Unicode table fixtures](../web/workspace/src/lib/tables.fixtures.json)
 cover all six differing code points at header, cell, body-row and blank-row edges,
 plus quoted/list tables, astral prefixes, escaped pipes, alignment, missing cells,
-invalid delimiters and adjacent code. The server pins exact formula source offsets;
-the browser pins the same blocks and TeX, including historical mismatch protection.
+invalid delimiters, paragraph/reference interruption, adjacent code and math escape
+boundaries in retained cell whitespace. The server pins exact formula source
+offsets; the browser pins the same blocks and TeX, including historical mismatch
+protection.
 
 A deterministic differential test runs the actual pinned browser and server
-parsers over those 29 cases and 1,024 generated whole documents. It compares every
+parsers over those 52 cases and 1,024 generated whole documents (1,076 total). It compares every
 block's kind, parent, depth, lines, own text, first offsets and source extent, every
 formula's kind and TeX, formula delimiter/source offsets in the generated corpus,
 and browser attachment of server block/math IDs. It includes Unicode row/cell
 edges, lists, quotes, theorem containers, code, ordinary prose and astral text.
 This is a bounded regression corpus, not an exhaustive proof of parser equivalence.
+
+Local validation passed 1,007 affected Python cases and all 571 web tests, including
+the differential corpus, with zero Svelte/TypeScript check errors or warnings.
+These checks cover saved-history reads, ordinary edits and exact revert under
+both profiles; they do not claim an automatic migration of immutable snapshots.
 
 Run the focused checks from the repository root:
 
@@ -62,6 +74,7 @@ npm --prefix web/workspace test -- src/lib/blockmap.test.ts server/table-parity.
 
 The browser differential test invokes the bounded local
 [server projection utility](../scripts/document_parser_parity.py) through `uv`.
-It requires the existing locked Python and npm dependencies. No model, worker,
+It requires the existing locked Python and npm dependencies; web CI sets up its
+existing pinned uv/Python action before running npm tests. No model, worker,
 service, VM or network peer participates. Independent review, final combined
 validation and delivery remain root-owned gates.

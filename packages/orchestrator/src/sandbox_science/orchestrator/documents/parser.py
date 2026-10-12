@@ -732,6 +732,36 @@ _POSITIONED: Final = {
 """Inline rules whose tokens record their place in the content, and those tokens' types."""
 
 
+@dataclass
+class _InlineEnds:
+    src: str
+    first: int
+    end: int
+
+
+def _browser_inline_boundary(rule: InlineRule) -> InlineRule:
+    """Keep dollarmath.ts's existing Python-trimmed escape boundary.
+
+    A JS-trimmed table cell can retain Python whitespace. The browser's math
+    escape check still wraps before its first non-Python-space character to the
+    last non-Python-space character, as the formerly Python-trimmed cell did.
+    Only this opening-boundary case differs from the unchanged Python rules.
+    """
+
+    def recording(state: StateInline, silent: bool) -> bool:
+        if not state.env.get("_image_description"):
+            src = state.src
+            ends = state.env.get("_inline_ends")
+            if not isinstance(ends, _InlineEnds) or ends.src is not src:
+                ends = _InlineEnds(src, len(src) - len(src.lstrip()), len(src.rstrip()))
+                state.env["_inline_ends"] = ends
+            if state.pos == ends.first and ends.end > ends.first and src[ends.end - 1] == "\\":
+                return False
+        return rule(state, silent)
+
+    return recording
+
+
 def _positioned(rule: InlineRule, types: tuple[str, ...]) -> InlineRule:
     """An inline rule whose token records where it begins and ends in the content; a
     link's also records where its text ends, before its address or reference."""
@@ -739,7 +769,16 @@ def _positioned(rule: InlineRule, types: tuple[str, ...]) -> InlineRule:
     def recording(state: StateInline, silent: bool) -> bool:
         start = state.pos
         before = len(state.tokens)
-        found = rule(state, silent)
+        # Browser dollarmath's noteDescriptions keeps image alt parsing untrimmed.
+        # Nested descriptions share env, so restore the previous depth on every exit.
+        descriptions = state.env.get("_image_description", 0)
+        if types == ("image",):
+            state.env["_image_description"] = descriptions + 1
+        try:
+            found = rule(state, silent)
+        finally:
+            if types == ("image",):
+                state.env["_image_description"] = descriptions
         if found and not silent:
             # Text pending before the rule's token is pushed first, so look by type.
             for token in state.tokens[before:]:
@@ -756,11 +795,13 @@ def _positioned(rule: InlineRule, types: tuple[str, ...]) -> InlineRule:
     return recording
 
 
-def _instrument(md: MarkdownIt) -> None:
+def _instrument(md: MarkdownIt, *, profile: str) -> None:
     for block_rule in md.block.ruler.__rules__:
         block_rule.fn = _instrumented(block_rule.name, block_rule.fn)
     md.block.ruler.__cache__ = None
     for inline_rule in md.inline.ruler.__rules__:
+        if profile == PROFILE and inline_rule.name in ("math_inline", "math_inline_backslash"):
+            inline_rule.fn = _browser_inline_boundary(inline_rule.fn)
         types = _POSITIONED.get(inline_rule.name)
         if types is not None:
             inline_rule.fn = _positioned(inline_rule.fn, types)
@@ -781,7 +822,9 @@ def _make(*, documents: bool = True, profile: str = PROFILE) -> MarkdownIt:
     md.validateLink = _validate_link  # type: ignore[method-assign]
     md.inline.ruler.at("backticks", _backticks)
     if profile == PROFILE:
-        md.block.ruler.at("table", partial(table, trim=js_trim))
+        md.block.ruler.at(
+            "table", partial(table, trim=js_trim), {"alt": ["paragraph", "reference"]}
+        )
     if documents:
         front_matter_plugin(md)
         plugin_front_matter = next(
@@ -807,7 +850,7 @@ def _make(*, documents: bool = True, profile: str = PROFILE) -> MarkdownIt:
     )
     if documents:
         container_plugin(md, CONTAINER, validate=_container_kind)
-    _instrument(md)
+    _instrument(md, profile=profile)
     return md
 
 

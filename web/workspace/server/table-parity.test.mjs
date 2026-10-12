@@ -26,6 +26,7 @@ function corpus() {
       `${edge}| ${cell}$b_{${i}}$${cell} | value |${edge}`,
       `| $b_{${i}}$ |`,
       `| $b_{${i}}$ | value | ignored |`,
+      `| ${cell}$b_{${i}}$\\${cell} | value |`,
       edge,
     ]);
     let table = [header, align, body].map((line) => lead + line).join('\n');
@@ -33,8 +34,9 @@ function corpus() {
       table = '- ' + table.replaceAll('\n', '\n  ');
     }
     const wrapper = choose(['', '::: lemma\n']);
+    const separation = choose(['\n', '\n\n']);
     sources.push(
-      `# Case ${i} 😀\n\nBefore $p_{${i}}$ and \\(q_{${i}}\\).\n\n` +
+      `# Case ${i} 😀\n\nBefore $p_{${i}}$ and \\(q_{${i}}\\).` + separation +
         wrapper + table + (wrapper ? '\n:::' : '') +
         `\n\n\`\`\`text\n| $code$ |\n\`\`\`\n\nAfter $$a_{${i}}$$.\n`,
     );

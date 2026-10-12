@@ -1193,6 +1193,723 @@
           74
         ]
       ]
+    },
+    {
+      "name": "interrupts preceding paragraph",
+      "markdown": "Before $p$.\n| \ufeff$h$\ufeff | right |\n| --- | --- |\n| $b$ | value |\n# After $a$\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          1
+        ],
+        [
+          "table",
+          0,
+          1,
+          4
+        ],
+        [
+          "heading",
+          0,
+          4,
+          5
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "p"
+        ],
+        [
+          1,
+          "inline",
+          "h"
+        ],
+        [
+          1,
+          "inline",
+          "b"
+        ],
+        [
+          2,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          7,
+          8,
+          9,
+          10
+        ],
+        [
+          15,
+          16,
+          17,
+          18
+        ],
+        [
+          46,
+          47,
+          48,
+          49
+        ],
+        [
+          68,
+          69,
+          70,
+          71
+        ]
+      ]
+    },
+    {
+      "name": "interrupts reference parsing",
+      "markdown": "[target]: /unused\n| \ufeff$h$\ufeff | right |\n| --- | --- |\n| $b$ | value |\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          1
+        ],
+        [
+          "table",
+          0,
+          1,
+          4
+        ]
+      ],
+      "math": [
+        [
+          1,
+          "inline",
+          "h"
+        ],
+        [
+          1,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          21,
+          22,
+          23,
+          24
+        ],
+        [
+          52,
+          53,
+          54,
+          55
+        ]
+      ]
+    },
+    {
+      "name": "table in adjacent quote paragraph",
+      "markdown": "> Before $p$.\n> | \ufeff$h$\ufeff | right |\n> | --- | --- |\n> | $b$ | value |\n",
+      "blocks": [
+        [
+          "quote",
+          0,
+          0,
+          4
+        ],
+        [
+          "paragraph",
+          1,
+          0,
+          1
+        ],
+        [
+          "table",
+          1,
+          1,
+          4
+        ]
+      ],
+      "math": [
+        [
+          1,
+          "inline",
+          "p"
+        ],
+        [
+          2,
+          "inline",
+          "h"
+        ],
+        [
+          2,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          9,
+          10,
+          11,
+          12
+        ],
+        [
+          19,
+          20,
+          21,
+          22
+        ],
+        [
+          54,
+          55,
+          56,
+          57
+        ]
+      ]
+    },
+    {
+      "name": "U+001C escape boundary trailing $x$",
+      "markdown": "| $x$\\\u001c | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          16,
+          17,
+          18,
+          19
+        ]
+      ]
+    },
+    {
+      "name": "U+001C escape boundary trailing \\(x\\)",
+      "markdown": "| \\(x\\)\\\u001c | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          18,
+          19,
+          20,
+          21
+        ]
+      ]
+    },
+    {
+      "name": "U+001C escape boundary both ends $x$",
+      "markdown": "| \u001c$x$\\\u001c | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          17,
+          18,
+          19,
+          20
+        ]
+      ]
+    },
+    {
+      "name": "U+001C escape boundary both ends \\(x\\)",
+      "markdown": "| \u001c\\(x\\)\\\u001c | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          19,
+          20,
+          21,
+          22
+        ]
+      ]
+    },
+    {
+      "name": "U+001D escape boundary trailing $x$",
+      "markdown": "| $x$\\\u001d | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          16,
+          17,
+          18,
+          19
+        ]
+      ]
+    },
+    {
+      "name": "U+001D escape boundary trailing \\(x\\)",
+      "markdown": "| \\(x\\)\\\u001d | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          18,
+          19,
+          20,
+          21
+        ]
+      ]
+    },
+    {
+      "name": "U+001D escape boundary both ends $x$",
+      "markdown": "| \u001d$x$\\\u001d | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          17,
+          18,
+          19,
+          20
+        ]
+      ]
+    },
+    {
+      "name": "U+001D escape boundary both ends \\(x\\)",
+      "markdown": "| \u001d\\(x\\)\\\u001d | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          19,
+          20,
+          21,
+          22
+        ]
+      ]
+    },
+    {
+      "name": "U+001E escape boundary trailing $x$",
+      "markdown": "| $x$\\\u001e | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          16,
+          17,
+          18,
+          19
+        ]
+      ]
+    },
+    {
+      "name": "U+001E escape boundary trailing \\(x\\)",
+      "markdown": "| \\(x\\)\\\u001e | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          18,
+          19,
+          20,
+          21
+        ]
+      ]
+    },
+    {
+      "name": "U+001E escape boundary both ends $x$",
+      "markdown": "| \u001e$x$\\\u001e | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          17,
+          18,
+          19,
+          20
+        ]
+      ]
+    },
+    {
+      "name": "U+001E escape boundary both ends \\(x\\)",
+      "markdown": "| \u001e\\(x\\)\\\u001e | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          19,
+          20,
+          21,
+          22
+        ]
+      ]
+    },
+    {
+      "name": "U+001F escape boundary trailing $x$",
+      "markdown": "| $x$\\\u001f | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          16,
+          17,
+          18,
+          19
+        ]
+      ]
+    },
+    {
+      "name": "U+001F escape boundary trailing \\(x\\)",
+      "markdown": "| \\(x\\)\\\u001f | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          18,
+          19,
+          20,
+          21
+        ]
+      ]
+    },
+    {
+      "name": "U+001F escape boundary both ends $x$",
+      "markdown": "| \u001f$x$\\\u001f | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          17,
+          18,
+          19,
+          20
+        ]
+      ]
+    },
+    {
+      "name": "U+001F escape boundary both ends \\(x\\)",
+      "markdown": "| \u001f\\(x\\)\\\u001f | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          19,
+          20,
+          21,
+          22
+        ]
+      ]
+    },
+    {
+      "name": "U+0085 escape boundary trailing $x$",
+      "markdown": "| $x$\\\u0085 | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          16,
+          17,
+          18,
+          19
+        ]
+      ]
+    },
+    {
+      "name": "U+0085 escape boundary trailing \\(x\\)",
+      "markdown": "| \\(x\\)\\\u0085 | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          18,
+          19,
+          20,
+          21
+        ]
+      ]
+    },
+    {
+      "name": "U+0085 escape boundary both ends $x$",
+      "markdown": "| \u0085$x$\\\u0085 | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          17,
+          18,
+          19,
+          20
+        ]
+      ]
+    },
+    {
+      "name": "U+0085 escape boundary both ends \\(x\\)",
+      "markdown": "| \u0085\\(x\\)\\\u0085 | other $y$ |\n| --- | --- |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "y"
+        ]
+      ],
+      "positions": [
+        [
+          19,
+          20,
+          21,
+          22
+        ]
+      ]
     }
   ],
   "legacy": [
