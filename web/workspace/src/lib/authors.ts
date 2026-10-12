@@ -10,6 +10,8 @@ export function describeAuthor(author: Author): string {
       return 'an import by the user';
     case 'platform':
       return `the platform's ${author.service ?? 'service'}`;
+    case 'worker':
+      return `worker code in environment ${author.environment_id ?? '?'}, incarnation ${author.incarnation ?? '?'}${author.session_id ? `, session ${author.session_id}` : ''}`;
     case 'agent': {
       const role = author.role && author.role !== 'main' ? `${author.role} ` : '';
       const model = author.model ? `, ${author.model}` : '';

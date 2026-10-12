@@ -166,7 +166,9 @@ These annotations currently cover living documents. Other artifact types' PDF/im
 
 ## Checkpoint triggers
 
-Consistency reviews are not built yet. `reviews.CheckpointWindow` is the part of CR-10 that documents feed: it counts a session's agent revisions by the characters the agents wrote and the structural blocks they added, never as artifact revisions, and a checkpoint review is due once the minimum interval has passed and the agents wrote 2,000 characters or added a structural block (CR-10 as amended, LD-40). The user's own revisions count toward no review. Its snapshot is the revisions since the last dispatch.
+The [consistency review](CONSISTENCY-REVIEW.md) consumes durable session-attributed agent and worker revisions, counting the characters they wrote and structural blocks they added, never as artifact revisions (CR-10 as amended, LD-40). USER revisions and worker changes without an established session do not trigger a session review. The reviewer reads bounded immutable revision evidence; checkpoint, terminal and confirmation windows retain their own durable state.
+
+The [internal worker source adapter](WORKER-DOCUMENT-SOURCE.md) prepares attested captured text as named patches, applies delegated authority and suggestions, and retains exact rejected bytes with durable replayable receipts. Its logical raw budgets and 4 MiB capture cap are explicit. It enables no worker transport, file capture, mirror overwrite or helper; uncertain writer closure remains held. This is a control-side prerequisite for LD-50, with LD-49 to LD-52 still requiring separate runtime work.
 
 ## Measured
 
@@ -184,8 +186,7 @@ A patch parses the text again after each operation and carries the IDs over; one
 
 - The project's macros, beneath a document's (LD-28).
 - Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents.
-- Automatic idle-session wake/turn dispatch for addressed comments (part of LD-22), annotation sidecar export and anchors for artifact types other than living documents (RA-21/RA-23), and review findings on blocks (LD-25).
+- Automatic idle-session wake/turn dispatch for addressed comments (part of LD-22), annotation sidecar export and anchors for artifact types other than living documents (RA-21/RA-23).
 - References, embedded artifacts and ledger bindings (LD-31 to LD-34), and exports (LD-35 to LD-38).
 - Document files in every environment, direct edits of them, and the `ss-doc` helper (LD-3, LD-49 to LD-52).
 - Math repairs proposed into a document (LD-48) and math findings from KaTeX's check on save (LD-53 to LD-55, D82).
-- The consistency review itself, which the trigger window will feed.

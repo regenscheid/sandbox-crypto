@@ -17,7 +17,7 @@ OPERATION_ID: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 MAX_TITLE: Final = 200
 MAX_REASON: Final = 1000
 
-AuthorKind = Literal["user", "agent", "import", "platform"]
+AuthorKind = Literal["user", "agent", "worker", "import", "platform"]
 PatchState = Literal[
     "applied", "unchanged", "conflicted", "refused", "suggested", "accepted", "declined"
 ]
@@ -41,6 +41,7 @@ class Author(Contract):
     - ``agent``: an agent run, with its session, role, model and tool call.
     - ``import``: an import the user started, by its ID.
     - ``platform``: a platform service, such as the math repair (later).
+    - ``worker``: captured code output, with trusted binding and incarnation context.
     """
 
     kind: AuthorKind
@@ -55,6 +56,11 @@ class Author(Contract):
     tool_call: str | None = None
     import_id: str | None = None
     service: str | None = None
+    worker_binding: Identifier | None = None
+    environment_id: Identifier | None = None
+    incarnation: Identifier | None = None
+    execution_id: Identifier | None = None
+    attempt_id: Identifier | None = None
 
     @model_validator(mode="after")
     def _complete(self) -> Self:
@@ -63,11 +69,36 @@ class Author(Contract):
             "agent": ("session_id", "run_id", "role"),
             "import": ("user", "import_id"),
             "platform": ("service",),
+            "worker": ("worker_binding", "environment_id", "incarnation", "role"),
         }[self.kind]
         missing = [name for name in required if getattr(self, name) is None]
         if missing:
             raise ValueError(f"an author of kind {self.kind} needs {', '.join(missing)}")
+        if self.kind == "worker":
+            if self.role != "delegated" or any(
+                value is not None
+                for value in (self.user, self.model, self.alias, self.import_id, self.service)
+            ):
+                raise ValueError("a worker has delegated authority and no user/model identity")
+            if self.session_id is None and self.run_id is not None:
+                raise ValueError("a worker run requires an established session")
+        elif any(
+            value is not None
+            for value in (
+                self.worker_binding,
+                self.environment_id,
+                self.incarnation,
+                self.execution_id,
+                self.attempt_id,
+            )
+        ):
+            raise ValueError("worker provenance belongs only to worker authors")
         return self
+
+    @property
+    def delegated(self) -> bool:
+        """Programmatic changes obey patch and suggestion restrictions."""
+        return self.kind in ("agent", "worker")
 
     @property
     def actor(self) -> str:
@@ -76,6 +107,8 @@ class Author(Contract):
             return f"session:{self.session_id}"
         if self.kind == "platform":
             return f"platform:{self.service}"
+        if self.kind == "worker":
+            return f"worker:{self.worker_binding}:{self.environment_id}:{self.incarnation}"
         return f"user:{self.user}"
 
 
