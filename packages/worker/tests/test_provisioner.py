@@ -16,6 +16,7 @@ checks for clients limited to projects (D78).
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -37,13 +38,18 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sandbox_science.contracts import (
+    CellRequest,
     EnvironmentInfo,
     EnvironmentState,
     ExecutionContext,
+    ExecutionState,
+    JobRequest,
+    KernelRestartRequest,
     Lockfile,
     ProvisioningQueue,
     ProvisionOperation,
     ProvisionState,
+    ReadFileRequest,
     ResolvedFile,
     RevisionHistory,
     ShellRequest,
@@ -62,6 +68,7 @@ from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.catalog import Catalog
+from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.permissions import Permissions, PermissionStoreError
 from sandbox_science.worker.provisioner import Governing, Provisioner
@@ -677,10 +684,81 @@ async def test_cp_f5_a_failed_post_link_script_leaves_the_environment_needing_re
     assert "revision 1" in done.next_step
     queue = await world.queue()
     assert (queue.status, queue.revision, queue.operations) == ("needs_recovery", 2, ())
-    # Later operations still run, and say so.
-    later = await world.finished((await world.provision("op-3", conda=["fpylll"]))["provision_id"])
-    assert later.outcome == "already_satisfied"
-    assert any("needs recovery" in note for note in later.notes)
+    later = await world.provision("op-3", conda=["fpylll"], expected=503)
+    assert later["error"]["kind"] == "unavailable"
+    assert done.provision_id in later["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_recovery_refuses_all_new_work_but_preserves_running_status_files_and_replay(
+    make_world: Factory,
+) -> None:
+    world = await make_world()
+    context = ExecutionContext(**CONTEXT)
+    original = ShellRequest(
+        operation_id="already-running",
+        context=context,
+        script="printf preserved > saved; sleep 1; printf finished",
+    )
+    running, _ = await world.manager.submit(original)
+    async with asyncio.timeout(10):
+        async for event in world.manager.events(running.execution_id, 0):
+            if getattr(event, "state", None) is ExecutionState.RUNNING:
+                break
+    failed = await world.finished(
+        (await world.provision("failed", conda=["badpostlink"]))["provision_id"]
+    )
+    assert failed.outcome == "needs_recovery"
+    for request in (
+        ShellRequest(operation_id="refused-shell", context=context, argv=("true",)),
+        CellRequest(operation_id="refused-cell", context=context, language="python", code="1"),
+        JobRequest(
+            operation_id="refused-job",
+            context=context,
+            argv=("true",),
+            purpose="test",
+            expected_progress="none",
+        ),
+    ):
+        with pytest.raises(WorkerError, match="needs_recovery"):
+            await world.manager.submit(request)
+        assert world.store.find_operation("p1", request.operation_id) is None
+    with pytest.raises(WorkerError, match="needs_recovery"):
+        await world.manager.restart_kernel(KernelRestartRequest(context=context, language="python"))
+    replay, created = await world.manager.submit(original)
+    assert replay.execution_id == running.execution_id
+    assert not created
+    assert (await world.manager.wait(running.execution_id)).state is ExecutionState.SUCCEEDED
+    content = await world.manager.read_file(ReadFileRequest(context=context, path="saved"))
+    assert base64.b64decode(content.content_b64) == b"preserved"
+    healthy = ShellRequest(
+        operation_id="healthy",
+        context=context.model_copy(update={"environment_id": "env2"}),
+        argv=("true",),
+    )
+    admitted, _ = await world.manager.submit(healthy)
+    assert (await world.manager.wait(admitted.execution_id)).state is ExecutionState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_queued_provision_cannot_run_after_preceding_install_needs_recovery(
+    make_world: Factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world = await make_world()
+    held = gate(world)
+    monkeypatch.setenv("FAKEPM_GATE", str(held))
+    first = await world.provision("first", conda=["badpostlink"])
+    second = await world.provision("queued", conda=["fpylll"])
+    await world.until(first["provision_id"], lambda op: op.state == "installing")
+    held.touch()
+    assert (await world.finished(first["provision_id"])).outcome == "needs_recovery"
+    refused = await world.finished(second["provision_id"])
+    assert refused.outcome == "failed"
+    assert refused.stage == "queue"
+    assert refused.error is not None
+    assert refused.error.kind == "unavailable"
+    assert refused.executions == ()
 
 
 class Restoring:
@@ -1185,18 +1263,12 @@ async def test_the_earliest_recovery_mark_holds(make_world: Factory) -> None:
         (await world.provision("op-1", conda=["badpostlink"]))["provision_id"]
     )
     assert (first.outcome, first.revision_before, first.revision_after) == ("needs_recovery", 0, 1)
-    second = await world.finished(
-        (await world.provision("op-2", conda=["otherbad"]))["provision_id"]
-    )
-    assert (second.outcome, second.revision_before, second.revision_after) == (
-        "needs_recovery",
-        1,
-        2,
-    )
-    # Revision 1 was already mixed: the packages were last good at revision 0.
-    assert second.next_step is not None
-    assert "revision 0's lockfile lists the packages as they were" in second.next_step
-    assert any(first.provision_id in note for note in second.notes)
+    # A stale/later classification cannot replace the original recovery reference.
+    world.store.set_package_status("env1", "needs_recovery", "prv-later", 1)
+    assert world.store.package_status("env1") == ("needs_recovery", first.provision_id, 0)
+    second = await world.provision("op-2", conda=["otherbad"], expected=503)
+    assert first.provision_id in second["error"]["message"]
+    assert "revision 0" in second["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -1382,6 +1454,42 @@ async def test_operation_ids_are_idempotent_per_project(make_world: Factory) -> 
     assert "provisioning" not in (await other.json())["features"]
 
 
+@pytest.mark.asyncio
+async def test_delete_drain_requires_durable_classification_and_retries_sql_failure(
+    make_world: Factory,
+) -> None:
+    entered = asyncio.Event()
+
+    class PausedInstall(Provisioner):
+        async def _operate(self, op: Any) -> None:
+            self._update(op, state=ProvisionState.INSTALLING, revision_before=0)
+            entered.set()
+            await asyncio.Event().wait()
+
+    world = await make_world(kind=PausedInstall)
+    submitted = await world.provision("delete-classification", conda=["example"])
+    await asyncio.wait_for(entered.wait(), 5)
+    store = world.manager.store
+    store._db.execute(
+        "CREATE TRIGGER fail_classification BEFORE UPDATE ON provisions"
+        " BEGIN SELECT RAISE(ABORT,'synthetic classification failure'); END"
+    )
+    with pytest.raises(WorkerError, match="not durably finished"):
+        await world.provisioner.forget("env1")
+    assert not store.provisioning_finished("env1")
+    assert store.package_gate("env1").mode == "hold"
+    with pytest.raises(WorkerError, match="not durably finished"):
+        store.forget_package_gate("env1")
+    store._db.execute("DROP TRIGGER fail_classification")
+    await world.provisioner.forget("env1")
+    assert store.provisioning_finished("env1")
+    record = store.provision(submitted["provision_id"])
+    assert record is not None
+    assert record.state is ProvisionState.FINISHED
+    store.forget_package_gate("env1")
+    assert store.package_gate("env1").mode == "ready"
+
+
 class _Records:
     def __init__(self, infos: dict[str, EnvironmentInfo]) -> None:
         self.infos = infos
@@ -1416,6 +1524,9 @@ class _Environments:
             }
         )
         self.deleted: list[Any] = []
+        self.required_deleted: list[Any] = []
+        self.confirmed_deleted: list[Any] = []
+        self.reusing: list[Any] = []
 
     def handmade(self, environment_id: str) -> bool:
         return False

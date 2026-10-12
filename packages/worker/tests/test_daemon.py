@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import signal
 import sys
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,9 @@ from sandbox_science.contracts import (
     ExecutionContext,
     ExecutionState,
     JobRequest,
+    ProvisionOperation,
+    ProvisionRequest,
+    ProvisionState,
     ReadFileRequest,
     ShellRequest,
 )
@@ -44,6 +49,30 @@ def request(operation: str, script: str = "sleep 60", **fields: Any) -> JobReque
         expected_progress="eventual completion",
         **fields,
     )
+
+
+def internal_request(worker: Worker, script: str = "sleep 60") -> ShellRequest:
+    """A positive saved operation+exact step, as registered only by the provisioner."""
+    record = ProvisionOperation(
+        provision_id="provision-test",
+        request=ProvisionRequest(
+            operation_id="internal",
+            context=CONTEXT,
+            conda=("example",),
+            purpose="test recovery",
+        ),
+        state=ProvisionState.QUEUED,
+        submitted_at=datetime.now(UTC),
+    )
+    worker.store.insert_provision(record, "test")
+    worker.store.update_provision(record.model_copy(update={"state": ProvisionState.INSTALLING}))
+    result = ShellRequest(operation_id="provision-test.install", context=CONTEXT, script=script)
+    worker.store.authorize_provision_step(
+        record.provision_id,
+        result.operation_id,
+        hashlib.sha256(result.model_dump_json().encode()).hexdigest(),
+    )
+    return result
 
 
 class Worker:
@@ -233,7 +262,7 @@ async def test_unknown_control_requests_are_cancelled_during_recovery(worker: Wo
 
 @pytest.mark.asyncio
 async def test_withdrawn_provisioning_execution_is_cancelled_on_restart(worker: Worker) -> None:
-    job, _ = await worker.manager.submit(request("provisioning"), origin="provision-test")
+    job, _ = await worker.manager.submit(internal_request(worker), origin="provision-test")
     await running(worker.manager, job.execution_id)
     await worker.restart()
     assert (
@@ -755,8 +784,8 @@ async def test_corrupt_only_execution_still_quiesces_its_daemon(worker: Worker) 
 @pytest.mark.asyncio
 async def test_provisioning_recovery_waits_for_termination_before_startup(worker: Worker) -> None:
     job, _ = await worker.manager.submit(
-        request(
-            "withdrawn",
+        internal_request(
+            worker,
             f"{sys.executable} -I -c 'import signal,time; "
             "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
             'print("ready",flush=True); time.sleep(60)\'',

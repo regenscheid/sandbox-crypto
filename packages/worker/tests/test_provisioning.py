@@ -880,6 +880,9 @@ async def test_a_limited_client_sees_only_its_projects_revisions(
         def __init__(self) -> None:
             self.records = Records()
             self.deleted: list[Any] = []
+            self.required_deleted: list[Any] = []
+            self.confirmed_deleted: list[Any] = []
+            self.reusing: list[Any] = []
 
     manager.revisions.observe("env-a", "a" * 32)
     clients = [
