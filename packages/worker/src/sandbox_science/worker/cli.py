@@ -28,7 +28,7 @@ from pathlib import Path
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import Identifier
+from sandbox_science.contracts import EnvironmentState, Identifier
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy.store import StoreError
 
@@ -37,7 +37,7 @@ from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
 from .catalog import CatalogError, load_catalog
-from .environments import EnvironmentRecords, Environments, printable
+from .environments import EnvironmentRecords, Environments, OpenShellCli, printable
 from .errors import WorkerError
 from .manager import ExecutionManager
 from .package_clients import cache_endpoint
@@ -143,9 +143,39 @@ async def serve(settings: Settings) -> None:
         manager.notices = environments.notices
         if shared is not None:
             environments.deleted.append(shared.forget)
+    if settings.openshell is not None:
+
+        async def confirmed_daemon_loss(environment_id: str) -> bool:
+            sandbox = manager.backend.sandbox_id(environment_id)
+            if environments is not None and environments.manages(environment_id):
+                info = environments.get(environment_id)
+                if info.state in (EnvironmentState.DELETED, EnvironmentState.STOPPED):
+                    return True  # those lifecycle paths explicitly stopped the executor first
+                sandbox = info.sandbox
+            if sandbox is None:
+                return True
+            openshell = settings.openshell
+            if openshell is None:
+                return False
+            cli = OpenShellCli(openshell, OpenShellBackend(openshell, settings.state_dir).cli_env())
+            try:
+                description = await cli.sandbox(sandbox)
+            except WorkerError:
+                return False  # gateway/transport failure is not evidence of sandbox loss
+            if description is None or description.get("phase") in (
+                "Stopped",
+                "Completed",
+                "Error",
+                "Deleting",
+            ):
+                return True
+            if environments is not None and environments.manages(environment_id):
+                return description.get("id") != environments.get(environment_id).sandbox_id
+            return False
+
+        manager.confirmed_daemon_loss = confirmed_daemon_loss
     provisioner = _provisioner(settings, manager, environments)
-    # SIGTERM (a systemd stop) and SIGINT shut down cleanly: executors stop, and
-    # attempts still running are stored as lost.
+    # SIGTERM/SIGINT detach sandbox daemons; the stdio development executor stops.
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):

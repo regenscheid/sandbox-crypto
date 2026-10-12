@@ -398,6 +398,7 @@ def openshell_settings(tmp_path: Path, **changes: Any) -> OpenShellBackendSettin
     sandbox = tmp_path / "sandbox"
     return OpenShellBackendSettings(
         cli=str(cli),
+        daemon=False,  # This stand-in exercises the original stdio transport.
         python=sys.executable,
         project_root=str(sandbox / "project"),
         executor_dir=str(sandbox / ".sandbox-science"),

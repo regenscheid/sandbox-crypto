@@ -81,6 +81,8 @@ class LocalBackendSettings(_Model):
     """Runs the executor as a plain subprocess of the worker: no isolation (tier 0)."""
 
     python: str = sys.executable
+    daemon: bool = False
+    """Opt into the reconnectable executor for development tests; still no isolation."""
 
 
 class EnvironmentSettings(_Model):
@@ -123,6 +125,8 @@ class EnvironmentSettings(_Model):
 class OpenShellBackendSettings(_Model):
     """Runs the executor in OpenShell sandboxes through the ``openshell`` CLI."""
 
+    daemon: bool = True
+    """Keep the sandbox executor alive across worker bridge disconnections."""
     cli: str = "openshell"
     python: str = "python3"
     project_root: str = "/sandbox/project"
