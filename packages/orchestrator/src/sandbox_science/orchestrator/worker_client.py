@@ -41,6 +41,7 @@ from sandbox_science.contracts import (
     JobStatus,
     KernelInfo,
     KernelListing,
+    KernelObservation,
     KernelRestartRequest,
     KernelStatusRequest,
     ListFilesRequest,
@@ -79,6 +80,8 @@ _EVENT: Final = TypeAdapter[Event](Event)
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
 MAX_CATALOG_STATUS_BYTES: Final = 8 * 1024
 CATALOG_TIMEOUT: Final = 10.0
+MAX_KERNEL_OBSERVATION_BYTES: Final = 8 * 1024
+KERNEL_OBSERVATION_TIMEOUT: Final = 5.0
 RECONNECT_ATTEMPTS: Final = 5
 RECONNECT_DELAY: Final = 0.5
 CALL_TIMEOUT: Final = 600.0
@@ -486,6 +489,24 @@ class WorkerClient:
         """This context's running kernels with durable birth/current package revisions."""
         result = await self._call(
             "POST", "/v1/kernels/status", KernelListing, KernelStatusRequest(context=context)
+        )
+        if (result.environment_id, result.session_id) != (
+            context.environment_id,
+            context.session_id,
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned another kernel scope")
+        return result
+
+    async def observe_kernels(self, context: ExecutionContext) -> KernelObservation:
+        """Observe an already connected executor; never fall back to waking status."""
+        result, _ = await self._request(
+            "POST",
+            "/v1/kernels/observe",
+            KernelObservation,
+            KernelStatusRequest(context=context),
+            max_bytes=MAX_KERNEL_OBSERVATION_BYTES,
+            total_timeout=KERNEL_OBSERVATION_TIMEOUT,
+            allow_redirects=False,
         )
         if (result.environment_id, result.session_id) != (
             context.environment_id,
