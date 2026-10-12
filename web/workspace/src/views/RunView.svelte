@@ -26,13 +26,19 @@
   {/if}
   <dt>Ended</dt>
   <dd>
-    {#if run.stopped === 'answered'}
+    {#if run.stopped === 'error'}
+      <span class="problem">Failed run{run.failure ? ` (${run.failure})` : ''}</span>
+    {:else if run.stopped === 'answered'}
       with an answer
     {:else}
       <span class="problem">without an answer ({run.stopped})</span>
     {/if}
   </dd>
 </dl>
+
+{#if run.stopped === 'error'}
+  <p class="problem">Partial transcript. No final answer was recorded.</p>
+{/if}
 
 {#each steps as step, index (index)}
   {#if step.kind === 'system'}

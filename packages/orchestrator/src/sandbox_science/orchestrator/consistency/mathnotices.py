@@ -92,11 +92,15 @@ class MathNotices(FindingNotices):
                 (project, session, run, dump(sorted(keep or set()))),
             )
 
-    def acknowledge(self, project: str, session: str, run: str, notices: list[str]) -> None:
+    def acknowledge(
+        self, project: str, session: str, run: str, notices: list[str], *, finalize: bool = True
+    ) -> None:
         """Finalize only after the represented transcript is durably saved."""
         with self.store.documents._write() as db:
             findings = Findings(self.store)
-            for finding, revision in self._eligible(db, project, session, run, notices, True):
+            for finding, revision in (
+                self._eligible(db, project, session, run, notices, True) if finalize else []
+            ):
                 current = findings._get(db, project, session, finding)
                 findings._transition(
                     db,

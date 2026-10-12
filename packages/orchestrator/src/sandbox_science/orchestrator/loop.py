@@ -4,13 +4,19 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncExitStack,
+    asynccontextmanager,
+    contextmanager,
+)
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from .documents.mathjobs import threaded
 from .model import ChatModel, Message
+from .projects import FailurePhase
 from .tools import Toolbox, ToolOutcome, operation_id
 from .worker_client import dump
 
@@ -34,6 +40,31 @@ SYSTEM_PROMPT: Final = (
 )
 
 
+_T = TypeVar("_T")
+
+
+class Interruption:
+    """Remember the first cancellation/exit before later cleanup can replace it."""
+
+    def __init__(self) -> None:
+        self.error: BaseException | None = None
+
+    @contextmanager
+    def protect(self) -> Generator[None]:
+        try:
+            yield
+        except BaseException as error:
+            if not isinstance(error, Exception) and self.error is None:
+                self.error = error
+            raise
+
+    @asynccontextmanager
+    async def context(self, scope: AbstractAsyncContextManager[_T]) -> AsyncGenerator[_T]:
+        with self.protect():
+            async with scope as value:
+                yield value
+
+
 @dataclass
 class Transcript:
     messages: list[Message]
@@ -47,7 +78,14 @@ class Transcript:
     final_text: str | None = None
     turns: int = 0
     stopped: str = "answered"
-    """``answered``, or ``turn_limit`` when the model was still asking for tools."""
+    failure: FailurePhase | None = None
+    phase: FailurePhase = field(default="harness", repr=False)
+
+    def fail(self, phase: FailurePhase) -> None:
+        """Keep the first failure classification without retaining exception data."""
+        self.failure = self.failure or phase
+        self.stopped = "error"
+        self.final_text = None
 
 
 async def _requests(toolbox: Toolbox, transcript: Transcript) -> bool:
@@ -102,17 +140,13 @@ async def _reviews(toolbox: Toolbox, transcript: Transcript) -> bool:
 async def _run_task(
     model: ChatModel,
     toolbox: Toolbox,
-    task: str,
+    transcript: Transcript,
     *,
     run_id: str,
     max_turns: int = 30,
-    system: str = SYSTEM_PROMPT,
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
 ) -> Transcript:
-    """Run ``task`` to an answer. ``run_id`` prefixes every worker operation ID."""
-    transcript = Transcript(
-        messages=[{"role": "system", "content": system}, {"role": "user", "content": task}]
-    )
+    """Run the observed conversation; ``run_id`` prefixes every worker operation ID."""
     await _requests(toolbox, transcript)
     if toolbox.jobs is not None:
         notices = await toolbox.jobs.notices()
@@ -131,7 +165,11 @@ async def _run_task(
         if toolbox.math_checks is not None:
             toolbox.math_checks.safe_point()
         transcript.turns = turn + 1
+        transcript.phase = "model"
         reply = await model.complete(transcript.messages, toolbox.specs)
+        transcript.phase = "harness"
+        if toolbox.jobs is not None:
+            transcript.job_notice_ids = sorted(toolbox.jobs.seen)
         if toolbox.documents is not None:
             toolbox.documents.request_delivered.update(toolbox.documents.request_seen)
         if toolbox.reviews is not None:
@@ -226,9 +264,11 @@ async def _run_task(
             transcript.final_text = reply.text
             return transcript
         for call in reply.tool_calls:
+            transcript.phase = "tool"
             outcome = await toolbox.call(
                 call, operation_id(f"{run_id}-t{turn}", call), model=reply.model
             )
+            transcript.phase = "harness"
             transcript.messages.append(
                 {"role": "tool", "tool_call_id": call.id, "content": outcome.text}
             )
@@ -254,24 +294,54 @@ async def run_task(
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes."""
-    async with AsyncExitStack() as stack:
-        if toolbox.jobs is not None:
-            await stack.enter_async_context(toolbox.jobs.active())
-        if toolbox.reviews is not None:
-            await stack.enter_async_context(toolbox.reviews.active())
-        if toolbox.math_checks is not None:
-            await stack.enter_async_context(toolbox.math_checks.active())
-        if toolbox.documents is not None:
-            await stack.enter_async_context(toolbox.documents.active_requests())
-        transcript = await _run_task(
-            model, toolbox, task, run_id=run_id, max_turns=max_turns, system=system, on_tool=on_tool
-        )
-        if toolbox.jobs is not None:
-            transcript.job_notice_ids = sorted(toolbox.jobs.seen)
-        if toolbox.documents is not None:
-            transcript.work_request_ids = sorted(toolbox.documents.request_delivered)
-        if toolbox.reviews is not None:
-            transcript.review_notice_ids = sorted(toolbox.reviews.delivered)
-        if toolbox.math_checks is not None:
-            transcript.math_notice_ids = sorted(toolbox.math_checks.delivered)
-        return transcript
+    transcript: Transcript | None = None
+    interruption = Interruption()
+    try:
+        async with AsyncExitStack() as stack:
+            with interruption.protect():
+                if toolbox.jobs is not None:
+                    await stack.enter_async_context(interruption.context(toolbox.jobs.active()))
+                if toolbox.reviews is not None:
+                    await stack.enter_async_context(interruption.context(toolbox.reviews.active()))
+                if toolbox.math_checks is not None:
+                    await stack.enter_async_context(
+                        interruption.context(toolbox.math_checks.active())
+                    )
+                if toolbox.documents is not None:
+                    await stack.enter_async_context(
+                        interruption.context(toolbox.documents.active_requests())
+                    )
+                transcript = Transcript(
+                    messages=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": task},
+                    ]
+                )
+                try:
+                    await _run_task(
+                        model,
+                        toolbox,
+                        transcript,
+                        run_id=run_id,
+                        max_turns=max_turns,
+                        on_tool=on_tool,
+                    )
+                except Exception:
+                    # Catch inside the leases: retain only successfully delivered claims
+                    # until the caller durably saves this partial record, then ACKs them.
+                    transcript.fail(transcript.phase)
+                if toolbox.documents is not None:
+                    transcript.work_request_ids = sorted(toolbox.documents.request_delivered)
+                if toolbox.reviews is not None:
+                    transcript.review_notice_ids = sorted(toolbox.reviews.delivered)
+                if toolbox.math_checks is not None:
+                    transcript.math_notice_ids = sorted(toolbox.math_checks.delivered)
+    except BaseException as error:
+        if interruption.error is not None:
+            raise interruption.error from None
+        if not isinstance(error, Exception):
+            raise
+        if transcript is None:
+            raise  # Setup did not start a run; there is no observed transcript.
+        transcript.fail("cleanup")
+    return transcript

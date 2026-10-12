@@ -189,7 +189,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Environments in the GUI (Conda provisioning, CP-26): each environment's revisions with the package differences between them, licenses with AGPL flagged, probe status per revision, and the provisioning operations waiting, with their permission requests' files
 - [ ] Previews of rich artifacts (HTML, SVG, notebook output, PDFs) on a separate origin in sandboxed frames (D54); the PDF viewer
 - [ ] Live updates while a run is in progress; the environments' live state from the worker
-- [ ] Records of runs that end in an error
+- [x] Records of runs that end in an ordinary error ([run records](../docs/WORKSPACE.md#run-records), [acceptance](docs/agent-reports/failed-run-records-2026-10-12.md)): independently reviewed signed `123b2e6`; retained partial observations, fixed safe phases, no final answer, delivered-only save-before-ACK and no failed math finalization. Final gates passed 9,749 Python/43 opt-in skips/two existing warnings, 445 web/24 math checks and all required checks/builds. Actual CLI/browser acceptance and complete cleanup passed; merge remains gated on fresh PR CI. Cancellation propagates without save/ACK; durable cancellation/process-death records remain open.
 - [ ] Ship the bundled npm packages' license notices with the built app before it is distributed: the build drops license comments
 - [ ] TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5)
 
