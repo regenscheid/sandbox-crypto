@@ -101,6 +101,41 @@ class ShellRequest(Contract):
         return self
 
 
+class JobRequest(Contract):
+    """A shell execution that outlives its initiating call and turn (D83)."""
+
+    kind: Literal["job"] = "job"
+    operation_id: Identifier
+    context: ExecutionContext
+    script: str | None = None
+    argv: tuple[str, ...] | None = None
+    purpose: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+    expected_progress: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
+    wake_session: bool = False
+    cwd: RelativePath = "."
+    timeout_seconds: Annotated[float, Field(gt=0, le=7 * 24 * 3600, allow_inf_nan=False)] = 86400.0
+    output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
+
+    @model_validator(mode="after")
+    def _one_command(self) -> Self:
+        if not self.purpose.strip() or not self.expected_progress.strip():
+            raise ValueError("purpose and expected_progress must not be blank")
+        _no_nul(self.purpose, "purpose")
+        _no_nul(self.expected_progress, "expected_progress")
+        if (self.script is None) == (self.argv is None):
+            raise ValueError("give exactly one of script and argv")
+        if self.script is not None:
+            if not self.script.strip():
+                raise ValueError("script must not be empty")
+            _no_nul(self.script, "script")
+        if self.argv is not None:
+            if not self.argv or not self.argv[0]:
+                raise ValueError("argv must name a program")
+            for argument in self.argv:
+                _no_nul(argument, "argv")
+        return self
+
+
 class CellRequest(Contract):
     """A cell for the session's kernel of ``language``."""
 
@@ -113,12 +148,12 @@ class CellRequest(Contract):
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
 
 
-Feature = Literal["pdf", "admission", "provisioning"]
+Feature = Literal["pdf", "admission", "provisioning", "jobs"]
 """Capabilities beyond kernels that an environment can offer. ``pdf`` needs pdf_oxide (D59);
 ``admission`` means the worker admits hosts ahead of use (D69, ``AdmissionRequest``);
 ``provisioning`` that it installs capabilities and packages on request (``ProvisionRequest``,
 Conda provisioning)."""
-FEATURES: Final[tuple[Feature, ...]] = ("pdf",)
+FEATURES: Final[tuple[Feature, ...]] = ("pdf", "jobs")
 """The features an executor may report; the worker adds ``admission`` itself."""
 PdfOperation = Literal["info", "pages", "search", "render"]
 PageList = Annotated[
@@ -171,7 +206,9 @@ class PdfRequest(Contract):
         return self
 
 
-ExecutionRequest = Annotated[ShellRequest | CellRequest | PdfRequest, Field(discriminator="kind")]
+ExecutionRequest = Annotated[
+    ShellRequest | JobRequest | CellRequest | PdfRequest, Field(discriminator="kind")
+]
 
 
 class ExecutionState(StrEnum):
@@ -354,13 +391,24 @@ class Result(Contract):
     as admitting a host that a connection was refused for (D69)."""
 
 
+class JobDetails(Contract):
+    """Durable job metadata, including its whole-output files in the session workspace."""
+
+    purpose: str
+    expected_progress: str
+    wake_session: bool = False
+    timeout_seconds: Annotated[float, Field(gt=0, le=604800, allow_inf_nan=False)]
+    stdout_path: RelativePath
+    stderr_path: RelativePath
+
+
 class Execution(Contract):
     """An execution and its current attempt."""
 
     execution_id: Identifier
     attempt_id: Identifier
     operation_id: Identifier
-    kind: Literal["shell", "cell", "pdf"]
+    kind: Literal["shell", "cell", "pdf", "job"]
     context: ExecutionContext
     state: ExecutionState
     submitted_at: datetime
@@ -370,9 +418,28 @@ class Execution(Contract):
     result: Result | None = None
     last_seq: Annotated[int, Field(ge=0)] = 0
     """The sequence number of the latest event."""
+    job: JobDetails | None = None
     origin: Identifier | None = None
     """The provisioning operation this execution is a step of (its dry run, install or a
     probe), when the worker ran it for one."""
+
+
+class JobListing(Contract):
+    """A bounded session job listing, oldest first, with a submission cursor."""
+
+    jobs: tuple[Execution, ...] = ()
+    truncated: bool = False
+    next_after: Identifier | None = None
+
+
+class JobStatus(Contract):
+    """Current job state, bounded live head and tail, and observed process usage."""
+
+    execution: Execution
+    stdout: StreamOutput | None = None
+    stderr: StreamOutput | None = None
+    cpu_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None = None
+    memory_bytes: Annotated[int, Field(ge=0)] | None = None
 
 
 class KernelRestartRequest(Contract):
@@ -381,7 +448,7 @@ class KernelRestartRequest(Contract):
 
 
 class SessionCloseRequest(Contract):
-    """Stop a session's kernels in one environment. Its files stay, and so do shell calls."""
+    """Stop a session's kernels and jobs in one environment. Files and foreground calls stay."""
 
     context: ExecutionContext
 
