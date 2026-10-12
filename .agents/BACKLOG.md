@@ -33,6 +33,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 
 ### Other track P items
 
+- [x] Keep synthetic OpenShell state readable across lifecycle-command cancellation: all fixture writers replace a complete JSON file atomically; the existing 79 environment cases retain their lifecycle assertions and timeout bounds
 - [x] Worker API schema and worker service, first version ([worker](../docs/WORKER.md)): idempotent executions with numbered, replayable events, cancellation, watchdogs, kernels through the Jupyter protocol, files and publication; local (tier 0, tests only) and OpenShell backends
 - [ ] Background jobs (D83, [tools](../docs/specs/tools.md#background-jobs)): shell commands that run without holding the agent's turn, with their output in log files, listing, reading and cancelling, waiting on jobs with the turn open, check-ins by a low-cost watcher model (5 minutes, then every 30), a notice when they end, policy limits of their own, and survival of the orchestrator's restart; the harness's tools and the GUI's list of jobs
   - [x] Worker/API slice: job execution identity and events, whole sandbox logs, live bounded output and usage, separate time and concurrency limits, session closure, environment deletion and idle protection
