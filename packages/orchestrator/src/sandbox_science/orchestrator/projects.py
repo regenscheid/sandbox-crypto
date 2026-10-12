@@ -108,6 +108,8 @@ class RunRecord(Contract):
     """``answered``, or ``turn_limit`` when the model was still asking for tools."""
     job_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
     """Completion notices represented by this durable run; acknowledged only after save."""
+    work_request_ids: list[Identifier] = Field(default_factory=list[Identifier])
+    """User work requests represented in this saved transcript, acknowledged after save."""
     final_text: str | None = None
     messages: list[dict[str, JsonValue]]
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""

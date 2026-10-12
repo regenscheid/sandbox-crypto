@@ -420,3 +420,85 @@ async def test_source_body_bound_revert_and_promote(
     latest = await get(client, f"/api/v0/projects/p1/documents/{doc}")
     assert latest["document"]["scope"] == "project"
     assert latest["text"] == "Notes.\n"
+
+
+async def test_comments_write_user_attribution_anchor_and_scope(
+    client: TestClient[Any, Any], state_dir: Path, documents: dict[str, str]
+) -> None:
+    path = f"/api/v0/projects/p1/documents/{documents['ff']}/comments"
+    payload = {
+        "action": "create",
+        "anchor": {"revision": 2, "block": documents["paragraph"]},
+        "body": "Explain $p$.",
+        "addressed_to": "a",
+        "operation_id": "comment-1",
+    }
+    response = await client.post(
+        path, json=payload, headers={"Origin": str(client.make_url("/")).rstrip("/")}
+    )
+    assert response.status == 200, await response.text()
+    result = await response.json()
+    page = await get(client, path)
+    thread = page["threads"][0]
+    assert thread["opener"]["kind"] == "user"
+    assert thread["entries"][0]["author"]["user"] == "user"
+    assert thread["requests"][0]["state"] == "queued"
+    assert thread["requests"][0]["session_id"] == "a"
+    assert thread["anchor"]["quote"] == "Let $p$ be prime."
+    assert thread["attachment"]["status"] == "current"
+    assert (await get(client, path + f"/{result['thread_id']}"))["revision"] == 1
+    assert not (await get(client, path + "?revision=1"))["threads"]
+    other = f"/api/v0/projects/p2/documents/{documents['other']}/comments/{result['thread_id']}"
+    assert (await get(client, other, 404))["error"]["kind"] == "not_found"
+    for extra in ({"author": {"kind": "agent"}}, {"addressed_to": "wrong"}, {"project_id": "p2"}):
+        response = await client.post(
+            path,
+            json={**payload, **extra, "operation_id": "bad"},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        assert response.status in (400, 404)
+    assert len((await get(client, path))["threads"]) == 1
+
+
+async def test_comments_require_auth_same_origin_and_expected_revision(
+    aiohttp_client: ClientFactory,
+    client: TestClient[Any, Any],
+    state_dir: Path,
+    static_dir: Path,
+    documents: dict[str, str],
+) -> None:
+    path = f"/api/v0/projects/p1/documents/{documents['ff']}/comments"
+    payload = {
+        "action": "create",
+        "anchor": {"revision": 1, "block": documents["paragraph"]},
+        "body": "Question",
+        "operation_id": "c",
+    }
+    anonymous = await aiohttp_client(
+        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+    )
+    assert (await anonymous.get(path)).status == 401
+    assert (
+        await anonymous.post(
+            path, json=payload, headers={"Origin": str(anonymous.make_url("/")).rstrip("/")}
+        )
+    ).status == 401
+    for headers in ({}, {"Origin": "https://untrusted.invalid"}):
+        assert (await client.post(path, json=payload, headers=headers)).status == 403
+    origin = {"Origin": str(client.make_url("/")).rstrip("/")}
+    response = await client.post(path, json=payload, headers=origin)
+    result = await response.json()
+    reply = {
+        "action": "reply",
+        "thread": result["thread_id"],
+        "expected": 1,
+        "body": "Answer",
+        "operation_id": "r",
+    }
+    assert (await client.post(path, json=reply, headers=origin)).status == 200
+    response = await client.post(path, json={**reply, "operation_id": "stale"}, headers=origin)
+    assert response.status == 409
+    assert (await response.json())["error"]["details"]["current"] == 2
+    assert (await client.post(path, data="{", headers=origin)).status == 400
+    assert (await client.get(path + "?revision=0")).status == 400
+    assert (await client.get(path + f"/{result['thread_id']}?before=-1")).status == 400
