@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance and GUI distribution-notice HTTP acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
@@ -12,8 +12,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 16898,
-      "sha256": "158a5e608235d715581fa21dd560fe17e09d0dc9f27917aa5df70945badf5610"
+      "bytes": 17676,
+      "sha256": "df560ea4481ecc4e6e223d43df3af984cd6ec24441b9e4adf012f6b03266b1fd"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -358,6 +358,12 @@
       "sha256": "9e59e003657991be608d5667b578e64aa28fcd6526c74f35ec61479fb2209e8f"
     },
     {
+      "path": "agent-reports/copy-latex-browser-2026-10-12.png",
+      "category": "browser-evidence",
+      "bytes": 146494,
+      "sha256": "1958ef05b66151b26cab51bb8eef0cd153a967e6f02588226c32715ee9bbbf68"
+    },
+    {
       "path": "agent-reports/document-comments-2026-10-12.md",
       "category": "runtime-validation",
       "bytes": 3816,
@@ -524,6 +530,18 @@
       "category": "agent-source-investigation",
       "bytes": 56150,
       "sha256": "0bc2cfc76ed52eea7a6b96cd966a17bd28d8083d5f95adfbca6b169fa9fb7be3"
+    },
+    {
+      "path": "agent-reports/workspace-copy-latex-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 5306,
+      "sha256": "8547f96755381ca6b656ab31727d446750cd7d37c857e3e34883662ceec697bc"
+    },
+    {
+      "path": "agent-reports/workspace-copy-latex-evidence-2026-10-12.json",
+      "category": "browser-evidence",
+      "bytes": 40290,
+      "sha256": "46986c076c679d50f8c23707caa345da645a894fbd21708a4ebf878e64997eba"
     },
     {
       "path": "agent-reports/workspace-license-evidence-2026-10-12.json",
