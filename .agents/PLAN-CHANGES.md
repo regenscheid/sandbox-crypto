@@ -4,6 +4,8 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-12
 
+- **Background jobs started (D83).** Split the checklist into worker/API, harness/GUI, real OpenShell acceptance evidence, and the still-needed long-running scheduler and shared model spend accounting. Refreshed the detailed implementation plan's stale W0/W1 priority to the completed M1 exit run and current M2 sequence. The executor daemon follows this slice; a running job must still be reported `lost` on a worker restart until reconnection is implemented and verified.
+
 - **Lab 18: provisioning in OpenShell** ([report](docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md)). The user resumed work after the handoff pause. Validated CP-F1 to CP-F4, CP-F8 and CP-F10 with real package managers, policy middleware and package cache; exact file-set grants and their withdrawal; all nine catalog probes; and cancellation and worker restart after linking began. Recorded the observed limits of the current recovery behavior. Added reusable lab checks and the crypto-base lab profile; all disposable lab state was removed. No platform behavior or decision changed. Background jobs and the executor daemon are next.
 
 ## 2026-10-11
