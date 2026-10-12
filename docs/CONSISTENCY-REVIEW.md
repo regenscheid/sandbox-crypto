@@ -63,6 +63,8 @@ anchors under their original evidence IDs, scoped to the same project/session. T
 also pin claimed-fix and user replacement revisions from durable transition payloads,
 even if the process crashed before optional feed observation. Those bytes count toward
 the snapshot bound. An omitted group remains incomplete and is not counted as attempted.
+If no confirmation target fits, an incomplete author-work window can still advance its
+feed; the omitted claimed fix stays explicitly unconfirmed.
 
 Reviewer tools are only manifest/read, checked-item record, finding creation and
 confirmation/rebuttal decision. Unknown or denied calls are recorded and consume the
@@ -76,8 +78,11 @@ ledger is not implemented and the gateway's hard spend cap remains the monetary 
 ### Findings, delivery and workspace
 
 Findings retain severity, category, Markdown/LaTeX prose, exact anchors, remedy, revision,
-reflags and append-only attributed transitions. Main agents may claim fixes or rebut;
-only a confirmation reviewer or explicit user decision can confirm a fix. User writes
+reflags and append-only attributed transitions. Reflags can strengthen the current
+severity/prose/remedy while retaining the previous
+assessment in history, and a weaker reflag cannot downgrade that current assessment.
+Main agents may claim fixes or rebut; only a confirmation reviewer or explicit user
+decision can confirm a fix. User writes
 use strict expected revisions and replay-safe operation IDs. A block's supersession
 links old and replacement revisions and never claims that it fixed the finding.
 Confirmation decisions compare the pinned finding revision and current head before
@@ -87,6 +92,9 @@ out-of-range and unrelated-prefix reads cannot satisfy that guard. Large evidenc
 therefore end capped or inconclusive. This records exposure, not model understanding.
 Rejected fixes/rebuttals and author response rounds stop at configured bounds;
 a claimed fix can remain visibly unconfirmed.
+Generic reflags arriving after a fix claim or rebuttal append a deferred audit observation
+without changing its revision or response payload. Only the pinned reviewer decision
+can resolve that pending response.
 
 Interrupt-threshold findings are delivered at main-agent safe points as bounded
 untrusted data. Other severity counts are delivered without their prose or anchors and
@@ -114,11 +122,14 @@ late notices and save-before-acknowledgement. HTTP fixtures cover scope, CSRF, a
 user decisions, stale heads and replay. Native browser acceptance is a separate pending
 gate until its report is recorded; unit/type/build results do not establish it.
 
-The local milestone checks on Python3.13 passed 9,056 repository tests, with 43 external
+The initial milestone checks on Python 3.13 passed 9,056 repository tests, with 43 external
 integration/image cases skipped; all 425 web tests passed. Ruff, format, strict pyright,
 Python/npm license checks, protobuf generation verification, Svelte/TypeScript checks,
 production build and whitespace checks passed. The main browser bundle is 490.98 kB;
 the review panel loads separately (12.91 kB).
+The finding-assessment/response follow-up passed all 1,221 affected component tests
+and 41 focused review/API fixtures, with strict pyright, Ruff, format and whitespace
+checks green again.
 
 The tracked synthetic browser fixture creates a new, marked state directory:
 

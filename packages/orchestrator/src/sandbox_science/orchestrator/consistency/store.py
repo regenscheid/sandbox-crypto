@@ -590,7 +590,11 @@ class ReviewStore:
             finding["response"] = (
                 {
                     "reason": response[0],
-                    "payload": json.loads(response[1]),
+                    "payload": {
+                        key: value
+                        for key, value in json.loads(response[1]).items()
+                        if key not in ("previous_assessment", "assessment")
+                    },
                 }
                 if response
                 else None
@@ -638,7 +642,8 @@ class ReviewStore:
                 for p in group_grants.values()
             )
             if (
-                size + added > MAX_SNAPSHOT_BYTES
+                any(len(item[2].encode()) > MAX_ITEM_BYTES for item in group)
+                or size + added > MAX_SNAPSHOT_BYTES
                 or len(prepared) + len(grants) + len(group) + len(group_grants) > MAX_SNAPSHOT_ITEMS
             ):
                 continue
@@ -648,6 +653,20 @@ class ReviewStore:
             grants.update(group_grants)
             included_findings += 1
             size += added
+        if kind == "confirmation" and not confirmation_targets:
+            # No exact fix group fit the immutable evidence bounds. Leave those
+            # responses unconfirmed, but service author work rather than create
+            # an empty confirmation key that starves its feed indefinitely.
+            return self.dispatch(
+                project,
+                session,
+                "terminal",
+                author_run=author_run,
+                owner=owner,
+                alias=alias,
+                classifier=classifier,
+                coverage_complete=False,
+            )
         complete = (
             coverage_complete
             and selected_end == end
