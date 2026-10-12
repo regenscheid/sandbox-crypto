@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-10",
-  "status": "planning and source inspection, nineteen OpenShell runtime lab records and document editing browser acceptance (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, nineteen OpenShell runtime lab records and document editing and comments browser acceptance (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 7865,
-      "sha256": "86b34b35056e92b1f6ff0b7039a9f13507259e0a3deaadef6b732b8bb9fe7915"
+      "bytes": 8394,
+      "sha256": "d7db919478432e615b15d866e840a20f1bc0e8acf1bdb2ddb504361235e6bed7"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-2-2026-10-10.md",
@@ -188,6 +188,36 @@
       "category": "runtime-validation",
       "bytes": 44794,
       "sha256": "13347a429cc53df397771e947729fd3612c949b9aa69fe79ae53c3578bab2d39"
+    },
+    {
+      "path": "agent-reports/document-comments-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 3816,
+      "sha256": "91fa9569cbaa37b58192d5868a99925addf69ecb3a5fade94894288587c7b97d"
+    },
+    {
+      "path": "agent-reports/document-comments-draft-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 52600,
+      "sha256": "9fd1129b4c3749881fc5a201757e86a81351343e4d137c2e988c9bcd685958fc"
+    },
+    {
+      "path": "agent-reports/document-comments-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 148006,
+      "sha256": "85caab84fb8d2050445d21d3027b9dae30ae07e1a9477597075bd3ce82841d53"
+    },
+    {
+      "path": "agent-reports/document-comments-queued-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 42519,
+      "sha256": "ea7e7b3b817f9a087624f9de7c03a385da87b5d69aa9534d61930389b3fef788"
+    },
+    {
+      "path": "agent-reports/document-comments-response-2026-10-12.jpg",
+      "category": "runtime-validation",
+      "bytes": 55614,
+      "sha256": "e94e417c9837ff7a5b00db15daa59a25ce9f944f4c1678c0cff30ce2598165fa"
     }
   ]
 }
