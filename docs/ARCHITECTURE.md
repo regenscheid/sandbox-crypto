@@ -61,6 +61,15 @@ Worker modes:
 
 Sessions/workbooks have separate kernel state even when they share the default project container. Those sessions share installed tools; coordinate package mutations. A dedicated session container has independent dependency state and separately granted project data access. Session directories inside one container are organizational, not automatically security boundaries. Provide explicit environment revisions so a reviewer reproduces a known dependency state.
 
+As built, each sandbox's executor daemon outlives worker and bridge connections.
+The worker reconciles the same attempts through bounded numbered replay and keeps
+kernel globals in the surviving daemon. An authenticated new daemon incarnation
+in a managed OpenShell VM requires a verified stop/start of that original VM
+before replacement readiness, preserving disk while losing unknown outcomes and
+kernel memory. [The worker](WORKER.md#sandbox-daemon-and-recovery) documents the
+fence and availability limits; [lab 20](../.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md)
+records both the initial cleanup failure and corrected runtime acceptance.
+
 The versioned worker API needs operations to describe/probe capabilities; open/close project environments; create/bind/resume dedicated session environments; grant project data references; start/inspect/interrupt/reset kernels; execute cells and argv commands; stream/replay events; stage/read/write/collect scoped files; query/reconcile attempts; cancel; and release resources. The existing [batch request](../examples/run-request.json) illustrates only one part of this API.
 
 Every request identifies project, session, environment revision, execution/attempt, scope, and limits. Worker routing uses capabilities and policy rather than an absolute executable path on the orchestrator. Host inventory remains diagnostic; functional probes run inside the selected worker policy.

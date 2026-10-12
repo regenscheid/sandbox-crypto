@@ -4,7 +4,7 @@
 
 Start lab_up.sh and PROJECT=lab20 worker_up.sh, then restart the worker from the
 branch under test. This deliberately stops/restarts only that transient lab unit.
-Usage: .venv/bin/python -I .agents/labs/recovery.py envs running offline kernel noisy timeout
+Usage: .venv/bin/python -I .agents/labs/recovery.py envs running offline normal refused cancelled kernel noisy timeout daemon_loss sandbox_loss idle_daemon_loss
 """
 
 from __future__ import annotations
@@ -30,6 +30,12 @@ STAMP = str(time.time_ns())
 TERMINAL = {"succeeded", "failed", "cancelled", "timed_out", "lost"}
 
 
+class ApiError(RuntimeError):
+    def __init__(self, method: str, path: str, status: int, value: dict[str, Any]) -> None:
+        super().__init__(f"{method} {path}: HTTP {status}: {value}")
+        self.status, self.value = status, value
+
+
 class Checks:
     def __init__(self, http: aiohttp.ClientSession) -> None:
         self.http = http
@@ -43,7 +49,7 @@ class Checks:
         async with self.http.request(method, URL + path, json=body) as response:
             value = await response.json()
             if response.status >= 400:
-                raise RuntimeError(f"{method} {path}: HTTP {response.status}: {value}")
+                raise ApiError(method, path, response.status, value)
             return value
 
     async def ready(self) -> None:
@@ -77,6 +83,26 @@ class Checks:
                 expected_progress="The acceptance check asserts its output.",
             )
         return await self.api("POST", "/v1/executions", body)
+
+    async def after_fence(self, name: str, **kwargs: Any) -> dict[str, Any]:
+        """Retry only definite admission refusals while the lifecycle fence runs."""
+        refusals = 0
+        async with asyncio.timeout(60):
+            while True:
+                try:
+                    result = await self.submit(name, **kwargs)
+                    self.evidence["fence_admission_refusals"] = refusals
+                    return result
+                except ApiError as error:
+                    detail = error.value.get("error", {})
+                    if (
+                        error.status != 503
+                        or detail.get("kind") != "unavailable"
+                        or "fenced" not in detail.get("message", "")
+                    ):
+                        raise
+                    refusals += 1
+                    await asyncio.sleep(0.2)
 
     async def finish(self, job: dict[str, Any]) -> dict[str, Any]:
         async with asyncio.timeout(60):
@@ -409,7 +435,7 @@ print(MARKER)
         other_done = await self.finish(other_job)
         assert other_done["state"] == "lost", other_done
         fresh = await self.finish(
-            await self.submit("after-loss", kind="shell", script="printf fresh")
+            await self.after_fence("after-loss", kind="shell", script="printf fresh")
         )
         assert fresh["state"] == "succeeded", fresh
         after_environment = await self.api("GET", f"/v1/environments/{ENVIRONMENT}")

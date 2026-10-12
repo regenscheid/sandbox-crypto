@@ -455,8 +455,11 @@ worker-unacknowledged execution after that bounded retention reports `lost`, nam
 limitation. Daemon memory and kernels do not survive daemon or sandbox death.
 
 Local daemon fixtures cover restart, bridge loss, cancellation, refusal, journal
-rollover, authentication, admission bursts and incarnation cleanup. Real OpenShell
-restart acceptance is tracked separately from these local checks.
+rollover, authentication, admission bursts and incarnation cleanup. [OpenShell lab
+20](../.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md) separately
+verified same-attempt restart, offline completion and timeout, kernel continuity,
+whole logs, and the managed VM fence after daemon loss. The initial owner-marker
+cleanup failure remains recorded beside the corrected runtime checks.
 
 ## Settings
 

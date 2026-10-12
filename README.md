@@ -2,7 +2,7 @@
 
 Working folder for a cryptography/math research workbench with independently deployable orchestration and sandboxed compute.
 
-**Status, 2026-10-10:** planning, plus the first library: project-policy validation and evaluation ([packages/policy](packages/policy), track P). No application, runtime or deployment has been implemented or tested here. Development follows [the conventions](.agents/CONVENTIONS.md); [STATUS](.agents/STATUS.md) and [BACKLOG](.agents/BACKLOG.md) track progress.
+**Status, 2026-10-12:** the worker, policy services, harness and web workspace are implemented in slices. Real OpenShell VM checks cover isolated execution, provisioning, shared data, background jobs and [worker restart recovery](.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md); the document editing GUI passed browser acceptance. The project ledger, automatic consistency review, full control-application scheduler and other deployment targets remain in the plan. Development follows [the conventions](.agents/CONVENTIONS.md); [STATUS](.agents/STATUS.md) and [BACKLOG](.agents/BACKLOG.md) track progress.
 
 ## Terminology
 
@@ -44,6 +44,8 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [Execution plan](docs/EXECUTION-PLAN.md) | Requirements, proposed topology, and the first decisions to discuss |
 | [Projects and sessions](docs/PROJECTS-AND-SESSIONS.md) | Persistent project containers, optional session containers, and data sharing |
 | [Architecture](docs/ARCHITECTURE.md) | Worker API, state, transport, and local/Kubernetes placement |
+| [Worker](docs/WORKER.md) | Execution, sandbox lifetimes, package provisioning, shared data and reconnectable executor daemons |
+| [Background jobs](docs/BACKGROUND-JOBS.md) | Job tools, waits, watcher check-ins, durable notices and current limits |
 | [Product](docs/PRODUCT.md) | Functional baseline, skills, and automatic review requirements |
 | [Reuse assessment](docs/REUSE-ASSESSMENT.md) | CScience and the located OpenScience Desktop fork |
 | [Monitoring and provisioning](docs/MONITORING.md) | Trusted traffic/content monitoring and isolated Conda installs |
