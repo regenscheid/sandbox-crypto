@@ -1,6 +1,6 @@
 # Sticky package recovery admission (CP-13 prerequisite)
 
-This slice enforces refusal after a managed install leaves uncertain or changed packages. It does not restore packages, detect arbitrary unmanaged failures, or prove recovery by comparing package lists. `Restorer`, an operator clear command, uninstall/upgrade and CP-20 remain open. Runtime acceptance against OpenShell is a separate Lab21 gate; local fixtures are not that evidence.
+This slice enforces refusal after a managed install leaves uncertain or changed packages. It does not restore packages, detect arbitrary unmanaged failures, or prove recovery by comparing package lists. `Restorer`, an operator clear command, uninstall/upgrade and CP-20 remain open. Independent review and root-owned OpenShell Lab21 passed on signed source `e320236`; both disposable labs are completely removed. Fresh PR CI is required before merge. Local fixtures and actual runtime observations are distinguished below.
 
 ## Durable hold and positive authority
 
@@ -28,9 +28,17 @@ Only gateway-confirmed deletion/absence of the exact retained binding records du
 
 The required pre-delete guard runs even when the optional executor-release callback is absent, and on deletion-proof retries. It validates the retained original binding before any guest mutation, preserving an exact legacy endpoint proof across executor shutdown. Atomic final cleanup checks that binding again with durable operation completion. Current same-name metadata or its deletion receipt cannot reset an unknown legacy hold; ready empty rows without a prior hold remain compatible.
 
-## Local validation boundary
+## Validation and runtime boundary
 
-The initial worker suite passed 703 cases with 32 opt-in skips, followed by focused retained-binding checks. The first root-owned Lab21 pass on predecessor `ef77f6d` passed successful release, actual linking cancellation, queued-launch denial, retained kernel/files/revisions/lockfiles, an independent environment and sticky recovery after worker restart; root verified complete teardown. Final original-binding proof corrections add required pre-delete and atomic-clear guards, including unknown legacy refusal and exact endpoint/bound/ready positives. The corrected source passed 321 affected cases plus one separate corrupt-binding allocation case, formatting, lint and strict typing. Its combined full gates and fresh offline/delete-reuse Lab21 pass remain pending. The predecessor's full run passed 9,520 cases with 43 opt-in skips and one older HTTP-composition namespace failure; only its missing lifecycle hook defaults were corrected, without changing assertions or timeouts.
+Signed source `e320236c8be60c19e0adbb8e784a0793163f5d05` passed independent adversarial review and final combined local gates: 9,532 Python tests (43 opt-in skips, two existing serializer warnings), 436 web tests and 24 post-build actual math-check cases. Locked uv/npm installation, Python/npm licenses, Ruff format/lint, strict Pyright, Svelte/TypeScript, generated protocol consistency and both production builds passed. Development used Python 3.13.15; the supported 3.12/3.13 fresh CI matrix remains the PR merge gate.
+
+Root's first [Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) pass on predecessor `ef77f6d` observed real package linking, cancellation and sticky recovery through a worker restart. It proved successful install release, queued calls with no start/markers, retained research globals, file/status/cancel/revision/lockfile access and an independent environment. That lab was completely removed before the final original-binding proof correction. The corrected source then passed 321 affected cases plus one corrupt-binding allocation case before its full combined run.
+
+The final fresh Lab21 used exact `e320236`. After three new Conda records appeared, graceful worker stop/reconnect retained the original VM boot and kernel global `1729`, with no installer process left during the offline interval. New shell/cell/job/PDF requests, kernel restart and provisioning refused; queued calls had no `started_at` and their forbidden markers returned actual HTTP 404. Recovery file/status/cancel/history and the known-good lockfile remained available, and the independent environment stayed healthy. Explicit deletion twice retained the old identity; recreation proved a new immutable sandbox/boot, a ready gate and successful fresh/peer cells. Root independently verified complete final teardown at 12:13:54 UTC: all seven owned units inactive, lab directory absent, ports free, no owned VM/process/driver/OpenShell XDG state. Shared images and unrelated services were preserved.
+
+Legacy unknown-binding/replacement, malformed retained state and abrupt-death cases are adversarial local fixtures; the real offline run used graceful worker stop. Unknown post-interruption revision is not a newly captured lockfile. No restoration, unmanaged-failure detection or atomic name-addressed gateway deletion is claimed. Fresh PR CI is required before merge.
+
+Earlier local evidence remains historical: the initial worker suite passed 703 cases with 32 opt-in skips, followed by focused retained-binding checks. The predecessor full run passed 9,520 cases with 43 skips and one older HTTP-composition namespace failure. Its missing hook defaults were corrected without changing assertions/timeouts; the final 9,532-case run passed.
 
 ## Disposable acceptance recipe
 
