@@ -214,18 +214,23 @@ class WorkerClient:
         return await self._catalog(project)
 
     async def catalog_begin(self, target: CatalogSnapshot) -> CatalogStatus:
+        """Reserve this exact complete target without changing catalog membership."""
         return await self._catalog(target.project_id, "/snapshots", target)
 
     async def catalog_page(self, page: CatalogSnapshotPage) -> CatalogStatus:
+        """Send one ordered metadata page for a pinned pending snapshot."""
         return await self._catalog(page.project_id, "/pages", page)
 
     async def catalog_delta(self, delta: CatalogDelta) -> CatalogStatus:
+        """Stage complete contiguous changes against the exact committed cursor."""
         return await self._catalog(delta.target.project_id, "/deltas", delta)
 
     async def catalog_content(self, chunk: CatalogContentChunk) -> CatalogStatus:
+        """Send one aligned content chunk owned by the pending generation."""
         return await self._catalog(chunk.project_id, "/content", chunk)
 
     async def catalog_commit(self, target: CatalogSnapshot) -> CatalogStatus:
+        """Verify and atomically commit the exact complete catalog target."""
         return await self._catalog(target.project_id, "/commit", target)
 
     # Environments (D73): the worker creates sandboxes under stored policy revisions.
