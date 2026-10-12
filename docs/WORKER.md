@@ -107,6 +107,12 @@ The optional `[document_catalog]` settings configure logical retained-data bound
 
 Reservation is transactional across connections. Stage expiry releases metadata and chunks even when the next request is refused. Tightened limits hold over-budget staging rather than allowing a continued upload or commit; current status stays readable, and a replacement must fit current aggregate quotas. Historical identity capacity is retained until a future explicit retirement mechanism exists. These bounds cover logical content/counts, not filesystem high-water usage, WAL size or process RSS; SQLite may retain freed pages. The protocol ceilings are 10,000 entries and 1 GiB declared content per target. Delta staging additionally retains at most 64 changed revision records for tombstones. Catalog SQL uses one private thread with bounded admission, so lock waiters do not consume the worker's default I/O thread pool. A disconnected caller does not cancel an admitted transaction; application cleanup drains it before closing the database.
 
+Catalog prerequisite acceptance after integrating the math and consistency changes passed
+9,253 Python tests (43 opt-in skips), 429 web tests, strict/static/license/protocol checks
+and both production builds. Independent adversarial review covered retained identities,
+old receipt replay, stage expiry, project/authentication denial and cancellation while SQL
+commits remain owned. These tests establish the catalog boundary, not sandbox publication.
+
 ## Behavior worth knowing
 
 - **Durability.** An execution is stored before it is dispatched, and each event before it is delivered. A client that loses its stream asks again with `after`, and receives each event once; a replay reads the store a page at a time. An execution's last two events (its terminal state and its result) and its final record are checked and stored in one transaction.
@@ -576,9 +582,3 @@ The local runs are then skipped; setting only some of the variables is an error.
 - **Authentication.** Bearer tokens: the pool's own, and [clients' limited to projects](#clients-limited-to-projects). Environment IDs are still shared by the whole pool (see there). The outbound, worker-initiated channel for hosted control (architecture) comes later.
 - **Monitoring.** No connection yet to the monitor or the event store with a hash chain.
 - **Probes across sandboxes.** Two sandboxes with the same boot ID share a kernel, so neither is tier 3; the worker does not compare sandboxes with each other yet.
-
-Catalog prerequisite acceptance after integrating the math and consistency changes passed
-9,253 Python tests (43 opt-in skips), 429 web tests, strict/static/license/protocol checks
-and both production builds. Independent adversarial review covered retained identities,
-old receipt replay, stage expiry, project/authentication denial and cancellation while SQL
-commits remain owned. These tests establish the catalog boundary, not sandbox publication.
