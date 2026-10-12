@@ -10,6 +10,10 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 - [OpenShell v0.1.3 policy schema](agent-reports/openshell-policy-v0.1.3.md): endpoint, L7, MCP and provider semantics, address handling and compiler constraints, as input to the policy compiler (D62, D68).
 - [Document writer guard investigation, 2026-10-12](agent-reports/document-writer-guard-2026-10-12.md): source-only analysis of notification, lease and protected-filesystem boundaries after Lab20's unreadable peer-process evidence. A protected-filesystem feasibility prerequisite is proposed; FUSE is unimplemented and unvalidated under OpenShell, and LD-49 remains open.
 
+## Local implementation validation
+
+- [Internal document export-input snapshots, 2026-10-12](agent-reports/document-export-inputs-2026-10-12.md): exact immutable source/parser/TeX/macro pins, durable replay, atomic quotas and unsupported-input holds. [Evidence](agent-reports/document-export-inputs-evidence-2026-10-12.json) retains independent review, 134 affected cases and root combined gates (9,979 Python/575 web/24 math and required checks/builds). Protected staging, worker conversion and actual `.tex`/PDF acceptance remain open; no export runtime was started.
+
 ## Runtime validation
 
 - [OpenShell v0.1.3 lab 26 on babbage, 2026-10-12](agent-reports/babbage-openshell-lab-26-2026-10-12.md): passive existing-channel observations preserve kernel/SQL pins and allow actual gateway-confirmed idle stop; thirty unavailable reads do not wake it, and ordinary execution resumes with state-loss disclosure. [Evidence](agent-reports/babbage-openshell-lab-26-evidence-2026-10-12.json) retains preliminary failures, exact source/helper/gates, safe SQL/gateway projections and complete teardown. GUI polling and agent notification remain open.
