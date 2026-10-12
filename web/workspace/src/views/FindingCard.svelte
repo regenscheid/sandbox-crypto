@@ -6,6 +6,7 @@
   import { loadDraft, saveDraft, clearDraft } from '../lib/drafts';
   import ErrorMessage from './ErrorMessage.svelte';
   import Markdown from '../lib/Markdown.svelte';
+  import ResponseBody from './ResponseBody.svelte';
   import { Preview } from '../lib/preview';
   let { projectId, sessionId, finding, changed, read }: { projectId: string; sessionId: string;
     finding: Finding; changed: () => Promise<void>; read: (review: string, evidence: string) => Promise<void> } = $props();
@@ -15,7 +16,8 @@
   let explanation = $state(draft?.text ?? ''), action = $state(draft?.reason ?? 'rebut'), references = $state(draft?.retained ?? '');
   let expected = $state(draft?.base ?? initial.revision), persisted = $state(true), busy = $state(false), error = $state<unknown>(null);
   let history = $state<Transition[]>([]), before = $state<number | null>(null), historyHead = $state(initial.revision), loaded = $state(false);
-  $effect(() => { if (finding.revision !== historyHead) { history = []; before = null; loaded = false; historyHead = finding.revision; } });
+  let sourceHead = $state(initial.response_generation ?? 0);
+  $effect(() => { if (finding.revision !== historyHead || (finding.response_generation ?? 0) !== sourceHead) { history = []; before = null; loaded = false; historyHead = finding.revision; sourceHead = finding.response_generation ?? 0; } });
   $effect(() => {
     if (explanation) persisted = saveDraft(projectId, key, { base: expected, text: explanation, reason: action, retained: references, block: null });
     else { clearDraft(projectId, key); expected = finding.revision; }
@@ -41,8 +43,8 @@
   async function earlier() {
     busy = true;
     try {
-      const head = finding.revision, result = await reviews.finding(projectId, sessionId, finding.finding_id, before);
-      if (head !== finding.revision) return;
+      const head = finding.revision, generation = finding.response_generation, result = await reviews.finding(projectId, sessionId, finding.finding_id, before);
+      if (head !== finding.revision || generation !== finding.response_generation) return;
       history = [...(result.history ?? []), ...history]; before = result.history_before ?? null; loaded = true;
     } catch (caught) { error = caught; } finally { busy = false; }
   }
@@ -58,7 +60,7 @@
   <details><summary>Pinned evidence anchors</summary>{#each finding.anchors as anchor, index (index)}{#if anchor.check}<button onclick={() => mathEvidence(anchor.check!, anchor.math)}>Read mechanical evidence {index + 1}</button>{:else if anchor.review && anchor.evidence}<button onclick={() => read(anchor.review!, anchor.evidence!)}>Read evidence {index + 1}</button>{/if}<pre>{JSON.stringify(anchor, null, 2)}</pre>{/each}</details>
   {#if mechanicalEvidence}<pre aria-label="Mechanical math evidence">{mechanicalEvidence}</pre>{/if}
   <button disabled={busy || (loaded && before === null)} onclick={earlier}>{loaded ? 'Load earlier finding history' : 'Read finding history'}</button>
-  {#each history as entry (entry.revision)}<div class="transition"><p>{entry.revision} · {entry.status} · {entry.actor}</p><Markdown source={entry.reason} /><details><summary>Decision evidence and attribution</summary><pre>{JSON.stringify(entry.payload, null, 2)}</pre></details></div>{/each}
+  {#each history as entry (entry.revision)}<div class="transition"><p>{entry.revision} · {entry.status} · {entry.actor}</p><Markdown source={entry.reason} /><details><summary>Decision evidence and attribution</summary><pre>{JSON.stringify(entry.payload, null, 2)}</pre></details>{#if entry.response_body}<ResponseBody {projectId} {sessionId} source={entry.response_body}/>{/if}</div>{/each}
   <details><summary>Respond as user</summary>
     <p>{finding.origin === "math" ? "The math checker confirms accepted or removed formulas; unavailable evidence does not resolve a finding." : "A claimed fix stays unconfirmed until a confirmation review."} Confirm and dismiss below are explicit user decisions.</p>
     <fieldset disabled={busy}>

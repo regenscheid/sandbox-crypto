@@ -3,7 +3,8 @@
 Document revisions now connect durable save scheduling, the isolated renderer,
 mechanical findings and closing-round delivery (D82, document portion of LD-53
 to LD-55 and CR-36 to CR-38). [Comments and replies](COMMENT-MATH.md) add immutable body revisions under the
-same checker and delivery bounds. Ledger entries and finding prose remain outside
+same checker and delivery bounds. [MAIN explanation fields](FINDING-PROSE-MATH.md)
+also use those bounds. Ledger entries and other finding prose remain outside
 these slices. The renderer remains unavailable until configured by the
 operator; an unavailable check never establishes rejection or a fix.
 
@@ -210,7 +211,7 @@ Final combined validation passed 9,459 Python tests (43 opt-in skips) on Python
 Python/Svelte/TypeScript checks, Python/npm license checks, protocol generation
 and both GUI/math builds. The actual Node boundary runs against the built math
 bundle. The supported Python 3.12 matrix remains unchanged; fresh PR CI and merge
-are separate delivery gates. Comment/reply checks have their own additive [slice and validation boundary](COMMENT-MATH.md). Ledger and finding-prose checks,
+are separate delivery gates. Comment/reply checks have their own additive [slice and validation boundary](COMMENT-MATH.md). Ledger and remaining finding-prose checks,
 idle scheduling and automatic history compaction remain open.
 
 The additive comment/reply slice also corrected shared dependency-only reflag
@@ -220,6 +221,13 @@ review, 78 focused document/comment cases and all combined gates (9,631 Python
 tests, 43 opt-in skips, two existing warnings; 441 web and 24 post-build math checks).
 Fresh [comment/reply browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md)
 passed against the frozen source/helper; all disposable state was removed. This
-extends durable source coverage to comments/replies, with ledger/finding prose,
+extends durable source coverage to comments/replies, with ledger/remaining finding prose,
 model repair proposals and idle dispatch still open. Fresh PR CI is required
 before merge.
+
+
+The additive [MAIN explanation math slice](FINDING-PROSE-MATH.md) checks only
+agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the
+original scientific action/evidence, use exact body and finding CAS, and fence
+stale reviewer snapshots independently. The workspace history is read-only;
+ledger and reviewer/USER/platform diagnostic prose remain outside this slice.
