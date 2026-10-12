@@ -71,7 +71,7 @@ Every request that may change something (all but `GET` and the file reads) is lo
 
 ## Document catalog prerequisite
 
-The worker can receive a control-owned document catalog in `documents-catalog.sqlite3` (`documents_catalog.py`; shared messages in `contracts/documents.py`). This is durable staging and catalog validation only. It writes no environment files, advances no environment's written revision, and advertises no mirror capability. LD-49 to LD-52 and fixtures LD-F12 and LD-F23 to LD-F27 remain open. Environment publication must first enforce the conservative hold whenever writer state is uncertain; direct-edit capture/acknowledgement, control outbox delivery and `ss-doc` are separate work.
+The worker can receive a control-owned document catalog in `documents-catalog.sqlite3` (`documents_catalog.py`; shared messages in `contracts/documents.py`). This is durable staging and catalog validation only. It writes no environment files, advances no environment's written revision, and advertises no mirror capability. LD-49 to LD-52 and fixtures LD-F12 and LD-F23 to LD-F27 remain open. The separate [manual delivery journal](LIVING-DOCUMENTS.md#manual-catalog-delivery) transfers canonical targets to this store. Environment publication must first enforce the conservative hold whenever writer state is uncertain; direct-edit capture/acknowledgement and `ss-doc` remain separate work.
 
 The [writer-guard investigation](../.agents/docs/agent-reports/document-writer-guard-2026-10-12.md) identifies a protected-filesystem feasibility prerequisite before runtime replacement/removal can be enabled. Existing `/proc` checks cannot prove all arbitrary writers closed, and notification counters do not supply that proof. FUSE is a proposed setup boundary requiring independent implementation and OpenShell validation of handle/mmap lifetime, namespace races, bounded admission and monitor/controller failure; it is not an advertised worker capability. Lab20's verified VM recycle terminates old processes and loses kernel memory, so it is not the ordinary document synchronization mechanism.
 
@@ -117,9 +117,10 @@ commits remain owned. These tests establish the catalog boundary, not sandbox pu
 
 The control store's [publication outbox](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
 now supplies complete pinned catalog plans and exact project-scoped revision content.
-Its source transaction records each canonical change coherently. Network delivery and
-worker acknowledgement reconciliation remain separate work; this prerequisite enables
-no environment writes or mirror capability.
+Its source transaction records each canonical change coherently. The internal
+[manual delivery journal](LIVING-DOCUMENTS.md#manual-catalog-delivery) now transfers
+complete pinned targets through these routes and reconciles exact worker storage
+acknowledgements. It enables no environment writes or mirror capability.
 
 The control-side [worker document source adapter](WORKER-DOCUMENT-SOURCE.md) consumes
 trusted immutable captures with established publication/context identity. It retains
