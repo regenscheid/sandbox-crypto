@@ -164,7 +164,7 @@ async def test_cancellation_and_setup_do_not_invent_a_record(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cancel_phase", [None, "model", "setup"])
+@pytest.mark.parametrize("cancel_phase", [None, "model", "setup", "cleanup"])
 async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
     tmp_path: Path, monkeypatch, capsys, cancel_phase
 ):
@@ -181,6 +181,8 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
 
         async def close(self):
             closed.append("model")
+            if cancel_phase == "cleanup":
+                raise asyncio.CancelledError("cleanup cancelled")
             raise RuntimeError(HOSTILE)
 
     class Client:
@@ -342,3 +344,49 @@ async def test_cancellation_survives_active_context_cleanup_failure(phase, monke
             monkeypatch.setattr(toolbox, "reviews", Other())
         with pytest.raises(asyncio.CancelledError, match=f"{phase} cancelled"):
             await run_task(Model(), toolbox, "Continue", run_id="cancelled")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outer_error", [RuntimeError, SystemExit])
+async def test_cleanup_origin_preserves_first_interrupted_object(outer_error, monkeypatch):
+    interrupted = asyncio.CancelledError("first cleanup interruption")
+
+    class Jobs:
+        def __init__(self):
+            self.seen = set()
+
+        @asynccontextmanager
+        async def active(self):
+            try:
+                yield
+            finally:
+                raise outer_error("later cleanup failure")
+
+        async def notices(self):
+            return []
+
+    class Documents:
+        specs = ()
+
+        def __init__(self):
+            self.request_delivered = set()
+
+        @asynccontextmanager
+        async def active_requests(self):
+            try:
+                yield
+            finally:
+                raise interrupted
+
+        async def request_notices(self):
+            return []
+
+    async with WorkerClient("http://127.0.0.1:1", "synthetic") as worker:
+        toolbox = Toolbox(worker, CONTEXT)
+        monkeypatch.setattr(toolbox, "jobs", Jobs())
+        monkeypatch.setattr(toolbox, "documents", Documents())
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await run_task(
+                ScriptedModel([ModelTurn("Observed")]), toolbox, "Continue", run_id="cancelled"
+            )
+    assert raised.value is interrupted
