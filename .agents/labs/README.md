@@ -264,3 +264,17 @@ warnings), 441 web tests and 24 post-build math checks, plus all required checks
 and both builds. Independent body/reply drafts, stale CAS/adoption, provenance,
 accepted/removal/unavailable evidence and session isolation passed in the browser.
 The tab, transient server and marked state were removed at 13:50:58.272097 UTC.
+
+
+`response_math.py` creates marked disposable synthetic MAIN fix/rebut explanation
+sources with actual operator-configured local KaTeX. It exercises six child states,
+exact original/current attribution, stale reviewer body pins, independent scientific
+confirmation and session isolation. Root owns the native browser/server/teardown;
+this helper starts no model or worker and grants no USER explanation editing.
+
+The [finding-prose browser report](../docs/agent-reports/finding-prose-math-2026-10-12.md)
+records root-owned acceptance on signed `f7bb0a3`, helper SHA
+`7bc82ebf57e01b7905327dabdd2cc558896b94374ea97db06c4f8ec08a92d94b`.
+The local renderer confirmed only child math findings; scientific confirmation
+used a fresh pinned reviewer fixture and retained an inconclusive overall verdict.
+Complete disposable teardown was independently verified at 15:37:06.734290 UTC.
