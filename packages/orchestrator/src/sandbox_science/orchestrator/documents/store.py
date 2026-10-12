@@ -766,6 +766,8 @@ class DocumentStore:
         operation_id: str | None = None,
     ) -> ChangeResult:
         """A new document with its first revision; ``session_id`` makes it a workbook's."""
+        if author.kind not in ("user", "agent", "import", "platform"):
+            raise DocumentError(POLICY_DENIED, "captured worker edits cannot create documents")
         stem = _name(name)
         title = _SPACE.sub(" ", title).strip()
         if not 0 < len(title) <= MAX_TITLE:
@@ -872,8 +874,8 @@ class DocumentStore:
         rules alone. A save from an older revision is refused; reconciling it is a later
         slice's (LD-13).
         """
-        if author.kind == "agent":
-            raise DocumentError(POLICY_DENIED, "agents change documents with patches")
+        if author.kind not in ("user", "import", "platform"):
+            raise DocumentError(POLICY_DENIED, "delegated authors change documents with patches")
         text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
         check_text(text)
         why = _reason(reason)
@@ -939,6 +941,8 @@ class DocumentStore:
         would change blocks it does not name; and kept as a suggestion when the
         document takes agent patches as suggestions.
         """
+        if author.kind != "user" and not author.delegated:
+            raise DocumentError(POLICY_DENIED, "patches need user or delegated authority")
         if OPERATION_ID.fullmatch(operation_id) is None:
             raise DocumentError(
                 INVALID_REQUEST,
@@ -956,7 +960,7 @@ class DocumentStore:
             if replay is not None:
                 return replay
             row = self._find(db, project_id, reference)
-            suggest = author.kind == "agent" and row.info.takes_suggestions
+            suggest = author.delegated and row.info.takes_suggestions
             assessed = self._assessed(db, row, submission, prepared)
             result = self._act(db, row, submission, assessed, suggest=suggest)
             self._remember(db, project_id, author, operation_id, request, result)
@@ -975,6 +979,51 @@ class DocumentStore:
     ) -> ChangeResult:
         """Reconcile a user's source draft by the blocks changed from its named base."""
         self._user(author)
+        self._operation_id(operation_id)
+        text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
+        check_text(text)
+        submission, prepared = self._prepare_source(
+            project_id, reference, base=base, text=text, author=author, reason=reason
+        )
+        if not submission.operations:
+            # Preserve the user's existing empty-draft operation fingerprint across
+            # upgrades. Delegated callers use the prepared engine, never this path.
+            return self.save_text(
+                project_id,
+                reference,
+                base=base,
+                text=text,
+                author=author,
+                reason=reason,
+                operation_id=operation_id,
+            )
+        request = {"source": reference, "base": base, "text": text, "reason": submission.reason}
+        with self._write() as db:
+            replay = self._replay(db, project_id, author, operation_id, request)
+            if replay is not None:
+                return replay
+            row = self._find(db, project_id, reference)
+            if prepared is None or prepared.key != _key(row):
+                raise DocumentError(
+                    BUSY,
+                    "the document changed while preparing this edit; "
+                    "retry with the same operation ID",
+                )
+            result = self._act(db, row, submission, prepared)
+            self._remember(db, project_id, author, operation_id, request, result)
+            return result
+
+    def _prepare_source(
+        self,
+        project_id: str,
+        reference: str,
+        *,
+        base: int,
+        text: str,
+        author: Author,
+        reason: str,
+    ) -> tuple[_Submission, _Assessed | None]:
+        """Prepare named source operations outside a write; callers fence the exact key."""
         from .source import operations as source_operations
 
         text = normalize_newlines(text).removeprefix(BYTE_ORDER_MARK)
@@ -982,33 +1031,19 @@ class DocumentStore:
         mapped = self.mapped(project_id, reference, base)
         budget = Budget()
         operations = source_operations(mapped, text, budget)
-        if not operations:
-            # Use a harmless named replacement so retries and stale-base checks take
-            # the same transactional path, even when only separating whitespace changed.
-            if mapped.block_ids:
-                operations = _operations(
-                    [
-                        {
-                            "op": "replace",
-                            "block": mapped.block_ids[0],
-                            "markdown": mapped.parsed.blocks[0].text,
-                        }
-                    ]
-                )
-            else:
-                return self.save_text(
-                    project_id,
-                    reference,
-                    base=base,
-                    text=text,
-                    author=author,
-                    reason=reason,
-                    operation_id=operation_id,
-                )
-        self._operation_id(operation_id)
+        if not operations and mapped.block_ids:
+            # Whitespace-only changes still take the named, fenced patch path.
+            operations = _operations(
+                [
+                    {
+                        "op": "replace",
+                        "block": mapped.block_ids[0],
+                        "markdown": mapped.parsed.blocks[0].text,
+                    }
+                ]
+            )
         why = _reason(reason)
         raw = [op.model_dump(mode="json", by_alias=True) for op in operations]
-        request = {"source": reference, "base": base, "text": text, "reason": why}
         submission = _Submission(new_id("patch"), base, operations, raw, why, author)
         budget.charge(len(text))
         made = normalize(parse(text), budget=budget)
@@ -1025,21 +1060,7 @@ class DocumentStore:
                 prepared.applied.mapped = final
             prepared.applied.converted.update(made.converted)
             prepared.applied.kept.extend(made.kept)
-        with self._write() as db:
-            replay = self._replay(db, project_id, author, operation_id, request)
-            if replay is not None:
-                return replay
-            row = self._find(db, project_id, reference)
-            if prepared is None or prepared.key != _key(row):
-                raise DocumentError(
-                    BUSY,
-                    "the document changed while preparing this edit; "
-                    "retry with the same operation ID",
-                )
-            assessed = self._assessed(db, row, submission, prepared)
-            result = self._act(db, row, submission, assessed)
-            self._remember(db, project_id, author, operation_id, request, result)
-            return result
+        return submission, prepared
 
     @staticmethod
     def _user(author: Author) -> None:
@@ -1170,6 +1191,11 @@ class DocumentStore:
         if found is None:
             raise DocumentError(NOT_FOUND, "no such document patch")
         patch = _patch(found)
+        if patch.details.get("raw_rejection"):
+            raise DocumentError(
+                POLICY_DENIED,
+                "this retained raw edit has no safe patch; edit the document explicitly",
+            )
         if patch.state not in ("conflicted", "refused", "suggested"):
             raise DocumentError(CONFLICT, "this patch is no longer awaiting application")
         return patch
@@ -1558,6 +1584,10 @@ class DocumentStore:
 
         An agent may delete only the documents its own session created.
         """
+        if author.kind not in ("user", "agent"):
+            raise DocumentError(
+                POLICY_DENIED, "only the user or an owning session agent may delete"
+            )
         why = _reason(reason)
         request = {"delete": reference}
         with self._write() as db:
@@ -1566,7 +1596,9 @@ class DocumentStore:
                 return replay
             row = self._find(db, project_id, reference, author.session_id)
             self._live(row)
-            if author.kind == "agent" and row.info.created_session != author.session_id:
+            if author.kind == "agent" and (
+                author.session_id is None or row.info.created_session != author.session_id
+            ):
                 raise DocumentError(
                     POLICY_DENIED,
                     f"document {row.info.name!r} was not created by this session; only the "
@@ -1801,7 +1833,7 @@ class DocumentStore:
             "removed": changed["removed"],
             "moved": changed["moved"],
             "structural_added": structural_added(mapped, changes),
-            "agent_characters": written(head, mapped, changes) if author.kind == "agent" else 0,
+            "agent_characters": written(head, mapped, changes) if author.delegated else 0,
             "normalized": bool(normalized.get("converted")),
             "tombstone": tombstone,
         }

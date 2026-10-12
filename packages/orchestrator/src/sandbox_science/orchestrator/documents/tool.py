@@ -540,6 +540,14 @@ def _describe(info: RevisionInfo, block_map: Json) -> str:
         who = f"agent run {author.run_id} of session {author.session_id}"
     elif author.kind == "platform":
         who = f"the platform's {author.service}"
+    elif author.kind == "worker":
+        who = (
+            f"worker code in environment {author.environment_id}, incarnation {author.incarnation}"
+        )
+        if author.session_id is not None:
+            who += f", session {author.session_id}"
+    elif author.kind == "import":
+        who = "an import by the user"
     else:
         who = "the user"
     if info.tombstone:
