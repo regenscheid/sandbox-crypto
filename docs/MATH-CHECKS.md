@@ -66,5 +66,5 @@ temporary directory so an operator rollout cannot change the bytes mid-check.
 
 Focused tests exercise actual Node/KaTeX, renderer-tested repairs, effective
 macros, process cancellation, output flooding, queue deadlines, invalid UTF-8,
-FIFO/missing configuration and protocol mismatches. The web CI job builds the
+FIFO/missing configuration, deeply nested malformed responses and protocol mismatches. The web CI job builds the
 bundle and runs the Python boundary tests with Node available.
