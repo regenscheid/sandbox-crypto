@@ -1,5 +1,11 @@
 # Plan changes
 
+## 2026-10-12 — comment/reply mechanical math
+
+Implement the approved comment portion of D82/LD-53–55/CR-36–38 with append-only original-entry/body revisions and ordinary exact thread/body/hash corrections. MAIN can remediate same-session agent source; delegated runs only their own current source, and USER only USER-owned original bodies. Work requests retain their original immutable instruction. Canonical parent/macro pins and shared bounded renderer/lifecycle/closing/save-ACK preserve existing authority and the two-round budget. Unknown legacy/parser-bound identity holds checks without vetoing ordinary edits or guessing ownership/removal. Signed `c1142e1` and exact-main union `7fa43e6` are independently reviewed; focused/actual local KaTeX fixtures and predecessor combined gates passed (9,613 Python/43 skips, 441 web/24 post-build math checks, locked/static/license/protocol checks and both builds). Preliminary browser acceptance found a shared dependency-only reflag-budget bug. The correction refreshes macro/renderer evidence without consuming failed-block-edit opportunities, reconciles accepted ownership from immutable observations, and preserves unaddressed/USER decisions. Both source kinds and bounded corrupt proofs pass 78 focused cases. Final corrected-source gates, fresh native browser acceptance and PR CI remain pending. No new broad decision, route, service/provider/runtime/security-policy change, ledger/finding-prose scope or idle scheduler.
+
+PR #86 merged exact capture source `ea31757` and both Lab22/Lab23 archives as `9c07725`, all three fresh CI checks successful (`38251872668`, 13:01:50 UTC). Historical test/runtime boundaries below remain unchanged.
+
 ## 2026-10-12 — external backend and linux/amd64 profile acceptance
 
 Close the existing OpenShell conformance/probe and research-profile lab acceptance
@@ -31,7 +37,7 @@ Independent review cleared signed combined freeze `b535856`; root-owned
 retention, prompt regular/sparse/symlink/FIFO refusal and healthy publication/read/execution
 access on Python 3.14.8. Zero capture leases/helpers and complete teardown were independently
 verified at 12:36:45 UTC. Main PR #85 and acceptance docs are integrated without changing
-product/test/configuration/helper bytes. Final docs review and fresh PR CI remain required.
+product/test/configuration/helper bytes. PR #86 merged at `9c07725` with all three fresh CI checks successful.
 Automatic fan-out and LD-49 writer proof remain open. [Boundary](../docs/ARTIFACTS.md#bounded-worker-capture-prerequisite).
 
 ## 2026-10-12 — sticky recovery admission prerequisite

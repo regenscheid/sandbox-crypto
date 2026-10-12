@@ -197,6 +197,11 @@ async def create(args: argparse.Namespace) -> None:
                 raise ValueError(f"Fixture failed to establish {name}={status}")
         if cases["user-owned"]["entry"] in by_entry or cases["parser-held"]["entry"] in by_entry:
             raise ValueError("Excluded/held source incorrectly received a finding")
+        for name in ("agent-opening", "delegated-reply"):
+            if by_entry[cases[name]["entry"]]["reflags"] != 0:
+                raise ValueError(f"Dependency-only update consumed {name}'s failed-patch budget")
+        if by_entry[cases["unaddressed"]["entry"]]["reflags"] != 2:
+            raise ValueError("Two failed body edits did not consume exactly two reflags")
         metadata["before_macro_reply_assessment"] = reply_after_user
         (root / "fixture.json").write_text(json.dumps(metadata, indent=2) + "\n")
         (root / "initial-evidence.json").write_text(json.dumps(snapshot, indent=2) + "\n")

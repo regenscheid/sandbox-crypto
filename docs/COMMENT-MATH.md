@@ -46,6 +46,11 @@ document containers grant no front matter or macros. Each attempt pins the exact
 body revision/hash, stable block/span, parent document/project and immutable macro
 revision/hash. Every span is rechecked when effective document macros change;
 invalidation remains separate from authorship and the two-reflag budget.
+Only a new proved edit to the failing block consumes a reflag. Repeated macro or
+renderer changes refresh exact assessment/history without consuming either failed
+patch opportunity. Last available immutable ownership proof covers accepted checks
+and older stale owner caches; unavailable or invalid proof cannot spend that budget.
+Dependency refresh preserves unaddressed and explicit USER resolutions.
 
 Admission, load, lease fence, current-result projection and ordinary reads derive
 scope through the canonical original entry → thread → document/project. A derived
@@ -99,6 +104,8 @@ actual local KaTeX; no model, worker or service calls occur. `fixture.json` and
 include opening/reply failures, USER exclusion, held text, accepted/removal,
 unavailable, two reflags and later macro/anchor context. A pre-macro assessment
 proves an unrelated USER opening edit did not reflag the delegated reply.
+The final audit also requires unchanged agent opening/delegated reply reflags zero
+after the macro/anchor update, while two actual failed body edits remain at two.
 
 `main-fix --state-dir <marked-state>` makes an ordinary MAIN correction of the
 delegated reply. `concurrent-user-edit` corrects the USER-owned opening for stale
@@ -106,3 +113,15 @@ draft/CAS tests. Both take the same renderer paths; `audit` needs only the marke
 state. Every action checks the marker before opening a writer. Browser/server
 acceptance and cleanup require separate coordination. Native browser acceptance
 and final combined gates are separate from these local fixtures.
+
+## Validation boundary
+
+Signed source `c1142e1` and signed exact-main union `7fa43e6` were independently
+reviewed. Predecessor combined gates on Python 3.13.15 passed 9,613 tests (43 opt-in
+skips, two existing warnings), 441 web tests, 24 post-build math checks and all
+locked/static/license/protocol checks/builds. Root's preliminary browser run then
+found a shared document/comment dependency-only reflag-budget bug. The correction
+separates exact assessment refresh from failed block edits and covers accepted
+owner reconciliation, old persisted caches, USER decisions and bounded corrupt
+proofs. Final corrected-source gates, fresh native browser acceptance and PR CI
+remain pending. The supported Python 3.12 matrix is unchanged.

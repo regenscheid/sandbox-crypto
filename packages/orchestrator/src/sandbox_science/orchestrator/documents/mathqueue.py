@@ -36,6 +36,7 @@ SCHEMA = (
       block TEXT NOT NULL, span TEXT NOT NULL, input_sha256 TEXT NOT NULL,
       status TEXT NOT NULL, payload TEXT NOT NULL, bytes INTEGER NOT NULL,
       PRIMARY KEY(check_id,ordinal)) STRICT""",
+    "CREATE INDEX IF NOT EXISTS math_observation_span ON math_observations(block,span,check_id)",
     """CREATE TABLE IF NOT EXISTS math_notices (
       finding_id TEXT NOT NULL, revision INTEGER NOT NULL, project TEXT NOT NULL,
       session TEXT NOT NULL, authored_run TEXT, claimed_run TEXT, claim_until REAL,

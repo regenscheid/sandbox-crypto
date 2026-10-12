@@ -376,7 +376,7 @@ async def test_effective_macro_change_rechecks_unchanged_agent_block(stores) -> 
     second = ScriptedChecker()
     await drain(reviews, second)
     assert first.calls[0].macros != second.calls[0].macros
-    assert get(reviews)[0]["reflags"] == 1
+    assert get(reviews)[0]["reflags"] == 0
     assert get(reviews)[0]["source"]["owner_revision"] == 1
 
 
