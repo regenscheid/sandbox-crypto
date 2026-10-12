@@ -2,6 +2,10 @@
 
 Dated log of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)). Newest first.
 
+## 2026-10-12
+
+- **Lab 18: provisioning in OpenShell** ([report](docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md)). The user resumed work after the handoff pause. Validated CP-F1 to CP-F4, CP-F8 and CP-F10 with real package managers, policy middleware and package cache; exact file-set grants and their withdrawal; all nine catalog probes; and cancellation and worker restart after linking began. Recorded the observed limits of the current recovery behavior. Added reusable lab checks and the crypto-base lab profile; all disposable lab state was removed. No platform behavior or decision changed. Background jobs and the executor daemon are next.
+
 ## 2026-10-11
 
 - **Handoff and lab scripts** ([handoff](handoff.md), [labs](labs/README.md)). A handoff for the next agent: where the work stopped, the user's standing instructions and pending decisions, the queued work, and how slices, reviews, labs and merges have been done. The babbage lab scripts, kept so far in a session's scratchpad, move to `.agents/labs/`, with paths relative to the repository and the forward unit stopped at teardown. CONVENTIONS lists both.
