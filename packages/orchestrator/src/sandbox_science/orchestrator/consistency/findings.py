@@ -50,6 +50,16 @@ class Findings:
             raise DocumentError(NOT_FOUND, "no such scoped finding")
         result: Json = dict(zip(FIELDS, row, strict=True))
         result["anchors"] = json.loads(result["anchors"])
+        from .response_bodies import available as response_available
+
+        result["response_generation"] = (
+            db.execute(
+                "SELECT coalesce(max(rowid),0) FROM review_response_bodies WHERE finding_id=?",
+                (finding,),
+            ).fetchone()[0]
+            if response_available(db)
+            else 0
+        )
         result["source"] = (
             {"kind": "math", "check": result["math_check_id"]}
             if result["origin"] == "math"
@@ -105,6 +115,15 @@ class Findings:
             )
             for r in reversed(selected)
         ]
+        from .response_bodies import pin as response_pin
+
+        with self.store.documents._read() as db:
+            assert db is not None  # noqa: S101 - finding was read
+            for raw_entry in result["history"]:
+                entry = cast(Json, raw_entry)
+                body = response_pin(db, finding, entry["revision"])
+                if body is not None:
+                    entry["response_body"] = body
         result["history_before"] = selected[-1][0] if len(rows) > len(selected) else None
         return result
 
@@ -576,6 +595,18 @@ class Findings:
             "artifact_revisions": artifact_pins,
             "author": author.model_dump(mode="json"),
         }
+        from sandbox_science.orchestrator.documents.comment_bodies import (
+            prepare as response_prepare,
+        )
+
+        from .response_bodies import commit as response_commit
+        from .response_bodies import original as response_original
+
+        prepared_body = (
+            response_prepare(value.explanation, author)
+            if author.kind == "agent" and target["origin"] == "review"
+            else None
+        )
         with self.store.documents._write() as db:
             replay = self._replay(db, project, actor, value.operation_id, fingerprint)
             if replay:
@@ -598,6 +629,13 @@ class Findings:
                 "reopen": "open",
             }[value.action]
             result = self._transition(db, found, status, actor, value.explanation, payload)
+            if prepared_body is not None:
+                response_commit(
+                    db,
+                    response_original(db, value.finding, result["revision"]),
+                    author,
+                    prepared_body,
+                )
             self._operation(db, project, actor, value.operation_id, fingerprint, result)
         # Immutable revision pins become confirmation evidence. A crash here cannot
         # lose them: the durable transition payload is also included in the snapshot.
@@ -646,6 +684,20 @@ class Findings:
                 )
             if found["revision"] != value.expected:
                 raise DocumentError(CONFLICT, "finding changed during confirmation")
+            from .response_bodies import pin as response_pin
+
+            current_body = response_pin(db, value.finding, value.expected)
+            if current_body is not None:
+                body_pin = db.execute(
+                    "SELECT body_revision,substr(CAST(sha256 AS BLOB),1,65) "
+                    "FROM review_response_pins WHERE review_id=? AND finding_id=? AND "
+                    "decision_revision=?",
+                    (review, value.finding, value.expected),
+                ).fetchone()
+                if body_pin != (current_body["revision"], current_body["sha256"].encode()):
+                    raise DocumentError(
+                        CONFLICT, "response explanation changed during confirmation"
+                    )
             config = ReviewConfig.model_validate_json(run["config"])
             if value.decision in ("confirm", "reject"):
                 self.confirmation_reads(db, review, json.loads(pinned[0]), pinned[1])

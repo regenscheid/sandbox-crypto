@@ -11,14 +11,18 @@ export interface Evidence { evidence: string; ordinal: number; kind: string;
 export interface Finding { finding_id: string; review_id: string | null; origin?: "review" | "math"; source?: Record<string, Json>; severity: string; category: string;
   statement: string; remedy: string | null; status: string; revision: number; reflags: number;
   anchors: ({ evidence?: string; review?: string; check?: string; math?: string; locator: Record<string, Json> } & Record<string, Json>)[];
-  history?: Transition[]; history_before?: number | null }
+  history?: Transition[]; history_before?: number | null; response_generation?: number }
+export interface ResponseBody { source: string; finding: string; response_revision: number; revision: number;
+  body: string; sha256: string; original_author: Record<string, Json>; author: Record<string, Json> | null; held?: string | null }
 export interface Transition { revision: number; status: string; actor: string; reason: string;
-  payload: Json; created: number }
-export interface MathJob { check_id: string; document: string; revision: number; state: string;
-  kind?: 'document' | 'comment'; comment?: { entry_id: string; macro_revision: number; macro_sha256: string };
+  payload: Json; created: number; response_body?: ResponseBody }
+export interface MathJob { check_id: string; document: string | null; revision: number; state: string;
+  kind?: 'document' | 'comment' | 'response'; comment?: { entry_id: string; macro_revision: number; macro_sha256: string };
+  response?: { source: string; finding: string; response_revision: number; session: string };
   cursor: number; spans: number | null; available: number; rejected: number; unavailable: number; created: number }
-export interface MathQueue { document: string; target: number; completed: number; blocked: string | null; running: boolean | number;
-  kind?: 'comment'; entry?: string; macro_revision?: number; macro_target?: number }
+export interface MathQueue { document?: string; target: number; completed: number; blocked: string | null; running: boolean | number;
+  kind?: 'comment' | 'response'; entry?: string; macro_revision?: number; macro_target?: number;
+  source?: string; finding?: string; response_revision?: number }
 const part = encodeURIComponent;
 const base = (project: string, session: string) => `/projects/${part(project)}/sessions/${part(session)}`;
 export const reviews = {
@@ -30,6 +34,7 @@ export const reviews = {
   records: (p: string, s: string, r: string, after = 0) => get<{ records: { sequence: number; kind: string; payload: Json; created: number }[]; next_after: number | null }>(`${base(p,s)}/reviews/${part(r)}/records?after=${after}`),
   evidence: (p: string, s: string, r: string, e: string, start = 0) => get<{ text: string; next_start: number | null; locator: Json; complete: boolean }>(`${base(p,s)}/reviews/${part(r)}/evidence/${part(e)}?start=${start}`),
   finding: (p: string, s: string, f: string, before: number | null = null) => get<Finding>(`${base(p,s)}/findings/${part(f)}${before ? `?before=${before}` : ''}`),
+  responseBody: (p: string,s: string,f: string,response: number,body?: number) => get<ResponseBody>(`${base(p,s)}/findings/${part(f)}/responses/${response}${body === undefined ? '' : `?body_revision=${body}`}`),
   respond: (p: string, s: string, f: string, body: Record<string, unknown>) => post<{ revision: number; status: string }>(`${base(p,s)}/findings/${part(f)}`, body),
   request: (p: string, s: string) => post<{ queued: boolean; detail: string }>(`${base(p,s)}/reviews`, {}),
 };

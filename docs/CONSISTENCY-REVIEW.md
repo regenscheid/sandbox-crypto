@@ -215,7 +215,8 @@ Shell-written artifact inventory/revisions (CRF-6), full rich-output/file eviden
 project spend accounting, ledger-specific evidence, automatic idle turns and a persistent
 chat host/push view remain deferred. Mathematical-renderability findings (CR-36–38 and
 CRF-14) have a separate [document-revision integration](MATH-CHECKS.md); comments,
-ledger fields and finding prose remain open. Browser rendering is not
+ledger fields and remaining finding prose stay open; MAIN fix/rebut explanation
+coverage is described in [finding prose math](FINDING-PROSE-MATH.md). Browser rendering is not
 presented as an automatic review verdict. Historical finding selection and supersession
 inspection are bounded; omitted snapshot context is explicit incomplete coverage.
 
@@ -299,3 +300,10 @@ Backend choice, maintainable CScience patchability, exact persistence implementa
 ## Mechanical document findings
 
 Document-revision D82 checks use the same finding/history and authenticated USER decision surfaces, with explicit `math` origin, a real mechanical check ID and no synthetic reviewer run. The additive migration preserves existing reviewer IDs, history, notices and CAS heads; readonly legacy stores project `review` origin without migration. Reviewer categories/grants are unchanged and exclude this mechanical authority. Generic confirmation, reflag, supersession and threshold delivery paths cannot decide math findings. A separate bounded controller checks immutable document revisions and collects closing-only notices together with terminal findings, sharing at most two author response rounds. Accepted current formulas and complete parsed removal confirm mechanically; stale, skipped and unavailable evidence never does. USER takeover retains unresolved historical evidence while excluding new author reflags/notices. Details, limits and remaining non-document LD-53 scope are in [document math checks](MATH-CHECKS.md).
+
+
+The additive [MAIN explanation math slice](FINDING-PROSE-MATH.md) checks only
+agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the
+original scientific action/evidence, use exact body and finding CAS, and fence
+stale reviewer snapshots independently. The workspace history is read-only;
+ledger and reviewer/USER/platform diagnostic prose remain outside this slice.

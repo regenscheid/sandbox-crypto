@@ -69,8 +69,9 @@ class MechanicalFindings:
                 "substr(CAST(json_extract(o.payload,'$.owner') AS BLOB),1,8193) "
                 "END END END,j.revision FROM math_jobs j "
                 "JOIN math_observations o USING(check_id) "
-                "LEFT JOIN math_comment_jobs c USING(check_id) WHERE j.document=? "
-                "AND c.entry_id IS ? AND o.block=? AND o.span=? "
+                "LEFT JOIN math_comment_jobs c USING(check_id) "
+                "LEFT JOIN math_response_jobs r USING(check_id) WHERE j.document IS ? "
+                "AND c.entry_id IS ? AND r.source IS ? AND o.block=? AND o.span=? "
                 "AND o.status IN ('accepted','rejected') AND j.revision<=? "
                 "AND j.rowid<(SELECT rowid FROM math_jobs WHERE check_id=?) "
                 "ORDER BY j.rowid DESC LIMIT 1"
@@ -78,6 +79,7 @@ class MechanicalFindings:
             (
                 job["document"],
                 job.get("comment", {}).get("entry_id"),
+                job.get("response", {}).get("source"),
                 item["block"],
                 item["span"],
                 job["revision"],
@@ -306,6 +308,13 @@ class MechanicalFindings:
                 "comment": job["comment"]["entry_id"],
                 "body_revision": job["revision"],
             }
+        if "response" in job:
+            locator = {
+                "finding": job["response"]["finding"],
+                "response_revision": job["response"]["response_revision"],
+                "field": "explanation",
+                "body_revision": job["revision"],
+            }
         return [
             {
                 "check": job["check_id"],
@@ -340,7 +349,11 @@ class MechanicalFindings:
                 "s.checked_revision<=? AND s.checked_revision>=? AND f.status NOT IN ('confirmed "
                 "fixed','withdrawn')"
             ),
-            (source_key(job), job["revision"], job.get("comment", {}).get("identity_floor", 0)),
+            (
+                source_key(job),
+                job["revision"],
+                job.get("response", job.get("comment", {})).get("identity_floor", 0),
+            ),
         ).fetchall()
         for finding, block, span, session in rows:
             if (block, span) in live:

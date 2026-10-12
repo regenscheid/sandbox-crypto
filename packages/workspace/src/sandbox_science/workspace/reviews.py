@@ -32,6 +32,7 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(base + "/findings", findings)
     app.router.add_get(base + "/findings/{finding}", finding)
     app.router.add_post(base + "/findings/{finding}", respond)
+    app.router.add_get(base + "/findings/{finding}/responses/{response}", response_body)
 
 
 def integer(request: web.Request, name: str, default: int, maximum: int) -> int:
@@ -163,7 +164,32 @@ async def respond(request: web.Request) -> web.Response:
 
 async def math_checks(request: web.Request) -> web.Response:
     return await answer(
-        request, lambda s, p, sid: MathJobs(s).listing(p, after=request.query.get("after"))
+        request,
+        lambda s, p, sid: MathJobs(s).listing(p, after=request.query.get("after"), session=sid),
+    )
+
+
+async def response_body(request: web.Request) -> web.Response:
+    from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
+
+    raw = request.match_info["response"]
+    if not raw.isascii() or not raw.isdigit() or not 1 <= len(raw) <= 9 or int(raw) < 1:
+        return documents.api_error(
+            DocumentError("invalid_request", "invalid original response revision")
+        )
+    try:
+        revision = (
+            integer(request, "body_revision", 0, 999999999)
+            if "body_revision" in request.query
+            else None
+        )
+    except DocumentError as error:
+        return documents.api_error(error)
+    return await answer(
+        request,
+        lambda s, p, sid: ResponseBodies(s).get(
+            p, sid, request.match_info["finding"], int(raw), body_revision=revision
+        ),
     )
 
 
@@ -175,5 +201,6 @@ async def math_evidence(request: web.Request) -> web.Response:
             request.match_info["check"],
             after=integer(request, "after", 0, 20000),
             span=request.query.get("span"),
+            session=sid,
         ),
     )
