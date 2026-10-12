@@ -70,6 +70,30 @@ async def test_the_projects(client: TestClient[Any, Any]) -> None:
     }
 
 
+async def test_failed_partial_run_is_readable_only_in_its_session(
+    client: TestClient[Any, Any], state_dir: Path
+) -> None:
+    projects = ProjectStore(state_dir)
+    original = projects.run("p1", "a", FIRST_RUN)
+    partial = original.model_copy(
+        update={
+            "run_id": "failed",
+            "stopped": "error",
+            "failure": "model",
+            "final_text": None,
+            "messages": original.messages[:-1],
+        }
+    )
+    entry = projects.save_run(partial)
+    path = f"/api/v0/projects/p1/sessions/a/runs/{entry.name}"
+    result = await get(client, path)
+    assert (result["stopped"], result["failure"], result["final_text"]) == ("error", "model", None)
+    assert result["messages"] == partial.messages
+    assert result["tools"] == partial.tools
+    await get(client, path.replace("/sessions/a/", "/sessions/b/"), 404)
+    await get(client, path.replace("/projects/p1/", "/projects/p2/"), 404)
+
+
 async def test_one_project_with_its_sessions_and_environments(
     client: TestClient[Any, Any], state_dir: Path
 ) -> None:

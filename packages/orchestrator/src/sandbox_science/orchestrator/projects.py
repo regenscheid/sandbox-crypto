@@ -37,9 +37,9 @@ import tempfile
 from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
-from pydantic import Field, JsonValue, TypeAdapter, ValidationError
+from pydantic import Field, JsonValue, TypeAdapter, ValidationError, model_validator
 
 from sandbox_science.contracts import (
     EnvironmentInfo,
@@ -95,6 +95,10 @@ class ProjectRecord(Contract):
         return [self.default_environment_id, *sorted(dedicated - {self.default_environment_id})]
 
 
+FailurePhase = Literal["model", "tool", "harness", "cleanup"]
+"""A fixed local classification, never exception text or a provider response."""
+
+
 class RunRecord(Contract):
     """One run of the harness: what ``run --transcript`` writes, and what a session keeps."""
 
@@ -105,7 +109,9 @@ class RunRecord(Contract):
     started_at: datetime
     ended_at: datetime
     stopped: str
-    """``answered``, or ``turn_limit`` when the model was still asking for tools."""
+    """``answered``, ``turn_limit``, ``user_message``, or ``error``."""
+    failure: FailurePhase | None = None
+    """Failed phase; old records omit it. Partial messages are observations, not an answer."""
     job_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
     """Completion notices represented by this durable run; acknowledged only after save."""
     work_request_ids: list[Identifier] = Field(default_factory=list[Identifier])
@@ -120,6 +126,12 @@ class RunRecord(Contract):
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""
     tools: list[dict[str, JsonValue]]
     """One record per tool call, in order: its name, arguments and outcome."""
+
+    @model_validator(mode="after")
+    def _failure_is_not_an_answer(self) -> RunRecord:
+        if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
+            raise ValueError("a failed run must have error status and no final answer")
+        return self
 
     def to_json(self) -> str:
         """The record as JSON text.
