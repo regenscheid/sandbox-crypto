@@ -481,6 +481,9 @@ class DocumentStore:
             from .project_macros import prepare as prepare_macros
 
             prepare_macros(db)
+            from .exports import prepare as prepare_export_inputs
+
+            prepare_export_inputs(db)
             from .comment_bodies import SCHEMA as COMMENT_BODY_SCHEMA
 
             for statement in COMMENT_BODY_SCHEMA:
