@@ -94,6 +94,63 @@ def read_confirmation(reviews: ReviewStore, review: str) -> None:
         after = page["next_after"]
 
 
+@pytest.mark.parametrize("later_review", [False, True])
+def test_reflag_escalates_current_assessment_and_notice_without_downgrading(
+    store, later_review: bool
+) -> None:
+    from sandbox_science.orchestrator.consistency.notices import FindingNotices
+
+    reviews, _, _ = store
+    claim(reviews)
+    review = dispatch(reviews)
+    warning = raise_finding(
+        reviews,
+        review,
+        severity="warn",
+        statement="The count might need qualification.",
+        remedy="Check the qualification.",
+    )
+    if later_review:
+        reviews.finish("p", "s", review, "owner", "findings", "One warning.")
+        review = dispatch(reviews)
+    failure = raise_finding(
+        reviews,
+        review,
+        severity="fail",
+        statement="The pinned output contradicts this count.",
+        remedy="Correct the durable count.",
+        operation_id="escalation",
+    )
+    assert failure["finding_id"] == warning["finding_id"]
+    current = Findings(reviews).get("p", "s", failure["finding_id"])
+    assert current["severity"] == "fail"
+    assert current["statement"] == "The pinned output contradicts this count."
+    assert current["remedy"] == "Correct the durable count."
+    assert current["review_id"] == review
+    assert current["history"][0]["payload"]["assessment"]["severity"] == "warn"
+    assert current["history"][-1]["payload"]["previous_assessment"]["severity"] == "warn"
+    assert current["history"][-1]["payload"]["assessment"]["severity"] == "fail"
+    notices = FindingNotices(reviews)
+    batch = notices.pending("p", "s", "author-1", set())
+    assert len(batch) == 1
+    assert batch[0]["severity"] == "fail"
+    assert batch[0]["statement"] == current["statement"]
+    assert notices.counts("p", "s") == {"fail:open": 1}
+    raise_finding(
+        reviews,
+        review,
+        severity="note",
+        statement="A weaker later observation.",
+        remedy="A weaker remedy.",
+        operation_id="no-downgrade",
+    )
+    retained = Findings(reviews).get("p", "s", failure["finding_id"])
+    assert retained["severity"] == "fail"
+    assert retained["statement"] == current["statement"]
+    assert retained["remedy"] == current["remedy"]
+    assert retained["history"][-1]["payload"]["assessment"]["severity"] == "note"
+
+
 def test_document_snapshot_reads_exact_revision_after_head_changes(store) -> None:
     reviews, documents, _ = store
     doc = documents.create(
@@ -128,6 +185,114 @@ def test_document_snapshot_reads_exact_revision_after_head_changes(store) -> Non
         reviews.run("p", "s", next_review)["start_seq"]
         == reviews.run("p", "s", review)["end_seq"] + 1
     )
+
+
+def test_oversized_finding_group_stays_explicitly_omitted(store, monkeypatch) -> None:
+    reviews, _, _ = store
+    claim(reviews)
+    original = dispatch(reviews)
+    raised = raise_finding(reviews, original, statement="The current count is wrong. " * 100)
+    reviews.finish("p", "s", original, "owner", "findings", "One large retained finding.")
+    monkeypatch.setattr(storage, "MAX_ITEM_BYTES", 512)
+    next_review = dispatch(reviews)
+    assert not reviews.run("p", "s", next_review)["coverage_complete"]
+    assert reviews.manifest("p", "s", next_review)["evidence"] == []
+    assert Findings(reviews).get("p", "s", raised["finding_id"])["status"] == "open"
+
+
+@pytest.mark.parametrize("action", ["fix", "rebut"])
+def test_stale_generic_reflag_preserves_pending_response_head(store, action: str) -> None:
+    reviews, documents, _ = store
+    claim(reviews)
+    original = dispatch(reviews)
+    raised = raise_finding(reviews, original, severity="warn", statement="Check this count.")
+    doc = documents.create(
+        "p",
+        name="response",
+        title="N",
+        text="The corrected count is15.\n",
+        author=USER,
+        session_id="s",
+    ).document_id
+    response = Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": raised["finding_id"],
+            "expected": 1,
+            "action": action,
+            "explanation": "This exact response must survive the old review.",
+            "revisions": [[doc, 1]] if action == "fix" else [],
+            "operation_id": "concurrent-response",
+        },
+        USER,
+    )
+    targets = reviews.confirmation_targets("p", "s")
+    result = raise_finding(
+        reviews,
+        original,
+        severity="fail",
+        statement="Repeated stale assessment.",
+        operation_id="stale-reflag",
+    )
+    assert result["outcome"] == "response_pending"
+    assert result["revision"] == response["revision"]
+    assert raise_finding(
+        reviews,
+        original,
+        severity="fail",
+        statement="Repeated stale assessment.",
+        operation_id="stale-reflag",
+    )["replayed"]
+    current = Findings(reviews).get("p", "s", raised["finding_id"])
+    assert current["revision"] == response["revision"]
+    assert current["severity"] == "warn"
+    assert current["history"][-1]["payload"]["action"] == action
+    assert reviews.confirmation_targets("p", "s") == targets
+    reviews.finish("p", "s", original, "owner", "findings", "The response remains pending.")
+    next_review = dispatch(reviews, "confirmation" if action == "fix" else "terminal")
+    copied = next(
+        item
+        for item in reviews.manifest("p", "s", next_review)["evidence"]
+        if item["kind"] == "finding"
+    )
+    payload = reviews.evidence("p", "s", next_review, copied["evidence"])["payload"]
+    assert payload["revision"] == response["revision"]
+    assert payload["response"]["payload"]["action"] == action
+
+
+def test_unadmitted_confirmation_group_falls_back_to_author_feed(store, monkeypatch) -> None:
+    reviews, documents, _ = store
+    claim(reviews)
+    original = dispatch(reviews)
+    raised = raise_finding(reviews, original, statement="The count is wrong. " * 100)
+    reviews.finish("p", "s", original, "owner", "findings", "One large retained finding.")
+    doc = documents.create(
+        "p", name="fix", title="N", text="15\n", author=USER, session_id="s"
+    ).document_id
+    response = Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": raised["finding_id"],
+            "expected": 1,
+            "action": "fix",
+            "explanation": "Claim the exact changed revision.",
+            "revisions": [[doc, 1]],
+            "operation_id": "claim-large-fix",
+        },
+        USER,
+    )
+    head = claim(reviews, "The final author answer.", "final-answer")
+    monkeypatch.setattr(storage, "MAX_ITEM_BYTES", 512)
+    fallback = dispatch(reviews, "confirmation")
+    record = reviews.run("p", "s", fallback)
+    assert record["kind"] == "terminal"
+    assert record["end_seq"] == head
+    assert not record["coverage_complete"]
+    reviews.finish("p", "s", fallback, "owner", "inconclusive", "Fix evidence did not fit.")
+    assert not reviews.progress("p", "s")["remaining"]
+    assert reviews.confirmation_targets("p", "s") == [(raised["finding_id"], response["revision"])]
 
 
 @pytest.mark.asyncio

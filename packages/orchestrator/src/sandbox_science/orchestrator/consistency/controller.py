@@ -374,7 +374,7 @@ class ReviewController:
             ended = await asyncio.to_thread(self.store.run, *self.scope, review)
             if ended["state"] in ("failed", "dropped"):
                 continue
-            if kind == "confirmation":
+            if ended["kind"] == "confirmation":
                 # The confirmation left new feed pending; a terminal window still
                 # checks the final author answer after checking the proposed fix.
                 continue

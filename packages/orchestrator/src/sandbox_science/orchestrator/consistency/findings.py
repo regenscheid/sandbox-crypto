@@ -349,6 +349,69 @@ class Findings:
             status = "inconclusive" if incomplete else "open"
             if existing:
                 found = self._get(db, project, session, existing[0])
+                previous = {
+                    key: found[key]
+                    for key in (
+                        "review_id",
+                        "severity",
+                        "category",
+                        "statement",
+                        "anchors",
+                        "remedy",
+                    )
+                }
+                assessment = {
+                    "review_id": review,
+                    "severity": value.severity,
+                    "category": value.category,
+                    "statement": value.statement,
+                    "anchors": anchors,
+                    "remedy": value.remedy,
+                }
+                latest = db.execute(
+                    "SELECT payload FROM review_transitions WHERE finding_id=? "
+                    "ORDER BY revision DESC LIMIT 1",
+                    (found["finding_id"],),
+                ).fetchone()
+                if (
+                    found["status"] == "claimed fixed"
+                    or json.loads(latest[0]).get("action") == "rebut"
+                ):
+                    # A detached review can still describe the old evidence after
+                    # a response arrives. Only an exact pinned review_decide may
+                    # resolve that response; generic reflags keep its CAS/head.
+                    result = {
+                        "outcome": "response_pending",
+                        "finding_id": found["finding_id"],
+                        "status": found["status"],
+                        "revision": found["revision"],
+                        "detail": "The pending response needs its pinned reviewer decision.",
+                    }
+                    db.execute(
+                        "INSERT INTO review_records(review_id,kind,payload,created) "
+                        "VALUES(?,'deferred_reflag',?,?)",
+                        (review, dump({**result, "assessment": assessment}), self.store.clock()),
+                    )
+                    self._operation(db, project, actor, value.operation_id, fingerprint, result)
+                    return result
+                ranks = {"fail": 0, "warn": 1, "note": 2}
+                if ranks[value.severity] <= ranks[found["severity"]]:
+                    # A stronger assessment must reach the canonical header and
+                    # notice threshold. Weaker reflags cannot erase it; both
+                    # assessments remain in this append-only transition.
+                    db.execute(
+                        "UPDATE review_findings SET review_id=?,severity=?,statement=?,"
+                        "anchors=?,remedy=? WHERE finding_id=?",
+                        (
+                            review,
+                            value.severity,
+                            value.statement,
+                            dump(anchors),
+                            value.remedy,
+                            found["finding_id"],
+                        ),
+                    )
+                    found.update(assessment)
                 if found["reflags"] + 1 >= config.max_reflags:
                     status = "unaddressed"
                 result = self._transition(
@@ -357,7 +420,12 @@ class Findings:
                     status,
                     actor,
                     value.statement,
-                    {"review": review, "anchors": anchors},
+                    {
+                        "review": review,
+                        "anchors": anchors,
+                        "previous_assessment": previous,
+                        "assessment": assessment,
+                    },
                     reflag=True,
                 )
             else:
@@ -384,7 +452,25 @@ class Findings:
                 )
                 found = self._get(db, project, session, finding)
                 result = self._transition(
-                    db, found, status, actor, "Reviewer raised this finding.", {"review": review}
+                    db,
+                    found,
+                    status,
+                    actor,
+                    "Reviewer raised this finding.",
+                    {
+                        "review": review,
+                        "assessment": {
+                            key: found[key]
+                            for key in (
+                                "review_id",
+                                "severity",
+                                "category",
+                                "statement",
+                                "anchors",
+                                "remedy",
+                            )
+                        },
+                    },
                 )
                 self.store.event(
                     db,
