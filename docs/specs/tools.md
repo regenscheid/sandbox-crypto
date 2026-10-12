@@ -36,6 +36,8 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 
 ## Background jobs
 
+Implementation status: the worker/API and harness/GUI slices are [built](../BACKGROUND-JOBS.md) and passed [OpenShell lab 19](../../.agents/docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md). Worker restart survival, automatic wake-up and shared monetary spend accounting are still open; the linked implementation notes also identify the current message-inbox and project-settings limits. The requirements below remain the target.
+
 A background job is a shell command that runs without holding a tool call open: lattice sieving, parameter searches and other computations that take hours (D83, confirmed by the user on 2026-10-11). Usually the agent needs the job's result to finish its turn, so it waits on the job, and a low-cost model checks on the job while it waits.
 
 1. **Starting.** The agent starts a job with the shell tool's script or argv, a purpose, what to expect while it runs (such as "a progress line every 10 minutes, about 6 hours") and an optional time limit. The call returns at once with the job's ID, and the job runs in the session's environment and workspace, under the same policy, network path and resource limits as a shell call. The agent can go on working and start other tools, then wait on the job, or end its turn and leave the job detached.

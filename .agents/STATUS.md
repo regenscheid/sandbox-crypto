@@ -4,9 +4,11 @@ Updated: 2026-10-12.
 
 **Phase:** 1 (babbage), milestone M1: its exit run passed on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M0's specs and decisions still await the user's review. **Focus:** toward M2: background jobs and the executor daemon, then the remaining research workspace features.
 
-Background jobs are in progress in an isolated worktree: worker/API and harness/GUI changes, independent adversarial review, then lab 19 in OpenShell before merge. Worker restart survival remains the following executor-daemon slice. The current CLI has no long-running session scheduler or shared model spend ledger; automatic wake-up and shared watcher spend accounting stay open until those exist.
+Background jobs now have worker/API and harness/GUI implementations, independent adversarial review, and real OpenShell acceptance evidence ([lab 19](docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md)). Jobs survive harness exits; worker restart survival is the following executor-daemon slice, now in development alongside GUI document editing. The current CLI has no long-running session scheduler or shared model spend ledger; automatic wake-up and shared watcher spend accounting stay open until those exist.
 
 ## Recent progress
+
+- **Background jobs (D83)** ([as built](../docs/BACKGROUND-JOBS.md), [lab 19](docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md)). Separate time and concurrency limits, full sandbox logs, live bounded output and usage, replayable events, cancellation and lifecycle cleanup; session job tools, durable completion notices, waits and a separately budgeted watcher; live GUI listing, output and cancellation. OpenShell checks passed twice, and the browser displayed the wait, progress and attention notes, then cancelled the job. A fresh harness process delivered its completion once. All lab state was removed. Integrated checks: 8,966 Python tests and 408 web tests passed, with no type or lint errors. Worker restarts still make running jobs `lost`; automatic wake-up, a live message inbox, persisted project watcher settings and a shared monetary spend ledger remain open.
 
 - **Lab 18: the provisioning tool** ([report](docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md)). CP-F1 to CP-F4, CP-F8 and CP-F10 passed against the real OpenShell gateway, middleware and cache. Real micromamba and pip dry runs passed the strict parsers; pinned installs matched their decided files and lockfiles; denial fetched no package files, approval fetched exactly its sixteen, requests outside the grant failed, and the grant ended with its operation. All nine catalog probes passed in a sandbox, after the tool added python-flint beside Sage. Cancellation and a worker restart after three package records appeared during linking both left visible `needs_recovery` status. The lab is completely removed. The user resumed work after the handoff pause.
 
@@ -99,10 +101,10 @@ Background jobs are in progress in an isolated worktree: worker/API and harness/
 
 ## Next
 
-- M2 (W3): Conda provisioning on babbage (a lab with a real gateway, middleware and cache), then restoring a revision after a failed install (CP-13), disk limits and uninstalls (CP-14, CP-20). The read-only root filesystem is deferred (D48).
+- M2 (W3): executor-daemon reconnect and restart survival, followed by restoring a revision after a failed install (CP-13), disk limits and uninstalls (CP-14, CP-20). Provisioning passed in lab 18. The read-only root filesystem is deferred (D48).
 - M2 (W4): the research workspace (living documents, ledger and board, comments, automatic consistency review), which the M2 exit run needs.
 - MCP connectors: the connector auth service for crypto-research-mcp (it needs the user's OAuth consent), compiling approved tools into the proxy's fence, and exporting the proxy's records to the monitor.
-- Background jobs (D83): long computations that run without holding the agent's turn, and the executor daemon in the sandbox that lets them survive worker restarts.
+- Background jobs (D83): the executor daemon for worker restart survival; then automatic wake-up and shared model spend accounting when the long-running control application exists.
 - Worker: environment IDs per project, and limits per client.
 
 ## Blockers and open questions
