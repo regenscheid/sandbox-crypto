@@ -9,6 +9,7 @@
   import Markdown from '../lib/Markdown.svelte';
   import { documentHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import CommentBodyEditor from './CommentBodyEditor.svelte';
   let { projectId, documentId, thread, sessions, macros, changed }: { projectId: string; documentId: string;
     thread: CommentThread; sessions: Session[]; macros: MacroSet; changed: () => Promise<void> } = $props();
   const initial = untrack(() => thread);
@@ -73,6 +74,15 @@
     <div class="entry">
       <p class="muted">{entry.number} · {entry.kind} · {describeAuthor(entry.author)} · {new Date(entry.created_at * 1000).toLocaleString()}</p>
       {#if entry.body}<Markdown source={entry.body} {macros} />{/if}
+      {#if entry.body_source}
+        {#if entry.body_source.held}<p role="status">Body math checks held: {entry.body_source.held}</p>
+        {/if}
+        {#if entry.body_source.revision !== undefined}
+          <details><summary>Current body revision {entry.body_source.revision} · {entry.body_source.author ? describeAuthor(entry.body_source.author) : 'legacy ownership unknown'}</summary><Markdown source={entry.body_source.body ?? ''} {macros} /></details>
+          {#if entry.author.kind === 'user'}<CommentBodyEditor {projectId} {documentId} threadId={thread.thread_id} expected={thread.revision} source={entry.body_source} {changed} />{/if}
+        {/if}
+      {/if}
+      {#if entry.payload.entry}<p class="muted">Correction of original entry <code>{entry.payload.entry}</code>, body revision {entry.payload.body_revision}.</p>{/if}
       {#if entry.payload.revision}<p>Made <a href={documentHref(projectId, documentId, entry.payload.revision)}>revision {entry.payload.revision}</a>; changed blocks: {(entry.payload.changed_blocks ?? []).join(', ') || 'none'}. Outside the anchor (including changes whose scope cannot be proved): {(entry.payload.outside_anchor ?? []).join(', ') || 'none'}.</p>{/if}
       {#if entry.payload.changed_blocks_truncated || entry.payload.outside_anchor_truncated}<p class="muted">Block lists show the first 100 IDs: {entry.payload.changed_blocks_total} changed, {entry.payload.outside_anchor_total} outside or uncertain. The revision and its history hold the full changes.</p>{/if}
       {#if entry.payload.addressed_to}<p>Addressed to session {entry.payload.addressed_to}.</p>{/if}

@@ -9,6 +9,7 @@ import sqlite3
 from typing import Any
 
 from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.documents.comment_bodies import source_key
 from sandbox_science.orchestrator.documents.models import Author
 
 from .findings import Findings
@@ -45,8 +46,8 @@ class MechanicalFindings:
     def _current(self, db: sqlite3.Connection, job: Json) -> bool:
         return (
             db.execute(
-                "SELECT 1 FROM documents WHERE document_id=? AND head=?",
-                (job["document"], job["revision"]),
+                "SELECT 1 FROM math_current_checks WHERE check_id=? AND source=? AND revision=?",
+                (job["check_id"], source_key(job), job["revision"]),
             ).fetchone()
             is not None
         )
@@ -61,7 +62,7 @@ class MechanicalFindings:
                 "SELECT finding_id,checked_revision,input_sha256,owner_revision FROM "
                 "math_finding_state WHERE document=? AND block=? AND span=?"
             ),
-            (job["document"], item["block"], item["span"]),
+            (source_key(job), item["block"], item["span"]),
         ).fetchone()
         if row and row[1] > job["revision"]:
             return
@@ -171,7 +172,7 @@ class MechanicalFindings:
                 + (answer["error"] or "parse error"),
                 dump(anchors),
                 answer["remedy"],
-                digest(dump([job["document"], item["block"], item["span"]])),
+                digest(dump([source_key(job), item["block"], item["span"]])),
                 self.store.clock(),
                 job["check_id"],
             ),
@@ -180,7 +181,7 @@ class MechanicalFindings:
             "INSERT INTO math_finding_state VALUES(?,?,?,?,?,?,?,?,NULL)",
             (
                 finding,
-                job["document"],
+                source_key(job),
                 item["block"],
                 item["span"],
                 job["revision"],
@@ -207,10 +208,18 @@ class MechanicalFindings:
         self._notice(db, job, author, finding, result["revision"])
 
     def _anchors(self, job: Json, item: Json) -> list[Json]:
+        locator = {"document": job["document"], "revision": job["revision"]}
+        if "comment" in job:
+            locator = {
+                "document": job["document"],
+                "revision": job["comment"]["macro_revision"],
+                "comment": job["comment"]["entry_id"],
+                "body_revision": job["revision"],
+            }
         return [
             {
                 "check": job["check_id"],
-                "locator": {"document": job["document"], "revision": job["revision"]},
+                "locator": locator,
                 "block": item["block"],
                 "math": item["span"],
                 "sha256": job["source_sha256"],
@@ -238,10 +247,10 @@ class MechanicalFindings:
             (
                 "SELECT s.finding_id,s.block,s.span,f.session FROM math_finding_state "
                 "s JOIN review_findings f USING(finding_id) WHERE s.document=? AND "
-                "s.checked_revision<=? AND f.status NOT IN ('confirmed "
+                "s.checked_revision<=? AND s.checked_revision>=? AND f.status NOT IN ('confirmed "
                 "fixed','withdrawn')"
             ),
-            (job["document"], job["revision"]),
+            (source_key(job), job["revision"], job.get("comment", {}).get("identity_floor", 0)),
         ).fetchall()
         for finding, block, span, session in rows:
             if (block, span) in live:
@@ -252,7 +261,7 @@ class MechanicalFindings:
                 current,
                 "confirmed fixed",
                 "platform:math",
-                "The formula was removed from the complete current document revision.",
+                "The formula was removed from the complete current saved source revision.",
                 {
                     "check": job["check_id"],
                     "document_revision": job["revision"],
