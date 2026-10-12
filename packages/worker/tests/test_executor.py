@@ -17,6 +17,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
@@ -63,6 +64,7 @@ def test_a_calls_leftovers_end_one_process_at_a_time(
         raise PermissionError(1, "Operation not permitted")
 
     monkeypatch.setattr(os, "killpg", refuse)
+    owner, other_owner = f"test-executor-{uuid4().hex}", f"test-executor-{uuid4().hex}"
     script = (
         f"sleep 60 & echo $! > {tmp_path}/plain\n"
         f"setsid sleep 61 & echo $! > {tmp_path}/setsid\n"
@@ -70,12 +72,12 @@ def test_a_calls_leftovers_end_one_process_at_a_time(
     )
     call = subprocess.Popen(  # noqa: S603 - a fixed command
         ["/bin/bash", "-c", script],
-        env={**os.environ, executor.OWNER: "call-test"},
+        env={**os.environ, executor.OWNER: owner},
         start_new_session=True,
     )
     other = subprocess.Popen(
         ["sleep", "60"],  # noqa: S607
-        env={**os.environ, executor.OWNER: "call-other"},
+        env={**os.environ, executor.OWNER: other_owner},
         start_new_session=True,
     )
     executor._spawned.add(call.pid)  # pyright: ignore[reportPrivateUsage]
@@ -83,21 +85,63 @@ def test_a_calls_leftovers_end_one_process_at_a_time(
         plain, escaped = _read_pid(tmp_path / "plain"), _read_pid(tmp_path / "setsid")
         info = executor.process_info(call.pid)
         assert info is not None
-        assert executor.end_owned("call-test", (call.pid, info.start)) >= 3
+        assert executor.end_owned(owner, (call.pid, info.start)) >= 3
         call.wait(timeout=10)
         assert _gone(plain)
         assert _gone(escaped)
         assert _alive(other.pid)  # another owner's process is left alone
     finally:
+        executor.end_owned(owner, None)
+        call.wait(timeout=10)
         executor._spawned.discard(call.pid)  # pyright: ignore[reportPrivateUsage]
         other.kill()
         other.wait()
 
 
+def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup() -> None:
+    # end_owned also scans /proc outside its descendants. Independent pytest suites
+    # must never reuse a mark: a sibling cleaner can see and kill that suite's owner.
+    owners = [f"test-executor-{uuid4().hex}" for _ in range(2)]
+    processes: list[subprocess.Popen[bytes]] = []
+    cleaner = (
+        "import sys\n"
+        "from sandbox_science.worker import executor\n"
+        "print(executor.end_owned(sys.argv[1], None))\n"
+    )
+    try:
+        for owner in owners:
+            processes.append(
+                subprocess.Popen(
+                    ["sleep", "60"],  # noqa: S607
+                    env={**os.environ, executor.OWNER: owner},
+                    start_new_session=True,
+                )
+            )
+        for process, owner in zip(processes, owners, strict=True):
+            assert executor.process_owner(process.pid) == owner
+        for index, owner in enumerate(owners):
+            cleaned = subprocess.run(  # noqa: S603 - fixed trusted cleanup helper
+                [sys.executable, "-c", cleaner, owner],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+            assert int(cleaned.stdout) == 1
+            assert processes[index].wait(timeout=10) == -9
+            if index == 0:
+                assert _alive(processes[1].pid)
+    finally:
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=10)
+
+
 def test_ending_an_owner_with_nothing_left_is_harmless() -> None:
     process = subprocess.Popen(["true"], start_new_session=True)  # noqa: S607
     process.wait()
-    assert executor.end_owned("call-finished", (process.pid, 0)) == 0
+    assert executor.end_owned(f"test-executor-{uuid4().hex}", (process.pid, 0)) == 0
 
 
 def test_an_oversized_result_is_trimmed_to_fit_one_line() -> None:
