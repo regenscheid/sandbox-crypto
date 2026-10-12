@@ -382,7 +382,7 @@ def _prepare(body: str, actor: Author, parent: Json | None = None) -> PreparedBo
     # Document macros apply at render time; front matter in a comment grants no macros.
     parsed = parse(body, documents=False)
     before = (
-        attach(parse(parent["body"], documents=False), parent["block_map"])
+        attach(parent["body"], parent["block_map"], documents=False)
         if parent and parent["block_map"] and not parent["block_map"].get("held")
         else None
     )
