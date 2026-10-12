@@ -78,6 +78,22 @@ adversarial review left no unresolved medium or high findings, including
 log-write failure, cancellation without acknowledgments, queued lifecycle races,
 notice-delivery failures, pagination, wait/message races and watcher-budget races.
 
+## CI follow-up: package cleanup
+
+The first PR run passed web and Python 3.13, but Python 3.12 reproduced an
+existing killed-wrapper cleanup race. `/proc/environ` can lose a process's turn
+marker before that process has stopped. Cleanup now follows observed PID/start
+identities through exit, treats uncertain reads or denied signals as pending,
+and retains the holder when bounded cleanup fails. Python package-client startup
+fails closed even if its diagnostic cannot be written. A subsequent locked
+observer retries the retained marker, including a live former wrapper that has
+released its lock. Thirteen new regressions and three existing real-process
+checks pass on both Python versions. Independent review cleared the final fix.
+The updated full local suite passed 8,979 tests (43 skips); 408 web tests and all
+static, build, generated-proto and license checks passed again. These follow-up
+checks are local process tests; the OpenShell results above retain their original
+code versions and are not presented as a repeat lab run.
+
 ## Cleanup
 
 All sandboxes were deleted (the gateway reported zero). All transient lab units,

@@ -129,6 +129,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] PDF extraction and rendering in the worker (pdf_oxide, D59): the in-sandbox helper, the [spec](../docs/specs/pdf-sources.md), the worker's `PdfRequest` and the harness's `pdf_*` tools
 - [x] PDF evidence on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)): Regev's LWE paper through the PDF tools in a crypto-base sandbox; page labels, outline, line anchors, and page and equation crops published as artifacts. Text extraction garbles mathematics, and the renders do not
 
+- [x] Lockfile validation responsiveness: preserve the original hostile inputs and 0.25-second bound in a fresh interpreter, with deterministic canonical-byte and exact byte-cap serialization guards (2026-10-12)
+- [x] Package-turn orphan cleanup waits for observed process identities to stop, preserves the holder on uncertain cleanup and retries it under the next lock; thirteen regressions and independent review after the Python 3.12 CI failure (2026-10-12)
+
 ## W4: integrate the initial research workspace
 
 - [x] GUI stack (D80, confirmed by the user): Svelte 5 with TypeScript built by Vite (`web/workspace`), an aiohttp server (`packages/workspace`), markdown-it and KaTeX in the browser
