@@ -34,6 +34,7 @@ from sandbox_science.contracts import (
     FileContent,
     FileListing,
     HostPort,
+    Identifier,
     JobListing,
     JobRequest,
     JobStatus,
@@ -55,6 +56,13 @@ from sandbox_science.contracts import (
     WriteFileRequest,
     WriteFileResult,
 )
+from sandbox_science.contracts.documents import (
+    CatalogContentChunk,
+    CatalogDelta,
+    CatalogSnapshot,
+    CatalogSnapshotPage,
+    CatalogStatus,
+)
 from sandbox_science.contracts.revisions import (
     MAX_LOCKFILE_BYTES,
     MAX_REVISION_PAGE,
@@ -64,6 +72,9 @@ from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MAX_EVENT_
 
 _log = logging.getLogger(__name__)
 _EVENT: Final = TypeAdapter[Event](Event)
+_IDENTIFIER: Final = TypeAdapter[str](Identifier)
+MAX_CATALOG_STATUS_BYTES: Final = 8 * 1024
+CATALOG_TIMEOUT: Final = 10.0
 RECONNECT_ATTEMPTS: Final = 5
 RECONNECT_DELAY: Final = 0.5
 CALL_TIMEOUT: Final = 600.0
@@ -136,6 +147,9 @@ class WorkerClient:
         body: BaseModel | None = None,
         params: dict[str, str] | None = None,
         max_bytes: int | None = None,
+        *,
+        total_timeout: float | None = None,
+        allow_redirects: bool = True,
     ) -> tuple[_Model, int]:
         """The response as ``model``, and its status; a body over ``max_bytes`` is an error."""
         if isinstance(body, JobRequest):
@@ -150,13 +164,16 @@ class WorkerClient:
                 data=data,
                 params=params,
                 headers={**self._headers, "Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(sock_connect=10, sock_read=CALL_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(
+                    total=total_timeout, sock_connect=10, sock_read=CALL_TIMEOUT
+                ),
+                allow_redirects=allow_redirects,
             ) as response:
                 if max_bytes is None:
                     payload = await response.read()
                 else:
                     payload = await _bounded_body(response.content, max_bytes)
-                if response.status >= 400:
+                if response.status >= 400 or (not allow_redirects and 300 <= response.status < 400):
                     raise _error(payload, response.status)
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise WorkerAPIError(ErrorKind.UNAVAILABLE, f"cannot reach the worker: {exc}") from exc
@@ -166,6 +183,50 @@ class WorkerClient:
             raise WorkerAPIError(
                 ErrorKind.INTERNAL, f"unexpected worker response: {str(exc)[:500]}"
             ) from exc
+
+    async def _catalog(
+        self, project: str, suffix: str = "", body: BaseModel | None = None
+    ) -> CatalogStatus:
+        try:
+            _IDENTIFIER.validate_python(project)
+        except ValidationError as error:
+            raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "invalid catalog project") from error
+        request_limit = 352 * 1024 if isinstance(body, CatalogContentChunk) else 64 * 1024
+        if body is not None and len(body.model_dump_json().encode()) > request_limit:
+            raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "catalog request exceeds byte bound")
+        status, _ = await self._request(
+            "POST" if body is not None else "GET",
+            f"/v1/document-catalog/{project}{suffix}",
+            CatalogStatus,
+            body,
+            max_bytes=MAX_CATALOG_STATUS_BYTES,
+            total_timeout=CATALOG_TIMEOUT,
+            allow_redirects=False,
+        )
+        if status.project_id != project or (
+            status.acknowledged is not None and status.acknowledged.project_id != project
+        ):
+            raise WorkerAPIError(ErrorKind.INTERNAL, "catalog response project differs")
+        return status
+
+    async def catalog_status(self, project: str) -> CatalogStatus:
+        """Read an explicitly authorized project's catalog; no environment publication."""
+        return await self._catalog(project)
+
+    async def catalog_begin(self, target: CatalogSnapshot) -> CatalogStatus:
+        return await self._catalog(target.project_id, "/snapshots", target)
+
+    async def catalog_page(self, page: CatalogSnapshotPage) -> CatalogStatus:
+        return await self._catalog(page.project_id, "/pages", page)
+
+    async def catalog_delta(self, delta: CatalogDelta) -> CatalogStatus:
+        return await self._catalog(delta.target.project_id, "/deltas", delta)
+
+    async def catalog_content(self, chunk: CatalogContentChunk) -> CatalogStatus:
+        return await self._catalog(chunk.project_id, "/content", chunk)
+
+    async def catalog_commit(self, target: CatalogSnapshot) -> CatalogStatus:
+        return await self._catalog(target.project_id, "/commit", target)
 
     # Environments (D73): the worker creates sandboxes under stored policy revisions.
 
