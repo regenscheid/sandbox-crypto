@@ -7,6 +7,8 @@
  * requires of a POST; there is nothing else to send.
  */
 import type { ServerBlock } from './attach';
+import { KERNEL_DEADLINE_MS, KernelReadError, kernelObservation, kernelReadsAllowed, stopKernelReadsForLogout, validKernelScope,
+  type KernelObservation, type KernelScope } from './kernels';
 
 export interface ProjectSummary {
   project_id: string;
@@ -391,7 +393,62 @@ export async function post<T>(path: string, body: unknown): Promise<T> {
 
 const part = encodeURIComponent;
 
+// Only this passive read uses this lease/deadline/bound; generic API behavior is unchanged.
+let kernelReadOwned = false;
+async function observeKernels(scope: KernelScope, signal: AbortSignal): Promise<KernelObservation> {
+  if (!kernelReadsAllowed()) throw new KernelReadError(401);
+  if (kernelReadOwned || signal.aborted || !validKernelScope(scope)) throw new KernelReadError(0);
+  kernelReadOwned = true;
+  const controller = new AbortController();
+  let response: Response | undefined;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let cancellation: Promise<unknown> | undefined;
+  const cancelBody = (): Promise<unknown> => {
+    cancellation ??= (reader ? reader.cancel() : response?.body?.cancel() ?? Promise.resolve()).catch(() => undefined);
+    return cancellation;
+  };
+  const abort = () => { controller.abort(); if (response) void cancelBody(); };
+  signal.addEventListener('abort', abort, {once: true});
+  const deadline = setTimeout(abort, KERNEL_DEADLINE_MS);
+  try {
+    response = await fetch(`/api/v0/projects/${part(scope.projectId)}/sessions/${part(scope.sessionId)}/kernels`, {
+      headers: {Accept: 'application/json'}, signal: controller.signal, redirect: 'error', cache: 'no-store',
+    });
+    if (controller.signal.aborted || response.redirected || response.type === 'opaqueredirect') throw new KernelReadError(0);
+    // Error bodies carry no useful kernel data. Cancel rather than parsing/retaining arbitrary text.
+    if (!response.ok) { await cancelBody(); throw new KernelReadError(response.status); }
+    if (!response.body) throw new KernelReadError(0);
+    const declared = response.headers.get('content-length');
+    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > 12 * 1024)) throw new KernelReadError(0);
+    reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0, reads = 0;
+    while (true) {
+      const chunk = await reader.read();
+      if (controller.signal.aborted) throw new KernelReadError(0);
+      if (chunk.done) break;
+      if (++reads > 256) throw new KernelReadError(0);
+      if (chunk.value.length > 12 * 1024 - size) throw new KernelReadError(0);
+      chunks.push(chunk.value); size += chunk.value.length;
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
+    return kernelObservation(JSON.parse(new TextDecoder('utf-8', {fatal: true}).decode(bytes)) as unknown, scope);
+  } catch (error) {
+    if (error instanceof KernelReadError) throw error;
+    throw new KernelReadError(0);
+  } finally {
+    await cancelBody();
+    reader?.releaseLock();
+    clearTimeout(deadline); signal.removeEventListener('abort', abort);
+    kernelReadOwned = false;
+  }
+}
+
 export const api = {
+  kernels: (project: string, session: string, environment: string, signal: AbortSignal) =>
+    observeKernels({projectId: project, sessionId: session, environmentId: environment}, signal),
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) => post<MacroContext>(`/projects/${part(project)}/macros`, value),
   projects: () => get<{ projects: ProjectSummary[] }>('/projects'),
@@ -430,6 +487,7 @@ export const api = {
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),
   mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),
   async logout(): Promise<void> {
+    stopKernelReadsForLogout();
     const response = await fetch('/api/v0/logout', { method: 'POST' });
     if (!response.ok && response.status !== 401) {
       throw new ApiError(response.status, 'unavailable', 'logging out failed');
