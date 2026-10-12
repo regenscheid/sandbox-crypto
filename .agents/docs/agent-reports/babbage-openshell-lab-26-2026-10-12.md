@@ -11,7 +11,7 @@ The [exact evidence](babbage-openshell-lab-26-evidence-2026-10-12.json) retains
 API results, safe SQL/gateway projections, source/helper pins, passing and failed
 gate logs, independent review and complete teardown. Every embedded text record
 has a byte length and SHA-256. Private settings, tokens, provider records, TLS
-keys and raw journals are excluded. No real credential or model was used.
+keys and raw journals are excluded. Only disposable lab authentication tokens and a visibly synthetic provider value were used; no external account credential or model was used.
 
 | Runtime | Observed configuration |
 | --- | --- |

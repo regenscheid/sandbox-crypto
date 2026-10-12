@@ -240,8 +240,8 @@
     {
       "path": "agent-reports/babbage-openshell-lab-26-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 5283,
-      "sha256": "bd86a73dddbca6afd1976ff679b47b0e41f06b73e0de3ac8f438c20086e75979"
+      "bytes": 5387,
+      "sha256": "334975e9025a83143494283d121536b69047cb8d313a4a655f72b124193a415e"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-26-evidence-2026-10-12.json",
