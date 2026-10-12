@@ -116,6 +116,34 @@ async def test_flood_is_bounded_and_reaped(tmp_path: Path, pipe: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_reap_drains_paused_subprocess_pipes() -> None:
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "import sys,time;sys.stdout.buffer.write(b'x'*300000);sys.stdout.flush();time.sleep(30)",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        limit=1024,
+        start_new_session=True,
+    )
+    assert process.stdout is not None
+    try:
+        async with asyncio.timeout(2):
+            # Exercise a genuinely paused transport, rather than relying on scheduling.
+            while not getattr(process.stdout, "_paused", False):
+                await asyncio.sleep(0.001)
+        await asyncio.wait_for(mathcheck._reap(process), 1)
+        assert process.returncode is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(process.pid, 0)
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await process.communicate()
+        await process.wait()
+
+
+@pytest.mark.asyncio
 async def test_deadline_and_cancellation_reap_children(tmp_path: Path) -> None:
     pidfile = tmp_path / "pid"
     checker = fixture_checker(

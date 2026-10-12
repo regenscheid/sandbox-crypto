@@ -146,7 +146,15 @@ async def _reap(process: asyncio.subprocess.Process) -> None:
     # Also reap descendants remaining in the launcher's process group.
     with contextlib.suppress(ProcessLookupError):
         os.killpg(process.pid, signal.SIGKILL)
-    await process.wait()
+
+    async def discard(stream: asyncio.StreamReader | None) -> None:
+        # A paused pipe can prevent Process.wait() from completing on Python 3.12.
+        # The exchange tasks have ended; drain without retaining the remaining bytes.
+        if stream is not None:
+            while await stream.read(4096):
+                pass
+
+    await asyncio.gather(discard(process.stdout), discard(process.stderr), process.wait())
 
 
 async def _owned[T](task: asyncio.Task[T]) -> tuple[T, bool]:
