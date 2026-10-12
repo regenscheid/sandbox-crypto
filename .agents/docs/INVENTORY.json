@@ -12,8 +12,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 18310,
-      "sha256": "96baa122159e6c2082a41f545c5fd0011b9309fb02d82b0449bbc88e211e9eba"
+      "bytes": 18487,
+      "sha256": "2eb08f5f038a94f48426558d509f534c3ee6b1468e31a13e93d88271a72d8f76"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -522,14 +522,14 @@
     {
       "path": "agent-reports/math-license-notices-2026-10-12.md",
       "category": "build-validation",
-      "bytes": 5379,
-      "sha256": "3870acab092c42947c6cbc7045d7c7993a62c6919ca7010972691342a0b04178"
+      "bytes": 6401,
+      "sha256": "5a47230703542b8502d257121a4358f74c2e7aaddeafa26459ef9f1bbfb51c0f"
     },
     {
       "path": "agent-reports/math-license-notices-evidence-2026-10-12.json",
       "category": "build-validation",
-      "bytes": 40697,
-      "sha256": "1a566295fa05591ccd1d26986ccdbae707449212f54a5d2a069b7963b7e9b50e"
+      "bytes": 61846,
+      "sha256": "bbe0cead68664f2c734df7ea92b26784e2a16e2f07ed4117183ad2d2649012ff"
     },
     {
       "path": "agent-reports/openscience-desktop.md",
