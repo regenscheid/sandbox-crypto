@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-12 — isolated math distribution embedded notices
+
+Implement the explicitly tracked W4 follow-on after GUI PR #91 merged at `05ba353` with all four fresh CI checks passed (run `38290115991`). Reuse the reviewed collector and pinned local primary texts for code-only KaTeX MIT, React-derived Apache helpers and glyph-derived SVG OFL attribution. The math build emits six covered files, preserving the established filenames and exact renderer/launcher bytes; its existing copier entry point verifies the complete directory. Node and its two launcher builtins remain operator-provided. No external font/CSS/Svelte runtime, dependency, license-allowlist, renderer or deployment change. All 41 focused notice cases pass; independent review, final web/math/fast gates, copy-main union and fresh PR CI/merge remain pending. See [math build](../docs/MATH-CHECKS.md#build-and-configure) and [primary inputs](../web/workspace/licenses/README.md).
+
 ## 2026-10-12 — bundled GUI distribution notices
 
 Independently reviewed signed union `1032cd4` integrates merged main `c6ccce6`. Fresh validation passed 472 web tests (27 notice cases), 24 post-build math cases, both builds and all locked/static/license/protocol checks. Full Python 9,749/43/two warnings is explicitly reused from unchanged signed `123b2e6` and fresh #90 CI. Root-owned [HTTP distribution acceptance](docs/agent-reports/workspace-license-notices-2026-10-12.md) served all 70 built files exactly and verified complete cleanup. Fresh exact-head PR CI remains required before merge. Embedded React and Svelte adaptations and glyph-derived SVG attribution are included; the separate isolated math-checker notice copier remains a tracked follow-on.

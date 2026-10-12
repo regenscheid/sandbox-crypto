@@ -58,8 +58,10 @@ function fontStatements(bytes) {
  * Build notices from actual emitted module/asset origins; unknown origins require review.
  * @param {string} root
  * @param {import('rolldown').OutputBundle} bundle
+ * @param {'gui' | 'math'} distribution
  */
-export function collectNotices(root, bundle) {
+export function collectNotices(root, bundle, distribution = 'gui') {
+  if (!['gui', 'math'].includes(distribution)) throw new Error('Unknown notice distribution');
   root = realpathSync(root);
   const manifest = JSON.parse(readFileSync(resolve(root, 'licenses/manifest.json'), 'utf8'));
   const lock = JSON.parse(readFileSync(resolve(root, 'package-lock.json'), 'utf8'));
@@ -135,7 +137,7 @@ export function collectNotices(root, bundle) {
       notices: [...owners].sort() });
   }
 
-  const sections = ['Third-party notices for the Sandbox Science workspace GUI.\n' +
+  const sections = [`Third-party notices for the Sandbox Science ${distribution === 'math' ? 'isolated math checker' : 'workspace GUI'}.\n` +
     'Includes runtime helpers and complete upstream notice files; some upstream files also cover build-only code.\n'];
   const packageRecords = [];
   for (const name of [...packages].sort()) {
@@ -189,22 +191,35 @@ export function collectNotices(root, bundle) {
   }
   const project = checkedBytes(resolve(root, '../../LICENSE'), manifest.projectLicenseSha256).toString('utf8');
   const notices = sections.join('\n\n');
+  const extra = distribution === 'math' ? {
+    'LICENSE-KaTeX.txt': checkedBytes(resolve(root, 'node_modules/katex/LICENSE'),
+      manifest.packages.katex.notices.LICENSE).toString('utf8'),
+    'check-math.mjs': checkedBytes(resolve(root, 'server/check-math.mjs'), manifest.mathLauncher.sha256).toString('utf8'),
+  } : {};
+  for (const [file, bytes] of Object.entries(extra)) {
+    if (bundle[file]) throw new Error(`Notice distribution file collision: ${file}`);
+    files.push({ file, sha256: sha256(bytes), notices: [file === 'LICENSE-KaTeX.txt' ? 'katex' : 'Sandbox Science'] });
+  }
   files.push({ file: 'THIRD-PARTY-NOTICES.txt', sha256: sha256(notices),
     notices: [...packages, ...(fontPaths.size ? ['KaTeX fonts (OFL-1.1)'] : [])].sort() });
   files.push({ file: 'LICENSE-Sandbox-Science.txt', sha256: sha256(project), notices: ['Sandbox Science'] });
   files.sort((a, b) => a.file < b.file ? -1 : a.file > b.file ? 1 : 0);
   return {
+    ...extra,
     'THIRD-PARTY-NOTICES.txt': notices,
     'LICENSE-Sandbox-Science.txt': project,
-    'license-manifest.json': JSON.stringify({ protocol: 1, packages: packageRecords,
+    'license-manifest.json': JSON.stringify({ protocol: 1,
+      ...(distribution === 'math' ? { distribution: 'math-checker',
+        externalRuntime: { name: 'Node.js', providedBy: 'operator', builtins: manifest.mathLauncher.builtins } } : {}),
+      packages: packageRecords,
       fontAndSvgLicense: fontPaths.size || katexRuntime ? manifest.ofl : null,
       reactLicense: katexRuntime ? manifest.reactLicense : null,
       isPromiseLicense: sveltePromise ? manifest.svelteEmbedded.upstream : null, files }, null, 2) + '\n',
   };
 }
 
-/** Include checked runtime and asset notices in the production GUI distribution. @returns {import('vite').Plugin} */
-export function licenseNotices() {
+/** Include checked runtime and asset notices. @param {'gui' | 'math'} distribution @returns {import('vite').Plugin} */
+export function licenseNotices(distribution = 'gui') {
   let root;
   return {
     name: 'workspace-license-notices', apply: 'build', enforce: 'post',
@@ -215,9 +230,28 @@ export function licenseNotices() {
       }
     },
     generateBundle: { order: 'post', handler(_, bundle) {
-      for (const [fileName, source] of Object.entries(collectNotices(root, bundle))) {
+      for (const [fileName, source] of Object.entries(collectNotices(root, bundle, distribution))) {
         this.emitFile({ type: 'asset', fileName, source });
       }
     } },
   };
+}
+
+/** Verify the complete standalone distribution after Vite writes it. @param {string} root */
+export function verifyMathDistribution(root) {
+  const directory = resolve(root, 'dist-math');
+  const expected = ['LICENSE-KaTeX.txt', 'LICENSE-Sandbox-Science.txt', 'THIRD-PARTY-NOTICES.txt',
+    'check-math.mjs', 'license-manifest.json', 'mathcheck.mjs'].sort();
+  const actual = readdirSync(directory).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('Uncovered math distribution files');
+  const report = JSON.parse(readFileSync(resolve(directory, 'license-manifest.json'), 'utf8'));
+  if (report.protocol !== 1 || report.distribution !== 'math-checker' ||
+      JSON.stringify(report.files.map(file => file.file).sort()) !==
+        JSON.stringify(expected.filter(file => file !== 'license-manifest.json'))) {
+    throw new Error('Incomplete math distribution manifest');
+  }
+  for (const file of report.files) checkedBytes(resolve(directory, file.file), file.sha256);
+  if (!readFileSync(resolve(directory, 'check-math.mjs')).equals(readFileSync(resolve(root, 'server/check-math.mjs')))) {
+    throw new Error('Math launcher differs from its project source');
+  }
 }

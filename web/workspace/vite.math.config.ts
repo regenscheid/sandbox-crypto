@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 import { defineConfig } from 'vite';
+import { licenseNotices } from './server/license-notices.mjs';
 
 // A standalone Node library: the exact GUI KaTeX and deterministic repair code.
 export default defineConfig({
+  plugins: [licenseNotices('math')],
   build: {
     target: 'node22',
     outDir: 'dist-math',
