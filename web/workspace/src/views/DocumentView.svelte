@@ -14,13 +14,15 @@
   import Markdown from '../lib/Markdown.svelte';
   import { documentHref, historyHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import DocumentEditor from './DocumentEditor.svelte';
 
   let {
     projectId,
     documentId,
     revision,
   }: { projectId: string; documentId: string; revision: number | null } = $props();
-  const loading = $derived(api.document(projectId, documentId, revision));
+  let refresh = $state(0);
+  const loading = $derived.by(() => { refresh; return api.document(projectId, documentId, revision); });
   let mismatches: Mismatch[] = $state([]);
 
   function lines(found: Mismatch): string {
@@ -81,6 +83,10 @@
       <dd>saved in the dollar form (LD-42)</dd>
     {/if}
   </dl>
+
+  {#key `${info.document_id}:${shown.number}`}
+    <DocumentEditor {projectId} {found} refreshed={() => refresh += 1} />
+  {/key}
 
   {#if shown.warnings.length > 0}
     <h2>Warnings</h2>
