@@ -123,17 +123,23 @@ anchors, missing evidence, confirmation and user replacement pins, owner expiry,
 and actual-usage caps, concurrent budget reservations, exact retry windows, contiguous
 prefixes, malformed cursors, document-only terminal classification, user-input races,
 late notices and save-before-acknowledgement. HTTP fixtures cover scope, CSRF, attributed
-user decisions, stale heads and replay. Native browser acceptance is a separate pending
-gate until its report is recorded; unit/type/build results do not establish it.
+user decisions, stale heads and replay. Independent [browser acceptance](../.agents/docs/agent-reports/consistency-review-2026-10-12.md)
+passed immutable previews, unavailable aliases, delayed selection, scoped sessions, retained
+claim/conflict drafts and attributed confirmation. The initial confirmation coverage issue
+and corrected scope are recorded, with the exact pending author-work retry preserved.
 
 The initial milestone checks on Python 3.13 passed 9,056 repository tests, with 43 external
 integration/image cases skipped; all 425 web tests passed. Ruff, format, strict pyright,
 Python/npm license checks, protobuf generation verification, Svelte/TypeScript checks,
 production build and whitespace checks passed. The main browser bundle is 490.98 kB;
-the review panel loads separately (12.91 kB).
+the review panel loads separately (12.91 kB at that milestone; 13.11 kB after the scope correction).
 The finding-assessment/response follow-up passed all 1,221 affected component tests
 and 41 focused review/API fixtures, with strict pyright, Ruff, format and whitespace
 checks green again.
+
+Final integrated acceptance after the scope correction passed 9,162 Python tests (43
+opt-in skips) and 429 web tests, with strict/static/license/protocol checks and both
+production builds green. Browser state and transient services were removed.
 
 The tracked synthetic browser fixture creates a new, marked state directory:
 

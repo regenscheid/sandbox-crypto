@@ -1,0 +1,904 @@
+{
+  "source": "fe0801e",
+  "runtime": "production GUI with scripted constrained reviewer; no worker or provider calls",
+  "records": {
+    "fixture": {
+      "project": "review-demo",
+      "document": "doc-ffe1493830a3f05bea0e9dd9",
+      "finding": "finding-4a8d2b602f266b62157ea05c",
+      "review": "rev-e3cd6a1ec2b9fae760942821",
+      "unavailable_review": "rev-07bdd9df512231376968cc25",
+      "url_fragment": "#/projects/review-demo/sessions/a"
+    },
+    "document_head": 2,
+    "reviews": {
+      "reviews": [
+        {
+          "review_id": "rev-bcac9481a638a367096d6d62",
+          "project": "review-demo",
+          "session": "a",
+          "kind": "confirmation",
+          "author_run": "fixture-author",
+          "state": "passed",
+          "start_seq": 3,
+          "end_seq": 2,
+          "created": 1791792612.8163042,
+          "ended": 1791792612.8250113,
+          "alias": "scripted-reviewer",
+          "resolved_model": "scripted",
+          "rubric": "sandbox-consistency-1",
+          "config": {
+            "enabled": true,
+            "min_interval_seconds": 120.0,
+            "text_characters": 2000,
+            "artifact_revisions": 3,
+            "kernel_cells": 40,
+            "kernel_interval_seconds": 1800.0,
+            "terminal_hold": true,
+            "interrupt_severity": "fail",
+            "response_rounds": 2,
+            "max_reflags": 2,
+            "max_findings": 10,
+            "max_turns": 12,
+            "time_seconds": 120.0,
+            "max_input_chars": 150000,
+            "max_output_chars": 16000,
+            "token_budget": 64000,
+            "calls_per_hour": 60
+          },
+          "config_revision": "5c9903ae5c2b60db53d380e7ed642161ee9c2ce7de74065648cbac7ba2dc1b1c",
+          "classifier": {},
+          "summary": "The changed count agrees with the pinned execution.",
+          "cap_reached": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_tokens": 23202,
+          "calls": 4,
+          "coverage_complete": 1,
+          "confirmation_key": "ef6b0144555e4de17309272c4dc360833108328cbce2bc171e53dee5da973b93"
+        },
+        {
+          "review_id": "rev-07bdd9df512231376968cc25",
+          "project": "review-demo",
+          "session": "a",
+          "kind": "checkpoint",
+          "author_run": "fixture-later",
+          "state": "failed",
+          "start_seq": 3,
+          "end_seq": 3,
+          "created": 1791792572.3758361,
+          "ended": 1791792572.376187,
+          "alias": null,
+          "resolved_model": null,
+          "rubric": "sandbox-consistency-1",
+          "config": {
+            "enabled": true,
+            "min_interval_seconds": 120.0,
+            "text_characters": 2000,
+            "artifact_revisions": 3,
+            "kernel_cells": 40,
+            "kernel_interval_seconds": 1800.0,
+            "terminal_hold": true,
+            "interrupt_severity": "fail",
+            "response_rounds": 2,
+            "max_reflags": 2,
+            "max_findings": 10,
+            "max_turns": 12,
+            "time_seconds": 120.0,
+            "max_input_chars": 150000,
+            "max_output_chars": 16000,
+            "token_budget": 64000,
+            "calls_per_hour": 60
+          },
+          "config_revision": "5c9903ae5c2b60db53d380e7ed642161ee9c2ce7de74065648cbac7ba2dc1b1c",
+          "classifier": {},
+          "summary": "The reviewer model alias is unavailable; this window was not reviewed.",
+          "cap_reached": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_tokens": 0,
+          "calls": 0,
+          "coverage_complete": 1,
+          "confirmation_key": null
+        },
+        {
+          "review_id": "rev-e3cd6a1ec2b9fae760942821",
+          "project": "review-demo",
+          "session": "a",
+          "kind": "terminal",
+          "author_run": "fixture-author",
+          "state": "findings",
+          "start_seq": 1,
+          "end_seq": 2,
+          "created": 1791792572.3626974,
+          "ended": 1791792572.3746045,
+          "alias": "scripted-reviewer",
+          "resolved_model": "scripted",
+          "rubric": "sandbox-consistency-1",
+          "config": {
+            "enabled": true,
+            "min_interval_seconds": 120.0,
+            "text_characters": 2000,
+            "artifact_revisions": 3,
+            "kernel_cells": 40,
+            "kernel_interval_seconds": 1800.0,
+            "terminal_hold": true,
+            "interrupt_severity": "fail",
+            "response_rounds": 2,
+            "max_reflags": 2,
+            "max_findings": 10,
+            "max_turns": 12,
+            "time_seconds": 120.0,
+            "max_input_chars": 150000,
+            "max_output_chars": 16000,
+            "token_budget": 64000,
+            "calls_per_hour": 60
+          },
+          "config_revision": "5c9903ae5c2b60db53d380e7ed642161ee9c2ce7de74065648cbac7ba2dc1b1c",
+          "classifier": {},
+          "summary": "One contradiction in the pinned count.",
+          "cap_reached": 0,
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "estimated_tokens": 20987,
+          "calls": 4,
+          "coverage_complete": 1,
+          "confirmation_key": null
+        }
+      ],
+      "next_after": null,
+      "unreviewed": []
+    },
+    "finding": {
+      "finding_id": "finding-4a8d2b602f266b62157ea05c",
+      "project": "review-demo",
+      "session": "a",
+      "review_id": "rev-e3cd6a1ec2b9fae760942821",
+      "severity": "fail",
+      "category": "contradicting_value",
+      "statement": "The document says $16$, while the pinned computation records $15$.",
+      "anchors": [
+        {
+          "evidence": "ev-0d471658170eebee5f53be48",
+          "block": "b2",
+          "review": "rev-e3cd6a1ec2b9fae760942821",
+          "locator": {
+            "document": "doc-ffe1493830a3f05bea0e9dd9",
+            "revision": 1,
+            "sha256": "64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e",
+            "run": "fixture-author"
+          },
+          "sha256": "3e86ec1de1609c45a075716d677075fb02e7ef0f982e5afd7a2a2981b2fa9efd",
+          "complete": true
+        },
+        {
+          "evidence": "ev-718de5ba915cd69543c869a3",
+          "stream": "stdout",
+          "first_line": 1,
+          "last_line": 1,
+          "review": "rev-e3cd6a1ec2b9fae760942821",
+          "locator": {
+            "execution": "fixture-execution",
+            "attempt": "fixture-attempt"
+          },
+          "sha256": "80a6a4cf8affaebb52614e69c500a681bfb6ef72141ccdba7be3c7331bdb82e0",
+          "complete": true
+        }
+      ],
+      "remedy": "Check the computation and correct the document's count.",
+      "status": "withdrawn",
+      "revision": 5,
+      "reflags": 0,
+      "dedupe": "08ab827f1acc3ce076d326c2efd78cb016f8deac68e8abf71d46a36eeb8a2312",
+      "supersedes": null,
+      "created": 1791792572.3735442,
+      "history": [
+        {
+          "revision": 1,
+          "status": "open",
+          "actor": "review:rev-e3cd6a1ec2b9fae760942821",
+          "reason": "Reviewer raised this finding.",
+          "payload": {
+            "review": "rev-e3cd6a1ec2b9fae760942821",
+            "assessment": {
+              "review_id": "rev-e3cd6a1ec2b9fae760942821",
+              "severity": "fail",
+              "category": "contradicting_value",
+              "statement": "The document says $16$, while the pinned computation records $15$.",
+              "anchors": [
+                {
+                  "evidence": "ev-0d471658170eebee5f53be48",
+                  "block": "b2",
+                  "review": "rev-e3cd6a1ec2b9fae760942821",
+                  "locator": {
+                    "document": "doc-ffe1493830a3f05bea0e9dd9",
+                    "revision": 1,
+                    "sha256": "64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e",
+                    "run": "fixture-author"
+                  },
+                  "sha256": "3e86ec1de1609c45a075716d677075fb02e7ef0f982e5afd7a2a2981b2fa9efd",
+                  "complete": true
+                },
+                {
+                  "evidence": "ev-718de5ba915cd69543c869a3",
+                  "stream": "stdout",
+                  "first_line": 1,
+                  "last_line": 1,
+                  "review": "rev-e3cd6a1ec2b9fae760942821",
+                  "locator": {
+                    "execution": "fixture-execution",
+                    "attempt": "fixture-attempt"
+                  },
+                  "sha256": "80a6a4cf8affaebb52614e69c500a681bfb6ef72141ccdba7be3c7331bdb82e0",
+                  "complete": true
+                }
+              ],
+              "remedy": "Check the computation and correct the document's count."
+            }
+          },
+          "created": 1791792572.3737009
+        },
+        {
+          "revision": 2,
+          "status": "claimed fixed",
+          "actor": "user:user",
+          "reason": "Checked the pinned computation and corrected the document count to 15.",
+          "payload": {
+            "action": "fix",
+            "explanation": "Checked the pinned computation and corrected the document count to 15.",
+            "anchors": [],
+            "revisions": [
+              {
+                "document": "doc-ffe1493830a3f05bea0e9dd9",
+                "revision": 2,
+                "sha256": "8c21342af859ff165bf9a00374b74a40f773d31e8ff501949e2cee8d45ad3e58"
+              }
+            ],
+            "author": {
+              "kind": "user",
+              "user": "user",
+              "session_id": null,
+              "run_id": null,
+              "role": null,
+              "model": null,
+              "alias": null,
+              "tool_call": null,
+              "import_id": null,
+              "service": null
+            }
+          },
+          "created": 1791792607.7637417
+        },
+        {
+          "revision": 3,
+          "status": "confirmed fixed",
+          "actor": "review:rev-bcac9481a638a367096d6d62",
+          "reason": "The pinned revision now states 15, matching the original pinned execution.",
+          "payload": {
+            "review": "rev-bcac9481a638a367096d6d62",
+            "anchors": [
+              {
+                "evidence": "ev-f2281b7a717ba871c6b90878",
+                "review": "rev-bcac9481a638a367096d6d62",
+                "locator": {
+                  "document": "doc-ffe1493830a3f05bea0e9dd9",
+                  "revision": 2,
+                  "sha256": "8c21342af859ff165bf9a00374b74a40f773d31e8ff501949e2cee8d45ad3e58"
+                },
+                "sha256": "6c56aad5bfeac1c4c025d215b626b2f8b69287e448c6307f3f2b6e7f00d038ed",
+                "complete": true
+              }
+            ],
+            "decision": "confirm"
+          },
+          "created": 1791792612.823659
+        },
+        {
+          "revision": 4,
+          "status": "open",
+          "actor": "user:user",
+          "reason": "Synthetic concurrent user reopens for browser draft retention.",
+          "payload": {
+            "action": "reopen",
+            "explanation": "Synthetic concurrent user reopens for browser draft retention.",
+            "anchors": [],
+            "revisions": [],
+            "author": {
+              "kind": "user",
+              "user": "user",
+              "session_id": null,
+              "run_id": null,
+              "role": null,
+              "model": null,
+              "alias": null,
+              "tool_call": null,
+              "import_id": null,
+              "service": null
+            }
+          },
+          "created": 1791792634.6890006
+        },
+        {
+          "revision": 5,
+          "status": "withdrawn",
+          "actor": "user:user",
+          "reason": "Retained USER decision draft at finding revision 3.",
+          "payload": {
+            "action": "dismiss",
+            "explanation": "Retained USER decision draft at finding revision 3.",
+            "anchors": [],
+            "revisions": [],
+            "author": {
+              "kind": "user",
+              "user": "user",
+              "session_id": null,
+              "run_id": null,
+              "role": null,
+              "model": null,
+              "alias": null,
+              "tool_call": null,
+              "import_id": null,
+              "service": null
+            }
+          },
+          "created": 1791792646.6714046
+        }
+      ],
+      "history_before": null
+    },
+    "provider_network_calls": 0,
+    "worker_calls": 0,
+    "author_work_window": {
+      "watermark": 2,
+      "retry_end": 3,
+      "failures": 1
+    },
+    "audit": [
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "model",
+        "payload": {
+          "content": "",
+          "tools": [
+            "review_manifest"
+          ],
+          "resolved_model": "scripted"
+        }
+      },
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "tool",
+        "payload": {
+          "id": "call-1",
+          "tool": "review_manifest",
+          "arguments": "{}",
+          "result": {
+            "review": {
+              "review_id": "rev-e3cd6a1ec2b9fae760942821",
+              "project": "review-demo",
+              "session": "a",
+              "kind": "terminal",
+              "author_run": "fixture-author",
+              "state": "running",
+              "start_seq": 1,
+              "end_seq": 2,
+              "created": 1791792572.3626974,
+              "ended": null,
+              "alias": "scripted-reviewer",
+              "resolved_model": "scripted",
+              "rubric": "sandbox-consistency-1",
+              "config": {
+                "enabled": true,
+                "min_interval_seconds": 120.0,
+                "text_characters": 2000,
+                "artifact_revisions": 3,
+                "kernel_cells": 40,
+                "kernel_interval_seconds": 1800.0,
+                "terminal_hold": true,
+                "interrupt_severity": "fail",
+                "response_rounds": 2,
+                "max_reflags": 2,
+                "max_findings": 10,
+                "max_turns": 12,
+                "time_seconds": 120.0,
+                "max_input_chars": 150000,
+                "max_output_chars": 16000,
+                "token_budget": 64000,
+                "calls_per_hour": 60
+              },
+              "config_revision": "5c9903ae5c2b60db53d380e7ed642161ee9c2ce7de74065648cbac7ba2dc1b1c",
+              "classifier": {},
+              "summary": "",
+              "cap_reached": 0,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "estimated_tokens": 4671,
+              "calls": 1,
+              "coverage_complete": 1,
+              "confirmation_key": null
+            },
+            "evidence": [
+              {
+                "evidence": "ev-0d471658170eebee5f53be48",
+                "ordinal": 1,
+                "kind": "document",
+                "locator": {
+                  "document": "doc-ffe1493830a3f05bea0e9dd9",
+                  "revision": 1,
+                  "sha256": "64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e",
+                  "run": "fixture-author"
+                },
+                "sha256": "3e86ec1de1609c45a075716d677075fb02e7ef0f982e5afd7a2a2981b2fa9efd",
+                "complete": true
+              },
+              {
+                "evidence": "ev-718de5ba915cd69543c869a3",
+                "ordinal": 2,
+                "kind": "execution",
+                "locator": {
+                  "execution": "fixture-execution",
+                  "attempt": "fixture-attempt"
+                },
+                "sha256": "80a6a4cf8affaebb52614e69c500a681bfb6ef72141ccdba7be3c7331bdb82e0",
+                "complete": true
+              }
+            ],
+            "next_after": null
+          }
+        }
+      },
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "model",
+        "payload": {
+          "content": "",
+          "tools": [
+            "review_read",
+            "review_read"
+          ],
+          "resolved_model": "scripted"
+        }
+      },
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "tool",
+        "payload": {
+          "id": "call-2",
+          "tool": "review_read",
+          "arguments": "{\"evidence\": \"ev-0d471658170eebee5f53be48\"}",
+          "result": {
+            "evidence": "ev-0d471658170eebee5f53be48",
+            "sha256": "3e86ec1de1609c45a075716d677075fb02e7ef0f982e5afd7a2a2981b2fa9efd",
+            "locator": {
+              "document": "doc-ffe1493830a3f05bea0e9dd9",
+              "revision": 1,
+              "sha256": "64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e",
+              "run": "fixture-author",
+              "block": null,
+              "start": 0,
+              "returned_characters": 40,
+              "total_characters": 40
+            },
+            "text": "# Count\n\nThe computation returned $16$.\n",
+            "start": 0,
+            "next_start": null,
+            "total_characters": 40,
+            "complete": true
+          }
+        }
+      },
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "tool",
+        "payload": {
+          "id": "call-3",
+          "tool": "review_read",
+          "arguments": "{\"evidence\": \"ev-718de5ba915cd69543c869a3\"}",
+          "result": {
+            "evidence": "ev-718de5ba915cd69543c869a3",
+            "sha256": "80a6a4cf8affaebb52614e69c500a681bfb6ef72141ccdba7be3c7331bdb82e0",
+            "locator": {
+              "execution": "fixture-execution",
+              "attempt": "fixture-attempt",
+              "block": null,
+              "start": 0,
+              "returned_characters": 42,
+              "total_characters": 42
+            },
+            "text": "{\"stdout\":\"nonzero_ok = 15\\n\",\"stderr\":\"\"}",
+            "start": 0,
+            "next_start": null,
+            "total_characters": 42,
+            "complete": true
+          }
+        }
+      },
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "model",
+        "payload": {
+          "content": "",
+          "tools": [
+            "review_finding"
+          ],
+          "resolved_model": "scripted"
+        }
+      },
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "finding",
+        "payload": {
+          "finding_id": "finding-4a8d2b602f266b62157ea05c",
+          "status": "open",
+          "revision": 1,
+          "reflags": 0
+        }
+      },
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "tool",
+        "payload": {
+          "id": "call-4",
+          "tool": "review_finding",
+          "arguments": "{\"severity\": \"fail\", \"category\": \"contradicting_value\", \"statement\": \"The document says $16$, while the pinned computation records $15$.\", \"anchors\": [{\"evidence\": \"ev-0d471658170eebee5f53be48\", \"block\": \"b2\"}, {\"evidence\": \"ev-718de5ba915cd69543c869a3\", \"stream\": \"stdout\", \"first_line\": 1, \"last_line\": 1}], \"remedy\": \"Check the computation and correct the document's count.\", \"operation_id\": \"fixture-count\"}",
+          "result": {
+            "finding_id": "finding-4a8d2b602f266b62157ea05c",
+            "status": "open",
+            "revision": 1,
+            "reflags": 0
+          }
+        }
+      },
+      {
+        "review": "rev-e3cd6a1ec2b9fae760942821",
+        "kind": "model",
+        "payload": {
+          "content": "{\"outcome\": \"findings\", \"summary\": \"One contradiction in the pinned count.\", \"cap_reached\": false}",
+          "tools": [],
+          "resolved_model": "scripted"
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "model",
+        "payload": {
+          "content": "",
+          "tools": [
+            "review_manifest"
+          ],
+          "resolved_model": "scripted"
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "tool",
+        "payload": {
+          "id": "call-1",
+          "tool": "review_manifest",
+          "arguments": "{}",
+          "result": {
+            "review": {
+              "review_id": "rev-bcac9481a638a367096d6d62",
+              "project": "review-demo",
+              "session": "a",
+              "kind": "confirmation",
+              "author_run": "fixture-author",
+              "state": "running",
+              "start_seq": 3,
+              "end_seq": 2,
+              "created": 1791792612.8163042,
+              "ended": null,
+              "alias": "scripted-reviewer",
+              "resolved_model": "scripted",
+              "rubric": "sandbox-consistency-1",
+              "config": {
+                "enabled": true,
+                "min_interval_seconds": 120.0,
+                "text_characters": 2000,
+                "artifact_revisions": 3,
+                "kernel_cells": 40,
+                "kernel_interval_seconds": 1800.0,
+                "terminal_hold": true,
+                "interrupt_severity": "fail",
+                "response_rounds": 2,
+                "max_reflags": 2,
+                "max_findings": 10,
+                "max_turns": 12,
+                "time_seconds": 120.0,
+                "max_input_chars": 150000,
+                "max_output_chars": 16000,
+                "token_budget": 64000,
+                "calls_per_hour": 60
+              },
+              "config_revision": "5c9903ae5c2b60db53d380e7ed642161ee9c2ce7de74065648cbac7ba2dc1b1c",
+              "classifier": {},
+              "summary": "",
+              "cap_reached": 0,
+              "input_tokens": 0,
+              "output_tokens": 0,
+              "estimated_tokens": 4671,
+              "calls": 1,
+              "coverage_complete": 1,
+              "confirmation_key": "ef6b0144555e4de17309272c4dc360833108328cbce2bc171e53dee5da973b93"
+            },
+            "evidence": [
+              {
+                "evidence": "ev-f2281b7a717ba871c6b90878",
+                "ordinal": 1,
+                "kind": "document",
+                "locator": {
+                  "document": "doc-ffe1493830a3f05bea0e9dd9",
+                  "revision": 2,
+                  "sha256": "8c21342af859ff165bf9a00374b74a40f773d31e8ff501949e2cee8d45ad3e58"
+                },
+                "sha256": "6c56aad5bfeac1c4c025d215b626b2f8b69287e448c6307f3f2b6e7f00d038ed",
+                "complete": true
+              },
+              {
+                "evidence": "ev-f1e72ddb9be51feed58b7a8e",
+                "ordinal": 2,
+                "kind": "finding",
+                "locator": {
+                  "finding": "finding-4a8d2b602f266b62157ea05c",
+                  "revision": 2
+                },
+                "sha256": "a448eca1897255de58e6d46781b2c16bec8aaf0366dcb453c40c95bd2166686a",
+                "complete": true
+              },
+              {
+                "evidence": "ev-0d471658170eebee5f53be48",
+                "ordinal": 3,
+                "kind": "document",
+                "locator": {
+                  "document": "doc-ffe1493830a3f05bea0e9dd9",
+                  "revision": 1,
+                  "sha256": "64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e",
+                  "run": "fixture-author"
+                },
+                "sha256": "3e86ec1de1609c45a075716d677075fb02e7ef0f982e5afd7a2a2981b2fa9efd",
+                "complete": true
+              },
+              {
+                "evidence": "ev-718de5ba915cd69543c869a3",
+                "ordinal": 4,
+                "kind": "execution",
+                "locator": {
+                  "execution": "fixture-execution",
+                  "attempt": "fixture-attempt"
+                },
+                "sha256": "80a6a4cf8affaebb52614e69c500a681bfb6ef72141ccdba7be3c7331bdb82e0",
+                "complete": true
+              }
+            ],
+            "next_after": null
+          }
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "model",
+        "payload": {
+          "content": "",
+          "tools": [
+            "review_read",
+            "review_read",
+            "review_read",
+            "review_read"
+          ],
+          "resolved_model": "scripted"
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "tool",
+        "payload": {
+          "id": "call-2",
+          "tool": "review_read",
+          "arguments": "{\"evidence\": \"ev-f2281b7a717ba871c6b90878\"}",
+          "result": {
+            "evidence": "ev-f2281b7a717ba871c6b90878",
+            "sha256": "6c56aad5bfeac1c4c025d215b626b2f8b69287e448c6307f3f2b6e7f00d038ed",
+            "locator": {
+              "document": "doc-ffe1493830a3f05bea0e9dd9",
+              "revision": 2,
+              "sha256": "8c21342af859ff165bf9a00374b74a40f773d31e8ff501949e2cee8d45ad3e58",
+              "block": null,
+              "start": 0,
+              "returned_characters": 40,
+              "total_characters": 40
+            },
+            "text": "# Count\n\nThe computation returned $15$.\n",
+            "start": 0,
+            "next_start": null,
+            "total_characters": 40,
+            "complete": true
+          }
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "tool",
+        "payload": {
+          "id": "call-3",
+          "tool": "review_read",
+          "arguments": "{\"evidence\": \"ev-f1e72ddb9be51feed58b7a8e\"}",
+          "result": {
+            "evidence": "ev-f1e72ddb9be51feed58b7a8e",
+            "sha256": "a448eca1897255de58e6d46781b2c16bec8aaf0366dcb453c40c95bd2166686a",
+            "locator": {
+              "finding": "finding-4a8d2b602f266b62157ea05c",
+              "revision": 2,
+              "block": null,
+              "start": 0,
+              "returned_characters": 1500,
+              "total_characters": 1500
+            },
+            "text": "{\"finding\":\"finding-4a8d2b602f266b62157ea05c\",\"severity\":\"fail\",\"category\":\"contradicting_value\",\"statement\":\"The document says $16$, while the pinned computation records $15$.\",\"anchors\":[{\"evidence\":\"ev-0d471658170eebee5f53be48\",\"block\":\"b2\",\"review\":\"rev-e3cd6a1ec2b9fae760942821\",\"locator\":{\"document\":\"doc-ffe1493830a3f05bea0e9dd9\",\"revision\":1,\"sha256\":\"64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e\",\"run\":\"fixture-author\"},\"sha256\":\"3e86ec1de1609c45a075716d677075fb02e7ef0f982e5afd7a2a2981b2fa9efd\",\"complete\":true},{\"evidence\":\"ev-718de5ba915cd69543c869a3\",\"stream\":\"stdout\",\"first_line\":1,\"last_line\":1,\"review\":\"rev-e3cd6a1ec2b9fae760942821\",\"locator\":{\"execution\":\"fixture-execution\",\"attempt\":\"fixture-attempt\"},\"sha256\":\"80a6a4cf8affaebb52614e69c500a681bfb6ef72141ccdba7be3c7331bdb82e0\",\"complete\":true}],\"remedy\":\"Check the computation and correct the document's count.\",\"status\":\"claimed fixed\",\"revision\":2,\"reflags\":0,\"supersedes\":null,\"response\":{\"reason\":\"Checked the pinned computation and corrected the document count to 15.\",\"payload\":{\"action\":\"fix\",\"explanation\":\"Checked the pinned computation and corrected the document count to 15.\",\"anchors\":[],\"revisions\":[{\"document\":\"doc-ffe1493830a3f05bea0e9dd9\",\"revision\":2,\"sha256\":\"8c21342af859ff165bf9a00374b74a40f773d31e8ff501949e2cee8d45ad3e58\"}],\"author\":{\"kind\":\"user\",\"user\":\"user\",\"session_id\":null,\"run_id\":null,\"role\":null,\"model\":null,\"alias\":null,\"tool_call\":null,\"import_id\":null,\"service\":null}}}}",
+            "start": 0,
+            "next_start": null,
+            "total_characters": 1500,
+            "complete": true
+          }
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "tool",
+        "payload": {
+          "id": "call-4",
+          "tool": "review_read",
+          "arguments": "{\"evidence\": \"ev-0d471658170eebee5f53be48\"}",
+          "result": {
+            "evidence": "ev-0d471658170eebee5f53be48",
+            "sha256": "3e86ec1de1609c45a075716d677075fb02e7ef0f982e5afd7a2a2981b2fa9efd",
+            "locator": {
+              "document": "doc-ffe1493830a3f05bea0e9dd9",
+              "revision": 1,
+              "sha256": "64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e",
+              "run": "fixture-author",
+              "block": null,
+              "start": 0,
+              "returned_characters": 40,
+              "total_characters": 40
+            },
+            "text": "# Count\n\nThe computation returned $16$.\n",
+            "start": 0,
+            "next_start": null,
+            "total_characters": 40,
+            "complete": true
+          }
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "tool",
+        "payload": {
+          "id": "call-5",
+          "tool": "review_read",
+          "arguments": "{\"evidence\": \"ev-718de5ba915cd69543c869a3\"}",
+          "result": {
+            "evidence": "ev-718de5ba915cd69543c869a3",
+            "sha256": "80a6a4cf8affaebb52614e69c500a681bfb6ef72141ccdba7be3c7331bdb82e0",
+            "locator": {
+              "execution": "fixture-execution",
+              "attempt": "fixture-attempt",
+              "block": null,
+              "start": 0,
+              "returned_characters": 42,
+              "total_characters": 42
+            },
+            "text": "{\"stdout\":\"nonzero_ok = 15\\n\",\"stderr\":\"\"}",
+            "start": 0,
+            "next_start": null,
+            "total_characters": 42,
+            "complete": true
+          }
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "model",
+        "payload": {
+          "content": "",
+          "tools": [
+            "review_checked",
+            "review_decide"
+          ],
+          "resolved_model": "scripted"
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "checked",
+        "payload": {
+          "checked": {
+            "statement": "The corrected revision's count 15 matches the original pinned execution.",
+            "evidence": [
+              "ev-f2281b7a717ba871c6b90878",
+              "ev-f1e72ddb9be51feed58b7a8e",
+              "ev-0d471658170eebee5f53be48",
+              "ev-718de5ba915cd69543c869a3"
+            ]
+          }
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "tool",
+        "payload": {
+          "id": "call-6",
+          "tool": "review_checked",
+          "arguments": "{\"statement\": \"The corrected revision's count 15 matches the original pinned execution.\", \"evidence\": [\"ev-f2281b7a717ba871c6b90878\", \"ev-f1e72ddb9be51feed58b7a8e\", \"ev-0d471658170eebee5f53be48\", \"ev-718de5ba915cd69543c869a3\"]}",
+          "result": {
+            "checked": {
+              "statement": "The corrected revision's count 15 matches the original pinned execution.",
+              "evidence": [
+                "ev-f2281b7a717ba871c6b90878",
+                "ev-f1e72ddb9be51feed58b7a8e",
+                "ev-0d471658170eebee5f53be48",
+                "ev-718de5ba915cd69543c869a3"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "tool",
+        "payload": {
+          "id": "call-7",
+          "tool": "review_decide",
+          "arguments": "{\"finding\": \"finding-4a8d2b602f266b62157ea05c\", \"expected\": 2, \"decision\": \"confirm\", \"explanation\": \"The pinned revision now states 15, matching the original pinned execution.\", \"anchors\": [{\"evidence\": \"ev-f2281b7a717ba871c6b90878\"}], \"operation_id\": \"fixture-confirm\"}",
+          "result": {
+            "finding_id": "finding-4a8d2b602f266b62157ea05c",
+            "status": "confirmed fixed",
+            "revision": 3,
+            "reflags": 0
+          }
+        }
+      },
+      {
+        "review": "rev-bcac9481a638a367096d6d62",
+        "kind": "model",
+        "payload": {
+          "content": "{\"outcome\": \"passed\", \"summary\": \"The changed count agrees with the pinned execution.\", \"cap_reached\": false}",
+          "tools": [],
+          "resolved_model": "scripted"
+        }
+      }
+    ]
+  },
+  "browser": {
+    "checks": [
+      {
+        "check": "Corrected source: claim action, explanation and revision pins survive reload",
+        "snapshot": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"review-demo\":\n      - /url: \"#/projects/review-demo\"\n    - text: /\n  - heading \"Session a\" [level=1]\n  - term: Environment\n  - definition:\n    - code: review-demo-default-95c5bb8b34fb\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 4:09:32 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - list:\n      - button \"checkpoint \u00b7 failed \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: The reviewer model alias is unavailable; this window was not reviewed.\n      - button \"terminal \u00b7 findings \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: One contradiction in the pinned count.\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"fail \u00b7 contradicting_value \u00b7 open\" [level=3]\n      - paragraph:\n        - code: finding-4a8d2b602f266b62157ea05c\n        - text: \u00b7 revision 1 \u00b7 0 reflags\n      - paragraph:\n        - text: The document says\n        - math:\n          - generic: \"16\"\n        - generic: \"16\"\n        - text: \", while the pinned computation records\"\n        - math:\n          - generic: \"15\"\n        - generic: \"15\"\n        - text: .\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: Check the computation and correct the document's count.\n      - generic \"Pinned evidence anchors\"\n      - button \"Read finding history\"\n      - generic \"Respond as user\" [active]\n      - paragraph: A claimed fix stays unconfirmed until a confirmation review. Confirm and dismiss below are explicit user decisions.\n      - paragraph: Based on finding revision 1.\n      - text: Decision\n      - combobox \"Decision\":\n        - option \"Rebut with explanation\"\n        - option \"Claim fixed\" [selected]\n        - option \"Confirm fixed as user\"\n        - option \"Dismiss as user\"\n        - option \"Reopen\"\n      - text: Explanation\n      - textbox \"Finding response finding-4a8d2b602f266b62157ea05c\": Checked the pinned computation and corrected the document count to 15.\n      - text: Changed document revisions\n      - textbox \"Changed document revisions\":\n        - /placeholder: doc-\u2026:2 doc-\u2026:3\n        - text: doc-ffe1493830a3f05bea0e9dd9:2\n      - button \"Save user response\"\n      - button \"Discard response draft\"\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: ."
+      },
+      {
+        "check": "Complete checked confirmation passes in pinned finding/fix scope, finding is confirmed fixed and the unrelated checkpoint still failed",
+        "snapshot": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"review-demo\":\n      - /url: \"#/projects/review-demo\"\n    - text: /\n  - heading \"Session a\" [level=1]\n  - term: Environment\n  - definition:\n    - code: review-demo-default-95c5bb8b34fb\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 4:09:32 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - list:\n      - button \"confirmation \u00b7 passed \u00b7 10/12/2026, 4:10:12 AM\"\n      - text: The changed count agrees with the pinned execution.\n      - button \"checkpoint \u00b7 failed \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: The reviewer model alias is unavailable; this window was not reviewed.\n      - button \"terminal \u00b7 findings \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: One contradiction in the pinned count.\n    - heading \"confirmation review \u00b7 passed\" [level=3]\n    - paragraph: The changed count agrees with the pinned execution.\n    - paragraph: Alias scripted-reviewer \u00b7 model scripted \u00b7 4 model calls \u00b7 0 input / 0 output tokens \u00b7 23202 reserved estimate.\n    - paragraph: Pinned finding and fix scope \u00b7 no author feed consumed \u00b7 coverage complete within available evidence \u00b7 cap not reached \u00b7 rubric sandbox-consistency-1.\n    - generic \"Classifier and configuration identity\"\n    - list:\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":2,\\\"sha256\\\":\\\"8c21342af859ff165bf9a00374b74a40f773d31e8ff501949e2cee8d45ad3e58\\\"}\"\n      - button \"finding \u00b7 available\"\n      - code: \"{\\\"finding\\\":\\\"finding-4a8d2b602f266b62157ea05c\\\",\\\"revision\\\":2}\"\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":1,\\\"sha256\\\":\\\"64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e\\\",\\\"run\\\":\\\"fixture-author\\\"}\"\n      - button \"execution \u00b7 available\"\n      - code: \"{\\\"execution\\\":\\\"fixture-execution\\\",\\\"attempt\\\":\\\"fixture-attempt\\\"}\"\n    - button \"Load review audit records\"\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"fail \u00b7 contradicting_value \u00b7 confirmed fixed\" [level=3]\n      - paragraph:\n        - code: finding-4a8d2b602f266b62157ea05c\n        - text: \u00b7 revision 3 \u00b7 0 reflags\n      - paragraph:\n        - text: The document says\n        - math:\n          - generic: \"16\"\n        - generic: \"16\"\n        - text: \", while the pinned computation records\"\n        - math:\n          - generic: \"15\"\n        - generic: \"15\"\n        - text: .\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: Check the computation and correct the document's count.\n      - generic \"Pinned evidence anchors\"\n      - button \"Load earlier finding history\" [disabled]\n      - paragraph: 1 \u00b7 open \u00b7 review:rev-e3cd6a1ec2b9fae760942821\n      - paragraph: Reviewer raised this finding.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 2 \u00b7 claimed fixed \u00b7 user:user\n      - paragraph: Checked the pinned computation and corrected the document count to 15.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 3 \u00b7 confirmed fixed \u00b7 review:rev-bcac9481a638a367096d6d62\n      - paragraph: The pinned revision now states 15, matching the original pinned execution.\n      - generic \"Decision evidence and attribution\"\n      - generic \"Respond as user\"\n      - paragraph: A claimed fix stays unconfirmed until a confirmation review. Confirm and dismiss below are explicit user decisions.\n      - paragraph: Based on finding revision 3.\n      - text: Decision\n      - combobox \"Decision\":\n        - option \"Rebut with explanation\"\n        - option \"Claim fixed\" [selected]\n        - option \"Confirm fixed as user\"\n        - option \"Dismiss as user\"\n        - option \"Reopen\"\n      - text: Explanation\n      - textbox \"Finding response finding-4a8d2b602f266b62157ea05c\"\n      - text: Changed document revisions\n      - textbox \"Changed document revisions\":\n        - /placeholder: doc-\u2026:2 doc-\u2026:3\n      - button \"Save user response\" [disabled]\n      - button \"Discard response draft\"\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: ."
+      },
+      {
+        "check": "Corrected source: stale revision 3 decision against revision 4 refuses with conflict and retains draft",
+        "snapshot": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"review-demo\":\n      - /url: \"#/projects/review-demo\"\n    - text: /\n  - heading \"Session a\" [level=1]\n  - term: Environment\n  - definition:\n    - code: review-demo-default-95c5bb8b34fb\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 4:09:32 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - list:\n      - button \"confirmation \u00b7 passed \u00b7 10/12/2026, 4:10:12 AM\"\n      - text: The changed count agrees with the pinned execution.\n      - button \"checkpoint \u00b7 failed \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: The reviewer model alias is unavailable; this window was not reviewed.\n      - button \"terminal \u00b7 findings \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: One contradiction in the pinned count.\n    - heading \"confirmation review \u00b7 passed\" [level=3]\n    - paragraph: The changed count agrees with the pinned execution.\n    - paragraph: Alias scripted-reviewer \u00b7 model scripted \u00b7 4 model calls \u00b7 0 input / 0 output tokens \u00b7 23202 reserved estimate.\n    - paragraph: Pinned finding and fix scope \u00b7 no author feed consumed \u00b7 coverage complete within available evidence \u00b7 cap not reached \u00b7 rubric sandbox-consistency-1.\n    - generic \"Classifier and configuration identity\"\n    - list:\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":2,\\\"sha256\\\":\\\"8c21342af859ff165bf9a00374b74a40f773d31e8ff501949e2cee8d45ad3e58\\\"}\"\n      - button \"finding \u00b7 available\"\n      - code: \"{\\\"finding\\\":\\\"finding-4a8d2b602f266b62157ea05c\\\",\\\"revision\\\":2}\"\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":1,\\\"sha256\\\":\\\"64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e\\\",\\\"run\\\":\\\"fixture-author\\\"}\"\n      - button \"execution \u00b7 available\"\n      - code: \"{\\\"execution\\\":\\\"fixture-execution\\\",\\\"attempt\\\":\\\"fixture-attempt\\\"}\"\n    - button \"Load review audit records\"\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"fail \u00b7 contradicting_value \u00b7 open\" [level=3]\n      - paragraph:\n        - code: finding-4a8d2b602f266b62157ea05c\n        - text: \u00b7 revision 4 \u00b7 0 reflags\n      - paragraph:\n        - text: The document says\n        - math:\n          - generic: \"16\"\n        - generic: \"16\"\n        - text: \", while the pinned computation records\"\n        - math:\n          - generic: \"15\"\n        - generic: \"15\"\n        - text: .\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: Check the computation and correct the document's count.\n      - generic \"Pinned evidence anchors\"\n      - button \"Read finding history\"\n      - generic \"Respond as user\"\n      - paragraph: A claimed fix stays unconfirmed until a confirmation review. Confirm and dismiss below are explicit user decisions.\n      - paragraph:\n        - text: Based on finding revision 3.\n        - button \"Use current finding revision\"\n        - text: Your draft is retained.\n      - text: Decision\n      - combobox \"Decision\":\n        - option \"Rebut with explanation\"\n        - option \"Claim fixed\"\n        - option \"Confirm fixed as user\"\n        - option \"Dismiss as user\" [selected]\n        - option \"Reopen\"\n      - text: Explanation\n      - textbox \"Finding response finding-4a8d2b602f266b62157ea05c\": Retained USER decision draft at finding revision 3.\n      - text: Changed document revisions\n      - textbox \"Changed document revisions\":\n        - /placeholder: doc-\u2026:2 doc-\u2026:3\n      - button \"Save user response\"\n      - button \"Discard response draft\"\n      - paragraph: finding changed since this response was drafted (conflict)\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: ."
+      },
+      {
+        "check": "Explicit current revision adoption saved USER dismissal at revision 5 with all reviewer and USER transitions retained",
+        "snapshot": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"review-demo\":\n      - /url: \"#/projects/review-demo\"\n    - text: /\n  - heading \"Session a\" [level=1]\n  - term: Environment\n  - definition:\n    - code: review-demo-default-95c5bb8b34fb\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 4:09:32 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - list:\n      - button \"confirmation \u00b7 passed \u00b7 10/12/2026, 4:10:12 AM\"\n      - text: The changed count agrees with the pinned execution.\n      - button \"checkpoint \u00b7 failed \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: The reviewer model alias is unavailable; this window was not reviewed.\n      - button \"terminal \u00b7 findings \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: One contradiction in the pinned count.\n    - heading \"confirmation review \u00b7 passed\" [level=3]\n    - paragraph: The changed count agrees with the pinned execution.\n    - paragraph: Alias scripted-reviewer \u00b7 model scripted \u00b7 4 model calls \u00b7 0 input / 0 output tokens \u00b7 23202 reserved estimate.\n    - paragraph: Pinned finding and fix scope \u00b7 no author feed consumed \u00b7 coverage complete within available evidence \u00b7 cap not reached \u00b7 rubric sandbox-consistency-1.\n    - generic \"Classifier and configuration identity\"\n    - list:\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":2,\\\"sha256\\\":\\\"8c21342af859ff165bf9a00374b74a40f773d31e8ff501949e2cee8d45ad3e58\\\"}\"\n      - button \"finding \u00b7 available\"\n      - code: \"{\\\"finding\\\":\\\"finding-4a8d2b602f266b62157ea05c\\\",\\\"revision\\\":2}\"\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":1,\\\"sha256\\\":\\\"64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e\\\",\\\"run\\\":\\\"fixture-author\\\"}\"\n      - button \"execution \u00b7 available\"\n      - code: \"{\\\"execution\\\":\\\"fixture-execution\\\",\\\"attempt\\\":\\\"fixture-attempt\\\"}\"\n    - button \"Load review audit records\"\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"fail \u00b7 contradicting_value \u00b7 withdrawn\" [level=3]\n      - paragraph:\n        - code: finding-4a8d2b602f266b62157ea05c\n        - text: \u00b7 revision 5 \u00b7 0 reflags\n      - paragraph:\n        - text: The document says\n        - math:\n          - generic: \"16\"\n        - generic: \"16\"\n        - text: \", while the pinned computation records\"\n        - math:\n          - generic: \"15\"\n        - generic: \"15\"\n        - text: .\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: Check the computation and correct the document's count.\n      - generic \"Pinned evidence anchors\"\n      - button \"Load earlier finding history\" [disabled]\n      - paragraph: 1 \u00b7 open \u00b7 review:rev-e3cd6a1ec2b9fae760942821\n      - paragraph: Reviewer raised this finding.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 2 \u00b7 claimed fixed \u00b7 user:user\n      - paragraph: Checked the pinned computation and corrected the document count to 15.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 3 \u00b7 confirmed fixed \u00b7 review:rev-bcac9481a638a367096d6d62\n      - paragraph: The pinned revision now states 15, matching the original pinned execution.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 4 \u00b7 open \u00b7 user:user\n      - paragraph: Synthetic concurrent user reopens for browser draft retention.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 5 \u00b7 withdrawn \u00b7 user:user\n      - paragraph: Retained USER decision draft at finding revision 3.\n      - generic \"Decision evidence and attribution\"\n      - generic \"Respond as user\"\n      - paragraph: A claimed fix stays unconfirmed until a confirmation review. Confirm and dismiss below are explicit user decisions.\n      - paragraph: Based on finding revision 5.\n      - text: Decision\n      - combobox \"Decision\":\n        - option \"Rebut with explanation\"\n        - option \"Claim fixed\"\n        - option \"Confirm fixed as user\"\n        - option \"Dismiss as user\" [selected]\n        - option \"Reopen\"\n      - text: Explanation\n      - textbox \"Finding response finding-4a8d2b602f266b62157ea05c\"\n      - text: Changed document revisions\n      - textbox \"Changed document revisions\":\n        - /placeholder: doc-\u2026:2 doc-\u2026:3\n      - button \"Save user response\" [disabled]\n      - button \"Discard response draft\"\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: ."
+      },
+      {
+        "check": "Final source: delayed terminal audit did not appear under checkpoint selection",
+        "snapshot": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"review-demo\":\n      - /url: \"#/projects/review-demo\"\n    - text: /\n  - heading \"Session a\" [level=1]\n  - term: Environment\n  - definition:\n    - code: review-demo-default-95c5bb8b34fb\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 4:09:32 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - list:\n      - button \"confirmation \u00b7 passed \u00b7 10/12/2026, 4:10:12 AM\"\n      - text: The changed count agrees with the pinned execution.\n      - button \"checkpoint \u00b7 failed \u00b7 10/12/2026, 4:09:32 AM\" [active]\n      - text: The reviewer model alias is unavailable; this window was not reviewed.\n      - button \"terminal \u00b7 findings \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: One contradiction in the pinned count.\n    - heading \"checkpoint review \u00b7 failed\" [level=3]\n    - paragraph: The reviewer model alias is unavailable; this window was not reviewed.\n    - paragraph: Alias unavailable \u00b7 model unavailable \u00b7 0 model calls \u00b7 0 input / 0 output tokens \u00b7 0 reserved estimate.\n    - paragraph: Feed 3\u20133 \u00b7 coverage complete within available evidence \u00b7 cap not reached \u00b7 rubric sandbox-consistency-1.\n    - generic \"Classifier and configuration identity\"\n    - list:\n      - button \"transcript \u00b7 available\"\n      - code: \"{\\\"run\\\":\\\"fixture-later\\\",\\\"message\\\":1}\"\n      - button \"finding \u00b7 available\"\n      - code: \"{\\\"finding\\\":\\\"finding-4a8d2b602f266b62157ea05c\\\",\\\"revision\\\":1}\"\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":1,\\\"sha256\\\":\\\"64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e\\\",\\\"run\\\":\\\"fixture-author\\\"}\"\n      - button \"execution \u00b7 available\"\n      - code: \"{\\\"execution\\\":\\\"fixture-execution\\\",\\\"attempt\\\":\\\"fixture-attempt\\\"}\"\n    - button \"Load review audit records\"\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"fail \u00b7 contradicting_value \u00b7 withdrawn\" [level=3]\n      - paragraph:\n        - code: finding-4a8d2b602f266b62157ea05c\n        - text: \u00b7 revision 5 \u00b7 0 reflags\n      - paragraph:\n        - text: The document says\n        - math:\n          - generic: \"16\"\n        - generic: \"16\"\n        - text: \", while the pinned computation records\"\n        - math:\n          - generic: \"15\"\n        - generic: \"15\"\n        - text: .\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: Check the computation and correct the document's count.\n      - generic \"Pinned evidence anchors\"\n      - button \"Load earlier finding history\" [disabled]\n      - paragraph: 1 \u00b7 open \u00b7 review:rev-e3cd6a1ec2b9fae760942821\n      - paragraph: Reviewer raised this finding.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 2 \u00b7 claimed fixed \u00b7 user:user\n      - paragraph: Checked the pinned computation and corrected the document count to 15.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 3 \u00b7 confirmed fixed \u00b7 review:rev-bcac9481a638a367096d6d62\n      - paragraph: The pinned revision now states 15, matching the original pinned execution.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 4 \u00b7 open \u00b7 user:user\n      - paragraph: Synthetic concurrent user reopens for browser draft retention.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 5 \u00b7 withdrawn \u00b7 user:user\n      - paragraph: Retained USER decision draft at finding revision 3.\n      - generic \"Decision evidence and attribution\"\n      - generic \"Respond as user\"\n      - paragraph: A claimed fix stays unconfirmed until a confirmation review. Confirm and dismiss below are explicit user decisions.\n      - paragraph: Based on finding revision 5.\n      - text: Decision\n      - combobox \"Decision\":\n        - option \"Rebut with explanation\"\n        - option \"Claim fixed\"\n        - option \"Confirm fixed as user\"\n        - option \"Dismiss as user\" [selected]\n        - option \"Reopen\"\n      - text: Explanation\n      - textbox \"Finding response finding-4a8d2b602f266b62157ea05c\"\n      - text: Changed document revisions\n      - textbox \"Changed document revisions\":\n        - /placeholder: doc-\u2026:2 doc-\u2026:3\n      - button \"Save user response\" [disabled]\n      - button \"Discard response draft\"\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: ."
+      },
+      {
+        "check": "Final source: delayed terminal document did not appear under checkpoint selection",
+        "snapshot": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"review-demo\":\n      - /url: \"#/projects/review-demo\"\n    - text: /\n  - heading \"Session a\" [level=1]\n  - term: Environment\n  - definition:\n    - code: review-demo-default-95c5bb8b34fb\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 4:09:32 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\"\n    - list:\n      - button \"confirmation \u00b7 passed \u00b7 10/12/2026, 4:10:12 AM\"\n      - text: The changed count agrees with the pinned execution.\n      - button \"checkpoint \u00b7 failed \u00b7 10/12/2026, 4:09:32 AM\" [active]\n      - text: The reviewer model alias is unavailable; this window was not reviewed.\n      - button \"terminal \u00b7 findings \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: One contradiction in the pinned count.\n    - heading \"checkpoint review \u00b7 failed\" [level=3]\n    - paragraph: The reviewer model alias is unavailable; this window was not reviewed.\n    - paragraph: Alias unavailable \u00b7 model unavailable \u00b7 0 model calls \u00b7 0 input / 0 output tokens \u00b7 0 reserved estimate.\n    - paragraph: Feed 3\u20133 \u00b7 coverage complete within available evidence \u00b7 cap not reached \u00b7 rubric sandbox-consistency-1.\n    - generic \"Classifier and configuration identity\"\n    - list:\n      - button \"transcript \u00b7 available\"\n      - code: \"{\\\"run\\\":\\\"fixture-later\\\",\\\"message\\\":1}\"\n      - button \"finding \u00b7 available\"\n      - code: \"{\\\"finding\\\":\\\"finding-4a8d2b602f266b62157ea05c\\\",\\\"revision\\\":1}\"\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":1,\\\"sha256\\\":\\\"64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e\\\",\\\"run\\\":\\\"fixture-author\\\"}\"\n      - button \"execution \u00b7 available\"\n      - code: \"{\\\"execution\\\":\\\"fixture-execution\\\",\\\"attempt\\\":\\\"fixture-attempt\\\"}\"\n    - button \"Load review audit records\"\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"fail \u00b7 contradicting_value \u00b7 withdrawn\" [level=3]\n      - paragraph:\n        - code: finding-4a8d2b602f266b62157ea05c\n        - text: \u00b7 revision 5 \u00b7 0 reflags\n      - paragraph:\n        - text: The document says\n        - math:\n          - generic: \"16\"\n        - generic: \"16\"\n        - text: \", while the pinned computation records\"\n        - math:\n          - generic: \"15\"\n        - generic: \"15\"\n        - text: .\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: Check the computation and correct the document's count.\n      - generic \"Pinned evidence anchors\"\n      - button \"Load earlier finding history\" [disabled]\n      - paragraph: 1 \u00b7 open \u00b7 review:rev-e3cd6a1ec2b9fae760942821\n      - paragraph: Reviewer raised this finding.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 2 \u00b7 claimed fixed \u00b7 user:user\n      - paragraph: Checked the pinned computation and corrected the document count to 15.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 3 \u00b7 confirmed fixed \u00b7 review:rev-bcac9481a638a367096d6d62\n      - paragraph: The pinned revision now states 15, matching the original pinned execution.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 4 \u00b7 open \u00b7 user:user\n      - paragraph: Synthetic concurrent user reopens for browser draft retention.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 5 \u00b7 withdrawn \u00b7 user:user\n      - paragraph: Retained USER decision draft at finding revision 3.\n      - generic \"Decision evidence and attribution\"\n      - generic \"Respond as user\"\n      - paragraph: A claimed fix stays unconfirmed until a confirmation review. Confirm and dismiss below are explicit user decisions.\n      - paragraph: Based on finding revision 5.\n      - text: Decision\n      - combobox \"Decision\":\n        - option \"Rebut with explanation\"\n        - option \"Claim fixed\"\n        - option \"Confirm fixed as user\"\n        - option \"Dismiss as user\" [selected]\n        - option \"Reopen\"\n      - text: Explanation\n      - textbox \"Finding response finding-4a8d2b602f266b62157ea05c\"\n      - text: Changed document revisions\n      - textbox \"Changed document revisions\":\n        - /placeholder: doc-\u2026:2 doc-\u2026:3\n      - button \"Save user response\" [disabled]\n      - button \"Discard response draft\"\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: ."
+      },
+      {
+        "check": "Final source: manual request queues without idle model wake-up",
+        "snapshot": "- banner:\n  - link \"Sandbox Science workspace\":\n    - /url: \"#/\"\n  - button \"Log out\"\n- main:\n  - navigation:\n    - link \"Projects\":\n      - /url: \"#/\"\n    - text: /\n    - link \"review-demo\":\n      - /url: \"#/projects/review-demo\"\n    - text: /\n  - heading \"Session a\" [level=1]\n  - term: Environment\n  - definition:\n    - code: review-demo-default-95c5bb8b34fb\n    - text: the project's default, shared with its sessions\n  - term: Opened\n  - definition: Oct 12, 2026, 4:09:32 AM\n  - term: State\n  - definition: open\n  - region \"Background jobs\":\n    - heading \"Background jobs\" [level=2]\n    - paragraph: job views need a configured worker connection (unsupported)\n  - region \"Consistency reviews\":\n    - heading \"Consistency reviews\" [level=2]\n    - paragraph: A pass covers the recorded checks and is not a proof. Missing evidence, capped reviews and unconfirmed fixes remain explicit.\n    - button \"Refresh reviews\"\n    - button \"Request review at next live safe point\" [active]\n    - status: The next live main-agent safe point can service this request. Idle sessions do not start a model turn.\n    - list:\n      - button \"confirmation \u00b7 passed \u00b7 10/12/2026, 4:10:12 AM\"\n      - text: The changed count agrees with the pinned execution.\n      - button \"checkpoint \u00b7 failed \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: The reviewer model alias is unavailable; this window was not reviewed.\n      - button \"terminal \u00b7 findings \u00b7 10/12/2026, 4:09:32 AM\"\n      - text: One contradiction in the pinned count.\n    - heading \"checkpoint review \u00b7 failed\" [level=3]\n    - paragraph: The reviewer model alias is unavailable; this window was not reviewed.\n    - paragraph: Alias unavailable \u00b7 model unavailable \u00b7 0 model calls \u00b7 0 input / 0 output tokens \u00b7 0 reserved estimate.\n    - paragraph: Feed 3\u20133 \u00b7 coverage complete within available evidence \u00b7 cap not reached \u00b7 rubric sandbox-consistency-1.\n    - generic \"Classifier and configuration identity\"\n    - list:\n      - button \"transcript \u00b7 available\"\n      - code: \"{\\\"run\\\":\\\"fixture-later\\\",\\\"message\\\":1}\"\n      - button \"finding \u00b7 available\"\n      - code: \"{\\\"finding\\\":\\\"finding-4a8d2b602f266b62157ea05c\\\",\\\"revision\\\":1}\"\n      - button \"document \u00b7 available\"\n      - code: \"{\\\"document\\\":\\\"doc-ffe1493830a3f05bea0e9dd9\\\",\\\"revision\\\":1,\\\"sha256\\\":\\\"64456a6a9865f029a8e05b5f5fb6689e3b23967438cb8420a568790ffb856a4e\\\",\\\"run\\\":\\\"fixture-author\\\"}\"\n      - button \"execution \u00b7 available\"\n      - code: \"{\\\"execution\\\":\\\"fixture-execution\\\",\\\"attempt\\\":\\\"fixture-attempt\\\"}\"\n    - button \"Load review audit records\"\n    - heading \"Findings\" [level=3]\n    - article:\n      - heading \"fail \u00b7 contradicting_value \u00b7 withdrawn\" [level=3]\n      - paragraph:\n        - code: finding-4a8d2b602f266b62157ea05c\n        - text: \u00b7 revision 5 \u00b7 0 reflags\n      - paragraph:\n        - text: The document says\n        - math:\n          - generic: \"16\"\n        - generic: \"16\"\n        - text: \", while the pinned computation records\"\n        - math:\n          - generic: \"15\"\n        - generic: \"15\"\n        - text: .\n      - paragraph: \"Suggested remedy:\"\n      - paragraph: Check the computation and correct the document's count.\n      - generic \"Pinned evidence anchors\"\n      - button \"Load earlier finding history\" [disabled]\n      - paragraph: 1 \u00b7 open \u00b7 review:rev-e3cd6a1ec2b9fae760942821\n      - paragraph: Reviewer raised this finding.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 2 \u00b7 claimed fixed \u00b7 user:user\n      - paragraph: Checked the pinned computation and corrected the document count to 15.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 3 \u00b7 confirmed fixed \u00b7 review:rev-bcac9481a638a367096d6d62\n      - paragraph: The pinned revision now states 15, matching the original pinned execution.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 4 \u00b7 open \u00b7 user:user\n      - paragraph: Synthetic concurrent user reopens for browser draft retention.\n      - generic \"Decision evidence and attribution\"\n      - paragraph: 5 \u00b7 withdrawn \u00b7 user:user\n      - paragraph: Retained USER decision draft at finding revision 3.\n      - generic \"Decision evidence and attribution\"\n      - generic \"Respond as user\"\n      - paragraph: A claimed fix stays unconfirmed until a confirmation review. Confirm and dismiss below are explicit user decisions.\n      - paragraph: Based on finding revision 5.\n      - text: Decision\n      - combobox \"Decision\":\n        - option \"Rebut with explanation\"\n        - option \"Claim fixed\"\n        - option \"Confirm fixed as user\"\n        - option \"Dismiss as user\" [selected]\n        - option \"Reopen\"\n      - text: Explanation\n      - textbox \"Finding response finding-4a8d2b602f266b62157ea05c\"\n      - text: Changed document revisions\n      - textbox \"Changed document revisions\":\n        - /placeholder: doc-\u2026:2 doc-\u2026:3\n      - button \"Save user response\" [disabled]\n      - button \"Discard response draft\"\n  - heading \"Runs\" [level=2]\n  - paragraph:\n    - text: No runs kept. The harness keeps a run when it runs with\n    - code: \"--state-dir\"\n    - text: ."
+      }
+    ],
+    "console": []
+  }
+}
