@@ -5,7 +5,7 @@ The workspace is the research GUI (W4, D80). It shows the harness's records: the
 - `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static files: an `index.html`, one script, one stylesheet and KaTeX's fonts.
 - `packages/workspace` (`sandbox_science.workspace`): the server, in the project's Python on aiohttp, with the command `sandbox-science-workspace`. It serves the built files and a JSON API, handles login, and asks the reviewer model for math repairs when it is configured to.
 
-Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Documents can be edited as Markdown source or by block, with conflicts and retained patches reviewed explicitly. Document comments and addressed work requests are available. The ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
+Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Documents can be edited as Markdown source or by block, with conflicts and retained patches reviewed explicitly. Document comments, addressed work requests and consistency findings are available. The ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
 
 ## Building and running
 
@@ -313,14 +313,33 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 
 ## Not built yet
 
-- Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents; artifact/PDF anchors and annotation export; the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)); and review findings ([consistency review](specs/consistency-review.md)).
+- Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents; artifact/PDF anchors and annotation export; and the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)).
 - The project's macros, beneath a document's (LD-28).
 - Approvals in the GUI, with re-authentication for high-risk ones (D54), and policy revisions from the GUI.
 - Previews of rich artifacts on a separate origin (D54), and the PDF viewer.
 - Saving Markdown with its math in the dollar form beyond living documents, which are saved so ([living documents as built](LIVING-DOCUMENTS.md#changes)): ledger entries, and direct edits of document files (LD-41, LD-42, LD-50).
-- Math findings: checking the math of saved text with the GUI's KaTeX, and sending what it rejects back to the agent that wrote it (LD-53 to LD-55, D82).
+- Math findings: checking the math of saved text with the GUI's KaTeX, and sending what it rejects back to the agent that wrote it (LD-53 to LD-55, D82). The [isolated renderer prerequisite](MATH-CHECKS.md) exists; save scheduling, findings and delivery are not connected yet.
 - Copying a rendered formula as its LaTeX (KaTeX's `copy-tex` does this); for now a repaired or approximated formula's LaTeX is copied from behind its mark.
 - KaTeX in a Web Worker, with a time limit that ends a formula's render ([the backlog](../.agents/BACKLOG.md) says why it waits).
 - Live updates while a run is in progress, and the environments' state from the worker.
 - Records of runs that end in an error, and the end of a session without `session close`.
 - TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5).
+
+
+## Consistency reviews
+
+Each session now has a consistency-review panel backed by the shared control store.
+It shows recent outcomes, pending/running/failed/capped/inconclusive/unreviewed states,
+role usage and configuration identity, exact evidence slices, audit records, findings
+and attributed decision history. Older pages remain available through explicit cursors.
+A pass is limited to the recorded checks and is not a proof. Refresh fetches current
+state; saved runs show their review status at the saved boundary, without claiming a
+live final-message stream.
+
+Users can rebut, claim a fix with exact `doc-ID:revision` references, explicitly confirm,
+dismiss or reopen a finding. Drafts and uncertain-request operation IDs survive reload;
+stale-head responses retain their text until the user chooses the current revision.
+Writes require the existing authenticated same-origin boundary and derive USER identity
+on the server. Request review queues a live-safe-point request and states that idle
+sessions do not start a model turn. [Runtime boundaries and acceptance](CONSISTENCY-REVIEW.md)
+describe snapshot budgets, retry/delivery rules and deferred evidence sources.

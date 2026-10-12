@@ -110,6 +110,9 @@ class RunRecord(Contract):
     """Completion notices represented by this durable run; acknowledged only after save."""
     work_request_ids: list[Identifier] = Field(default_factory=list[Identifier])
     """User work requests represented in this saved transcript, acknowledged after save."""
+    review_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
+    """Finding notices sent to a successful model call and acknowledged after save."""
+    review_summary: dict[str, JsonValue] = Field(default_factory=dict[str, JsonValue])
     final_text: str | None = None
     messages: list[dict[str, JsonValue]]
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""

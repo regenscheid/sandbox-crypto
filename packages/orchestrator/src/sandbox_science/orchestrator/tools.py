@@ -40,6 +40,8 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.worker import Language
 
+from .consistency.controller import AUTHOR_NAMES, ReviewController
+from .documents.errors import DocumentError
 from .documents.tool import NAMES as DOCUMENT_TOOLS
 from .documents.tool import DocumentTool, with_notices
 from .jobs import BACKGROUND, JOB_SPECS, JobTools
@@ -277,11 +279,13 @@ class Toolbox:
         output_chars: int = 20000,
         documents: DocumentTool | None = None,
         jobs: JobTools | None = None,
+        reviews: ReviewController | None = None,
     ) -> None:
         self.client = client
         self.context = context
         self.output_chars = output_chars
         self.languages = tuple(languages)
+        self.reviews = reviews
         self.documents = documents
         self.jobs = jobs if BACKGROUND in features else None
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
@@ -312,6 +316,8 @@ class Toolbox:
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         if documents is not None:
             specs.extend(documents.specs)
+        if reviews is not None:
+            specs.extend(reviews.specs)
         self.specs = tuple(specs)
 
     async def call(
@@ -365,6 +371,14 @@ class Toolbox:
         if not isinstance(arguments, dict):
             return _failure(ErrorKind.INVALID_REQUEST, "arguments must be a JSON object")
         args = cast(dict[str, Any], arguments)
+        if call.name in AUTHOR_NAMES and self.reviews is not None:
+            try:
+                text, record = await self.reviews.author_call(
+                    call.name, args, operation, model=model
+                )
+                return ToolOutcome(self._bound(text), record)
+            except DocumentError as error:
+                return _failure(ErrorKind(error.kind), error.message)
         if call.name in DOCUMENT_TOOLS and self.documents is not None:
             text, record = await self.documents.call(
                 call.name, args, operation=operation, call_id=call.id, model=model

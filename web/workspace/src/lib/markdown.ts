@@ -41,6 +41,8 @@ import markdownit from 'markdown-it';
 import type { Env, MarkdownIt, Token } from 'markdown-it';
 import katex from 'katex';
 import type { KatexOptions } from 'katex';
+import { KATEX_OPTIONS, MAX_FORMULA } from './mathoptions';
+export { KATEX_OPTIONS, MAX_FORMULA } from './mathoptions';
 import { attachIds, type Mismatch, type ServerBlock } from './attach';
 import { bareTex, blockMap, recordPlaces } from './blockmap';
 import { CONTAINER, containerRule, frontMatterRule } from './documentrules';
@@ -67,23 +69,11 @@ export const MATH_RULES: DollarMathOptions = {
   doubleInline: true,
 };
 
-/** KaTeX's settings. A parse error throws, and goes to the repairs. */
-export const KATEX_OPTIONS = {
-  throwOnError: true,
-  trust: false,
-  strict: 'ignore',
-  maxSize: 20,
-  maxExpand: 1000,
-  output: 'htmlAndMathml',
-} as const satisfies KatexOptions;
-
 /** Longer text is shown as written: rendering it would hold up the page. */
 export const MAX_RENDERED = 200_000;
 /** The formulas one text renders, and the characters of math in all of them. */
 export const MAX_FORMULAS = 1_000;
 export const MAX_MATH = 20_000;
-/** The longest formula rendered; KaTeX's output grows about 150 times its input. */
-export const MAX_FORMULA = 5_000;
 /** The characters of repaired math one text may send to KaTeX besides. */
 export const MAX_REPAIR_MATH = 20_000;
 
