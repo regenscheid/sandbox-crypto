@@ -192,6 +192,8 @@ def create_app(
     if environments is not None:
         app[ENVIRONMENTS] = environments
         environments.deleted.append(manager.forget_revisions)
+        environments.confirmed_deleted.append(manager.forget_package_gate)
+        environments.reusing.append(manager.guard_package_reuse)
 
         def job_resources(environment_id: str) -> Resources:
             if environments.busy(environment_id):
@@ -207,7 +209,7 @@ def create_app(
     if provisioner is not None:
         app[PROVISIONER] = provisioner
         if environments is not None:
-            environments.deleted.append(provisioner.forget)
+            environments.required_deleted.append(provisioner.forget)
     app.add_routes(
         [
             web.post("/v1/environments", create_environment),

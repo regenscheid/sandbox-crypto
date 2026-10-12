@@ -404,7 +404,14 @@ class Daemon:
                 }
             )
             return
-        await self.executor.handle(request)
+        await self.executor.handle(
+            {
+                **request,
+                "_admission_guard": lambda: (
+                    self.writer is writer and not writer.is_closing() and not self.stopping
+                ),
+            }
+        )
 
     async def serve(self) -> None:
         server = await asyncio.start_unix_server(

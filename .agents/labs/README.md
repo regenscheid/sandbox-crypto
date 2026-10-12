@@ -133,3 +133,13 @@ a concurrent USER change, and `record` exports token-free research state and aud
 Close the tab, stop the transient server and remove only the marked synthetic state.
 The [report](../docs/agent-reports/consistency-review-2026-10-12.md) records the initial
 coverage issue, correction, browser interactions and limits.
+
+
+## Lab21: sticky recovery admission (runtime gate pending)
+
+The source helper is [`recovery_gate.py`](recovery_gate.py); the reviewed-tree setup,
+positive/negative checks, explicit offline variant and teardown boundary are in
+[`RECOVERY-FENCE.md`](../../docs/RECOVERY-FENCE.md#disposable-acceptance-recipe).
+Root coordinates the run only after exact-source review. The helper's marker and
+lab21 client scope are mandatory; it never runs against real project data. Keep
+both source checkouts unchanged while lab worker/middleware/cache processes use them.

@@ -5,11 +5,13 @@ artifacts and provisioning operations."""
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import sqlite3
 from collections.abc import Generator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from pydantic import TypeAdapter, ValidationError
 
@@ -17,12 +19,16 @@ from sandbox_science.contracts import (
     TERMINAL_STATES,
     ArtifactRef,
     EnvironmentRevision,
+    ErrorKind,
     Event,
     Execution,
     ExecutionContext,
     ProvisionOperation,
     ProvisionState,
 )
+
+from .errors import WorkerError
+from .package_gate import PackageGate, checked
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -108,6 +114,20 @@ CREATE TABLE IF NOT EXISTS package_status (
     provision_id TEXT NOT NULL,
     revision INTEGER
 );
+CREATE TABLE IF NOT EXISTS package_execution_gates (
+    environment_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    revision INTEGER,
+    binding TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS provision_steps (
+    provision_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    PRIMARY KEY(provision_id, operation_id)
+);
 """
 
 
@@ -142,7 +162,7 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
-        self._db.execute("PRAGMA synchronous=NORMAL")
+        self._db.execute("PRAGMA synchronous=FULL")
         self._db.executescript(_SCHEMA)
         for table in ("executor_endpoints", "executor_recycles"):
             columns = {str(row[1]) for row in self._db.execute(f"PRAGMA table_info({table})")}
@@ -150,6 +170,56 @@ class Store:
                 if name not in columns:
                     self._db.execute(
                         f"ALTER TABLE {table} ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                    )
+        # Old writers did not publish admission state. Any unfinished operation is
+        # conservatively closed until startup classifies it; never infer readiness
+        # from the absence of the new row.
+        with self._transaction():
+            self._db.execute(
+                "INSERT OR IGNORE INTO package_execution_gates"
+                " SELECT environment_id,1,'needs_recovery',provision_id,revision,''"
+                " FROM package_status"
+            )
+            self._db.execute(
+                "INSERT OR IGNORE INTO package_execution_gates"
+                " SELECT environment_id,1,'hold',provision_id,NULL,''"
+                " FROM provisions WHERE finished=0 ORDER BY submitted"
+            )
+            for row in self._db.execute(
+                "SELECT substr(CAST(environment_id AS BLOB),1,130),"
+                " substr(CAST(provision_id AS BLOB),1,130)"
+                " FROM provisions WHERE finished=0 ORDER BY submitted"
+            ):
+                environment, operation = (bytes(value).decode("ascii", "replace") for value in row)
+                checked(1, "hold", environment, None)
+                checked(1, "hold", operation, None)
+                gate = self.package_gate(environment)
+                if gate.mode == "ready":
+                    self._gate_write(
+                        environment, PackageGate(gate.generation + 1, "hold", operation)
+                    )
+            for row in self._db.execute(
+                "SELECT substr(CAST(environment_id AS BLOB),1,130) FROM package_status"
+            ):
+                environment = bytes(row[0]).decode("ascii", "replace")
+                checked(1, "needs_recovery", environment, None)
+                marked = self.package_status(environment)
+                if marked is None:
+                    raise RuntimeError("retained package recovery identity changed")
+                _, operation, revision = marked
+                gate = self.package_gate(environment)
+                if gate.mode != "needs_recovery" or (gate.operation, gate.revision) != (
+                    operation,
+                    revision,
+                ):
+                    self._gate_write(
+                        environment,
+                        PackageGate(
+                            gate.generation + 1,
+                            "needs_recovery",
+                            operation,
+                            revision,
+                        ),
                     )
 
     def close(self) -> None:
@@ -309,12 +379,23 @@ class Store:
 
     def _executor_binding(self, table: str, environment_id: str) -> tuple[str, str] | None:
         query = (
-            "SELECT sandbox, sandbox_id FROM executor_endpoints WHERE environment_id = ?"
+            "SELECT coalesce(substr(CAST(sandbox AS BLOB),1,2049),X''),"
+            "coalesce(substr(CAST(sandbox_id AS BLOB),1,2049),X'')"
+            " FROM executor_endpoints WHERE environment_id = ?"
             if table == "executor_endpoints"
-            else "SELECT sandbox, sandbox_id FROM executor_recycles WHERE environment_id = ?"
+            else "SELECT coalesce(substr(CAST(sandbox AS BLOB),1,2049),X''),"
+            "coalesce(substr(CAST(sandbox_id AS BLOB),1,2049),X'')"
+            " FROM executor_recycles WHERE environment_id = ?"
         )
         row = self._db.execute(query, (environment_id,)).fetchone()
-        return (str(row[0]), str(row[1])) if row and row[0] and row[1] else None
+        if row is None or not row[0] or not row[1]:
+            return None
+        if any(len(value) > 2048 for value in row):
+            raise WorkerError(ErrorKind.UNAVAILABLE, "invalid retained executor binding")
+        try:
+            return bytes(row[0]).decode(), bytes(row[1]).decode()
+        except UnicodeDecodeError as exc:
+            raise WorkerError(ErrorKind.UNAVAILABLE, "invalid retained executor binding") from exc
 
     def pending_recycles(self) -> tuple[str, ...]:
         return tuple(
@@ -544,10 +625,33 @@ class Store:
             self._db.execute(
                 "DELETE FROM environment_revisions WHERE environment_id = ?", (environment_id,)
             )
-            self._db.execute(
-                "DELETE FROM package_status WHERE environment_id = ?", (environment_id,)
-            )
         return [str(found[0]) for found in gone]
+
+    def forget_package_gate(self, environment_id: str) -> None:
+        """Clear only after confirmed sandbox deletion and durable operation drain."""
+        with self._transaction():
+            if not self.provisioning_finished(environment_id):
+                raise WorkerError(ErrorKind.UNAVAILABLE, "old provisioning is not durably finished")
+            self._db.execute("DELETE FROM package_status WHERE environment_id=?", (environment_id,))
+            self._db.execute(
+                "DELETE FROM package_execution_gates WHERE environment_id=?", (environment_id,)
+            )
+
+    def provisioning_finished(self, environment_id: str) -> bool:
+        """Do not parse or skip corrupt old records when proving durable drain."""
+        return (
+            self._db.execute(
+                "SELECT 1 FROM provisions WHERE environment_id=? AND ("
+                " typeof(finished)!='integer' OR finished!=1 OR"
+                " CASE WHEN json_valid(record) THEN"
+                " json_extract(record,'$.state') IS NOT 'finished' OR"
+                " json_extract(record,'$.provision_id') IS NOT provision_id OR"
+                " json_extract(record,'$.request.context.environment_id') IS NOT environment_id"
+                " ELSE 1 END) LIMIT 1",
+                (environment_id,),
+            ).fetchone()
+            is None
+        )
 
     # Kernels.
 
@@ -607,13 +711,103 @@ class Store:
         )
 
     def update_provision(self, operation: ProvisionOperation) -> None:
+        environment = operation.request.context.environment_id
+        with self._transaction():
+            gate = self.package_gate(environment)
+            if operation.state is ProvisionState.INSTALLING and gate.mode == "ready":
+                self._gate_write(
+                    environment,
+                    PackageGate(
+                        gate.generation + 1,
+                        "hold",
+                        operation.provision_id,
+                        operation.revision_before,
+                    ),
+                )
+            elif operation.state is ProvisionState.FINISHED and (
+                gate.mode == "hold" and gate.operation == operation.provision_id
+            ):
+                self._gate_write(environment, PackageGate(gate.generation + 1))
+            self._db.execute(
+                "UPDATE provisions SET record = ?, finished = ? WHERE provision_id = ?",
+                (
+                    operation.model_dump_json(),
+                    int(operation.state is ProvisionState.FINISHED),
+                    operation.provision_id,
+                ),
+            )
+
+    def package_gate(self, environment_id: str) -> PackageGate:
+        row = self._db.execute(
+            "SELECT generation,substr(CAST(mode AS BLOB),1,32),"
+            "coalesce(substr(CAST(operation AS BLOB),1,130),X''),revision"
+            " FROM package_execution_gates WHERE environment_id=?",
+            (environment_id,),
+        ).fetchone()
+        try:
+            gate = (
+                PackageGate()
+                if row is None
+                else checked(row[0], bytes(row[1]).decode(), bytes(row[2]).decode(), row[3])
+            )
+        except (UnicodeError, TypeError):
+            return checked(None, None, None, None)
+        marked = self.package_status(environment_id)
+        if marked is not None and (gate.mode, gate.operation, gate.revision) != marked:
+            if not self._db.in_transaction:
+                with self._transaction():
+                    return self.package_gate(environment_id)
+            gate = PackageGate(gate.generation + 1, "needs_recovery", marked[1], marked[2])
+            self._gate_write(environment_id, gate)
+        return gate
+
+    def bind_package_gate(self, environment_id: str, binding: str) -> None:
+        """Never transfer a retained hold to another immutable sandbox binding."""
+        with self._transaction():
+            gate = self.package_gate(environment_id)
+            self._db.execute(
+                "INSERT OR IGNORE INTO package_execution_gates VALUES (?,0,'ready','',NULL,?)",
+                (environment_id, binding),
+            )
+            row = self._db.execute(
+                "SELECT coalesce(substr(CAST(binding AS BLOB),1,4097),X'')"
+                " FROM package_execution_gates WHERE environment_id=?",
+                (environment_id,),
+            ).fetchone()
+            if row is None or row[0] not in (b"", binding.encode()):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "package admission sandbox binding changed"
+                )
+            if row[0] == b"" and gate.mode != "ready":
+                previous = self.endpoint_binding(environment_id)
+                if previous is None or repr(previous) != binding:
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE,
+                        "legacy package hold has no proven original sandbox binding",
+                    )
+            self._db.execute(
+                "UPDATE package_execution_gates SET binding=? WHERE environment_id=?",
+                (binding, environment_id),
+            )
+
+    def package_gate_has_binding(self, environment_id: str) -> bool:
+        """Existence projection: ready state does not transfer an original binding."""
+        return (
+            self._db.execute(
+                "SELECT 1 FROM package_execution_gates WHERE environment_id=?"
+                " AND (typeof(binding)!='text' OR binding!='')",
+                (environment_id,),
+            ).fetchone()
+            is not None
+        )
+
+    def _gate_write(self, environment_id: str, gate: PackageGate) -> None:
+        checked(gate.generation, gate.mode, gate.operation, gate.revision)
         self._db.execute(
-            "UPDATE provisions SET record = ?, finished = ? WHERE provision_id = ?",
-            (
-                operation.model_dump_json(),
-                int(operation.state is ProvisionState.FINISHED),
-                operation.provision_id,
-            ),
+            "INSERT INTO package_execution_gates VALUES (?,?,?,?,?,'')"
+            " ON CONFLICT(environment_id) DO UPDATE SET generation=excluded.generation,"
+            " mode=excluded.mode,operation=excluded.operation,revision=excluded.revision",
+            (environment_id, gate.generation, gate.mode, gate.operation, gate.revision),
         )
 
     def provision(self, provision_id: str) -> ProvisionOperation | None:
@@ -621,6 +815,57 @@ class Store:
             "SELECT record FROM provisions WHERE provision_id = ?", (provision_id,)
         ).fetchone()
         return _provision(str(row[0])) if row else None
+
+    def provision_authority(
+        self, provision_id: str
+    ) -> tuple[ExecutionContext, ProvisionState] | None:
+        """Small positive authority projection, independent of large resolve/probe records."""
+        try:
+            row = self._db.execute(
+                "SELECT substr(CAST(CASE WHEN json_valid(record) THEN json_object("
+                " 'id',json_extract(record,'$.provision_id'),"
+                " 'context',json_extract(record,'$.request.context'),"
+                " 'state',json_extract(record,'$.state')) ELSE '' END AS BLOB),1,4097),"
+                " substr(CAST(environment_id AS BLOB),1,130)"
+                " FROM provisions WHERE provision_id=?",
+                (provision_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            if row[0] is None or len(row[0]) > 4096:
+                raise ValueError("oversized authority")
+            raw: object = json.loads(row[0])
+            if not isinstance(raw, dict):
+                raise ValueError("invalid authority identity")
+            value = cast(dict[str, object], raw)
+            if value.get("id") != provision_id:
+                raise ValueError("invalid authority identity")
+            context = ExecutionContext.model_validate(value.get("context"))
+            if row[1] != context.environment_id.encode():
+                raise ValueError("invalid authority scope")
+            return context, ProvisionState(value.get("state"))
+        except (ValueError, TypeError, sqlite3.Error, RecursionError) as exc:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE, "invalid retained provisioning authority"
+            ) from exc
+
+    def provision_step(self, provision_id: str, operation_id: str) -> str | None:
+        row = self._db.execute(
+            "SELECT substr(CAST(request_digest AS BLOB),1,65) FROM provision_steps"
+            " WHERE provision_id=? AND operation_id=?",
+            (provision_id, operation_id),
+        ).fetchone()
+        return bytes(row[0]).decode("ascii", "replace") if row else None
+
+    def authorize_provision_step(self, provision_id: str, operation_id: str, digest: str) -> None:
+        """Only the internal provisioner registers an exact saved step; no RPC exposes this."""
+        with self._transaction():
+            self._db.execute(
+                "INSERT OR IGNORE INTO provision_steps VALUES (?,?,?)",
+                (provision_id, operation_id, digest),
+            )
+            if self.provision_step(provision_id, operation_id) != digest:
+                raise RuntimeError("provisioning step identity changed")
 
     def provision_ids(self) -> list[str]:
         """Every provisioning operation's ID, oldest first."""
@@ -638,12 +883,19 @@ class Store:
         """An environment's package status other than ``ready``: the status, the operation
         that left it so, and the last revision known good before it."""
         row = self._db.execute(
-            "SELECT status, provision_id, revision FROM package_status WHERE environment_id = ?",
+            "SELECT substr(CAST(status AS BLOB),1,32),"
+            "coalesce(substr(CAST(provision_id AS BLOB),1,130),X''),revision"
+            " FROM package_status WHERE environment_id = ?",
             (environment_id,),
         ).fetchone()
         if row is None:
             return None
-        return str(row[0]), str(row[1]), None if row[2] is None else int(row[2])
+        mode = bytes(row[0]).decode("ascii", "replace") if row[0] is not None else ""
+        operation = bytes(row[1]).decode("ascii", "replace")
+        checked(0, mode, operation, row[2])
+        if mode != "needs_recovery":
+            raise WorkerError(ErrorKind.UNAVAILABLE, "invalid retained package recovery status")
+        return mode, operation, row[2]
 
     def set_package_status(
         self, environment_id: str, status: str, provision_id: str, revision: int | None
@@ -651,10 +903,25 @@ class Store:
         """Mark an environment's packages, unless a mark is there already: the earliest
         holds, with the last revision known good (CP-13). Forgetting the environment's
         revisions clears it."""
-        self._db.execute(
-            "INSERT OR IGNORE INTO package_status VALUES (?, ?, ?, ?)",
-            (environment_id, status, provision_id, revision),
-        )
+        with self._transaction():
+            self._db.execute(
+                "INSERT OR IGNORE INTO package_status VALUES (?, ?, ?, ?)",
+                (environment_id, status, provision_id, revision),
+            )
+            marked = self.package_status(environment_id)
+            if marked is None:
+                raise RuntimeError("package recovery mark was not retained")
+            gate = self.package_gate(environment_id)
+            if gate.mode != "needs_recovery":
+                self._gate_write(
+                    environment_id,
+                    PackageGate(
+                        gate.generation + 1,
+                        "needs_recovery",
+                        marked[1],
+                        marked[2],
+                    ),
+                )
 
 
 def _provision(record: str) -> ProvisionOperation | None:

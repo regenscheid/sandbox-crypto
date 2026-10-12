@@ -46,6 +46,18 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Final, cast
 
 
+async def _owned[T](work: Awaitable[T], cancelled: Callable[[], None] | None = None) -> T:
+    """Cancellation cannot outlive an actual process launch or its cleanup."""
+    task = asyncio.ensure_future(work)
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if cancelled is not None:
+                cancelled()
+    return task.result()
+
+
 def _sibling(name: str) -> ModuleType:
     """A module of the worker package; in a sandbox, the copy the worker put beside this file."""
     if __package__:
@@ -1129,6 +1141,10 @@ class Running:
     captures: dict[str, Capture] = field(default_factory=dict[str, Capture])
     log_error: str | None = None
     waited: float = 0.0
+    admitted: float = field(default_factory=time.monotonic)
+    package_operation: str = ""
+    package_generation: int = -1
+    controller: Callable[[], bool] | None = None
     """Seconds it waited for package commands before it started; its time limit covers them."""
 
 
@@ -1172,7 +1188,9 @@ class Kernel:
     async def alive(self) -> bool:
         return self.manager is not None and await _alive(self.manager)
 
-    async def ensure_started(self) -> None:
+    async def ensure_started(
+        self, launcher: Callable[[Callable[[], Awaitable[None]]], Awaitable[None]] | None = None
+    ) -> None:
         if await self.alive():
             return
         if self.manager is not None:
@@ -1187,7 +1205,14 @@ class Kernel:
         manager: Any = AsyncKernelManager(kernel_name=KERNEL_NAMES[self.language])
         leader: Leader | None = None
         try:
-            await manager.start_kernel(cwd=str(self.cwd), env={**self.env, OWNER: owner})
+
+            async def spawn() -> None:
+                await manager.start_kernel(cwd=str(self.cwd), env={**self.env, OWNER: owner})
+
+            if launcher is None:
+                await spawn()
+            else:
+                await launcher(spawn)
             pid = getattr(manager.provisioner, "pid", None)
             if isinstance(pid, int) and (info := process_info(pid)) is not None:
                 _spawned.add(pid)
@@ -1195,12 +1220,20 @@ class Kernel:
             client = manager.client()
             client.start_channels()
             await client.wait_for_ready(timeout=KERNEL_START_TIMEOUT)
-        except Exception as exc:
-            with contextlib.suppress(Exception):
-                await manager.shutdown_kernel(now=True)
-            await asyncio.to_thread(end_owned, owner, leader)
+        except BaseException as exc:
+
+            async def cleanup() -> None:
+                with contextlib.suppress(Exception):
+                    await manager.shutdown_kernel(now=True)
+                await asyncio.to_thread(end_owned, owner, leader)
+
+            await _owned(cleanup())
             if leader is not None:
                 _spawned.discard(leader[0])
+            if not isinstance(exc, Exception) or isinstance(
+                exc, ToolError | _BusyError | _NotStartedError
+            ):
+                raise
             raise ToolError("unsupported", f"cannot start a {self.language} kernel: {exc}") from exc
         self.manager, self.client, self.owner, self.leader = manager, client, owner, leader
         self.generation += 1
@@ -1263,9 +1296,16 @@ class Executor:
         self.running: dict[str, Running] = {}
         self.kernels: dict[tuple[str, str], Kernel] = {}
         self.tasks: set[asyncio.Task[None]] = set()
+        self.launch_controls: set[asyncio.Task[Any]] = set()
         self.configured: dict[str, str] = {}
         """Variables from ``configure``, added to every command's and kernel's environment."""
         self.closing = False
+        self.package_gate_id = "gate-" + secrets.token_hex(12)
+        self.package_generation = -1
+        self.package_mode = "hold"
+        self.package_operation = ""
+        self.package_revision: int | None = None
+        self.package_launch = asyncio.Lock()
         """Shutting down: attempts it stops are not reported as ended. The worker
         reports them lost when this connection closes, since it stopped them."""
         # Package commands (docs/specs/conda-provisioning.md, CP-4, CP-11, CP-12).
@@ -1326,6 +1366,7 @@ class Executor:
             "hello": self.op_hello,
             "probe": self.op_probe,
             "configure": self.op_configure,
+            "package_gate": self.op_package_gate,
             "shell": self.op_shell,
             "job": self.op_shell,
             "job_status": self.op_job_status,
@@ -1356,6 +1397,9 @@ class Executor:
 
     async def shutdown(self) -> None:
         """Stop every command and kernel, then anything still running below this process."""
+        await _owned(self.finish_shutdown(asyncio.current_task()))
+
+    async def finish_shutdown(self, requester: asyncio.Task[Any] | None) -> None:
         self.closing = True
         if self.reaper is not None:
             self.reaper.cancel()
@@ -1365,8 +1409,18 @@ class Executor:
             return_exceptions=True,
         )
         for item in running:
+            item.cancel_requested = True
             if item.task is not None:
                 item.task.cancel()
+        await asyncio.gather(
+            *(item.task for item in running if item.task is not None), return_exceptions=True
+        )
+        controls = [
+            task for task in self.launch_controls if task not in (requester, asyncio.current_task())
+        ]
+        for task in controls:
+            task.cancel()
+        await asyncio.gather(*controls, return_exceptions=True)
         await asyncio.gather(
             *(kernel.stop() for kernel in self.kernels.values()), return_exceptions=True
         )
@@ -1652,6 +1706,7 @@ class Executor:
         await self.reply(
             request,
             protocol=PROTOCOL,
+            package_gate=self.package_gate_id,
             languages=languages,
             location={
                 "hostname": socket.gethostname(),
@@ -1666,6 +1721,103 @@ class Executor:
             features=available_features(),
             environment=await self.baseline(),
         )
+
+    async def op_package_gate(self, request: Message) -> None:
+        """ACK a hold only after every launch ordered before it has completed admission."""
+        generation, mode = request.get("generation"), request.get("mode")
+        operation, revision = request.get("operation"), request.get("revision")
+        if (
+            request.get("incarnation") != self.package_gate_id
+            or type(generation) is not int
+            or not 0 <= generation < 2**62
+            or mode not in ("ready", "hold", "needs_recovery")
+            or not isinstance(operation, str)
+            or len(operation) > 128
+            or (operation and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", operation) is None)
+            or (mode == "ready" and operation)
+            or (mode == "needs_recovery" and not operation)
+            or (revision is not None and (type(revision) is not int or not 0 <= revision < 2**62))
+        ):
+            raise ToolError("invalid_request", "invalid package admission identity or state")
+        async with self.package_launch:
+            self.controller_present(request)
+            existing = (
+                self.package_generation,
+                self.package_mode,
+                self.package_operation,
+                self.package_revision,
+            )
+            incoming = (generation, mode, operation, revision)
+            if generation < self.package_generation or (
+                generation == self.package_generation and incoming != existing
+            ):
+                raise ToolError("conflict", "stale package admission generation")
+            self.package_generation, self.package_mode = generation, mode
+            self.package_operation, self.package_revision = operation, revision
+        await self.reply(
+            request,
+            incarnation=self.package_gate_id,
+            generation=generation,
+            mode=mode,
+            operation=operation,
+            revision=revision,
+        )
+
+    def controller_present(self, request: Message) -> None:
+        guard = request.get("_admission_guard")
+        if callable(guard) and not guard():
+            raise ToolError("unavailable", "controller detached before admission")
+
+    async def own_launch[T](self, running: Running, work: Awaitable[T]) -> T:
+        """Keep launch serialization through actual work and repeated cancellation."""
+        return await _owned(work, lambda: setattr(running, "cancel_requested", True))
+
+    async def start_kernel(
+        self, running: Running, timeout: float, work: Callable[[], Awaitable[None]]
+    ) -> None:
+        async with self.launch(running, timeout):
+            await self.own_launch(running, work())
+
+    @contextlib.asynccontextmanager
+    async def launch(self, running: Running, timeout: float):
+        """Wait without retaining the launch lock; serialize the final launch with hold ACK."""
+        while True:
+            await self.package_launch.acquire()
+            if self.closing:
+                self.package_launch.release()
+                raise ToolError("unavailable", "executor is closing; new launch refused")
+            if (
+                (running.package_operation or running.kind == "restart")
+                and running.controller
+                and not running.controller()
+            ):
+                self.package_launch.release()
+                raise ToolError("unavailable", "provisioning controller detached before launch")
+            if self.package_mode == "needs_recovery":
+                self.package_launch.release()
+                raise ToolError("unavailable", "environment needs_recovery; new work is refused")
+            exempt = (
+                running.package_operation
+                and running.package_operation == self.package_operation
+                and running.package_generation == self.package_generation
+            )
+            if self.package_mode == "ready" or exempt:
+                break
+            self.package_launch.release()
+            if running.cancel_requested:
+                raise _NotStartedError
+            if time.monotonic() - running.admitted >= timeout:
+                raise _BusyError(time.monotonic() - running.admitted, None)
+            await asyncio.sleep(0.05)
+        try:
+            if running.cancel_requested:
+                raise _NotStartedError
+            running.waited = max(running.waited, time.monotonic() - running.admitted)
+            if running.waited >= timeout:
+                raise _BusyError(running.waited, None)
+            yield
+        finally:
+            self.package_launch.release()
 
     async def op_probe(self, request: Message) -> None:
         """Describe this sandbox, and say whether each of the worker's sentinel paths shows here."""
@@ -1724,6 +1876,14 @@ class Executor:
         if execution in self.running:
             raise ToolError("conflict", f"execution {execution} is already running")
         running = Running(execution=execution, kind=kind)
+        operation = request.get("package_operation", "")
+        generation = request.get("package_generation", -1)
+        if not isinstance(operation, str) or type(generation) is not int:
+            raise ToolError("invalid_request", "invalid internal package admission exemption")
+        running.package_operation, running.package_generation = operation, generation
+        guard = request.get("_admission_guard")
+        if callable(guard):
+            running.controller = lambda: bool(guard())
         if self.owner_prefix:
             running.owner = self.owner_prefix + secrets.token_hex(8)
         self.running[execution] = running
@@ -1811,15 +1971,21 @@ class Executor:
                 logs = await asyncio.to_thread(self.job_logs, session, execution)
             self.own(running.owner, execution)
             try:
-                process = await asyncio.create_subprocess_exec(
-                    *argv,
-                    cwd=cwd,
-                    env={**env, OWNER: running.owner},
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    start_new_session=True,
-                )
+                async with self.launch(running, timeout):
+                    process = await self.own_launch(
+                        running,
+                        asyncio.create_subprocess_exec(
+                            *argv,
+                            cwd=cwd,
+                            env={**env, OWNER: running.owner},
+                            stdin=asyncio.subprocess.DEVNULL,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            start_new_session=True,
+                        ),
+                    )
+                    running.process = process
+                    running.started = True
             except OSError as exc:
                 error = {"kind": "invalid_request", "message": f"cannot run {argv[0]!r}: {exc}"}
                 return
@@ -1869,7 +2035,13 @@ class Executor:
                 error = {"kind": "timed_out", "message": f"exceeded the {timeout:g} s limit"}
             else:
                 state = "succeeded" if code == 0 else "failed"
-        except (OSError, ToolError) as exc:
+        except ToolError as exc:
+            error = {"kind": exc.kind, "message": exc.message}
+        except _BusyError as exc:
+            state, error = "timed_out", exc.error()
+        except _NotStartedError:
+            state, error = "cancelled", not_started
+        except OSError as exc:
             error = {
                 "kind": "internal",
                 "message": f"job output could not be saved ({type(exc).__name__}); "
@@ -2064,17 +2236,21 @@ class Executor:
                 start = await self.begin(running, timeout)
                 running.queued = False
                 async with kernel.control:
-                    await kernel.ensure_started()
+                    await kernel.ensure_started(
+                        lambda work: self.start_kernel(running, timeout, work)
+                    )
                 if running.cancel_requested:  # asked for while the kernel started
                     raise _NotStartedError
-                running.started = True
                 self.own(kernel.owner, execution)
                 ran_on = kernel.info()
                 state_lost, kernel.state_lost = kernel.state_lost, False
                 before = await asyncio.to_thread(self.snapshot, kernel.session)
+                async with self.launch(running, timeout):
+                    msg_id = kernel.client.execute(code, store_history=True, allow_stdin=False)
+                    running.started = True
                 await self.event(execution, "state", **_running(start))
                 state, result = await self.execute(
-                    running, kernel, code, timeout, limit, captures, outputs
+                    running, kernel, code, timeout, limit, captures, outputs, msg_id=msg_id
                 )
                 result["state_lost"] = state_lost or result.get("state_lost", False)
                 result.update(await self.written(kernel.session, before))
@@ -2119,13 +2295,16 @@ class Executor:
         limit: int,
         captures: dict[str, Capture],
         outputs: list[Message],
+        *,
+        msg_id: str | None = None,
     ) -> tuple[str, Message]:
         from queue import Empty
 
         loop = asyncio.get_running_loop()
         # This generation's client and manager, even once a restart replaces the kernel's.
         client, manager = kernel.client, kernel.manager
-        msg_id = client.execute(code, store_history=True, allow_stdin=False)
+        if msg_id is None:
+            msg_id = client.execute(code, store_history=True, allow_stdin=False)
         deadline = loop.time() + max(0.0, timeout - running.waited)
         interrupted_at: float | None = None
         timed_out = False
@@ -2294,17 +2473,40 @@ class Executor:
         # runs, and a running one is interrupted by its loop.
 
     async def op_restart(self, request: Message) -> None:
+        task = asyncio.current_task()
+        if task is not None:
+            self.launch_controls.add(task)
+        try:
+            await self.restart_request(request)
+        finally:
+            if task is not None:
+                self.launch_controls.discard(task)
+
+    async def restart_request(self, request: Message) -> None:
         session = self.session(request)
         kernel = self.kernel(session, str(request.get("language", "python")))
+        restart = Running("restart", "restart")
+        guard = request.get("_admission_guard")
+        if callable(guard):
+            restart.controller = lambda: bool(guard())
         async with kernel.control:
-            # The running cell does not hold up a restart: it ends, cancelled.
-            for running in self.running.values():
-                if running.kernel is kernel and running.started:
-                    running.restarted = True
-            if kernel.manager is None:
-                await kernel.ensure_started()
-            else:
-                await kernel.restart()
+            await self.package_launch.acquire()
+            try:
+                self.controller_present(request)
+                if self.closing or self.package_mode != "ready":
+                    raise ToolError(
+                        "unavailable", "package admission is closed; kernel restart refused"
+                    )
+                # The running cell does not hold up a restart: it ends, cancelled.
+                for running in self.running.values():
+                    if running.kernel is kernel and running.started:
+                        running.restarted = True
+                if kernel.manager is not None:
+                    await self.own_launch(restart, kernel.stop())
+                    kernel.state_lost = True
+            finally:
+                self.package_launch.release()
+            await kernel.ensure_started(lambda work: self.start_kernel(restart, 180, work))
         await self.reply(request, kernel=kernel.info())
 
     async def reap_idle_kernels(self, idle: float) -> None:

@@ -32,7 +32,11 @@ from sandbox_science.contracts import (
     EnvironmentRequest,
     EnvironmentState,
     ErrorKind,
+    ExecutionContext,
     PackageCommand,
+    ProvisionOperation,
+    ProvisionRequest,
+    ProvisionState,
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
@@ -63,6 +67,7 @@ from sandbox_science.worker.environments import (
 )
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import Activity, ExecutionManager
+from sandbox_science.worker.provisioner import Provisioner, _Op
 from sandbox_science.worker.settings import (
     ClientSettings,
     EnvironmentSettings,
@@ -1180,8 +1185,8 @@ async def test_a_sandbox_that_comes_back_as_another_is_refused(setup: Setup) -> 
     assert refused.value.kind is ErrorKind.UNAVAILABLE
     assert "create the environment again" in refused.value.message
     assert setup.environments.get("env-1").state is EnvironmentState.DELETED
-    assert len(setup.fake.calls("sandbox", "stop")) == 2
-    # Creating it again replaces whatever runs under the name.
+    assert len(setup.fake.calls("sandbox", "stop")) == 1
+    # The replacement remains healthy under its name; recreating uses a fresh name.
     again, created = await setup.environments.create(setup.request())
     assert created
     assert again.state is EnvironmentState.READY
@@ -1734,6 +1739,11 @@ async def test_review3_l2_an_environment_the_worker_gives_up_forgets_its_revisio
         with pytest.raises(WorkerError):
             await setup.environments.resume("env-1")
         assert setup.environments.get("env-1").state is EnvironmentState.DELETED
+        assert len(manager.revisions.history("env-1").revisions) == 3
+        state = setup.fake.read()
+        del state["sandboxes"][created["sandbox"]]
+        setup.fake.write(state)
+        await setup.environments.delete("env-1")
         assert manager.revisions.history("env-1").revisions == ()
         assert list(blobs.glob("*/*")) == []
     finally:
@@ -1741,8 +1751,8 @@ async def test_review3_l2_an_environment_the_worker_gives_up_forgets_its_revisio
         manager.store.close()
 
 
-async def test_each_one_told_of_deletions_hears_of_a_given_up_environment(setup: Setup) -> None:
-    # The shared files' sync, too, forgets an environment the worker gives up (D79).
+async def test_abandon_retains_evidence_until_explicit_delete_or_reuse(setup: Setup) -> None:
+    # Abandonment may originate inside an operation; cleanup waits for explicit reuse.
     told: list[tuple[str, str]] = []
 
     async def first(environment_id: str) -> None:
@@ -1758,10 +1768,153 @@ async def test_each_one_told_of_deletions_hears_of_a_given_up_environment(setup:
     setup.fake.write(state)
     with pytest.raises(WorkerError):
         await setup.environments.resume("env-1")
+    assert told == []
+    await setup.environments.create(setup.request())
     assert told == [("first", "env-1"), ("second", "env-1")]
     await setup.environments.create(setup.request("env-2"))
     await setup.environments.delete("env-2")
     assert told[2:] == [("first", "env-2"), ("second", "env-2")]
+
+
+async def test_abandon_from_provisioning_task_does_not_wait_for_its_own_drain(
+    setup: Setup, tmp_path: Path
+) -> None:
+    store = Store(tmp_path / "worker.sqlite3")
+    info, _ = await setup.environments.create(setup.request())
+    record = ProvisionOperation(
+        provision_id="prv-self",
+        request=ProvisionRequest(
+            operation_id="self",
+            purpose="synthetic abandonment cycle",
+            conda=("example",),
+            context=ExecutionContext(project_id="p1", session_id="s1", environment_id="env-1"),
+        ),
+        state=ProvisionState.INSTALLING,
+        submitted_at=datetime.now(UTC),
+    )
+    store.insert_provision(record, "digest")
+    store.set_package_status("env-1", "needs_recovery", "prv-self", 0)
+    operation = _Op(record, asyncio.get_running_loop().create_future())
+    provisioner = Provisioner.__new__(Provisioner)
+    provisioner.store = store
+    provisioner._ops = {record.provision_id: operation}
+    setup.environments.required_deleted.append(provisioner.forget)
+    try:
+        task = asyncio.create_task(setup.environments._abandon(info, "synthetic replacement"))
+        operation.task = task
+        with pytest.raises(WorkerError, match="synthetic replacement"):
+            await asyncio.wait_for(task, 1)
+        assert task.cancelling() == 0
+        assert not store.provisioning_finished("env-1")
+        assert store.package_gate("env-1").operation == "prv-self"
+        assert setup.environments.get("env-1").state is EnvironmentState.DELETED
+    finally:
+        store.close()
+
+
+async def test_required_delete_drain_owns_double_cancellation_and_name_reuse(
+    setup: Setup, tmp_path: Path
+) -> None:
+    store = Store(tmp_path / "worker.sqlite3")
+    entered, finish = asyncio.Event(), asyncio.Event()
+    order: list[str] = []
+    original, _ = await setup.environments.create(setup.request())
+    store.bind_package_gate("env-1", repr((original.sandbox, original.sandbox_id)))
+
+    async def drain(environment_id: str) -> None:
+        entered.set()
+        await finish.wait()
+        # An old delayed classification is still part of the owned drain.
+        store.set_package_status(environment_id, "needs_recovery", "prv-old", 1)
+        order.append("drained")
+
+    async def clear(environment_id: str) -> None:
+        assert order[-1] == "drained"
+        store.forget_package_gate(environment_id)
+        order.append("cleared")
+
+    setup.environments.required_deleted.append(drain)
+    setup.environments.confirmed_deleted.append(clear)
+    deletion = asyncio.create_task(setup.environments.delete("env-1"))
+    recreation: asyncio.Task[Any] | None = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        deletion.cancel()
+        await asyncio.sleep(0)
+        deletion.cancel()
+        recreation = asyncio.create_task(setup.environments.create(setup.request()))
+        await asyncio.sleep(0.02)
+        assert not deletion.done()
+        assert not recreation.done()
+        finish.set()
+        with pytest.raises(asyncio.CancelledError):
+            await deletion
+        replacement, created = await asyncio.wait_for(recreation, 5)
+        assert created
+        assert replacement.sandbox_id != original.sandbox_id
+        store.bind_package_gate("env-1", repr((replacement.sandbox, replacement.sandbox_id)))
+        assert store.package_gate("env-1").mode == "ready"
+        assert order == ["drained", "cleared", "drained", "cleared"]
+    finally:
+        finish.set()
+        await asyncio.gather(
+            deletion, *([recreation] if recreation is not None else []), return_exceptions=True
+        )
+        store.close()
+
+
+async def test_failed_required_delete_cleanup_retains_fence_and_retries_exact_proof(
+    setup: Setup, tmp_path: Path
+) -> None:
+    store = Store(tmp_path / "worker.sqlite3")
+    original, _ = await setup.environments.create(setup.request())
+    store.set_package_status("env-1", "needs_recovery", "prv-old", 2)
+    failed = True
+    ordinary: list[str] = []
+
+    async def drain(environment_id: str) -> None:
+        if failed:
+            raise WorkerError(ErrorKind.UNAVAILABLE, "classification write failed")
+
+    async def clear(environment_id: str) -> None:
+        store.forget_package_gate(environment_id)
+
+    async def told(environment_id: str) -> None:
+        ordinary.append(environment_id)
+
+    setup.environments.required_deleted.append(drain)
+    setup.environments.confirmed_deleted.append(clear)
+    setup.environments.deleted.append(told)
+    try:
+        with pytest.raises(WorkerError, match="classification write failed"):
+            await setup.environments.delete("env-1")
+        assert setup.environments.get("env-1").state is EnvironmentState.DELETED
+        assert setup.environments.records.deletion_confirmed(original)
+        assert ordinary == []
+        assert store.package_gate("env-1").mode == "needs_recovery"
+        failed = False
+        await setup.environments.delete("env-1")
+        assert ordinary == ["env-1"]
+        assert store.package_gate("env-1").mode == "ready"
+        replacement, _ = await setup.environments.create(setup.request())
+        assert not setup.environments.records.deletion_confirmed(replacement)
+    finally:
+        store.close()
+
+
+async def test_delete_never_certifies_or_mutates_same_name_replacement(setup: Setup) -> None:
+    original, _ = await setup.environments.create(setup.request())
+    state = setup.fake.read()
+    state["sandboxes"][original.sandbox]["id"] = "healthy-replacement"
+    setup.fake.write(state)
+    before_delete = setup.fake.calls("sandbox", "delete")
+    before_stop = setup.fake.calls("sandbox", "stop")
+    with pytest.raises(WorkerError, match="replacement deletion refused"):
+        await setup.environments.delete("env-1")
+    assert setup.fake.calls("sandbox", "delete") == before_delete
+    assert setup.fake.calls("sandbox", "stop") == before_stop
+    assert not setup.environments.records.deletion_confirmed(original)
+    assert setup.fake.read()["sandboxes"][original.sandbox].get("phase", "Ready") == "Ready"
 
 
 async def test_a_known_environment_never_falls_back_to_a_sandbox_made_by_hand(
@@ -2065,3 +2218,50 @@ async def test_a_client_has_at_most_its_limit_of_environments(
     finally:
         await manager.close()
         manager.store.close()
+
+
+async def test_explicit_delete_after_abandon_requires_original_absence_before_clear(
+    setup: Setup, tmp_path: Path
+) -> None:
+    store = Store(tmp_path / "worker.sqlite3")
+    manager = ExecutionManager(
+        store,
+        LocalBackend(LocalBackendSettings(), tmp_path),
+        Blobs(tmp_path / "artifacts"),
+        pool_id="test",
+        max_artifact_size=1024,
+        state_dir=tmp_path,
+    )
+    original, _ = await setup.environments.create(setup.request())
+    store.set_package_status("env-1", "needs_recovery", "prv-original", 1)
+    state = setup.fake.read()
+    state["sandboxes"][original.sandbox]["id"] = "replacement"
+    setup.fake.write(state)
+
+    async def clear(environment_id: str) -> None:
+        store.forget_package_gate(environment_id)
+
+    setup.environments.confirmed_deleted.append(clear)
+    setup.environments.reusing.append(manager.guard_package_reuse)
+    try:
+        with pytest.raises(WorkerError):
+            await setup.environments.resume("env-1")
+        assert setup.environments.get("env-1").state is EnvironmentState.DELETED
+        creates = setup.fake.calls("sandbox", "create")
+        with pytest.raises(WorkerError, match="requires confirmed sandbox deletion"):
+            await setup.environments.create(setup.request())
+        assert setup.fake.calls("sandbox", "create") == creates
+        with pytest.raises(WorkerError, match="replacement deletion refused"):
+            await setup.environments.delete("env-1")
+        assert store.package_gate("env-1").mode == "needs_recovery"
+        state = setup.fake.read()
+        del state["sandboxes"][original.sandbox]  # operator-confirmed absence
+        setup.fake.write(state)
+        await setup.environments.delete("env-1")
+        assert setup.environments.records.deletion_confirmed(original)
+        assert store.package_gate("env-1").mode == "ready"
+        assert setup.fake.calls("sandbox", "stop") == []
+        assert setup.fake.calls("sandbox", "delete") == []
+    finally:
+        await manager.close()
+        store.close()

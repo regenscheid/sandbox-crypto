@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-12 — sticky recovery admission prerequisite
+
+Implement CP-13 execution refusal independently of the deferred Restorer: atomically persist install hold, require guest acknowledgement and exact saved internal-step authority, fence actual process/kernel launch after waits, and conservatively classify startup/legacy peers. Sticky state is bound to the original immutable sandbox and survives abandonment/daemon recycle. Required cancellation-owned durable operation drain precedes confirmed deletion cleanup/reuse; observed replacement stop/delete is refused. Matching package lists never clear uncertainty. [As built](../docs/RECOVERY-FENCE.md); marked Lab21 helper added, with runtime acceptance and final combined delivery gates pending. No runtime, security policy, provider or service changes.
+
 Dated log of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)). Newest first.
 
 ## 2026-10-12

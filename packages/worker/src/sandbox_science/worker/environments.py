@@ -79,6 +79,22 @@ from .settings import EnvironmentSettings, OpenShellBackendSettings
 
 _log = logging.getLogger(__name__)
 
+
+async def _owned[T](work: Awaitable[T]) -> T:
+    """Retain lifecycle ownership until actual cleanup ends, despite repeat cancellation."""
+    task = asyncio.ensure_future(work)
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 SANDBOX_PREFIX: Final = "ss-"
 MAX_SANDBOX_NAME: Final = 19
 """OpenShell's limit on a sandbox's name (``MAX_ROUTABLE_NAME_LEN``)."""
@@ -219,7 +235,32 @@ class EnvironmentRecords:
             " project_id TEXT NOT NULL, revision TEXT NOT NULL,"
             " PRIMARY KEY (project_id, revision))"
         )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS confirmed_deletions ("
+            " environment_id TEXT PRIMARY KEY, sandbox TEXT NOT NULL, sandbox_id TEXT)"
+        )
         self._lock = threading.Lock()
+
+    def confirm_deletion(self, info: EnvironmentInfo) -> None:
+        """Remember gateway-confirmed deletion before fallible local cleanup."""
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO confirmed_deletions VALUES (?,?,?) ON CONFLICT(environment_id)"
+                " DO UPDATE SET sandbox=excluded.sandbox,sandbox_id=excluded.sandbox_id",
+                (info.environment_id, info.sandbox, info.sandbox_id),
+            )
+
+    def deletion_confirmed(self, info: EnvironmentInfo) -> bool:
+        """A proof belongs only to this exact retained sandbox binding."""
+        with self._lock:
+            return (
+                self._db.execute(
+                    "SELECT 1 FROM confirmed_deletions"
+                    " WHERE environment_id=? AND sandbox=? AND sandbox_id IS ?",
+                    (info.environment_id, info.sandbox, info.sandbox_id),
+                ).fetchone()
+                is not None
+            )
 
     def get(self, environment_id: str) -> EnvironmentInfo | None:
         with self._lock:
@@ -380,6 +421,12 @@ class Environments:
         """Told of each environment deleted, by a client or given up by the worker, in
         turn: the shared files' sync forgets it (D79), and the execution manager its
         revisions."""
+        self.required_deleted: list[Release] = []
+        """Required drains: failure retains the fence and prevents subsequent cleanup."""
+        self.confirmed_deleted: list[Release] = []
+        """Required cleanup only for gateway-confirmed deletion of the exact binding."""
+        self.reusing: list[Release] = []
+        """Required original-binding checks before allocating a replacement sandbox."""
         self._locks: dict[str, asyncio.Lock] = {}
         self._users: dict[str, int] = {}
         """Callers holding or waiting for each environment's lock."""
@@ -457,6 +504,8 @@ class Environments:
                 # An ID stays with the project that first created it, deleted or not, so
                 # that nothing checked for one project can reach another's (D78).
                 raise taken
+            if existing is not None and existing.state is EnvironmentState.DELETED:
+                await self._forget(request.environment_id, reuse=True)
             if existing is not None and existing.state in (
                 EnvironmentState.READY,
                 EnvironmentState.STOPPED,
@@ -622,26 +671,60 @@ class Environments:
     async def delete(self, environment_id: str) -> EnvironmentInfo:
         """Stop the environment's executor and delete its sandbox and binding."""
         async with self._lock(environment_id):
-            info = self.get(environment_id)
-            if info.state is EnvironmentState.DELETED:
-                return info
+            return await _owned(self._delete(environment_id))
+
+    async def _delete(self, environment_id: str) -> EnvironmentInfo:
+        info = self.get(environment_id)
+        if info.state is EnvironmentState.DELETED and self.records.deletion_confirmed(info):
+            await self._forget(environment_id)
+            return info
+        if not self.records.deletion_confirmed(info):
+            document = await self.cli.sandbox(info.sandbox)
+            if document is not None and (
+                info.sandbox_id is None or document.get("id") != info.sandbox_id
+            ):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "sandbox identity changed; replacement deletion refused"
+                )
             if self.release is not None:
                 await self.release(environment_id)
-            await self.cli.run("sandbox", "delete", info.sandbox)
-            if info.sandbox_id is not None:
-                self.store.unbind(info.sandbox_id)
-            self.records.forget(environment_id)
-            self._start_failures.pop(environment_id, None)
-            deleted = info.model_copy(
-                update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
-            )
-            self.records.save(deleted)
-            _log.info("deleted sandbox %s of environment %s", info.sandbox, environment_id)
-            await self._forget(environment_id)
-            return deleted
+            # Executor shutdown is an await. A fresh identity check precedes the
+            # name-addressed gateway mutation; a replacement is never our target.
+            document = await self.cli.sandbox(info.sandbox)
+            if document is not None:
+                if info.sandbox_id is None or document.get("id") != info.sandbox_id:
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE, "sandbox identity changed before deletion"
+                    )
+                await self.cli.run("sandbox", "delete", info.sandbox)
+            if await self.cli.sandbox(info.sandbox) is not None:
+                raise WorkerError(ErrorKind.UNAVAILABLE, "sandbox deletion was not confirmed")
+            self.records.confirm_deletion(info)
+        if info.sandbox_id is not None:
+            self.store.unbind(info.sandbox_id)
+        self.records.forget(environment_id)
+        self._start_failures.pop(environment_id, None)
+        deleted = info.model_copy(
+            update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
+        )
+        self.records.save(deleted)
+        _log.info("deleted sandbox %s of environment %s", info.sandbox, environment_id)
+        await self._forget(environment_id)
+        return deleted
 
-    async def _forget(self, environment_id: str) -> None:
+    async def _forget(self, environment_id: str, *, reuse: bool = False) -> None:
         """Tell each of ``deleted`` that the environment is deleted."""
+        await _owned(self._finish_forget(environment_id, reuse))
+
+    async def _finish_forget(self, environment_id: str, reuse: bool) -> None:
+        for told in self.required_deleted:
+            await told(environment_id)
+        if self.records.deletion_confirmed(self.get(environment_id)):
+            for told in self.confirmed_deleted:
+                await told(environment_id)
+        if reuse:
+            for told in self.reusing:
+                await told(environment_id)
         for told in self.deleted:
             try:
                 await told(environment_id)
@@ -813,6 +896,8 @@ class Environments:
                 )
             if document is None:
                 await self._abandon(info, f"sandbox {info.sandbox} is gone")
+            elif document.get("id") != info.sandbox_id:
+                await self._abandon(info, f"sandbox {info.sandbox} has another identity")
             elif document.get("phase") != "Ready":
                 await self.cli.run("sandbox", "start", info.sandbox, timeout=timeout)
             sandbox_id = await self._wait_ready(info.sandbox, timeout)
@@ -839,8 +924,8 @@ class Environments:
 
     async def _abandon(self, info: EnvironmentInfo, reason: str) -> NoReturn:
         """Give up an environment whose sandbox is gone or not its own, so it is created again."""
-        with contextlib.suppress(WorkerError):
-            await self.cli.run("sandbox", "stop", info.sandbox)
+        # A missing/replaced binding is not authority to stop whatever now has its
+        # old name. Preserve the original package gate; only confirmed deletion clears it.
         if info.sandbox_id is not None:
             with contextlib.suppress(StoreError):
                 self.store.unbind(info.sandbox_id)
@@ -850,7 +935,9 @@ class Environments:
                 update={"state": EnvironmentState.DELETED, "updated_at": datetime.now(UTC)}
             )
         )
-        await self._forget(info.environment_id)
+        # This can be the provisioning task itself, through backend.prepare. It
+        # must return to classification rather than wait for its own deletion drain.
+        # Keep original revision/lockfile evidence until explicit deletion or reuse.
         raise WorkerError(ErrorKind.UNAVAILABLE, f"{reason}; create the environment again")
 
     def _policy(self, revision: str) -> LoadedPolicy:
