@@ -4,6 +4,7 @@
   import type { Json } from '../lib/api';
   import FindingCard from './FindingCard.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
   let listed = $state<Review[]>([]), findings = $state<Finding[]>([]), nextReview = $state<string | null>(null), nextFinding = $state<string | null>(null);
   let unreviewed = $state<Json[]>([]), selected = $state<Review | null>(null), evidence = $state<Evidence[]>([]), nextEvidence = $state<number | null>(null);
@@ -103,7 +104,7 @@
   <button disabled={busy || nextRecord === null} onclick={audit}>Load review audit records</button>
   {#each records as record, index (index)}<details><summary>Audit record {index + 1}</summary><pre>{JSON.stringify(record, null, 2)}</pre></details>{/each}
 {/if}
-{#if output}<h3>Pinned evidence preview</h3><pre aria-label="Pinned evidence preview">{output}</pre>{#if nextOutput !== null}<button onclick={() => read(outputReview, outputId, nextOutput!)}>Read next evidence slice</button>{/if}{/if}
+{#if outputId}<PinnedEvidencePreview text={output} />{#if nextOutput !== null}<button onclick={() => read(outputReview, outputId, nextOutput!)}>Read next evidence slice</button>{/if}{/if}
 <h3>Document math checks</h3>
 <p class="muted">Mechanical checks use the operator-configured renderer. Unavailable, queued and quota-held work cannot establish a fix. Checks with no eligible author remain visible here.</p>
 {#if queue.length}<details open><summary>Pending document revisions</summary><pre>{JSON.stringify(queue,null,2)}</pre>{#if queueMore}<p>Additional documents remain queued.</p>{/if}</details>{/if}
