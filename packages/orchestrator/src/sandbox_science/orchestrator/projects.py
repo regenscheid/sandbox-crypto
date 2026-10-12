@@ -106,6 +106,8 @@ class RunRecord(Contract):
     ended_at: datetime
     stopped: str
     """``answered``, or ``turn_limit`` when the model was still asking for tools."""
+    job_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
+    """Completion notices represented by this durable run; acknowledged only after save."""
     final_text: str | None = None
     messages: list[dict[str, JsonValue]]
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""
@@ -310,6 +312,13 @@ class ProjectStore:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.link(partial, directory / f"{entry.name}.json")
+            # A completion notice may be acknowledged after this returns. Sync the
+            # directory entry too, so a power loss cannot keep the ack and lose the run.
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         except FileExistsError:
             raise ProjectError(
                 ErrorKind.CONFLICT, f"session {session_id!r} has a run {entry.name!r} already"

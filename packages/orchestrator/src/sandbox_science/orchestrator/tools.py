@@ -42,6 +42,7 @@ from sandbox_science.contracts.worker import Language
 
 from .documents.tool import NAMES as DOCUMENT_TOOLS
 from .documents.tool import DocumentTool, with_notices
+from .jobs import BACKGROUND, JOB_SPECS, JobTools
 from .model import ToolCall, ToolSpec
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .worker_client import WorkerAPIError, WorkerClient, dump
@@ -275,12 +276,14 @@ class Toolbox:
         features: Sequence[str] = (),
         output_chars: int = 20000,
         documents: DocumentTool | None = None,
+        jobs: JobTools | None = None,
     ) -> None:
         self.client = client
         self.context = context
         self.output_chars = output_chars
         self.languages = tuple(languages)
         self.documents = documents
+        self.jobs = jobs if BACKGROUND in features else None
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
         if "sage" in self.languages:
             specs.append(SAGE)
@@ -304,6 +307,8 @@ class Toolbox:
             specs.append(ADMIT_HOSTS)
         if PROVISIONING in features:
             specs.extend(PROVISION_SPECS)
+        if self.jobs is not None:
+            specs.extend(JOB_SPECS)
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         if documents is not None:
             specs.extend(documents.specs)
@@ -335,6 +340,21 @@ class Toolbox:
             if notices:
                 outcome.text = with_notices(outcome.text, notices)
                 outcome.record["document_notices"] = notices
+        if self.jobs is not None:
+            try:
+                notices = await self.jobs.notices(max_chars=self.output_chars // 4)
+            except Exception:
+                _log.exception("the job notices failed; will retry at the next safe point")
+            else:
+                if notices:
+                    # Job output is untrusted tool data, never a system instruction.
+                    text = outcome.text
+                    combined = dump({"tool_result": text, "job_notices": notices})
+                    while len(combined) > self.output_chars and len(text) > 100:
+                        text = self._bound(text[: len(text) // 2])
+                        combined = dump({"tool_result": text, "job_notices": notices})
+                    outcome.text = combined
+                    outcome.record["job_notices"] = notices
         return outcome
 
     async def _call(self, call: ToolCall, operation: str, model: str | None) -> ToolOutcome:
@@ -350,6 +370,16 @@ class Toolbox:
                 call.name, args, operation=operation, call_id=call.id, model=model
             )
             return ToolOutcome(text, record)
+        if self.jobs is not None and call.name in self.jobs.handlers:
+            try:
+                text, record = await self.jobs.handlers[call.name](args, operation)
+                return ToolOutcome(self._bound(text), record)
+            except (ValidationError, WorkerAPIError) as exc:
+                return (
+                    _failure(exc.kind, exc.message)
+                    if isinstance(exc, WorkerAPIError)
+                    else _failure(ErrorKind.INVALID_REQUEST, str(exc)[:500])
+                )
         handlers = {
             "shell": self._shell,
             "python": self._python,

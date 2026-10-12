@@ -34,6 +34,9 @@ from sandbox_science.contracts import (
     FileContent,
     FileListing,
     HostPort,
+    JobListing,
+    JobRequest,
+    JobStatus,
     KernelInfo,
     KernelRestartRequest,
     ListFilesRequest,
@@ -135,7 +138,11 @@ class WorkerClient:
         max_bytes: int | None = None,
     ) -> tuple[_Model, int]:
         """The response as ``model``, and its status; a body over ``max_bytes`` is an error."""
-        data = body.model_dump_json() if body is not None else None
+        if isinstance(body, JobRequest):
+            # Keep the union discriminator while omitting an unspecified time limit,
+            # so the worker can choose the policy's configured default.
+            body = body.model_copy(update={"kind": "job"})
+        data = body.model_dump_json(exclude_unset=isinstance(body, JobRequest)) if body else None
         try:
             async with self._http().request(
                 method,
@@ -268,7 +275,11 @@ class WorkerClient:
 
     async def get(self, execution_id: str, *, project_id: str | None = None) -> Execution:
         return await self._call(
-            "GET", f"/v1/executions/{execution_id}", Execution, params=_project(project_id)
+            "GET",
+            f"/v1/executions/{execution_id}",
+            Execution,
+            params=_project(project_id),
+            max_bytes=MAX_EVENT_BYTES,
         )
 
     async def cancel(self, execution_id: str, *, project_id: str | None = None) -> Execution:
@@ -366,6 +377,33 @@ class WorkerClient:
                 f"no result from the worker {RESULT_GRACE:g} s after the execution's limit",
             ) from exc
         return await self.get(execution.execution_id, project_id=project_id)
+
+    async def jobs(
+        self, context: ExecutionContext, *, limit: int = 100, after: str | None = None
+    ) -> JobListing:
+        """List this session's jobs, never another session's or environment's."""
+        return await self._call(
+            "GET",
+            "/v1/jobs",
+            JobListing,
+            params={
+                "project_id": context.project_id,
+                "session_id": context.session_id,
+                "environment_id": context.environment_id,
+                "limit": str(limit),
+                **({"after": after} if after is not None else {}),
+            },
+            max_bytes=8 * 1024 * 1024,
+        )
+
+    async def job_status(self, execution_id: str, *, project_id: str) -> JobStatus:
+        return await self._call(
+            "GET",
+            f"/v1/jobs/{execution_id}",
+            JobStatus,
+            params=_project(project_id),
+            max_bytes=1024 * 1024,
+        )
 
     # Kernels, files and artifacts.
 

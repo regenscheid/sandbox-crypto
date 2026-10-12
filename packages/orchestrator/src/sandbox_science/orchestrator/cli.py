@@ -45,6 +45,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
+import sqlite3
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -57,6 +59,8 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, L
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
+from .jobs import JobTools
+from .jobstate import JobState
 from .loop import run_task
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
@@ -149,6 +153,31 @@ async def _run(args: argparse.Namespace) -> int:
                 run_id=run_id,
                 alias="scripted" if args.script is not None else args.model,
             )
+        job_state = JobState(args.state_dir) if args.state_dir is not None else None
+        watcher: ChatModel | None = None
+        watcher_alias = args.watcher_model
+        if watcher_alias is not None:
+            if args.watcher_script is not None:
+                watcher = ScriptedModel.from_json(json.loads(args.watcher_script.read_text()))
+            else:
+                watcher = OpenAICompatibleModel(
+                    args.model_url,
+                    watcher_alias,
+                    _read_secret(args.api_key_file),
+                    max_tokens=300,
+                    max_response_bytes=16384,
+                )
+        jobs = JobTools(
+            client,
+            context,
+            run_id=run_id,
+            state=job_state,
+            watcher=watcher,
+            watcher_alias=watcher_alias,
+            watcher_calls_per_hour=args.watcher_calls_per_hour,
+            first_check_seconds=args.watcher_first_check,
+            check_interval_seconds=args.watcher_interval,
+        )
         try:
             transcript = await run_task(
                 model,
@@ -158,6 +187,7 @@ async def _run(args: argparse.Namespace) -> int:
                     languages=capabilities.languages,
                     features=capabilities.features,
                     documents=documents,
+                    jobs=jobs,
                 ),
                 args.task,
                 run_id=run_id,
@@ -165,6 +195,8 @@ async def _run(args: argparse.Namespace) -> int:
                 on_tool=show,
             )
         finally:
+            if isinstance(watcher, OpenAICompatibleModel):
+                await watcher.close()
             if documents is not None:
                 documents.store.close()
     if isinstance(model, OpenAICompatibleModel):
@@ -180,6 +212,7 @@ async def _run(args: argparse.Namespace) -> int:
         "final_text": transcript.final_text,
         "messages": transcript.messages,
         "tools": transcript.tool_records,
+        "job_notice_ids": transcript.job_notice_ids,
     }
     return _keep(args, fields, 0 if transcript.stopped == "answered" else 3)
 
@@ -208,7 +241,11 @@ def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> i
             if record is None:
                 raise ProjectError(ErrorKind.INVALID_REQUEST, f"the record is invalid: {invalid}")
             ProjectStore(args.state_dir).save_run(record)
-        except (ProjectError, OSError, ValueError, RecursionError) as exc:
+            # Save first: a crash before this acknowledgement safely repeats notices.
+            JobState(args.state_dir).acknowledge(
+                record.context, record.run_id, record.job_notice_ids
+            )
+        except (ProjectError, OSError, ValueError, RecursionError, sqlite3.Error) as exc:
             print(f"error: the run's record could not be kept: {exc}", file=sys.stderr)
             status = 1
     return status
@@ -433,6 +470,18 @@ def main(argv: list[str] | None = None) -> int:
         help="name the run (default: a new random ID). Under a reused ID, a call identical "
         "to one already made in the same place returns its earlier result, marked replayed",
     )
+    run.add_argument(
+        "--watcher-model", help="separate job watcher model alias; omitted: no check-ins"
+    )
+    run.add_argument("--watcher-script", type=Path, help="scripted watcher replies for validation")
+    run.add_argument(
+        "--watcher-calls-per-hour",
+        type=int,
+        default=60,
+        help="durable per-project watcher call budget (default 60)",
+    )
+    run.add_argument("--watcher-first-check", type=float, default=300)
+    run.add_argument("--watcher-interval", type=float, default=1800)
     run.add_argument("--transcript", type=Path)
     run.add_argument("task")
     project = commands.add_parser("project", help="create, show or revise a project")
@@ -460,6 +509,22 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     match args.command:
         case "run":
+            if args.watcher_calls_per_hour < 1:
+                parser.error("--watcher-calls-per-hour must be positive")
+            if any(
+                not math.isfinite(value) or value <= 0
+                for value in (args.watcher_first_check, args.watcher_interval)
+            ):
+                parser.error("watcher intervals must be positive and finite")
+            if args.watcher_model is not None:
+                if args.state_dir is None:
+                    parser.error("--watcher-model needs --state-dir for durable accounting")
+                if args.watcher_script is None and args.model_url is None:
+                    parser.error("--watcher-model needs --model-url or --watcher-script")
+                if args.watcher_model == args.model and args.script is None:
+                    parser.error("--watcher-model must be a separate model alias")
+            elif args.watcher_script is not None:
+                parser.error("--watcher-script needs --watcher-model")
             if args.model_url is not None and args.api_key_file is None:
                 parser.error("--model-url needs --api-key-file")
             if args.dedicated and args.state_dir is None:
