@@ -37,6 +37,7 @@ from sandbox_science.contracts import (
     ProvisionOperation,
     ProvisionRequest,
     ProvisionState,
+    new_id,
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
@@ -549,6 +550,45 @@ async def test_the_api_manages_environments(
     response = await plain.post("/v1/environments", json=body, headers=headers)
     assert response.status == 422
     assert (await response.json())["error"]["kind"] == "unsupported"
+
+
+@pytest.mark.parametrize("binding", ["held", "active", "unknown", "replacement"])
+async def test_capture_cleanup_uses_only_confirmed_original_vm_deletion(
+    setup: Setup, aiohttp_client: ClientFactory, tmp_path: Path, binding: str
+) -> None:
+    manager = idle_manager(tmp_path)
+    client = await aiohttp_client(create_app(manager, TOKEN, setup.environments))
+    info, _ = await setup.environments.create(setup.request())
+    assert info.sandbox_id is not None
+    lease = manager.store.reserve_capture(new_id("pub"), info.environment_id)
+    original = (
+        None
+        if binding == "unknown"
+        else (info.sandbox, "another-immutable-id" if binding == "replacement" else info.sandbox_id)
+    )
+    lease = manager.store.dispatch_capture(lease, new_id("inc"), new_id("cap"), original)
+    if binding != "active":
+        manager.store.finish_capture(lease, certain=False)
+    before = manager.store.capture_leases()
+    try:
+        # Neither advisory forgetting nor a forged logical DELETED state is proof.
+        await setup.environments._forget(info.environment_id)
+        assert manager.store.capture_leases() == before
+        response = await client.delete(
+            f"/v1/environments/{info.environment_id}",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        assert response.status == 200, await response.text()
+        if binding == "held":
+            assert not manager.store.capture_leases()
+        elif binding == "active":
+            assert manager.store.capture_leases()[0].guest_clean == 1
+            assert manager.store.finish_capture(lease, certain=False)
+        else:
+            assert manager.store.capture_leases() == before
+    finally:
+        await manager.close()
+        manager.store.close()
 
 
 async def test_the_harness_client_manages_environments(

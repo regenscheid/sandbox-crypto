@@ -17,7 +17,7 @@ from typing import Literal, Protocol
 
 from sandbox_science.contracts import ErrorKind
 
-from . import daemon, executor, pdfhelper, provisioning
+from . import capture, daemon, executor, pdfhelper, provisioning
 from .channel import EventHandler, ExecutorChannel
 from .errors import WorkerError
 from .package_clients import ClientConfiguration, render
@@ -27,6 +27,7 @@ _log = logging.getLogger(__name__)
 
 DAEMON_SOURCE = Path(daemon.__file__)
 EXECUTOR_SOURCE = Path(executor.__file__)
+CAPTURE_SOURCE = Path(capture.__file__)
 PDF_HELPER_SOURCE = Path(pdfhelper.__file__)
 PROVISIONING_SOURCE = Path(provisioning.__file__)
 """The package-command wrappers and hook (provisioning.py), which the executor loads."""
@@ -224,7 +225,13 @@ class OpenShellBackend:
             "sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell", "--",
             "mkdir", "-p", settings.executor_dir, settings.project_root,
         )  # fmt: skip
-        files = [EXECUTOR_SOURCE, PROVISIONING_SOURCE, PDF_HELPER_SOURCE, DAEMON_SOURCE]
+        files = [
+            EXECUTOR_SOURCE,
+            PROVISIONING_SOURCE,
+            PDF_HELPER_SOURCE,
+            DAEMON_SOURCE,
+            CAPTURE_SOURCE,
+        ]
         if settings.sched_shim:
             files.append(await self._shim())
         for path in files:

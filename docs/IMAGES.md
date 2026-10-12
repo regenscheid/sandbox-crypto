@@ -292,6 +292,17 @@ What arm64 still needs:
 
 ## In OpenShell
 
+The unchanged external worker conformance suite passed both linux/amd64 research
+profiles in [Lab23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md),
+on frozen main `73c07aa`: 23 external cases per profile, with 23 local variants
+intentionally skipped per run. `minimal:02f85b3` and `crypto-base:02f85b3` both ran
+Python 3.14.8 under their worker profiles and compiled filesystem settings, retaining
+effective/declared isolation tier 3. Complete teardown was independently verified.
+The suite exercised Python kernels and worker API/file/publication semantics;
+crypto-base advertised Sage but gained no new Sage/G6K/TeX/PDF functional assertion.
+Earlier tool checks below remain separately dated. No arm64 or multi-platform
+acceptance is implied, and no image/source/test change was needed for this run.
+
 Labs on babbage ran every image in OpenShell VM sandboxes, under the compiled policies:
 - crypto-base for the M1 exit run ([lab 9](../.agents/docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)), so the VM driver handles its root filesystem;
 - minimal in labs 10 to 12 and 14, where runtime installs into the prefix worked ([lab 11](../.agents/docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md));
