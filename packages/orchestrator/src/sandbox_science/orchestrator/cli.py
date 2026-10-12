@@ -56,6 +56,8 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 
+from .artifact_publisher import ArtifactPublisher
+from .artifacts import ArtifactInventory
 from .consistency.controller import ReviewController
 from .consistency.mathnotices import MathNotices
 from .consistency.notices import FindingNotices
@@ -222,6 +224,17 @@ async def _run(args: argparse.Namespace) -> int:
             first_check_seconds=args.watcher_first_check,
             check_interval_seconds=args.watcher_interval,
         )
+        artifacts = (
+            ArtifactPublisher(
+                ArtifactInventory(documents.store),
+                client,
+                context,
+                run_id=run_id,
+                alias="scripted" if args.script is not None else args.model,
+            )
+            if documents is not None
+            else None
+        )
         try:
             transcript = await run_task(
                 model,
@@ -234,6 +247,7 @@ async def _run(args: argparse.Namespace) -> int:
                     jobs=jobs,
                     reviews=reviews,
                     math_checks=math_checks,
+                    artifacts=artifacts,
                 ),
                 args.task,
                 run_id=run_id,
@@ -241,14 +255,22 @@ async def _run(args: argparse.Namespace) -> int:
                 on_tool=show,
             )
         finally:
-            if isinstance(reviewer, OpenAICompatibleModel):
-                await reviewer.close()
-            if isinstance(watcher, OpenAICompatibleModel):
-                await watcher.close()
-            if documents is not None:
-                documents.store.close()
-    if isinstance(model, OpenAICompatibleModel):
-        await model.close()
+            try:
+                if artifacts is not None:
+                    await artifacts.aclose()
+            finally:
+                try:
+                    if isinstance(reviewer, OpenAICompatibleModel):
+                        await reviewer.close()
+                finally:
+                    try:
+                        if isinstance(watcher, OpenAICompatibleModel):
+                            await watcher.close()
+                    finally:
+                        if documents is not None:
+                            documents.store.close()
+                        if isinstance(model, OpenAICompatibleModel):
+                            await model.close()
     print(f"\n{transcript.final_text or '(no answer)'}")
     fields: dict[str, object] = {
         "run_id": run_id,
