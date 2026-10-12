@@ -78,3 +78,7 @@ It requires the existing locked Python and npm dependencies; web CI sets up its
 existing pinned uv/Python action before running npm tests. No model, worker,
 service, VM or network peer participates. Independent review, final combined
 validation and delivery remain root-owned gates.
+
+## Final integration gates
+
+Root final combined gates on signed `9419abec` passed 9,817 Python tests (43 opt-in skips, two existing serializer warnings), 571 web tests including the 1,076-source differential corpus, 24 post-build math cases, both production builds and locked/static/license/protocol checks. Source/test/helper/configuration stayed unchanged; subsequent edits describe acceptance and tracking only. Fresh exact-head PR CI and merge remain required.

@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-12 — Unicode table parity and historical parser profiles
+
+Implement the known table whitespace mismatch using the pinned rule with JavaScript trim, preserving paragraph/reference interruption and exact source provenance. New parses record profile 2; immutable profile 1 documents and ordinary bodies select their original parser before parsing, and explicit restores retain truthful profile metadata. The browser production renderer, source normalization and authority remain unchanged. The existing pinned uv setup/sync move before web tests so the full-document differential gate uses the actual locked server parser. Independent source/main-union reviews clear `9419abec`; root final combined gates pass 9,817 Python/43 skips/two existing warnings, 571 web, 24 post-build math cases and all required checks/builds. Fresh CI/merge remain pending. See [scope and limits](../docs/TABLE-PARSER-PARITY.md).
+
 ## 2026-10-12 — parallel continuation and merged tracking
 
 The user explicitly requested more parallel agents. Start three independent existing
