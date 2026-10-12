@@ -1825,7 +1825,7 @@ class DocumentStore:
                 _dumps(normalized),
                 _dumps(found),
                 _dumps(stored),
-                _dumps(parser_versions()),
+                _dumps({**parser_versions(), "profile": mapped.parsed.profile}),
             ),
         )
         db.execute(

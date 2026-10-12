@@ -1,0 +1,1258 @@
+{
+  "cases": [
+    {
+      "name": "U+FEFF header outer",
+      "markdown": "\ufeff| $h$ | right |\ufeff\n| --- | --- |\n| $b$ | value |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          34,
+          35,
+          36,
+          37
+        ]
+      ]
+    },
+    {
+      "name": "U+FEFF cell edges",
+      "markdown": "| \ufeff$h$\ufeff | right |\n| --- | --- |\n| \ufeff$b$\ufeff | value |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          35,
+          36,
+          37,
+          38
+        ]
+      ]
+    },
+    {
+      "name": "U+FEFF body outer",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\ufeff| $b$ | value |\ufeff\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          33,
+          34,
+          35,
+          36
+        ]
+      ]
+    },
+    {
+      "name": "U+FEFF body blank",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\ufeff\nAfter $a$.\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          2
+        ],
+        [
+          "paragraph",
+          0,
+          2,
+          4
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          1,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          38,
+          39,
+          40,
+          41
+        ]
+      ]
+    },
+    {
+      "name": "U+001C header outer",
+      "markdown": "\u001c| $h$ | right |\u001c\n| --- | --- |\n| $b$ | value |\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          34,
+          35,
+          36,
+          37
+        ]
+      ]
+    },
+    {
+      "name": "U+001C cell edges",
+      "markdown": "| \u001c$h$\u001c | right |\n| --- | --- |\n| \u001c$b$\u001c | value |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          35,
+          36,
+          37,
+          38
+        ]
+      ]
+    },
+    {
+      "name": "U+001C body outer",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u001c| $b$ | value |\u001c\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          33,
+          34,
+          35,
+          36
+        ]
+      ]
+    },
+    {
+      "name": "U+001C body blank",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u001c\nAfter $a$.\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          4
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          38,
+          39,
+          40,
+          41
+        ]
+      ]
+    },
+    {
+      "name": "U+001D header outer",
+      "markdown": "\u001d| $h$ | right |\u001d\n| --- | --- |\n| $b$ | value |\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          34,
+          35,
+          36,
+          37
+        ]
+      ]
+    },
+    {
+      "name": "U+001D cell edges",
+      "markdown": "| \u001d$h$\u001d | right |\n| --- | --- |\n| \u001d$b$\u001d | value |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          35,
+          36,
+          37,
+          38
+        ]
+      ]
+    },
+    {
+      "name": "U+001D body outer",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u001d| $b$ | value |\u001d\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          33,
+          34,
+          35,
+          36
+        ]
+      ]
+    },
+    {
+      "name": "U+001D body blank",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u001d\nAfter $a$.\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          4
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          38,
+          39,
+          40,
+          41
+        ]
+      ]
+    },
+    {
+      "name": "U+001E header outer",
+      "markdown": "\u001e| $h$ | right |\u001e\n| --- | --- |\n| $b$ | value |\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          34,
+          35,
+          36,
+          37
+        ]
+      ]
+    },
+    {
+      "name": "U+001E cell edges",
+      "markdown": "| \u001e$h$\u001e | right |\n| --- | --- |\n| \u001e$b$\u001e | value |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          35,
+          36,
+          37,
+          38
+        ]
+      ]
+    },
+    {
+      "name": "U+001E body outer",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u001e| $b$ | value |\u001e\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          33,
+          34,
+          35,
+          36
+        ]
+      ]
+    },
+    {
+      "name": "U+001E body blank",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u001e\nAfter $a$.\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          4
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          38,
+          39,
+          40,
+          41
+        ]
+      ]
+    },
+    {
+      "name": "U+001F header outer",
+      "markdown": "\u001f| $h$ | right |\u001f\n| --- | --- |\n| $b$ | value |\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          34,
+          35,
+          36,
+          37
+        ]
+      ]
+    },
+    {
+      "name": "U+001F cell edges",
+      "markdown": "| \u001f$h$\u001f | right |\n| --- | --- |\n| \u001f$b$\u001f | value |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          35,
+          36,
+          37,
+          38
+        ]
+      ]
+    },
+    {
+      "name": "U+001F body outer",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u001f| $b$ | value |\u001f\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          33,
+          34,
+          35,
+          36
+        ]
+      ]
+    },
+    {
+      "name": "U+001F body blank",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u001f\nAfter $a$.\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          4
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          38,
+          39,
+          40,
+          41
+        ]
+      ]
+    },
+    {
+      "name": "U+0085 header outer",
+      "markdown": "\u0085| $h$ | right |\u0085\n| --- | --- |\n| $b$ | value |\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          34,
+          35,
+          36,
+          37
+        ]
+      ]
+    },
+    {
+      "name": "U+0085 cell edges",
+      "markdown": "| \u0085$h$\u0085 | right |\n| --- | --- |\n| \u0085$b$\u0085 | value |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          35,
+          36,
+          37,
+          38
+        ]
+      ]
+    },
+    {
+      "name": "U+0085 body outer",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u0085| $b$ | value |\u0085\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          33,
+          34,
+          35,
+          36
+        ]
+      ]
+    },
+    {
+      "name": "U+0085 body blank",
+      "markdown": "| $h$ | right |\n| --- | --- |\n\u0085\nAfter $a$.\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          4
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          38,
+          39,
+          40,
+          41
+        ]
+      ]
+    },
+    {
+      "name": "quote escaped pipes and Unicode",
+      "markdown": "> | \ufeff$x\\|y$\ufeff | right |\n> | --- | --- |\n> | \u0085$z$\u0085 | value |\n",
+      "blocks": [
+        [
+          "quote",
+          0,
+          0,
+          3
+        ],
+        [
+          "table",
+          1,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          1,
+          "inline",
+          "x|y"
+        ],
+        [
+          1,
+          "inline",
+          "z"
+        ]
+      ],
+      "positions": [
+        [
+          5,
+          6,
+          10,
+          11
+        ],
+        [
+          44,
+          45,
+          46,
+          47
+        ]
+      ]
+    },
+    {
+      "name": "list table with astral prefix",
+      "markdown": "\ud83d\ude00 prefix $p$.\n\n- | \ufeff$h$\ufeff | right |\n  | --- | --- |\n  | \u001f$b$\u001f | value |\n\nAfter $a$.\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          1
+        ],
+        [
+          "list",
+          0,
+          2,
+          5
+        ],
+        [
+          "list_item",
+          1,
+          2,
+          5
+        ],
+        [
+          "table",
+          2,
+          2,
+          5
+        ],
+        [
+          "paragraph",
+          0,
+          6,
+          7
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "p"
+        ],
+        [
+          3,
+          "inline",
+          "h"
+        ],
+        [
+          3,
+          "inline",
+          "b"
+        ],
+        [
+          4,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          9,
+          10,
+          11,
+          12
+        ],
+        [
+          20,
+          21,
+          22,
+          23
+        ],
+        [
+          56,
+          57,
+          58,
+          59
+        ],
+        [
+          78,
+          79,
+          80,
+          81
+        ]
+      ]
+    },
+    {
+      "name": "aligned and missing cells",
+      "markdown": "| \ufeff$h$\ufeff | right |\n| :--- | ---: |\n| $b$ |\n| $c$ | value | ignored |\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          4
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ],
+        [
+          0,
+          "inline",
+          "c"
+        ]
+      ],
+      "positions": [
+        [
+          3,
+          4,
+          5,
+          6
+        ],
+        [
+          36,
+          37,
+          38,
+          39
+        ],
+        [
+          44,
+          45,
+          46,
+          47
+        ]
+      ]
+    },
+    {
+      "name": "delimiter non-ASCII stays invalid",
+      "markdown": "| $h$ | right |\n| ---\u0085 | --- |\n| $b$ | value |\n",
+      "blocks": [
+        [
+          "paragraph",
+          0,
+          0,
+          3
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          33,
+          34,
+          35,
+          36
+        ]
+      ]
+    },
+    {
+      "name": "table followed by code and paragraph",
+      "markdown": "| $h$ | right |\n| --- | --- |\n| \u0085$b$\u0085 | value |\n\n    | $code$ |\n\nAfter $a$.\n",
+      "blocks": [
+        [
+          "table",
+          0,
+          0,
+          3
+        ],
+        [
+          "code",
+          0,
+          4,
+          5
+        ],
+        [
+          "paragraph",
+          0,
+          6,
+          7
+        ]
+      ],
+      "math": [
+        [
+          0,
+          "inline",
+          "h"
+        ],
+        [
+          0,
+          "inline",
+          "b"
+        ],
+        [
+          2,
+          "inline",
+          "a"
+        ]
+      ],
+      "positions": [
+        [
+          2,
+          3,
+          4,
+          5
+        ],
+        [
+          33,
+          34,
+          35,
+          36
+        ],
+        [
+          71,
+          72,
+          73,
+          74
+        ]
+      ]
+    }
+  ],
+  "legacy": [
+    {
+      "name": "U+FEFF header outer",
+      "markdown": "\ufeff| $h$ | right |\ufeff\n| --- | --- |\n| $b$ | value |\n",
+      "profile": "ss-markdown-1",
+      "blocks": [
+        {
+          "id": "b1",
+          "kind": "paragraph",
+          "depth": 0,
+          "lines": [
+            0,
+            3
+          ],
+          "status": "added",
+          "math": [
+            {
+              "id": "m1",
+              "kind": "inline",
+              "tex": "h"
+            },
+            {
+              "id": "m2",
+              "kind": "inline",
+              "tex": "b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "U+0085 header outer",
+      "markdown": "\u0085| $h$ | right |\u0085\n| --- | --- |\n| $b$ | value |\n",
+      "profile": "ss-markdown-1",
+      "blocks": [
+        {
+          "id": "b1",
+          "kind": "table",
+          "depth": 0,
+          "lines": [
+            0,
+            3
+          ],
+          "status": "added",
+          "math": [
+            {
+              "id": "m1",
+              "kind": "inline",
+              "tex": "h"
+            },
+            {
+              "id": "m2",
+              "kind": "inline",
+              "tex": "b"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

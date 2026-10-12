@@ -2,18 +2,20 @@
 // The browser's half of the shared document cases (living documents, LD-F2): the server
 // runs the same file through its parser (packages/orchestrator, test_document_parser.py).
 import { describe, expect, it } from 'vitest';
+import { attachIds, type ServerBlock } from './attach';
 import { blockMap } from './blockmap';
 import documents from './documents.fixtures.json';
 import dollars from './dollarmath.fixtures.json';
 import { documentParser, parser } from './markdown';
 import delimiters from './mathdelimiters.fixtures.json';
+import tables from './tables.fixtures.json';
 
 function parsed(markdown: string) {
   return blockMap(markdown, documentParser.parse(markdown, {}));
 }
 
 describe('blocks and formulas, as the server finds them', () => {
-  for (const { name, markdown, blocks, math } of documents.cases) {
+  for (const { name, markdown, blocks, math } of [...documents.cases, ...tables.cases]) {
     it(name, () => {
       const found = parsed(markdown);
       expect(found.blocks.map((block) => [block.kind, block.depth, ...block.lines])).toEqual(blocks);
@@ -66,4 +68,14 @@ describe('the places the parser records', () => {
       ['paragraph', 1, 2],
     ]);
   });
+});
+
+describe('historical profile 1 maps', () => {
+  for (const { name, markdown, blocks } of tables.legacy) {
+    it(`keeps the existing mismatch guard for ${name}`, () => {
+      const attached = attachIds(parsed(markdown), blocks as ServerBlock[]);
+      expect(attached.mismatches.length).toBeGreaterThan(0);
+      expect(attached.blocks.size).toBeLessThan(blocks.length);
+    });
+  }
 });
