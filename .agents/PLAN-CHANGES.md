@@ -1,8 +1,27 @@
 # Plan changes
 
+## 2026-10-12 — bundled GUI distribution notices
+
+Independently reviewed signed union `1032cd4` integrates merged main `c6ccce6`. Fresh validation passed 472 web tests (27 notice cases), 24 post-build math cases, both builds and all locked/static/license/protocol checks. Full Python 9,749/43/two warnings is explicitly reused from unchanged signed `123b2e6` and fresh #90 CI. Root-owned [HTTP distribution acceptance](docs/agent-reports/workspace-license-notices-2026-10-12.md) served all 70 built files exactly and verified complete cleanup. Fresh exact-head PR CI remains required before merge. Embedded React and Svelte adaptations and glyph-derived SVG attribution are included; the separate isolated math-checker notice copier remains a tracked follow-on.
+
+Implement the existing W4 notice-shipping backlog item with a production build
+plugin: actual emitted npm module/runtime-helper coverage, complete primary local
+notice text, project MIT, exact KaTeX CSS/font pins and deterministic distribution
+hashes. Unknown or mismatched inputs and unclassified copied/public assets fail
+the build. Local source identifies React-derived Apache 2 helpers, an MIT is-promise
+adaptation and OFL glyph-derived SVG assets; distributed fonts also identify OFL.
+Retain the exact source/font attribution and pinned primary license text. OFL
+remains the existing font/SVG asset terms; the platform-code allowlist does not
+change. No new dependency, service, route/UI or math-check copier change.
+Signed milestone `6b2b6bb` is preserved by independently reviewed actual-main
+union `1032cd4`; final integrated checks and HTTP acceptance passed as recorded
+above. Fresh PR CI remains the merge gate. See
+[distribution](../docs/WORKSPACE.md#building-and-running) and
+[primary inputs](../web/workspace/licenses/README.md).
+
 ## 2026-10-12 — retain ordinary failed runs
 
-Implement the existing W4 failed-run item with additive fixed failure phases and partial observations. The CLI preserves exit 1, completed tool outcomes and delivery claims, and saves before acknowledging notices. Failed records do not finalize staged ignored-math outcomes or label partial assistant text as an answer. Cleanup proceeds through owned resources; the first interruption propagates through later cleanup failures without saving or acknowledging a run. Legacy records remain readable. Setup refusal, cancellation/process-death persistence, live streaming and session-end handling remain separate. This changes no model/runtime/security policy or architecture decision. Independently reviewed signed source `123b2e6` passed 9,749 Python tests (43 opt-in skips, two existing warnings), 445 web tests, 24 post-build math checks and all required checks/builds. Root-owned [CLI/browser acceptance](docs/agent-reports/failed-run-records-2026-10-12.md) and complete teardown passed. Web/helper/assets stayed unchanged through the Python cancellation corrections; incomplete predecessor Python logs are retained separately. Fresh PR CI is required before merge.
+Implement the existing W4 failed-run item with additive fixed failure phases and partial observations. The CLI preserves exit 1, completed tool outcomes and delivery claims, and saves before acknowledging notices. Failed records do not finalize staged ignored-math outcomes or label partial assistant text as an answer. Cleanup proceeds through owned resources; the first interruption propagates through later cleanup failures without saving or acknowledging a run. Legacy records remain readable. Setup refusal, cancellation/process-death persistence, live streaming and session-end handling remain separate. This changes no model/runtime/security policy or architecture decision. Independently reviewed signed source `123b2e6` passed 9,749 Python tests (43 opt-in skips, two existing warnings), 445 web tests, 24 post-build math checks and all required checks/builds. Root-owned [CLI/browser acceptance](docs/agent-reports/failed-run-records-2026-10-12.md) and complete teardown passed. Web/helper/assets stayed unchanged through the Python cancellation corrections; incomplete predecessor Python logs are retained separately. PR #90 merged at `c6ccce6` after all fresh CI checks passed (run `38287920059`).
 
 - **MAIN finding explanation math** (D82/LD-53–55/CR-36–38; [scope](../docs/FINDING-PROSE-MATH.md)). Extend the accepted document/comment engine only to MAIN-authored fix/rebut explanation fields. Original scientific transitions remain immutable; ordinary same-session MAIN edits require exact finding/body CAS and bounded immutable operation replay. Reviewer confirmation independently pins the current explanation. Source-neutral checks use real finding parents, empty macros, session-private evidence, shared quotas/closing/save-ACK and explicit held unknown legacy proof. No new USER edit authority, recursive diagnostic source, service/provider/runtime pin/security policy, ledger or idle scope. Signed source `eb5a50f`, actual-main union `c509bc1` and replay correction `f7bb0a3` passed independent review and final combined gates (9,730 Python/43 skips/two existing warnings, 443 web/24 math, all required checks/builds). Root-owned [browser acceptance](docs/agent-reports/finding-prose-math-2026-10-12.md) passed independent scientific/mechanical confirmation and session scope; full teardown passed. PR #89 merged at `3c91c30` after fresh Python 3.12/3.13/web and security checks passed (run `38272517996`).
 
