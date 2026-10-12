@@ -1,5 +1,23 @@
 # Plan changes
 
+## 2026-10-12 — worker-local terminal observation prerequisite
+
+Implement the next approved RA prerequisite without enabling automatic inventory:
+retain bounded exact byte/root identities from existing regular-stat reports,
+original request/attempt/incarnation/known immutable VM dispatch pins, terminal
+detail/gaps in the canonical result/event/source-cursor transaction, and scoped
+internal replay with explicit baseline/retention limits. Derived invalid/quota/corrupt
+state must preserve healthy completion; canonical recovery never depends on derived
+metadata. All mutation coverage stays incomplete, links/specials unavailable and
+`not_seen_after` is not deletion. No public feed, capture fan-out, consumer, scheduler,
+artifact revision or invented producer/input authority is added. This implements an
+existing requirement incrementally; it does not waive every-file-minus-ignore-patterns
+RA-5. The [as-built boundary](../docs/ARTIFACTS.md#worker-local-terminal-observations)
+and [marked Lab24 recipe](labs/README.md#lab24-worker-local-output-observations)
+retain stronger telemetry and one-shot capture receipts as follow-ons. Local tests,
+exact independent review, integrated gates and root-owned OpenShell acceptance remain
+required before merge.
+
 ## 2026-10-12 — external backend and linux/amd64 profile acceptance
 
 Close the existing OpenShell conformance/probe and research-profile lab acceptance

@@ -4,6 +4,22 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 
 ## Where things stand
 
+- **Current worker continuation, 2026-10-12:** `impl/output-observations` starts from
+  merged main `9c077257` (PR #86). It implements the bounded worker-local terminal
+  observation prerequisite: raw byte/root identities from existing regular stat
+  reports, original request/attempt/incarnation/known immutable VM pins, atomic
+  terminal detail/gaps and scoped internal replay. No public feed, capture, consumer,
+  scheduler or artifact revisions are enabled. Invalid/quota/corrupt derived metadata
+  must not change healthy terminal outcomes or canonical daemon recoverability.
+  The 83 focused cases/static checks pass; an earlier affected run passed 962 tests
+  with 32 opt-in skips. Independent review and final main integration/full gates,
+  exact signed-head review and root-owned [Lab24](labs/README.md#lab24-worker-local-output-observations)
+  remain required. Keep the new tree separate from the clean published capture tree.
+  RA-5 still requires every file minus project ignore patterns; this incomplete stat
+  report is not mutation completeness, deletion/link evidence, writer/producer/input
+  proof or attempt-end content. Future authenticated transport and one-shot bound
+  capture receipts remain separate prerequisites.
+
 - **External conformance acceptance, 2026-10-12:** root-owned
   [Lab23](docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) passed the unchanged
   external suite on frozen main `73c07aa`: 23 cases per linux/amd64 profile, minimal
@@ -28,13 +44,13 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
   publication/read/execution access on Python 3.14.8. Independent inspection found
   zero capture leases/helpers; full teardown was verified at 12:36:45 UTC. Actual
   main PR #85 ancestry and acceptance docs are unioned with no product/test/configuration/
-  helper changes. Final docs review and fresh PR CI remain pending. No automatic output discovery,
+  helper changes. PR #86 merged after all three fresh CI checks passed. No automatic output discovery,
   attempt-end bytes, producer/input lineage or closed-writer claim is enabled.
   See [capture boundary](../docs/ARTIFACTS.md#bounded-worker-capture-prerequisite).
 
 - **CP-13 admission continuation:** [sticky recovery fence](../docs/RECOVERY-FENCE.md) signed source `e320236` is independently reviewed and passed final local gates: 9,532 Python tests (43 opt-in skips), 436 web tests, 24 post-build math checks, locked/static/license/protocol checks and both builds. Main `73c07aa`, including merged PR #85, is integrated. Root's first cancel/restart [Lab21](docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) pass used predecessor `ef77f6d`; the final fresh pass used exact `e320236` and proved graceful worker-offline recovery, protected-work refusal, preserved existing kernel/files/history/lockfile/peer and explicit idempotent delete/reuse with a new immutable sandbox/boot. Both labs are completely removed; final teardown was independently verified at 12:13:54 UTC. PR #85 merged after all three fresh CI checks passed; no source/helper edits followed the runtime freeze. Restorer and operator clear remain separate follow-ons. No lab/service was started by the source author.
 
-- **Current continuation, 2026-10-12:** main `73c07aa` includes PR #69 through #85 with fresh CI successful, including catalog #76, outbox #77, source adapter #79, atomic fixture #80, manual delivery #81 and artifact inventory #82. Document-revision D82 now has independently reviewed signed source and [real browser acceptance](docs/agent-reports/document-math-2026-10-12.md). Its exact artifact source union passed final combined gates: 9,459 Python tests (43 opt-in skips), 434 web tests, locked/static/license/protocol checks and both builds. One manually constructed CLI test namespace needed three optional math defaults; its cleanup assertions and timeouts are unchanged, and the final full rerun passed. Rebuilt GUI bytes match the browser archive. D82 PR #83 and artifact evidence PR #84 merged after all fresh CI jobs passed. Main #84 validation recorded 9,494 Python/436 web tests. Renderer configuration remains operator-owned/default unavailable. Full LD-53 comments/replies/ledger/finding-prose coverage and idle dispatch remain open. Normal development is Python 3.13; the supported 3.12 CI matrix remains.
+- **Current continuation, 2026-10-12:** main `9c077257` includes PR #69 through #86 with fresh CI successful, including catalog #76, outbox #77, source adapter #79, atomic fixture #80, manual delivery #81 and artifact inventory #82. Document-revision D82 now has independently reviewed signed source and [real browser acceptance](docs/agent-reports/document-math-2026-10-12.md). Its exact artifact source union passed final combined gates: 9,459 Python tests (43 opt-in skips), 434 web tests, locked/static/license/protocol checks and both builds. One manually constructed CLI test namespace needed three optional math defaults; its cleanup assertions and timeouts are unchanged, and the final full rerun passed. Rebuilt GUI bytes match the browser archive. D82 PR #83 and artifact evidence PR #84 merged after all fresh CI jobs passed. Main #84 validation recorded 9,494 Python/436 web tests. Renderer configuration remains operator-owned/default unavailable. Full LD-53 comments/replies/ledger/finding-prose coverage and idle dispatch remain open. Normal development is Python 3.13; the supported 3.12 CI matrix remains.
 
 - **Manual catalog delivery continuation:** a separate internal adapter and durable journal passed independent source review and combined acceptance: 9,365 Python tests (43 opt-in skips), 431 web tests and all required checks/builds. Writer-guard planning, the worker source adapter and the atomic synthetic OpenShell fixture are integrated. Explicit approved endpoint/configuration bindings, complete pinned targets and exact worker storage acknowledgement never imply environment file publication. There is no scheduler, automatic client discovery or execution hook; uncertain writer state still holds LD-49 publication. See [manual delivery](../docs/LIVING-DOCUMENTS.md#manual-catalog-delivery) for the current boundary.
 

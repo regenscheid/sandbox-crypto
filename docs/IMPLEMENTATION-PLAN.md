@@ -1,6 +1,6 @@
 # Detailed implementation plan
 
-Updated: 2026-10-12. Engineering sequence beneath the milestone [roadmap](ROADMAP.md). Track P has the policy library, OpenShell compiler, policy middleware, package cache and event store. W1/W2 provide the [worker service](WORKER.md), harness and native math execution. M1 passed its babbage exit run; provisioning, background jobs and executor recovery have real OpenShell acceptance. W4 has the [workspace](WORKSPACE.md) GUI with document editing, comments, consistency review and document-only mechanical math findings checked in the browser. Main `73c07aa` includes PR #69 through #85 with fresh CI green; D82 passed final combined local gates (9,459 Python/434 web tests and all required checks/builds), PR #83 merged after fresh CI passed, and #84 recorded 9,494 Python/436 web tests. The integrated M2 research workflow remains open. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [consistency review](CONSISTENCY-REVIEW.md).
+Updated: 2026-10-12. Engineering sequence beneath the milestone [roadmap](ROADMAP.md). Track P has the policy library, OpenShell compiler, policy middleware, package cache and event store. W1/W2 provide the [worker service](WORKER.md), harness and native math execution. M1 passed its babbage exit run; provisioning, background jobs and executor recovery have real OpenShell acceptance. W4 has the [workspace](WORKSPACE.md) GUI with document editing, comments, consistency review and document-only mechanical math findings checked in the browser. Main `9c077257` includes PR #69 through #86 with fresh CI green; D82 passed final combined local gates (9,459 Python/434 web tests and all required checks/builds), PR #83 merged after fresh CI passed, and #84 recorded 9,494 Python/436 web tests. The integrated M2 research workflow remains open. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [consistency review](CONSISTENCY-REVIEW.md).
 
 The [CP-13 sticky admission prerequisite](RECOVERY-FENCE.md) is implemented and independently reviewed at signed `e320236`. Final combined gates passed 9,532 Python tests (43 opt-in skips), 436 web tests, 24 post-build math checks, locked/static/license/protocol checks and both builds. Root-owned [OpenShell Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) passed real linking cancellation, graceful worker-offline/reconnect and explicit confirmed delete/reuse, preserving existing research state and refusing new protected work. Both labs are completely removed; PR #85 merged after all three fresh CI checks passed. Restoring/clearing package state remains open; no package-list comparison proves recovery.
 
@@ -159,12 +159,20 @@ freeze `b535856`; root-owned [OpenShell Lab22](../.agents/docs/agent-reports/bab
 passed exact binary/empty retention, prompt regular/sparse/symlink/FIFO refusals and
 healthy publication/read/execution access on Python 3.14.8. Zero capture leases/helpers
 and complete teardown were independently verified. Actual main PR #85 ancestry and
-acceptance docs change no product/test/configuration/helper bytes. Final docs review
-and fresh PR CI remain required before merge. This adds no automatic discovery.
-Then design a durable bounded execution/attempt/path observation journal with exact
-original-incarnation binding and honest incomplete-manifest coverage. Current
-`written_files` stat differences cannot prove all writes, producer identity, inputs
-or attempt-end source bytes; RA-5/RA-F2/CR-F6 remain open.
+acceptance docs change no product/test/configuration/helper bytes. PR #86 merged after all three fresh CI checks passed. This adds no automatic discovery.
+The next [worker-local terminal observation prerequisite](ARTIFACTS.md#worker-local-terminal-observations)
+is implemented for local validation: bounded raw-byte/root stat sidecars, original
+pre-dispatch request/attempt/incarnation/known immutable VM pins, atomic terminal
+detail/gaps and scoped internal replay/retention. Derived invalid/quota/corrupt state
+preserves healthy execution completion and canonical recovery. Exact independent
+review, integrated full gates and root-owned OpenShell Lab24 remain required before
+merge. No public feed, capture, consumer, scheduler or artifact revision is enabled.
+Every report remains mutation-incomplete; links/specials are unavailable and
+`not_seen_after` is not deletion. Current `written_files` stat differences cannot prove
+all writes, producer identity, inputs or attempt-end source bytes; RA-5/RA-F2/CR-F6
+remain open, including project ignore patterns. Next design one-shot bound capture
+intent/status/receipts and authenticated scoped transport before automatic fan-out;
+complete filesystem telemetry/snapshotting remains a stronger separate requirement.
 
 Support attributed user edits and revision-checked agent patches; demonstrate stale-patch reconciliation and orphaned anchors. Use one TeX-preserving renderer across research views. Evaluate PDF.js navigation against exact page/region anchors while retaining worker extraction/rendering. Assumption changes should identify dependent claims/reviews for reconsideration, not silently rewrite conclusions.
 

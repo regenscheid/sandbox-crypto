@@ -29,8 +29,10 @@ from sandbox_science.contracts import (
     ProvisionOperation,
     ProvisionState,
 )
+from sandbox_science.contracts.output_observations import Gap, OutputPage, OutputReport, OutputScope
 
 from .errors import WorkerError
+from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
 
 _log = logging.getLogger(__name__)
@@ -194,6 +196,7 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
         self._db.executescript(_SCHEMA)
+        self.observations = ObservationJournal(self._db)
         for table in ("executor_endpoints", "executor_recycles"):
             columns = {str(row[1]) for row in self._db.execute(f"PRAGMA table_info({table})")}
             for name in ("sandbox", "sandbox_id"):
@@ -505,18 +508,20 @@ class Store:
         return None
 
     def insert_execution(self, execution: Execution, digest: str) -> None:
-        self._db.execute(
-            "INSERT INTO executions VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                execution.execution_id,
-                _operation_key(execution.context.project_id, execution.operation_id),
-                digest,
-                execution.context.environment_id,
-                execution.context.session_id,
-                int(execution.state in TERMINAL_STATES),
-                execution.model_dump_json(),
-            ),
-        )
+        with self._transaction():
+            self._db.execute(
+                "INSERT INTO executions VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    execution.execution_id,
+                    _operation_key(execution.context.project_id, execution.operation_id),
+                    digest,
+                    execution.context.environment_id,
+                    execution.context.session_id,
+                    int(execution.state in TERMINAL_STATES),
+                    execution.model_dump_json(),
+                ),
+            )
+            self.observations.accept(execution, digest)
 
     def update_execution(self, execution: Execution) -> None:
         self._db.execute(
@@ -676,15 +681,58 @@ class Store:
         )
 
     def finish(
-        self, execution: Execution, events: Sequence[Event], source_seq: int | None = None
+        self,
+        execution: Execution,
+        events: Sequence[Event],
+        source_seq: int | None = None,
+        *,
+        observation: OutputReport | None = None,
+        observation_gap: Gap | None = "missing",
     ) -> None:
         """Store an execution's last events and its terminal record in one transaction."""
         with self._transaction():
+            row = self._db.execute(
+                "SELECT terminal FROM executions WHERE execution_id=?", (execution.execution_id,)
+            ).fetchone()
+            if row is not None and row[0] == 1:
+                return  # terminal replay cannot overwrite its original observation or result
             for event in events:
                 self.add_event(event)
             self.update_execution(execution)
+            self.observations.finish(execution, observation, observation_gap)
             if source_seq is not None:
                 self.source_cursor(execution.execution_id, source_seq)
+
+    def observation_dispatch(
+        self,
+        execution: Execution,
+        incarnation: str,
+        identity: tuple[str, str] | None,
+        *,
+        daemon: bool,
+    ) -> None:
+        """Pin original dispatch facts together before the first request write."""
+        with self._transaction():
+            if daemon:
+                # Recoverability is canonical execution state, independent of a
+                # missing/corrupt derived observation binding. Never rebind it.
+                self._db.execute(
+                    "UPDATE execution_recovery SET incarnation=?"
+                    " WHERE execution_id=? AND incarnation=''",
+                    (incarnation, execution.execution_id),
+                )
+            self.observations.dispatch(execution, incarnation, identity)
+
+    def observation_page(
+        self,
+        scope: OutputScope,
+        *,
+        after: int = 0,
+        target: int | None = None,
+        stream_id: str | None = None,
+    ) -> OutputPage:
+        """Internal scoped read only; this grants no remote/client or capture authority."""
+        return self.observations.page(scope, after=after, target=target, stream_id=stream_id)
 
     def endpoints(self) -> tuple[str, ...]:
         return tuple(
