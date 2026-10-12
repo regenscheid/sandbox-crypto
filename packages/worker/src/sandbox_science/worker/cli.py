@@ -38,6 +38,7 @@ from .app import create_app
 from .artifacts import Blobs
 from .backends import Backend, LocalBackend, OpenShellBackend
 from .catalog import CatalogError, load_catalog
+from .documents_catalog import DocumentsCatalog
 from .environments import EnvironmentRecords, Environments, OpenShellCli, printable
 from .errors import WorkerError
 from .manager import ExecutionManager
@@ -119,6 +120,9 @@ async def serve(settings: Settings) -> None:
     token = settings.token()
     environments = _environments(settings)
     store = Store(settings.state_dir / "worker.sqlite3")
+    documents = DocumentsCatalog(
+        settings.state_dir / "documents-catalog.sqlite3", settings.document_catalog
+    )
     blobs = Blobs(settings.state_dir / "artifacts")
     # The shared files' blobs are kept apart from published artifacts, by project (D79).
     shared = (
@@ -165,7 +169,7 @@ async def serve(settings: Settings) -> None:
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
     runner = web.AppRunner(
-        create_app(manager, token, environments, settings.clients, provisioner),
+        create_app(manager, token, environments, settings.clients, provisioner, documents),
         access_log=None,
     )
     background: list[asyncio.Task[None]] = []
@@ -203,6 +207,7 @@ async def serve(settings: Settings) -> None:
         if provisioner.permissions is not None:
             provisioner.permissions.close()
         store.close()
+        documents.close()
         if shared is not None:
             shared.records.close()
         if environments is not None:
