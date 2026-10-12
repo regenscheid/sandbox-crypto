@@ -16,10 +16,57 @@ Documents live in one SQLite database in the harness's state directory, `<state-
 | `annotation_threads`, `annotation_entries` | Immutable anchor/opening author and append-only attributed create, reply, edit, resolve and reopen entries |
 | `annotation_operations` | Scoped idempotent comment mutation results |
 | `annotation_requests` | User-addressed requests, their session, delivery lease and queued/delivered/responded lifecycle |
+| `publication_projects`, `publication_current` | Durable per-project publication cursor and current metadata for every canonical identity, including tombstones |
+| `publication_events`, `publication_meta` | Bounded recent publication metadata and the completed additive bootstrap version |
 
 Triggers refuse updates and deletions of revisions, events, annotation threads and annotation entries, as a guard against mistakes; anyone who can write the file can drop them. The schema's version is SQLite's `user_version`, 1; a database in another version, or an SQLite file that is not a control store, is refused. The workspace server reads and writes the store through the orchestrator package, as it reads the projects' records, until W5 gives the control application an API of its own.
 
 **Events.** `document.created`; `document.revision_created`, with the revision, its base and parent, the author and the author's kind, the blocks changed, added, removed and moved, the structural blocks added, the characters of text an agent added or changed, whether delimiters were normalized, and whether it is a tombstone; `document.patch_conflicted`, with the conflicts; `document.patch_refused`, with the blocks the patch would have changed without naming them; `document.suggestion_created`; `document.suggestion_decided`; `document.settings_changed`; and `document.promoted`, recording the original session, new name, user and reason; and `annotation.created` / `annotation.changed`, committed with the thread entry and request. Each names the service that recorded it (`harness`, `harness-cli` for the user's commands, or `workspace`) and the session of the agent that made the change.
+
+## Publication outbox prerequisite
+
+The internal `documents.publication.Publications` reader pins complete canonical targets
+for the [worker catalog](WORKER.md#document-catalog-prerequisite). Every committed revision,
+including deletion, and every promotion records publication metadata in the same SQLite
+transaction as its source event and operation receipt. A failed hook rolls everything back;
+an exact operation retry emits no duplicate publication. The hook reads the updated SQL
+head and scope rather than the caller's earlier metadata. Promotion changes the path at
+the same immutable revision, without inventing a deletion of that revision.
+
+Project publication sequence is independent of document revision and survives history
+eviction. The event cache retains at most 4,096 entries per project and 65,536 globally;
+current identity projections and cursors are never evicted. Content remains in immutable
+revisions. These are logical metadata bounds, not a filesystem/WAL/RSS quota. Existing
+schema-version-one stores receive the additive tables and a current-state baseline in
+one transaction, once. Baseline entries are not lifecycle deltas: a cursor preceding
+that baseline requires a complete snapshot, including an empty target for deleted-only
+projects. Read-only clients never initialize or repair the store.
+
+`plan(project, after=...)` reads the cursor and all live metadata in one consistent read.
+It returns a pinned complete snapshot, a complete contiguous delta of at most 64 changes
+and 64 KiB, or an already-current result. Missing/evicted history and larger deltas fall
+back to the complete snapshot. Repeated changes to one document remain separate. A
+target over 10,000 entries or the shared protocol's byte limits is refused in full;
+worker export limits do not veto ordinary canonical edits. An already-running older
+writer that bypasses the hook leaves a detectable projection mismatch: export refuses
+instead of assigning its bytes to an older publication cursor.
+
+`content(project, entry)` reads the exact pinned immutable revision, even after later
+edits or deletion, and verifies its byte length and SHA-256 within that project. SQL
+clips metadata, content and digest fields before returning them to Python; malformed
+or oversized stored rows cannot become unbounded Python export objects. Both APIs are
+synchronous and must run off asynchronous event loops.
+
+This slice supplies no network delivery, worker acknowledgement cursor, environment
+file publication, direct-edit ingestion or `ss-doc` invocation. LD-49 to LD-52 and their
+runtime fixtures remain open, including the conservative hold for uncertain writers.
+
+Acceptance passed 59 focused publication/store cases, independent SQL fault/retry,
+retention/bootstrap and actual worker-catalog composition probes, and the combined
+suite: 9,274 Python tests (43 opt-in skips), 429 web tests, strict/static/license/protocol
+checks and both production builds. Corrupt 20 MiB metadata and revision rows were
+refused with bounded Python export allocations; this does not measure SQLite cache
+memory or prove a sandbox writer guard.
 
 ## Parsing
 

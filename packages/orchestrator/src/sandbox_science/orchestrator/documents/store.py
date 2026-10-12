@@ -472,6 +472,9 @@ class DocumentStore:
 
             for statement in ANNOTATION_SCHEMA:
                 db.execute(statement)
+            from .publication import prepare as prepare_publication
+
+            prepare_publication(db)
             db.execute("COMMIT")
         finally:
             if db.in_transaction:
@@ -1868,7 +1871,7 @@ class DocumentStore:
         author: Author,
         payload: Json,
     ) -> None:
-        db.execute(
+        cursor = db.execute(
             "INSERT INTO events (time, kind, producer, project_id, session_id, document_id, "
             "payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -1881,6 +1884,10 @@ class DocumentStore:
                 _dumps(payload),
             ),
         )
+        from .publication import record_event
+
+        assert cursor.lastrowid is not None  # noqa: S101 - this event was inserted
+        record_event(db, kind, info.document_id, cursor.lastrowid)
 
     def _replay(
         self,
