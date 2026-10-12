@@ -270,7 +270,22 @@ class Stdio:
             stdout=asyncio.subprocess.PIPE,
             limit=executor.MAX_LINE,
         )
-        return cls(process)
+        stdio = cls(process)
+        stdio.send({"id": -2, "op": "hello"})
+        hello = await stdio.until(_reply(-2))
+        stdio.send(
+            {
+                "id": -1,
+                "op": "package_gate",
+                "incarnation": hello["package_gate"],
+                "generation": 0,
+                "mode": "ready",
+                "operation": "",
+                "revision": None,
+            }
+        )
+        assert (await stdio.until(_reply(-1)))["ok"]
+        return stdio
 
     def send(self, *requests: dict[str, Any]) -> None:
         # One write: the executor reads them in one go, as it may from the worker.
