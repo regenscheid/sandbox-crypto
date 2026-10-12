@@ -118,3 +118,18 @@ base revision, pagination and explicit adoption of the current thread revision.
 `record STATE` exports research records without authentication state. Close the
 tab, stop the transient server and remove the marked directory. The
 [report](../docs/agent-reports/document-comments-2026-10-12.md) records acceptance.
+
+## Consistency review browser acceptance
+
+`uv run python -I .agents/labs/consistency_review.py create` creates a fresh marked
+synthetic state and prints its IDs. The `serve --state STATE --static web/workspace/dist`
+mode serves a production build on loopback, with only a fixed synthetic login token.
+An optional `--delay-review ID` adds two-second evidence/audit responses to exercise
+selection races. Use `fix --state STATE` to produce the exact corrected revision,
+claim that revision in the GUI, then `confirm --state STATE` for a real constrained
+ScriptedModel runner. Confirmation requires its checked-item record, exact source/fix
+bytes and pins; it asserts the unrelated author retry is unchanged. `reopen` simulates
+a concurrent USER change, and `record` exports token-free research state and audit.
+Close the tab, stop the transient server and remove only the marked synthetic state.
+The [report](../docs/agent-reports/consistency-review-2026-10-12.md) records the initial
+coverage issue, correction, browser interactions and limits.
