@@ -1264,10 +1264,12 @@ def _same_running(pid: int, start: int) -> bool:
 
 
 def end_strays(state: State) -> int:
-    """End what a package command whose wrapper died left running, such as the build
-    backend or post-link script its command started: the processes that carry its turn's
-    mark. A wrapper killed with SIGKILL leaves its holder's record behind. Call this
-    holding the lock; returns how many processes were ended."""
+    """End processes a previous package turn left running, including after wrapper death.
+
+    Call this holding the lock. An active turn holds it exclusively, so even a live
+    holder here has relinquished its turn (possibly while reporting failed cleanup).
+    Its retained marker must be cleaned before another turn can replace it.
+    """
     holder = state.holding()
     if holder is None:
         return 0
@@ -1277,7 +1279,6 @@ def end_strays(state: State) -> int:
         or isinstance(pid, bool)
         or not isinstance(start, int)
         or isinstance(start, bool)
-        or process_start(pid) == start  # alive, so not what held the lock
     ):
         return 0
     ended = end_marked(f"{pid}:{start}")

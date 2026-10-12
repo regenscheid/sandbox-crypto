@@ -1948,6 +1948,29 @@ def test_failed_cleanup_at_turn_end_preserves_holder_and_releases_lock(
         pass
 
 
+def test_next_turn_retries_cleanup_before_replacing_a_still_live_holder(
+    sandbox: Sandbox,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pid, start = os.getpid(), provisioning.process_start(os.getpid())
+    holder = json.dumps({"pid": pid, "start": start})
+    sandbox.state.holder.write_text(holder)
+    retried: list[str] = []
+
+    def pending(marker: str) -> int:
+        retried.append(marker)
+        raise provisioning.CleanupPendingError("pending")
+
+    monkeypatch.setattr(provisioning, "end_marked", pending)
+    turn = provisioning.Turn(sandbox.state, sandbox.config, ["pip", "install", "x"], "wrapper")
+    with pytest.raises(provisioning.CleanupPendingError):
+        turn.begin()
+    assert retried == [f"{pid}:{start}"]
+    assert sandbox.state.holder.read_text() == holder
+    with held(sandbox.state):
+        pass
+
+
 @pytest.mark.parametrize("broken_stderr", [False, True])
 def test_module_hook_exits_instead_of_running_after_failed_cleanup(
     sandbox: Sandbox,
