@@ -136,7 +136,14 @@ artifact cases, 431 web tests and the 24-test built Node/KaTeX boundary. Locked
 dependency, formatting, lint, strict type, license and protocol checks and both
 production builds passed. Independent review cleared the exact combined source,
 including receipt substitution, cancellation ownership and existing parameterized
-worker media metadata. Fresh PR CI and merge remain the delivery gate.
+worker media metadata. PR #82 merged after the fresh Python 3.12, Python 3.13
+and web CI jobs passed.
+
+The later document-math source combination passed 9,459 Python tests (43 opt-in
+skips), 434 web tests and all required locked/static/license/protocol checks and
+both builds. Its manually constructed CLI cleanup fixture adds the three optional
+math defaults without changing assertions or deadlines; the final full rerun and
+68 affected publication/math/migration/workspace API cases pass.
 
 Successful tool records include `artifact_inventory` with a pinned control receipt,
 beside the original `artifact` worker snapshot. Internal `resolve`, `content`,
