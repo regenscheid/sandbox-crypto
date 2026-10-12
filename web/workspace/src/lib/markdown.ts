@@ -598,12 +598,13 @@ export function renderMarkdown(
   source: string,
   repairs: ModelRepairs | null = null,
   state: TextState | null = null,
+  macros: MacroSet = NO_MACROS,
 ): Rendered {
   const { html, waiting, unfinished } = renderText(
     source,
     repairs,
     state,
-    NO_MACROS,
+    macros,
     TEXT_LIMITS,
     (env) => ({ html: md.render(source, env), mismatches: [] }),
   );

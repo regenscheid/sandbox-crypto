@@ -15,6 +15,7 @@
   import { documentHref, historyHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import DocumentEditor from './DocumentEditor.svelte';
+  const commentComponent = import('./DocumentComments.svelte');
 
   let {
     projectId,
@@ -136,6 +137,12 @@
       <Markdown source={found.text} document={input} bind:mismatches />
     </article>
   {/if}
+  {#key `${info.document_id}:${shown.number}`}
+    {#await commentComponent then component}
+      {@const Comments = component.default}
+      <Comments {projectId} {found} />
+    {:catch error}<ErrorMessage {error} />{/await}
+  {/key}
 {:catch error}
   <ErrorMessage {error} />
 {/await}

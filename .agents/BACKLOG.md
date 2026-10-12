@@ -144,7 +144,8 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [ ] The project's macros, beneath a document's (LD-28)
   - [ ] The user's decision on a `\(…\)` that single dollars would make ambiguous ([open question 15](../docs/specs/living-documents.md#open-questions)): kept as written for now
   - [x] User edits in the GUI, by block or as source, reconciled as patches, and their conflicts (LD-13, LD-14); the user applying a rejected patch (LD-19); moving a workbook document to the project (LD-1); reverts. Independent review and [browser acceptance](docs/agent-reports/document-editing-2026-10-12.md) passed; uncertain responses preserve scoped retry IDs
-  - [ ] Comments, anchors and the work requests they carry (LD-21 to LD-24); review findings on blocks (LD-25)
+  - [x] Document comments, block/formula/range anchors and durable USER work requests (LD-21 to LD-24): main-agent safe points, attributed replies, checked change reports, resolution history and bounded paging; independent review and [browser acceptance](docs/agent-reports/document-comments-2026-10-12.md) passed. Idle sessions queue until manually started; automatic wake-up remains open
+  - [ ] Review findings on blocks (LD-25), artifact/PDF anchors and annotation export
   - [ ] References, embedded artifacts and ledger bindings (LD-31 to LD-34); exports to `.tex` and PDF in workers (LD-35 to LD-38)
   - [ ] Math repairs proposed into a document as suggestions (LD-48)
 - [ ] Document files, mirror and merge (D65 amended; [living documents](../docs/specs/living-documents.md), LD-49 to LD-52): the worker keeps each environment's `documents/` at the documents' current revisions at every sync point, outside the `shared/` sync; it reports direct edits of the files, which the control application merges into the current revision or keeps as rejected patches; and the `ss-doc` helper's calls travel from the executor through the worker in the running call's event stream
