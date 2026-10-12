@@ -1,0 +1,2149 @@
+{
+  "lab": 18,
+  "date": "2026-10-12",
+  "host": "babbage",
+  "base_commit": "48f9730",
+  "runtime": "OpenShell 0.1.3, VM driver, 4 vCPU, 4096 MiB RAM, 8192 MiB overlay per VM",
+  "images": [
+    "sandbox-science/minimal:02f85b3",
+    "sandbox-science/crypto-base:02f85b3"
+  ],
+  "lockfile_checks": {
+    "gp-install": {
+      "matched_files": 6,
+      "lockfile_has_cache_address": false
+    },
+    "flint-install": {
+      "matched_files": 4,
+      "lockfile_has_cache_address": false
+    },
+    "fpylll-approve": {
+      "matched_files": 16,
+      "lockfile_has_cache_address": false
+    },
+    "flint-with-sage": {
+      "matched_files": 1,
+      "lockfile_has_cache_address": false
+    }
+  },
+  "operations": {
+    "unlisted-channel": {
+      "provision_id": "prv-da29a6e537fff3e50c586dff",
+      "outcome": "denied",
+      "reason": "policy_denied",
+      "stage": "resolve",
+      "revision_before": null,
+      "revision_after": null,
+      "submitted_at": "2026-10-12T03:57:54.980566Z",
+      "started_at": "2026-10-12T03:57:54.980981Z",
+      "ended_at": "2026-10-12T03:57:54.981311Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [],
+      "changes": [],
+      "error": {
+        "kind": "policy_denied",
+        "message": "conda channel 'bioconda' is not allowed (packages.conda)",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "file_count": 0,
+      "files": []
+    },
+    "agpl-conda": {
+      "provision_id": "prv-7088f16170dfa1ba5f6c41d1",
+      "outcome": "denied",
+      "reason": "agpl_license",
+      "stage": "resolve",
+      "revision_before": null,
+      "revision_after": null,
+      "submitted_at": "2026-10-12T03:57:54.982341Z",
+      "started_at": "2026-10-12T03:57:54.982647Z",
+      "ended_at": "2026-10-12T03:58:33.491613Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [],
+      "changes": [],
+      "error": {
+        "kind": "policy_denied",
+        "message": "the resolved packages include AGPL-licensed software: conda package jbig2dec 0.20 (AGPL-3.0-only); conda package mupdf 1.28.0 (AGPL-3.0-only); conda package pymupdf 1.28.0 (AGPL-3.0-or-later)",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "file_count": 75,
+      "files": [
+        {
+          "ecosystem": "conda",
+          "name": "jbig2dec",
+          "version": "0.20",
+          "build": "h2e0aa2d_0",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "jbig2dec-0.20-h2e0aa2d_0.conda",
+          "url": null,
+          "sha256": "9802190cb3c944d120294a825c4b3039961fbdbc8e6064b5ae3d5a34d2d0b898",
+          "license": "AGPL-3.0-only",
+          "agpl": true,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "mupdf",
+          "version": "1.28.0",
+          "build": "py314he0429d3_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "mupdf-1.28.0-py314he0429d3_2.conda",
+          "url": null,
+          "sha256": "4b84f690f7c127fa3a8f5aa745da536845ebc55e2483ed35a22c21c6106b4e2a",
+          "license": "AGPL-3.0-only",
+          "agpl": true,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "pymupdf",
+          "version": "1.28.0",
+          "build": "py314h42812f9_1",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "pymupdf-1.28.0-py314h42812f9_1.conda",
+          "url": null,
+          "sha256": "0f14dc57a707bd52324139e923630c4160a23c6a37b8753491837cc65931bd49",
+          "license": "AGPL-3.0-or-later",
+          "agpl": true,
+          "action": "allow",
+          "rule": "packages.conda"
+        }
+      ],
+      "cache_index_or_metadata_requests": 440,
+      "package_file_requests": 0
+    },
+    "gp-install": {
+      "provision_id": "prv-28d0754710f149e69d860441",
+      "outcome": "completed",
+      "reason": null,
+      "stage": null,
+      "revision_before": 0,
+      "revision_after": 1,
+      "submitted_at": "2026-10-12T03:58:34.563747Z",
+      "started_at": "2026-10-12T03:58:34.564424Z",
+      "ended_at": "2026-10-12T03:58:39.450634Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [
+        {
+          "capability": "gp",
+          "probe": "gp-factor",
+          "version": 1,
+          "kind": "functional",
+          "status": "failed",
+          "revision": 0,
+          "execution_id": "exe-8f34a1e86a69e154e10da62e",
+          "output": "\n[stderr]\nsh: 1: gp: not found\n",
+          "duration_seconds": 0.01650269099999946,
+          "operation": "prv-28d0754710f149e69d860441",
+          "recorded_at": "2026-10-12T03:58:34.590485Z"
+        },
+        {
+          "capability": "gp",
+          "probe": "gp-factor",
+          "version": 1,
+          "kind": "functional",
+          "status": "passed",
+          "revision": 1,
+          "execution_id": "exe-250c33dfc60980733535d031",
+          "output": "[274177, 1; 67280421310721, 1]\n",
+          "duration_seconds": 0.03303686099999936,
+          "operation": "prv-28d0754710f149e69d860441",
+          "recorded_at": "2026-10-12T03:58:39.450505Z"
+        }
+      ],
+      "changes": [
+        {
+          "ecosystem": "conda",
+          "name": "gmp",
+          "before": null,
+          "after": "6.3.0",
+          "build_before": null,
+          "build_after": "hfd2156b_3"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libxcrypt",
+          "before": null,
+          "after": "4.4.38",
+          "build_before": null,
+          "build_after": "h280c20c_0"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "pari",
+          "before": null,
+          "after": "2.17.3",
+          "build_before": null,
+          "build_after": "hab59ada_0_pthread"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "pari-galdata",
+          "before": null,
+          "after": "0.0.20180411",
+          "build_before": null,
+          "build_after": "0"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "pari-seadata-small",
+          "before": null,
+          "after": "0.0.20090618",
+          "build_before": null,
+          "build_after": "0"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "perl",
+          "before": null,
+          "after": "5.44.0",
+          "build_before": null,
+          "build_after": "1_h7cc23a3_perl5"
+        }
+      ],
+      "error": null,
+      "file_count": 6,
+      "files": [
+        {
+          "ecosystem": "conda",
+          "name": "pari-galdata",
+          "version": "0.0.20180411",
+          "build": "0",
+          "channel": "conda-forge",
+          "subdir": "noarch",
+          "file": "pari-galdata-0.0.20180411-0.tar.bz2",
+          "url": null,
+          "sha256": "a5656915bffe1ee8a3825f545bc6cd56608fe94067226fcbeb6bdc48672eb000",
+          "license": "GPL-2.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "pari-seadata-small",
+          "version": "0.0.20090618",
+          "build": "0",
+          "channel": "conda-forge",
+          "subdir": "noarch",
+          "file": "pari-seadata-small-0.0.20090618-0.tar.bz2",
+          "url": null,
+          "sha256": "1d95a97778b30a8579e1dbd87678250b94e30e1bed94324d44b1c44aa6b3f87a",
+          "license": "GPL-2.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "gmp",
+          "version": "6.3.0",
+          "build": "hfd2156b_3",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "gmp-6.3.0-hfd2156b_3.conda",
+          "url": null,
+          "sha256": "f36c336efc874f346a53a9011f67e997f9faac505562cc18c13b6d399cfe61c7",
+          "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libxcrypt",
+          "version": "4.4.38",
+          "build": "h280c20c_0",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libxcrypt-4.4.38-h280c20c_0.conda",
+          "url": null,
+          "sha256": "f7e9292dd219a6435bbb1223da9586c3e70d66d169c5a92f08db3f2127df04e9",
+          "license": "LGPL-2.1-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "perl",
+          "version": "5.44.0",
+          "build": "1_h7cc23a3_perl5",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "perl-5.44.0-1_h7cc23a3_perl5.conda",
+          "url": null,
+          "sha256": "43afad1c27c24ccc40d98461ab7e1648ccac876421a8783167861ae19c4edc83",
+          "license": "GPL-1.0-or-later OR Artistic-1.0-Perl",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "pari",
+          "version": "2.17.3",
+          "build": "hab59ada_0_pthread",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "pari-2.17.3-hab59ada_0_pthread.conda",
+          "url": null,
+          "sha256": "44d3b5b8c9ef49548adaeb36b3b03a81c768d43c5937551f3c8cd724d69c379b",
+          "license": "GPL-2.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        }
+      ]
+    },
+    "flint-install": {
+      "provision_id": "prv-9511ebb4de21033d16abc932",
+      "outcome": "completed",
+      "reason": null,
+      "stage": null,
+      "revision_before": 0,
+      "revision_after": 1,
+      "submitted_at": "2026-10-12T03:58:34.565606Z",
+      "started_at": "2026-10-12T03:58:34.565839Z",
+      "ended_at": "2026-10-12T03:58:40.726286Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [
+        {
+          "capability": "python-flint",
+          "probe": "flint-factor",
+          "version": 1,
+          "kind": "functional",
+          "status": "failed",
+          "revision": 0,
+          "execution_id": "exe-334035fb529b76100b60c084",
+          "output": "\n[stderr]\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import flint; print([(int(p), int(e)) for p, e in flint.fmpz(2**64 + 1).factor()])\n    ^^^^^^^^^^^^\nModuleNotFoundError: No module named 'flint'\n",
+          "duration_seconds": 0.07718289799999667,
+          "operation": "prv-9511ebb4de21033d16abc932",
+          "recorded_at": "2026-10-12T03:58:36.232401Z"
+        },
+        {
+          "capability": "python-flint",
+          "probe": "flint-factor",
+          "version": 1,
+          "kind": "functional",
+          "status": "passed",
+          "revision": 1,
+          "execution_id": "exe-a0fe5143f14011c3bbd132b1",
+          "output": "[(274177, 1), (67280421310721, 1)]\n",
+          "duration_seconds": 0.05828060400000368,
+          "operation": "prv-9511ebb4de21033d16abc932",
+          "recorded_at": "2026-10-12T03:58:40.726159Z"
+        }
+      ],
+      "changes": [
+        {
+          "ecosystem": "conda",
+          "name": "gmp",
+          "before": null,
+          "after": "6.3.0",
+          "build_before": null,
+          "build_after": "hfd2156b_3"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libflint",
+          "before": null,
+          "after": "3.3.1",
+          "build_before": null,
+          "build_after": "h9a6c01d_1"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "mpfr",
+          "before": null,
+          "after": "4.2.2",
+          "build_before": null,
+          "build_after": "ha2cb11d_1"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "python-flint",
+          "before": null,
+          "after": "0.8.0",
+          "build_before": null,
+          "build_after": "py314hfa0257f_2"
+        }
+      ],
+      "error": null,
+      "file_count": 4,
+      "files": [
+        {
+          "ecosystem": "conda",
+          "name": "gmp",
+          "version": "6.3.0",
+          "build": "hfd2156b_3",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "gmp-6.3.0-hfd2156b_3.conda",
+          "url": null,
+          "sha256": "f36c336efc874f346a53a9011f67e997f9faac505562cc18c13b6d399cfe61c7",
+          "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "mpfr",
+          "version": "4.2.2",
+          "build": "ha2cb11d_1",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "mpfr-4.2.2-ha2cb11d_1.conda",
+          "url": null,
+          "sha256": "0be79ef2ee536e0c5d3ddb4a52bbae9f26d08560623299f33db2f4c4a17c525a",
+          "license": "LGPL-3.0-only",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libflint",
+          "version": "3.3.1",
+          "build": "h9a6c01d_1",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libflint-3.3.1-h9a6c01d_1.conda",
+          "url": null,
+          "sha256": "2ac104841053f0ca356a51b3b04d7f744557d728c79d69b919032663ee698774",
+          "license": "LGPL-3.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "python-flint",
+          "version": "0.8.0",
+          "build": "py314hfa0257f_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "python-flint-0.8.0-py314hfa0257f_2.conda",
+          "url": null,
+          "sha256": "61717922431a43ee405ca5486500a8954f3ab88efa9326c3240ce7499d0fbccf",
+          "license": "MIT",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        }
+      ]
+    },
+    "gp-again": {
+      "provision_id": "prv-e34725d3f8d83161e0a61a83",
+      "outcome": "already_satisfied",
+      "reason": null,
+      "stage": null,
+      "revision_before": 1,
+      "revision_after": 1,
+      "submitted_at": "2026-10-12T03:59:04.033756Z",
+      "started_at": "2026-10-12T03:59:04.034139Z",
+      "ended_at": "2026-10-12T03:59:04.034346Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [
+        {
+          "capability": "gp",
+          "probe": "gp-factor",
+          "version": 1,
+          "kind": "functional",
+          "status": "passed",
+          "revision": 1,
+          "execution_id": "exe-250c33dfc60980733535d031",
+          "output": "[274177, 1; 67280421310721, 1]\n",
+          "duration_seconds": 0.03303686099999936,
+          "operation": "prv-28d0754710f149e69d860441",
+          "recorded_at": "2026-10-12T03:58:39.450505Z"
+        }
+      ],
+      "changes": [],
+      "error": null,
+      "file_count": 0,
+      "files": []
+    },
+    "pip-install": {
+      "provision_id": "prv-3f32e35207f046785d26753f",
+      "outcome": "completed",
+      "reason": null,
+      "stage": null,
+      "revision_before": 1,
+      "revision_after": 2,
+      "submitted_at": "2026-10-12T03:59:05.472529Z",
+      "started_at": "2026-10-12T03:59:05.473101Z",
+      "ended_at": "2026-10-12T03:59:06.749292Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [
+        {
+          "capability": null,
+          "probe": "installed:pypi:snowballstemmer",
+          "version": 1,
+          "kind": "import_check",
+          "status": "passed",
+          "revision": 2,
+          "execution_id": null,
+          "output": "snowballstemmer 3.1.1",
+          "duration_seconds": 0.0,
+          "operation": "prv-3f32e35207f046785d26753f",
+          "recorded_at": "2026-10-12T03:59:06.748996Z"
+        }
+      ],
+      "changes": [
+        {
+          "ecosystem": "pypi",
+          "name": "snowballstemmer",
+          "before": null,
+          "after": "3.1.1",
+          "build_before": null,
+          "build_after": null
+        }
+      ],
+      "error": null,
+      "file_count": 1,
+      "files": [
+        {
+          "ecosystem": "pypi",
+          "name": "snowballstemmer",
+          "version": "3.1.1",
+          "build": null,
+          "channel": null,
+          "subdir": null,
+          "file": "snowballstemmer-3.1.1-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/4c/07/2ebca9b11fb9be7340a818d8d6f63feaebb146be2c4afbd6061701d6df6e/snowballstemmer-3.1.1-py3-none-any.whl",
+          "sha256": "7e207fa178741da09cdee59d3ecec3827ad5f92b1fc5c9ff3755b639f71f5752",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.pypi"
+        }
+      ]
+    },
+    "agpl-pip": {
+      "provision_id": "prv-7043ce74ef5c2be03a5f9981",
+      "outcome": "denied",
+      "reason": "agpl_license",
+      "stage": "resolve",
+      "revision_before": null,
+      "revision_after": null,
+      "submitted_at": "2026-10-12T03:59:06.751223Z",
+      "started_at": "2026-10-12T03:59:06.751648Z",
+      "ended_at": "2026-10-12T03:59:07.308511Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [],
+      "changes": [],
+      "error": {
+        "kind": "policy_denied",
+        "message": "the resolved packages include AGPL-licensed software: pypi package pymupdf 1.28.2 (Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License)",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "file_count": 1,
+      "files": [
+        {
+          "ecosystem": "pypi",
+          "name": "pymupdf",
+          "version": "1.28.2",
+          "build": null,
+          "channel": null,
+          "subdir": null,
+          "file": "pymupdf-1.28.2-cp310-abi3-manylinux_2_28_x86_64.whl",
+          "url": "https://files.pythonhosted.org/packages/c7/06/dace3e27af26690cb20bead80dbac42941b0841eb689b8aabbd67dde16f0/pymupdf-1.28.2-cp310-abi3-manylinux_2_28_x86_64.whl",
+          "sha256": "397d6715c1f0df7548a92d0afd8ce370fc48fa47aeefac16be2bc04a16a8227f",
+          "license": "Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License",
+          "agpl": true,
+          "action": "allow",
+          "rule": "packages.pypi"
+        }
+      ],
+      "cache_index_or_metadata_requests": 2,
+      "package_file_requests": 0
+    },
+    "fpylll-deny": {
+      "provision_id": "prv-bec05d8a80a790bab8de5daa",
+      "outcome": "denied",
+      "reason": "permission_denied",
+      "stage": "permission",
+      "revision_before": null,
+      "revision_after": null,
+      "submitted_at": "2026-10-12T04:01:24.983522Z",
+      "started_at": "2026-10-12T04:01:24.983832Z",
+      "ended_at": "2026-10-12T04:01:28.287519Z",
+      "permission_request": 4,
+      "notes": [],
+      "probes": [
+        {
+          "capability": "fpylll",
+          "probe": "fpylll-lll",
+          "version": 1,
+          "kind": "functional",
+          "status": "failed",
+          "revision": 0,
+          "execution_id": "exe-47d30d1e0c194832e68cc236",
+          "output": "\n[stderr]\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    from fpylll import IntegerMatrix, LLL; A = IntegerMatrix.from_matrix([[1, 2, 3], [4, 5, 6], [7, 8, 10]]); LLL.reduction(A); print(LLL.is_reduced(A))\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nModuleNotFoundError: No module named 'fpylll'\n",
+          "duration_seconds": 0.045595550000001595,
+          "operation": "prv-bec05d8a80a790bab8de5daa",
+          "recorded_at": "2026-10-12T04:01:25.036890Z"
+        }
+      ],
+      "changes": [],
+      "error": {
+        "kind": "policy_denied",
+        "message": "permission request 4 was denied",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "file_count": 16,
+      "files": [
+        {
+          "ecosystem": "conda",
+          "name": "cysignals",
+          "version": "1.12.6",
+          "build": "py314ha160325_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "cysignals-1.12.6-py314ha160325_2.conda",
+          "url": null,
+          "sha256": "2e37840a8dc2652d529748509e610c2c6a6ead80cfd7440a4c1e26b7fa3465a8",
+          "license": "LGPL-3.0-or-later",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "gmp",
+          "version": "6.3.0",
+          "build": "hfd2156b_3",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "gmp-6.3.0-hfd2156b_3.conda",
+          "url": null,
+          "sha256": "f36c336efc874f346a53a9011f67e997f9faac505562cc18c13b6d399cfe61c7",
+          "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libstdcxx-ng",
+          "version": "16.2.0",
+          "build": "hdf11a46_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libstdcxx-ng-16.2.0-hdf11a46_7.conda",
+          "url": null,
+          "sha256": "337f481db36cc357884f05f404ccd1b3a7e0fc1ee48ec5c884e4281d213bc863",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgcc-ng",
+          "version": "16.2.0",
+          "build": "h69a702a_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libgcc-ng-16.2.0-h69a702a_7.conda",
+          "url": null,
+          "sha256": "03b54d7008de080a17cc2174b0e4acd6d06e1c981b2eb19846f46d8f59966034",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran5",
+          "version": "16.2.0",
+          "build": "h6b99dfc_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libgfortran5-16.2.0-h6b99dfc_7.conda",
+          "url": null,
+          "sha256": "04dbab12c925b92977bb835dd2f5eda413607afa79f95a554e5a04b07a380322",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "mpfr",
+          "version": "4.2.2",
+          "build": "ha2cb11d_1",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "mpfr-4.2.2-ha2cb11d_1.conda",
+          "url": null,
+          "sha256": "0be79ef2ee536e0c5d3ddb4a52bbae9f26d08560623299f33db2f4c4a17c525a",
+          "license": "LGPL-3.0-only",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran",
+          "version": "16.2.0",
+          "build": "h69a702a_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libgfortran-16.2.0-h69a702a_7.conda",
+          "url": null,
+          "sha256": "9682ae4dd11487e10b904b3cb3ab6379cad25233d45fdfdf90d54349df244494",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libopenblas",
+          "version": "0.3.34",
+          "build": "pthreads_hf13c14d_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libopenblas-0.3.34-pthreads_hf13c14d_2.conda",
+          "url": null,
+          "sha256": "69a722751e14eab2eb3bfdcb9acb1187afbd962b0c49b48d829341e0f6787f60",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran-ng",
+          "version": "16.2.0",
+          "build": "h69a702a_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libgfortran-ng-16.2.0-h69a702a_7.conda",
+          "url": null,
+          "sha256": "d5c80029e15b2e4c404a9a7189b607be566c7ea6142d43291c81648958ffe1f0",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libblas",
+          "version": "3.11.0",
+          "build": "11_h4a7cf45_openblas",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libblas-3.11.0-11_h4a7cf45_openblas.conda",
+          "url": null,
+          "sha256": "d942e0c820d60a613a6f786d074f0820fb6343e3f1ccfb110b1d98b44fb75968",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "qd",
+          "version": "2.3.22",
+          "build": "h2cc385e_1004",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "qd-2.3.22-h2cc385e_1004.tar.bz2",
+          "url": null,
+          "sha256": "043ee8515e614aa5d292b1dd30a05dd192165f5fb6792bfff4d6eec4c3d0be76",
+          "license": "LBNL-BSD",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libcblas",
+          "version": "3.11.0",
+          "build": "11_h0358290_openblas",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libcblas-3.11.0-11_h0358290_openblas.conda",
+          "url": null,
+          "sha256": "f7d1bbdea61cf94ba219d17b2cb571a29830f8025385af799bff5a7ad1ef45e6",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "liblapack",
+          "version": "3.11.0",
+          "build": "11_h47877c9_openblas",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "liblapack-3.11.0-11_h47877c9_openblas.conda",
+          "url": null,
+          "sha256": "1ad3f43c9319ef398a8ef45989f4903a06e3965b51e77fc669a4c894168a8411",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "fplll",
+          "version": "5.5.0",
+          "build": "hd20a173_0",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "fplll-5.5.0-hd20a173_0.conda",
+          "url": null,
+          "sha256": "35fe2404f9d2d92a3529528e58f224dff7bc7c5a1d6c721e6758ed83109db140",
+          "license": "LGPL-2.1-or-later",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "numpy",
+          "version": "2.5.4",
+          "build": "py314hd3a7d6b_0",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "numpy-2.5.4-py314hd3a7d6b_0.conda",
+          "url": null,
+          "sha256": "7533361a15ff1d4c1e7069b9410d32a602a6a9350d717a43731b07e3565a6689",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "fpylll",
+          "version": "0.6.4",
+          "build": "py314hd68ceb5_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "fpylll-0.6.4-py314hd68ceb5_2.conda",
+          "url": null,
+          "sha256": "1afc0d976f4b61578196414fc77a08da5e81cba04110e59b02a870670777df5e",
+          "license": "GPL-2.0-or-later",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        }
+      ]
+    },
+    "fpylll-approve": {
+      "provision_id": "prv-3feaa32dc20629bf51971da0",
+      "outcome": "completed",
+      "reason": null,
+      "stage": null,
+      "revision_before": 0,
+      "revision_after": 1,
+      "submitted_at": "2026-10-12T04:01:28.294327Z",
+      "started_at": "2026-10-12T04:01:28.294691Z",
+      "ended_at": "2026-10-12T04:01:36.996397Z",
+      "permission_request": 7,
+      "notes": [],
+      "probes": [
+        {
+          "capability": "fpylll",
+          "probe": "fpylll-lll",
+          "version": 1,
+          "kind": "functional",
+          "status": "failed",
+          "revision": 0,
+          "execution_id": "exe-7db69c5b68f61db8810093e5",
+          "output": "\n[stderr]\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    from fpylll import IntegerMatrix, LLL; A = IntegerMatrix.from_matrix([[1, 2, 3], [4, 5, 6], [7, 8, 10]]); LLL.reduction(A); print(LLL.is_reduced(A))\n    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nModuleNotFoundError: No module named 'fpylll'\n",
+          "duration_seconds": 0.06344451999999734,
+          "operation": "prv-3feaa32dc20629bf51971da0",
+          "recorded_at": "2026-10-12T04:01:28.370556Z"
+        },
+        {
+          "capability": "fpylll",
+          "probe": "fpylll-lll",
+          "version": 1,
+          "kind": "functional",
+          "status": "passed",
+          "revision": 1,
+          "execution_id": "exe-e54a736c4c4593681463df90",
+          "output": "True\n",
+          "duration_seconds": 0.11359994899999748,
+          "operation": "prv-3feaa32dc20629bf51971da0",
+          "recorded_at": "2026-10-12T04:01:36.985142Z"
+        }
+      ],
+      "changes": [
+        {
+          "ecosystem": "conda",
+          "name": "cysignals",
+          "before": null,
+          "after": "1.12.6",
+          "build_before": null,
+          "build_after": "py314ha160325_2"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "fplll",
+          "before": null,
+          "after": "5.5.0",
+          "build_before": null,
+          "build_after": "hd20a173_0"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "fpylll",
+          "before": null,
+          "after": "0.6.4",
+          "build_before": null,
+          "build_after": "py314hd68ceb5_2"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "gmp",
+          "before": null,
+          "after": "6.3.0",
+          "build_before": null,
+          "build_after": "hfd2156b_3"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libblas",
+          "before": null,
+          "after": "3.11.0",
+          "build_before": null,
+          "build_after": "11_h4a7cf45_openblas"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libcblas",
+          "before": null,
+          "after": "3.11.0",
+          "build_before": null,
+          "build_after": "11_h0358290_openblas"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgcc-ng",
+          "before": null,
+          "after": "16.2.0",
+          "build_before": null,
+          "build_after": "h69a702a_7"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran",
+          "before": null,
+          "after": "16.2.0",
+          "build_before": null,
+          "build_after": "h69a702a_7"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran-ng",
+          "before": null,
+          "after": "16.2.0",
+          "build_before": null,
+          "build_after": "h69a702a_7"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran5",
+          "before": null,
+          "after": "16.2.0",
+          "build_before": null,
+          "build_after": "h6b99dfc_7"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "liblapack",
+          "before": null,
+          "after": "3.11.0",
+          "build_before": null,
+          "build_after": "11_h47877c9_openblas"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libopenblas",
+          "before": null,
+          "after": "0.3.34",
+          "build_before": null,
+          "build_after": "pthreads_hf13c14d_2"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libstdcxx-ng",
+          "before": null,
+          "after": "16.2.0",
+          "build_before": null,
+          "build_after": "hdf11a46_7"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "mpfr",
+          "before": null,
+          "after": "4.2.2",
+          "build_before": null,
+          "build_after": "ha2cb11d_1"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "numpy",
+          "before": null,
+          "after": "2.5.4",
+          "build_before": null,
+          "build_after": "py314hd3a7d6b_0"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "qd",
+          "before": null,
+          "after": "2.3.22",
+          "build_before": null,
+          "build_after": "h2cc385e_1004"
+        }
+      ],
+      "error": null,
+      "file_count": 16,
+      "files": [
+        {
+          "ecosystem": "conda",
+          "name": "cysignals",
+          "version": "1.12.6",
+          "build": "py314ha160325_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "cysignals-1.12.6-py314ha160325_2.conda",
+          "url": null,
+          "sha256": "2e37840a8dc2652d529748509e610c2c6a6ead80cfd7440a4c1e26b7fa3465a8",
+          "license": "LGPL-3.0-or-later",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "gmp",
+          "version": "6.3.0",
+          "build": "hfd2156b_3",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "gmp-6.3.0-hfd2156b_3.conda",
+          "url": null,
+          "sha256": "f36c336efc874f346a53a9011f67e997f9faac505562cc18c13b6d399cfe61c7",
+          "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libstdcxx-ng",
+          "version": "16.2.0",
+          "build": "hdf11a46_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libstdcxx-ng-16.2.0-hdf11a46_7.conda",
+          "url": null,
+          "sha256": "337f481db36cc357884f05f404ccd1b3a7e0fc1ee48ec5c884e4281d213bc863",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgcc-ng",
+          "version": "16.2.0",
+          "build": "h69a702a_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libgcc-ng-16.2.0-h69a702a_7.conda",
+          "url": null,
+          "sha256": "03b54d7008de080a17cc2174b0e4acd6d06e1c981b2eb19846f46d8f59966034",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran5",
+          "version": "16.2.0",
+          "build": "h6b99dfc_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libgfortran5-16.2.0-h6b99dfc_7.conda",
+          "url": null,
+          "sha256": "04dbab12c925b92977bb835dd2f5eda413607afa79f95a554e5a04b07a380322",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "mpfr",
+          "version": "4.2.2",
+          "build": "ha2cb11d_1",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "mpfr-4.2.2-ha2cb11d_1.conda",
+          "url": null,
+          "sha256": "0be79ef2ee536e0c5d3ddb4a52bbae9f26d08560623299f33db2f4c4a17c525a",
+          "license": "LGPL-3.0-only",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran",
+          "version": "16.2.0",
+          "build": "h69a702a_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libgfortran-16.2.0-h69a702a_7.conda",
+          "url": null,
+          "sha256": "9682ae4dd11487e10b904b3cb3ab6379cad25233d45fdfdf90d54349df244494",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libopenblas",
+          "version": "0.3.34",
+          "build": "pthreads_hf13c14d_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libopenblas-0.3.34-pthreads_hf13c14d_2.conda",
+          "url": null,
+          "sha256": "69a722751e14eab2eb3bfdcb9acb1187afbd962b0c49b48d829341e0f6787f60",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libgfortran-ng",
+          "version": "16.2.0",
+          "build": "h69a702a_7",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libgfortran-ng-16.2.0-h69a702a_7.conda",
+          "url": null,
+          "sha256": "d5c80029e15b2e4c404a9a7189b607be566c7ea6142d43291c81648958ffe1f0",
+          "license": "GPL-3.0-only WITH GCC-exception-3.1",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libblas",
+          "version": "3.11.0",
+          "build": "11_h4a7cf45_openblas",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libblas-3.11.0-11_h4a7cf45_openblas.conda",
+          "url": null,
+          "sha256": "d942e0c820d60a613a6f786d074f0820fb6343e3f1ccfb110b1d98b44fb75968",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "qd",
+          "version": "2.3.22",
+          "build": "h2cc385e_1004",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "qd-2.3.22-h2cc385e_1004.tar.bz2",
+          "url": null,
+          "sha256": "043ee8515e614aa5d292b1dd30a05dd192165f5fb6792bfff4d6eec4c3d0be76",
+          "license": "LBNL-BSD",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libcblas",
+          "version": "3.11.0",
+          "build": "11_h0358290_openblas",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libcblas-3.11.0-11_h0358290_openblas.conda",
+          "url": null,
+          "sha256": "f7d1bbdea61cf94ba219d17b2cb571a29830f8025385af799bff5a7ad1ef45e6",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "liblapack",
+          "version": "3.11.0",
+          "build": "11_h47877c9_openblas",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "liblapack-3.11.0-11_h47877c9_openblas.conda",
+          "url": null,
+          "sha256": "1ad3f43c9319ef398a8ef45989f4903a06e3965b51e77fc669a4c894168a8411",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "fplll",
+          "version": "5.5.0",
+          "build": "hd20a173_0",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "fplll-5.5.0-hd20a173_0.conda",
+          "url": null,
+          "sha256": "35fe2404f9d2d92a3529528e58f224dff7bc7c5a1d6c721e6758ed83109db140",
+          "license": "LGPL-2.1-or-later",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "numpy",
+          "version": "2.5.4",
+          "build": "py314hd3a7d6b_0",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "numpy-2.5.4-py314hd3a7d6b_0.conda",
+          "url": null,
+          "sha256": "7533361a15ff1d4c1e7069b9410d32a602a6a9350d717a43731b07e3565a6689",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        },
+        {
+          "ecosystem": "conda",
+          "name": "fpylll",
+          "version": "0.6.4",
+          "build": "py314hd68ceb5_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "fpylll-0.6.4-py314hd68ceb5_2.conda",
+          "url": null,
+          "sha256": "1afc0d976f4b61578196414fc77a08da5e81cba04110e59b02a870670777df5e",
+          "license": "GPL-2.0-or-later",
+          "agpl": false,
+          "action": "escalate",
+          "rule": "packages.conda"
+        }
+      ]
+    },
+    "missing-build": {
+      "provision_id": "prv-1e8c2f7e6dbef171df0baefc",
+      "outcome": "failed",
+      "reason": "resolve_failed",
+      "stage": "resolve",
+      "revision_before": null,
+      "revision_after": null,
+      "submitted_at": "2026-10-12T04:01:39.209344Z",
+      "started_at": "2026-10-12T04:01:39.209854Z",
+      "ended_at": "2026-10-12T04:01:43.461354Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [],
+      "changes": [],
+      "error": {
+        "kind": "exception",
+        "message": "the dry run exited with 1: {\n    \"log_history\": [\n        {\n            \"level\": \"error\",\n            \"location\": \"/home/conda/feedstock_root/build_artifacts/micromamba_1786125696885/work/mamba/libmamba/src/api/utils.cpp:683:13 bool mamba::handle_unsolvable_with_retry(solver::libsolv::Solver::Outcome&, const Palette&, bool, bool, bool, std::size_t&, solver::libsolv::Database&, const std::function<void()>&, const std::function<void()>&)\",\n            \"message\": \"Could not solve for environment specs\\n    The following package could not be installed\\n    \u2514\u2500 pari ==2.17.3 ss_lab18_missing_build does not exist (perhaps a typo or a missing channel).\",\n            \"source\": \"libmamba\"\n        },\n        {\n            \"level\": \"critical\",\n            \"location\": \"/home/conda/feedstock_root/build_artifacts/micromamba_1786125696885/work/mamba/micromamba/src/main.cpp:235:9 int main(int, char**)\",\n            \"message\": \"Could not solve for environment specs\",\n            \"source\": \"libmamba\"\n        }\n    ],\n    \"solver_problems\": [\n        \"unsupported request\"\n    ],\n    \"success\": false\n}",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "file_count": 0,
+      "files": []
+    },
+    "flint-with-sage": {
+      "provision_id": "prv-5469df356825cbdffc901bd5",
+      "outcome": "completed",
+      "reason": null,
+      "stage": null,
+      "revision_before": 0,
+      "revision_after": 1,
+      "submitted_at": "2026-10-12T04:04:39.649796Z",
+      "started_at": "2026-10-12T04:04:39.650192Z",
+      "ended_at": "2026-10-12T04:06:52.829858Z",
+      "permission_request": null,
+      "notes": [],
+      "probes": [
+        {
+          "capability": "python-flint",
+          "probe": "flint-factor",
+          "version": 1,
+          "kind": "functional",
+          "status": "failed",
+          "revision": 0,
+          "execution_id": "exe-2461ce22678ed7cd76460b54",
+          "output": "\n[stderr]\nTraceback (most recent call last):\n  File \"<string>\", line 1, in <module>\n    import flint; print([(int(p), int(e)) for p, e in flint.fmpz(2**64 + 1).factor()])\n    ^^^^^^^^^^^^\nModuleNotFoundError: No module named 'flint'\n",
+          "duration_seconds": 0.08111070900000072,
+          "operation": "prv-5469df356825cbdffc901bd5",
+          "recorded_at": "2026-10-12T04:04:39.740536Z"
+        },
+        {
+          "capability": "python-flint",
+          "probe": "flint-factor",
+          "version": 1,
+          "kind": "functional",
+          "status": "passed",
+          "revision": 1,
+          "execution_id": "exe-72b3ce837374add319f7538e",
+          "output": "[(274177, 1), (67280421310721, 1)]\n",
+          "duration_seconds": 0.07244700100000045,
+          "operation": "prv-5469df356825cbdffc901bd5",
+          "recorded_at": "2026-10-12T04:06:52.829708Z"
+        }
+      ],
+      "changes": [
+        {
+          "ecosystem": "conda",
+          "name": "python-flint",
+          "before": null,
+          "after": "0.8.0",
+          "build_before": null,
+          "build_after": "py314hfa0257f_2"
+        }
+      ],
+      "error": null,
+      "file_count": 1,
+      "files": [
+        {
+          "ecosystem": "conda",
+          "name": "python-flint",
+          "version": "0.8.0",
+          "build": "py314hfa0257f_2",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "python-flint-0.8.0-py314hfa0257f_2.conda",
+          "url": null,
+          "sha256": "61717922431a43ee405ca5486500a8954f3ab88efa9326c3240ce7499d0fbccf",
+          "license": "MIT",
+          "agpl": false,
+          "action": "allow",
+          "rule": "packages.conda"
+        }
+      ]
+    }
+  },
+  "catalog": {
+    "gp": {
+      "state": "succeeded",
+      "stdout": "[274177, 1; 67280421310721, 1]\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:52.850827Z",
+      "ended_at": "2026-10-12T04:06:52.885822Z"
+    },
+    "gap": {
+      "state": "succeeded",
+      "stdout": "[ 274177, 67280421310721 ]\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:52.903555Z",
+      "ended_at": "2026-10-12T04:06:53.429979Z"
+    },
+    "sage": {
+      "state": "succeeded",
+      "stdout": "274177 * 67280421310721\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:53.447272Z",
+      "ended_at": "2026-10-12T04:06:54.356622Z"
+    },
+    "sympy": {
+      "state": "succeeded",
+      "stdout": "{274177: 1, 67280421310721: 1}\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:54.392089Z",
+      "ended_at": "2026-10-12T04:06:54.687507Z"
+    },
+    "fpylll": {
+      "state": "succeeded",
+      "stdout": "True\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:54.706740Z",
+      "ended_at": "2026-10-12T04:06:54.910676Z"
+    },
+    "python-flint": {
+      "state": "succeeded",
+      "stdout": "[(274177, 1), (67280421310721, 1)]\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:54.934902Z",
+      "ended_at": "2026-10-12T04:06:54.992296Z"
+    },
+    "networkx": {
+      "state": "succeeded",
+      "stdout": "5\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:55.013345Z",
+      "ended_at": "2026-10-12T04:06:55.209859Z"
+    },
+    "numpy": {
+      "state": "succeeded",
+      "stdout": "1.0\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:55.227570Z",
+      "ended_at": "2026-10-12T04:06:55.309052Z"
+    },
+    "pandoc": {
+      "state": "succeeded",
+      "stdout": "<h1 id=\"hi\">Hi</h1>\n",
+      "stderr": "",
+      "started_at": "2026-10-12T04:06:55.326521Z",
+      "ended_at": "2026-10-12T04:06:55.349563Z"
+    }
+  },
+  "dry_runs": {
+    "conda": {
+      "parsed_files": [
+        {
+          "ecosystem": "conda",
+          "name": "pari-galdata",
+          "version": "0.0.20180411",
+          "build": "0",
+          "channel": "conda-forge",
+          "subdir": "noarch",
+          "file": "pari-galdata-0.0.20180411-0.tar.bz2",
+          "url": null,
+          "sha256": "a5656915bffe1ee8a3825f545bc6cd56608fe94067226fcbeb6bdc48672eb000",
+          "license": "GPL-2.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": null
+        },
+        {
+          "ecosystem": "conda",
+          "name": "pari-seadata-small",
+          "version": "0.0.20090618",
+          "build": "0",
+          "channel": "conda-forge",
+          "subdir": "noarch",
+          "file": "pari-seadata-small-0.0.20090618-0.tar.bz2",
+          "url": null,
+          "sha256": "1d95a97778b30a8579e1dbd87678250b94e30e1bed94324d44b1c44aa6b3f87a",
+          "license": "GPL-2.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": null
+        },
+        {
+          "ecosystem": "conda",
+          "name": "gmp",
+          "version": "6.3.0",
+          "build": "hfd2156b_3",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "gmp-6.3.0-hfd2156b_3.conda",
+          "url": null,
+          "sha256": "f36c336efc874f346a53a9011f67e997f9faac505562cc18c13b6d399cfe61c7",
+          "license": "GPL-2.0-or-later OR LGPL-3.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": null
+        },
+        {
+          "ecosystem": "conda",
+          "name": "libxcrypt",
+          "version": "4.4.38",
+          "build": "h280c20c_0",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "libxcrypt-4.4.38-h280c20c_0.conda",
+          "url": null,
+          "sha256": "f7e9292dd219a6435bbb1223da9586c3e70d66d169c5a92f08db3f2127df04e9",
+          "license": "LGPL-2.1-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": null
+        },
+        {
+          "ecosystem": "conda",
+          "name": "perl",
+          "version": "5.44.0",
+          "build": "1_h7cc23a3_perl5",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "perl-5.44.0-1_h7cc23a3_perl5.conda",
+          "url": null,
+          "sha256": "43afad1c27c24ccc40d98461ab7e1648ccac876421a8783167861ae19c4edc83",
+          "license": "GPL-1.0-or-later OR Artistic-1.0-Perl",
+          "agpl": false,
+          "action": "allow",
+          "rule": null
+        },
+        {
+          "ecosystem": "conda",
+          "name": "pari",
+          "version": "2.17.3",
+          "build": "hab59ada_0_pthread",
+          "channel": "conda-forge",
+          "subdir": "linux-64",
+          "file": "pari-2.17.3-hab59ada_0_pthread.conda",
+          "url": null,
+          "sha256": "44d3b5b8c9ef49548adaeb36b3b03a81c768d43c5937551f3c8cd724d69c379b",
+          "license": "GPL-2.0-or-later",
+          "agpl": false,
+          "action": "allow",
+          "rule": null
+        }
+      ],
+      "cache_requests": [
+        "2026-10-11 23:58:33,904 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/033494104f1ecc70c5d06b5409149ea8857cd59a460f2a96aec887d26b8cf500.msgpack.zst result=miss status=200 bytes=4700 upstream_ms=31 sandbox=f837afb0-df1b-48cb-9aa1-c9dd81e4473c",
+        "2026-10-11 23:58:33,972 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/a2e4de91a7beb14e1803d741ef240079f0aacd7643b7bd88351f1cb97b70092f.msgpack.zst result=miss status=200 bytes=2767 upstream_ms=27 sandbox=f837afb0-df1b-48cb-9aa1-c9dd81e4473c",
+        "2026-10-11 23:58:34,013 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/noarch/5cf928397611a4225d5976f8ca10d3a8abadffc29a8daa2b217ec961f12bc768.msgpack.zst result=miss status=200 bytes=294 upstream_ms=24 sandbox=f837afb0-df1b-48cb-9aa1-c9dd81e4473c",
+        "2026-10-11 23:58:34,020 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/noarch/daa27b82b3e9ba7815853d4ac9b77ce5f5e29d8d3bc33f66f35de90fe01a9673.msgpack.zst result=miss status=200 bytes=300 upstream_ms=32 sandbox=f837afb0-df1b-48cb-9aa1-c9dd81e4473c"
+      ],
+      "link_fields": [
+        "build",
+        "build_number",
+        "build_string",
+        "channel",
+        "constrains",
+        "depends",
+        "fn",
+        "license",
+        "md5",
+        "name",
+        "noarch",
+        "sha256",
+        "size",
+        "subdir",
+        "timestamp",
+        "track_features",
+        "url",
+        "version"
+      ]
+    },
+    "pip": {
+      "parsed_files": [
+        {
+          "ecosystem": "pypi",
+          "name": "snowballstemmer",
+          "version": "3.1.1",
+          "build": null,
+          "channel": null,
+          "subdir": null,
+          "file": "snowballstemmer-3.1.1-py3-none-any.whl",
+          "url": "https://files.pythonhosted.org/packages/4c/07/2ebca9b11fb9be7340a818d8d6f63feaebb146be2c4afbd6061701d6df6e/snowballstemmer-3.1.1-py3-none-any.whl",
+          "sha256": "7e207fa178741da09cdee59d3ecec3827ad5f92b1fc5c9ff3755b639f71f5752",
+          "license": "BSD-3-Clause",
+          "agpl": false,
+          "action": "allow",
+          "rule": null
+        }
+      ],
+      "cache_requests": [
+        "2026-10-11 23:59:05,121 INFO sandbox_science.package_cache.requests: ecosystem=pypi method=GET path=/pypi/simple/pip/ result=miss status=200 bytes=174444 upstream_ms=60 sandbox=f837afb0-df1b-48cb-9aa1-c9dd81e4473c",
+        "2026-10-11 23:59:05,265 INFO sandbox_science.package_cache.requests: ecosystem=pypi method=GET path=/pypi/simple/snowballstemmer/ result=miss status=200 bytes=15115 upstream_ms=27 sandbox=f837afb0-df1b-48cb-9aa1-c9dd81e4473c",
+        "2026-10-11 23:59:05,392 INFO sandbox_science.package_cache.requests: ecosystem=pypi method=GET path=/pypi/files/snowballstemmer/7e207fa178741da09cdee59d3ecec3827ad5f92b1fc5c9ff3755b639f71f5752/packages/4c/07/2ebca9b11fb9be7340a818d8d6f63feaebb146be2c4afbd6061701d6df6e/snowballstemmer-3.1.1-py3-none-any.whl.metadata result=miss status=200 bytes=7882 upstream_ms=115 sandbox=f837afb0-df1b-48cb-9aa1-c9dd81e4473c"
+      ],
+      "download_info": [
+        {
+          "url": "http://host.openshell.internal:8090/pypi/files/snowballstemmer/7e207fa178741da09cdee59d3ecec3827ad5f92b1fc5c9ff3755b639f71f5752/packages/4c/07/2ebca9b11fb9be7340a818d8d6f63feaebb146be2c4afbd6061701d6df6e/snowballstemmer-3.1.1-py3-none-any.whl",
+          "archive_info": {
+            "hashes": {
+              "sha256": "7e207fa178741da09cdee59d3ecec3827ad5f92b1fc5c9ff3755b639f71f5752"
+            },
+            "hash": "sha256=7e207fa178741da09cdee59d3ecec3827ad5f92b1fc5c9ff3755b639f71f5752"
+          }
+        }
+      ]
+    }
+  },
+  "approvals": {
+    "denied_package_downloads": [],
+    "approved_downloads": [
+      "2026-10-12 00:01:32,857 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/fpylll-0.6.4-py314hd68ceb5_2.conda result=miss status=200 bytes=739013 upstream_ms=131 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:32,890 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/libgfortran5-16.2.0-h6b99dfc_7.conda result=miss status=200 bytes=2528180 upstream_ms=164 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:32,904 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/mpfr-4.2.2-ha2cb11d_1.conda result=hit status=200 bytes=730409 upstream_ms=- sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:32,971 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/qd-2.3.22-h2cc385e_1004.tar.bz2 result=miss status=200 bytes=590266 upstream_ms=57 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:32,985 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/gmp-6.3.0-hfd2156b_3.conda result=hit status=200 bytes=493498 upstream_ms=- sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,020 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/libopenblas-0.3.34-pthreads_hf13c14d_2.conda result=miss status=200 bytes=6845411 upstream_ms=284 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,029 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/cysignals-1.12.6-py314ha160325_2.conda result=miss status=200 bytes=185589 upstream_ms=35 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,050 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/libstdcxx-ng-16.2.0-hdf11a46_7.conda result=miss status=200 bytes=28665 upstream_ms=25 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,069 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/libgfortran-ng-16.2.0-h69a702a_7.conda result=miss status=200 bytes=28630 upstream_ms=27 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,086 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/libgcc-ng-16.2.0-h69a702a_7.conda result=miss status=200 bytes=28616 upstream_ms=27 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,106 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/libgfortran-16.2.0-h69a702a_7.conda result=miss status=200 bytes=28571 upstream_ms=25 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,124 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/libblas-3.11.0-11_h4a7cf45_openblas.conda result=miss status=200 bytes=18246 upstream_ms=23 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,128 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/numpy-2.5.4-py314hd3a7d6b_0.conda result=miss status=200 bytes=9406761 upstream_ms=377 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,134 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/liblapack-3.11.0-11_h47877c9_openblas.conda result=miss status=200 bytes=18227 upstream_ms=24 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,168 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/libcblas-3.11.0-11_h0358290_openblas.conda result=miss status=200 bytes=18196 upstream_ms=39 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52",
+      "2026-10-12 00:01:33,807 INFO sandbox_science.package_cache.requests: ecosystem=conda method=GET path=/conda/conda-forge/linux-64/fplll-5.5.0-hd20a173_0.conda result=miss status=200 bytes=59006970 upstream_ms=940 sandbox=e7ad4b67-ea07-4b64-acae-e2100e550f52"
+    ],
+    "grant_events": [
+      {
+        "seq": 10,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package numpy",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/numpy-2.5.4-py314hd3a7d6b_0.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "f1db7006-66de-4fbe-8e5e-a1121dcc86db",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 11,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package fplll",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/fplll-5.5.0-hd20a173_0.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "6d75ee79-cef2-43f8-b9a9-d4d76e3b0f4b",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 12,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package libopenblas",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/libopenblas-0.3.34-pthreads_hf13c14d_2.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "3677b55d-757a-4c2c-b72a-c2f4bfb0a908",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 13,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package libgfortran5",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/libgfortran5-16.2.0-h6b99dfc_7.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "8423f808-6239-4780-98bd-67b9b5d56cc4",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 14,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package fpylll",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/fpylll-0.6.4-py314hd68ceb5_2.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "63997d0f-2867-4558-9c6e-c383b5a741f8",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 15,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package mpfr",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/mpfr-4.2.2-ha2cb11d_1.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "f0f1fb6b-7d6e-45ce-bb56-51a140a20386",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 16,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package qd",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/qd-2.3.22-h2cc385e_1004.tar.bz2",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "c5ac7bc2-ba3d-4789-8c75-500f9388d0a0",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 17,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package gmp",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/gmp-6.3.0-hfd2156b_3.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "2cae0480-4792-4447-af6a-d1c1b231f3d1",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 18,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package cysignals",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/cysignals-1.12.6-py314ha160325_2.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "53c86539-3ea2-40e6-b674-fff5d9151dab",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 19,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package libstdcxx-ng",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/libstdcxx-ng-16.2.0-hdf11a46_7.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "578586c3-5d16-47c9-a010-21e90f773b63",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 20,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package libgfortran-ng",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/libgfortran-ng-16.2.0-h69a702a_7.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "53882414-97be-429c-9d73-2c2da300ca86",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 21,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package libgcc-ng",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/libgcc-ng-16.2.0-h69a702a_7.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "33a240b8-2187-485b-a0c9-1e508840a037",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 22,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package libgfortran",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/libgfortran-16.2.0-h69a702a_7.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "1d28d084-7fad-495b-9b0d-82fc03cb6c79",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 23,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package libblas",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/libblas-3.11.0-11_h4a7cf45_openblas.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "98164917-bbfe-4542-9463-5659c34cfb76",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 24,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package liblapack",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/liblapack-3.11.0-11_h47877c9_openblas.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "466ca9d5-2304-4e57-a60e-1ede44652c4e",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      },
+      {
+        "seq": 25,
+        "kind": "approved",
+        "data": {
+          "approval_seq": 9,
+          "escalation": {
+            "on_timeout": "deny",
+            "timeout_seconds": 1800
+          },
+          "grant": "packages",
+          "policy": {
+            "digest": "sha256:23fcf7e76cf2bd58c5d9b8195b8a558d53ba55ad64ff2725c5923efc44b3cf96",
+            "name": "permissive-default"
+          },
+          "reason": "conda package libcblas",
+          "request": {
+            "host": "host.openshell.internal",
+            "method": "GET",
+            "path": "/conda/conda-forge/linux-64/libcblas-3.11.0-11_h0358290_openblas.conda",
+            "port": 8090,
+            "query_bytes": 0,
+            "scheme": "https"
+          },
+          "request_id": "17f3dfe0-64b2-426c-89b7-ffc1d9b6a1d8",
+          "request_seq": 7,
+          "rule": "packages.conda",
+          "sandbox_id": "e7ad4b67-ea07-4b64-acae-e2100e550f52"
+        }
+      }
+    ],
+    "outside_grant_refusals": 32,
+    "after_operation": "REFUSED 403 {\"error\":\"middleware_denied\",\"detail\":\"Request rejected by configured middleware\",\"policy\":\"sandbox-science-package-cache\",\"middleware\":\"sandbox-science-policy\",\"reason_code\":\"approval_required\",\"layer\":\"l7\",\"method\":\"GET\",\"path\":\"/conda/conda-forge/linux-64/cysignals-1.12.6-py314ha160325_2.conda\",\"host\":\"host.openshell.internal\",\"port\":8090,\"binary\":\"/opt/sandbox-science/bin/python3.14\"}\n",
+    "late_approval": {
+      "exit_code": 1,
+      "output": "error: permission request 7 was withdrawn: its provisioning operation has ended, and its files can no longer be granted\n"
+    }
+  },
+  "interruptions": {
+    "cancel": {
+      "observed": {
+        "linked_records": [
+          "cycler-0.12.1-pyhcf101f3_2.json",
+          "networkx-3.7-pyhc364b38_0.json",
+          "pyparsing-3.3.3-pyh5ded981_0.json"
+        ],
+        "time": 1791778034.5609076
+      },
+      "state_before_interrupt": "installing",
+      "outcome": "needs_recovery",
+      "reason": "environment_changed",
+      "error": {
+        "kind": "cancelled",
+        "message": "the install was cancelled",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "revision_before": 0,
+      "revision_after": 1,
+      "queue_at_end": {
+        "environment_id": "lab18-cancel",
+        "status": "needs_recovery",
+        "revision": 1,
+        "operations": []
+      },
+      "next_step": "The failed install changed the environment's packages (revision 0 to 1). The worker cannot restore an earlier revision yet. Tell the user: revision 0's lockfile lists the packages as they were.",
+      "later_execution_revision": "1",
+      "package_processes_after": "[]"
+    },
+    "restart": {
+      "observed": {
+        "linked_records": [
+          "cycler-0.12.1-pyhcf101f3_2.json",
+          "networkx-3.7-pyhc364b38_0.json",
+          "pyparsing-3.3.3-pyh5ded981_0.json"
+        ],
+        "time": 1791778053.2621522
+      },
+      "state_before_interrupt": "installing",
+      "outcome": "needs_recovery",
+      "reason": "worker_restarted",
+      "error": {
+        "kind": "internal",
+        "message": "the worker stopped during this operation; request it again",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "revision_before": 0,
+      "revision_after": null,
+      "queue_at_end": {
+        "environment_id": "lab18-restart",
+        "status": "needs_recovery",
+        "revision": 0,
+        "operations": []
+      },
+      "next_step": "The worker stopped during its install: it may have changed packages. The worker cannot restore an earlier revision yet. Tell the user: revision 0's lockfile lists the packages as they were.",
+      "later_execution_revision": "1",
+      "package_processes_after": "[]"
+    }
+  }
+}

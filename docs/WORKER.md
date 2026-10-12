@@ -305,6 +305,8 @@ What it does not do:
 
 ## Provisioning operations
 
+Runtime evidence: [lab 18](../.agents/docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md) ran the provisioning tool with real micromamba and pip, the middleware and cache, and independent OpenShell VMs. Its dry runs passed the parsers, installs matched their decided files and lockfiles, an escalated install downloaded exactly its approved set, and the grant ended with the operation. All nine catalog probes passed. Cancellation and a worker restart after linking began both exposed `needs_recovery`; restoration remains unimplemented.
+
 An agent asks for a capability or for packages, and the worker decides, installs in the environment's turn, records and probes, telling the agent what happened ([Conda provisioning](specs/conda-provisioning.md), CP-1 to CP-25). The code is `provisioner.py`, with `resolution.py` (commands, parsing and decisions), `permissions.py` (permission requests) and `catalog.py`; the harness's tools are `provision` and `provision_status` (`packages/orchestrator`, `provision.py`).
 
 - **Which environments.** The worker provisions the environments it created ([environments](#environments)), under their stored policy revision. Their capabilities list the `provisioning` feature, and the harness then offers the tools. An environment of a sandbox made by hand is `unsupported`.
