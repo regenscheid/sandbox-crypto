@@ -4,6 +4,16 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 
 ## Where things stand
 
+- **Capture prerequisite in progress, 2026-10-12:** the automatic-output readiness
+  assessment found the first worker whole-file hash was unbounded. The independent
+  bounded helper/ownership slice now preserves ordinary reads, fails visibly on
+  legacy capture peers and retains durable admission for unknown guest cleanup.
+  Original immutable VM proof and actual host drain are distinct. CP13's signed
+  source is unioned; root owns its runtime acceptance. Capture source review, all
+  combined gates and marked Lab22 remain pending. No automatic output discovery,
+  attempt-end bytes, producer/input lineage or closed-writer claim is enabled.
+  See [capture boundary](../docs/ARTIFACTS.md#bounded-worker-capture-prerequisite).
+
 - **CP-13 admission continuation:** [sticky recovery fence](../docs/RECOVERY-FENCE.md) source and the marked `.agents/labs/recovery_gate.py` helper are implemented locally. Main `999de27` is integrated. Root's first cancel/restart Lab21 pass on predecessor `ef77f6d` passed and was completely removed. The final original-binding proof correction is in local review/gates; a fresh offline/delete-reuse Lab21 remains pending on that corrected source. Restorer and operator clear are separate follow-ons. No lab/service was started by the source author.
 
 - **Current continuation, 2026-10-12:** main `999de27` includes PR #69 through #84 with fresh CI successful, including catalog #76, outbox #77, source adapter #79, atomic fixture #80, manual delivery #81 and artifact inventory #82. Document-revision D82 now has independently reviewed signed source and [real browser acceptance](docs/agent-reports/document-math-2026-10-12.md). Its exact artifact source union passed final combined gates: 9,459 Python tests (43 opt-in skips), 434 web tests, locked/static/license/protocol checks and both builds. One manually constructed CLI test namespace needed three optional math defaults; its cleanup assertions and timeouts are unchanged, and the final full rerun passed. Rebuilt GUI bytes match the browser archive. D82 PR #83 and artifact evidence PR #84 merged after all fresh CI jobs passed. Main #84 validation recorded 9,494 Python/436 web tests. Renderer configuration remains operator-owned/default unavailable. Full LD-53 comments/replies/ledger/finding-prose coverage and idle dispatch remain open. Normal development is Python 3.13; the supported 3.12 CI matrix remains.
