@@ -456,3 +456,32 @@ async def test_completed_job_summary_and_list_never_duplicate_large_output(
     assert status.execution.result is not None
     assert status.execution.result.stdout is None
     assert len(jobs.jobs(CONTEXT).model_dump_json().encode()) < 10000
+
+
+@pytest.mark.asyncio
+async def test_direct_cancel_has_completion_deadline(
+    jobs: ExecutionManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sandbox_science.worker import manager as manager_module
+
+    job, _ = await jobs.submit(request("ack-without-end", "sleep 60"))
+    await running(jobs, job.execution_id)
+    live = jobs._live[job.execution_id]
+    assert live.channel is not None
+    channel = live.channel
+    original = channel.request
+
+    async def acknowledge_cancel(op: str, **fields: Any) -> Any:
+        if op == "cancel":
+            return {"found": True}
+        return await original(op, **fields)
+
+    monkeypatch.setattr(channel, "request", acknowledge_cancel)
+    monkeypatch.setattr(manager_module, "CANCEL_GRACE", 0.05)
+    execution = await jobs.cancel(job.execution_id)
+    assert execution.state is ExecutionState.CANCELLING
+    final = await asyncio.wait_for(jobs.wait(job.execution_id), 10)
+    assert final.state is ExecutionState.LOST
+    assert live.cancel_watchdog is not None
+    await live.cancel_watchdog
+    assert channel.closed

@@ -179,6 +179,7 @@ class _Live:
     cancel_requested: bool = False
     dispatched: bool = False
     watchdog: asyncio.Task[None] | None = None
+    cancel_watchdog: asyncio.Task[None] | None = None
     stored: int = 0
     """Bytes of stream text and rich output stored as events."""
     events: int = 0
@@ -504,6 +505,8 @@ class ExecutionManager:
             environment.last_used = time.monotonic()
         if live.watchdog is not None and live.watchdog is not asyncio.current_task():
             live.watchdog.cancel()
+        if live.cancel_watchdog is not None and live.cancel_watchdog is not asyncio.current_task():
+            live.cancel_watchdog.cancel()
         asyncio.get_running_loop().call_later(RETAIN_LIVE, self._live.pop, execution_id, None)
 
     def _final(
@@ -875,6 +878,10 @@ class ExecutionManager:
                 ),
             )
             return
+        if isinstance(request, JobRequest) and "jobs" not in environment.features:
+            raise WorkerError(
+                ErrorKind.UNSUPPORTED, "this executor does not support background jobs"
+            )
         if isinstance(request, PdfRequest) and "pdf" not in environment.features:
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, "this environment cannot read PDFs (it lacks pdf_oxide)"
@@ -1050,6 +1057,8 @@ class ExecutionManager:
                     }
                 )
             live.final = (state, result)
+            if live.cancel_watchdog is not None:
+                live.cancel_watchdog.cancel()
             live.ended_at = time.monotonic()
             if self.shared is None or live.channel is None:
                 self._complete(live, live.notices)
@@ -1570,10 +1579,17 @@ class ExecutionManager:
         live = self._live.get(execution_id)
         if live is None or live.execution.state in TERMINAL_STATES:
             return execution
+        already_requested = live.cancel_requested
         live.cancel_requested = True
-        if live.dispatched:
-            await self._send_cancel(live)
-        elif execution.kind == "job":
+        if live.dispatched and not already_requested:
+            if execution.kind == "job":
+                live.cancel_watchdog = self._spawn(self._watch_cancel(live))
+            try:
+                await self._send_cancel(live)
+            except WorkerError:
+                if live.execution.state not in TERMINAL_STATES:
+                    raise
+        elif not live.dispatched and execution.kind == "job":
             self._finish(
                 live,
                 ExecutionState.CANCELLED,
@@ -1582,6 +1598,16 @@ class ExecutionManager:
                 ),
             )
         return live.execution
+
+    async def _watch_cancel(self, live: _Live) -> None:
+        """A direct job cancel has its own deadline, independent of the wall-time limit."""
+        await asyncio.sleep(CANCEL_GRACE)
+        if live.execution.state in TERMINAL_STATES or live.final is not None:
+            return
+        channel = live.channel
+        self._lose(live, "the executor that did not confirm job cancellation")
+        if channel is not None:
+            await channel.close()
 
     async def _send_cancel(self, live: _Live) -> None:
         if live.execution.state not in (ExecutionState.CANCELLING, *TERMINAL_STATES):
