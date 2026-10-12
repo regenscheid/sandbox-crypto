@@ -115,6 +115,14 @@ replay and shared operation collisions. All fixtures are synthetic and make no w
 model or environment calls. Existing editor/annotation/consistency fixtures protect the
 shared store and authority paths.
 
+Independent adversarial review passed, including bounded corrupt receipt reads. Combined
+acceptance with the merged catalog and outbox passed 9,307 Python tests (43 opt-in skips),
+431 web tests, strict/static/license/protocol checks and both production builds. This
+includes 33 adapter cases and the SQL-hook rollback/retry integration. The author's
+earlier broad run encountered an unrelated fake OpenShell JSON rewrite race; its isolated
+case and all 79 environment tests passed on rerun without changing assertions, and the
+final combined suite passed. These are control-side tests, not runtime capture proof.
+
 Authenticating and fencing bindings, delivering and acknowledging document changes, acquiring a proven
 writer boundary, filesystem capture/restore, retention resolution, USER raw-download
 routes, and `ss-doc` remain separate work. This slice does not complete LD-49 to LD-52
