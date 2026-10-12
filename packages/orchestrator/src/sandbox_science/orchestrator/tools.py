@@ -526,7 +526,14 @@ class Toolbox:
             return _failure(ErrorKind.UNSUPPORTED, f"no {language!r} kernel in this environment")
         kernel = await self.client.restart_kernel(self.context, language)
         return ToolOutcome(
-            dump({"restarted": True, "kernel_generation": kernel.generation, "state_lost": True}),
+            dump(
+                {
+                    "restarted": True,
+                    "kernel_generation": kernel.generation,
+                    "state_lost": True,
+                    "kernel": kernel.model_dump(mode="json"),
+                }
+            ),
             {"kernel": kernel.model_dump(mode="json")},
         )
 
@@ -701,6 +708,22 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
             summary["error"] = error
         if result.kernel is not None:
             summary["kernel_generation"] = result.kernel.generation
+            summary["kernel"] = result.kernel.model_dump(mode="json")
+        if result.running_kernels:
+            summary["running_kernels"] = [
+                kernel.model_dump(mode="json") for kernel in result.running_kernels
+            ]
+            stale = [
+                kernel.kernel_id
+                for kernel in result.running_kernels
+                if kernel.revision_status == "predates"
+            ]
+            if stale:
+                summary["kernel_revision_notice"] = (
+                    "Running kernels predate the current environment revision: "
+                    + ", ".join(stale)
+                    + ". Their loaded state is retained; restart explicitly to replace it."
+                )
         if result.state_lost:
             summary["state_lost"] = "the kernel restarted before this cell; earlier state is gone"
         if result.notices:

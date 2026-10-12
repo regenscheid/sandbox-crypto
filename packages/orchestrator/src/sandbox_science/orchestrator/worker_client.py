@@ -40,7 +40,9 @@ from sandbox_science.contracts import (
     JobRequest,
     JobStatus,
     KernelInfo,
+    KernelListing,
     KernelRestartRequest,
+    KernelStatusRequest,
     ListFilesRequest,
     Lockfile,
     PolicyRevisionRequest,
@@ -479,6 +481,18 @@ class WorkerClient:
         return await self._call(
             "GET", "/v1/capabilities", Capabilities, params={"environment_id": environment_id}
         )
+
+    async def kernel_status(self, context: ExecutionContext) -> KernelListing:
+        """This context's running kernels with durable birth/current package revisions."""
+        result = await self._call(
+            "POST", "/v1/kernels/status", KernelListing, KernelStatusRequest(context=context)
+        )
+        if (result.environment_id, result.session_id) != (
+            context.environment_id,
+            context.session_id,
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned another kernel scope")
+        return result
 
     async def restart_kernel(
         self, context: ExecutionContext, language: Language = "python"
