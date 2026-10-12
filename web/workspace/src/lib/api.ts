@@ -133,6 +133,8 @@ export interface RunRecord {
   ended_at: string;
   stopped: string;
   final_text: string | null;
+  review_notice_ids?: string[];
+  review_summary?: { pending?: boolean; outcome?: string; counts?: Record<string, number>; reviews?: string[] };
   messages: Message[];
   tools: ToolRecord[];
 }
@@ -349,13 +351,13 @@ async function failure(response: Response): Promise<ApiError> {
   return new ApiError(response.status, kind, message, details);
 }
 
-async function get<T>(path: string): Promise<T> {
+export async function get<T>(path: string): Promise<T> {
   const response = await fetch(`/api/v0${path}`, { headers: { Accept: 'application/json' } });
   if (!response.ok) throw await failure(response);
   return (await response.json()) as T;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+export async function post<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`/api/v0${path}`, {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
