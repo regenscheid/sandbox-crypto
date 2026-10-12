@@ -12,7 +12,8 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && tsc -p tsconfig.node.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build:math": "vite build --config vite.math.config.ts && node server/copy-math-licenses.mjs"
   },
   "dependencies": {
     "katex": "0.18.9",

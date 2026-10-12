@@ -6,6 +6,7 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import JobsPanel from './JobsPanel.svelte';
   import RunSection from './RunSection.svelte';
+  const reviewComponent = import('./ReviewsPanel.svelte');
 
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
   const loading = $derived(api.session(projectId, sessionId));
@@ -36,6 +37,10 @@
   </dl>
 
   <JobsPanel {projectId} {sessionId} />
+  {#await reviewComponent then component}
+    {@const Reviews = component.default}
+    <Reviews {projectId} {sessionId} />
+  {/await}
 
   <h2>Runs</h2>
   {#if detail.runs.length === 0}
