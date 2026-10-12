@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Sequence
+from contextlib import asynccontextmanager, suppress
 from typing import Any, Final, cast
 
 from pydantic import JsonValue
@@ -25,6 +26,8 @@ from pydantic import JsonValue
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.model import ToolSpec
 
+from . import annotation_tools
+from .annotations import Annotations
 from .errors import INVALID_REQUEST, DocumentError
 from .identity import Mapped
 from .models import Author, ChangeResult, DocumentInfo, RevisionInfo
@@ -34,6 +37,7 @@ from .store import DocumentStore
 Json = dict[str, Any]
 
 NAMES: Final = (
+    *annotation_tools.NAMES,
     "document_list",
     "document_read",
     "document_create",
@@ -233,10 +237,72 @@ class DocumentTool:
         self.role = role
         self.alias = alias
         self.output_chars = output_chars
-        self.specs = SPECS
+        self.specs = SPECS + annotation_tools.SPECS
+        self.request_seen: set[str] = set()
+        self.request_delivered: set[str] = set()
         self._seen: dict[str, int] = {}
         """The revision of each document this run last saw: read, wrote or was told of."""
         self._names: dict[str, str] = {}
+
+    async def request_notices(self) -> list[Json]:
+        """Only user-addressed requests for this session's main role reach the model."""
+        if self.role != "main":
+            return []
+        return await asyncio.to_thread(
+            Annotations(self.store).pending,
+            self.context.project_id,
+            self.context.session_id,
+            self.run_id,
+            seen=self.request_seen,
+            max_chars=20000,
+        )
+
+    @asynccontextmanager
+    async def active_requests(self) -> AsyncGenerator[None]:
+        if self.role != "main":
+            yield
+            return
+
+        async def renew() -> None:
+            while True:
+                await asyncio.sleep(30)
+                try:
+                    await asyncio.to_thread(
+                        Annotations(self.store).renew,
+                        self.context.project_id,
+                        self.context.session_id,
+                        self.run_id,
+                    )
+                except DocumentError:
+                    # A transient busy store retries before the 120-second lease ends.
+                    # A lease lost across a long outage may safely replay the request.
+                    continue
+
+        heartbeat = asyncio.create_task(renew())
+        failed = True
+        try:
+            yield
+            failed = False
+        except BaseException:
+            await asyncio.to_thread(
+                Annotations(self.store).release,
+                self.context.project_id,
+                self.context.session_id,
+                self.run_id,
+            )
+            raise
+        finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
+            if not failed:
+                await asyncio.to_thread(
+                    Annotations(self.store).release,
+                    self.context.project_id,
+                    self.context.session_id,
+                    self.run_id,
+                    keep=self.request_delivered,
+                )
 
     def author(self, call_id: str | None, model: str | None) -> Author:
         return Author(
@@ -266,6 +332,16 @@ class DocumentTool:
             "document_patch": lambda: self._patch(args, operation, call_id, model),
             "document_delete": lambda: self._delete(args, operation, call_id, model),
         }
+        if name in annotation_tools.NAMES:
+            handlers[name] = lambda: annotation_tools.call(
+                self.store,
+                self.context,
+                name,
+                args,
+                operation,
+                self.author(call_id, model),
+                self.output_chars,
+            )
         handler = handlers.get(name)
         if handler is None:
             return _failure(INVALID_REQUEST, f"there is no tool named {name!r}")
