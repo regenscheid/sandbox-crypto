@@ -1,12 +1,30 @@
 # Plan changes
 
+## 2026-10-12 — Unicode table parity and historical parser profiles
+
+Implement the known table whitespace mismatch using the pinned rule with JavaScript trim, preserving paragraph/reference interruption and exact source provenance. New parses record profile 2; immutable profile 1 documents and ordinary bodies select their original parser before parsing, and explicit restores retain truthful profile metadata. The browser production renderer, source normalization and authority remain unchanged. The existing pinned uv setup/sync move before web tests so the full-document differential gate uses the actual locked server parser. Independent source/main-union reviews clear `9419abec`; root final combined gates pass 9,817 Python/43 skips/two existing warnings, 571 web, 24 post-build math cases and all required checks/builds. Fresh CI/merge remain pending. See [scope and limits](../docs/TABLE-PARSER-PARITY.md).
+
+## 2026-10-12 — parallel continuation and merged tracking
+
+The user explicitly requested more parallel agents. Start three independent existing
+backlog items from main `1890db0`: CP-12 kernel start revisions, LD-28 project macros,
+and Unicode table-rule parity. Separate worktrees and source ownership allow authors
+to proceed concurrently, then rotate onto independent reviews. Root owns integration,
+tracking, final gates and acceptance. This changes no requirement, authority, security
+boundary or milestone exit criterion; the three features remain open during implementation.
+
+Refresh tracking from verified GitHub merge state: original-LaTeX copying PR #92
+merged at `b2f2e62`, all four exact-head checks passed in run `38292786944`; isolated
+math notices PR #93 merged at `1890db0`, all four exact-head checks passed in run
+`38295449131`. Existing detailed local/runtime evidence remains unchanged.
+
 ## 2026-10-12 — refresh roadmap implementation status
 
 Correct the roadmap's obsolete starting statement that nothing was implemented. M1 passed its recorded babbage exit run; M0 specification/decision review and the complete M2 local research workflow remain open. Point current work at W4/M2 and the maintained status/backlog. Hosted, multi-architecture, placement and representative cryptography workflow gates remain open. This changes no milestone scope or acceptance requirement. See the [roadmap](../docs/ROADMAP.md).
 
 ## 2026-10-12 — isolated math distribution embedded notices
 
-Implement the explicitly tracked W4 follow-on after GUI PR #91 merged at `05ba353` with all four fresh CI checks passed (run `38290115991`). Reuse the reviewed collector and pinned local primary texts for code-only KaTeX MIT, React-derived Apache helpers and glyph-derived SVG OFL attribution. The math build emits six covered files, preserving the established filenames and exact renderer/launcher bytes; its existing copier entry point verifies the complete directory. Node and its two launcher builtins remain operator-provided. No external font/CSS/Svelte runtime, dependency, license-allowlist, renderer or deployment change. Independent review and root six-file acceptance pass. Final gates passed 486 web tests (41 notice cases), 24 post-build math cases, both builds and locked/static/license/protocol checks. Source-identical full Python 9,749/43/two warnings is explicitly reused. Actual main `b2f2e62` (merged PR #92) is integrated at signed `fe19020`; fresh combined 515 web tests/check/build pass, and all 70 GUI files match root copy-accepted bytes exactly. The unchanged six-file math distribution/build/24 results and backend baseline are explicitly reused. Exact combined review and fresh PR CI/merge remain pending. See [math build](../docs/MATH-CHECKS.md#build-and-configure) and [primary inputs](../web/workspace/licenses/README.md).
+Implement the explicitly tracked W4 follow-on after GUI PR #91 merged at `05ba353` with all four fresh CI checks passed (run `38290115991`). Reuse the reviewed collector and pinned local primary texts for code-only KaTeX MIT, React-derived Apache helpers and glyph-derived SVG OFL attribution. The math build emits six covered files, preserving the established filenames and exact renderer/launcher bytes; its existing copier entry point verifies the complete directory. Node and its two launcher builtins remain operator-provided. No external font/CSS/Svelte runtime, dependency, license-allowlist, renderer or deployment change. Independent review and root six-file acceptance pass. Final gates passed 486 web tests (41 notice cases), 24 post-build math cases, both builds and locked/static/license/protocol checks. Source-identical full Python 9,749/43/two warnings is explicitly reused. Actual main `b2f2e62` (merged PR #92) is integrated at signed `fe19020`; fresh combined 515 web tests/check/build pass, and all 70 GUI files match root copy-accepted bytes exactly. The unchanged six-file math distribution/build/24 results and backend baseline are explicitly reused. Independent exact-head review cleared signed `a4be274`; PR #93 merged at actual main `1890db0` after all four fresh checks passed (run `38295449131`). See [math build](../docs/MATH-CHECKS.md#build-and-configure) and [primary inputs](../web/workspace/licenses/README.md).
 
 ## 2026-10-12 — copy original formula LaTeX
 
