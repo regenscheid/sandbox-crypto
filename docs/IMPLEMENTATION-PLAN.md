@@ -114,9 +114,10 @@ Document synchronization now has separate [worker catalog](WORKER.md#document-ca
 and [control publication outbox](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
 prerequisites. The latter records canonical changes and source events in one transaction
 and exports complete pinned targets, with snapshot recovery across retention/bootstrap
-gaps. Delivery, worker acknowledgement reconciliation, writer-state safety, direct-edit
-capture and `ss-doc` still require implementation and real OpenShell acceptance before
-environment publication is enabled.
+gaps. A separate internal manual delivery journal now pins transfers and reconciles
+exact storage acknowledgements through bounded worker calls. It supplies no scheduler
+or execution hook. Writer-state safety, direct-edit capture and `ss-doc` still require
+implementation and real OpenShell acceptance before environment publication is enabled.
 
 Use the shared artifact/revision/anchor contracts for living documents, comments, sources and ledger entries. Keep open questions/issues, scientific findings, results and frontier candidates as typed entries in one project ledger; board/frontier/history are views. Link review findings without merging their resolution lifecycle into scientific result status.
 
