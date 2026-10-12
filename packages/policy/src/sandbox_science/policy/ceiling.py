@@ -126,6 +126,24 @@ def effective_resources(
             "workspace_disk", requested.workspace_disk, caps.workspace_disk, notices
         ),
         wall_time=_clamp("wall_time", requested.wall_time, caps.wall_time, notices),
+        job_wall_time_default=_clamp(
+            "job_wall_time_default",
+            requested.job_wall_time_default,
+            caps.job_wall_time_default,
+            notices,
+        ),
+        job_wall_time_max=_clamp(
+            "job_wall_time_max", requested.job_wall_time_max, caps.job_wall_time_max, notices
+        ),
+        jobs_per_session=_clamp(
+            "jobs_per_session", requested.jobs_per_session, caps.jobs_per_session, notices
+        ),
+        jobs_per_environment=_clamp(
+            "jobs_per_environment",
+            requested.jobs_per_environment,
+            caps.jobs_per_environment,
+            notices,
+        ),
         model_budget_usd_per_day=_clamp(
             "model_budget_usd_per_day",
             requested.model_budget_usd_per_day,

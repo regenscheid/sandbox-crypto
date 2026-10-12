@@ -52,6 +52,8 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
+from sandbox_science.policy import effective_resources
+from sandbox_science.policy.model import Resources
 
 from .environments import Environments
 from .errors import WorkerError
@@ -155,6 +157,18 @@ def create_app(
     if environments is not None:
         app[ENVIRONMENTS] = environments
         environments.deleted.append(manager.forget_revisions)
+
+        def job_resources(environment_id: str) -> Resources:
+            if environments.busy(environment_id):
+                raise WorkerError(ErrorKind.UNAVAILABLE, "the environment is changing")
+            governing = environments.governing(environment_id)
+            if governing is None:
+                if environments.handmade(environment_id):
+                    return environments.ceiling.resources
+                raise WorkerError(ErrorKind.POLICY_DENIED, "no ready environment policy for jobs")
+            return effective_resources(governing.policy.policy, governing.ceiling)[0]
+
+        manager.job_resources = job_resources
     if provisioner is not None:
         app[PROVISIONER] = provisioner
         if environments is not None:
@@ -177,6 +191,8 @@ def create_app(
             web.post("/v1/provisioning/{provision_id}/cancel", cancel_provision),
             web.get("/v1/capabilities", capabilities),
             web.post("/v1/executions", submit),
+            web.get("/v1/jobs", list_jobs),
+            web.get("/v1/jobs/{execution_id}", job_status),
             web.get("/v1/executions/{execution_id}", get_execution),
             web.get("/v1/executions/{execution_id}/events", events),
             web.post("/v1/executions/{execution_id}/cancel", cancel),
@@ -505,6 +521,25 @@ async def submit(request: web.Request) -> web.Response:
         )
     execution, created = await request.app[MANAGER].submit(execution_request)
     return _json(execution, 201 if created else 200)
+
+
+async def list_jobs(request: web.Request) -> web.Response:
+    context = ExecutionContext(
+        project_id=request.query.get("project_id", ""),
+        session_id=request.query.get("session_id", ""),
+        environment_id=request.query.get("environment_id", ""),
+    )
+    _context(request, context, hide=True)
+    try:
+        limit = int(request.query.get("limit", "100"))
+    except ValueError as exc:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid job listing limit") from exc
+    return _json(request.app[MANAGER].jobs(context, limit, request.query.get("after")))
+
+
+async def job_status(request: web.Request) -> web.Response:
+    execution = _execution(request)
+    return _json(await request.app[MANAGER].job_status(execution.execution_id, _project(request)))
 
 
 # Provisioning operations (Conda provisioning, CP-1 to CP-25).

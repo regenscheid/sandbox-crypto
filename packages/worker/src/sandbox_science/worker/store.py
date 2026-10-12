@@ -19,6 +19,7 @@ from sandbox_science.contracts import (
     EnvironmentRevision,
     Event,
     Execution,
+    ExecutionContext,
     ProvisionOperation,
     ProvisionState,
 )
@@ -208,6 +209,39 @@ class Store:
             "SELECT execution_id, record FROM executions"
             " WHERE environment_id = ? AND session_id = ?",
             (environment_id, session_id),
+        ).fetchall()
+        return [found for row in rows if (found := _readable(str(row[0]), row[1])) is not None]
+
+    def session_jobs(
+        self, context: ExecutionContext, limit: int, after: str | None = None
+    ) -> list[Execution]:
+        """A bounded job query; filter project before limit so other tenants reveal nothing."""
+        cursor = 0
+        if after is not None:
+            row = self._db.execute(
+                "SELECT rowid, record FROM executions WHERE execution_id = ?", (after,)
+            ).fetchone()
+            found = _readable(after, row[1]) if row else None
+            if (
+                found is None
+                or found.kind != "job"
+                or (
+                    found.context.project_id,
+                    found.context.environment_id,
+                    found.context.session_id,
+                )
+                != (context.project_id, context.environment_id, context.session_id)
+            ):
+                raise LookupError("unknown session job cursor")
+            cursor = int(row[0])
+        rows = self._db.execute(
+            "SELECT execution_id, json_remove(record, '$.result.stdout', '$.result.stderr',"
+            " '$.result.outputs', '$.result.written_files', '$.result.notices', '$.result.error')"
+            " FROM executions"
+            " WHERE environment_id = ? AND session_id = ?"
+            " AND json_extract(record, '$.context.project_id') = ?"
+            " AND json_extract(record, '$.kind') = 'job' AND rowid > ? ORDER BY rowid LIMIT ?",
+            (context.environment_id, context.session_id, context.project_id, cursor, limit),
         ).fetchall()
         return [found for row in rows if (found := _readable(str(row[0]), row[1])) is not None]
 
