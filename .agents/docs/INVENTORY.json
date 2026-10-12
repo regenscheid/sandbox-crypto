@@ -1,13 +1,19 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-five OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-six OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
       "category": "implementation-boundary",
       "bytes": 7327,
       "sha256": "55126b3baf4eec548b8321689a69c6667de3a34a641c62009ac1f64620b34c9c"
+    },
+    {
+      "path": "../../docs/KERNEL-REVISIONS.md",
+      "category": "implementation-boundary",
+      "bytes": 12221,
+      "sha256": "7a736b1d5566a77e8a8b86921546bc6c9596a18700813592493a17c55e885143"
     },
     {
       "path": "../../docs/PROJECT-MACROS.md",
@@ -18,8 +24,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 19905,
-      "sha256": "62a8f85e27b4195807d870b2207b5678ff394367a8d0e13ae66b1e50fbe8a41c"
+      "bytes": 20454,
+      "sha256": "988b0b2f8f75c2b6a11615e248bcfd434724ba6a17963c7d2756231445600fcc"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -230,6 +236,18 @@
       "category": "runtime-evidence",
       "bytes": 204935,
       "sha256": "1f89881098c764f301b1b0570b561bea1d8ef04175d39580f750dec6e808a044"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-26-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 5283,
+      "sha256": "bd86a73dddbca6afd1976ff679b47b0e41f06b73e0de3ac8f438c20086e75979"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-26-evidence-2026-10-12.json",
+      "category": "runtime-evidence",
+      "bytes": 251354,
+      "sha256": "5818a1dbd52f203cef43b62a037bd7d471d21231666ae385983a437d5a2ea3a7"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",
