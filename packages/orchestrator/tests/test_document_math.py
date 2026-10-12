@@ -1079,6 +1079,10 @@ def test_corrupt_admission_lease_and_listing_ids_refuse_before_fetch(stores) -> 
     with pytest.raises(DocumentError, match="lease"):
         jobs.claim("p", "other")
     with docs._write() as db:
+        # Remove only the new immutable context pin in this corrupt-row fixture,
+        # so its FK does not prevent testing the original admission read bound.
+        db.execute("DROP TRIGGER math_macro_pins_delete")
+        db.execute("DELETE FROM math_macro_pins")
         db.execute("UPDATE math_jobs SET check_id=?", ("x" * 20_000_000,))
     with pytest.raises(DocumentError, match="identity"):
         jobs.listing("p")

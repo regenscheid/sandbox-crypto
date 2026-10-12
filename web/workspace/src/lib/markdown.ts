@@ -512,6 +512,7 @@ function renderFormula(
     repairs: rendering.repairs,
     check: macros.key ? checkerFor(macros) : checker,
     macros: macros.key,
+    scope: macros.repairScope,
   });
   if (recovery.status === 'unfinished') {
     rendering.unfinished = true;

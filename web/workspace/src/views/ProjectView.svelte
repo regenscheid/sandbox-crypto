@@ -4,6 +4,7 @@
   import { formatTime } from '../lib/format';
   import { documentHref, sessionHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import ProjectMacros from './ProjectMacros.svelte';
 
   let { projectId }: { projectId: string } = $props();
   const loading = $derived(api.project(projectId));
@@ -28,6 +29,7 @@
     <dt>Updated</dt>
     <dd>{formatTime(project.updated_at)}</dd>
   </dl>
+  <ProjectMacros {projectId} />
 
   <h2>Sessions</h2>
   {#if project.sessions.length === 0}

@@ -112,6 +112,9 @@ class ResponseMath:
             (check, revision, saved["sha256"], owner, now + LEASE, now),
         )
         db.execute("INSERT INTO math_response_jobs VALUES(?,?)", (check, source))
+        from .project_macros import pin, response_anchors
+
+        pin(db, check, project, response_anchors(db, source))
         db.execute(
             "UPDATE response_math_sources SET retry_requested=0,blocked=NULL WHERE source=?",
             (source,),

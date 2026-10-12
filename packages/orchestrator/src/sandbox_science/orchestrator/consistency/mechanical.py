@@ -47,6 +47,10 @@ class MechanicalFindings:
         return author
 
     def _current(self, db: sqlite3.Connection, job: Json) -> bool:
+        from sandbox_science.orchestrator.documents.project_macros import current
+
+        if not current(db, job["check_id"], job["project"]):
+            return False
         return (
             db.execute(
                 "SELECT 1 FROM math_current_checks WHERE check_id=? AND source=? AND revision=?",
@@ -155,7 +159,17 @@ class MechanicalFindings:
         configuration = {
             k: answer[k] for k in ("bundle_sha256", "launcher_sha256", "engine", "runtime")
         }
-        identity = digest(dump([answer["input_sha256"], configuration, item["owner"]["revision"]]))
+        identity = digest(
+            dump(
+                [
+                    answer["input_sha256"],
+                    configuration,
+                    item["owner"]["revision"],
+                    job["macro_context"]["revision"],
+                    job["macro_context"]["sha256"],
+                ]
+            )
+        )
         if row:
             found = db.execute(
                 "SELECT project,session FROM review_findings WHERE finding_id=?", (row[0],)

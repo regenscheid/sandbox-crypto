@@ -96,6 +96,9 @@ class RepairRequest:
     display: bool
     error: str
     """KaTeX's error, cut to ``MAX_ERROR`` characters."""
+    project: str = ""
+    macro_context: str = ""
+    """Bounded cache identity only; it grants no document/setting access."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,10 +136,22 @@ def parse_request(payload: object) -> RepairRequest:
         raise RepairRequestError(f"the expression exceeds {MAX_TEX} characters")
     error = fields.get("error")
     display = fields.get("display")
+    project, context = fields.get("project", ""), fields.get("macro_context", "")
+    if (project or context) and (
+        not isinstance(project, str)
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", project) is None
+        or not isinstance(context, str)
+        or re.fullmatch(r"[A-Za-z0-9._:-]{1,256}", context) is None
+    ):
+        raise RepairRequestError("invalid project macro cache context")
+    if not isinstance(project, str) or not isinstance(context, str):
+        raise RepairRequestError("invalid project macro cache context")
     return RepairRequest(
         tex=tex,
         display=display is True or display == "true",
         error=error[:MAX_ERROR] if isinstance(error, str) else "",
+        project=project,
+        macro_context=context,
     )
 
 
@@ -203,7 +218,8 @@ def disabled_reason(setting: str | None) -> str:
 def _cache_key(request: RepairRequest) -> str:
     mode = b"display" if request.display else b"inline"
     tex = request.tex.encode("utf-8", "surrogatepass")
-    return hashlib.sha256(mode + b"\0" + tex).hexdigest()
+    scope = (request.project + "\0" + request.macro_context).encode()
+    return hashlib.sha256(scope + b"\0" + mode + b"\0" + tex).hexdigest()
 
 
 def _messages(request: RepairRequest) -> list[Message]:

@@ -185,6 +185,9 @@ class MathJobs:
             from .comment_math import reconcile
 
             reconcile(db, project)
+            from .project_macros import refresh
+
+            refresh(db, project)
             # Mixed-version writers may append valid immutable revisions without
             # the new scheduling hook. Reconcile only authoritative head metadata;
             # history still proves each queued revision's individual block owner.
@@ -287,6 +290,9 @@ class MathJobs:
                 "UPDATE math_sources SET blocked=NULL,retry_requested=0 WHERE document=?",
                 (source[0],),
             )
+            from .project_macros import pin
+
+            pin(db, check, project)
             return check
 
     def job(self, check: str) -> Json:
@@ -381,6 +387,10 @@ class MathJobs:
                     value["response"] = response
                 elif value["document"] is None:
                     raise ValueError
+                from .project_macros import job_context, resolved
+
+                value["macro_context"] = job_context(db, check, value["project"])
+                value["effective_macro_context"] = resolved(db, check, value["macro_context"])
                 return value
             except (ValueError, TypeError, UnicodeDecodeError):
                 raise DocumentError(INTERNAL, "stored math job exceeds its schema bounds") from None
@@ -694,14 +704,38 @@ class MathJobs:
         except (ValueError, TypeError, KeyError, RecursionError):
             raise DocumentError(INTERNAL, "pinned math source identity is invalid") from None
 
-    def effective_macros(self, job: Json, mapped: Mapped) -> dict[str, str]:
+    def effective_macros(self, job: Json, mapped: Mapped, owner: str) -> dict[str, str]:
+        from .project_macros import anchored_macros, resolve, save_resolution
+
+        project = job["macro_context"]["macros"]
+        held = not job["macro_context"]["known"]
         if "response" in job:
-            return {}
-        if "comment" in job:
+            macros, problems, held = anchored_macros(
+                self.documents, job["project"], job["macro_context"]
+            )
+        elif "comment" in job:
             from .comment_math import CommentMath
 
-            return CommentMath(self).macros(job)
-        return mapped.parsed.front_matter.macros if mapped.parsed.front_matter else {}
+            macros, problems = resolve(project, CommentMath(self).macros(job))
+        else:
+            macros, problems = resolve(
+                project, mapped.parsed.front_matter.macros if mapped.parsed.front_matter else {}
+            )
+        if held and not problems:
+            problems = ["Historical project macro context is unknown; checks are held"]
+        with self.documents._write() as db:
+            self._fence(db, job["check_id"], owner)
+            job["macro_capacity"] = save_resolution(
+                db, job["check_id"], job["macro_context"], macros, problems, held
+            )
+            if held:
+                db.execute(
+                    "UPDATE math_jobs SET reason='macro context unknown or ambiguous' "
+                    "WHERE check_id=?",
+                    (job["check_id"],),
+                )
+        job["macro_held"] = held
+        return macros
 
     async def step(self, check: str, owner: str, checker: Checker | None) -> bool:
         """One bounded provenance page or formula batch; False means durable pending."""
@@ -716,7 +750,9 @@ class MathJobs:
         proofs = await threaded(self.attribution, check, owner, blocks)
         if proofs is None or not await threaded(self.capacity, check, owner):
             return False
-        macros = await threaded(self.effective_macros, job, mapped)
+        macros = await threaded(self.effective_macros, job, mapped, owner)
+        if not job["macro_capacity"]:
+            return False
         formulas: list[Formula] = []
         for index, span in selected:
             block = mapped.parsed.blocks[span.block]
@@ -741,12 +777,20 @@ class MathJobs:
             identity = {"renderer": "unavailable", "reason": "invalid operator configuration"}
         identity = json.loads(dump(identity))
         pinned = await threaded(self.pin, check, owner, identity)
-        if checker is None or not pinned or identity.get("renderer") == "unavailable":
+        context_held = job["macro_held"]
+        if (
+            context_held
+            or checker is None
+            or not pinned
+            or identity.get("renderer") == "unavailable"
+        ):
             answers = [
                 MathCheck(
                     id=f.id,
                     status="unavailable",
-                    error="renderer unavailable or its pinned configuration changed",
+                    error="macro context unknown or ambiguous"
+                    if context_held
+                    else "renderer unavailable or its pinned configuration changed",
                     input_sha256=hashlib.sha256(f.model_dump_json().encode()).hexdigest(),
                     bundle_sha256=None,
                 )
@@ -918,6 +962,22 @@ class MathJobs:
                 response = response_metadata(db, entry["check_id"])
                 if response:
                     entry["kind"], entry["response"] = "response", response
+                from .project_macros import head, job_context, resolved
+
+                context = job_context(db, entry["check_id"], project)
+                effective = resolved(db, entry["check_id"], context)
+                entry["project_macro_revision"] = context["revision"]
+                entry["macro_context_status"] = (
+                    "unknown"
+                    if not context["known"]
+                    else "stale"
+                    if context["revision"] != head(db, project)
+                    else "pending"
+                    if effective is None
+                    else "held"
+                    if effective["held"]
+                    else "pinned"
+                )
             queue = [
                 dict(zip(("document", "target", "completed", "blocked", "running"), r, strict=True))
                 for r in db.execute(

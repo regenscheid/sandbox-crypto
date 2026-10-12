@@ -33,6 +33,11 @@ class MathNotices(FindingNotices):
               AND n.session=f.session AND n.revision=f.revision AND f.status='open' AND
               s.excluded IS NULL
               AND s.checked_revision=c.revision AND o.status='rejected'
+              AND EXISTS(SELECT 1 FROM math_macro_pins p LEFT JOIN project_macro_heads h
+              ON h.project=p.project WHERE p.check_id=j.check_id AND p.project=f.project
+              AND p.revision=coalesce(h.revision,0))
+              AND EXISTS(SELECT 1 FROM math_macro_contexts mc WHERE mc.check_id=j.check_id
+              AND mc.held=0)
 
               AND (n.claimed_run IS NULL OR n.claim_until<=? OR n.claimed_run=?)
               AND (n.finding_id||'-r'||n.revision) NOT IN (SELECT value FROM json_each(?))
@@ -157,6 +162,11 @@ class MathNotices(FindingNotices):
               AND n.session=f.session AND n.revision=f.revision AND f.status='open' AND
               s.excluded IS NULL
               AND s.checked_revision=c.revision AND o.status='rejected'
+              AND EXISTS(SELECT 1 FROM math_macro_pins p LEFT JOIN project_macro_heads h
+              ON h.project=p.project WHERE p.check_id=j.check_id AND p.project=f.project
+              AND p.revision=coalesce(h.revision,0))
+              AND EXISTS(SELECT 1 FROM math_macro_contexts mc WHERE mc.check_id=j.check_id
+              AND mc.held=0)
                AND (n.finding_id||'-r'||n.revision) IN (SELECT value FROM
               json_each(?))
               AND (?=0 OR EXISTS(SELECT 1 FROM math_ignored i WHERE i.finding_id=n.finding_id AND

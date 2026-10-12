@@ -33,7 +33,7 @@
   let error = $state<unknown>(null);
   let persisted = $state(true);
   let loading = $state(false);
-  const macros = $derived(macroSet(found.macros));
+  const macros = $derived(macroSet(found.macros, `${projectId}:${found.macro_context?.key ?? 'legacy-document'}`));
   const anchorDocument = $derived(base === found.revision.number ? Promise.resolve(found) : api.document(projectId, id, base));
   $effect(() => {
     if (body) persisted = saveDraft(projectId, draftKey, { base, text: body, reason: '', block,

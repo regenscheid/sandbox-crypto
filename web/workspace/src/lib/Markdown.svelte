@@ -13,7 +13,7 @@
   the two parsers disagree in `mismatches`.
 -->
 <script lang="ts">
-  import { flushSync } from 'svelte';
+  import { flushSync, getContext } from 'svelte';
   import type { Mismatch } from './attach';
   import { renderDocument, renderMarkdown, textState, whenMathTime } from './markdown';
   import type { DocumentInput } from './markdown';
@@ -23,9 +23,10 @@
   let {
     source,
     document = null,
-    macros = NO_MACROS,
+    macros = undefined,
     mismatches = $bindable([]),
   }: { source: string; document?: DocumentInput | null; macros?: MacroSet; mismatches?: Mismatch[] } = $props();
+  const projectMacros = getContext<(() => MacroSet) | undefined>('project-macros');
   /** Counts what makes this text render again: repairs it waits for, or its turn in a go. */
   let arrivals = $state(0);
   let element: HTMLDivElement | undefined = $state();
@@ -34,7 +35,7 @@
 
   const rendered = $derived.by(() => {
     void arrivals;
-    if (document === null) return { ...renderMarkdown(source, pageRepairs, kept, macros), mismatches: [] };
+    if (document === null) return { ...renderMarkdown(source, pageRepairs, kept, macros ?? projectMacros?.() ?? NO_MACROS), mismatches: [] };
     return renderDocument(source, document, pageRepairs, kept);
   });
 

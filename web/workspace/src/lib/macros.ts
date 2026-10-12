@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 /**
  * The macros a document's math renders with (living documents, LD-28): those of its front
- * matter, as the server read them. The project's own macros, which LD-28 adds beneath
- * them, are not built yet.
+ * matter above project definitions, as the server resolved them. Keys include the
+ * trusted project/context identity so repair/render caches cannot cross scopes.
  *
  * KaTeX expands a macro wherever a formula uses it, and a few short macros that use one
  * another can expand into a great many characters: three of them took KaTeX 39 s when a
@@ -48,6 +48,8 @@ type KatexMacro = (context: object) => string;
 export interface MacroSet {
   /** The set's key in the page's caches: the same definitions, the same key. */
   readonly key: string;
+  /** Stable server cache scope; this is an identity, never source read authority. */
+  readonly repairScope?: { project: string; macro_context: string };
   /** The macros used, by name. */
   readonly definitions: Readonly<Record<string, string>>;
   /** The macros left out, each with why. */
@@ -73,10 +75,10 @@ function repeatedArgument(definition: string): string | null {
 /** The keys given so far, by the definitions they stand for. */
 const keys = new Map<string, string>();
 
-function keyOf(used: Record<string, string>): string {
+function keyOf(used: Record<string, string>, scope: string): string {
   const entries = Object.entries(used);
-  if (entries.length === 0) return '';
-  const canonical = JSON.stringify(entries.sort(([a], [b]) => (a < b ? -1 : 1)));
+  if (entries.length === 0 && !scope) return '';
+  const canonical = JSON.stringify([scope, entries.sort(([a], [b]) => (a < b ? -1 : 1))]);
   let key = keys.get(canonical);
   if (key === undefined) {
     key = `macros-${keys.size + 1}`;
@@ -86,7 +88,7 @@ function keyOf(used: Record<string, string>): string {
 }
 
 /** The macros of `definitions` that may be used, with a key for their set. */
-export function macroSet(definitions: Readonly<Record<string, string>>): MacroSet {
+export function macroSet(definitions: Readonly<Record<string, string>>, scope = ''): MacroSet {
   const problems: string[] = [];
   const used: Record<string, string> = {};
   let count = 0;
@@ -116,8 +118,10 @@ export function macroSet(definitions: Readonly<Record<string, string>>): MacroSe
     used[name] = definition;
     count += 1;
   }
+  const scoped = /^([A-Za-z0-9][A-Za-z0-9._-]{0,127}):([A-Za-z0-9._:-]{1,256})$/u.exec(scope);
   return {
-    key: keyOf(used),
+    key: keyOf(used, scope),
+    ...(scoped ? { repairScope: { project: scoped[1]!, macro_context: scoped[2]! } } : {}),
     definitions: used,
     problems,
     forFormula() {
