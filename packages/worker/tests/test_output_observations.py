@@ -859,6 +859,8 @@ async def test_marked_lab_recipe_composes_with_actual_local_http_and_readonly_jo
                 "sandbox_id": "synthetic-id",
             }
             await checks.verify()
+            session = backend.root / helper.ENVIRONMENT / "project/sessions" / helper.SESSION
+            assert all(not (session / f"many-{i:03}").exists() for i in range(300))
             outcomes = checks.evidence["terminal-outcomes"]
             page = checks.evidence["scoped-journal"]
             pdf = next((outcome for outcome in outcomes if outcome["kind"] == "pdf"), None)
@@ -881,6 +883,15 @@ async def test_marked_lab_recipe_composes_with_actual_local_http_and_readonly_jo
             await checks.checkpoint()
             await checks.running()
             await checks.resume()
+            damaged = helper.journal()
+            recovered_id = checks.evidence["running"]["execution"]["execution_id"]
+            for record in damaged["records"]:
+                if record["marker"]["binding"]["execution_id"] == recovered_id:
+                    record["report"] = None
+            with monkeypatch.context() as missing_recovery_report:
+                missing_recovery_report.setattr(helper, "journal", lambda **_fields: damaged)
+                with pytest.raises(AssertionError):
+                    await checks.resume()
             await checks.restart_verify()
             assert checks.evidence["durable-prefix"]["target"] > 10
     finally:

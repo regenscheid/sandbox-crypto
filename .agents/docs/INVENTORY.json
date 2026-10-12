@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-three OpenShell runtime lab records, document editing, comments, consistency review and document math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-three OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 13171,
-      "sha256": "cd6832f553fac6dc74401645a6de90721f4e1aec267b1ad314b0f70ea127def1"
+      "bytes": 13760,
+      "sha256": "56284fc753f485576865fff1a966031549899a4a6ce84c454a9c0d1e9a0e9d4b"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -248,6 +248,48 @@
       "category": "agent-source-investigation",
       "bytes": 18135,
       "sha256": "2df6e760403cbbb3d21188f7294c660c951b40ac71e8468424f5ee2550b9341e"
+    },
+    {
+      "path": "agent-reports/comment-math-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 6141,
+      "sha256": "9d4fc173b9ef27f03ba7f5bb4b3b06ff92b3696b3e170c88e3e22d129fc5777e"
+    },
+    {
+      "path": "agent-reports/comment-math-browser-evidence-2026-10-12.json",
+      "category": "browser-evidence",
+      "bytes": 623607,
+      "sha256": "18f334198b5c4363052a1dc3bf350e31ae0c47dde0f2f3ab917dd60e075c59d3"
+    },
+    {
+      "path": "agent-reports/comment-math-confirmed-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 71339,
+      "sha256": "a1c0373a821dd898b1f3f338e08775306c6ac1b1ad373538ce2c00e077e8c3f4"
+    },
+    {
+      "path": "agent-reports/comment-math-initial-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 58709,
+      "sha256": "ec8a0d10bdfacd57dadaef402aa9450021088eec810f5117711addafcff93bc2"
+    },
+    {
+      "path": "agent-reports/comment-math-main-correction-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 55068,
+      "sha256": "f027e4239d37264d7963f3b4161f53f78d28f8c3b6ad6954c8640320f1c84aab"
+    },
+    {
+      "path": "agent-reports/comment-math-stale-draft-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 54123,
+      "sha256": "1693e2197c424e57c0bac3bda3555055e4e5524190db76a8b589a64b63415ad5"
+    },
+    {
+      "path": "agent-reports/comment-math-user-correction-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 58923,
+      "sha256": "c1d175c3c677dc1cfefcff875d5dd7568f88d67f30cd342ab9406bf28f52acc8"
     },
     {
       "path": "agent-reports/consistency-review-2026-10-12.md",

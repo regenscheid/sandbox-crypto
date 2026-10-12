@@ -18,6 +18,12 @@ retain stronger telemetry and one-shot capture receipts as follow-ons. Local tes
 exact independent review, integrated gates and root-owned OpenShell acceptance remain
 required before merge.
 
+## 2026-10-12 — comment/reply mechanical math
+
+Implement the approved comment portion of D82/LD-53–55/CR-36–38 with append-only original-entry/body revisions and ordinary exact thread/body/hash corrections. MAIN can remediate same-session agent source; delegated runs only their own current source, and USER only USER-owned original bodies. Work requests retain their original immutable instruction. Canonical parent/macro pins and shared bounded renderer/lifecycle/closing/save-ACK preserve existing authority and the two-round budget. Unknown legacy/parser-bound identity holds checks without vetoing ordinary edits or guessing ownership/removal. Preliminary browser acceptance at `7fa43e6` found that dependency-only changes consumed failed-block opportunities. Final signed `77ecc171` separates evidence refresh from proved block edits, reconciles old accepted-owner state and preserves unaddressed/USER decisions. Independent review, 78 focused cases and all final combined gates pass (9,631 Python/43 opt-in skips/two existing warnings, 441 web/24 post-build math checks, locked/static/license/protocol checks and both builds). Fresh root-owned [browser acceptance](docs/agent-reports/comment-math-2026-10-12.md) passed exact authority/provenance, corrected budgets, retained conflict drafts and actual local KaTeX lifecycle evidence; complete teardown was verified at 13:50:58.272097 UTC. PR #87 merged at `d2b133f` after all three fresh CI checks passed on `16bb1308`. No new broad decision, route, service/provider/runtime/security-policy change, ledger/finding-prose scope, model repair proposal or idle scheduler.
+
+PR #86 merged exact capture source `ea31757` and both Lab22/Lab23 archives as `9c07725`, all three fresh CI checks successful (`38251872668`, 13:01:50 UTC). Historical test/runtime boundaries below remain unchanged.
+
 ## 2026-10-12 — external backend and linux/amd64 profile acceptance
 
 Close the existing OpenShell conformance/probe and research-profile lab acceptance
@@ -49,7 +55,7 @@ Independent review cleared signed combined freeze `b535856`; root-owned
 retention, prompt regular/sparse/symlink/FIFO refusal and healthy publication/read/execution
 access on Python 3.14.8. Zero capture leases/helpers and complete teardown were independently
 verified at 12:36:45 UTC. Main PR #85 and acceptance docs are integrated without changing
-product/test/configuration/helper bytes. Final docs review and fresh PR CI remain required.
+product/test/configuration/helper bytes. PR #86 merged at `9c07725` with all three fresh CI checks successful.
 Automatic fan-out and LD-49 writer proof remain open. [Boundary](../docs/ARTIFACTS.md#bounded-worker-capture-prerequisite).
 
 ## 2026-10-12 — sticky recovery admission prerequisite

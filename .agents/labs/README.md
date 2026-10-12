@@ -215,6 +215,8 @@ scoped stream identity and unknown producer/input fields. Every exercised outcom
 requires its report except a request refused before start; known partial file paths
 and metadata are required for failed, cancelled and timed-out work. A synthetic
 Python global must remain usable after cancellation and after the worker restart.
+The helper retains the truncation report, then removes only its known 300 fixture
+files before checkpoint/recovery so the recovered path fits below the scan cap.
 
 Archive `evidence/output-observations.json`, logs, source/helper hashes and explicit
 teardown evidence, then remove every Lab24 VM/service/state with `lab_down.sh`.
@@ -240,3 +242,17 @@ Keep source/tests frozen, retain pytest/JUnit/capability/state records, and remo
 both VMs, services, lab state and only the owned fixture roots afterward. No new
 helper or service setup is introduced here. Lab23 validates old main separately
 from capture Lab22 and adds no capture fault/ownership claim or platform parity.
+
+## Disposable comment/reply math browser fixture
+
+See [comment math](../../docs/COMMENT-MATH.md#disposable-acceptance-fixture). `.agents/labs/comment_math.py create` requires explicit absolute Node/launcher/bundle paths and creates marked temporary synthetic state only. `main-fix`, `concurrent-user-edit` and `audit` require its marker before opening a writer. Actual local KaTeX runs; no model/worker/service is contacted. This is a browser fixture, not an OpenShell lab; coordinate any browser/server separately.
+
+Root-owned [fresh acceptance](../docs/agent-reports/comment-math-2026-10-12.md)
+passed on signed `77ecc171` / helper `972b459b`, after the predecessor run exposed
+and prompted correction of dependency-only reflag accounting. The strengthened
+fixture requires unchanged opening/reply budgets zero and two failed body edits
+at two. Source checks passed 9,631 Python tests (43 opt-in skips, two existing
+warnings), 441 web tests and 24 post-build math checks, plus all required checks
+and both builds. Independent body/reply drafts, stale CAS/adoption, provenance,
+accepted/removal/unavailable evidence and session isolation passed in the browser.
+The tab, transient server and marked state were removed at 13:50:58.272097 UTC.

@@ -24,17 +24,16 @@ class MathNotices(FindingNotices):
             rows = db.execute(
                 """SELECT n.finding_id,n.revision,f.statement,f.math_check_id
               FROM math_notices n JOIN review_findings f USING(finding_id)
-              JOIN math_finding_state s USING(finding_id) JOIN documents d ON
-              d.document_id=s.document
+              JOIN math_finding_state s USING(finding_id)
+              JOIN math_current_checks c ON c.check_id=s.checked_check AND c.source=s.document
               JOIN math_jobs j ON j.check_id=s.checked_check
               JOIN math_observations o ON o.check_id=j.check_id AND o.block=s.block AND
               o.span=s.span
               WHERE n.project=? AND n.session=? AND n.delivered_run IS NULL
               AND n.session=f.session AND n.revision=f.revision AND f.status='open' AND
               s.excluded IS NULL
-              AND s.checked_revision=d.head AND o.status='rejected'
-              AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k WHERE k.document=s.document AND
-              k.revision=d.head)
+              AND s.checked_revision=c.revision AND o.status='rejected'
+
               AND (n.claimed_run IS NULL OR n.claim_until<=? OR n.claimed_run=?)
               AND (n.finding_id||'-r'||n.revision) NOT IN (SELECT value FROM json_each(?))
               ORDER BY n.rowid LIMIT ?""",
@@ -51,7 +50,8 @@ class MathNotices(FindingNotices):
                     "check": check,
                     "statement": clipped(statement, 2048),
                     "detail": (
-                        "Read review_finding_read, then patch the document source. A "
+                        "Read review_finding_read, then use the ordinary source "
+                        "edit tool (document_comment_edit for a comment body). A "
                         "mechanical check confirms accepted or removed formulas; do not claim "
                         "a model-confirmed fix."
                     ),
@@ -143,7 +143,7 @@ class MathNotices(FindingNotices):
         return db.execute(
             """SELECT n.finding_id,n.revision FROM math_notices n
               JOIN review_findings f USING(finding_id) JOIN math_finding_state s USING(finding_id)
-              JOIN documents d ON d.document_id=s.document
+              JOIN math_current_checks c ON c.check_id=s.checked_check AND c.source=s.document
               JOIN math_jobs j ON j.check_id=s.checked_check
               JOIN math_observations o ON o.check_id=j.check_id AND o.block=s.block AND
               o.span=s.span
@@ -151,9 +151,8 @@ class MathNotices(FindingNotices):
               AND n.delivered_run IS NULL
               AND n.session=f.session AND n.revision=f.revision AND f.status='open' AND
               s.excluded IS NULL
-              AND s.checked_revision=d.head AND o.status='rejected'
-              AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k WHERE k.document=s.document AND
-              k.revision=d.head) AND (n.finding_id||'-r'||n.revision) IN (SELECT value FROM
+              AND s.checked_revision=c.revision AND o.status='rejected'
+               AND (n.finding_id||'-r'||n.revision) IN (SELECT value FROM
               json_each(?))
               AND (?=0 OR EXISTS(SELECT 1 FROM math_ignored i WHERE i.finding_id=n.finding_id AND
               i.revision=n.revision AND i.run=?))
