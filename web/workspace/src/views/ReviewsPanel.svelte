@@ -82,7 +82,7 @@
 {#if selected}
   <h3>{selected.kind} review · {selected.state}</h3><p class="prose">{selected.summary}</p>
   <p>Alias {selected.alias ?? 'unavailable'} · model {selected.resolved_model ?? 'unavailable'} · {selected.calls} model calls · {selected.input_tokens} input / {selected.output_tokens} output tokens · {selected.estimated_tokens} reserved estimate.</p>
-  <p>Feed {selected.start_seq}–{selected.end_seq} · coverage {selected.coverage_complete ? 'complete within available evidence' : 'incomplete'} · cap {selected.cap_reached ? 'reached' : 'not reached'} · rubric {selected.rubric}.</p>
+  <p>{#if selected.kind === 'confirmation'}Pinned finding and fix scope · no author feed consumed{:else}Feed {selected.start_seq}–{selected.end_seq}{/if} · coverage {selected.coverage_complete ? 'complete within available evidence' : 'incomplete'} · cap {selected.cap_reached ? 'reached' : 'not reached'} · rubric {selected.rubric}.</p>
   <details><summary>Classifier and configuration identity</summary><pre>{JSON.stringify({ classifier: selected.classifier, config_revision: selected.config_revision }, null, 2)}</pre></details>
   <ul>{#each evidence as item (item.evidence)}<li><button onclick={() => read(selected!.review_id, item.evidence)}>{item.kind} · {item.complete ? 'available' : 'incomplete'}</button><code>{JSON.stringify(item.locator)}</code></li>{/each}</ul>
   {#if nextEvidence !== null}<button disabled={busy} onclick={moreEvidence}>Load more snapshot evidence</button>{/if}

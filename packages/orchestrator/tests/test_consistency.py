@@ -735,6 +735,156 @@ def test_confirmation_does_not_clear_or_replace_failed_author_window(store) -> N
     assert reviews.run("p", "s", retry)["end_seq"] == second
 
 
+def test_confirmation_with_an_omitted_exact_target_stays_incomplete(store, monkeypatch) -> None:
+    reviews, _documents, _ = store
+    claim(reviews)
+    initial = dispatch(reviews)
+    findings = [
+        raise_finding(reviews, initial, category=category, operation_id=category)
+        for category in ("contradicting_value", "method")
+    ]
+    reviews.finish("p", "s", initial, "owner", "findings", "Two distinct pinned findings.")
+    for finding in findings:
+        Findings(reviews).respond(
+            "p",
+            "s",
+            {
+                "finding": finding["finding_id"],
+                "expected": 1,
+                "action": "fix",
+                "explanation": "The pinned claim was corrected.",
+                "evidence": [anchor(reviews, initial)],
+                "operation_id": finding["finding_id"],
+            },
+            MAIN,
+        )
+    # One finding plus its original evidence fits; the second finding cannot fit.
+    monkeypatch.setattr(storage, "MAX_SNAPSHOT_ITEMS", 2)
+    confirmation = dispatch(reviews, "confirmation")
+    assert reviews.run("p", "s", confirmation)["kind"] == "confirmation"
+    assert not reviews.run("p", "s", confirmation)["coverage_complete"]
+    manifest = reviews.manifest("p", "s", confirmation)["evidence"]
+    assert sum(item["kind"] == "finding" for item in manifest) == 1
+    with reviews.documents._read() as db:
+        assert (
+            db.execute(
+                "SELECT count(*) FROM review_confirmation_targets WHERE review_id=?",
+                (confirmation,),
+            ).fetchone()[0]
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("original_complete", "response_complete", "checked"),
+    [(True, True, True), (False, True, True), (True, False, True), (True, True, False)],
+)
+async def test_confirmation_coverage_is_independent_of_failed_author_window(
+    store, original_complete: bool, response_complete: bool, checked: bool
+) -> None:
+    reviews, documents, _ = store
+    for name, complete in (("original", original_complete), ("response", response_complete)):
+        reviews.observe(
+            "p",
+            "s",
+            name,
+            "execution",
+            {"execution": name},
+            {"stdout": "count = 15\n", "stderr": ""},
+            complete=complete,
+            effects=True,
+        )
+    initial = dispatch(reviews)
+    evidence = {
+        item["locator"]["execution"]: {"evidence": item["evidence"]}
+        for item in reviews.manifest("p", "s", initial)["evidence"]
+    }
+    finding = raise_finding(reviews, initial, anchors=[evidence["original"]])
+    reviews.finish("p", "s", initial, "owner", "findings", "Original count finding.")
+    assert claim(reviews, "Later author work", "pending-work") == 3
+    failed = dispatch(reviews)
+    reviews.finish("p", "s", failed, "owner", "failed", "Unavailable main-window reviewer.")
+    response = Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": finding["finding_id"],
+            "expected": 1,
+            "action": "fix",
+            "explanation": "The corrected claim agrees with the pinned response output.",
+            "evidence": [evidence["response"]],
+            "operation_id": "claim-count-fix",
+        },
+        MAIN,
+    )
+    confirmation = dispatch(reviews, "confirmation")
+    record = reviews.run("p", "s", confirmation)
+    assert bool(record["coverage_complete"]) == (original_complete and response_complete)
+    items = reviews.manifest("p", "s", confirmation, limit=20)["evidence"]
+    ids = [item["evidence"] for item in items]
+    assert all(item["evidence"] in ids for item in evidence.values())
+    decisions = [
+        {
+            "name": "review_decide",
+            "arguments": {
+                "finding": finding["finding_id"],
+                "expected": response["revision"],
+                "decision": "confirm",
+                "explanation": "The pinned original and response output agree with the correction.",
+                "anchors": [evidence["response"]],
+                "operation_id": "confirm-count-fix",
+            },
+        }
+    ]
+    if checked:
+        decisions.insert(
+            0,
+            {
+                "name": "review_checked",
+                "arguments": {
+                    "statement": "The corrected count agrees with the pinned output.",
+                    "evidence": ids,
+                },
+            },
+        )
+    model = ScriptedModel.from_json(
+        [
+            {"tool_calls": [{"name": "review_manifest", "arguments": {}}]},
+            {
+                "tool_calls": [
+                    {"name": "review_read", "arguments": {"evidence": item}} for item in ids
+                ]
+            },
+            {"tool_calls": decisions},
+            {
+                "text": json.dumps(
+                    {
+                        "outcome": "passed",
+                        "summary": "The exact claimed count correction was checked.",
+                        "cap_reached": False,
+                    }
+                )
+            },
+        ]
+    )
+    await ReviewerRunner(reviews, "p", "s", confirmation, "owner", model).run()
+    assert reviews.run("p", "s", confirmation)["state"] == (
+        "passed" if original_complete and response_complete and checked else "inconclusive"
+    )
+    assert Findings(reviews).get("p", "s", finding["finding_id"])["status"] == "confirmed fixed"
+    with documents._read() as db:
+        assert tuple(
+            db.execute(
+                "SELECT watermark,retry_end,failures FROM review_windows "
+                "WHERE project='p' AND session='s'"
+            ).fetchone()
+        ) == (2, 3, 1)
+    retry = dispatch(reviews)
+    assert reviews.run("p", "s", retry)["start_seq"] == 3
+    assert reviews.run("p", "s", retry)["end_seq"] == 3
+
+
 @pytest.mark.asyncio
 async def test_cancelled_terminal_wait_requeues_consumed_user_input(store) -> None:
     import asyncio
