@@ -69,7 +69,7 @@ from .documents.mathcontroller import MathController
 from .documents.tool import view_blocks
 from .jobs import JobTools
 from .jobstate import JobState
-from .loop import run_task
+from .loop import Interruption, Transcript, run_task
 from .mathcheck import MathChecker
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
@@ -134,148 +134,184 @@ async def _run(args: argparse.Namespace) -> int:
         model = OpenAICompatibleModel(args.model_url, args.model, _read_secret(args.api_key_file))
     run_id = args.run_id or new_id("run")
     started = datetime.now(UTC)
-    async with WorkerClient(args.worker, _read_secret(args.token_file)) as client:
-        context = await _context(args, client)
-        capabilities = await client.capabilities(context.environment_id)
-        location = capabilities.location
-        tier = tier_in_effect(location)
-        if not args.allow_unisolated and (tier is None or tier < args.min_isolation_tier):
-            print(
-                f"error: the worker offers {describe_isolation(location)}. At least tier "
-                f"{args.min_isolation_tier} is required (--allow-unisolated for development)",
-                file=sys.stderr,
-            )
-            return 2
-        print(
-            f"worker: pool {location.pool_id}, {location.backend} backend, sandbox "
-            f"{location.sandbox_id}, host {location.hostname}, {describe_isolation(location)}"
-        )
-
-        async def show(name: str, arguments: str, outcome: ToolOutcome) -> None:
-            print(f"\n→ {name} {arguments}\n← {outcome.text}")
-
-        documents = None
-        if args.state_dir is not None:
-            documents = DocumentTool(
-                DocumentStore(store_path(args.state_dir), producer="harness"),
-                context,
-                run_id=run_id,
-                alias="scripted" if args.script is not None else args.model,
-            )
-        job_state = JobState(args.state_dir) if args.state_dir is not None else None
-        watcher: ChatModel | None = None
-        watcher_alias = args.watcher_model
-        if watcher_alias is not None:
-            if args.watcher_script is not None:
-                watcher = ScriptedModel.from_json(json.loads(args.watcher_script.read_text()))
-            else:
-                watcher = OpenAICompatibleModel(
-                    args.model_url,
-                    watcher_alias,
-                    _read_secret(args.api_key_file),
-                    max_tokens=300,
-                    max_response_bytes=16384,
+    transcript: Transcript | None = None
+    context: ExecutionContext | None = None
+    interruption = Interruption()
+    try:
+        async with interruption.context(
+            WorkerClient(args.worker, _read_secret(args.token_file))
+        ) as client:
+            with interruption.protect():
+                context = await _context(args, client)
+                capabilities = await client.capabilities(context.environment_id)
+                location = capabilities.location
+                tier = tier_in_effect(location)
+                if not args.allow_unisolated and (tier is None or tier < args.min_isolation_tier):
+                    print(
+                        f"error: the worker offers {describe_isolation(location)}. At least tier "
+                        f"{args.min_isolation_tier} is required "
+                        "(--allow-unisolated for development)",
+                        file=sys.stderr,
+                    )
+                    return 2
+                print(
+                    f"worker: pool {location.pool_id}, {location.backend} backend, sandbox "
+                    f"{location.sandbox_id}, host {location.hostname}, "
+                    f"{describe_isolation(location)}"
                 )
-        reviewer: ChatModel | None = None
-        if args.reviewer_model is not None:
-            reviewer = (
-                ScriptedModel.from_json(json.loads(args.reviewer_script.read_text()))
-                if args.reviewer_script is not None
-                else OpenAICompatibleModel(
-                    args.model_url,
-                    args.reviewer_model,
-                    _read_secret(args.api_key_file),
-                    max_tokens=2048,
-                    max_response_bytes=65536,
+
+                async def show(name: str, arguments: str, outcome: ToolOutcome) -> None:
+                    print(f"\n→ {name} {arguments}\n← {outcome.text}")
+
+                documents = None
+                if args.state_dir is not None:
+                    documents = DocumentTool(
+                        DocumentStore(store_path(args.state_dir), producer="harness"),
+                        context,
+                        run_id=run_id,
+                        alias="scripted" if args.script is not None else args.model,
+                    )
+                job_state = JobState(args.state_dir) if args.state_dir is not None else None
+                watcher: ChatModel | None = None
+                watcher_alias = args.watcher_model
+                if watcher_alias is not None:
+                    if args.watcher_script is not None:
+                        watcher = ScriptedModel.from_json(
+                            json.loads(args.watcher_script.read_text())
+                        )
+                    else:
+                        watcher = OpenAICompatibleModel(
+                            args.model_url,
+                            watcher_alias,
+                            _read_secret(args.api_key_file),
+                            max_tokens=300,
+                            max_response_bytes=16384,
+                        )
+                reviewer: ChatModel | None = None
+                if args.reviewer_model is not None:
+                    reviewer = (
+                        ScriptedModel.from_json(json.loads(args.reviewer_script.read_text()))
+                        if args.reviewer_script is not None
+                        else OpenAICompatibleModel(
+                            args.model_url,
+                            args.reviewer_model,
+                            _read_secret(args.api_key_file),
+                            max_tokens=2048,
+                            max_response_bytes=65536,
+                        )
+                    )
+                inventory = ArtifactInventory(documents.store) if documents is not None else None
+                reviews = (
+                    ReviewController(
+                        ReviewStore(documents.store, artifacts=inventory),
+                        context,
+                        run_id=run_id,
+                        model=reviewer,
+                        alias=args.reviewer_model,
+                        author_alias="scripted" if args.script is not None else args.model,
+                    )
+                    if documents is not None
+                    else None
                 )
-            )
-        inventory = ArtifactInventory(documents.store) if documents is not None else None
-        reviews = (
-            ReviewController(
-                ReviewStore(documents.store, artifacts=inventory),
-                context,
-                run_id=run_id,
-                model=reviewer,
-                alias=args.reviewer_model,
-                author_alias="scripted" if args.script is not None else args.model,
-            )
-            if documents is not None
-            else None
-        )
-        checker = (
-            MathChecker(args.math_node, args.math_launcher, args.math_bundle)
-            if args.math_node is not None
-            else None
-        )
-        math_checks = (
-            MathController(
-                reviews.store, context.project_id, context.session_id, run_id, checker=checker
-            )
-            if reviews is not None
-            else None
-        )
-        jobs = JobTools(
-            client,
-            context,
-            run_id=run_id,
-            state=job_state,
-            watcher=watcher,
-            watcher_alias=watcher_alias,
-            watcher_calls_per_hour=args.watcher_calls_per_hour,
-            first_check_seconds=args.watcher_first_check,
-            check_interval_seconds=args.watcher_interval,
-        )
-        artifacts = (
-            ArtifactPublisher(
-                inventory,
-                client,
-                context,
-                run_id=run_id,
-                alias="scripted" if args.script is not None else args.model,
-            )
-            if documents is not None and inventory is not None
-            else None
-        )
-        try:
-            transcript = await run_task(
-                model,
-                Toolbox(
+                checker = (
+                    MathChecker(args.math_node, args.math_launcher, args.math_bundle)
+                    if args.math_node is not None
+                    else None
+                )
+                math_checks = (
+                    MathController(
+                        reviews.store,
+                        context.project_id,
+                        context.session_id,
+                        run_id,
+                        checker=checker,
+                    )
+                    if reviews is not None
+                    else None
+                )
+                jobs = JobTools(
                     client,
                     context,
-                    languages=capabilities.languages,
-                    features=capabilities.features,
-                    documents=documents,
-                    jobs=jobs,
-                    reviews=reviews,
-                    math_checks=math_checks,
-                    artifacts=artifacts,
-                ),
-                args.task,
-                run_id=run_id,
-                max_turns=args.max_turns,
-                on_tool=show,
-            )
-        finally:
-            try:
+                    run_id=run_id,
+                    state=job_state,
+                    watcher=watcher,
+                    watcher_alias=watcher_alias,
+                    watcher_calls_per_hour=args.watcher_calls_per_hour,
+                    first_check_seconds=args.watcher_first_check,
+                    check_interval_seconds=args.watcher_interval,
+                )
+                artifacts = (
+                    ArtifactPublisher(
+                        inventory,
+                        client,
+                        context,
+                        run_id=run_id,
+                        alias="scripted" if args.script is not None else args.model,
+                    )
+                    if documents is not None and inventory is not None
+                    else None
+                )
                 try:
-                    if artifacts is not None:
-                        await artifacts.aclose()
-                finally:
-                    if reviews is not None:
-                        await reviews.close()
-            finally:
-                try:
-                    if isinstance(reviewer, OpenAICompatibleModel):
-                        await reviewer.close()
+                    with interruption.protect():
+                        transcript = await run_task(
+                            model,
+                            Toolbox(
+                                client,
+                                context,
+                                languages=capabilities.languages,
+                                features=capabilities.features,
+                                documents=documents,
+                                jobs=jobs,
+                                reviews=reviews,
+                                math_checks=math_checks,
+                                artifacts=artifacts,
+                            ),
+                            args.task,
+                            run_id=run_id,
+                            max_turns=args.max_turns,
+                            on_tool=show,
+                        )
                 finally:
                     try:
-                        if isinstance(watcher, OpenAICompatibleModel):
-                            await watcher.close()
+                        try:
+                            if artifacts is not None:
+                                with interruption.protect():
+                                    await artifacts.aclose()
+                        finally:
+                            if reviews is not None:
+                                with interruption.protect():
+                                    await reviews.close()
                     finally:
-                        if documents is not None:
-                            documents.store.close()
-                        if isinstance(model, OpenAICompatibleModel):
-                            await model.close()
+                        try:
+                            if isinstance(reviewer, OpenAICompatibleModel):
+                                with interruption.protect():
+                                    await reviewer.close()
+                        finally:
+                            try:
+                                if isinstance(watcher, OpenAICompatibleModel):
+                                    with interruption.protect():
+                                        await watcher.close()
+                            finally:
+                                try:
+                                    if documents is not None:
+                                        with interruption.protect():
+                                            documents.store.close()
+                                finally:
+                                    if isinstance(model, OpenAICompatibleModel):
+                                        with interruption.protect():
+                                            await model.close()
+    except BaseException as error:
+        if interruption.error is not None:
+            raise interruption.error from None
+        if not isinstance(error, Exception):
+            raise
+        if transcript is None:
+            raise
+        transcript.fail("cleanup")
+    if transcript is None or context is None:
+        raise RuntimeError("the run did not start")
+    if transcript.failure is not None:
+        print(f"error: run failed during {transcript.failure}", file=sys.stderr)
     print(f"\n{transcript.final_text or '(no answer)'}")
     fields: dict[str, object] = {
         "run_id": run_id,
@@ -284,6 +320,7 @@ async def _run(args: argparse.Namespace) -> int:
         "started_at": started,
         "ended_at": datetime.now(UTC),
         "stopped": transcript.stopped,
+        "failure": transcript.failure,
         "final_text": transcript.final_text,
         "messages": transcript.messages,
         "tools": transcript.tool_records,
@@ -294,7 +331,11 @@ async def _run(args: argparse.Namespace) -> int:
         "math_notice_ids": transcript.math_notice_ids,
         "math_summary": transcript.math_summary,
     }
-    return _keep(args, fields, 0 if transcript.stopped == "answered" else 3)
+    return _keep(
+        args,
+        fields,
+        1 if transcript.failure is not None else 0 if transcript.stopped == "answered" else 3,
+    )
 
 
 def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> int:
@@ -344,6 +385,7 @@ def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> i
                         record.context.session_id,
                         record.run_id,
                         record.math_notice_ids,
+                        finalize=record.failure is None,
                     )
                 finally:
                     math_documents.close()

@@ -717,14 +717,18 @@ async def test_failed_model_after_closing_notice_releases_it_unacknowledged(stor
     )
     controller = MathController(reviews, "p", "s", "failed", checker=ScriptedChecker())
     async with WorkerClient("http://127.0.0.1:1", "synthetic-token") as client:
-        with pytest.raises(ModelError, match="synthetic"):
-            await run_task(
-                Failed(),
-                Toolbox(client, context, math_checks=controller),
-                "Continue",
-                run_id="failed",
-                max_turns=3,
-            )
+        transcript = await run_task(
+            Failed(),
+            Toolbox(client, context, math_checks=controller),
+            "Continue",
+            run_id="failed",
+            max_turns=3,
+        )
+    assert (transcript.stopped, transcript.failure, transcript.math_notice_ids) == (
+        "error",
+        "model",
+        [],
+    )
     assert controller.delivered == set()
     assert MathNotices(reviews).pending("p", "s", "next", set())
 
@@ -874,7 +878,8 @@ async def test_terminal_review_and_math_share_one_closing_model_handoff(
 
 
 @pytest.mark.asyncio
-async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch) -> None:
+@pytest.mark.parametrize("failure", [None, "cleanup"])
+async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, failure) -> None:
     import argparse
     from datetime import UTC, datetime
 
@@ -912,8 +917,9 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch) 
         "task": "Synthetic",
         "started_at": now,
         "ended_at": now,
-        "stopped": "answered",
-        "final_text": "Read warning.",
+        "stopped": "error" if failure else "answered",
+        "failure": failure,
+        "final_text": None if failure else "Read warning.",
         "messages": transcript.messages,
         "tools": [],
         "math_notice_ids": transcript.math_notice_ids,
@@ -931,7 +937,7 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch) 
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] is None
     monkeypatch.setattr(ProjectStore, "save_run", original)
     assert cli._keep(args, fields, 0) == 0
-    assert get(reviews)[0]["status"] == "unaddressed"
+    assert get(reviews)[0]["status"] == ("open" if failure else "unaddressed")
     with docs._read() as db:
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] == "saved"
     assert (
@@ -1117,3 +1123,92 @@ async def test_valid_older_writer_revision_reconciles_without_losing_owner(
     assert current["reflags"] == 0
     with docs._read() as db:
         assert db.execute("SELECT target,completed FROM math_sources").fetchone() == (2, 2)
+
+
+@pytest.mark.asyncio
+async def test_completed_scientific_bound_survives_later_math_failure(stores, monkeypatch):
+    import argparse
+    from datetime import UTC, datetime
+
+    from sandbox_science.contracts import ExecutionContext
+    from sandbox_science.orchestrator import cli
+    from sandbox_science.orchestrator.consistency.controller import ReviewController
+    from sandbox_science.orchestrator.consistency.models import ReviewConfig
+    from sandbox_science.orchestrator.documents.mathcontroller import MathController
+    from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.model import ScriptedModel
+    from sandbox_science.orchestrator.tools import Toolbox
+    from sandbox_science.orchestrator.worker_client import WorkerClient
+
+    docs, reviews, _ = stores
+    create(docs)
+    await drain(reviews, ScriptedChecker())
+    reviews.observe("p", "s", "science", "transcript", {}, {"role": "assistant", "content": "16"})
+    review = reviews.dispatch("p", "s", "terminal", author_run="old", owner="owner", alias=None)
+    evidence = reviews.manifest("p", "s", review)["evidence"][0]["evidence"]
+    scientific = Findings(reviews).create(
+        "p",
+        "s",
+        review,
+        "owner",
+        {
+            "severity": "fail",
+            "category": "contradicting_value",
+            "statement": "15 versus 16",
+            "anchors": [{"evidence": evidence}],
+            "operation_id": "science-finding",
+        },
+    )
+    reviews.finish("p", "s", review, "owner", "findings", "Contradiction")
+    reviews.configure("p", "s", ReviewConfig(enabled=False))
+    context = ExecutionContext(
+        project_id="p",
+        session_id="s",
+        environment_id=ProjectStore(docs.path.parent).get("p").default_environment_id,
+    )
+    mechanical = MathController(reviews, "p", "s", "partial", checker=ScriptedChecker())
+    bound = mechanical.notice_store.bound
+
+    def failed(*args):
+        bound(*args)
+        raise RuntimeError("test-secret-failed-math-close")
+
+    monkeypatch.setattr(mechanical.notice_store, "bound", failed)
+    async with WorkerClient("http://127.0.0.1:1", "synthetic") as client:
+        transcript = await run_task(
+            ScriptedModel.from_json([{"text": "First response"}, {"text": "Closing response"}]),
+            Toolbox(
+                client,
+                context,
+                reviews=ReviewController(
+                    reviews, context, run_id="partial", model=None, alias=None
+                ),
+                math_checks=mechanical,
+            ),
+            "Continue",
+            run_id="partial",
+            max_turns=2,
+        )
+    assert (transcript.failure, transcript.final_text) == ("harness", None)
+    assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "unaddressed"
+    math = next(f for f in get(reviews) if f["origin"] == "math")
+    assert math["status"] == "open"
+    now = datetime.now(UTC)
+    fields = {
+        "run_id": "partial",
+        "context": context.model_dump(mode="json"),
+        "task": "Continue",
+        "started_at": now,
+        "ended_at": now,
+        "stopped": "error",
+        "failure": transcript.failure,
+        "messages": transcript.messages,
+        "tools": transcript.tool_records,
+        "review_notice_ids": transcript.review_notice_ids,
+        "math_notice_ids": transcript.math_notice_ids,
+    }
+    assert (
+        cli._keep(argparse.Namespace(state_dir=docs.path.parent, transcript=None), fields, 1) == 1
+    )
+    assert Findings(reviews).get("p", "s", math["finding_id"])["status"] == "open"
+    assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "unaddressed"

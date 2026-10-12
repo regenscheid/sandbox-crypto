@@ -268,7 +268,13 @@ Project, session, run and document views continue to work.
 
 ## Run records
 
-With `--state-dir`, the harness keeps every run of a session, the same record `--transcript` writes, beside the projects' records:
+Ordinary model, tool-loop, harness and cleanup exceptions retain the messages and completed tool outcomes observed so far. A failed record has `stopped="error"` and no final answer; the GUI labels it a failed run and shows its partial transcript. The command still exits 1. The failure field contains only a fixed phase, never exception text, an upstream error body or a traceback. Normal transcript content is retained as before.
+
+The [2026-10-12 CLI/browser acceptance](../.agents/docs/agent-reports/failed-run-records-2026-10-12.md) records the ordinary failure path, retained tool observation, GUI status and complete fixture cleanup. Cancellation propagates through later cleanup failures without saving a run or acknowledging notices; durable cancellation/process-death records remain separate work.
+
+Only notices delivered through a successful model call may be acknowledged, and only after the run is durably saved. A failed record cannot finalize staged ignored-math outcomes. Scientific decisions already completed remain recorded. Setup and isolation refusal before the loop, cancellation, process death and an unwritable state directory do not gain a durable failed-record guarantee.
+
+With `--state-dir`, the harness keeps runs that reach the tool loop, including ordinary failures. It keeps the same record `--transcript` writes, beside the projects' records:
 
 ```text
 <state-dir>/projects/<project>.json
@@ -283,8 +289,9 @@ Runs have a tree of their own because project IDs may contain dots: a project's 
 | `context` | Project, session, environment and policy revision |
 | `task` | The task as given |
 | `started_at`, `ended_at` | When the run started and ended, in UTC |
-| `stopped` | `answered`, or `turn_limit` when the model was still asking for tools |
-| `final_text` | The answer |
+| `stopped` | `answered`, `turn_limit`, `user_message`, or `error` |
+| `failure` | Optional fixed phase: `model`, `tool`, `harness` or `cleanup`; older records omit it |
+| `final_text` | The answer, or null for a failed run |
 | `job_notice_ids` | Completion IDs represented by this run; acknowledged after the run is saved |
 | `work_request_ids` | User document requests actually received by the model in this run; acknowledged after the run is saved |
 | `messages` | The conversation in the OpenAI chat format the harness uses, system prompt first |
@@ -345,7 +352,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 - Copying a rendered formula as its LaTeX (KaTeX's `copy-tex` does this); for now a repaired or approximated formula's LaTeX is copied from behind its mark.
 - KaTeX in a Web Worker, with a time limit that ends a formula's render ([the backlog](../.agents/BACKLOG.md) says why it waits).
 - Live updates while a run is in progress, and the environments' state from the worker.
-- Records of runs that end in an error, and the end of a session without `session close`.
+- The end of a session without `session close`.
 - TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5).
 
 
