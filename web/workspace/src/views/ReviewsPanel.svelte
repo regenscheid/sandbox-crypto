@@ -4,6 +4,7 @@
   import type { Json } from '../lib/api';
   import FindingCard from './FindingCard.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
+  import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
   let listed = $state<Review[]>([]), findings = $state<Finding[]>([]), nextReview = $state<string | null>(null), nextFinding = $state<string | null>(null);
   let unreviewed = $state<Json[]>([]), selected = $state<Review | null>(null), evidence = $state<Evidence[]>([]), nextEvidence = $state<number | null>(null);
@@ -89,7 +90,7 @@
   <button disabled={busy || nextRecord === null} onclick={audit}>Load review audit records</button>
   {#each records as record, index (index)}<details><summary>Audit record {index + 1}</summary><pre>{JSON.stringify(record, null, 2)}</pre></details>{/each}
 {/if}
-{#if output}<h3>Pinned evidence preview</h3><pre aria-label="Pinned evidence preview">{output}</pre>{#if nextOutput !== null}<button onclick={() => read(outputReview, outputId, nextOutput!)}>Read next evidence slice</button>{/if}{/if}
+{#if outputId}<PinnedEvidencePreview text={output} />{#if nextOutput !== null}<button onclick={() => read(outputReview, outputId, nextOutput!)}>Read next evidence slice</button>{/if}{/if}
 <h3>Findings</h3>{#if !findings.length}<p>No consistency findings recorded.</p>{/if}
 {#each findings as finding (finding.finding_id)}<FindingCard {projectId} {sessionId} {finding} changed={refresh} {read} />{/each}
 {#if nextFinding}<button disabled={busy} onclick={() => more('findings')}>Load more findings</button>{/if}

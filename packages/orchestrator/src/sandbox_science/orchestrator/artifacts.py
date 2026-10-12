@@ -497,9 +497,16 @@ class ArtifactInventory:
                 raise DocumentError(CONFLICT, "artifact pinned hash differs")
             return result
 
-    def content(self, project: str, reference: ArtifactRevisionRef) -> bytes:
+    def content(
+        self, project: str, reference: ArtifactRevisionRef, *, max_bytes: int | None = None
+    ) -> bytes:
         """Exact pinned bytes for future evidence consumers; never parse rich content."""
         self._scope(project)
+        bound = self.limits.artifact_bytes if max_bytes is None else max_bytes
+        if type(bound) is not int or not 0 <= bound <= self.limits.artifact_bytes:
+            raise DocumentError(INVALID_REQUEST, "invalid artifact content bound")
+        if reference.size > bound:
+            raise DocumentError(INVALID_REQUEST, "artifact content exceeds consumer bound")
         if project != reference.project_id:
             raise DocumentError(NOT_FOUND, "no such artifact in project")
         with self.documents._read() as db:
@@ -509,10 +516,11 @@ class ArtifactInventory:
             if revision.reference != reference:
                 raise DocumentError(CONFLICT, "artifact revision reference differs")
             row = db.execute(
-                "SELECT substr(data,1,?) FROM artifact_revisions "
+                "SELECT CASE WHEN length(data)=0 THEN x'' ELSE substr(data,1,?) END "
+                "FROM artifact_revisions "
                 "WHERE project=? AND artifact=? AND number=?",
                 (
-                    self.limits.artifact_bytes + 1,
+                    bound + 1,
                     project,
                     reference.artifact_id,
                     reference.revision,
@@ -522,7 +530,7 @@ class ArtifactInventory:
             data = row[0]
             if (
                 not isinstance(data, bytes)
-                or len(data) > self.limits.artifact_bytes
+                or len(data) > bound
                 or len(data) != reference.size
                 or hashlib.sha256(data).hexdigest() != reference.sha256
             ):

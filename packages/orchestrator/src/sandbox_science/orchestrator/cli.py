@@ -186,9 +186,10 @@ async def _run(args: argparse.Namespace) -> int:
                     max_response_bytes=65536,
                 )
             )
+        inventory = ArtifactInventory(documents.store) if documents is not None else None
         reviews = (
             ReviewController(
-                ReviewStore(documents.store),
+                ReviewStore(documents.store, artifacts=inventory),
                 context,
                 run_id=run_id,
                 model=reviewer,
@@ -211,13 +212,13 @@ async def _run(args: argparse.Namespace) -> int:
         )
         artifacts = (
             ArtifactPublisher(
-                ArtifactInventory(documents.store),
+                inventory,
                 client,
                 context,
                 run_id=run_id,
                 alias="scripted" if args.script is not None else args.model,
             )
-            if documents is not None
+            if documents is not None and inventory is not None
             else None
         )
         try:
@@ -240,8 +241,12 @@ async def _run(args: argparse.Namespace) -> int:
             )
         finally:
             try:
-                if artifacts is not None:
-                    await artifacts.aclose()
+                try:
+                    if artifacts is not None:
+                        await artifacts.aclose()
+                finally:
+                    if reviews is not None:
+                        await reviews.close()
             finally:
                 try:
                     if isinstance(reviewer, OpenAICompatibleModel):

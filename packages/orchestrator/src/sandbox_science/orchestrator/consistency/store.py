@@ -15,11 +15,13 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, cast
 
 from pydantic import ValidationError
 
 from sandbox_science.contracts import new_id
+from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
+from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.blocks import check_text
 from sandbox_science.orchestrator.documents.errors import (
@@ -46,6 +48,9 @@ SCHEMA: Final = (
       project TEXT NOT NULL,session TEXT NOT NULL,watermark INTEGER NOT NULL DEFAULT 0,
       document_cursor INTEGER NOT NULL DEFAULT 0,last_dispatch REAL,retry_end INTEGER,
       failures INTEGER NOT NULL DEFAULT 0,requested INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(project,session)) STRICT""",
+    """CREATE TABLE IF NOT EXISTS review_artifact_cursors (
+      project TEXT NOT NULL,session TEXT NOT NULL,cursor INTEGER NOT NULL,
       PRIMARY KEY(project,session)) STRICT""",
     """CREATE TABLE IF NOT EXISTS review_config (
       project TEXT NOT NULL,number INTEGER NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL,
@@ -144,6 +149,19 @@ def dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
+def bounded_json(value: str | bytes, limit: int) -> Json:
+    """Reject oversized/corrupt SQL prefixes before JSON allocation."""
+    if len(value if isinstance(value, bytes) else value.encode()) > limit:
+        raise DocumentError(CONFLICT, "stored review metadata exceeds its bound")
+    try:
+        result = json.loads(value)
+    except (ValueError, RecursionError, UnicodeError):
+        raise DocumentError(CONFLICT, "stored review metadata is invalid") from None
+    if not isinstance(result, dict):
+        raise DocumentError(CONFLICT, "stored review metadata is not an object")
+    return cast(Json, result)
+
+
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -173,8 +191,27 @@ def clipped(value: str, limit: int) -> str:
 class ReviewStore:
     """The bounded review repository; DocumentStore initializes the shared database first."""
 
-    def __init__(self, documents: DocumentStore, *, clock: Callable[[], float] = time.time) -> None:
-        self.documents, self.clock = documents, clock
+    def __init__(
+        self,
+        documents: DocumentStore,
+        *,
+        clock: Callable[[], float] = time.time,
+        artifacts: ArtifactInventory | None = None,
+    ) -> None:
+        self.documents, self.clock, self.artifacts = documents, clock, artifacts
+        if artifacts is None:
+            with documents._read() as db:
+                existing = (
+                    db is not None
+                    and db.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name='artifact_meta'"
+                    ).fetchone()
+                    is not None
+                )
+            if existing:
+                self.artifacts = ArtifactInventory(documents)
+        if artifacts is not None and artifacts.documents is not documents:
+            raise ValueError("artifact evidence must share the control connection")
         if not documents.readonly:
             with documents._write() as db:
                 for statement in SCHEMA:
@@ -255,6 +292,41 @@ class ReviewStore:
     ) -> int:
         """Copy one platform observation. A duplicate source key has one immutable value."""
         self.scope(project, session)
+        with self.documents._write() as db:
+            return self._observe(
+                db,
+                project,
+                session,
+                key,
+                kind,
+                locator,
+                payload,
+                complete=complete,
+                characters=characters,
+                structural=structural,
+                artifacts=artifacts,
+                cells=cells,
+                effects=effects,
+            )
+
+    def _observe(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        key: str,
+        kind: str,
+        locator: Json,
+        payload: Json,
+        *,
+        complete: bool = True,
+        characters: int = 0,
+        structural: int = 0,
+        artifacts: int = 0,
+        cells: int = 0,
+        effects: bool = False,
+    ) -> int:
+        """Insert an immutable observation inside the caller's owned transaction."""
         if (
             not key
             or len(key) > 256
@@ -265,39 +337,38 @@ class ReviewStore:
         if len(encoded.encode()) > MAX_ITEM_BYTES or len(location.encode()) > 4096:
             raise DocumentError(INVALID_REQUEST, "review observation exceeds its bound")
         sha = digest(encoded)
-        with self.documents._write() as db:
-            self._window(db, project, session)
-            previous = db.execute(
-                "SELECT seq,sha256 FROM review_feed WHERE project=? AND session=? AND source_key=?",
-                (project, session, key),
-            ).fetchone()
-            if previous:
-                if previous[1] != sha:
-                    raise DocumentError(CONFLICT, "observation key names different evidence")
-                return previous[0]
-            cursor = db.execute(
-                """INSERT INTO review_feed(project,session,source_key,kind,locator,payload,
-                sha256,complete,characters,structural,artifacts,cells,effects,created)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    project,
-                    session,
-                    key,
-                    kind,
-                    location,
-                    encoded,
-                    sha,
-                    int(complete),
-                    characters,
-                    structural,
-                    artifacts,
-                    cells,
-                    int(effects),
-                    self.clock(),
-                ),
-            )
-            assert cursor.lastrowid is not None  # noqa: S101
-            return cursor.lastrowid
+        self._window(db, project, session)
+        previous = db.execute(
+            "SELECT seq,sha256 FROM review_feed WHERE project=? AND session=? AND source_key=?",
+            (project, session, key),
+        ).fetchone()
+        if previous:
+            if previous[1] != sha:
+                raise DocumentError(CONFLICT, "observation key names different evidence")
+            return previous[0]
+        cursor = db.execute(
+            """INSERT INTO review_feed(project,session,source_key,kind,locator,payload,
+            sha256,complete,characters,structural,artifacts,cells,effects,created)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                project,
+                session,
+                key,
+                kind,
+                location,
+                encoded,
+                sha,
+                int(complete),
+                characters,
+                structural,
+                artifacts,
+                cells,
+                int(effects),
+                self.clock(),
+            ),
+        )
+        assert cursor.lastrowid is not None  # noqa: S101
+        return cursor.lastrowid
 
     def ingest_documents(self, project: str, session: str, *, drain: bool = False) -> Json:
         """Consume bounded pages through a pinned event head, preserving overflow.
@@ -524,12 +595,17 @@ class ReviewStore:
             size = 0
             for row in db.execute(
                 (
-                    "SELECT seq,kind,locator,payload,sha256,complete FROM review_feed "
+                    "SELECT seq,substr(kind,1,33),substr(cast(locator AS BLOB),1,4097),"
+                    "substr(cast(payload AS BLOB),1,262145),"
+                    "substr(sha256,1,65),complete FROM review_feed "
                     "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq "
                     "LIMIT ?"
                 ),
                 (project, session, watermark, end, MAX_SNAPSHOT_ITEMS),
             ):
+                bounded_json(row[2], 4096)
+                bounded_json(row[3], MAX_ITEM_BYTES)
+                row = (*row[:2], row[2].decode(), row[3].decode(), *row[4:])
                 added = len(row[2].encode()) + len(row[3].encode()) + 256
                 if items and size + added > MAX_SNAPSHOT_BYTES:
                     break
@@ -622,6 +698,15 @@ class ReviewStore:
                         )
                     encoded = dump(locator)
                     group.append(("document", encoded, encoded, digest(encoded), 1))
+            if finding["response"]:
+                response_payload = finding["response"]["payload"]
+                for raw in response_payload.get("artifact_revisions", []) + response_payload.get(
+                    "artifact_replacements", []
+                ):
+                    ref = ArtifactRevisionRef.model_validate(raw)
+                    location, projection, ready = self.artifact_pin(project, session, ref)
+                    encoded = dump(projection)
+                    group.append(("artifact", dump(location), encoded, digest(encoded), int(ready)))
             # Cross-snapshot access is an explicit immutable grant. Keeping the
             # original ID makes the retained finding/response anchors readable;
             # it does not give the reviewer ambient access to other reviews.
@@ -858,6 +943,8 @@ class ReviewStore:
                 raise DocumentError(CONFLICT, "the review owner renewed its lease")
             if outcome != "dropped":
                 self.owner(found, owner)
+            if outcome == "passed" and not found["coverage_complete"]:
+                outcome = "inconclusive"
             cap_reached = cap_reached or bool(found["cap_reached"])
             if cap_reached and outcome in ("passed", "findings", "inconclusive"):
                 outcome = "capped"
@@ -1086,7 +1173,8 @@ class ReviewStore:
             rows = list(
                 db.execute(
                     (
-                        "SELECT evidence_id,ordinal,kind,locator,sha256,complete FROM ("
+                        "SELECT substr(evidence_id,1,28),ordinal,substr(kind,1,33),"
+                        "substr(cast(locator AS BLOB),1,4097),substr(sha256,1,65),complete FROM ("
                         "SELECT evidence_id,ordinal,kind,locator,sha256,complete FROM "
                         "review_evidence WHERE review_id=? UNION ALL "
                         "SELECT e.evidence_id,g.ordinal,e.kind,e.locator,e.sha256,e.complete "
@@ -1103,7 +1191,7 @@ class ReviewStore:
                     "evidence": r[0],
                     "ordinal": r[1],
                     "kind": r[2],
-                    "locator": json.loads(r[3]),
+                    "locator": bounded_json(r[3], 4096),
                     "sha256": r[4],
                     "complete": bool(r[5]),
                 }
@@ -1120,7 +1208,9 @@ class ReviewStore:
             self._run(db, project, session, review)
             row = db.execute(
                 (
-                    "SELECT kind,locator,payload,sha256,complete FROM review_evidence "
+                    "SELECT substr(kind,1,33),substr(cast(locator AS BLOB),1,4097),"
+                    "substr(cast(payload AS BLOB),1,262145),substr(sha256,1,65),"
+                    "complete FROM review_evidence "
                     "WHERE evidence_id=? AND (review_id=? OR EXISTS(SELECT 1 FROM "
                     "review_grants g WHERE g.review_id=? AND "
                     "g.evidence_id=review_evidence.evidence_id))"
@@ -1129,16 +1219,64 @@ class ReviewStore:
             ).fetchone()
         if row is None:
             raise DocumentError(NOT_FOUND, "evidence is outside this snapshot")
-        if digest(row[2]) != row[3]:
+        location = bounded_json(row[1], 4096)
+        payload = bounded_json(row[2], MAX_ITEM_BYTES)
+        encoded = row[2].decode() if isinstance(row[2], bytes) else row[2]
+        if digest(encoded) != row[3]:
             raise DocumentError(CONFLICT, "pinned evidence failed its digest check")
+        if row[0] == "artifact" and payload.get("projection") == 1:
+            from .artifacts import artifact_text
+
+            if (artifact_text(location, payload) is not None) != bool(row[4]):
+                raise DocumentError(
+                    CONFLICT, "artifact availability differs from evidence coverage"
+                )
         return {
             "evidence": evidence,
             "kind": row[0],
-            "locator": json.loads(row[1]),
-            "payload": json.loads(row[2]),
+            "locator": location,
+            "payload": payload,
             "sha256": row[3],
             "complete": bool(row[4]),
         }
+
+    def artifact_pin(
+        self,
+        project: str,
+        session: str,
+        reference: ArtifactRevisionRef,
+    ) -> tuple[Json, Json, bool]:
+        """Grant only an exact canonical artifact already observed for this session."""
+        self.scope(project, session)
+        if reference.project_id != project:
+            raise DocumentError(NOT_FOUND, "artifact evidence is outside this project")
+        with self.documents._read() as db:
+            assert db is not None  # noqa: S101
+            row = db.execute(
+                "SELECT substr(cast(locator AS BLOB),1,4097),"
+                "substr(cast(payload AS BLOB),1,262145),substr(sha256,1,65),"
+                "complete FROM review_feed "
+                "WHERE project=? AND session=? AND kind='artifact' "
+                "AND CASE WHEN json_valid(locator) THEN "
+                "json_extract(locator,'$.artifact.artifact_id') END=? "
+                "AND CASE WHEN json_valid(locator) THEN "
+                "json_extract(locator,'$.artifact.revision') END=? ORDER BY seq LIMIT 1",
+                (project, session, reference.artifact_id, reference.revision),
+            ).fetchone()
+        if row is None:
+            raise DocumentError(NOT_FOUND, "exact artifact revision has no session evidence grant")
+        location, payload = bounded_json(row[0], 4096), bounded_json(row[1], MAX_ITEM_BYTES)
+        if ArtifactRevisionRef.model_validate(location.get("artifact")) != reference:
+            raise DocumentError(
+                CONFLICT, "claimed artifact reference differs from session evidence"
+            )
+        if digest(row[1].decode()) != row[2]:
+            raise DocumentError(CONFLICT, "artifact evidence failed its digest check")
+        from .artifacts import artifact_text
+
+        if (artifact_text(location, payload) is not None) != bool(row[3]):
+            raise DocumentError(CONFLICT, "artifact availability differs from evidence coverage")
+        return location, payload, bool(row[3])
 
     def read_evidence(
         self,
@@ -1185,6 +1323,14 @@ class ReviewStore:
             if block is not None:
                 raise DocumentError(INVALID_REQUEST, "block locators apply to documents only")
             source = dump(item["payload"])
+            if item["kind"] == "artifact" and item["payload"].get("projection") == 1:
+                from .artifacts import artifact_text
+
+                copied = artifact_text(item["locator"], item["payload"])
+                if copied is not None:
+                    source = copied
+                    # An empty source remains exact; exposure is recorded separately.
+
         result: Json = {
             "evidence": evidence,
             "sha256": item["sha256"],
@@ -1195,6 +1341,10 @@ class ReviewStore:
             "total_characters": len(source),
             "complete": item["complete"],
         }
+        if item["kind"] == "artifact" and item["payload"].get("projection") == 1:
+            result["source_sha256"] = locator.get("artifact", {}).get("sha256")
+            result["availability"] = item["payload"].get("availability")
+            result["locator"]["empty_source"] = source == "" and item["complete"]
         result["locator"]["returned_characters"] = len(result["text"])
         result["locator"]["total_characters"] = len(source)
         if owner is None:
@@ -1202,7 +1352,7 @@ class ReviewStore:
         with self.documents._write() as db:
             found = self._run(db, project, session, review)
             self.owner(found, owner)
-            if not result["text"]:
+            if not result["text"] and not result["locator"].get("empty_source"):
                 return result
             db.execute(
                 (
