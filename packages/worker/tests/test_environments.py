@@ -18,6 +18,7 @@ import re
 import sqlite3
 import sys
 import time
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -98,9 +99,15 @@ state["calls"].append(argv)
 sandboxes = state["sandboxes"]
 
 
-def fail(message):
-    with open(path, "w") as handle:
+def save():
+    temporary = path + "." + uuid.uuid4().hex + ".tmp"
+    with open(temporary, "x") as handle:
         json.dump(state, handle)
+    os.replace(temporary, path)
+
+
+def fail(message):
+    save()
     print("Error:   x " + message, file=sys.stderr)
     sys.exit(1)
 
@@ -209,8 +216,7 @@ elif command == ["profile", "list"]:
     out = json.dumps([{"id": i, "endpoints": e} for i, e in state["profiles"].items()])
 else:
     fail(f"unexpected command {argv}")
-with open(path, "w") as handle:
-    json.dump(state, handle)
+save()
 print(out)
 """
 
@@ -237,7 +243,11 @@ class Fake:
         return json.loads(self.path.read_text())
 
     def write(self, state: dict[str, Any]) -> None:
-        self.path.write_text(json.dumps(state))
+        # A lifecycle timeout may kill the fake CLI during its write. Readers must
+        # see the previous or next complete state, never a truncated JSON file.
+        temporary = self.path.with_name(self.path.name + "." + uuid.uuid4().hex + ".tmp")
+        temporary.write_text(json.dumps(state))
+        temporary.replace(self.path)
 
     def update(self, **changes: Any) -> None:
         self.write({**self.read(), **changes})
