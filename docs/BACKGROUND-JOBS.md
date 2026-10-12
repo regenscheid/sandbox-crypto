@@ -94,10 +94,15 @@ The server derives the environment from the recorded project/session and checks
 the worker response's full ownership before exposing or cancelling a job.
 Cancellation requires login and the server's own Origin, like other writes.
 
+The [sandbox daemon](WORKER.md#sandbox-daemon-and-recovery) preserves jobs under
+the same execution and attempt across worker/bridge restarts; [OpenShell lab
+20](../.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md) records
+that recovery. Confirmed daemon/VM loss reports unknown outcomes as `lost` and
+never resubmits the command. A managed VM must pass its lifecycle fence before
+replacement work is admitted; its full log files persist across stop/start.
+
 Still pending:
 
-- The executor daemon: a worker restart currently makes running jobs `lost`;
-  the harness reports this and never resubmits them.
 - A long-lived harness scheduler and project-wide spend accounting.
   `start_job` refuses `wake_session: true` until a budgeted scheduler can
   actually start a session turn; detached completion is a next-turn notice.

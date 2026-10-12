@@ -11,6 +11,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 ## Runtime validation
 
+- [OpenShell v0.1.3 lab 20 on babbage, 2026-10-12](agent-reports/babbage-openshell-lab-20-2026-10-12.md): same-attempt worker restart, offline completion/timeout, kernel continuity and bounded replay; the initial daemon-loss cleanup failure and corrected same-VM stop/start fence, preserved disk, lost old process/kernel identity, independent sandbox deletion and idle endpoints. [Final evidence](agent-reports/babbage-openshell-lab-20-final-evidence-2026-10-12.json); initial evidence and failure remain linked in the report. All Lab20 state was removed.
+
 - [Document comments browser acceptance, 2026-10-12](agent-reports/document-comments-2026-10-12.md): durable main-agent requests, stale formula anchors, attributed revisions/replies, resolve/reopen, concurrent drafts and paged history. [Evidence](agent-reports/document-comments-evidence-2026-10-12.json), [queued request](agent-reports/document-comments-queued-2026-10-12.jpg), [responded thread](agent-reports/document-comments-response-2026-10-12.jpg), [retained draft](agent-reports/document-comments-draft-2026-10-12.jpg).
 
 - [Document editing browser acceptance, 2026-10-12](agent-reports/document-editing-2026-10-12.md): retained source/block drafts, concurrent conflicts, reviewed patches, stable-ID reverts and workbook promotion. [Evidence](agent-reports/document-editing-evidence-2026-10-12.json), [conflict view](agent-reports/document-editing-conflict-2026-10-12.jpg), [accepted suggestion](agent-reports/document-editing-accepted-patch-2026-10-12.jpg).
@@ -38,6 +40,10 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 - [OpenShell v0.1.3 lab 5 on babbage, 2026-10-11](agent-reports/babbage-openshell-lab-5-2026-10-11.md): a real SageMath from conda-forge through the worker and the harness, its performance against the host, and the device paths and `PATH` it needed.
 
 These are dated investigation reports. Recommendations inside them are not confirmed requirements; the [decision register](../../docs/DECISIONS.md) resolves later choices, and the [critical review](../critical-review.md) and [proposed changes](../proposed-changes.md) record the 2026-10-10 review.
+
+## Implementation notes
+
+- [Document mirror and helper interface plan, 2026-10-12](agent-reports/document-mirror-plan-2026-10-12.md): proposed publication, direct-edit and helper boundaries for LD-49 to LD-52, with ownership and adversarial checks. Read-only preparation; implementation waits for comments/consistency interface coordination, including bounded rejection storage and proof that a writer closed its file.
 
 ## Earlier planning states
 

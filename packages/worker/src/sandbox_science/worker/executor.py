@@ -858,6 +858,11 @@ def process_info(pid: int) -> Process | None:
         return None
 
 
+def enable_subreaper() -> bool:
+    """Adopt orphan research descendants when supported by the sandbox kernel."""
+    return _prctl(PR_SET_CHILD_SUBREAPER, 1)
+
+
 def process_table() -> dict[int, Process]:
     table: dict[int, Process] = {}
     with contextlib.suppress(OSError):
@@ -1178,7 +1183,7 @@ class Kernel:
             from jupyter_client.manager import AsyncKernelManager
         except ImportError as exc:
             raise ToolError("unsupported", "jupyter_client is not installed here") from exc
-        owner = f"kernel-{secrets.token_hex(8)}"
+        owner = self.env.get("SANDBOX_SCIENCE_DAEMON_MARK", "") + f"kernel-{secrets.token_hex(8)}"
         manager: Any = AsyncKernelManager(kernel_name=KERNEL_NAMES[self.language])
         leader: Leader | None = None
         try:
@@ -1247,6 +1252,7 @@ class Executor:
         kernel_idle: float | None = None,
     ) -> None:
         self.root = root
+        self.owner_prefix = ""
         self.kernel_idle = kernel_idle
         """Stop a kernel nobody has used for this many seconds; None keeps them."""
         self.reaper: asyncio.Task[None] | None = None
@@ -1436,6 +1442,7 @@ class Executor:
         env.update(self.configured)
         if self.provisioning is not None:
             env.update(provisioning.variables(self.packages, env, self.wrapped))
+        env["SANDBOX_SCIENCE_DAEMON_MARK"] = self.owner_prefix
         env["SESSION_WORKSPACE"] = str(self.session_dir(session))
         env["PROJECT_SHARED"] = str(self.root / SHARED)
         return env
@@ -1717,6 +1724,8 @@ class Executor:
         if execution in self.running:
             raise ToolError("conflict", f"execution {execution} is already running")
         running = Running(execution=execution, kind=kind)
+        if self.owner_prefix:
+            running.owner = self.owner_prefix + secrets.token_hex(8)
         self.running[execution] = running
         return running
 
@@ -2844,7 +2853,7 @@ def fit_line(message: Message) -> bytes | None:
         return line
     if message.get("type") == "event" and message.get("event") == "end":
         result = dict(cast(Message, message.get("result") or {}))
-        while _shrink(result):
+        while shrink_result(result):
             line = encode_line({**message, "result": result})
             if len(line) <= MAX_LINE:
                 return line
@@ -2856,7 +2865,7 @@ def fit_line(message: Message) -> bytes | None:
     return None
 
 
-def _shrink(result: Message) -> bool:
+def shrink_result(result: Message) -> bool:
     """Halve the largest part of a result over 1 KiB; False when no part is that large."""
     sizes: dict[str, int] = {}
     parts: dict[str, object] = {
