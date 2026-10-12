@@ -1,8 +1,34 @@
 # Plan changes
 
+## 2026-10-12 — worker-local terminal observation prerequisite
+
+Implement the next approved RA prerequisite without enabling automatic inventory:
+retain bounded exact byte/root identities from existing regular-stat reports,
+original request/attempt/incarnation/known immutable VM dispatch pins, terminal
+detail/gaps in the canonical result/event/source-cursor transaction, and scoped
+internal replay with explicit baseline/retention limits. Derived invalid/quota/corrupt
+state must preserve healthy completion; canonical recovery never depends on derived
+metadata. All mutation coverage stays incomplete, links/specials unavailable and
+`not_seen_after` is not deletion. No public feed, capture fan-out, consumer, scheduler,
+artifact revision or invented producer/input authority is added. This implements an
+existing requirement incrementally; it does not waive every-file-minus-ignore-patterns
+RA-5. The [as-built boundary](../docs/ARTIFACTS.md#worker-local-terminal-observations)
+and [marked Lab24 recipe](labs/README.md#lab24-worker-local-output-observations)
+retain stronger telemetry and one-shot capture receipts as follow-ons. Independent
+review cleared signed `35863776`; all integrated gates passed (83 focused cases,
+9,714 Python/43 opt-in skips/two existing warnings, 441 web/24 post-build math cases,
+locked/static/license/protocol checks and both builds). Root-owned
+[OpenShell Lab24](docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md) passed
+nineteen terminal markers/eighteen bounded reports, raw identities, partial files,
+explicit gaps and original-attempt/kernel continuity through worker restart. PDF
+was unavailable. Complete teardown was verified at 14:59:02.325873 UTC. No source,
+helper or assertion changes followed the freeze; inspection hash/CLI/key corrections
+are retained transparently in the report. Acceptance changes are documentation only;
+fresh PR CI remains required before merge.
+
 ## 2026-10-12 — comment/reply mechanical math
 
-Implement the approved comment portion of D82/LD-53–55/CR-36–38 with append-only original-entry/body revisions and ordinary exact thread/body/hash corrections. MAIN can remediate same-session agent source; delegated runs only their own current source, and USER only USER-owned original bodies. Work requests retain their original immutable instruction. Canonical parent/macro pins and shared bounded renderer/lifecycle/closing/save-ACK preserve existing authority and the two-round budget. Unknown legacy/parser-bound identity holds checks without vetoing ordinary edits or guessing ownership/removal. Preliminary browser acceptance at `7fa43e6` found that dependency-only changes consumed failed-block opportunities. Final signed `77ecc171` separates evidence refresh from proved block edits, reconciles old accepted-owner state and preserves unaddressed/USER decisions. Independent review, 78 focused cases and all final combined gates pass (9,631 Python/43 opt-in skips/two existing warnings, 441 web/24 post-build math checks, locked/static/license/protocol checks and both builds). Fresh root-owned [browser acceptance](docs/agent-reports/comment-math-2026-10-12.md) passed exact authority/provenance, corrected budgets, retained conflict drafts and actual local KaTeX lifecycle evidence; complete teardown was verified at 13:50:58.272097 UTC. Fresh PR CI is required before merge. No new broad decision, route, service/provider/runtime/security-policy change, ledger/finding-prose scope, model repair proposal or idle scheduler.
+Implement the approved comment portion of D82/LD-53–55/CR-36–38 with append-only original-entry/body revisions and ordinary exact thread/body/hash corrections. MAIN can remediate same-session agent source; delegated runs only their own current source, and USER only USER-owned original bodies. Work requests retain their original immutable instruction. Canonical parent/macro pins and shared bounded renderer/lifecycle/closing/save-ACK preserve existing authority and the two-round budget. Unknown legacy/parser-bound identity holds checks without vetoing ordinary edits or guessing ownership/removal. Preliminary browser acceptance at `7fa43e6` found that dependency-only changes consumed failed-block opportunities. Final signed `77ecc171` separates evidence refresh from proved block edits, reconciles old accepted-owner state and preserves unaddressed/USER decisions. Independent review, 78 focused cases and all final combined gates pass (9,631 Python/43 opt-in skips/two existing warnings, 441 web/24 post-build math checks, locked/static/license/protocol checks and both builds). Fresh root-owned [browser acceptance](docs/agent-reports/comment-math-2026-10-12.md) passed exact authority/provenance, corrected budgets, retained conflict drafts and actual local KaTeX lifecycle evidence; complete teardown was verified at 13:50:58.272097 UTC. PR #87 merged at `d2b133f` after all three fresh CI checks passed on `16bb1308`. No new broad decision, route, service/provider/runtime/security-policy change, ledger/finding-prose scope, model repair proposal or idle scheduler.
 
 PR #86 merged exact capture source `ea31757` and both Lab22/Lab23 archives as `9c07725`, all three fresh CI checks successful (`38251872668`, 13:01:50 UTC). Historical test/runtime boundaries below remain unchanged.
 

@@ -221,10 +221,9 @@ review, 78 focused document/comment cases and all combined gates (9,631 Python
 tests, 43 opt-in skips, two existing warnings; 441 web and 24 post-build math checks).
 Fresh [comment/reply browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md)
 passed against the frozen source/helper; all disposable state was removed. This
-extends durable source coverage to comments/replies, with ledger/remaining finding prose,
-model repair proposals and idle dispatch still open. Fresh PR CI is required
-before merge.
-
+extends durable source coverage to comments/replies. PR #87 merged at `d2b133f`
+after all three fresh CI checks passed on `16bb1308`. Ledger, model repair
+proposals and idle dispatch remain open.
 
 The additive [MAIN explanation math slice](FINDING-PROSE-MATH.md) checks only
 agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the

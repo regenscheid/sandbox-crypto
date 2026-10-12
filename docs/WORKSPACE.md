@@ -360,7 +360,7 @@ Dependency-only changes kept budgets zero; two failed body edits reached the
 two-reflag bound. Final gates passed 9,631 Python tests (43 opt-in skips, two
 existing warnings), 441 web tests, 24 post-build math checks and both builds with
 all required static/license/protocol checks. The transient browser/server/state
-were removed at 13:50:58.272097 UTC; fresh PR CI is required before merge.
+were removed at 13:50:58.272097 UTC; PR #87 merged at `d2b133f` after all three fresh CI checks passed on `16bb1308`.
 
 The ordinary `edit_body` action carries the original `entry`, current body `base`
 and `sha256`, plus `thread`, its `expected` revision, replacement `body` and
