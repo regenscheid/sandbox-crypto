@@ -57,9 +57,11 @@ clips metadata, content and digest fields before returning them to Python; malfo
 or oversized stored rows cannot become unbounded Python export objects. Both APIs are
 synchronous and must run off asynchronous event loops.
 
-This slice supplies no network delivery, worker acknowledgement cursor, environment
-file publication, direct-edit ingestion or `ss-doc` invocation. LD-49 to LD-52 and their
-runtime fixtures remain open, including the conservative hold for uncertain writers.
+The outbox itself performs no network delivery. Its separate manual delivery adapter
+below retains pinned targets and exact storage acknowledgements. Environment file
+publication, direct-edit ingestion and `ss-doc` invocation remain disabled. LD-49 to
+LD-52 and their runtime fixtures remain open, including the conservative hold for
+uncertain writers.
 
 Acceptance passed 59 focused publication/store cases, independent SQL fault/retry,
 retention/bootstrap and actual worker-catalog composition probes, and the combined
@@ -67,6 +69,61 @@ suite: 9,274 Python tests (43 opt-in skips), 429 web tests, strict/static/licens
 checks and both production builds. Corrupt 20 MiB metadata and revision rows were
 refused with bounded Python export allocations; this does not measure SQLite cache
 memory or prove a sandbox writer guard.
+
+## Manual catalog delivery
+
+`documents.delivery.CatalogDelivery` is an internal, explicitly invoked adapter.
+`step(binding, client)` receives an operator-approved `WorkerClient` and immutable
+`DeliveryBinding`: project, binding ID, exact positive configuration revision and
+SHA-256 of the approved endpoint. It discovers no credentials, enables no clients and
+has no scheduler, execution hook, agent tool or public route. Each step reads fresh
+worker status and sends at most one begin/delta, page, content chunk or commit request.
+The catalog-only transport caps response bodies at 8 KiB and metadata/content requests
+at 64/352 KiB, refuses redirects and applies a ten-second total HTTP deadline.
+
+A separate SQLite journal uses WAL and `synchronous=FULL`. Before the first upload it
+commits the exact target, complete ordered metadata, chosen snapshot/delta mode and
+original delta payload. Source advances cannot alter that pin. Immutable content is
+read and verified one document at a time from the canonical revision store; this journal
+stores no document content. Metadata pages and aligned chunks replay identically after
+lost replies or restart. Stage expiry can replay the same pin. A reset or changed base
+that makes a pending delta ambiguous holds for explicit reconciliation, preserving its
+original mode and payload. A snapshot can restart on an empty worker without treating
+the old local acknowledgement as current storage.
+
+Fresh status must coherently bind project, generation, cursor, manifest, count and
+bytes. Matching the exact current target can settle a lost commit reply after receipt
+eviction. An older replay receipt never substitutes for actual current membership;
+foreign stages, unknown ahead cursors and same-cursor different manifests hold. A
+historical local acknowledgement is reported separately from freshly observed current
+storage. A successful acknowledgement and pin removal commit in one transaction.
+
+Per-binding SQL leases fence configuration changes and stale replies. Endpoint changes
+require a higher operator configuration revision, retain unresolved pins/history and
+reconcile fresh status. The endpoint is checked before and after network operations.
+Leases never grant worker permissions. Canonical writes remain independent of delivery
+failure or quota exhaustion. Future canonical revision collection must retain pinned
+source revisions; current revisions are append-only.
+A process that dies without releasing its lease leaves the binding busy until expiry;
+the next owner reconciles the retained target rather than assuming the request failed.
+
+Defaults bound 128 bindings, 20,000 pinned entries and 32 MiB of pinned metadata across
+the journal, eight admitted steps/SQL operations and 60-second leases. `DeliveryLimits`
+configures these logical bounds; they do not claim filesystem/WAL or SQLite RSS limits.
+Tightened limits refuse continued admission without discarding the original pin.
+All SQL uses one private thread, with bounded admission before submission. Caller
+cancellation retains admitted step/transaction ownership; `aclose()` stops admission
+and drains actual work before closing, even under repeated cancellation. The caller
+must retain the injected client and canonical store until that drain finishes.
+
+Focused local acceptance covers actual authenticated worker HTTP composition, lost
+replies/restarts, source advances during a 600,000-byte upload, empty-target deletion only
+at commit, stage expiry, worker resets, ambiguous delta holds, stale lease/endpoint
+replies, corrupt pins, aggregate quotas and acknowledgement transaction failure.
+Independent source review and final combined validation with the worker source adapter
+and atomic synthetic OpenShell fixture passed 9,365 Python tests (43 opt-in skips),
+431 web tests, strict/static/license/protocol checks and both production builds.
+No OpenShell or environment publication is exercised by this prerequisite.
 
 ## Parsing
 
