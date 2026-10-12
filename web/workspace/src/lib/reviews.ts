@@ -8,15 +8,20 @@ export interface Review { review_id: string; kind: string; state: string; summar
   start_seq: number; end_seq: number; config_revision: string; classifier: Json }
 export interface Evidence { evidence: string; ordinal: number; kind: string;
   locator: Record<string, Json>; sha256: string; complete: boolean }
-export interface Finding { finding_id: string; review_id: string; severity: string; category: string;
+export interface Finding { finding_id: string; review_id: string | null; origin?: "review" | "math"; source?: Record<string, Json>; severity: string; category: string;
   statement: string; remedy: string | null; status: string; revision: number; reflags: number;
-  anchors: ({ evidence: string; review: string; locator: Record<string, Json> } & Record<string, Json>)[];
+  anchors: ({ evidence?: string; review?: string; check?: string; math?: string; locator: Record<string, Json> } & Record<string, Json>)[];
   history?: Transition[]; history_before?: number | null }
 export interface Transition { revision: number; status: string; actor: string; reason: string;
   payload: Json; created: number }
+export interface MathJob { check_id: string; document: string; revision: number; state: string;
+  cursor: number; spans: number | null; available: number; rejected: number; unavailable: number; created: number }
+export interface MathQueue { document: string; target: number; completed: number; blocked: string | null; running: boolean | number }
 const part = encodeURIComponent;
 const base = (project: string, session: string) => `/projects/${part(project)}/sessions/${part(session)}`;
 export const reviews = {
+  math: (p: string, s: string, after: string | null = null) => get<{ checks: MathJob[]; next_after: string | null; queue: MathQueue[]; queue_more?: boolean }>(`${base(p,s)}/math-checks${after ? `?after=${part(after)}` : ''}`),
+  mathEvidence: (p: string, s: string, id: string, after = 0, span?: string) => get<{ check: Json; observations: Json[]; next_after: number | null }>(`${base(p,s)}/math-checks/${part(id)}?after=${after}${span ? `&span=${part(span)}` : ''}`),
   list: (p: string, s: string, after: string | null = null) => get<{ reviews: Review[]; next_after: string | null; unreviewed: Json[] }>(`${base(p,s)}/reviews${after ? `?after=${part(after)}` : ''}`),
   findings: (p: string, s: string, after: string | null = null) => get<{ findings: Finding[]; next_after: string | null }>(`${base(p,s)}/findings${after ? `?after=${part(after)}` : ''}`),
   manifest: (p: string, s: string, r: string, after = 0) => get<{ review: Review; evidence: Evidence[]; next_after: number | null }>(`${base(p,s)}/reviews/${part(r)}?after=${after}`),

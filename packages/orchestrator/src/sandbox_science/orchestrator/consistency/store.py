@@ -33,6 +33,8 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
+from .finding_schema import FINDING_INDEX, FINDING_TABLE
+from .finding_schema import prepare as prepare_findings
 from .models import ReviewConfig, ReviewOutcome, ReviewType, Scope
 from .rubric import RUBRIC_VERSION
 
@@ -99,16 +101,8 @@ SCHEMA: Final = (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
       review_id TEXT NOT NULL REFERENCES review_runs(review_id),
       kind TEXT NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_findings (
-      finding_id TEXT PRIMARY KEY,project TEXT NOT NULL,session TEXT NOT NULL,
-      review_id TEXT NOT NULL,
-      severity TEXT NOT NULL,category TEXT NOT NULL,statement TEXT NOT NULL,anchors TEXT NOT NULL,
-      remedy TEXT,status TEXT NOT NULL,revision INTEGER NOT NULL,reflags INTEGER NOT NULL DEFAULT 0,
-      dedupe TEXT NOT NULL,supersedes TEXT,created REAL NOT NULL) STRICT""",
-    (
-        "CREATE INDEX IF NOT EXISTS review_findings_scope ON "
-        "review_findings(project,session,created)"
-    ),
+    FINDING_TABLE,
+    FINDING_INDEX,
     """CREATE TABLE IF NOT EXISTS review_transitions (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
       finding_id TEXT NOT NULL REFERENCES review_findings(finding_id),
@@ -216,6 +210,7 @@ class ReviewStore:
             with documents._write() as db:
                 for statement in SCHEMA:
                     db.execute(statement)
+                prepare_findings(db)
 
     def available(self, db: sqlite3.Connection | None) -> bool:
         return (
@@ -463,6 +458,7 @@ class ReviewStore:
             return dict(
                 db.execute(
                     "SELECT status,count(*) FROM review_findings WHERE project=? AND session=? "
+                    "AND category!='math' "
                     "GROUP BY status",
                     (project, session),
                 )
@@ -545,7 +541,8 @@ class ReviewStore:
                 tuple(row)
                 for row in db.execute(
                     "SELECT f.finding_id,f.revision FROM review_findings f WHERE project=? "
-                    "AND session=? AND status='claimed fixed' AND NOT EXISTS(SELECT 1 FROM "
+                    "AND session=? AND category!='math' AND status='claimed fixed' "
+                    "AND NOT EXISTS(SELECT 1 FROM "
                     "review_confirmation_targets t JOIN review_runs r USING(review_id) "
                     "WHERE t.finding_id=f.finding_id AND t.revision=f.revision AND "
                     "r.state NOT IN ('running','failed','dropped')) AND (SELECT count(*) FROM "
@@ -623,7 +620,8 @@ class ReviewStore:
                     (
                         "SELECT finding_id,severity,category,statement,anchors,remedy,"
                         "status,revision,reflags,supersedes FROM review_findings f WHERE "
-                        "project=? AND session=? AND status NOT IN ('confirmed fixed',"
+                        "project=? AND session=? AND category!='math' "
+                        "AND status NOT IN ('confirmed fixed',"
                         "'withdrawn') ORDER BY CASE WHEN finding_id IN "
                         "(SELECT value FROM json_each(?)) THEN 0 WHEN (SELECT "
                         "json_extract(t.payload,'$.action') FROM review_transitions t "

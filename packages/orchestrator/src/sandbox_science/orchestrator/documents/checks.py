@@ -16,9 +16,9 @@ When a revision is saved, its new and changed blocks are checked for:
   after it;
 - ``front_matter``: front matter that is not a title and macros in YAML.
 
-The checks are heuristics: they warn and never change the text. KaTeX's own check, which
-makes ``math`` findings (LD-53 to LD-55), is a later slice; ``math_check`` below is where
-it will plug in.
+The checks are heuristics: they warn and never change the text. KaTeX's own check is
+scheduled atomically by the source-event hook and runs outside source transactions
+in ``mathjobs``. It creates separately attributed mechanical findings.
 """
 
 from __future__ import annotations
@@ -84,12 +84,6 @@ def _swallowed(tex: str) -> str | None:
         if _PROSE.search(plain):
             return f"its line {line.strip()[:40]!r} reads as text"
     return None
-
-
-def math_check(mapped: Mapped, blocks: Iterable[int]) -> list[dict[str, JsonValue]]:
-    """The seam for KaTeX's check of each formula (LD-53), a later slice: nothing yet."""
-    del mapped, blocks
-    return []
 
 
 def warnings(mapped: Mapped, blocks: Iterable[int]) -> list[dict[str, JsonValue]]:

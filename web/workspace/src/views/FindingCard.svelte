@@ -6,6 +6,7 @@
   import { loadDraft, saveDraft, clearDraft } from '../lib/drafts';
   import ErrorMessage from './ErrorMessage.svelte';
   import Markdown from '../lib/Markdown.svelte';
+  import { Preview } from '../lib/preview';
   let { projectId, sessionId, finding, changed, read }: { projectId: string; sessionId: string;
     finding: Finding; changed: () => Promise<void>; read: (review: string, evidence: string) => Promise<void> } = $props();
   const initial = untrack(() => finding);
@@ -19,6 +20,15 @@
     if (explanation) persisted = saveDraft(projectId, key, { base: expected, text: explanation, reason: action, retained: references, block: null });
     else { clearDraft(projectId, key); expected = finding.revision; }
   });
+  let mechanicalEvidence = $state(''), mathHead = $state(initial.revision);
+  const mathPreview = new Preview();
+  $effect(() => { if (finding.revision !== mathHead) { mathPreview.invalidate(); mechanicalEvidence = ''; mathHead = finding.revision; } });
+  async function mathEvidence(check: string, span?: string) {
+    const current = mathPreview.begin(`${projectId}/${sessionId}/${finding.finding_id}`), head = finding.revision;
+    try { const result = await reviews.mathEvidence(projectId,sessionId,check,0,span);
+      if (current() && head === finding.revision) mechanicalEvidence = JSON.stringify(result,null,2); }
+    catch (caught) { if (current() && head === finding.revision) error = caught; }
+  }
   async function respond() {
     busy = true; error = null;
     try {
@@ -41,12 +51,16 @@
 <article class="finding">
   <h3>{finding.severity} · {finding.category} · {finding.status}</h3>
   <p class="muted"><code>{finding.finding_id}</code> · revision {finding.revision} · {finding.reflags} reflags</p>
+  {#if finding.origin === 'math'}<p>Mechanical math check · <code>{String(finding.source?.check ?? '')}</code>. No reviewer model was used.</p>
+    {#if finding.source?.excluded}<p role="status">{String(finding.source.excluded)}</p>{/if}
+  {/if}
   <Markdown source={finding.statement} />{#if finding.remedy}<p>Suggested remedy:</p><Markdown source={finding.remedy} />{/if}
-  <details><summary>Pinned evidence anchors</summary>{#each finding.anchors as anchor, index (index)}<button onclick={() => read(anchor.review, anchor.evidence)}>Read evidence {index + 1}</button><pre>{JSON.stringify(anchor, null, 2)}</pre>{/each}</details>
+  <details><summary>Pinned evidence anchors</summary>{#each finding.anchors as anchor, index (index)}{#if anchor.check}<button onclick={() => mathEvidence(anchor.check!, anchor.math)}>Read mechanical evidence {index + 1}</button>{:else if anchor.review && anchor.evidence}<button onclick={() => read(anchor.review!, anchor.evidence!)}>Read evidence {index + 1}</button>{/if}<pre>{JSON.stringify(anchor, null, 2)}</pre>{/each}</details>
+  {#if mechanicalEvidence}<pre aria-label="Mechanical math evidence">{mechanicalEvidence}</pre>{/if}
   <button disabled={busy || (loaded && before === null)} onclick={earlier}>{loaded ? 'Load earlier finding history' : 'Read finding history'}</button>
   {#each history as entry (entry.revision)}<div class="transition"><p>{entry.revision} · {entry.status} · {entry.actor}</p><Markdown source={entry.reason} /><details><summary>Decision evidence and attribution</summary><pre>{JSON.stringify(entry.payload, null, 2)}</pre></details></div>{/each}
   <details><summary>Respond as user</summary>
-    <p>A claimed fix stays unconfirmed until a confirmation review. Confirm and dismiss below are explicit user decisions.</p>
+    <p>{finding.origin === "math" ? "The math checker confirms accepted or removed formulas; unavailable evidence does not resolve a finding." : "A claimed fix stays unconfirmed until a confirmation review."} Confirm and dismiss below are explicit user decisions.</p>
     <fieldset disabled={busy}>
       <p>Based on finding revision {expected}. {#if expected !== finding.revision}<button onclick={() => expected = finding.revision}>Use current finding revision</button> Your draft is retained.{/if}</p>
       <label>Decision <select bind:value={action}><option value="rebut">Rebut with explanation</option><option value="fix">Claim fixed</option><option value="confirm">Confirm fixed as user</option><option value="dismiss">Dismiss as user</option><option value="reopen">Reopen</option></select></label>

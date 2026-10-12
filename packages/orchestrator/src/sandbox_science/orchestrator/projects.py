@@ -112,6 +112,8 @@ class RunRecord(Contract):
     """User work requests represented in this saved transcript, acknowledged after save."""
     review_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
     """Finding notices sent to a successful model call and acknowledged after save."""
+    math_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
+    math_summary: dict[str, JsonValue] = Field(default_factory=dict[str, JsonValue])
     review_summary: dict[str, JsonValue] = Field(default_factory=dict[str, JsonValue])
     final_text: str | None = None
     messages: list[dict[str, JsonValue]]

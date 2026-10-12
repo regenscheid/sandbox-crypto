@@ -134,6 +134,7 @@ export interface RunRecord {
   stopped: string;
   final_text: string | null;
   review_notice_ids?: string[];
+  math_summary?: { pending?: boolean; renderer?: string; counts?: Record<string, number>; detail?: string };
   review_summary?: { pending?: boolean; outcome?: string; counts?: Record<string, number>; reviews?: string[] };
   messages: Message[];
   tools: ToolRecord[];
