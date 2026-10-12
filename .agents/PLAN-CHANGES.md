@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-12 — refresh roadmap implementation status
+
+Correct the roadmap's obsolete starting statement that nothing was implemented. M1 passed its recorded babbage exit run; M0 specification/decision review and the complete M2 local research workflow remain open. Point current work at W4/M2 and the maintained status/backlog. Hosted, multi-architecture, placement and representative cryptography workflow gates remain open. This changes no milestone scope or acceptance requirement. See the [roadmap](../docs/ROADMAP.md).
+
 ## 2026-10-12 — isolated math distribution embedded notices
 
 Implement the explicitly tracked W4 follow-on after GUI PR #91 merged at `05ba353` with all four fresh CI checks passed (run `38290115991`). Reuse the reviewed collector and pinned local primary texts for code-only KaTeX MIT, React-derived Apache helpers and glyph-derived SVG OFL attribution. The math build emits six covered files, preserving the established filenames and exact renderer/launcher bytes; its existing copier entry point verifies the complete directory. Node and its two launcher builtins remain operator-provided. No external font/CSS/Svelte runtime, dependency, license-allowlist, renderer or deployment change. Independent review and root six-file acceptance pass. Final gates passed 486 web tests (41 notice cases), 24 post-build math cases, both builds and locked/static/license/protocol checks. Source-identical full Python 9,749/43/two warnings is explicitly reused. Actual main `b2f2e62` (merged PR #92) is integrated at signed `fe19020`; fresh combined 515 web tests/check/build pass, and all 70 GUI files match root copy-accepted bytes exactly. The unchanged six-file math distribution/build/24 results and backend baseline are explicitly reused. Exact combined review and fresh PR CI/merge remain pending. See [math build](../docs/MATH-CHECKS.md#build-and-configure) and [primary inputs](../web/workspace/licenses/README.md).
