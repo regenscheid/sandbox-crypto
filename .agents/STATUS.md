@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-12. Delivery baseline main `d61e4ad` includes PR #69 through #97 after their fresh CI gates; normal development uses Python 3.13, with supported Python 3.12 retained in the matrix.
+Updated: 2026-10-12. Delivery baseline main `b207c9d` includes PR #69 through #98 after their fresh CI gates; normal development uses Python 3.13, with supported Python 3.12 retained in the matrix.
 
 **Phase:** 1 (babbage), milestone M1: its exit run passed on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M0's specs and decisions still await the user's review. **Focus:** toward M2: the research workspace, following background jobs and executor recovery acceptance.
 
@@ -8,7 +8,7 @@ Background jobs have worker/API and harness/GUI implementations, independent adv
 
 ## Latest parallel implementation
 
-Table parity PR #94, kernel start tracking PR #95, project macros PR #96 and passive kernel observations PR #97 are merged after independent review and all fresh CI gates. PR #97 merged at `d61e4ad` on independently reviewed signed `8fd62e8` after all four fresh checks passed (run `38315213515`). The separate bounded immutable export-input prerequisite passes independent review and full combined gates (9,979 Python/575 web/24 math). Export delivery requires exact-head independent review and all fresh CI checks before merge. GUI polling, agent inboxes, protected worker staging and conversion stay open; M2 remains open.
+Table parity PR #94, kernel start tracking PR #95, project macros PR #96, passive observations PR #97 and immutable export inputs PR #98 are merged after independent review and all fresh CI gates. PR #98 merged at `b207c9d` on reviewed signed `013adcb` after four successful checks (run `38316931992`). The next CP-12 slice is in active parallel implementation: a bounded authenticated workspace proxy and a visible-session GUI kernel panel, with a separate reviewer. Root owns integration, docs, full gates and real browser/OpenShell acceptance. No new polling capability is enabled until that slice passes delivery. Durable agent inboxes, idle wake, protected export staging and conversion remain open; M2 remains open.
 
 ## Recent progress
 
