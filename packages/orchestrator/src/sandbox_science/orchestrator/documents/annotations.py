@@ -18,6 +18,7 @@ from sandbox_science.contracts import Identifier, new_id
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 
+from . import comment_bodies
 from .blocks import check_text
 from .errors import CONFLICT, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED, DocumentError
 from .identity import Mapped, compare, increasing
@@ -94,8 +95,21 @@ class ResolveComment(Contract):
     operation_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
+class EditBody(Contract):
+    action: Literal["edit_body"]
+    thread: str = Field(pattern=r"^ann-[0-9a-f]{24}$")
+    expected: int = Field(ge=1, le=999999999, strict=True)
+    entry: str = Field(pattern=r"^cmt-[0-9a-f]{24}$")
+    base: int = Field(ge=0, le=999999999, strict=True)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    body: str = Field(max_length=8192)
+    operation_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
 CHANGE: Final = TypeAdapter(
-    Annotated[CreateComment | ReplyComment | ResolveComment, Field(discriminator="action")]
+    Annotated[
+        CreateComment | ReplyComment | ResolveComment | EditBody, Field(discriminator="action")
+    ]
 )
 
 
@@ -361,6 +375,24 @@ class Annotations:
                 "payload": payload,
                 "created_at": e[6],
             }
+            if e[2] in ("create", "reply"):
+                try:
+                    source = comment_bodies.current(db, e[0], full=False, allow_legacy=True)
+                    entry["body_source"] = {
+                        k: source[k]
+                        for k in (
+                            "entry_id",
+                            "revision",
+                            "sha256",
+                            "author",
+                            "original_author",
+                            "body",
+                        )
+                    }
+                    if "held" in source:
+                        entry["body_source"]["held"] = source["held"]
+                except DocumentError as error:
+                    entry["body_source"] = {"entry_id": e[0], "held": error.message}
             size = len(dump(entry).encode())
             if entries and entry_bytes + size > 256 * 1024:
                 break
@@ -498,6 +530,28 @@ class Annotations:
         found["view_revision"] = info.head
         return found
 
+    def body(self, project: str, reference: str, entry: object) -> Json:
+        if not isinstance(entry, str) or re.fullmatch(r"cmt-[0-9a-f]{24}", entry) is None:
+            raise DocumentError(INVALID_REQUEST, "invalid original comment entry")
+        info = self.store.document(project, reference)
+        with self.store._read() as db:
+            if (
+                db is None
+                or db.execute(
+                    "SELECT 1 FROM annotation_entries e JOIN annotation_threads t USING(thread_id) "
+                    "WHERE t.document_id=? AND e.entry_id=?",
+                    (info.document_id, entry),
+                ).fetchone()
+                is None
+            ):
+                raise DocumentError(NOT_FOUND, "no such scoped comment body")
+            value = comment_bodies.current(db, entry, full=False, allow_legacy=True)
+            value["expected"] = db.execute(
+                "SELECT max(number) FROM annotation_entries WHERE thread_id=?",
+                (value["thread"],),
+            ).fetchone()[0]
+        return value
+
     def change(self, project: str, reference: str, raw: object, author: Author) -> Json:
         try:
             value = CHANGE.validate_python(raw)
@@ -505,7 +559,9 @@ class Annotations:
             raise DocumentError(INVALID_REQUEST, "invalid annotation change") from None
         if author.kind not in ("user", "agent"):
             raise DocumentError(POLICY_DENIED, "only users and agent runs comment")
-        body = value.body if isinstance(value, (CreateComment, ReplyComment)) else ""
+        if len(author.model_dump_json().encode()) > 8192:
+            raise DocumentError(INVALID_REQUEST, "comment author provenance exceeds its bound")
+        body = value.body if isinstance(value, (CreateComment, ReplyComment, EditBody)) else ""
         check_text(body)
         if any(ord(char) < 32 and char not in "\n\r\t" for char in body):
             raise DocumentError(
@@ -527,6 +583,69 @@ class Annotations:
                 self.store.mapped(project, reference, value.anchor.revision), value.anchor
             )
         info = self.store.document(project, reference)
+        fingerprint = digest(dump([info.document_id, value.model_dump(mode="json")]))
+        with self.store._read() as db:
+            assert db is not None  # noqa: S101 - writer initialized
+            replay = db.execute(
+                "SELECT substr(CAST(fingerprint AS BLOB),1,65),"
+                "substr(CAST(result AS BLOB),1,16385) "
+                "FROM annotation_operations WHERE project_id=? AND actor=? AND operation_id=?",
+                (project, author.actor, value.operation_id),
+            ).fetchone()
+            if replay is not None:
+                if replay[0] != fingerprint.encode():
+                    raise DocumentError(
+                        CONFLICT, "operation ID already names another annotation change"
+                    )
+                if len(replay[1]) > 16384:
+                    raise DocumentError(
+                        INVALID_REQUEST, "retained annotation outcome exceeds its bound"
+                    )
+                return {**json.loads(replay[1]), "replayed": True}
+        body_parent: Json | None = None
+        body_entry: str | None = None
+        if isinstance(value, EditBody) or (
+            isinstance(value, ReplyComment) and value.action == "edit"
+        ):
+            with self.store._read() as db:
+                assert db is not None  # noqa: S101 - writer initialized
+                if (
+                    db.execute(
+                        "SELECT 1 FROM annotation_threads WHERE document_id=? AND thread_id=?",
+                        (info.document_id, value.thread),
+                    ).fetchone()
+                    is None
+                ):
+                    raise DocumentError(NOT_FOUND, "no such scoped comment thread")
+                if isinstance(value, EditBody):
+                    body_entry = value.entry
+                else:
+                    original = db.execute(
+                        "SELECT substr(CAST(entry_id AS BLOB),1,129) FROM annotation_entries "
+                        "WHERE thread_id=? AND number=1",
+                        (value.thread,),
+                    ).fetchone()
+                    if original is None or re.fullmatch(b"cmt-[0-9a-f]{24}", original[0]) is None:
+                        raise DocumentError(NOT_FOUND, "no such original comment body")
+                    body_entry = original[0].decode()
+                body_parent = comment_bodies.current(db, body_entry or "", allow_legacy=True)
+            if body_parent["thread"] != value.thread:
+                raise DocumentError(NOT_FOUND, "the body belongs to another thread")
+            if isinstance(value, EditBody) and (value.base, value.sha256) != (
+                body_parent["revision"],
+                body_parent["sha256"],
+            ):
+                raise DocumentError(
+                    CONFLICT, "the comment body changed; retain and review your draft"
+                )
+            comment_bodies.authority(
+                Author.model_validate(body_parent["original_author"]), body_parent, author
+            )
+        body_prepared = (
+            comment_bodies.prepare(body, author, body_parent)
+            if isinstance(value, (CreateComment, EditBody, ReplyComment))
+            else None
+        )
         report: Json = {}
         if isinstance(value, ReplyComment) and value.revision is not None:
             revised = self.store.revision(project, info.document_id, value.revision)
@@ -545,19 +664,23 @@ class Annotations:
                 else None
             )
             report = scope_report(before, after, thread["anchor"], value.revision)
-        fingerprint = digest(dump([info.document_id, value.model_dump(mode="json")]))
         with self.store._write() as db:
             replay = db.execute(
                 (
-                    "SELECT fingerprint,result FROM annotation_operations WHERE "
+                    "SELECT substr(CAST(fingerprint AS BLOB),1,65),"
+                    "substr(CAST(result AS BLOB),1,16385) FROM annotation_operations WHERE "
                     "project_id=? AND actor=? AND operation_id=?"
                 ),
                 (project, author.actor, value.operation_id),
             ).fetchone()
             if replay is not None:
-                if replay[0] != fingerprint:
+                if replay[0] != fingerprint.encode():
                     raise DocumentError(
                         CONFLICT, "operation ID already names another annotation change"
+                    )
+                if len(replay[1]) > 16384:
+                    raise DocumentError(
+                        INVALID_REQUEST, "retained annotation outcome exceeds its bound"
                     )
                 return {**json.loads(replay[1]), "replayed": True}
             row = self.store._find(db, project, info.document_id)
@@ -598,6 +721,13 @@ class Annotations:
                         raise DocumentError(POLICY_DENIED, "edit only your own opening comment")
                 number, kind = thread["revision"] + 1, value.action
                 payload.update(report)
+                if isinstance(value, EditBody):
+                    payload.update(
+                        entry=value.entry,
+                        base=value.base,
+                        sha256=value.sha256,
+                        body_revision=value.base + 1,
+                    )
             if addressed is not None:
                 payload["addressed_to"] = addressed
             entry_id = new_id("cmt")
@@ -619,6 +749,13 @@ class Annotations:
                         "only the addressed session's main agent answers this request",
                     )
                 payload["request_id"] = value.request_id
+            if body_parent is not None:
+                latest = comment_bodies.current(db, body_entry or "", full=False, allow_legacy=True)
+                if (latest["revision"], latest["sha256"]) != (
+                    body_parent["revision"],
+                    body_parent["sha256"],
+                ):
+                    raise DocumentError(CONFLICT, "the comment body changed during preparation")
             db.execute(
                 "INSERT INTO annotation_entries VALUES(?,?,?,?,?,?,?,?)",
                 (
@@ -632,6 +769,16 @@ class Annotations:
                     time.time(),
                 ),
             )
+            if body_prepared is not None:
+                comment_bodies.commit(
+                    db,
+                    body_entry or entry_id,
+                    entry_id,
+                    info.document_id,
+                    project,
+                    author,
+                    body_prepared,
+                )
             request_id = None
             addressed = (
                 value.addressed_to if isinstance(value, (CreateComment, ReplyComment)) else None

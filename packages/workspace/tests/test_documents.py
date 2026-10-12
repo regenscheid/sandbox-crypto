@@ -502,3 +502,52 @@ async def test_comments_require_auth_same_origin_and_expected_revision(
     assert (await client.post(path, data="{", headers=origin)).status == 400
     assert (await client.get(path + "?revision=0")).status == 400
     assert (await client.get(path + f"/{result['thread_id']}?before=-1")).status == 400
+
+
+async def test_comment_body_revision_cas_existing_route_authority_and_retry(
+    client: TestClient[Any, Any],
+    documents: dict[str, str],
+) -> None:
+    path = f"/api/v0/projects/p1/documents/{documents['ff']}/comments"
+    origin = {"Origin": str(client.make_url("/")).rstrip("/")}
+    made = await client.post(
+        path,
+        json={
+            "action": "create",
+            "anchor": {"revision": 2, "block": documents["paragraph"]},
+            "body": "Original USER body",
+            "operation_id": "body-source",
+        },
+        headers=origin,
+    )
+    source = await made.json()
+    thread = (await get(client, path))["threads"][0]
+    body = thread["entries"][0]["body_source"]
+    change = {
+        "action": "edit_body",
+        "thread": source["thread_id"],
+        "entry": source["entry_id"],
+        "expected": 1,
+        "base": body["revision"],
+        "sha256": body["sha256"],
+        "body": "Corrected USER body",
+        "operation_id": "body-correction",
+    }
+    assert (await client.post(path, json=change)).status == 403
+    assert (
+        await client.post(path, json={**change, "author": {"kind": "agent"}}, headers=origin)
+    ).status == 400
+    first = await client.post(path, json=change, headers=origin)
+    assert first.status == 200
+    replay = await client.post(path, json=change, headers=origin)
+    assert (await replay.json())["replayed"] is True
+    stale = await client.post(path, json={**change, "operation_id": "stale-body"}, headers=origin)
+    assert stale.status == 409
+    foreign = f"/api/v0/projects/p2/documents/{documents['other']}/comments"
+    assert (
+        await client.post(foreign, json={**change, "operation_id": "foreign"}, headers=origin)
+    ).status == 404
+    thread = (await get(client, path))["threads"][0]
+    assert thread["entries"][0]["body"] == "Original USER body"
+    assert thread["entries"][0]["body_source"]["revision"] == 2
+    assert thread["entries"][1]["author"]["kind"] == "user"

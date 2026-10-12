@@ -142,7 +142,8 @@ leases/helpers; complete teardown was verified at 12:36:45 UTC. The disposable w
 used a 1 MiB limit; this does not validate maximum-size successful capture. Lost-bridge,
 blocked host-I/O and corrupt-state behavior remain local hostile evidence. Actual main
 PR #85 ancestry and acceptance docs change no product, test, configuration or helper
-bytes; final docs review and fresh PR CI remain required. The marked reusable recipe
+bytes. Exact source `ea31757` and both Lab22/Lab23 archives merged as PR #86 at
+`9c07725` after all three fresh CI checks passed (run `38251872668`, 13:01:50 UTC). The marked reusable recipe
 is in [the lab guide](../.agents/labs/README.md#lab22-bounded-artifact-capture).
 
 Automatic execution-output inventory remains open. `written_files` is a bounded

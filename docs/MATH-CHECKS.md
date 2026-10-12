@@ -1,9 +1,10 @@
-# Document math checks
+# Durable text math checks
 
 Document revisions now connect durable save scheduling, the isolated renderer,
 mechanical findings and closing-round delivery (D82, document portion of LD-53
-to LD-55 and CR-36 to CR-38). Comments, replies, ledger entries and finding prose
-are outside this slice. The renderer remains unavailable until configured by the
+to LD-55 and CR-36 to CR-38). [Comments and replies](COMMENT-MATH.md) add immutable body revisions under the
+same checker and delivery bounds. Ledger entries and finding prose remain outside
+these slices. The renderer remains unavailable until configured by the
 operator; an unavailable check never establishes rejection or a fix.
 
 `orchestrator.mathcheck.MathChecker` runs one formula in a fresh Node process.
@@ -117,9 +118,16 @@ reflag. A late result is retained as evidence but cannot change newer canonical
 state. Same-head retries consult the latest exact attempt, so an older rejection
 cannot cause a new handoff while current evidence is pending or unavailable.
 
-A changed failing block or effective renderer/macro input can reflag the same
-finding. Duplicate checks, unchanged spans, unrelated edits and restarted attempts
-do not consume the two-reflag budget. Two failing changes leave it unaddressed.
+A newly proved edit to the failing block can reflag the same finding. Macro and
+renderer dependency changes refresh the exact assessment and audit history without
+consuming either failed-patch opportunity when the block owner revision is unchanged.
+Dependency refresh preserves unaddressed and explicit USER resolutions; a previously
+mechanically accepted formula can reopen on a new rejection. Available accepted
+checks also update the assessed block owner. Previous ownership is reconciled from
+the last immutable available observation, including pre-fix accepted rows; missing
+or invalid proof never consumes a reflag. Duplicate checks, unchanged spans,
+unrelated edits and restarted attempts do not consume the two-reflag budget.
+Two failing block edits leave it unaddressed.
 Current prose, error, evidence and eligible session attribution follow the new
 check, while append-only history keeps the prior assessment and owner.
 
@@ -202,5 +210,16 @@ Final combined validation passed 9,459 Python tests (43 opt-in skips) on Python
 Python/Svelte/TypeScript checks, Python/npm license checks, protocol generation
 and both GUI/math builds. The actual Node boundary runs against the built math
 bundle. The supported Python 3.12 matrix remains unchanged; fresh PR CI and merge
-are separate delivery gates. Comment/reply, ledger and finding-prose checks,
+are separate delivery gates. Comment/reply checks have their own additive [slice and validation boundary](COMMENT-MATH.md). Ledger and finding-prose checks,
 idle scheduling and automatic history compaction remain open.
+
+The additive comment/reply slice also corrected shared dependency-only reflag
+accounting: macro/renderer changes refresh evidence but only a new proved failing
+block edit spends an author opportunity. Final signed `77ecc171` passed independent
+review, 78 focused document/comment cases and all combined gates (9,631 Python
+tests, 43 opt-in skips, two existing warnings; 441 web and 24 post-build math checks).
+Fresh [comment/reply browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md)
+passed against the frozen source/helper; all disposable state was removed. This
+extends durable source coverage to comments/replies, with ledger/finding prose,
+model repair proposals and idle dispatch still open. Fresh PR CI is required
+before merge.

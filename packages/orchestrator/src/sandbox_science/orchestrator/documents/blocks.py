@@ -445,13 +445,13 @@ def _attrs(token: Token, kind: str) -> dict[str, object]:
     return {}
 
 
-def parse(text: str) -> Parsed:
+def parse(text: str, *, documents: bool = True) -> Parsed:
     """The blocks and spans of ``text``, which must already have ``\\n`` line breaks."""
     check_text(text)
     builder = _Builder(text)
     stack: list[int] = []
     in_table = 0
-    for token in tokens(text):
+    for token in tokens(text, documents=documents):
         if in_table:
             if token.type == "table_open":
                 in_table += 1
