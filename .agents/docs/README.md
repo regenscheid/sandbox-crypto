@@ -12,6 +12,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 ## Runtime validation
 
+- [MAIN finding-explanation math browser acceptance, 2026-10-12](agent-reports/finding-prose-math-2026-10-12.md): original/current ordinary explanation bodies and actor history, independent mechanical versus scientific confirmation, stale reviewer body refusal, six exact child states and session-private evidence. [Evidence](agent-reports/finding-prose-math-evidence-2026-10-12.json) retains nineteen exact text records and four screenshots, including [confirmed history](agent-reports/finding-prose-confirmed-2026-10-12.jpg). Signed `f7bb0a3` passed final gates; all disposable browser state was removed. The overall scripted scientific review remains explicitly inconclusive.
+
 - [OpenShell v0.1.3 lab 24 on babbage, 2026-10-12](agent-reports/babbage-openshell-lab-24-2026-10-12.md): worker-local bounded regular-stat observations on signed `35863776`, with raw path/root identity, failed/cancelled/timed-out partial files, honest missing/truncated coverage and original-attempt/kernel continuity through worker restart. [Evidence](agent-reports/babbage-openshell-lab-24-evidence-2026-10-12.json) retains 23 exact text records, including independent inspection corrections and complete teardown. PDF was unavailable; automatic inventory, producer/input proof and complete mutation coverage remain open.
 
 - [Comment and reply math browser acceptance, 2026-10-12](agent-reports/comment-math-2026-10-12.md): exact body/macro/author pins, dependency refresh without consuming retries, unavailable/held checks, independent retained drafts and stale conflicts, MAIN correction with immutable delegated history, mechanical confirmation and session scope. [Evidence](agent-reports/comment-math-browser-evidence-2026-10-12.json) preserves the preliminary bug and corrected acceptance; [confirmed history](agent-reports/comment-math-confirmed-2026-10-12.jpg). All disposable browser state was removed.
@@ -56,6 +58,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 These are dated investigation reports. Recommendations inside them are not confirmed requirements; the [decision register](../../docs/DECISIONS.md) resolves later choices, and the [critical review](../critical-review.md) and [proposed changes](../proposed-changes.md) record the 2026-10-10 review.
 
 ## Implementation notes
+
+- [MAIN explanation math as built](../../docs/FINDING-PROSE-MATH.md): narrow source/authority, append-only body and original scientific history, exact confirmation pins, source-neutral empty-macro checks and shared closing/save-ACK limits. Ledger and reviewer/USER/platform prose, model repair proposals and idle work remain excluded.
 
 - [Document mirror and helper interface plan, 2026-10-12](agent-reports/document-mirror-plan-2026-10-12.md): proposed publication, direct-edit and helper boundaries for LD-49 to LD-52, with ownership and adversarial checks. The catalog prerequisite is implemented; coordinated control outbox/source adapter/helper work and the protected-filesystem writer-guard prerequisite remain open. The note describes interfaces, not an integrated runtime mirror.
 

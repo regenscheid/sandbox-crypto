@@ -1,13 +1,19 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
+    {
+      "path": "../../docs/FINDING-PROSE-MATH.md",
+      "category": "implementation-boundary",
+      "bytes": 6021,
+      "sha256": "2eec34497011779518753ecf463bc416da230df15f3c6c7a08702b8c2310ae32"
+    },
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 14386,
-      "sha256": "1f7bb25ce6751cebddfb2a912d22a42dd9af00919b9f4f9c50da893ec886ea40"
+      "bytes": 15402,
+      "sha256": "752986df204bbf7fefc575ec52a3e1dcc22d8dc404df323f66884e2ccbef87d1"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -452,6 +458,42 @@
       "category": "source-investigation",
       "bytes": 12709,
       "sha256": "33aa358f483987c7c4c531a01ff7e93ff03c3f7cca6a4ab6cdc2999e24cd743e"
+    },
+    {
+      "path": "agent-reports/finding-prose-confirmed-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 57031,
+      "sha256": "5668489bcff7bf51a266429103ed87c778b1a6d7459feae1696cc8f16711540a"
+    },
+    {
+      "path": "agent-reports/finding-prose-current-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 58045,
+      "sha256": "53870cd8ea63ad953523076e904561e9decc1bfa3ccd5f6250d7fbd928815a70"
+    },
+    {
+      "path": "agent-reports/finding-prose-math-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 5906,
+      "sha256": "b8a02e75ed560cd2c4a37b2b97fd5c7c40826e0ebbde1d32cbd4c234cfb07053"
+    },
+    {
+      "path": "agent-reports/finding-prose-math-evidence-2026-10-12.json",
+      "category": "browser-evidence",
+      "bytes": 536469,
+      "sha256": "1923c2959330d39f2328d7f2117fcb949eafcf4e508357fc8c5be11e37ab45d6"
+    },
+    {
+      "path": "agent-reports/finding-prose-original-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 62966,
+      "sha256": "89461b937fe85708264834b6c796368141353189e9ca55ac451178237735a4d8"
+    },
+    {
+      "path": "agent-reports/finding-prose-other-session-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 55786,
+      "sha256": "2997f53d7ee2d81d27755defa6f4bec8d7cdac8034dff7616a35301543dd2125"
     },
     {
       "path": "agent-reports/openscience-desktop.md",

@@ -72,8 +72,23 @@ body/reviewer races, immutable original history, empty macros, failed-edit budge
 unavailable retries, stale closing ACK, receipt/queue rollback, bounded corrupt
 reads, unknown legacy isolation and populated source-neutral job migration with
 child FKs/rollback. Workspace API and read-only rendering fixtures cover historical
-scope and original/current attribution. Full combined gates and root-owned native
-browser acceptance are separate completion gates.
+scope and original/current attribution. The final signed source `f7bb0a3` passed
+independent adversarial review. Final
+combined gates passed 9,730 Python tests (43 opt-in skips, two existing warnings),
+443 web tests, 24 post-build math checks and all locked/static/license/protocol
+checks/builds. The response-only replay correction is covered by the final Python
+run; completed web results/assets remain byte-identical. An interrupted predecessor
+Python run is not final evidence.
+
+Root-owned [native browser acceptance](../.agents/docs/agent-reports/finding-prose-math-2026-10-12.md)
+passed six exact child states, original/current explanation and actor history,
+ordinary MAIN correction, separate mechanical versus scientific confirmation and
+session isolation. The fixture's overall review stays explicitly inconclusive;
+confirming one scientific parent does not claim all fixture findings were reviewed.
+Independent read-only SQL verified twelve body hashes and thirteen finished jobs.
+The tab, transient server, port, marked state and private login file were removed;
+complete teardown was verified at 15:37:06.734290 UTC. Seventy-one built assets,
+helper and source were unchanged. Fresh PR CI remains required before merge.
 
 `.agents/labs/response_math.py` builds marked disposable synthetic state using
 actual configured local KaTeX without worker or model calls. Root owns the browser
