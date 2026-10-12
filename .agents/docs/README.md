@@ -8,6 +8,7 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 - [Claude Code and Desktop](agent-reports/claude-code-desktop.md): official skills, roles, hooks, MCP, shared knowledge and living-document behavior, including limits of public prompt evidence.
 - [OpenScience Desktop and the earlier fork](agent-reports/openscience-desktop.md): source-level reuse candidates, native-desktop dependencies and incomplete execution/persistence paths.
 - [OpenShell v0.1.3 policy schema](agent-reports/openshell-policy-v0.1.3.md): endpoint, L7, MCP and provider semantics, address handling and compiler constraints, as input to the policy compiler (D62, D68).
+- [Document writer guard investigation, 2026-10-12](agent-reports/document-writer-guard-2026-10-12.md): source-only analysis of notification, lease and protected-filesystem boundaries after Lab20's unreadable peer-process evidence. A protected-filesystem feasibility prerequisite is proposed; FUSE is unimplemented and unvalidated under OpenShell, and LD-49 remains open.
 
 ## Runtime validation
 
@@ -45,7 +46,7 @@ These are dated investigation reports. Recommendations inside them are not confi
 
 ## Implementation notes
 
-- [Document mirror and helper interface plan, 2026-10-12](agent-reports/document-mirror-plan-2026-10-12.md): proposed publication, direct-edit and helper boundaries for LD-49 to LD-52, with ownership and adversarial checks. Read-only preparation; implementation waits for comments/consistency interface coordination, including bounded rejection storage and proof that a writer closed its file.
+- [Document mirror and helper interface plan, 2026-10-12](agent-reports/document-mirror-plan-2026-10-12.md): proposed publication, direct-edit and helper boundaries for LD-49 to LD-52, with ownership and adversarial checks. The catalog prerequisite is implemented; coordinated control outbox/source adapter/helper work and the protected-filesystem writer-guard prerequisite remain open. The note describes interfaces, not an integrated runtime mirror.
 
 ## Earlier planning states
 
