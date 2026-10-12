@@ -194,8 +194,15 @@ existing execution history, SQLite/WAL allocation or RSS. Original producer and 
 inputs remain unknown; accepted actor is informational.
 
 There is no public journal route, capability, capture or automatic artifact/reviewer
-consumer. Root-owned real [Lab24 acceptance](../.agents/labs/README.md#lab24-worker-local-output-observations)
-is still required. See [the full boundary and remaining prerequisites](ARTIFACTS.md#worker-local-terminal-observations).
+consumer. Independently reviewed signed `35863776` passed all integrated gates
+(9,714 Python/43 opt-in skips, 441 web and 24 post-build math cases) and root-owned
+[OpenShell Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md).
+The real run retained nineteen markers/eighteen reports, known partial files,
+raw path/root distinctions and explicit truncation/missing coverage. The same
+attempt and Python kernel survived graceful worker restart; PDF was unavailable.
+Complete teardown was verified at 14:59:02.325873 UTC. Corruption/quota/namespace
+races remain local hostile proof; fresh PR CI is still required before merge.
+See [the full boundary and remaining prerequisites](ARTIFACTS.md#worker-local-terminal-observations).
 
 ## Bounded artifact capture
 

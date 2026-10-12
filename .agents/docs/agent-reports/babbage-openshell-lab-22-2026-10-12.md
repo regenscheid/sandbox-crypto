@@ -101,3 +101,30 @@ lab unit names inactive, no lab processes, no occupied lab ports, no driver sock
 no lab state directory and no OpenShell XDG paths. The tested source and helper
 stayed frozen throughout the run and teardown. Shared images and persistent
 configuration were preserved.
+
+## Addendum: GitGuardian alert investigation, 2026-10-12
+
+The user supplied a Bearer Token alert location in commit `cd1f86f`,
+[archive line 36](https://github.com/regenscheid/sandbox-crypto/blob/cd1f86f098b23b8ce37ea0e9f45b01254ffe5c19/.agents/docs/agent-reports/babbage-openshell-lab-22-evidence-2026-10-12.json#L36).
+That location ends the `gateway.log` record; its encoded text is on line 35.
+Decoding it locates ordinary diagnostic line 49:
+`renewed gateway sandbox JWT sandbox_id=<UUIDv4>`. The value is the already-recorded
+managed sandbox UUID, not token bytes. Root and independent review checked both
+the literal and JSON-encoded record.
+
+The pinned [OpenShell v0.1.3 source, lines 283–288](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/crates/openshell-server/src/grpc/auth_rpc.rs#L283-L288)
+logs only `sandbox.sandbox_id` at this point. The inspected source has Git blob
+`848adae6f594b1d6cf5ef9dbe7b55679bffcc035`. The JWT is returned separately in
+the response; the log statement does not emit it. GitGuardian's official
+[generic Bearer detector documentation](https://docs.gitguardian.com/secrets-detection/secrets-detection-engine/detectors/generics/bearer_token)
+includes JWT among recognized authentication terms and states that this detector
+has no validity check. This strongly supports a false positive at the supplied
+location; the exact proprietary match and incident payload were not independently
+available, so they are not claimed reproduced.
+
+No live credential was identified in this record. The original Lab22 archive
+remains byte-identical at 103,849 bytes and SHA-256
+`3474c2a6577ecd4b6089e4045c038175afae2e580e0fbfe8bb21ce2d1065503d`.
+No credentials were revoked, integration installed or published history rewritten
+as part of this investigation. This dated addendum changes only the report and
+its inventory entry; it does not redact or replace the original evidence.

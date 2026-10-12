@@ -4,22 +4,26 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 
 ## Where things stand
 
-- **Current worker continuation, 2026-10-12:** `impl/output-observations` starts from
-  merged main `9c077257` (PR #86), now integrated with actual main `d2b133f`
-  (PR #87). It implements the bounded worker-local terminal
-  observation prerequisite: raw byte/root identities from existing regular stat
-  reports, original request/attempt/incarnation/known immutable VM pins, atomic
-  terminal detail/gaps and scoped internal replay. No public feed, capture, consumer,
-  scheduler or artifact revisions are enabled. Invalid/quota/corrupt derived metadata
-  must not change healthy terminal outcomes or canonical daemon recoverability.
-  The 83 focused cases/static checks pass; an earlier affected run passed 962 tests
-  with 32 opt-in skips. Final integrated full gates, independent exact signed-head
-  review and root-owned [Lab24](labs/README.md#lab24-worker-local-output-observations)
-  remain required. Keep the new tree separate from the clean published capture tree.
-  RA-5 still requires every file minus project ignore patterns; this incomplete stat
-  report is not mutation completeness, deletion/link evidence, writer/producer/input
-  proof or attempt-end content. Future authenticated transport and one-shot bound
-  capture receipts remain separate prerequisites.
+- **Current worker continuation, 2026-10-12:** `impl/output-observations` has
+  independently reviewed signed freeze `35863776`, integrating actual main `d2b133f`
+  (PR #87). It retains bounded exact raw-byte/root regular-stat sidecars, original
+  request/attempt/incarnation/known immutable VM pins and atomic terminal detail/gaps
+  with scoped internal replay. Invalid/quota/corrupt derived state preserves healthy
+  completion and canonical recovery. All integrated gates pass: 83 focused cases,
+  9,714 Python tests (43 opt-in skips, two existing serializer warnings), 441 web
+  tests, 24 post-build math cases and all required checks/builds.
+  Root-owned [Lab24](docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md) passed
+  nineteen terminal markers/eighteen reports, raw identities, partial outputs,
+  missing/truncation gaps and original-attempt/kernel continuity through graceful
+  worker restart. PDF was unavailable. Full teardown was independently verified
+  at 14:59:02.325873 UTC. Source/test/helper/configuration stayed frozen; subsequent
+  changes are acceptance documentation/archive only. Root owns final review,
+  signing, PR, fresh CI and merge; no push has occurred from this author.
+  RA-5 still requires every file minus project ignore patterns. No public feed,
+  consumer, scheduler, content capture or artifact revisions are enabled. Mutation
+  completeness, deletion/link proof, writer/producer/input lineage and attempt-end
+  content remain open. Next design original-attempt-bound one-shot capture receipts
+  and authenticated transport; do not enable automatic fan-out from this journal.
 
 - **Comment/reply D82 acceptance, 2026-10-12:** final signed source `77ecc171` and helper SHA `972b459ba8223cb374818098e375c948ddddbee3dc817ac0b5027051b116a62e`, independently reviewed. [Scope](../docs/COMMENT-MATH.md) preserves immutable original/current correcting actors, ordinary edit authority and exact thread/body/hash CAS, canonical parent/macros, shared closing/save-ACK and explicit held unknown/parser-bound work. A preliminary browser found the dependency-only reflag bug; the corrected shared lifecycle spends the two-reflag budget only on proved failing block edits and reconciles old accepted-owner state. Final combined gates pass: 9,631 Python tests (43 opt-in skips, two existing warnings), 441 web tests, 24 post-build math checks and all locked/static/license/protocol checks/builds. Fresh root-owned [browser acceptance](docs/agent-reports/comment-math-2026-10-12.md) passed corrected budgets, retained independent drafts/stale CAS, USER-only-own-body authority, MAIN correction of delegated text with original history, exact accepted/removal evidence and session isolation. Browser tab/server/marked fixture were removed at 13:50:58.272097 UTC; final logs had no warning/error. Source/test/helper/assets remain unchanged after the freeze. PR #87 merged at `d2b133f` after all three fresh CI checks passed on `16bb1308`. Ledger/finding prose, model repair proposals, idle work and automatic compaction remain open.
 

@@ -206,10 +206,15 @@ new hard I/O deadline; the separately bounded sidecar does not fix those limitat
 
 This prerequisite adds no public feed, WorkerClient method, consumer, scheduler,
 content capture, artifact revision, permission or runtime capability advertisement.
-The 83 focused contract/worker cases pass, including actual HTTP/helper composition and PDF when offered,
-cancellation and deterministic same-daemon restart. Static checks pass; an earlier
-affected worker/contracts run passed 962 tests with 32 opt-in skips. Root-owned OpenShell Lab24,
-final integrated gates, independent exact-head review and fresh CI remain required.
+Independent review cleared exact signed freeze `35863776`. All integrated gates
+passed: 83 focused cases, 9,714 Python tests (43 opt-in skips, two existing warnings),
+441 web tests, 24 post-build math cases, locked/static/license/protocol checks and
+both builds. Root-owned [OpenShell Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md)
+passed nineteen terminal outcomes with eighteen bounded reports, raw path/root
+identity, partial files, explicit missing/truncated coverage, same-attempt worker
+restart and preserved kernel state. PDF was unavailable and not tested in that VM.
+Complete teardown was verified at 14:59:02.325873 UTC. Corruption/quota/namespace-race
+faults remain local hostile evidence. Fresh PR CI remains required before merge.
 The [marked lab recipe](../.agents/labs/README.md#lab24-worker-local-output-observations)
 inspects only its disposable worker's internal read-only journal.
 
