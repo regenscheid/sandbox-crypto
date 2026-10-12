@@ -256,6 +256,8 @@ Project, session, run and document views continue to work.
 
 Ordinary model, tool-loop, harness and cleanup exceptions retain the messages and completed tool outcomes observed so far. A failed record has `stopped="error"` and no final answer; the GUI labels it a failed run and shows its partial transcript. The command still exits 1. The failure field contains only a fixed phase, never exception text, an upstream error body or a traceback. Normal transcript content is retained as before.
 
+The [2026-10-12 CLI/browser acceptance](../.agents/docs/agent-reports/failed-run-records-2026-10-12.md) records the ordinary failure path, retained tool observation, GUI status and complete fixture cleanup. Cancellation propagates through later cleanup failures without saving a run or acknowledging notices; durable cancellation/process-death records remain separate work.
+
 Only notices delivered through a successful model call may be acknowledged, and only after the run is durably saved. A failed record cannot finalize staged ignored-math outcomes. Scientific decisions already completed remain recorded. Setup and isolation refusal before the loop, cancellation, process death and an unwritable state directory do not gain a durable failed-record guarantee.
 
 With `--state-dir`, the harness keeps runs that reach the tool loop, including ordinary failures. It keeps the same record `--transcript` writes, beside the projects' records:

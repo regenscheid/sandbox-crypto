@@ -124,7 +124,7 @@ Implement retain/suspend or capture/restore using one environment lifecycle comp
 
 ### W4 — Integrate the initial research workspace (M2 → M3)
 
-The narrow [failed-run record slice](WORKSPACE.md#run-records) retains partial loop observations and fixed failure phases while preserving error exit status, cleanup and delivered-only save-before-ACK. Failed records carry no final answer and cannot finalize staged ignored-math outcomes. Final combined gates and root-owned CLI/browser acceptance remain pending. Cancellation/process-death persistence, live updates and session-end handling remain open.
+The narrow [failed-run record slice](WORKSPACE.md#run-records) retains partial loop observations and fixed failure phases while preserving error exit status, cleanup and delivered-only save-before-ACK. Failed records carry no final answer and cannot finalize staged ignored-math outcomes. Independently reviewed signed source `123b2e6` passed all final gates: 9,749 Python tests (43 opt-in skips, two existing warnings), 445 web tests and 24 post-build math checks. Root-owned [CLI/browser acceptance](../.agents/docs/agent-reports/failed-run-records-2026-10-12.md) and complete cleanup passed; fresh PR CI remains required before merge. Cancellation propagates through cleanup failures without save or ACK. Cancellation/process-death persistence, live updates and session-end handling remain open.
 
 Document synchronization now has separate [worker catalog](WORKER.md#document-catalog-prerequisite)
 and [control publication outbox](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
