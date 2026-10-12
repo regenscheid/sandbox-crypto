@@ -75,7 +75,7 @@ Nothing here blocks the queued work: each item has a default in place.
    Use [`labs/`](labs/README.md).
 2. **Background jobs: first slice complete** (D83; [as built](../docs/BACKGROUND-JOBS.md), [lab 19](docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md)). **The executor daemon** is in development: jobs, and where possible calls and kernels, must survive worker restarts with authoritative replay. Automatic wake-up, the live message inbox, persisted watcher settings and the shared spend ledger remain later control-application work.
 3. **W4, living documents slice 2:**
-   - user edits and conflicts in the GUI (LD-13, LD-14);
+   - user edits and conflicts in the GUI (LD-13, LD-14) — completed with [browser acceptance](docs/agent-reports/document-editing-2026-10-12.md), including reviewed patches, reverts and workbook promotion;
    - comments, anchors and work requests (LD-21 to LD-24), with the research-artifacts spec's annotations;
    - then the files under `documents/` in every environment, direct edits merged, and the `ss-doc` helper (LD-49 to LD-52), which are worker work;
    - then math findings (LD-53 to LD-55, D82), which need KaTeX on the server (Node or an embedded engine, to choose).
