@@ -69,7 +69,7 @@ from .documents.mathcontroller import MathController
 from .documents.tool import view_blocks
 from .jobs import JobTools
 from .jobstate import JobState
-from .loop import Transcript, run_task
+from .loop import Interruption, Transcript, run_task
 from .mathcheck import MathChecker
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
@@ -136,10 +136,12 @@ async def _run(args: argparse.Namespace) -> int:
     started = datetime.now(UTC)
     transcript: Transcript | None = None
     context: ExecutionContext | None = None
-    interrupted: BaseException | None = None
+    interruption = Interruption()
     try:
-        async with WorkerClient(args.worker, _read_secret(args.token_file)) as client:
-            try:
+        async with interruption.context(
+            WorkerClient(args.worker, _read_secret(args.token_file))
+        ) as client:
+            with interruption.protect():
                 context = await _context(args, client)
                 capabilities = await client.capabilities(context.environment_id)
                 location = capabilities.location
@@ -250,58 +252,59 @@ async def _run(args: argparse.Namespace) -> int:
                     else None
                 )
                 try:
-                    transcript = await run_task(
-                        model,
-                        Toolbox(
-                            client,
-                            context,
-                            languages=capabilities.languages,
-                            features=capabilities.features,
-                            documents=documents,
-                            jobs=jobs,
-                            reviews=reviews,
-                            math_checks=math_checks,
-                            artifacts=artifacts,
-                        ),
-                        args.task,
-                        run_id=run_id,
-                        max_turns=args.max_turns,
-                        on_tool=show,
-                    )
-                except BaseException as error:
-                    if not isinstance(error, Exception):
-                        interrupted = error
-                    raise
+                    with interruption.protect():
+                        transcript = await run_task(
+                            model,
+                            Toolbox(
+                                client,
+                                context,
+                                languages=capabilities.languages,
+                                features=capabilities.features,
+                                documents=documents,
+                                jobs=jobs,
+                                reviews=reviews,
+                                math_checks=math_checks,
+                                artifacts=artifacts,
+                            ),
+                            args.task,
+                            run_id=run_id,
+                            max_turns=args.max_turns,
+                            on_tool=show,
+                        )
                 finally:
                     try:
                         try:
                             if artifacts is not None:
-                                await artifacts.aclose()
+                                with interruption.protect():
+                                    await artifacts.aclose()
                         finally:
                             if reviews is not None:
-                                await reviews.close()
+                                with interruption.protect():
+                                    await reviews.close()
                     finally:
                         try:
                             if isinstance(reviewer, OpenAICompatibleModel):
-                                await reviewer.close()
+                                with interruption.protect():
+                                    await reviewer.close()
                         finally:
                             try:
                                 if isinstance(watcher, OpenAICompatibleModel):
-                                    await watcher.close()
+                                    with interruption.protect():
+                                        await watcher.close()
                             finally:
                                 try:
                                     if documents is not None:
-                                        documents.store.close()
+                                        with interruption.protect():
+                                            documents.store.close()
                                 finally:
                                     if isinstance(model, OpenAICompatibleModel):
-                                        await model.close()
-            except BaseException as error:
-                if not isinstance(error, Exception):
-                    interrupted = error
-                raise
-    except Exception:
-        if interrupted is not None:
-            raise interrupted from None
+                                        with interruption.protect():
+                                            await model.close()
+    except BaseException as error:
+        if interruption.error is not None:
+            raise interruption.error from None
+        if not isinstance(error, Exception):
+            raise
         if transcript is None:
             raise
         transcript.fail("cleanup")

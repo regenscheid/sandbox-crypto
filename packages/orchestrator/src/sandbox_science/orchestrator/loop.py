@@ -4,10 +4,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from contextlib import AsyncExitStack
+from collections.abc import AsyncGenerator, Awaitable, Callable, Generator
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncExitStack,
+    asynccontextmanager,
+    contextmanager,
+)
 from dataclasses import dataclass, field
-from typing import Any, Final
+from typing import Any, Final, TypeVar
 
 from .documents.mathjobs import threaded
 from .model import ChatModel, Message
@@ -33,6 +38,31 @@ SYSTEM_PROMPT: Final = (
     "Answer a document work request in its thread with document_reply, naming the revision "
     "you made if you changed the document, and its request_id."
 )
+
+
+_T = TypeVar("_T")
+
+
+class Interruption:
+    """Remember the first cancellation/exit before later cleanup can replace it."""
+
+    def __init__(self) -> None:
+        self.error: BaseException | None = None
+
+    @contextmanager
+    def protect(self) -> Generator[None]:
+        try:
+            yield
+        except BaseException as error:
+            if not isinstance(error, Exception) and self.error is None:
+                self.error = error
+            raise
+
+    @asynccontextmanager
+    async def context(self, scope: AbstractAsyncContextManager[_T]) -> AsyncGenerator[_T]:
+        with self.protect():
+            async with scope as value:
+                yield value
 
 
 @dataclass
@@ -265,18 +295,22 @@ async def run_task(
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes."""
     transcript: Transcript | None = None
-    interrupted: BaseException | None = None
+    interruption = Interruption()
     try:
         async with AsyncExitStack() as stack:
-            try:
+            with interruption.protect():
                 if toolbox.jobs is not None:
-                    await stack.enter_async_context(toolbox.jobs.active())
+                    await stack.enter_async_context(interruption.context(toolbox.jobs.active()))
                 if toolbox.reviews is not None:
-                    await stack.enter_async_context(toolbox.reviews.active())
+                    await stack.enter_async_context(interruption.context(toolbox.reviews.active()))
                 if toolbox.math_checks is not None:
-                    await stack.enter_async_context(toolbox.math_checks.active())
+                    await stack.enter_async_context(
+                        interruption.context(toolbox.math_checks.active())
+                    )
                 if toolbox.documents is not None:
-                    await stack.enter_async_context(toolbox.documents.active_requests())
+                    await stack.enter_async_context(
+                        interruption.context(toolbox.documents.active_requests())
+                    )
                 transcript = Transcript(
                     messages=[
                         {"role": "system", "content": system},
@@ -302,14 +336,11 @@ async def run_task(
                     transcript.review_notice_ids = sorted(toolbox.reviews.delivered)
                 if toolbox.math_checks is not None:
                     transcript.math_notice_ids = sorted(toolbox.math_checks.delivered)
-            except BaseException as error:
-                # Cleanup must not turn cancellation/exit into a saved run.
-                if not isinstance(error, Exception):
-                    interrupted = error
-                raise
-    except Exception:
-        if interrupted is not None:
-            raise interrupted from None
+    except BaseException as error:
+        if interruption.error is not None:
+            raise interruption.error from None
+        if not isinstance(error, Exception):
+            raise
         if transcript is None:
             raise  # Setup did not start a run; there is no observed transcript.
         transcript.fail("cleanup")
