@@ -793,6 +793,43 @@ async def test_unreachable_live_endpoint_refuses_startup_without_claiming_loss(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("known_job", [False, True])
+async def test_disabling_daemon_transport_with_live_endpoints_refuses_startup(
+    worker: Worker, known_job: bool
+) -> None:
+    from sandbox_science.worker.errors import WorkerError
+
+    job = None
+    if known_job:
+        job, _ = await worker.manager.submit(request("transport-change"))
+        await running(worker.manager, job.execution_id)
+    else:
+        await worker.manager.capabilities("env1")
+    channel = worker.manager._environments["env1"].channel
+    assert channel is not None
+    unknown = "exe-" + "e" * 24
+    await channel.request("shell", execution=unknown, session="s1", script="sleep 60", timeout=100)
+    await worker.manager.close()
+    settings = worker.backend.settings
+    worker.backend.settings = settings.model_copy(update={"daemon": False})
+    worker.manager = worker.new_manager()
+    try:
+        with pytest.raises(WorkerError, match="before disabling daemon transport; startup refused"):
+            await worker.manager.start()
+        assert "env1" in worker.store.endpoints()
+        if job is not None:
+            assert worker.manager.get(job.execution_id).state is ExecutionState.RUNNING
+    finally:
+        worker.backend.settings = settings
+        await worker.manager.close()
+        worker.manager = worker.new_manager()
+        await worker.manager.start()
+    channel = worker.manager._environments["env1"].channel
+    assert channel is not None
+    assert unknown not in (await channel.request("active"))["executions"]
+
+
+@pytest.mark.asyncio
 async def test_replaced_controller_cannot_dispatch_already_buffered_shutdown(
     tmp_path: Path,
 ) -> None:

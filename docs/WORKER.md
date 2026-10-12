@@ -408,6 +408,9 @@ A transient gateway failure retries during live recovery; startup refuses readin
 until remembered live daemons can be reconciled and unknown installers quiesced.
 One unreachable live environment therefore delays availability for the pool, rather
 than exposing an API while its control-created tasks may still be running.
+Disabling daemon transport while remembered endpoints remain also refuses startup.
+Explicitly release those environments or recycle their sandboxes through the daemon
+transport first, so an old installer cannot continue beside a new stdio executor.
 
 The daemon adds `source_seq` to each execution event. `replay` reads bounded pages after
 a source cursor; `active` lists at most 128 accepted unfinished requests. Admission
