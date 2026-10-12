@@ -126,8 +126,8 @@ policy changes; an omitted timeout and an explicit timeout are different request
 
 Closing a session cancels its jobs in that environment, including queued jobs. Deleting
 an environment cancels its jobs before dropping its executor, and an environment with
-accepted jobs is busy and cannot be suspended as idle. Cancel acknowledgment and completion
-are bounded together; an executor that cannot confirm them within 30 seconds is disconnected
+accepted jobs is busy and cannot be suspended as idle. Every direct job cancel has a completion watchdog of its own; session close and deletion
+also bound cancel acknowledgment and completion together. In both paths, an executor that cannot confirm them within 30 seconds is disconnected
 and affected outcomes become `lost`, rather than blocking lifecycle operations for days.
 Package commands take their existing environment turns, and shared files sync before and
 after jobs as they do calls. A worker restart still loses in-flight jobs: the executor
