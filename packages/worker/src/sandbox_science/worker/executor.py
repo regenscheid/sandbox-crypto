@@ -1330,6 +1330,10 @@ class Kernel:
     env: dict[str, str]
     generation: int = 0
     state_lost: bool = False
+    birth_id: str | None = None
+    start_environment: str | None = None
+    start_execution: str | None = None
+    start_package_epoch: int | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Held by the running cell: cells queue on it in submission order."""
     control: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -1355,6 +1359,10 @@ class Kernel:
             "kernel_id": self.kernel_id,
             "language": self.language,
             "generation": self.generation,
+            "birth_id": self.birth_id,
+            "start_environment": self.start_environment,
+            "start_execution": self.start_execution,
+            "start_package_epoch": self.start_package_epoch,
         }
 
     async def alive(self) -> bool:
@@ -1375,23 +1383,27 @@ class Kernel:
             raise ToolError("unsupported", "jupyter_client is not installed here") from exc
         owner = self.env.get("SANDBOX_SCIENCE_DAEMON_MARK", "") + f"kernel-{secrets.token_hex(8)}"
         manager: Any = AsyncKernelManager(kernel_name=KERNEL_NAMES[self.language])
+        client: Any = None
         leader: Leader | None = None
         try:
 
             async def spawn() -> None:
+                nonlocal leader, client
                 await manager.start_kernel(cwd=str(self.cwd), env={**self.env, OWNER: owner})
+                pid = getattr(manager.provisioner, "pid", None)
+                if isinstance(pid, int) and (info := process_info(pid)) is not None:
+                    _spawned.add(pid)
+                    leader = (pid, info.start)
+                client = manager.client()
+                client.start_channels()
+                await client.wait_for_ready(timeout=KERNEL_START_TIMEOUT)
 
+            self.birth_id = self.start_environment = self.start_execution = None
+            self.start_package_epoch = None
             if launcher is None:
-                await spawn()
+                await spawn()  # legacy/internal restart: its revision stays unknown
             else:
                 await launcher(spawn)
-            pid = getattr(manager.provisioner, "pid", None)
-            if isinstance(pid, int) and (info := process_info(pid)) is not None:
-                _spawned.add(pid)
-                leader = (pid, info.start)
-            client = manager.client()
-            client.start_channels()
-            await client.wait_for_ready(timeout=KERNEL_START_TIMEOUT)
         except BaseException as exc:
 
             async def cleanup() -> None:
@@ -1425,11 +1437,6 @@ class Kernel:
             await asyncio.to_thread(end_owned, owner, leader)
         if leader is not None:
             _spawned.discard(leader[0])
-
-    async def restart(self) -> None:
-        await self.stop()
-        self.state_lost = True
-        await self.ensure_started()
 
 
 async def _alive(manager: Any) -> bool:
@@ -1493,6 +1500,7 @@ class Executor:
         self.owners: dict[str, list[tuple[float, str]]] = {}
         """The attempts each call or kernel ran, with when they started, by its OWNER mark."""
         self.reported = ""
+        self.package_epoch = 0
         """The packages' fingerprint as the worker knows it, from ``hello`` and the
         ``revision`` events since."""
         try:
@@ -1549,6 +1557,7 @@ class Executor:
             "restart": self.op_restart,
             "close_session": self.op_close_session,
             "usage": self.op_usage,
+            "kernels": self.op_kernels,
             "read": self.op_read,
             "capture_read": self.op_capture_read,
             "capture_cancel": self.op_capture_cancel,
@@ -1694,12 +1703,15 @@ class Executor:
     async def baseline(self) -> str:
         """The packages' fingerprint as this executor starts, which ``hello`` reports."""
         async with self.observing:
+            previous = self.reported
             if self.provisioning is None:
                 self.reported = await asyncio.to_thread(provisioning.fingerprint, self.places)
             else:
                 self.reported = await asyncio.to_thread(
                     provisioning.baseline, self.packages, self.places
                 )
+            if previous and previous != self.reported:
+                self.package_epoch += 1
             return self.reported
 
     async def begin(self, running: Running, timeout: float) -> str | None:
@@ -1817,10 +1829,12 @@ class Executor:
                 if size > MAX_LOCKFILE_EVENT:
                     print(f"executor: a lockfile of {size} bytes is too large", file=sys.stderr)
                     lockfile = None
+            self.package_epoch += 1
             await self.event(
                 execution,
                 "revision",
                 fingerprint=change.fingerprint,
+                package_epoch=self.package_epoch,
                 managed=change.managed,
                 cause=change.cause,
                 commands=change.commands[-MAX_COMMANDS:],
@@ -1908,7 +1922,9 @@ class Executor:
             features=available_features(),
             artifact_capture_protocol=capture.PROTOCOL,
             output_observation_protocol=1,
+            kernel_revision_protocol=1,
             environment=await self.baseline(),
+            package_epoch=self.package_epoch,
         )
 
     async def op_package_gate(self, request: Message) -> None:
@@ -1962,10 +1978,75 @@ class Executor:
         return await _owned(work, lambda: setattr(running, "cancel_requested", True))
 
     async def start_kernel(
-        self, running: Running, timeout: float, work: Callable[[], Awaitable[None]]
+        self, running: Running, kernel: Kernel, timeout: float, work: Callable[[], Awaitable[None]]
     ) -> None:
         async with self.launch(running, timeout):
-            await self.own_launch(running, work())
+            await self.own_launch(running, self.kernel_birth(running, kernel, timeout, work))
+
+    async def kernel_birth(
+        self, running: Running, kernel: Kernel, timeout: float, work: Callable[[], Awaitable[None]]
+    ) -> None:
+        """Hold managed linking out through actual kernel startup/readiness (CP-12).
+
+        Direct package-record writes can bypass this lock. A fingerprint is an
+        observation of managed package state, never proof of all loaded code.
+        """
+        held: int | None = None
+        fingerprint: str | None = None
+        epoch: int | None = None
+        try:
+            if self.provisioning is not None:
+                while held is None:
+                    if running.cancel_requested:
+                        raise _NotStartedError
+                    if time.monotonic() - running.admitted >= timeout:
+                        raise _BusyError(time.monotonic() - running.admitted, None)
+                    try:
+                        held = self.packages.try_lock(exclusive=False)
+                    except OSError:
+                        break  # damaged lock: start is explicitly unknown
+                    if held is None:
+                        await asyncio.sleep(0.05)
+                if held is not None:
+                    async with self.observing:
+                        if running.kind == "cell":
+                            for _ in range(MAX_LOOKS):
+                                observed = await asyncio.to_thread(
+                                    provisioning.observe,
+                                    self.packages,
+                                    self.places,
+                                    self.reported,
+                                    os.dup(held),
+                                )
+                                await self.report(running.execution, observed, None)
+                                if observed.complete:
+                                    fingerprint = observed.fingerprint
+                                    break
+                        else:
+                            # Restart has no execution event stream. Do not consume
+                            # another call's package journal or fabricate its cause.
+                            fingerprint = await asyncio.to_thread(
+                                provisioning.fingerprint, self.places
+                            )
+                        epoch = self.package_epoch if fingerprint == self.reported else None
+            if running.cancel_requested:
+                raise _NotStartedError
+            if self.closing or (
+                (running.kind == "restart" or running.package_operation)
+                and running.controller
+                and not running.controller()
+            ):
+                raise ToolError(
+                    "unavailable", "controller detached or executor closing before kernel startup"
+                )
+            await work()
+            kernel.birth_id = "birth-" + secrets.token_hex(12)
+            kernel.start_environment = fingerprint
+            kernel.start_package_epoch = epoch
+            kernel.start_execution = running.execution if running.kind == "cell" else None
+        finally:
+            if held is not None:
+                os.close(held)
 
     @contextlib.asynccontextmanager
     async def launch(self, running: Running, timeout: float):
@@ -2261,6 +2342,7 @@ class Executor:
                 "sandbox_started": wall_started,
                 "sandbox_ended": time.time(),
                 **written,
+                "running_kernels": await self.session_kernels(session),
             }
             if not self.closing:
                 await self.event(
@@ -2429,7 +2511,7 @@ class Executor:
                 running.queued = False
                 async with kernel.control:
                     await kernel.ensure_started(
-                        lambda work: self.start_kernel(running, timeout, work)
+                        lambda work: self.start_kernel(running, kernel, timeout, work)
                     )
                 if running.cancel_requested:  # asked for while the kernel started
                     raise _NotStartedError
@@ -2440,7 +2522,9 @@ class Executor:
                 async with self.launch(running, timeout):
                     msg_id = kernel.client.execute(code, store_history=True, allow_stdin=False)
                     running.started = True
-                await self.event(execution, "state", **_running(start))
+                if kernel.start_execution == execution:
+                    start = kernel.start_environment
+                await self.event(execution, "state", **_running(start), kernel=ran_on)
                 state, result = await self.execute(
                     running, kernel, code, timeout, limit, captures, outputs, msg_id=msg_id
                 )
@@ -2471,6 +2555,7 @@ class Executor:
                 stderr=captures["stderr"].summary(),
                 outputs=outputs,
                 kernel=ran_on,
+                running_kernels=await self.session_kernels(kernel.session),
                 elapsed_seconds=time.monotonic() - started,
                 sandbox_started=wall_started,
                 sandbox_ended=time.time(),
@@ -2529,11 +2614,20 @@ class Executor:
                 # The kernel ignored the interrupt: restart it, losing its state.
                 async with kernel.control:
                     if not (running.restarted or running.closing):
-                        await kernel.restart()
+                        # A replacement is new work and must pass CP13 admission.
+                        # Stop now; the next admitted cell starts a fresh kernel.
+                        kernel.state_lost = True
+                        await _owned(kernel.stop())
                 kind = "timed_out" if timed_out else "cancelled"
                 return kind, {
                     "status": "aborted",
-                    "error": {"kind": kind, "message": "the kernel did not stop and was restarted"},
+                    "error": {
+                        "kind": kind,
+                        "message": (
+                            "the kernel ignored interruption and was stopped; "
+                            "the next admitted cell starts fresh"
+                        ),
+                    },
                     "state_lost": True,
                 }
             if running.cancel_requested and interrupted_at is None:
@@ -2701,7 +2795,7 @@ class Executor:
                     kernel.state_lost = True
             finally:
                 self.package_launch.release()
-            await kernel.ensure_started(lambda work: self.start_kernel(restart, 180, work))
+            await kernel.ensure_started(lambda work: self.start_kernel(restart, kernel, 180, work))
         await self.reply(request, kernel=kernel.info())
 
     async def reap_idle_kernels(self, idle: float) -> None:
@@ -2761,6 +2855,18 @@ class Executor:
                     await kernel.stop()
                     kernel.state_lost = True
         await self.reply(request, kernels=stopped)
+
+    async def session_kernels(self, session: str) -> list[Message]:
+        """Only this session's live kernels, in the fixed supported-language order."""
+        found: list[Message] = []
+        for language in KERNEL_NAMES:
+            kernel = self.kernels.get((session, language))
+            if kernel is not None and await kernel.alive():
+                found.append(kernel.info())
+        return found
+
+    async def op_kernels(self, request: Message) -> None:
+        await self.reply(request, kernels=await self.session_kernels(self.session(request)))
 
     async def op_usage(self, request: Message) -> None:
         """The CPU time used below this executor, and its running kernels and calls.
