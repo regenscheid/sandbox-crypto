@@ -36,7 +36,7 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import new_id
 
 from .blocks import BYTE_ORDER_MARK, Budget, check_text, normalize_newlines, parse
-from .checks import math_check, warnings
+from .checks import warnings
 from .engine import (
     Applied,
     Since,
@@ -475,6 +475,9 @@ class DocumentStore:
             from .publication import prepare as prepare_publication
 
             prepare_publication(db)
+            from .mathqueue import prepare as prepare_math
+
+            prepare_math(db)
             db.execute("COMMIT")
         finally:
             if db.in_transaction:
@@ -1782,7 +1785,7 @@ class DocumentStore:
             for index, block_id in enumerate(mapped.block_ids)
             if changes.blocks[block_id] in ("added", "changed")
         ]
-        found = warnings(mapped, new_blocks) + math_check(mapped, new_blocks)
+        found = warnings(mapped, new_blocks)
         now = self._clock()
         text = mapped.parsed.text
         if normalized.get("converted"):
@@ -1888,6 +1891,9 @@ class DocumentStore:
 
         assert cursor.lastrowid is not None  # noqa: S101 - this event was inserted
         record_event(db, kind, info.document_id, cursor.lastrowid)
+        from .mathqueue import record_event as record_math
+
+        record_math(db, kind, info.document_id, cursor.lastrowid)
 
     def _replay(
         self,

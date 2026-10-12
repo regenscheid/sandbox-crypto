@@ -59,15 +59,18 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, L
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .consistency.controller import ReviewController
+from .consistency.mathnotices import MathNotices
 from .consistency.notices import FindingNotices
 from .consistency.store import ReviewStore
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
 from .documents.annotations import Annotations
 from .documents.errors import CONFLICT
+from .documents.mathcontroller import MathController
 from .documents.tool import view_blocks
 from .jobs import JobTools
 from .jobstate import JobState
 from .loop import run_task
+from .mathcheck import MathChecker
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
 from .tools import Toolbox, ToolOutcome
@@ -198,6 +201,18 @@ async def _run(args: argparse.Namespace) -> int:
             if documents is not None
             else None
         )
+        checker = (
+            MathChecker(args.math_node, args.math_launcher, args.math_bundle)
+            if args.math_node is not None
+            else None
+        )
+        math_checks = (
+            MathController(
+                reviews.store, context.project_id, context.session_id, run_id, checker=checker
+            )
+            if reviews is not None
+            else None
+        )
         jobs = JobTools(
             client,
             context,
@@ -231,6 +246,7 @@ async def _run(args: argparse.Namespace) -> int:
                     documents=documents,
                     jobs=jobs,
                     reviews=reviews,
+                    math_checks=math_checks,
                     artifacts=artifacts,
                 ),
                 args.task,
@@ -270,6 +286,8 @@ async def _run(args: argparse.Namespace) -> int:
         "work_request_ids": transcript.work_request_ids,
         "review_notice_ids": transcript.review_notice_ids,
         "review_summary": transcript.review_summary,
+        "math_notice_ids": transcript.math_notice_ids,
+        "math_summary": transcript.math_summary,
     }
     return _keep(args, fields, 0 if transcript.stopped == "answered" else 3)
 
@@ -313,6 +331,17 @@ def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> i
                     )
                 finally:
                     review_documents.close()
+            if record.math_notice_ids:
+                math_documents = DocumentStore(store_path(args.state_dir), producer="harness")
+                try:
+                    MathNotices(ReviewStore(math_documents)).acknowledge(
+                        record.context.project_id,
+                        record.context.session_id,
+                        record.run_id,
+                        record.math_notice_ids,
+                    )
+                finally:
+                    math_documents.close()
             if record.work_request_ids:
                 documents = DocumentStore(store_path(args.state_dir), producer="harness")
                 try:
@@ -568,6 +597,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     run.add_argument("--watcher-first-check", type=float, default=300)
     run.add_argument("--watcher-interval", type=float, default=1800)
+    run.add_argument(
+        "--math-node",
+        type=Path,
+        help="operator-configured absolute Node path for document math checks",
+    )
+    run.add_argument("--math-launcher", type=Path, help="operator-configured bounded math launcher")
+    run.add_argument(
+        "--math-bundle", type=Path, help="operator-configured built math checker bundle"
+    )
     run.add_argument("--reviewer-model", help="separate consistency reviewer model alias")
     run.add_argument(
         "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
@@ -615,6 +653,12 @@ def main(argv: list[str] | None = None) -> int:
                     parser.error("--watcher-model must be a separate model alias")
             elif args.watcher_script is not None:
                 parser.error("--watcher-script needs --watcher-model")
+            configured_math = (args.math_node, args.math_launcher, args.math_bundle)
+            if any(v is not None for v in configured_math) and (
+                any(v is None or not v.is_absolute() for v in configured_math)
+                or args.state_dir is None
+            ):
+                parser.error("math checks need --state-dir and all three absolute --math-* paths")
             if args.reviewer_model is not None:
                 if args.state_dir is None:
                     parser.error("--reviewer-model needs --state-dir for durable snapshots")
