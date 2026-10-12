@@ -40,7 +40,7 @@ env = {XDG_CONFIG_HOME = "$XDG_CONFIG_HOME", XDG_STATE_HOME = "$XDG_STATE_HOME",
 policy_store = "$LAB/middleware/state"
 targets = "$LAB/targets.yaml"
 ceiling = "$LAB/middleware/pool-ceiling.yaml"
-profiles = {minimal = "sandbox-science/minimal:02f85b3"}
+profiles = {minimal = "sandbox-science/minimal:02f85b3", crypto-base = "sandbox-science/crypto-base:02f85b3"}
 
 [[clients]]
 name = "orchestrator-$PROJECT"

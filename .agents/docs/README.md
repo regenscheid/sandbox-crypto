@@ -11,6 +11,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 ## Runtime validation
 
+- [OpenShell v0.1.3 lab 18 on babbage, 2026-10-12](agent-reports/babbage-openshell-lab-18-2026-10-12.md): the provisioning tool with real dry runs and pinned installs, exact file-set grants and withdrawal, independent environments, all nine catalog probes, and cancellation and worker restart after linking began. [Recorded evidence](agent-reports/babbage-openshell-lab-18-evidence-2026-10-12.json).
+
 - [OpenShell v0.1.3 lab on babbage, 2026-10-10](agent-reports/babbage-openshell-lab-2026-10-10.md): the policy middleware against a real gateway with the VM driver, and what the lab changed (D69, D70).
 - [OpenShell v0.1.3 lab 2 on babbage, 2026-10-10](agent-reports/babbage-openshell-lab-2-2026-10-10.md): the package cache with real clients in a sandbox, provider credentials, and the MCP proxy's compiled policy (D57, D69, D71).
 - [OpenShell v0.1.3 lab 3 on babbage, 2026-10-11](agent-reports/babbage-openshell-lab-3-2026-10-11.md): the compiled credential bindings (D57, amended), and plain-HTTP credential substitution seen at runtime.
