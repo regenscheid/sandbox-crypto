@@ -468,6 +468,10 @@ class DocumentStore:
                     f"{self.path} is in store format {version}; this version reads "
                     f"{SCHEMA_VERSION}",
                 )
+            from .annotations import SCHEMA as ANNOTATION_SCHEMA
+
+            for statement in ANNOTATION_SCHEMA:
+                db.execute(statement)
             db.execute("COMMIT")
         finally:
             if db.in_transaction:
