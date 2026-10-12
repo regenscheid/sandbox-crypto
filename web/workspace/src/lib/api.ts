@@ -226,6 +226,7 @@ export interface DocumentRevision {
     parent: string | null;
     structural: string | null;
     attrs: Record<string, Json>;
+    source?: string | null;
   })[];
   removed: { id: string; kind: string }[];
   removed_math: { id: string; block: string }[];
@@ -256,6 +257,7 @@ export interface PatchRecord {
   base: number;
   reason: string;
   state: string;
+  operations?: Json[];
   revision?: number | null;
   decided_at?: string | null;
   decided_by?: Author | null;
@@ -270,11 +272,33 @@ export interface DocumentHistory {
   patches: PatchRecord[];
 }
 
+export interface DocumentChange {
+  outcome: string;
+  document_id: string;
+  revision: number;
+  patch_id: string | null;
+  message: string;
+  conflicts: { block?: string; math?: string; now?: string; at_base?: string;
+    changed_by?: { revision: number; author: Author }[] }[];
+  unnamed: string[];
+}
+
+export interface PatchPreview {
+  patch: PatchRecord;
+  base: number;
+  current: string;
+  proposed: string | null;
+  allowed: boolean;
+  message?: string | null;
+  unnamed: string[];
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly kind: string,
     message: string,
+    readonly details: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -287,14 +311,16 @@ export class ApiError extends Error {
 async function failure(response: Response): Promise<ApiError> {
   let kind = 'unavailable';
   let message = `the server answered ${response.status}`;
+  let details: Record<string, unknown> = {};
   try {
-    const body = (await response.json()) as { error?: { kind?: string; message?: string } };
+    const body = (await response.json()) as { error?: { kind?: string; message?: string; details?: Record<string, unknown> } };
     kind = body.error?.kind ?? kind;
     message = body.error?.message ?? message;
+    details = body.error?.details ?? {};
   } catch {
     // Not JSON: keep the status.
   }
-  return new ApiError(response.status, kind, message);
+  return new ApiError(response.status, kind, message, details);
 }
 
 async function get<T>(path: string): Promise<T> {
@@ -336,6 +362,10 @@ export const api = {
       `/projects/${part(project)}/documents/${part(document)}` +
         (revision === null ? '' : `?revision=${revision}`),
     ),
+  changeDocument: (project: string, document: string, change: Record<string, unknown>) =>
+    post<DocumentChange>(`/projects/${part(project)}/documents/${part(document)}/changes`, change),
+  previewPatch: (project: string, document: string, patch: string) =>
+    get<PatchPreview>(`/projects/${part(project)}/documents/${part(document)}/patches/${part(patch)}/preview`),
   history: (project: string, document: string) =>
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),
   mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),
