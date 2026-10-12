@@ -133,10 +133,17 @@ lease metadata, exact original-binding fences and actual HTTP disconnect behavio
 Independent review cleared signed source `cbcfc7e`. Final-source local gates passed
 60 capture/lifecycle cases, 9,592 Python tests (43 opt-in skips), 436 web tests and
 24 post-build math checks, plus locked/static/license/protocol checks and both builds.
-The CP13 acceptance-document union changes no product, test, configuration or helper
-bytes; exact combined-head review and fresh CI remain required.
-Real OpenShell acceptance is a separate required gate; the marked Lab22 recipe is
-in [the lab guide](../.agents/labs/README.md#lab22-bounded-artifact-capture).
+Independent review also cleared signed combined freeze `b535856`. Root-owned
+[OpenShell Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md)
+passed exact 24-byte binary/empty retention, twelve prompt regular/sparse/symlink/FIFO
+refusals and healthy publication/read/execution access on Python 3.14.8. Independent
+inspection found five artifacts, three terminal shell executions and zero capture
+leases/helpers; complete teardown was verified at 12:36:45 UTC. The disposable worker
+used a 1 MiB limit; this does not validate maximum-size successful capture. Lost-bridge,
+blocked host-I/O and corrupt-state behavior remain local hostile evidence. Actual main
+PR #85 ancestry and acceptance docs change no product, test, configuration or helper
+bytes; final docs review and fresh PR CI remain required. The marked reusable recipe
+is in [the lab guide](../.agents/labs/README.md#lab22-bounded-artifact-capture).
 
 Automatic execution-output inventory remains open. `written_files` is a bounded
 executor-reported before/after stat manifest, not a complete mutation journal or
@@ -293,7 +300,7 @@ locked/static/license/protocol checks and both production builds.
 [Browser/API acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md)
 verified exact original/changed bytes, empty and incomplete sources, scoped fix claims
 and delayed selection. The synthetic state and server were removed; no live model,
-worker or OpenShell VM was used for that browser check. Fresh PR CI remains the merge gate.
+worker or OpenShell VM was used for that browser check. PR #84 merged after all three fresh CI checks passed.
 
 Automatic execution-output inventory (RA-5/RA-F2/CRF-6), imports/MCP binary results,
 deletions/tombstones, retention drop workflows, observed inputs/kernel lineage,
