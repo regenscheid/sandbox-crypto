@@ -1,0 +1,19 @@
+apiVersion: sandbox-science/v0alpha1
+kind: ProjectPolicy
+metadata:
+  name: lab17-mcp
+defaults:
+  action: escalate
+mcp:
+  proxy:
+    worker_access: true
+    worker_tools: inherit
+    max_argument_bytes: 4Ki
+    max_response_bytes: 256Ki
+  servers:
+    deepwiki:
+      url: https://mcp.deepwiki.com/mcp
+      revision: "2025-11-25"
+      auth: {mode: none}
+      tools:
+        allow: [read_wiki_structure]
