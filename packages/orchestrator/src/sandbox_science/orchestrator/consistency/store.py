@@ -667,9 +667,15 @@ class ReviewStore:
                 classifier=classifier,
                 coverage_complete=False,
             )
+        # A confirmation pins finding groups rather than consuming author work.
+        # A failed author window stays independently queued, with its exact end.
         complete = (
             coverage_complete
-            and selected_end == end
+            and (
+                set(confirmation_targets) == set(targets)
+                if kind == "confirmation"
+                else selected_end == end
+            )
             and included_findings == len(findings)
             and all(item[4] for item in prepared)
             and all(item["complete"] for item in grants.values())

@@ -62,7 +62,11 @@ Confirmation snapshots explicitly grant the original finding evidence and respon
 anchors under their original evidence IDs, scoped to the same project/session. They
 also pin claimed-fix and user replacement revisions from durable transition payloads,
 even if the process crashed before optional feed observation. Those bytes count toward
-the snapshot bound. An omitted group remains incomplete and is not counted as attempted.
+the snapshot bound. Confirmation coverage describes the exact finding/fix groups and
+their original and response evidence; unrelated pending author work cannot make that
+scope incomplete. Confirmations consume no author feed and preserve its retry window.
+A passed confirmation still requires a recorded checked claim. An omitted group remains
+incomplete and is not counted as attempted.
 If no confirmation target fits, an incomplete author-work window can still advance its
 feed; the omitted claimed fix stays explicitly unconfirmed.
 
