@@ -131,6 +131,13 @@ receipt substitution, transfer digest/size/header errors, redirects, deadlines,
 transaction rollback, forged context/USER attribution and repeated cancellation.
 These are local fixtures, not new OpenShell acceptance evidence.
 
+The final combined local suite passed 9,415 Python tests (43 opt-in skips), all 50
+artifact cases, 431 web tests and the 24-test built Node/KaTeX boundary. Locked
+dependency, formatting, lint, strict type, license and protocol checks and both
+production builds passed. Independent review cleared the exact combined source,
+including receipt substitution, cancellation ownership and existing parameterized
+worker media metadata. Fresh PR CI and merge remain the delivery gate.
+
 Successful tool records include `artifact_inventory` with a pinned control receipt,
 beside the original `artifact` worker snapshot. Internal `resolve`, `content`,
 `list` and `events` methods form the evidence read boundary. The current consistency
