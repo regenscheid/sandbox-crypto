@@ -38,6 +38,13 @@ unnamed blocks, reverts, ownership, promotion name collisions and same-origin
 USER attribution. These API edge cases have automated coverage; the browser
 run above did not simulate network packet loss or a second browser session.
 
+## Integrated checks
+
+The final integrated branch, including the background-job cleanup and bounded
+lockfile serialization follow-ups, passed 8,999 Python tests (43 opt-in tests
+skipped) and 414 web tests. Strict Python and TypeScript checks, Ruff, license
+checks, generated contracts and the production web build also passed.
+
 ## Limits and cleanup
 
 The editor is Markdown source or one block at a time. Source conflicts start

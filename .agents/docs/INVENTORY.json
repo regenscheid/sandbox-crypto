@@ -150,8 +150,8 @@
     {
       "path": "agent-reports/babbage-openshell-lab-19-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 7211,
-      "sha256": "ef87c03638f66e0c73f0344930f0a63836b197808f56b1e72457d598674f95e9"
+      "bytes": 8141,
+      "sha256": "4bc0f35cf96bf3486864c740a4f520356f750990135812f01b866c337c803b3e"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-19-evidence-2026-10-12.json",
@@ -168,8 +168,8 @@
     {
       "path": "agent-reports/document-editing-2026-10-12.md",
       "category": "runtime-validation",
-      "bytes": 3671,
-      "sha256": "cc5227bbe26cda931259172930e5ad89dd493070c5e78649e09f12b716258c6e"
+      "bytes": 3999,
+      "sha256": "5d548e664d75d616c15fe514176787c2c3fe659f6ceda30137b89c00d401c74e"
     },
     {
       "path": "agent-reports/document-editing-evidence-2026-10-12.json",
