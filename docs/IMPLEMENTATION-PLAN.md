@@ -2,7 +2,7 @@
 
 Updated: 2026-10-12. Engineering sequence beneath the milestone [roadmap](ROADMAP.md). Track P has the policy library, OpenShell compiler, policy middleware, package cache and event store. W1/W2 provide the [worker service](WORKER.md), harness and native math execution. M1 passed its babbage exit run; provisioning, background jobs and executor recovery have real OpenShell acceptance. W4 has the [workspace](WORKSPACE.md) GUI with document editing, comments, consistency review and document-only mechanical math findings checked in the browser. Main `999de27` includes PR #69 through #84 with fresh CI green; D82 passed final combined local gates (9,459 Python/434 web tests and all required checks/builds), PR #83 merged after fresh CI passed, and #84 recorded 9,494 Python/436 web tests. The integrated M2 research workflow remains open. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [consistency review](CONSISTENCY-REVIEW.md).
 
-The next approved worker slice is the [CP-13 sticky admission prerequisite](RECOVERY-FENCE.md), locally implemented with the first predecessor cancel/restart Lab21 pass complete and removed. Final original-binding proof review/gates and a fresh offline/delete-reuse Lab21 remain pending. Restoring/clearing package state remains open; no package-list comparison proves recovery.
+The [CP-13 sticky admission prerequisite](RECOVERY-FENCE.md) is implemented and independently reviewed at signed `e320236`. Final combined gates passed 9,532 Python tests (43 opt-in skips), 436 web tests, 24 post-build math checks, locked/static/license/protocol checks and both builds. Root-owned [OpenShell Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) passed real linking cancellation, graceful worker-offline/reconnect and explicit confirmed delete/reuse, preserving existing research state and refusing new protected work. Both labs are completely removed; fresh PR CI is required before merge. Restoring/clearing package state remains open; no package-list comparison proves recovery.
 
 ## First implementation slice
 
@@ -144,8 +144,11 @@ Actual producer remains unknown; a worker last-writer hint is not provenance pro
 Before automatic reported-output capture, complete the [bounded worker capture
 prerequisite](ARTIFACTS.md#bounded-worker-capture-prerequisite): fixed sandbox helper,
 size/growth/hash limits, owned spawn/reap/blob I/O and durable unknown-cleanup
-admission. Local source/tests are in progress, with independent review and marked
-real OpenShell Lab22 required before merge. This adds no automatic discovery.
+admission. Independent review cleared signed source `cbcfc7e`; final-source local
+gates passed 60 capture/lifecycle cases, 9,592 Python/43 skips, 436 web/24 post-build
+math checks and all required checks/builds. The CP13 acceptance-document union changes
+no product/test/configuration/helper bytes. Exact combined-head review, marked real
+OpenShell Lab22 and fresh CI remain required before merge. This adds no automatic discovery.
 Then design a durable bounded execution/attempt/path observation journal with exact
 original-incarnation binding and honest incomplete-manifest coverage. Current
 `written_files` stat differences cannot prove all writes, producer identity, inputs

@@ -10,13 +10,16 @@ Exact helper/incarnation ACK or verified original immutable VM termination can r
 guest uncertainty; active host ownership still drains before release. No expiry, implicit
 new-incarnation reset, execution exemption, deployment change or fabricated lineage.
 The unproven last-writer hint has a 256-terminal-record scoped horizon and separate
-64 KiB record cap, materializing only row IDs. Source/tests and
-CP13 union are in progress; independent exact review, all gates and marked Lab22 remain
-required. Automatic fan-out and LD-49 writer proof remain open. [Boundary](../docs/ARTIFACTS.md#bounded-worker-capture-prerequisite).
+64 KiB record cap, materializing only row IDs. Independent review cleared signed
+source `cbcfc7e`; final-source local gates passed 60 capture/lifecycle cases,
+9,592 Python/43 skips, 436 web/24 post-build math checks and all required checks/builds.
+The final CP13 acceptance-document union changes no product/test/configuration/helper
+bytes. Exact combined-head review, marked Lab22 and fresh CI remain required.
+Automatic fan-out and LD-49 writer proof remain open. [Boundary](../docs/ARTIFACTS.md#bounded-worker-capture-prerequisite).
 
 ## 2026-10-12 — sticky recovery admission prerequisite
 
-Implement CP-13 execution refusal independently of the deferred Restorer: atomically persist install hold, require guest acknowledgement and exact saved internal-step authority, fence actual process/kernel launch after waits, and conservatively classify startup/legacy peers. Sticky state is bound to the original immutable sandbox and survives abandonment/daemon recycle. Required cancellation-owned durable operation drain precedes confirmed deletion cleanup/reuse; observed replacement stop/delete is refused. Matching package lists never clear uncertainty. [As built](../docs/RECOVERY-FENCE.md); marked Lab21 helper added. Root's first predecessor cancel/restart pass passed and was completely removed. Final original-binding proof correction requires a guard before guest mutation and atomic clear revalidation, including API compositions without optional release. Corrected-source review, combined gates and fresh offline/delete-reuse acceptance remain pending. No runtime pins, security policy, provider or running service changes.
+Implement CP-13 execution refusal independently of the deferred Restorer: atomically persist install hold, require guest acknowledgement and exact saved internal-step authority, fence actual process/kernel launch after waits, and conservatively classify startup/legacy peers. Sticky state is bound to the original immutable sandbox and survives abandonment/daemon recycle. Required cancellation-owned durable operation drain precedes confirmed deletion cleanup/reuse; observed replacement stop/delete is refused. Required pre-delete and atomic-clear guards demand original bound identity or exact retained legacy endpoint proof, including API compositions without optional release. Matching package lists never clear uncertainty. [As built](../docs/RECOVERY-FENCE.md); signed `e320236` passed independent review, 9,532 Python/43 skips, 436 web/24 post-build math checks and all required gates/builds. Root-owned [Lab21](docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) passed predecessor cancel/restart and final fresh graceful-offline/reconnect plus modern delete/reuse; both labs are completely removed. Fresh PR CI is required before merge. No runtime pins, security policy, provider or running service changes.
 
 Dated log of changes to the plan, decisions and conventions ([conventions](CONVENTIONS.md)). Newest first.
 
