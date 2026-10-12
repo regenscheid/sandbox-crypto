@@ -179,3 +179,28 @@ accepted/removal resolution, unavailable evidence and two failing reflags.
 `fix`, `unavailable` and `reopen` subcommands require that marker before opening
 a writer; `reopen` supports concurrent USER CAS/draft checks. Native browser
 acceptance is recorded separately from unit/static checks.
+
+## Validation boundary
+
+Independent review covers populated legacy migrations and rollback, historical
+ownership, stale/unavailable/configuration retries, bounded corrupt-state reads,
+actual-work cancellation, closing-round delivery and failed-save/ACK races.
+[Native browser acceptance](../.agents/docs/agent-reports/document-math-2026-10-12.md)
+uses actual local KaTeX 0.18.9 and Node 24.20.0 with synthetic documents, no
+provider or worker calls, and retained USER drafts through concurrent CAS changes.
+All disposable browser state was removed. Rebuilt production GUI bytes match
+the archived acceptance assets.
+
+Artifact integration required three `None` defaults in a manually constructed
+CLI test namespace. Its cleanup assertions and timeouts are unchanged. The
+combined affected publication/math/migration/workspace API suite then passed
+68 tests; this fixture correction changes no product, GUI or fixture-builder
+behavior.
+
+Final combined validation passed 9,459 Python tests (43 opt-in skips) on Python
+3.13.15, 434 web tests, locked dependency installation, formatting, lint, strict
+Python/Svelte/TypeScript checks, Python/npm license checks, protocol generation
+and both GUI/math builds. The actual Node boundary runs against the built math
+bundle. The supported Python 3.12 matrix remains unchanged; fresh PR CI and merge
+are separate delivery gates. Comment/reply, ledger and finding-prose checks,
+idle scheduling and automatic history compaction remain open.
