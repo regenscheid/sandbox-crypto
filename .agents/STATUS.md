@@ -4,6 +4,8 @@ Updated: 2026-10-12.
 
 **Phase:** 1 (babbage), milestone M1: its exit run passed on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M0's specs and decisions still await the user's review. **Focus:** toward M2: background jobs and the executor daemon, then the remaining research workspace features.
 
+Background jobs are in progress in an isolated worktree: worker/API and harness/GUI changes, independent adversarial review, then lab 19 in OpenShell before merge. Worker restart survival remains the following executor-daemon slice. The current CLI has no long-running session scheduler or shared model spend ledger; automatic wake-up and shared watcher spend accounting stay open until those exist.
+
 ## Recent progress
 
 - **Lab 18: the provisioning tool** ([report](docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md)). CP-F1 to CP-F4, CP-F8 and CP-F10 passed against the real OpenShell gateway, middleware and cache. Real micromamba and pip dry runs passed the strict parsers; pinned installs matched their decided files and lockfiles; denial fetched no package files, approval fetched exactly its sixteen, requests outside the grant failed, and the grant ended with its operation. All nine catalog probes passed in a sandbox, after the tool added python-flint beside Sage. Cancellation and a worker restart after three package records appeared during linking both left visible `needs_recovery` status. The lab is completely removed. The user resumed work after the handoff pause.
