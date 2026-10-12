@@ -189,7 +189,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [ ] Environments in the GUI (Conda provisioning, CP-26): each environment's revisions with the package differences between them, licenses with AGPL flagged, probe status per revision, and the provisioning operations waiting, with their permission requests' files
 - [ ] Previews of rich artifacts (HTML, SVG, notebook output, PDFs) on a separate origin in sandboxed frames (D54); the PDF viewer
 - [ ] Live updates while a run is in progress; the environments' live state from the worker
-- [ ] Records of runs that end in an error
+- [ ] Records of runs that end in an error: narrow implementation and focused review passed; final gates and CLI/browser acceptance pending ([run records](../docs/WORKSPACE.md#run-records))
 - [ ] Ship the bundled npm packages' license notices with the built app before it is distributed: the build drops license comments
 - [ ] TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5)
 
