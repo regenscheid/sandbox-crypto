@@ -5,7 +5,7 @@ The workspace is the research GUI (W4, D80). It shows the harness's records: the
 - `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static files: an `index.html`, one script, one stylesheet and KaTeX's fonts.
 - `packages/workspace` (`sandbox_science.workspace`): the server, in the project's Python on aiohttp, with the command `sandbox-science-workspace`. It serves the built files and a JSON API, handles login, and asks the reviewer model for math repairs when it is configured to.
 
-Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Documents can be edited as Markdown source or by block, with conflicts and retained patches reviewed explicitly. Document comments and addressed work requests are available. The ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
+Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Documents can be edited as Markdown source or by block, with conflicts and retained patches reviewed explicitly. Document comments, addressed work requests and consistency findings are available. The ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
 
 ## Building and running
 
@@ -313,7 +313,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 
 ## Not built yet
 
-- Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents; artifact/PDF anchors and annotation export; the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)); and review findings ([consistency review](specs/consistency-review.md)).
+- Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents; artifact/PDF anchors and annotation export; and the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)).
 - The project's macros, beneath a document's (LD-28).
 - Approvals in the GUI, with re-authentication for high-risk ones (D54), and policy revisions from the GUI.
 - Previews of rich artifacts on a separate origin (D54), and the PDF viewer.
@@ -324,3 +324,22 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 - Live updates while a run is in progress, and the environments' state from the worker.
 - Records of runs that end in an error, and the end of a session without `session close`.
 - TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5).
+
+
+## Consistency reviews
+
+Each session now has a consistency-review panel backed by the shared control store.
+It shows recent outcomes, pending/running/failed/capped/inconclusive/unreviewed states,
+role usage and configuration identity, exact evidence slices, audit records, findings
+and attributed decision history. Older pages remain available through explicit cursors.
+A pass is limited to the recorded checks and is not a proof. Refresh fetches current
+state; saved runs show their review status at the saved boundary, without claiming a
+live final-message stream.
+
+Users can rebut, claim a fix with exact `doc-ID:revision` references, explicitly confirm,
+dismiss or reopen a finding. Drafts and uncertain-request operation IDs survive reload;
+stale-head responses retain their text until the user chooses the current revision.
+Writes require the existing authenticated same-origin boundary and derive USER identity
+on the server. Request review queues a live-safe-point request and states that idle
+sessions do not start a model turn. [Runtime boundaries and acceptance](CONSISTENCY-REVIEW.md)
+describe snapshot budgets, retry/delivery rules and deferred evidence sources.
