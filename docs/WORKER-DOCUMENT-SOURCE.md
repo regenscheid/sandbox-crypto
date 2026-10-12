@@ -99,8 +99,11 @@ No arbitrary filesystem path is read.
 
 The source event sequence is a durable reference; it is not a catalog sequence. An
 applied receipt says publication is pending, and never invents a transport acknowledgement.
-When installed, the root-owned central SQL publication hook executes inside the same
-document transaction; this adapter neither implements nor imports it. There is no async I/O or
+The central SQL [publication hook](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
+executes inside the same document transaction; this adapter neither implements nor
+imports it. Integration checks inject a failure after the hook's append and verify
+rollback of source, raw capture, receipt and publication cursor, followed by one exact
+retry/replay. There is no async I/O or
 model/tool call under the source write lock.
 
 ## Validation and remaining work
@@ -112,7 +115,7 @@ replay and shared operation collisions. All fixtures are synthetic and make no w
 model or environment calls. Existing editor/annotation/consistency fixtures protect the
 shared store and authority paths.
 
-Authenticating and fencing bindings, publishing all document changes, acquiring a proven
+Authenticating and fencing bindings, delivering and acknowledging document changes, acquiring a proven
 writer boundary, filesystem capture/restore, retention resolution, USER raw-download
 routes, and `ss-doc` remain separate work. This slice does not complete LD-49 to LD-52
 or establish safe environment overwrites.

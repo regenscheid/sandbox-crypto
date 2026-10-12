@@ -19,8 +19,10 @@ from sandbox_science.orchestrator.documents import (
     Author,
     DocumentError,
     DocumentStore,
+    publication,
     store_path,
 )
+from sandbox_science.orchestrator.documents.publication import Publications
 from sandbox_science.orchestrator.documents.worker_source import (
     MAX_CAPTURE_BYTES,
     Quota,
@@ -331,6 +333,41 @@ def test_transaction_failure_rolls_back_source_raw_event_and_operation(setup, mo
     assert adapter.apply(binding, candidate, capture).change.revision == 2
     with documents._read() as db, pytest.raises(sqlite3.IntegrityError, match="immutable"):
         db.execute("DELETE FROM worker_source_receipts")
+
+
+def test_publication_hook_failure_keeps_raw_source_receipt_and_cursor_atomic(
+    setup, monkeypatch
+) -> None:
+    documents, _, adapter, binding = setup
+    candidate, capture = request(binding, TEXT.replace("Alpha stays.", "Alpha worker.").encode())
+    exporter = Publications(documents)
+    before = exporter.plan("p")
+    before_events = len(documents.events("p"))
+    original = publication.record_event
+
+    def fail(db, kind, document, event):
+        original(db, kind, document, event)
+        raise sqlite3.OperationalError("synthetic publication hook failure")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(publication, "record_event", fail)
+        with pytest.raises(sqlite3.OperationalError, match="publication hook failure"):
+            adapter.apply(binding, candidate, capture)
+    assert exporter.plan("p").snapshot == before.snapshot
+    assert documents.revision("p", binding.document_id).info.number == 1
+    assert len(documents.events("p")) == before_events
+    assert stored(documents) == 0
+    receipt = adapter.apply(binding, candidate, capture)
+    replay = adapter.apply(binding, candidate, capture)
+    assert receipt.change.revision == 2
+    assert replay.replayed
+    assert stored(documents) == 1
+    target = exporter.plan("p", after=before.snapshot.catalog_seq)
+    assert target.delta is not None
+    assert len(target.delta.changes) == 1
+    assert target.delta.changes[0].entry.revision == 2
+    assert b"Alpha worker." in exporter.content("p", target.entries[0])
+    assert not receipt.safe_to_restore
 
 
 def test_head_race_is_busy_and_current_suggestion_setting_is_honored(setup, monkeypatch) -> None:
