@@ -36,6 +36,16 @@ BATCH = 32
 LEASE = 120
 
 
+def scope_table(db: sqlite3.Connection) -> str:
+    """Legacy readonly stores need no schema/cursor mutation to expose old checks."""
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='math_job_scope'").fetchone():
+        return "math_job_scope"
+    return (
+        "(SELECT j.check_id,s.project,NULL AS session FROM math_jobs j "
+        "JOIN math_sources s USING(document))"
+    )
+
+
 async def owned[T](work: Awaitable[T]) -> T:
     """Retain actual work ownership through repeated caller cancellation."""
     task = asyncio.ensure_future(work)
@@ -97,6 +107,12 @@ class MathJobs:
 
     def _fence(self, db: sqlite3.Connection, check: str, owner: str) -> tuple[Any, ...]:
         from .comment_math import CommentMath, metadata
+        from .response_math import ResponseMath
+        from .response_math import metadata as response_metadata
+
+        response = response_metadata(db, check)
+        if response is not None:
+            return ResponseMath(self).fence(db, check, owner, response)
 
         comment = metadata(db, check)
         if comment is not None:
@@ -154,8 +170,14 @@ class MathJobs:
             from .comment_math import CommentMath
 
             CommentMath(self).retry(db, project, dump(configuration) if configuration else None)
+            from .response_math import ResponseMath
+
+            ResponseMath(self).retry(db, project, dump(configuration) if configuration else None)
 
     def claim(self, project: str, owner: str) -> str | None:
+        from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
+
+        ResponseBodies(self.store).reconcile(project)
         now = self.store.clock()
         if not math.isfinite(now) or abs(now) > 1e18:
             raise DocumentError(INTERNAL, "invalid math clock")
@@ -188,7 +210,7 @@ class MathJobs:
             old = db.execute(
                 (
                     "SELECT substr(CAST(j.check_id AS BLOB),1,129) FROM math_jobs j JOIN "
-                    "math_sources s USING(document) WHERE s.project=? AND "
+                    "math_job_scope s USING(check_id) WHERE s.project=? AND "
                     "j.state='running' AND (j.lease_until<=? OR j.owner=?) ORDER BY "
                     "j.created LIMIT 1"
                 ),
@@ -213,15 +235,20 @@ class MathJobs:
                     "SELECT substr(CAST(document AS BLOB),1,129),CASE WHEN "
                     "completed<target THEN completed+1 ELSE target END FROM math_sources "
                     "WHERE project=? AND (completed<target OR retry_requested=1) AND "
-                    "document NOT IN (SELECT document FROM math_jobs WHERE "
-                    "state='running') ORDER BY rowid LIMIT 1"
+                    "NOT EXISTS (SELECT 1 FROM math_jobs WHERE "
+                    "document=math_sources.document AND state='running') ORDER BY rowid LIMIT 1"
                 ),
                 (project,),
             ).fetchone()
             if source is None:
                 from .comment_math import CommentMath
 
-                return CommentMath(self).claim(db, project, owner, now)
+                selected = CommentMath(self).claim(db, project, owner, now)
+                if selected is not None:
+                    return selected
+                from .response_math import ResponseMath
+
+                return ResponseMath(self).claim(db, project, owner, now)
             if (
                 len(source[0]) > 128
                 or type(source[1]) is not int
@@ -314,8 +341,10 @@ class MathJobs:
                             raise ValueError
                         value[name] = value[name].decode("utf-8")
                 project = db.execute(
-                    "SELECT substr(CAST(project AS BLOB),1,129) FROM math_sources WHERE document=?",
-                    (value["document"],),
+                    "SELECT substr(CAST(project AS BLOB),1,129) FROM "  # noqa: S608 - fixed view
+                    + scope_table(db)
+                    + " WHERE check_id=?",
+                    (check,),
                 ).fetchone()
                 if project is None or len(project[0]) > 128:
                     raise ValueError
@@ -345,6 +374,13 @@ class MathJobs:
                 comment = metadata(db, check)
                 if comment is not None:
                     value["comment"] = comment
+                from .response_math import metadata as response_metadata
+
+                response = response_metadata(db, check)
+                if response is not None:
+                    value["response"] = response
+                elif value["document"] is None:
+                    raise ValueError
                 return value
             except (ValueError, TypeError, UnicodeDecodeError):
                 raise DocumentError(INTERNAL, "stored math job exceeds its schema bounds") from None
@@ -383,10 +419,15 @@ class MathJobs:
         reaching the beginning, never because a page budget ran out.
         """
         from .comment_math import CommentMath, metadata
+        from .response_math import ResponseMath
+        from .response_math import metadata as response_metadata
 
         with self.documents._read() as db:
             assert db is not None  # noqa: S101 - canonical store initialized
             comment = metadata(db, check)
+            response = response_metadata(db, check)
+        if response is not None:
+            return ResponseMath(self).attribution(check, owner, blocks)
         if comment is not None:
             return CommentMath(self).attribution(check, owner, blocks)
         with self.documents._read() as db:
@@ -501,6 +542,11 @@ class MathJobs:
                     "WHERE entry_id=(SELECT entry_id FROM math_comment_jobs WHERE check_id=?)",
                     (check,),
                 )
+                db.execute(
+                    "UPDATE response_math_sources SET blocked='math observation quota reached' "
+                    "WHERE source=(SELECT source FROM math_response_jobs WHERE check_id=?)",
+                    (check,),
+                )
                 return False
             db.execute(
                 "UPDATE math_jobs SET lease_until=? WHERE check_id=?",
@@ -598,7 +644,11 @@ class MathJobs:
                     ),
                     (self.store.clock(), check),
                 )
-                if "comment" in job:
+                if "response" in job:
+                    from .response_math import ResponseMath
+
+                    ResponseMath(self).finish(db, job)
+                elif "comment" in job:
                     from .comment_math import CommentMath
 
                     CommentMath(self).finish(db, job)
@@ -613,6 +663,10 @@ class MathJobs:
 
     def load(self, job: Json) -> Mapped:
         """Bound bytes before parsing and bind job/project/hash to actual source."""
+        if "response" in job:
+            from .response_math import ResponseMath
+
+            return ResponseMath(self).load(job)
         if "comment" in job:
             from .comment_math import CommentMath
 
@@ -641,6 +695,8 @@ class MathJobs:
             raise DocumentError(INTERNAL, "pinned math source identity is invalid") from None
 
     def effective_macros(self, job: Json, mapped: Mapped) -> dict[str, str]:
+        if "response" in job:
+            return {}
         if "comment" in job:
             from .comment_math import CommentMath
 
@@ -772,7 +828,9 @@ class MathJobs:
         )
         return complete
 
-    def listing(self, project: str, *, after: str | None = None) -> Json:
+    def listing(
+        self, project: str, *, after: str | None = None, session: str | None = None
+    ) -> Json:
         from sandbox_science.orchestrator.consistency.store import identifier
 
         with self.documents._read() as db:
@@ -787,10 +845,13 @@ class MathJobs:
                 identifier(after, "math")
                 row = db.execute(
                     (
-                        "SELECT j.rowid FROM math_jobs j JOIN math_sources s USING(document) "
-                        "WHERE s.project=? AND j.check_id=?"
+                        "SELECT j.rowid FROM math_jobs j JOIN "  # noqa: S608 - fixed view
+                        + scope_table(db)
+                        + " s USING(check_id) "
+                        "WHERE s.project=? AND j.check_id=? AND (s.session IS NULL OR ? IS "
+                        "NULL OR s.session=?)"
                     ),
-                    (project, after),
+                    (project, after, session, session),
                 ).fetchone()
                 if row is None:
                     from .errors import NOT_FOUND
@@ -800,20 +861,29 @@ class MathJobs:
             rows = list(
                 db.execute(
                     (
-                        "SELECT substr(CAST(j.check_id AS BLOB),1,129),"
+                        "SELECT substr(CAST(j.check_id AS BLOB),1,129),"  # noqa: S608 - fixed view
                         "substr(CAST(j.document AS BLOB),1,129),j.revision,"
                         "substr(CAST(j.state AS BLOB),1,33),j.cursor,j.spans,j.available,"
-                        "j.rejected,j.unavailable,j.created FROM math_jobs j JOIN math_sources "
-                        "s USING(document) WHERE s.project=? AND j.rowid<? ORDER BY j.rowid "
+                        "j.rejected,j.unavailable,j.created FROM math_jobs j JOIN "
+                        + scope_table(db)
+                        + " s USING(check_id) WHERE s.project=? AND j.rowid<? "
+                        "AND (s.session IS NULL OR ? IS NULL OR s.session=?) ORDER BY j.rowid "
                         "DESC LIMIT 21"
                     ),
-                    (project, cursor),
+                    (project, cursor, session, session),
                 )
             )
             for row in rows:
-                if len(row[0]) > 128 or len(row[1]) > 128 or len(row[3]) > 32:
+                if (
+                    len(row[0]) > 128
+                    or (row[1] is not None and len(row[1]) > 128)
+                    or len(row[3]) > 32
+                ):
                     raise DocumentError(INTERNAL, "stored math listing identity exceeds its bound")
-            rows = [(r[0].decode(), r[1].decode(), r[2], r[3].decode(), *r[4:]) for r in rows]
+            rows = [
+                (r[0].decode(), r[1].decode() if r[1] else None, r[2], r[3].decode(), *r[4:])
+                for r in rows
+            ]
             checks: list[Json] = [
                 dict(
                     zip(
@@ -837,12 +907,17 @@ class MathJobs:
             ]
             from .comment_math import metadata
             from .comment_math import queue as comment_queue
+            from .response_math import metadata as response_metadata
+            from .response_math import queue as response_queue
 
             for entry in checks:
                 comment = metadata(db, entry["check_id"])
                 entry["kind"] = "comment" if comment else "document"
                 if comment:
                     entry["comment"] = comment
+                response = response_metadata(db, entry["check_id"])
+                if response:
+                    entry["kind"], entry["response"] = "response", response
             queue = [
                 dict(zip(("document", "target", "completed", "blocked", "running"), r, strict=True))
                 for r in db.execute(
@@ -869,14 +944,23 @@ class MathJobs:
                 if entry["blocked"] is not None:
                     entry["blocked"] = entry["blocked"].decode()
             comments = comment_queue(db, project)
+            responses = response_queue(db, project, session=session)
             return {
                 "checks": checks,
                 "next_after": checks[-1]["check_id"] if len(rows) > 20 else None,
-                "queue": queue[:20] + comments[:20],
-                "queue_more": len(queue) > 20 or len(comments) > 20,
+                "queue": queue[:20] + comments[:20] + responses[:20],
+                "queue_more": len(queue) > 20 or len(comments) > 20 or len(responses) > 20,
             }
 
-    def evidence(self, project: str, check: str, *, after: int = 0, span: object = None) -> Json:
+    def evidence(
+        self,
+        project: str,
+        check: str,
+        *,
+        after: int = 0,
+        span: object = None,
+        session: str | None = None,
+    ) -> Json:
         from sandbox_science.orchestrator.consistency.store import identifier
 
         from .errors import INVALID_REQUEST, NOT_FOUND
@@ -895,10 +979,13 @@ class MathJobs:
                 is None
                 or db.execute(
                     (
-                        "SELECT 1 FROM math_jobs j JOIN math_sources s USING(document) WHERE "
-                        "s.project=? AND j.check_id=?"
+                        "SELECT 1 FROM math_jobs j JOIN "  # noqa: S608 - fixed view
+                        + scope_table(db)
+                        + " s USING(check_id) WHERE "
+                        "s.project=? AND j.check_id=? AND (s.session IS NULL OR ? IS NULL "
+                        "OR s.session=?)"
                     ),
-                    (project, check),
+                    (project, check, session, session),
                 ).fetchone()
                 is None
             ):

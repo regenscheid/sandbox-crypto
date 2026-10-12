@@ -211,6 +211,9 @@ class ReviewStore:
                 for statement in SCHEMA:
                     db.execute(statement)
                 prepare_findings(db)
+                from .response_bodies import prepare_schema
+
+                prepare_schema(db)
 
     def available(self, db: sqlite3.Connection | None) -> bool:
         return (
@@ -545,9 +548,19 @@ class ReviewStore:
                     "AND NOT EXISTS(SELECT 1 FROM "
                     "review_confirmation_targets t JOIN review_runs r USING(review_id) "
                     "WHERE t.finding_id=f.finding_id AND t.revision=f.revision AND "
+                    "coalesce((SELECT b.revision FROM review_response_bodies b WHERE "
+                    "b.finding_id=f.finding_id AND b.decision_revision=f.revision ORDER BY "
+                    "b.revision "
+                    "DESC LIMIT 1),0)=coalesce((SELECT p.body_revision FROM review_response_pins p "
+                    "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) AND "
                     "r.state NOT IN ('running','failed','dropped')) AND (SELECT count(*) FROM "
                     "review_confirmation_targets t JOIN review_runs r USING(review_id) "
                     "WHERE t.finding_id=f.finding_id AND t.revision=f.revision AND "
+                    "coalesce((SELECT b.revision FROM review_response_bodies b WHERE "
+                    "b.finding_id=f.finding_id AND b.decision_revision=f.revision ORDER BY "
+                    "b.revision "
+                    "DESC LIMIT 1),0)=coalesce((SELECT p.body_revision FROM review_response_pins p "
+                    "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) AND "
                     "r.state IN ('failed','dropped'))<3 ORDER BY f.rowid LIMIT 100",
                     (project, session),
                 )
@@ -636,6 +649,7 @@ class ReviewStore:
         grants: dict[str, Json] = {}
         included_findings = 0
         confirmation_targets: list[tuple[str, int]] = []
+        response_pins: dict[str, Json] = {}
         for _, item_kind, location, payload, sha, complete in items:
             prepared.append((item_kind, location, payload, sha, complete))
         for row in findings[:100]:
@@ -665,6 +679,9 @@ class ReviewStore:
                     "AND revision=?",
                     (row[0], row[7]),
                 ).fetchone()
+                from .response_bodies import pin as response_pin
+
+                body_pin = response_pin(db, row[0], row[7])
             finding["response"] = (
                 {
                     "reason": response[0],
@@ -677,6 +694,8 @@ class ReviewStore:
                 if response
                 else None
             )
+            if body_pin is not None and finding["response"] is not None:
+                finding["response"]["body"] = body_pin
             payload = dump(finding)
             group: list[tuple[str, str, str, str, int]] = []
             group_grants: dict[str, Json] = {}
@@ -735,6 +754,8 @@ class ReviewStore:
             ):
                 continue
             prepared.extend(group)
+            if body_pin is not None:
+                response_pins[finding["finding"]] = body_pin
             if (finding["finding"], finding["revision"]) in targets:
                 confirmation_targets.append((finding["finding"], finding["revision"]))
             grants.update(group_grants)
@@ -767,7 +788,18 @@ class ReviewStore:
             and all(item[4] for item in prepared)
             and all(item["complete"] for item in grants.values())
         )
-        confirmation_key = digest(dump(confirmation_targets)) if kind == "confirmation" else None
+        confirmation_key = (
+            digest(
+                dump(
+                    [
+                        confirmation_targets,
+                        sorted((f, p["revision"], p["sha256"]) for f, p in response_pins.items()),
+                    ]
+                )
+            )
+            if kind == "confirmation"
+            else None
+        )
         review = new_id("rev")
         with self.documents._write() as db:
             self._window(db, project, session)
@@ -777,6 +809,15 @@ class ReviewStore:
             ).fetchone()
             if tuple(actual) != (watermark, retry):
                 return None
+            for finding_id, body_pin in response_pins.items():
+                from .response_bodies import pin as response_pin
+
+                current_pin = response_pin(db, finding_id, body_pin["response_revision"])
+                if current_pin is None or (current_pin["revision"], current_pin["sha256"]) != (
+                    body_pin["revision"],
+                    body_pin["sha256"],
+                ):
+                    return None
             if db.execute(
                 "SELECT 1 FROM review_runs WHERE project=? AND session=? AND state='running'",
                 (project, session),
@@ -833,6 +874,17 @@ class ReviewStore:
                         "INSERT INTO review_confirmation_targets VALUES(?,?,?)",
                         (review, finding_id, revision),
                     )
+            for finding_id, body_pin in response_pins.items():
+                db.execute(
+                    "INSERT INTO review_response_pins VALUES(?,?,?,?,?)",
+                    (
+                        review,
+                        finding_id,
+                        body_pin["response_revision"],
+                        body_pin["revision"],
+                        body_pin["sha256"],
+                    ),
+                )
             for ordinal, evidence_id in enumerate(grants, len(prepared) + 1):
                 db.execute(
                     "INSERT INTO review_grants VALUES(?,?,?)", (review, evidence_id, ordinal)

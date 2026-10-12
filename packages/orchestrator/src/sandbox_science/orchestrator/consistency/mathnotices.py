@@ -51,7 +51,8 @@ class MathNotices(FindingNotices):
                     "statement": clipped(statement, 2048),
                     "detail": (
                         "Read review_finding_read, then use the ordinary source "
-                        "edit tool (document_comment_edit for a comment body). A "
+                        "edit tool (document_comment_edit for comments, review_response_edit "
+                        "for a response explanation). A "
                         "mechanical check confirms accepted or removed formulas; do not claim "
                         "a model-confirmed fix."
                     ),

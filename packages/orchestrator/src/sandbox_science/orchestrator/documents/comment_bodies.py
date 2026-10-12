@@ -81,6 +81,8 @@ def sha(text: str) -> str:
 
 
 def source_key(job: Json) -> str:
+    if "response" in job:
+        return job["response"]["source"]
     return "comment:" + job["comment"]["entry_id"] if "comment" in job else job["document"]
 
 
@@ -349,6 +351,7 @@ class PreparedBody:
     base: int
     base_sha256: str | None
     held: str | None = None
+    identity_floor: int = 1
 
 
 def prepare(body: str, actor: Author, parent: Json | None = None) -> PreparedBody:
@@ -370,6 +373,7 @@ def prepare(body: str, actor: Author, parent: Json | None = None) -> PreparedBod
             parent["revision"] if parent else 0,
             parent.get("retained_sha256", parent["sha256"]) if parent else None,
             reason,
+            revision,
         )
 
 
@@ -422,6 +426,7 @@ def _prepare(body: str, actor: Author, parent: Json | None = None) -> PreparedBo
         allocate.next_span,
         parent["revision"] if parent else 0,
         parent.get("retained_sha256", parent["sha256"]) if parent else None,
+        identity_floor=stored_map["identity_floor"],
     )
 
 

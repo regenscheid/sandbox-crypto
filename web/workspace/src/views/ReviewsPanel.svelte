@@ -105,11 +105,11 @@
   {#each records as record, index (index)}<details><summary>Audit record {index + 1}</summary><pre>{JSON.stringify(record, null, 2)}</pre></details>{/each}
 {/if}
 {#if outputId}<PinnedEvidencePreview text={output} />{#if nextOutput !== null}<button onclick={() => read(outputReview, outputId, nextOutput!)}>Read next evidence slice</button>{/if}{/if}
-<h3>Document and comment math checks</h3>
+<h3>Mechanical math checks</h3>
 <p class="muted">Mechanical checks use the operator-configured renderer. Unavailable, queued and quota-held work cannot establish a fix. Checks with no eligible author remain visible here.</p>
 {#if queue.length}<details open><summary>Pending or held source revisions</summary><pre>{JSON.stringify(queue,null,2)}</pre>{#if queueMore}<p>Additional sources remain queued or held.</p>{/if}</details>{/if}
 {#if !checks.length}<p>No mechanical math checks recorded.</p>{/if}
-<ul>{#each checks as check (check.check_id)}<li><button onclick={() => mathEvidence(check.check_id)}>{check.kind === 'comment' ? 'Comment body' : 'Math'} revision {check.revision} · {check.state} · {check.rejected} rejected · {check.unavailable} unavailable</button><code>{check.document}</code>{#if check.comment}<p class="muted">Original entry <code>{check.comment.entry_id}</code>; document macro revision {check.comment.macro_revision}.</p>{/if}</li>{/each}</ul>
+<ul>{#each checks as check (check.check_id)}<li><button onclick={() => mathEvidence(check.check_id)}>{check.kind === 'comment' ? 'Comment body' : check.kind === 'response' ? 'Finding explanation' : 'Math'} revision {check.revision} · {check.state} · {check.rejected} rejected · {check.unavailable} unavailable</button>{#if check.document}<code>{check.document}</code>{/if}{#if check.comment}<p class="muted">Original entry <code>{check.comment.entry_id}</code>; document macro revision {check.comment.macro_revision}.</p>{/if}{#if check.response}<p class="muted">Finding <code>{check.response.finding}</code>; original response {check.response.response_revision}; empty macros.</p>{/if}</li>{/each}</ul>
 {#if nextCheck}<button onclick={moreChecks}>Load more math checks</button>{/if}
 {#if mathOutput}<h4>Mechanical evidence and author provenance</h4><pre aria-label="Document math check">{mathOutput}</pre>{#if mathNext !== null}<button onclick={() => mathEvidence(mathId,mathNext!)}>Read next math evidence page</button>{/if}{/if}
 <h3>Findings</h3>{#if !findings.length}<p>No consistency findings recorded.</p>{/if}

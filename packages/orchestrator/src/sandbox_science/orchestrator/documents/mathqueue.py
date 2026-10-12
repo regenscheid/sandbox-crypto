@@ -21,7 +21,7 @@ SCHEMA = (
       revision INTEGER NOT NULL, author TEXT NOT NULL,
       PRIMARY KEY(document,block)) STRICT""",
     """CREATE TABLE IF NOT EXISTS math_jobs (
-      check_id TEXT PRIMARY KEY, document TEXT NOT NULL REFERENCES documents(document_id),
+      check_id TEXT PRIMARY KEY, document TEXT REFERENCES documents(document_id),
       revision INTEGER NOT NULL, source_sha256 TEXT NOT NULL, state TEXT NOT NULL,
       owner TEXT, lease_until REAL, cursor INTEGER NOT NULL DEFAULT 0,
       spans INTEGER, available INTEGER NOT NULL DEFAULT 0, rejected INTEGER NOT NULL DEFAULT 0,
@@ -70,6 +70,35 @@ def prepare(db: sqlite3.Connection) -> None:
     """
     if not db.in_transaction:
         raise DocumentError(INTERNAL, "math preparation requires the source transaction")
+    columns = list(db.execute("PRAGMA table_info(math_jobs)"))
+    if any(row[1] == "document" and row[3] == 1 for row in columns):
+        # Preserve the parent name, rowids and all observation/finding FKs. A
+        # finding explanation has no document parent; never borrow an anchor.
+        db.execute("PRAGMA defer_foreign_keys=ON")
+        views = list(
+            db.execute(
+                "SELECT name,sql FROM sqlite_master WHERE type='view' AND name IN "
+                "('math_current_checks','math_job_scope')"
+            )
+        )
+        for name, _ in views:
+            db.execute("DROP VIEW " + name)
+        db.execute(SCHEMA[2].replace("math_jobs", "math_jobs_source_neutral", 1))
+        names = "rowid," + ",".join(row[1] for row in columns)
+        db.execute(
+            "INSERT INTO math_jobs_source_neutral("  # noqa: S608 - schema column names
+            + names
+            + ") SELECT "
+            + names
+            + " FROM math_jobs ORDER BY rowid"
+        )
+        db.execute("DROP TABLE math_jobs")
+        db.execute("ALTER TABLE math_jobs_source_neutral RENAME TO math_jobs")
+        for _, sql in views:
+            db.execute(sql)
+        if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise DocumentError(INTERNAL, "source-neutral math migration violated a foreign key")
+        db.execute("PRAGMA defer_foreign_keys=OFF")
     for statement in SCHEMA:
         db.execute(statement)
     # One cursor per document references all retained revisions without copying an
