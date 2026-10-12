@@ -3,7 +3,9 @@
 Prepared 2026-10-12 from LD-3 and LD-49 to LD-52 in the
 [living-documents specification](../../../docs/specs/living-documents.md).
 **Proposal only. No mirror/helper implementation or acceptance is claimed.**
-Source changes wait for coordination with the comments/consistency author.
+At preparation, source changes waited for coordination with the
+comments/consistency author. The catalog prerequisite is now implemented;
+coordinated control/source/helper work and writer-guard feasibility remain open.
 The existing document parser, source-to-patch engine and control-store rules
 remain authoritative; this is an independent implementation.
 
@@ -91,6 +93,15 @@ check would not prove this rule. Publication should conservatively defer while
 relevant calls/known descendants may write, and uncertainty must produce a held
 sync notice rather than overwrite. Long-lived kernel/background writers still
 need an agreed close-proof strategy before claiming LD-49 complete.
+
+The follow-up [writer-guard investigation](document-writer-guard-2026-10-12.md)
+records why notification counters and the inspected lease boundary are
+insufficient. A protected-filesystem feasibility prerequisite must establish
+handle/mmap lifetime, namespace exclusion, bounded admission and failure/restart
+semantics before enabling replacement or removal. FUSE is a proposed boundary,
+not implemented or validated under OpenShell; this does not narrow arbitrary
+direct edits to cooperative helper calls. The catalog prerequisite is now
+implemented, while runtime publication remains disabled.
 
 Non-UTF8, oversized and deleted-document candidates also need an explicit bounded
 raw rejection representation. Do not report an edit fully retained if only a
