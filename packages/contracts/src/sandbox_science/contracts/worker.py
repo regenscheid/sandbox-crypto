@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Final, Literal, Self
 
-from pydantic import AfterValidator, Field, StringConstraints, model_validator
+from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, model_validator
 
 from .artifacts import Sha256
 from .context import ExecutionContext
@@ -322,6 +322,12 @@ class KernelListing(Contract):
         if any(kernel.current_revision != self.current_revision for kernel in self.kernels):
             raise ValueError("kernel listing has inconsistent current revisions")
         return self
+
+
+class KernelObservation(KernelListing):
+    """A successful existing-channel observation, timestamped by the worker."""
+
+    observed_at: AwareDatetime
 
 
 IsolationTier = Annotated[int, Field(ge=0, le=3)]
