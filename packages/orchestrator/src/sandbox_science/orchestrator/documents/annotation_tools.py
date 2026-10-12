@@ -72,6 +72,33 @@ SPECS: Final = tuple(
             ["document", "thread", "expected", "body"],
         ),
         (
+            "document_comment_read",
+            "Read the exact current body, original author and body/thread CAS of "
+            "one comment or reply.",
+            {"document": {"type": "string"}, "entry": {"type": "string"}},
+            ["document", "entry"],
+        ),
+        (
+            "document_comment_edit",
+            "Append a correction to one original comment/reply body. Exact thread "
+            "and body revision/hash "
+            "are required. MAIN may correct this session's agent source; delegated "
+            "runs only their own. "
+            "USER/reviewer/foreign source cannot be revised by agents. Empty body "
+            "removes its formulas.",
+            {
+                "document": {"type": "string"},
+                "thread": {"type": "string"},
+                "entry": {"type": "string"},
+                "expected": {"type": "integer"},
+                "base": {"type": "integer"},
+                "sha256": {"type": "string"},
+                "body": {"type": "string"},
+                "operation_id": {"type": "string"},
+            },
+            ["document", "thread", "entry", "expected", "base", "sha256", "body"],
+        ),
+        (
             "document_resolve",
             (
                 "Resolve a thread this session opened, using its expected thread "
@@ -104,6 +131,12 @@ def call(
         raise DocumentError(INVALID_REQUEST, "document is required")
     info = store.document(context.project_id, reference, context.session_id)
     annotations = Annotations(store)
+    if name == "document_comment_read":
+        result = annotations.body(context.project_id, info.document_id, args.get("entry"))
+        text = dump(result)
+        if len(text) > output_chars:
+            raise DocumentError(INVALID_REQUEST, "comment body exceeds the tool response bound")
+        return text, {"annotation_body_read": args.get("entry")}
     if name == "document_comments":
         result = annotations.list(
             context.project_id, info.document_id, after=args.get("after"), limit=10
@@ -127,6 +160,7 @@ def call(
         "document_comment": "create",
         "document_reply": "reply",
         "document_resolve": "resolve",
+        "document_comment_edit": "edit_body",
     }[name]
     payload = {key: value for key, value in args.items() if key != "document"}
     payload.update(action=action, operation_id=args.get("operation_id", operation))

@@ -756,18 +756,19 @@ def _instrument(md: MarkdownIt) -> None:
     md.inline.ruler.__cache__ = None
 
 
-def _make() -> MarkdownIt:
+def _make(*, documents: bool = True) -> MarkdownIt:
     md = MarkdownIt(
         "js-default",
         {"html": False, "linkify": False, "typographer": False, "maxNesting": MAX_NESTING},
     )
     md.validateLink = _validate_link  # type: ignore[method-assign]
     md.inline.ruler.at("backticks", _backticks)
-    front_matter_plugin(md)
-    plugin_front_matter = next(
-        rule.fn for rule in md.block.ruler.__rules__ if rule.name == "front_matter"
-    )
-    md.block.ruler.at("front_matter", _front_matter_at_start(plugin_front_matter))
+    if documents:
+        front_matter_plugin(md)
+        plugin_front_matter = next(
+            rule.fn for rule in md.block.ruler.__rules__ if rule.name == "front_matter"
+        )
+        md.block.ruler.at("front_matter", _front_matter_at_start(plugin_front_matter))
     dollarmath_plugin(
         md,
         allow_labels=True,
@@ -785,7 +786,8 @@ def _make() -> MarkdownIt:
         _backslash_block,
         {"alt": ["paragraph", "reference", "blockquote", "list"]},
     )
-    container_plugin(md, CONTAINER, validate=_container_kind)
+    if documents:
+        container_plugin(md, CONTAINER, validate=_container_kind)
     _instrument(md)
     return md
 
@@ -793,15 +795,16 @@ def _make() -> MarkdownIt:
 _local = threading.local()
 
 
-def markdown() -> MarkdownIt:
+def markdown(*, documents: bool = True) -> MarkdownIt:
     """This thread's parser. Parses share no state, but the rulers' caches are not locked."""
-    md = cast(MarkdownIt | None, getattr(_local, "md", None))
+    key = "md" if documents else "comment_md"
+    md = cast(MarkdownIt | None, getattr(_local, key, None))
     if md is None:
-        md = _make()
-        _local.md = md
+        md = _make(documents=documents)
+        setattr(_local, key, md)
     return md
 
 
-def tokens(text: str) -> list[Token]:
+def tokens(text: str, *, documents: bool = True) -> list[Token]:
     """The tokens of ``text``, with positions recorded in their ``meta``."""
-    return markdown().parse(text, {})
+    return markdown(documents=documents).parse(text, {})

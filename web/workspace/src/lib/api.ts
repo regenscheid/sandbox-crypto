@@ -307,12 +307,18 @@ export interface CommentAnchor {
   start: number | null; end: number | null; kind: 'block' | 'math' | 'range';
   quote: string; quote_truncated: boolean; before: string; after: string;
 }
+export interface CommentBodySource {
+  entry_id: string; revision?: number; sha256?: string; body?: string;
+  author?: Author | null; original_author?: Author; held?: string;
+}
 export interface CommentEntry {
-  entry_id: string; number: number; kind: 'create' | 'reply' | 'edit' | 'resolve' | 'reopen';
+  entry_id: string; number: number; kind: 'create' | 'reply' | 'edit' | 'edit_body' | 'resolve' | 'reopen';
   author: Author; body: string; created_at: number;
+  body_source?: CommentBodySource;
   payload: { revision?: number; changed_blocks?: string[]; outside_anchor?: string[]; changed_blocks_total?: number; changed_blocks_truncated?: boolean;
     outside_anchor_total?: number; outside_anchor_truncated?: boolean;
-    addressed_to?: string; request_id?: string; anchor?: Record<string, unknown> };
+    addressed_to?: string; request_id?: string; anchor?: Record<string, unknown>;
+    entry?: string; base?: number; sha256?: string; body_revision?: number };
 }
 export interface CommentThread {
   thread_id: string; anchor: CommentAnchor; opener: Author; created_at: number;

@@ -315,6 +315,15 @@ os.mkfifo('fifo')
         self.verify_reports(outcomes, page, pdf_execution)
         self.save("terminal-outcomes", outcomes)
         self.save("scoped-journal", page)
+        # Preserve the asserted truncation evidence, then remove only this
+        # fixture's known files so recovery proof does not depend on walk order.
+        await self.shell(
+            "cleanup-truncation",
+            "python -I -S -c "
+            + shlex.quote(
+                "import pathlib; [pathlib.Path('many-%03d'%n).unlink(missing_ok=True) for n in range(300)]"
+            ),
+        )
 
     def verify_reports(
         self,
@@ -459,6 +468,17 @@ os.mkfifo('fifo')
             record["marker"]["binding"]["sandbox_id"] == self.evidence["environment"]["sandbox_id"]
         )
         assert record["marker"]["binding"] == self.evidence["running"]["binding"]
+        assert record["marker"]["state"] == "succeeded"
+        assert record["report"] is not None
+        assert record["report"]["coverage"]["mutation_coverage"] == "incomplete"
+        paths = [
+            entry
+            for entry in record["report"]["entries"]
+            if entry["area"] == "session" and base64.b64decode(entry["path_b64"]) == b"runs"
+        ]
+        assert len(paths) == 1
+        assert paths[0]["after"] is not None
+        assert paths[0]["after"]["size"] == len(b"beforeafter")
         self.save(
             "resumed",
             {"execution": ended, "record": record, "read": read, "kernel-continuity": continuity},

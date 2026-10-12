@@ -52,11 +52,22 @@ class MathController:
                     return
 
     def blocked(self, check: str) -> bool:
+        from .comment_math import metadata
+
         with self.store.documents._read() as db:
+            if db is not None and (meta := metadata(db, check)) is not None:
+                return bool(
+                    db.execute(
+                        "SELECT blocked IS NOT NULL AND blocked!='' "
+                        "FROM comment_math_sources WHERE entry_id=?",
+                        (meta["entry_id"],),
+                    ).fetchone()[0]
+                )
             return db is not None and bool(
                 db.execute(
                     (
-                        "SELECT blocked FROM math_sources WHERE document=(SELECT document FROM "
+                        "SELECT blocked IS NOT NULL AND blocked!='' FROM math_sources "
+                        "WHERE document=(SELECT document FROM "
                         "math_jobs WHERE check_id=?)"
                     ),
                     (check,),
@@ -93,10 +104,12 @@ class MathController:
         }
 
     def remaining(self) -> bool:
+        from .comment_math import remaining
+
         with self.store.documents._read() as db:
-            return (
-                db is not None
-                and db.execute(
+            return db is not None and (
+                remaining(db, self.project)
+                or db.execute(
                     (
                         "SELECT 1 FROM math_sources WHERE project=? AND (completed<target OR "
                         "retry_requested=1 OR EXISTS(SELECT 1 FROM math_jobs j WHERE "

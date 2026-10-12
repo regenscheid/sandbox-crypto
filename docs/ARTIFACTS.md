@@ -142,7 +142,8 @@ leases/helpers; complete teardown was verified at 12:36:45 UTC. The disposable w
 used a 1 MiB limit; this does not validate maximum-size successful capture. Lost-bridge,
 blocked host-I/O and corrupt-state behavior remain local hostile evidence. Actual main
 PR #85 ancestry and acceptance docs change no product, test, configuration or helper
-bytes. PR #86 merged after all three fresh CI checks passed. The marked reusable recipe
+bytes. Exact source `ea31757` and both Lab22/Lab23 archives merged as PR #86 at
+`9c07725` after all three fresh CI checks passed (run `38251872668`, 13:01:50 UTC). The marked reusable recipe
 is in [the lab guide](../.agents/labs/README.md#lab22-bounded-artifact-capture).
 
 ### Worker-local terminal observations
@@ -193,7 +194,8 @@ the shared transaction's durability; this is not a second independently durable 
 Detail retention removes oldest eligible payloads while retaining their fixed
 attempt markers, hashes and explicit `evicted` gaps. Quota refusal retains a `quota`
 marker. Counters, cursors and eviction floors are project/session/environment scoped;
-another scope's activity does not create a local gap or disclose a global cursor.
+another scope's activity does not create sequence holes or disclose a global
+cursor; shared global retention can still evict scoped detail.
 Internal `Store.observation_page` pins a target and stream identity and clips SQL
 metadata before parsing. History begins at an explicit feature baseline, with no
 startup backfill of older terminals. Older unfinished attempts have unavailable
@@ -204,7 +206,7 @@ new hard I/O deadline; the separately bounded sidecar does not fix those limitat
 
 This prerequisite adds no public feed, WorkerClient method, consumer, scheduler,
 content capture, artifact revision, permission or runtime capability advertisement.
-The 83 focused contract/worker cases pass, including actual HTTP/PDF/helper composition,
+The 83 focused contract/worker cases pass, including actual HTTP/helper composition and PDF when offered,
 cancellation and deterministic same-daemon restart. Static checks pass; an earlier
 affected worker/contracts run passed 962 tests with 32 opt-in skips. Root-owned OpenShell Lab24,
 final integrated gates, independent exact-head review and fresh CI remain required.
