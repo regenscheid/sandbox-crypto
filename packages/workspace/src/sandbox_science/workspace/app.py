@@ -47,7 +47,7 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from . import api, documents, jobs, project_settings, reviews
+from . import api, documents, jobs, kernels, project_settings, reviews
 from .mathrepair import (
     MathRepairService,
     RepairRequestError,
@@ -308,8 +308,11 @@ def create_app(
         await repairs.close()
 
     async def close_job_worker(app: web.Application) -> None:
-        if job_worker is not None:
-            await job_worker.close()
+        try:
+            await app[kernels.PROXY].close()
+        finally:
+            if job_worker is not None:
+                await job_worker.close()
 
     async def close_documents(app: web.Application) -> None:
         app[documents.DOCUMENTS].close()
@@ -329,6 +332,13 @@ def create_app(
     project_settings.add_routes(app)
     reviews.add_routes(app)
     jobs.add_routes(app, job_worker, job_state)
+    kernels.add_routes(
+        app,
+        store,
+        job_worker,
+        lambda request: _digest(request.cookies.get(cookie_name(request), "")).hex(),
+        lambda request: sessions.valid(request.cookies.get(cookie_name(request))),
+    )
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)
