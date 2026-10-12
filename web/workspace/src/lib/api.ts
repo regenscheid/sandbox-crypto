@@ -293,6 +293,32 @@ export interface PatchPreview {
   unnamed: string[];
 }
 
+/** Immutable anchor context, projected onto the selected document revision. */
+export interface CommentAnchor {
+  revision: number; block: string; math: string | null;
+  start: number | null; end: number | null; kind: 'block' | 'math' | 'range';
+  quote: string; quote_truncated: boolean; before: string; after: string;
+}
+export interface CommentEntry {
+  entry_id: string; number: number; kind: 'create' | 'reply' | 'edit' | 'resolve' | 'reopen';
+  author: Author; body: string; created_at: number;
+  payload: { revision?: number; changed_blocks?: string[]; outside_anchor?: string[]; changed_blocks_total?: number; changed_blocks_truncated?: boolean;
+    outside_anchor_total?: number; outside_anchor_truncated?: boolean;
+    addressed_to?: string; request_id?: string; anchor?: Record<string, unknown> };
+}
+export interface CommentThread {
+  thread_id: string; anchor: CommentAnchor; opener: Author; created_at: number;
+  revision: number; status: 'open' | 'resolved'; entries_before: number | null;
+  entries: CommentEntry[];
+  requests: { request_id: string; session_id: string; entry_id: string;
+    state: 'queued' | 'delivered' | 'responded'; delivered_run: string | null; responded_entry: string | null }[];
+  view_revision: number;
+  attachment: { status: 'current' | 'moved' | 'stale' | 'orphaned'; quote: string; current: string | null };
+}
+export interface CommentListing { threads: CommentThread[]; next_after: string | null }
+export interface CommentChange { thread_id: string; entry_id: string; revision: number;
+  request_id: string | null; outcome: string; replayed?: boolean }
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -364,6 +390,14 @@ export const api = {
     ),
   changeDocument: (project: string, document: string, change: Record<string, unknown>) =>
     post<DocumentChange>(`/projects/${part(project)}/documents/${part(document)}/changes`, change),
+  comments: (project: string, document: string, revision: number, after: string | null = null) =>
+    get<CommentListing>(`/projects/${part(project)}/documents/${part(document)}/comments?revision=${revision}` +
+      (after === null ? '' : `&after=${part(after)}`)),
+  commentThread: (project: string, document: string, thread: string, before: number | null = null) =>
+    get<CommentThread>(`/projects/${part(project)}/documents/${part(document)}/comments/${part(thread)}` +
+      (before === null ? '' : `?before=${before}`)),
+  changeComment: (project: string, document: string, change: Record<string, unknown>) =>
+    post<CommentChange>(`/projects/${part(project)}/documents/${part(document)}/comments`, change),
   previewPatch: (project: string, document: string, patch: string) =>
     get<PatchPreview>(`/projects/${part(project)}/documents/${part(document)}/patches/${part(patch)}/preview`),
   history: (project: string, document: string) =>

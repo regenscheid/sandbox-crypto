@@ -4,6 +4,7 @@ import katex from 'katex';
 import { render } from 'svelte/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Markdown from './Markdown.svelte';
+import { macroSet } from './macros';
 import {
   forgetResults,
   MAX_FORMULA,
@@ -554,4 +555,15 @@ describe('code', () => {
     expect(out).toContain('ok⟦U+2066⟧ ⟦U+2069⟧');
     expect(out).toContain('תודה\u200F.');
   });
+});
+
+
+it('renders comment text with explicit document macros without attaching document IDs', () => {
+  const macros = macroSet({ '\\F': '\\mathbb{F}' });
+  const rendered = renderMarkdown('Comment on $\\F_{17}$.', null, null, macros);
+  expect(rendered.html).toContain('katex');
+  expect(rendered.html).not.toContain('data-block');
+  expect(rendered.html).not.toContain('Undefined control sequence');
+  const unrelated = renderMarkdown('Comment on $\\F_{17}$.');
+  expect(unrelated.html).toContain('Undefined control sequence');
 });

@@ -29,7 +29,7 @@ none. These are the concrete integration seams, not completed features.
   sequence, canonical scope/name/session path, content SHA-256 and bounded
   UTF-8 bytes or a tombstone. Catalog sequence is separate from revision because
   workbook promotion changes a path without necessarily changing its text.
-  Snapshot/delta pages have record and aggregate-byte bounds. A partial page
+  A complete snapshot manifest and final digest/sequence are required before atomic publication or deletion. Snapshot/delta pages have record and aggregate-byte bounds. A partial page
   never authorizes deleting absent files; a new environment needs a completed
   current snapshot before its first dispatch.
 - **Direct edit:** worker-generated edit/operation IDs; project, environment and
