@@ -240,7 +240,22 @@ for line in sys.stdin.buffer:
         fields: dict[str, Any] = {}
         if MODE == "lockfile_requests":
             fields["environment"] = os.urandom(16).hex()
-        reply(request["id"], protocol=1, languages=["python"], location=location, **fields)
+        reply(
+            request["id"],
+            protocol=1,
+            languages=["python"],
+            location=location,
+            package_gate="gate-" + "0" * 24,
+            **fields,
+        )
+    elif op == "package_gate":
+        reply(
+            request["id"],
+            **{
+                key: request[key]
+                for key in ("incarnation", "generation", "mode", "operation", "revision")
+            },
+        )
     elif op == "lockfile" and MODE == "lockfile_requests":
         reply(request["id"], fingerprint=os.urandom(16).hex(), lockfile=unknown_keys())
     elif op == "usage":

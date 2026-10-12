@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty OpenShell runtime lab records, document editing, comments, consistency review and document math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-one OpenShell runtime lab records, document editing, comments, consistency review and document math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 11439,
-      "sha256": "7875bf650e326d66e44eaaa5d7e82b423423619f60d09d2dbf25ebc40ffd4579"
+      "bytes": 12046,
+      "sha256": "8e142a71de68354ec02270b11c1d2ca61270f03674ae790ff3a123a0720660d2"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -152,6 +152,24 @@
       "category": "runtime-validation",
       "bytes": 5977,
       "sha256": "96639ca8a6e22c4822da8a2fcb7b8c0ee3f7bb43698f4076266cfd0688b344b0"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-21-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 7720,
+      "sha256": "6bc8e329f1e805184c52eaeac024f3f8026c9e0bbecb3dd77521f6f0fa7b7362"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-21-cancel-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 332262,
+      "sha256": "e0f741bb4f068b0c0f786b9b479a805c2b91f5a1832fbdb3119f0e193af24597"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-21-offline-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 595952,
+      "sha256": "4529e8576a294b25ee749600435abb714f3358009a674a297a344116ceea5f5b"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",

@@ -274,6 +274,16 @@ async def test_disk_write_failure_ends_job_and_preserves_bounded_output(
         events.append(event)
 
     instance = executor.Executor(tmp_path, send)
+    await instance.op_package_gate(
+        {
+            "id": 0,
+            "incarnation": instance.package_gate_id,
+            "generation": 0,
+            "mode": "ready",
+            "operation": "",
+            "revision": None,
+        }
+    )
 
     def full(_fd: int, _data: bytes) -> None:
         raise OSError(errno.ENOSPC, "synthetic full job disk")
