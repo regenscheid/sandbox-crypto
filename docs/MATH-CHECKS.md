@@ -56,6 +56,8 @@ temporary directory so an operator rollout cannot change the bytes mid-check.
 - Timeout, cancellation, oversized output and failures kill/reap the process
   group before temporary code is removed. The child inherits no credentials
   or Node startup options from the service environment.
+  Repeated cancellation keeps the admission slot and private code until the
+  process ownership handoff and cleanup finish.
   Cleanup covers descendants remaining in that process group. The fixed
   KaTeX bundle creates no child processes; operator-configured code is trusted.
 - IDs, protocol version, engine version, settings, result shape and runtime

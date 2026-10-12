@@ -149,6 +149,18 @@ async def _reap(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
+async def _owned[T](task: asyncio.Task[T]) -> tuple[T, bool]:
+    """Finish ownership handoff/cleanup before propagating repeated cancellation."""
+    cancelled = False
+    while True:
+        try:
+            return await asyncio.shield(task), cancelled
+        except asyncio.CancelledError:
+            cancelled = True
+            if task.done():
+                return task.result(), cancelled
+
+
 def _code(path: Path, limit: int) -> bytes:
     """Configuration must be an ordinary bounded file, never a blocking device/FIFO."""
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
@@ -257,16 +269,16 @@ class MathChecker:
                 start_new_session=True,
             )
         )
-        try:
-            process = await asyncio.shield(spawning)
-        except asyncio.CancelledError:
-            process = await spawning
-            await asyncio.shield(_reap(process))
-            raise
+        process, cancelled = await _owned(spawning)
+        if cancelled:
+            await _owned(asyncio.create_task(_reap(process)))
+            raise asyncio.CancelledError
         try:
             output = await _exchange(process, data)
         finally:
-            await asyncio.shield(_reap(process))
+            _, cleanup_cancelled = await _owned(asyncio.create_task(_reap(process)))
+            if cleanup_cancelled:
+                raise asyncio.CancelledError
         if process.returncode != 0:
             raise ValueError("math checker process failed")
         answer = _Answer.model_validate(json.loads(output))
