@@ -14,6 +14,7 @@ import base64
 import json
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import time
@@ -245,6 +246,9 @@ async def test_a_sage_kernel_is_offered_when_its_kernelspec_exists(
             "kernel_id": "krn-s1-sage",
             "language": "sage",
             "generation": 1,
+            "start_revision": 0,
+            "current_revision": 0,
+            "revision_status": "current",
         }
         assert sage["result"]["outputs"][0]["data"]["text/plain"] == "'sage'"
         # Each language has its own kernel and state.
@@ -358,6 +362,7 @@ async def test_closing_a_session_stops_its_kernels_only(worker: Worker) -> None:
     after = await worker.run("op-a3", kind="cell", code="x")
     assert after["result"]["error"]["name"] == "NameError"
     assert after["result"]["state_lost"] is True
+    assert after["result"]["error"]["name"] == "NameError"
     assert after["result"]["kernel"]["generation"] == generation + 1
     kept = await run_in(other, "op-b2", "y")
     assert kept["result"]["outputs"][0]["data"]["text/plain"] == "'other'"
@@ -452,8 +457,108 @@ async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker
     assert "env1" not in manager._environments  # pyright: ignore[reportPrivateUsage]
     assert await manager.release_if_idle("env1", time.monotonic())  # nothing left to stop
     after = await worker.run("op-r3", kind="cell", code="x")
+    assert after["kernel_state_lost"] is True
     assert after["result"]["state_lost"] is True
-    assert after["result"]["error"]["name"] == "NameError"
+
+
+async def test_status_before_start_and_failed_birth_commit_do_not_consume_kernel_identity(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await worker.run("cp12-old", kind="cell", code="previous = 1729")
+    manager = worker.manager
+    before = manager.store.kernel("env1", "s1", "python")
+    assert before is not None
+    await manager.release("env1")
+    observed: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
+    on_event = manager._on_event  # pyright: ignore[reportPrivateUsage]
+
+    async def delayed_state(environment: str, message: Message) -> None:
+        if message.get("event") == "state" and message.get("kernel") is not None:
+            if not observed.done():
+                observed.set_result(message)
+            return  # A source event delayed before the worker applies it.
+        await on_event(environment, message)
+
+    monkeypatch.setattr(manager, "_on_event", delayed_state)
+    execution = await worker.submit(
+        "cp12-new",
+        kind="cell",
+        code="import time\nfrom pathlib import Path\n"
+        "while not Path('cp12-release').exists(): time.sleep(.01)\nprint(42)",
+    )
+    message = await asyncio.wait_for(observed, 30)
+    status, listing = await worker.post("/v1/kernels/status", {"context": CONTEXT})
+    assert status == 200, listing
+    assert listing["kernels"][0]["start_revision"] is None
+    assert manager.store.kernel("env1", "s1", "python") == before
+
+    observe = manager.store.kernel_starts.observe
+
+    def broken_observe(*args: Any, **kwargs: Any):
+        observe(*args, **kwargs)
+        raise sqlite3.OperationalError("one failed birth transaction")
+
+    with monkeypatch.context() as failing:
+        failing.setattr(manager.store.kernel_starts, "observe", broken_observe)
+        await on_event("env1", message)
+    saved = manager.store.execution(execution["execution_id"])
+    assert saved is not None
+    assert saved.state == ExecutionState.QUEUED
+    assert manager.get(saved.execution_id).state == ExecutionState.QUEUED
+    assert manager.store.kernel("env1", "s1", "python") == before
+    await on_event("env1", message)  # Same-process replay retries the whole birth commit.
+    saved = manager.store.execution(execution["execution_id"])
+    assert saved is not None
+    assert saved.kernel_state_lost
+    assert saved.kernel is not None
+    assert (saved.kernel.generation, saved.kernel.start_revision) == (2, 0)
+    (worker.root / "environments/env1/project/sessions/s1/cp12-release").touch()
+    done = await worker.finish(saved.execution_id)
+    assert done["kernel_state_lost"] is True
+    assert done["result"]["state_lost"] is True
+    assert done["result"]["kernel"]["start_revision"] == 0
+
+
+async def test_damaged_kernel_generation_refuses_status_but_preserves_shell_completion(
+    worker: Worker,
+) -> None:
+    await worker.run("cp12-seed", kind="cell", code="value = 1729")
+    worker.manager.store._db.execute(  # pyright: ignore[reportPrivateUsage]
+        "UPDATE kernels SET incarnation=?", ("x" * 20_000_000,)
+    )
+    status, _ = await worker.post("/v1/kernels/status", {"context": CONTEXT})
+    assert status == 503
+    done = await worker.run("cp12-healthy", kind="shell", script="echo healthy")
+    assert done["state"] == "succeeded"
+    assert done["result"]["stdout"]["text"] == "healthy\n"
+    assert done["result"]["running_kernels"] == []
+
+
+@pytest.mark.parametrize(
+    "kernel",
+    [
+        {},
+        {"kernel_id": "k", "language": "python", "generation": True},
+        {"kernel_id": "k", "language": "python", "generation": 1.0},
+        {"kernel_id": "k", "language": "python", "generation": 2**63},
+        {"kernel_id": "../invalid", "language": "python", "generation": 1},
+        {"kernel_id": "k", "generation": 1},
+    ],
+)
+async def test_protocol_one_kernel_status_refuses_missing_or_malformed_identity(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch, kernel: dict[str, object]
+) -> None:
+    await worker.run("cp12-open", kind="shell", script="true")
+    request = ExecutorChannel.request
+
+    async def malformed(channel: ExecutorChannel, op: str, **fields: Any) -> Message:
+        if op == "kernels":
+            return {"kernels": [kernel]}
+        return await request(channel, op, **fields)
+
+    monkeypatch.setattr(ExecutorChannel, "request", malformed)
+    status, _ = await worker.post("/v1/kernels/status", {"context": CONTEXT})
+    assert status == 503
 
 
 async def test_package_changes_count_as_environment_revisions(

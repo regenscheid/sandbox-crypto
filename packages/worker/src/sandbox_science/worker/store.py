@@ -10,7 +10,7 @@ import logging
 import re
 import sqlite3
 import time
-from collections.abc import Generator, Sequence
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -855,6 +855,18 @@ class Store:
             if source_seq is not None:
                 self.source_cursor(execution.execution_id, source_seq)
 
+    def commit_kernel_start(
+        self, start: Callable[[], Execution], event: Event, source_seq: int | None
+    ) -> Execution:
+        """Birth/generation, cell state and source acknowledgement share one commit."""
+        with self._transaction():
+            execution = start()
+            self.add_event(event)
+            self.update_execution(execution)
+            if source_seq is not None:
+                self.source_cursor(execution.execution_id, source_seq)
+        return execution
+
     # Events.
 
     def add_event(self, event: Event) -> None:
@@ -1035,11 +1047,23 @@ class Store:
 
     def kernel(self, environment_id: str, session_id: str, language: str) -> KernelRecord | None:
         row = self._db.execute(
-            "SELECT incarnation, base, last FROM kernels"
+            "SELECT substr(incarnation,1,29), CASE WHEN typeof(base)='integer' THEN base END,"
+            " CASE WHEN typeof(last)='integer' THEN last END FROM kernels"
             " WHERE environment_id = ? AND session_id = ? AND language = ?",
             (environment_id, session_id, language),
         ).fetchone()
-        return KernelRecord(str(row[0]), int(row[1]), int(row[2])) if row else None
+        if row is None:
+            return None
+        incarnation, base, last = row
+        if (
+            not isinstance(incarnation, str)
+            or re.fullmatch(r"inc-[0-9a-f]{24}", incarnation) is None
+            or type(base) is not int
+            or type(last) is not int
+            or not 0 <= base < last <= 2**62
+        ):
+            raise ValueError("invalid retained kernel generation")
+        return KernelRecord(incarnation, base, last)
 
     def save_kernel(
         self, environment_id: str, session_id: str, language: str, record: KernelRecord

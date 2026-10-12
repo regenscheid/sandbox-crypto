@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from sandbox_science.contracts import KernelInfo
+from sandbox_science.contracts import KernelInfo, KernelListing
 from sandbox_science.worker.kernel_revisions import KernelBirth, KernelStarts
 
 
@@ -75,6 +75,55 @@ def test_first_reattached_observation_is_permanently_unknown_until_new_birth() -
     assert starts.observe(birth(), info(), 7).start_revision is None
     assert starts.observe(new, info(2), 8).start_revision == 7
     db.close()
+
+
+def test_status_observation_does_not_freeze_a_provisional_unknown_birth() -> None:
+    db = sqlite3.connect(":memory:")
+    starts = KernelStarts(db)
+    assert (
+        starts.observe(birth(start_revision=None), info(), 0, remember=False).start_revision is None
+    )
+    assert starts.observe(birth(), info(), 0).start_revision == 0
+    db.close()
+
+
+@pytest.mark.parametrize(
+    "kernels",
+    [
+        [info(), info()],
+        [KernelInfo(kernel_id="k", language="python", generation=1, current_revision=1)],
+    ],
+)
+def test_kernel_listing_rejects_duplicate_or_incoherent_entries(kernels: list[KernelInfo]) -> None:
+    with pytest.raises(ValidationError):
+        KernelListing(environment_id="e1", session_id="s1", kernels=tuple(kernels))
+
+
+@pytest.mark.parametrize("column", ["incarnation", "base", "last"])
+def test_corrupt_legacy_generation_is_bounded_and_never_becomes_absent(
+    tmp_path: Path, column: str
+) -> None:
+    from sandbox_science.worker.store import KernelRecord, Store
+
+    store = Store(tmp_path / "worker.sqlite")
+    try:
+        store.save_kernel("e1", "s1", "python", KernelRecord("inc-" + "a" * 24, 0, 1))
+        query = {
+            "incarnation": "UPDATE kernels SET incarnation=?",
+            "base": "UPDATE kernels SET base=?",
+            "last": "UPDATE kernels SET last=?",
+        }[column]
+        store._db.execute(  # pyright: ignore[reportPrivateUsage]
+            query, ("x" * 20_000_000,)
+        )
+        tracemalloc.start()
+        with pytest.raises(ValueError, match="retained kernel generation"):
+            store.kernel("e1", "s1", "python")
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert peak < 100_000
+    finally:
+        store.close()
 
 
 def test_corrupt_large_birth_record_is_bounded_and_unknown() -> None:

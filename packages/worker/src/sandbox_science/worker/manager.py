@@ -1677,23 +1677,37 @@ class ExecutionManager:
                         update["location"] = location.model_copy(
                             update={"environment_revision": str(revision)}
                         )
-                live.execution = live.execution.model_copy(update=update)
-                # Birth persistence precedes source acknowledgement. A crash can
-                # replay the event, never acknowledge away an unretained start pin.
-                kernel, _ = self._kernel(
-                    environment_id,
-                    live.execution.context.session_id,
-                    message.get("kernel"),
-                    False,
-                    project_id=live.execution.context.project_id,
-                    birth_execution=execution_id if not live.reattached else None,
-                    fingerprint=message.get("environment"),
-                    expected_channel=live.channel,
+                event = StateEvent(
+                    execution_id=execution_id,
+                    seq=live.execution.last_seq + 1,
+                    time=_now(),
+                    state=ExecutionState.RUNNING,
                 )
-                if kernel is not None and live.execution.kind == "cell":
-                    live.execution = live.execution.model_copy(update={"kernel": kernel})
-                self._state(live, ExecutionState.RUNNING)
-                self.store.update_execution(live.execution)
+
+                def start() -> Execution:
+                    kernel, kernel_state_lost = self._kernel(
+                        environment_id,
+                        live.execution.context.session_id,
+                        message.get("kernel"),
+                        False,
+                        project_id=live.execution.context.project_id,
+                        birth_execution=execution_id if not live.reattached else None,
+                        fingerprint=message.get("environment"),
+                        expected_channel=live.channel,
+                    )
+                    if kernel is not None and live.execution.kind == "cell":
+                        update.update(
+                            kernel=kernel,
+                            kernel_state_lost=live.execution.kernel_state_lost or kernel_state_lost,
+                        )
+                    return live.execution.model_copy(update={**update, "last_seq": event.seq})
+
+                source = _SOURCE_EVENT.get()
+                acknowledged = (
+                    source[1] if source is not None and source[0] == execution_id else None
+                )
+                live.execution = self.store.commit_kernel_start(start, event, acknowledged)
+                self._changed(live)
                 self._ask_lockfile(environment_id, live)
         elif kind == "stream":
             name = "stderr" if message.get("name") == "stderr" else "stdout"
@@ -1913,7 +1927,7 @@ class ExecutionManager:
             environment_id,
             live.execution.context.session_id,
             raw.get("kernel"),
-            raw.get("state_lost") is True,
+            raw.get("state_lost") is True or live.execution.kernel_state_lost,
             project_id=live.execution.context.project_id,
             expected_channel=live.channel,
         )
@@ -2114,13 +2128,14 @@ class ExecutionManager:
         fingerprint: object = None,
         restarted: bool = False,
         expected_channel: ExecutorChannel | None = None,
+        remember: bool = True,
     ) -> tuple[KernelInfo | None, bool]:
         """Map the executor's kernel generation onto one that never goes back."""
         if not isinstance(raw, dict):
             return None, state_lost
         raw = cast(dict[str, Any], raw)
         language = raw.get("language", "python")
-        generation = _integer(raw.get("generation", 1), 1)
+        generation = _integer(raw.get("generation", 1), 1, 2**31 - 1)
         if language not in LANGUAGES or generation is None:
             return None, state_lost
         environment = self._environments.get(environment_id)
@@ -2128,7 +2143,10 @@ class ExecutionManager:
         if expected_channel is not None and channel is not expected_channel:
             return None, state_lost  # old bridge cannot rebind a replacement's kernel
         incarnation = channel.incarnation if channel is not None else "unknown"
-        record = self.store.kernel(environment_id, session_id, language)
+        try:
+            record = self.store.kernel(environment_id, session_id, language)
+        except ValueError:
+            return None, state_lost  # damaged derived metadata cannot fail a shell result
         if record is None:
             base = 0
         elif record.incarnation != incarnation:
@@ -2136,12 +2154,17 @@ class ExecutionManager:
             base, state_lost = record.last, state_lost or record.last > 0
         else:
             base = record.base
-        self.store.save_kernel(
-            environment_id,
-            session_id,
-            language,
-            KernelRecord(incarnation, base, max(base + generation, record.last if record else 0)),
-        )
+        if base + generation > 2**62:
+            return None, state_lost
+        if remember:
+            self.store.save_kernel(
+                environment_id,
+                session_id,
+                language,
+                KernelRecord(
+                    incarnation, base, max(base + generation, record.last if record else 0)
+                ),
+            )
         info = {
             "kernel_id": raw.get("kernel_id"),
             "language": language,
@@ -2199,7 +2222,9 @@ class ExecutionManager:
             except ValidationError:
                 pass  # legacy or malformed sandbox birth: do not infer it from today's packages
             else:
-                kernel = self.store.kernel_starts.observe(birth, kernel, revision)
+                kernel = self.store.kernel_starts.observe(
+                    birth, kernel, revision, remember=remember
+                )
         return kernel, state_lost
 
     def _session_kernel_info(
@@ -2223,6 +2248,7 @@ class ExecutionManager:
                 False,
                 project_id=context.project_id,
                 expected_channel=expected_channel,
+                remember=False,
             )
             if kernel is not None:
                 found[kernel.language] = kernel
@@ -2243,6 +2269,25 @@ class ExecutionManager:
             raw = reply.get("kernels")
             if not isinstance(raw, list) or len(cast(list[object], raw)) > len(LANGUAGES):
                 raise WorkerError(ErrorKind.UNAVAILABLE, "executor sent invalid kernel status")
+            for item in cast(list[object], raw):
+                if not isinstance(item, dict):
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE, "executor sent invalid kernel identity"
+                    )
+                item = cast(dict[str, object], item)
+                generation = item.get("generation")
+                if type(generation) is not int or not 1 <= generation < 2**31:
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE, "executor sent invalid kernel generation"
+                    )
+                try:
+                    KernelInfo.model_validate(
+                        {key: item.get(key) for key in ("kernel_id", "language", "generation")}
+                    )
+                except ValidationError as exc:
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE, "executor sent invalid kernel identity"
+                    ) from exc
             kernels = self._session_kernel_info(
                 context, cast(list[object], raw), expected_channel=channel
             )

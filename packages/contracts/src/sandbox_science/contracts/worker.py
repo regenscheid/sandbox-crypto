@@ -315,6 +315,14 @@ class KernelListing(Contract):
     current_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
     kernels: tuple[KernelInfo, ...] = Field(default=(), max_length=2)
 
+    @model_validator(mode="after")
+    def _coherent(self) -> Self:
+        if len({kernel.language for kernel in self.kernels}) != len(self.kernels):
+            raise ValueError("kernel listing repeats a language")
+        if any(kernel.current_revision != self.current_revision for kernel in self.kernels):
+            raise ValueError("kernel listing has inconsistent current revisions")
+        return self
+
 
 IsolationTier = Annotated[int, Field(ge=0, le=3)]
 """0 (none) to 3 (a microVM per sandbox), as docs/THREAT-MODEL.md defines them (D43)."""
@@ -449,6 +457,8 @@ class Execution(Contract):
     location: Location | None = None
     kernel: KernelInfo | None = None
     """The kernel observed at this cell's start; retained even if it is replaced mid-cell."""
+    kernel_state_lost: bool = False
+    """The start observation found that this cell's previous kernel state was lost."""
     result: Result | None = None
     last_seq: Annotated[int, Field(ge=0)] = 0
     """The sequence number of the latest event."""
