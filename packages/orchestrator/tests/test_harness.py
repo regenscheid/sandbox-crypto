@@ -145,6 +145,14 @@ async def test_the_first_slice_through_the_harness(client: WorkerClient) -> None
     assert assign["state"] == "succeeded"
     assert add["outputs"] == ["42"]
     assert add["kernel_generation"] == 1
+    assert add["kernel"]["start_revision"] == 0
+    assert add["kernel"]["revision_status"] == "current"
+    status = await client.kernel_status(CONTEXT)
+    assert len(status.kernels) == 1
+    assert status.kernels[0].start_revision == 0
+    assert status.kernels[0].kernel_id == add["kernel"]["kernel_id"]
+    other = await client.kernel_status(CONTEXT.model_copy(update={"session_id": "other"}))
+    assert other.kernels == ()
     assert write["state"] == "succeeded"
     artifact = published["published"]
     assert artifact["sha256"] == hashlib.sha256(b"a,b\n1,2\n").hexdigest()
