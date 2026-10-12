@@ -36,3 +36,7 @@ class WorkerError(Exception):
 
     def info(self) -> ErrorInfo:
         return ErrorInfo(kind=self.kind, message=self.message)
+
+
+class ExecutorRefusalError(WorkerError):
+    """A definite executor rejection, distinguished from an uncertain transport loss."""

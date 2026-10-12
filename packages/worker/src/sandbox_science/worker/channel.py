@@ -20,7 +20,7 @@ from typing import Any, cast
 
 from sandbox_science.contracts import ErrorKind, new_id
 
-from .errors import WorkerError
+from .errors import ExecutorRefusalError, WorkerError
 
 _log = logging.getLogger(__name__)
 
@@ -108,7 +108,11 @@ class ExecutorChannel:
         on_closed: Callable[[ExecutorChannel], Awaitable[None]],
         *,
         env: Mapping[str, str] | None = None,
+        daemon_token: str | None = None,
     ) -> None:
+        self.daemon_token = daemon_token
+        self.detaching = False
+        self.bridge_id = new_id("bridge")
         self.argv = list(argv)
         self.env = dict(env) if env is not None else None
         self.incarnation = new_id("inc")
@@ -144,7 +148,16 @@ class ExecutorChannel:
             asyncio.ensure_future(self._read_stderr()),
         ]
         try:
-            self.hello = await self.request("hello", reply_timeout=REPLY_TIMEOUT)
+            fields = {"daemon_token": self.daemon_token} if self.daemon_token else {}
+            self.hello = await self.request("hello", reply_timeout=REPLY_TIMEOUT, **fields)
+            if self.daemon_token is not None:
+                incarnation = self.hello.get("daemon_incarnation")
+                if (
+                    not isinstance(incarnation, str)
+                    or re.fullmatch(r"inc-[0-9a-f]{24}", incarnation) is None
+                ):
+                    raise WorkerError(ErrorKind.UNAVAILABLE, "invalid daemon incarnation")
+                self.incarnation = incarnation
         except BaseException:
             await self.close()
             raise
@@ -187,8 +200,21 @@ class ExecutorChannel:
             except ValueError:
                 kind = ErrorKind.INTERNAL
             message = str(error.get("message", "the executor refused the request"))
-            raise WorkerError(kind, message[:MAX_ERROR_MESSAGE])
+            raise ExecutorRefusalError(kind, message[:MAX_ERROR_MESSAGE])
         return reply
+
+    async def detach(self) -> None:
+        """Close only the stdio bridge; a daemon keeps its research processes alive."""
+        self.detaching = True
+        await self.close()
+
+    async def shutdown(self) -> None:
+        """Stop the daemon and its processes, then the bridge (environment lifecycle)."""
+        if self.daemon_token is not None and not self.closed:
+            with contextlib.suppress(WorkerError):
+                await self.request("daemon_shutdown", reply_timeout=CLOSE_GRACE)
+        self.detaching = True
+        await self.close()
 
     async def close(self) -> None:
         """Stop the executor: close its stdin, and kill it if it does not exit in time."""
@@ -266,7 +292,7 @@ class ExecutorChannel:
                 future.set_result(message)
         elif kind == "event":
             try:
-                await self._on_event(message)
+                await self._on_event({**message, "_bridge": self.bridge_id})
             except Exception:
                 _log.exception("handling an executor event failed")
 

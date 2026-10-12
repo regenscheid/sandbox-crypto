@@ -10,13 +10,14 @@ import hashlib
 import logging
 import os
 import re
+import secrets
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Literal, Protocol
 
 from sandbox_science.contracts import ErrorKind
 
-from . import executor, pdfhelper, provisioning
+from . import daemon, executor, pdfhelper, provisioning
 from .channel import EventHandler, ExecutorChannel
 from .errors import WorkerError
 from .package_clients import ClientConfiguration, render
@@ -24,6 +25,7 @@ from .settings import LocalBackendSettings, OpenShellBackendSettings
 
 _log = logging.getLogger(__name__)
 
+DAEMON_SOURCE = Path(daemon.__file__)
 EXECUTOR_SOURCE = Path(executor.__file__)
 PDF_HELPER_SOURCE = Path(pdfhelper.__file__)
 PROVISIONING_SOURCE = Path(provisioning.__file__)
@@ -94,6 +96,7 @@ class LocalBackend:
         self.settings = settings
         self.executor_args = tuple(executor_args)
         self.root = state_dir / "environments"
+        self.state_dir = state_dir
 
     async def prepare(self, environment_id: str) -> None:
         return None
@@ -110,7 +113,18 @@ class LocalBackend:
         # modules cannot shadow anything it imports.
         argv = [self.settings.python, "-I", str(EXECUTOR_SOURCE), "--stdio", "--root", str(project)]
         argv += self.executor_args
-        channel = ExecutorChannel(argv, on_event, on_closed, env=_child_env())
+        token = None
+        if self.settings.daemon:
+            argv = [
+                self.settings.python,
+                "-I",
+                str(DAEMON_SOURCE),
+                "--root",
+                str(project),
+                *self.executor_args,
+            ]
+            token = daemon_token(self.state_dir, environment_id)
+        channel = ExecutorChannel(argv, on_event, on_closed, env=_child_env(), daemon_token=token)
         await channel.start()
         return channel
 
@@ -210,7 +224,7 @@ class OpenShellBackend:
             "sandbox", "exec", "-n", sandbox, "--no-tty", "--no-login-shell", "--",
             "mkdir", "-p", settings.executor_dir, settings.project_root,
         )  # fmt: skip
-        files = [EXECUTOR_SOURCE, PROVISIONING_SOURCE, PDF_HELPER_SOURCE]
+        files = [EXECUTOR_SOURCE, PROVISIONING_SOURCE, PDF_HELPER_SOURCE, DAEMON_SOURCE]
         if settings.sched_shim:
             files.append(await self._shim())
         for path in files:
@@ -225,13 +239,23 @@ class OpenShellBackend:
             "--", settings.python, "-I", f"{settings.executor_dir}/{EXECUTOR_SOURCE.name}",
             "--stdio", "--root", settings.project_root, *self.executor_args,
         ]  # fmt: skip
-        channel = ExecutorChannel(argv, on_event, on_closed, env=self._env())
+        token = None
+        if settings.daemon:
+            argv = [argument for argument in argv if argument != "--stdio"]
+            argv = [
+                f"{settings.executor_dir}/{DAEMON_SOURCE.name}"
+                if argument == f"{settings.executor_dir}/{EXECUTOR_SOURCE.name}"
+                else argument
+                for argument in argv
+            ]
+            token = daemon_token(self.state_dir, environment_id)
+        channel = ExecutorChannel(argv, on_event, on_closed, env=self._env(), daemon_token=token)
         await channel.start()
         if self._clients is not None:
             try:
                 await configure_package_clients(channel, self._clients, environment_id)
             except BaseException:
-                await channel.close()
+                await channel.shutdown()
                 raise
         return channel
 
@@ -251,6 +275,37 @@ class OpenShellBackend:
     @property
     def isolation_tier(self) -> int:
         return self.settings.isolation_tier
+
+
+def daemon_token(state_dir: Path, environment_id: str) -> str:
+    """A stable private worker-side token; never a research-supplied path or credential."""
+    if not _IDENTIFIER.fullmatch(environment_id):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid environment ID")
+    directory = state_dir / "daemon-tokens"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / environment_id
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            import stat
+
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise WorkerError(ErrorKind.UNAVAILABLE, "daemon token is not a regular file")
+            token = os.read(fd, 256).decode().strip()
+        finally:
+            os.close(fd)
+    else:
+        token = secrets.token_hex(32)
+        try:
+            os.write(fd, token.encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    if re.fullmatch(r"[0-9a-f]{64}", token) is None:
+        raise WorkerError(ErrorKind.UNAVAILABLE, "invalid daemon token")
+    return token
 
 
 async def configure_package_clients(
