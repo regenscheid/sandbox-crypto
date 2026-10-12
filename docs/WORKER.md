@@ -69,6 +69,44 @@ Environment IDs are still shared by the whole pool, so a client can take an ID b
 
 Every request that may change something (all but `GET` and the file reads) is logged with the route it matched, the caller's name and the answer's status, never with the path it sent. Closing a session where no environment of the project is left stops nothing and answers with no kernels.
 
+## Document catalog prerequisite
+
+The worker can receive a control-owned document catalog in `documents-catalog.sqlite3` (`documents_catalog.py`; shared messages in `contracts/documents.py`). This is durable staging and catalog validation only. It writes no environment files, advances no environment's written revision, and advertises no mirror capability. LD-49 to LD-52 and fixtures LD-F12 and LD-F23 to LD-F27 remain open. Environment publication must first enforce the conservative hold whenever writer state is uncertain; direct-edit capture/acknowledgement, control outbox delivery and `ss-doc` are separate work.
+
+Catalog routes require the pool token or a project-scoped client with the explicit boolean `document_catalog = true`. Existing clients default to denial, including status reads. An enabled client sees only its configured projects; other projects return `not_found`. No deployed configuration enables a client automatically. Permission and project checks precede body reads. Metadata requests are limited to 64 KiB and content requests to 352 KiB, including chunked requests, before JSON decoding. All counters are exact JSON integers, digests are lowercase 64-character SHA-256, and unknown fields are refused.
+
+All routes below start with `/v1/document-catalog/{project_id}` and return `CatalogStatus`:
+
+| Method and suffix | Request and behavior |
+| --- | --- |
+| `GET` with no suffix | Current committed cursor, target digest and counts, plus explicitly pending staging progress |
+| `POST /snapshots` | `CatalogSnapshot`: reserve one pending generation for this project without changing membership |
+| `POST /pages` | `CatalogSnapshotPage`: contiguous metadata pages, at most 64 live entries, ordered strictly by document ID |
+| `POST /deltas` | `CatalogDelta`: at most 64 contiguous project sequence changes against the exact current cursor, including tombstones; declares the complete resulting target |
+| `POST /content` | `CatalogContentChunk`: canonical base64 for a declared target digest, in aligned contiguous 256 KiB chunks, with only the final chunk shorter |
+| `POST /commit` | The exact `CatalogSnapshot` target: verify the complete target and atomically replace the catalog, retain a receipt and discard staging |
+
+An entry names its document ID, immutable revision, project/session scope, session where applicable, name, digest and UTF-8 byte length. Its path is derived as `documents/<name>.md` or `documents/sessions/<session_id>/<name>.md`; callers cannot supply paths. Content is at most 1 MiB per document, valid UTF-8 without NUL. Empty content uses SHA-256 of the empty byte string and requires no chunk. Content already retained for the same project/digest can be reused; there is no cross-project content lookup.
+
+The version-one manifest is UTF-8 bytes: one compact JSON header with sorted keys and a terminating newline, then the same encoding of each complete live `PublicationEntry`, in strictly increasing document-ID order. All entry fields, including null/default fields, are present. The header contains `protocol: 1`, `project_id`, `catalog_seq`, `entry_count` and `total_content_bytes`. Paths must be unique. `manifest_sha256()` and `canonical_entry()` provide this encoding. The generation ID must be `catalog-<catalog_seq>-<manifest_sha256>`. Catalog sequence orders publication independently of immutable document revision; a promotion may change scope/path without changing the revision's bytes. Deltas carry their own contiguous changes and must produce the declared complete live manifest. Tombstones never appear in a snapshot's target.
+
+Only a complete, verified commit changes membership. Missing pages/chunks, wrong counts or aggregate bytes, digest mismatches, revision rollback, an immutable revision with different bytes, an inexact delta base, and path collisions all leave the previous catalog intact. An omitted document is removed from current catalog membership only at commit. Its durable identity high-water record survives removal, so a later live reintroduction needs a newer revision; delta tombstones retain their actual revision. History has an explicit identity quota and is never silently evicted. These catalog removals delete no sandbox files.
+
+SQLite `FULL` transactions commit the catalog, content membership, revision high-water records and receipt together. Pending pages/chunks survive worker restarts. Identical pending page/chunk retries return `replayed`; altered retries conflict. The most recent 32 committed generation receipts per project retain the original acknowledgement. Status always reports the actual current catalog, while `acknowledged` identifies the committed target a replay refers to, which may be older. Snapshot/delta retries must use the original payload; commit retries use the exact target. After receipt eviction an old generation remains stale and is never reapplied. Page/chunk routes address pending staging only, and return `not_found` after completion or expiry; retry the original begin/delta or commit to recover its receipt.
+
+The optional `[document_catalog]` settings configure logical retained-data bounds:
+
+| Setting | Default |
+| --- | --- |
+| `max_entries`, `max_project_bytes` | 10,000 current entries/project, 256 MiB declared content/project |
+| `max_total_entries`, `max_total_bytes` | 100,000 current entries and 4 GiB declared content across the worker |
+| `max_staged_entries`, `max_staged_bytes` | 20,000 declared target entries and 512 MiB declared content across pending generations |
+| `max_projects`, `max_retained_identities` | 1,024 project catalogs and 100,000 revision high-water identities across the worker |
+| `staging_seconds`, `receipts_per_project` | 900-second fixed staging lifetime, 32 committed receipts/project |
+| `max_pending_requests` | 8 admitted catalog operations, including queued/running SQL |
+
+Reservation is transactional across connections. Stage expiry releases metadata and chunks even when the next request is refused. Tightened limits hold over-budget staging rather than allowing a continued upload or commit; current status stays readable, and a replacement must fit current aggregate quotas. Historical identity capacity is retained until a future explicit retirement mechanism exists. These bounds cover logical content/counts, not filesystem high-water usage, WAL size or process RSS; SQLite may retain freed pages. The protocol ceilings are 10,000 entries and 1 GiB declared content per target. Delta staging additionally retains at most 64 changed revision records for tombstones. Catalog SQL uses one private thread with bounded admission, so lock waiters do not consume the worker's default I/O thread pool. A disconnected caller does not cancel an admitted transaction; application cleanup drains it before closing the database.
+
 ## Behavior worth knowing
 
 - **Durability.** An execution is stored before it is dispatched, and each event before it is delivered. A client that loses its stream asks again with `after`, and receives each event once; a replay reads the store a page at a time. An execution's last two events (its terminal state and its result) and its final record are checked and stored in one transaction.

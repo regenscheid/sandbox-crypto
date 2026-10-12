@@ -8,6 +8,19 @@ shared contracts ("Shared contracts to establish first").
 
 from .artifacts import ArtifactRef
 from .context import ExecutionContext
+from .documents import (
+    CatalogChange,
+    CatalogContentChunk,
+    CatalogDelta,
+    CatalogSnapshot,
+    CatalogSnapshotPage,
+    CatalogStageStatus,
+    CatalogStatus,
+    PublicationEntry,
+    canonical_entry,
+    generation_id,
+    manifest_sha256,
+)
 from .environments import (
     MAX_ADMISSION_HOSTS,
     AdmissionDecision,
@@ -87,7 +100,14 @@ __all__ = [
     "AdmissionResult",
     "ArtifactRef",
     "Capabilities",
+    "CatalogChange",
+    "CatalogContentChunk",
+    "CatalogDelta",
     "CatalogRef",
+    "CatalogSnapshot",
+    "CatalogSnapshotPage",
+    "CatalogStageStatus",
+    "CatalogStatus",
     "CellRequest",
     "CondaPackage",
     "Contract",
@@ -132,6 +152,7 @@ __all__ = [
     "ProvisionRequest",
     "ProvisionState",
     "ProvisioningQueue",
+    "PublicationEntry",
     "PublishRequest",
     "ReadFileRequest",
     "ResolvedFile",
@@ -148,6 +169,9 @@ __all__ = [
     "WorkerErrorResponse",
     "WriteFileRequest",
     "WriteFileResult",
+    "canonical_entry",
+    "generation_id",
+    "manifest_sha256",
     "new_id",
     "validate_relative_path",
 ]
