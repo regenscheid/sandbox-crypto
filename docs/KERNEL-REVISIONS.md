@@ -79,6 +79,48 @@ opening its executor connection uses the normal managed environment lifecycle.
 An empty session returns an empty list. A legacy executor without the scoped
 status protocol, or an invalid/oversized kernel reply, fails visibly.
 
+### Existing-connection observations
+
+`POST /v1/kernels/observe` accepts the same `KernelStatusRequest` and returns
+`KernelObservation`: the same bounded environment/session/revision/kernel fields,
+plus an aware `observed_at` timestamp assigned by the worker when it receives and
+validates the reply. This timestamp is a host receipt time, not an atomic snapshot
+of kernel or package state. The response is an observation; subsequent lifecycle
+or package changes can make it stale.
+
+Unlike explicit `/status`, observation requires an already connected executor. It
+never opens, wakes, reconnects or recycles an environment, creates a kernel,
+refreshes ordinary activity time, or increments the environment's busy counter.
+It reads existing birth/generation pins without persisting a provisional birth or
+consuming a state-loss notice. A readable CP-13 `needs_recovery` package hold stays
+readable and unchanged.
+
+Missing, closed, detaching, recovering, quarantined or recycle-fenced connections
+are `unavailable`, rather than an empty kernel list. A busy lifecycle lock or active
+session close also refuses observation. A healthy connected session with no
+running kernels returns an empty list. The worker checks the exact environment
+object, channel and incarnation again after the reply, including empty replies;
+idle release and connection replacement can win while the query is pending. A
+matching session close invalidates its active observer token even if close finishes
+before the old reply arrives; a later fresh observation can read the empty session.
+These tokens exist only for the at most eight active calls, with no retained session
+epoch history.
+
+Observer admission is immediate, with no queue: at most eight calls globally and
+one per environment. The worker waits at most two seconds for the whole existing
+channel RPC, including its transport write lock, then releases this observer's
+admission on success, failure or cancellation. It holds no lifecycle lock during
+the RPC, so repeated polling cannot hold up idle release. It neither stops the
+executor nor cancels research work when an observation times out. Legacy executors
+without the scoped kernel protocol fail visibly as `unsupported`.
+
+`WorkerClient.observe_kernels(context)` uses only this route, a five-second total
+HTTP deadline, an 8 KiB response/error limit and no redirects. It checks exact
+response environment/session scope and the existing unique-language/current-revision
+coherence rules. It never falls back to explicit `/status` when observation is
+unavailable. This is a transport prerequisite only: no GUI poller, cross-session
+notification inbox, agent injection or automatic kernel restart is enabled.
+
 A same-incarnation worker restart preserves a previously recorded exact birth pin
 and kernel globals. First observation of a kernel that was already running,
 including an unseen birth replayed after reconnect, does not infer a start revision
@@ -121,3 +163,16 @@ For root-owned disposable CP-F7 acceptance:
 Root-owned [OpenShell Lab25](../.agents/docs/agent-reports/babbage-openshell-lab-25-2026-10-12.md) passed on signed `629e27d`: Python 3.14.8, real networkx 3.7 provisioning from revision 0 to 1, retained A globals/start, fresh B start, same-VM worker restart and explicit kernel restart. The helper and evidence passed independent review; complete teardown was independently verified at 20:34:35.276855 UTC. This is sequential CP-F7 kernel-revision continuation acceptance, not a new concurrent-linking/overlap rerun. Exact combined gates, fresh CI and merge are recorded centrally. Automatic recovery/restoration,
 uninstall/upgrade, package UI and live cross-session notification remain separate
 backlog work.
+
+For root-owned disposable observation acceptance, first query a managed environment
+with no connected executor and verify `unavailable` without a start or wake. After
+an explicit cell establishes a kernel, observe its exact retained start/current
+revision and check another session is empty and a foreign project is refused.
+Observe repeatedly across a managed idle suspension: ordinary activity/busy counts
+must not advance, suspension must still complete, and subsequent observations must
+remain unavailable without reconnecting. Explicit status may use its existing wake
+path afterward. Retain source and VM/channel identities and complete teardown;
+these runtime checks are pending for the new observer route. Local focused tests
+cover the read-only SQL state, active package hold, paused kernel birth, actual
+write-lock timeout, connection/lifecycle races, cancellation and admission bounds,
+and actual HTTP scope/body/deadline/redirect refusals.
