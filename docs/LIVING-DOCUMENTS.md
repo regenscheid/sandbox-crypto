@@ -228,7 +228,7 @@ fresh [browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12
 It preserves ordinary body edit authority, immutable original/correcting history,
 exact CAS drafts and shared mechanical delivery; dependency refresh spends no
 failed-block opportunity. Complete browser/server/marked-state cleanup was verified
-at 13:50:58.272097 UTC. Fresh PR CI is required before merge. Ledger/finding-prose
+at 13:50:58.272097 UTC. PR #87 merged at `d2b133f` after all three fresh CI checks passed on `16bb1308`. Ledger/finding-prose
 math, model repair proposals and idle scheduling remain open.
 
 ## Checkpoint triggers

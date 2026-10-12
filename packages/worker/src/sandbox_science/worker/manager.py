@@ -74,6 +74,7 @@ from sandbox_science.contracts import (
     WriteFileResult,
     new_id,
 )
+from sandbox_science.contracts.output_observations import Gap, OutputReport
 from sandbox_science.contracts.worker import (
     DEFAULT_OUTPUT_LIMIT,
     FEATURES,
@@ -91,6 +92,7 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import ExecutorRefusalError, WorkerError
 from .isolation import probe
+from .output_observations import normalize as normalize_observation
 from .package_gate import PackageGate
 from .package_gate import refusal as recovery_refusal
 from .revisions import Prepared, Revisions, package_commands
@@ -189,6 +191,8 @@ class _Live:
     environment_id: str
     changed: asyncio.Future[None]
     final_source_seq: int | None = None
+    observation: OutputReport | None = None
+    observation_gap: Gap | None = "missing"
     limit: int = DEFAULT_OUTPUT_LIMIT
     cancel_requested: bool = False
     dispatched: bool = False
@@ -906,7 +910,13 @@ class ExecutionManager:
         acknowledged = live.final_source_seq
         if acknowledged is None and source is not None and source[0] == execution_id:
             acknowledged = source[1]
-        self.store.finish(final, events, acknowledged)
+        self.store.finish(
+            final,
+            events,
+            acknowledged,
+            observation=live.observation,
+            observation_gap=live.observation_gap,
+        )
         live.execution = final
         self._changed(live)
         environment = self._environments.get(live.environment_id)
@@ -1542,8 +1552,15 @@ class ExecutionManager:
         live.dispatched = True
         live.dispatched_at = time.monotonic()
         live.channel = channel
-        if channel.daemon_token is not None:
-            self.store.dispatch_incarnation(execution_id, channel.incarnation)
+        identity = self.daemon_identity(live.environment_id) if self.daemon_identity else None
+        if channel.daemon_token is not None and (
+            self.store.endpoint_incarnation(live.environment_id) != channel.incarnation
+            or self.store.endpoint_binding(live.environment_id) != identity
+        ):
+            identity = None  # never combine this channel with a newer endpoint's identity
+        self.store.observation_dispatch(
+            live.execution, channel.incarnation, identity, daemon=channel.daemon_token is not None
+        )
         live.watchdog = self._spawn(self._watch(live, request.timeout_seconds))
         await channel.request(request.kind, **fields)
         if channel.daemon_token is not None:
@@ -1676,6 +1693,13 @@ class ExecutionManager:
                 ),
             )
         elif kind == "end":
+            # Observation data is derived and independent of the research result. A
+            # bad sidecar must never enter the result parser's FAILED fallback.
+            live.observation, live.observation_gap = normalize_observation(
+                message.get("output_observations")
+            )
+            if message.get("observation_omitted") == "oversized":
+                live.observation, live.observation_gap = None, "oversized"
             try:
                 state = ExecutionState(str(message.get("state")))
                 if state not in TERMINAL_STATES:

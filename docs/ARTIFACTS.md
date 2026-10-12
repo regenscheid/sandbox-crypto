@@ -146,13 +146,87 @@ bytes. Exact source `ea31757` and both Lab22/Lab23 archives merged as PR #86 at
 `9c07725` after all three fresh CI checks passed (run `38251872668`, 13:01:50 UTC). The marked reusable recipe
 is in [the lab guide](../.agents/labs/README.md#lab22-bounded-artifact-capture).
 
-Automatic execution-output inventory remains open. `written_files` is a bounded
-executor-reported before/after stat manifest, not a complete mutation journal or
-proof of which process wrote a path. Concurrent writers, restored metadata,
-deleted/transient paths and invalid-path aliases require explicit coverage limits.
-Future capture must pin the trusted execution/attempt and original incarnation;
-later source bytes are observations at capture time, not fabricated attempt-end
-bytes or producer/input lineage. LD-49's stronger writer proof remains separate.
+### Worker-local terminal observations
+
+The next prerequisite retains a bounded typed sidecar from the executor's existing
+regular-file stat walk. It adds no scan, content read, hash or unowned filesystem
+operation. `written_files` and ordinary execution/API behavior remain compatible.
+The sidecar is independent of the result schema, so malformed or oversized derived
+metadata produces a gap while the healthy research outcome remains unchanged.
+
+Paths carry an explicit `session` or `shared` area and canonical base64 of the
+original relative POSIX bytes, before presentation replacement or the legacy
+`shared/` prefix can alias them. Invalid UTF-8 names remain distinct opaque names;
+they are not converted into paths the current UTF-8 capture API can consume.
+The only source kinds are `regular_stat_difference`, `regular_observed` when a
+limited/error before-report cannot establish novelty, and `not_seen_after`.
+The last means missing from this after-report, **not a deletion or tombstone**.
+Links and special files are unavailable. All mutation coverage is incomplete,
+even for an empty, non-truncated report. Same-size rewrites with restored timestamps,
+transient writes/deletes, concurrent writers and process causality remain unproven.
+
+Before the first dispatch, the worker stores the accepted execution/attempt/operation,
+request digest and context beside the original channel incarnation and known paired
+managed sandbox name/immutable ID. Recovery identity remains canonical execution
+state even when the derived pin is unavailable. Recovery never fills missing original
+facts from today's endpoint. The accepted actor is informational; actual producer,
+observed inputs, publishing run/model, image digest and input/kernel lineage are not
+invented. Source scan intervals use the executor's untrusted monotonic clock. A separate
+trusted host `received_at` records journal receipt/commit preparation; it does not
+claim attempt-end source bytes or reuse a possibly legacy execution end timestamp.
+
+Terminal execution, final events, daemon source cursor and observation detail/gap
+commit in the same worker SQLite transaction. Exact terminal replay leaves the first
+record unchanged. Derived quota/validation/counter/binding corruption cannot veto a
+healthy terminal record: if no trustworthy scoped sequence exists, one fixed invalid
+marker remains tied to that attempt with no invented sequence, and scoped history
+reads are explicitly unavailable. SQLite I/O or whole-store failure still affects
+the shared transaction's durability; this is not a second independently durable store.
+
+| Observation resource | Engineering cap |
+| --- | ---: |
+| Additional raw metadata per before/after report | 256 entries / 64 KiB bookkeeping |
+| One normalized report | 64 entries / 16 KiB |
+| One fixed terminal marker / scoped read page | 12 KiB / 32 records and 64 KiB |
+| Retained detail, global / project | 4,096 reports and 32 MiB / 8 MiB |
+| Detail evictions during one terminal commit | 64 |
+
+Detail retention removes oldest eligible payloads while retaining their fixed
+attempt markers, hashes and explicit `evicted` gaps. Quota refusal retains a `quota`
+marker. Counters, cursors and eviction floors are project/session/environment scoped;
+another scope's activity does not create sequence holes or disclose a global
+cursor; shared global retention can still evict scoped detail.
+Internal `Store.observation_page` pins a target and stream identity and clips SQL
+metadata before parsing. History begins at an explicit feature baseline, with no
+startup backfill of older terminals. Older unfinished attempts have unavailable
+original pins. Fixed markers/bindings follow existing execution history; these detail
+caps do not bound that history, SQLite/WAL high-water usage or process RSS. The existing
+20,000-file/depth-128 walk still has potentially large directory-name lists and no
+new hard I/O deadline; the separately bounded sidecar does not fix those limitations.
+
+This prerequisite adds no public feed, WorkerClient method, consumer, scheduler,
+content capture, artifact revision, permission or runtime capability advertisement.
+Independent review cleared exact signed freeze `35863776`. All integrated gates
+passed: 83 focused cases, 9,714 Python tests (43 opt-in skips, two existing warnings),
+441 web tests, 24 post-build math cases, locked/static/license/protocol checks and
+both builds. Root-owned [OpenShell Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md)
+passed nineteen terminal outcomes with eighteen bounded reports, raw path/root
+identity, partial files, explicit missing/truncated coverage, same-attempt worker
+restart and preserved kernel state. PDF was unavailable and not tested in that VM.
+Complete teardown was verified at 14:59:02.325873 UTC. Corruption/quota/namespace-race
+faults remain local hostile evidence. Fresh PR CI remains required before merge.
+The [marked lab recipe](../.agents/labs/README.md#lab24-worker-local-output-observations)
+inspects only its disposable worker's internal read-only journal.
+
+Automatic execution-output inventory remains open. RA-5's every-file-minus-ignore-
+patterns requirement is unchanged; this incomplete stat report does not satisfy it.
+Next design an execution/attempt/incarnation-bound one-shot capture intent/status/receipt
+before any automatic fan-out: unknown outcomes cannot republish a mutable path,
+and known receipts must pin exact retained bytes for retries. Later bytes are
+observations at capture time, never fabricated attempt-end snapshots or producer/input
+lineage. Complete telemetry/snapshotting, deletion/link semantics, ignore patterns,
+authenticated feed binding and control ingestion remain follow-ons. LD-49's stronger
+writer proof remains separate.
 
 An artifact operation is separate from document operations, keyed by trusted
 project/session and operation ID. Before the worker RPC, the inventory reserves a

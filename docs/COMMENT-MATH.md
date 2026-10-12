@@ -137,5 +137,5 @@ and confirmed-fixed history, a distinct removal reason and session-b isolation
 passed. Final capture had no warning/error logs. The browser tab, transient server
 and marked state were removed at 13:50:58.272097 UTC. No model, worker or provider
 calls occurred. Source/test/helper/assets stayed frozen through gates and final
-acceptance. Fresh PR CI is required before merge; ledger/finding-prose math,
+acceptance. PR #87 merged at `d2b133f` after all three fresh CI checks passed; ledger/finding-prose math,
 model repair proposals, idle scheduling and automatic compaction remain open.

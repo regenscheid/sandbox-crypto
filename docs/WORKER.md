@@ -155,13 +155,54 @@ authority. Transport authentication and real OpenShell acceptance remain open.
 - **Kernel generations.** A kernel's globals and generation survive worker and bridge restarts in the same daemon incarnation. A new daemon, sandbox restart, explicit kernel restart or lifecycle shutdown loses that state. The next result reports `state_lost`, and the generation keeps counting up from the last one the worker reported.
 - **Kernels.** An interrupted cell ends `cancelled` (or `timed_out`), with the kernel's own error, `KeyboardInterrupt` for Python. A cell cancelled while its kernel starts never runs. A restart does not wait for the running cell: that cell ends `cancelled`, and queued cells run on the new kernel.
 - **Watchdog.** An execution still running 30 seconds past its own limit is cancelled by the worker. If no result follows within another 60 seconds, it is reported `lost`.
-- **Written files.** The executor lists the regular files in the session workspace and the shared area before and after each attempt. The result names those the attempt created or changed (`written_files`, at most 1,000). An attempt running at the same time in the session may contribute some of them. The lists come from the executor, so research code that takes it over can name the wrong attempt.
-- **Publication** reads the file through the executor in ranges. The executor hashes the whole file once, with the first range. The ranges must start where asked and add up to exactly the size first reported, within the size limit, the size must not change between ranges, and the stored bytes must hash as first reported. `produced_by` names the last finished attempt that wrote the file. Session files count only that session's attempts, shared files any session's. A file written through the file API has no producer. (Modification times could not do this: in lab 4, the guest kernel's coarse clock gave a cell and the next shell call the same time.)
+- **Written files.** The executor lists regular files in the session workspace and shared area before/after each attempt. The result names stat differences (`written_files`, at most 1,000), preserving its existing API. Concurrent attempts can contribute them; this is neither all mutation history nor producer proof. A separately bounded raw-byte sidecar now supports the [worker-local terminal journal](ARTIFACTS.md#worker-local-terminal-observations).
+- **Publication** reads the file through the executor in ranges. The executor hashes the whole file once, with the first range. The ranges must start where asked and add up to exactly the size first reported, within the size limit, the size must not change between ranges, and the stored bytes must hash as first reported. `produced_by` is an unproven recent scoped last-writer hint, never actual-producer lineage. Session files consider only that session's attempts; shared files consider the project's scoped attempts. A file written through the file API has no proven producer. (Modification times could not do this: in lab 4, the guest kernel's coarse clock gave a cell and the next shell call the same time.)
 - **Paths.**
   - Session workspaces are `<project root>/sessions/<session>`; the shared area is `<project root>/shared`.
   - The file tools refuse absolute paths, `..` and paths through symlinks. They open one directory at a time, relative to the last, without following a symlink, the workspace and the shared area themselves included.
   - Reads refuse anything but a regular file without waiting for it (a FIFO, say), and hash in a thread, so a large file does not hold up other sessions.
   - Writes to the shared area need `expected_sha256` or `create_only`.
+
+## Worker-local output observations
+
+`contracts/output_observations.py` and `worker/output_observations.py` retain only
+already-observed regular stat differences, regular observations and `not_seen_after`
+omissions, independently of `Result.written_files`. Raw byte paths are tagged by root
+before printable aliases. Each scan's added raw bookkeeping is capped at 256 entries
+and 64 KiB; normalized reports at 64 entries/16 KiB. The legacy stat walk and its
+pending directory lists remain unchanged; no complete mutation or hard I/O bound is
+claimed. Links/special files are unavailable and absence is not a deletion.
+
+The accepted request and exact original dispatch incarnation/known immutable VM pair
+are pinned before send. Missing or corrupt derived bindings cannot suppress canonical
+daemon recovery or borrow today's endpoint. Terminal detail/gap, final execution/events
+and source acknowledgement share one FULL-synchronous transaction. Invalid sidecars,
+detail quotas or damaged derived counters retain honest gaps without changing healthy
+completion. Untrustworthy sequence state leaves an unsequenced invalid marker and makes
+that scoped history unavailable; whole-store SQLite I/O failure remains a durability
+failure. The trusted host receipt timestamp is separate from untrusted source-monotonic
+scan intervals and execution end time.
+
+Internal `Store.observation_page(OutputScope(...), after=..., target=..., stream_id=...)`
+returns at most 32 records/64 KiB using clipped typed SQL projections. Sequences/floors
+are local to project/session/environment, target pins support bounded replay and stream
+identity detects resets. One fixed marker/binding follows each execution. Detail has
+4,096-report/32 MiB global and 8 MiB project caps with at most 64 evictions per finish;
+markers preserve quota/eviction gaps. The explicit feature baseline excludes old
+terminal history; no startup backfill is attempted. Logical detail quotas do not bound
+existing execution history, SQLite/WAL allocation or RSS. Original producer and observed
+inputs remain unknown; accepted actor is informational.
+
+There is no public journal route, capability, capture or automatic artifact/reviewer
+consumer. Independently reviewed signed `35863776` passed all integrated gates
+(9,714 Python/43 opt-in skips, 441 web and 24 post-build math cases) and root-owned
+[OpenShell Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md).
+The real run retained nineteen markers/eighteen reports, known partial files,
+raw path/root distinctions and explicit truncation/missing coverage. The same
+attempt and Python kernel survived graceful worker restart; PDF was unavailable.
+Complete teardown was verified at 14:59:02.325873 UTC. Corruption/quota/namespace
+races remain local hostile proof; fresh PR CI is still required before merge.
+See [the full boundary and remaining prerequisites](ARTIFACTS.md#worker-local-terminal-observations).
 
 ## Bounded artifact capture
 
