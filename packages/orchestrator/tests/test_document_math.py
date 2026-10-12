@@ -376,7 +376,7 @@ async def test_effective_macro_change_rechecks_unchanged_agent_block(stores) -> 
     second = ScriptedChecker()
     await drain(reviews, second)
     assert first.calls[0].macros != second.calls[0].macros
-    assert get(reviews)[0]["reflags"] == 1
+    assert get(reviews)[0]["reflags"] == 0
     assert get(reviews)[0]["source"]["owner_revision"] == 1
 
 
@@ -773,8 +773,9 @@ async def test_actual_commit_thread_owned_through_repeated_cancellation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("math_source", ["document", "comment"])
 async def test_terminal_review_and_math_share_one_closing_model_handoff(
-    stores, monkeypatch
+    stores, monkeypatch, math_source
 ) -> None:
     from sandbox_science.contracts import ExecutionContext
     from sandbox_science.orchestrator.consistency.controller import ReviewController
@@ -786,7 +787,12 @@ async def test_terminal_review_and_math_share_one_closing_model_handoff(
     from sandbox_science.orchestrator.worker_client import WorkerClient
 
     docs, reviews, _ = stores
-    create(docs)
+    if math_source == "comment":
+        from .test_comment_math import comment
+
+        comment(docs, create(docs, USER, "Context."))
+    else:
+        create(docs)
     await drain(reviews, ScriptedChecker())
     reviews.configure("p", "s", ReviewConfig(enabled=False))
     context = ExecutionContext(

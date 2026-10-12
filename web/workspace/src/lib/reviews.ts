@@ -15,8 +15,10 @@ export interface Finding { finding_id: string; review_id: string | null; origin?
 export interface Transition { revision: number; status: string; actor: string; reason: string;
   payload: Json; created: number }
 export interface MathJob { check_id: string; document: string; revision: number; state: string;
+  kind?: 'document' | 'comment'; comment?: { entry_id: string; macro_revision: number; macro_sha256: string };
   cursor: number; spans: number | null; available: number; rejected: number; unavailable: number; created: number }
-export interface MathQueue { document: string; target: number; completed: number; blocked: string | null; running: boolean | number }
+export interface MathQueue { document: string; target: number; completed: number; blocked: string | null; running: boolean | number;
+  kind?: 'comment'; entry?: string; macro_revision?: number; macro_target?: number }
 const part = encodeURIComponent;
 const base = (project: string, session: string) => `/projects/${part(project)}/sessions/${part(session)}`;
 export const reviews = {
