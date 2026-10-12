@@ -39,6 +39,7 @@ from array import array
 from bisect import bisect_left, bisect_right
 from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
+from functools import partial
 from importlib.metadata import version
 from typing import Any, Final, cast
 
@@ -51,8 +52,12 @@ from mdit_py_plugins.dollarmath import dollarmath_plugin
 from mdit_py_plugins.dollarmath.index import is_escaped as _escaped_like_dollars
 from mdit_py_plugins.front_matter import front_matter_plugin
 
-PROFILE: Final = "ss-markdown-1"
+from .table_rule import table
+
+PROFILE: Final = "ss-markdown-2"
 """The profile's version. It changes whenever what the parser finds can change."""
+LEGACY_PROFILE: Final = "ss-markdown-1"
+PROFILES: Final = frozenset({LEGACY_PROFILE, PROFILE})
 
 MAX_BLOCK_LINES: Final = 200
 """The lines after a ``$$``, ``\\[`` or ``\\begin{…}`` that its block may end in."""
@@ -544,16 +549,18 @@ class Provenance:
         return None if found is None else found + 1
 
 
-def _provenance(pieces: list[tuple[str, int | None]], content: str) -> Provenance | None:
+def _provenance(
+    pieces: list[tuple[str, int | None]], content: str, space: str | None = None
+) -> Provenance | None:
     """The provenance of ``content``, the pieces joined and stripped as markdown-it does.
 
     Pieces without a source offset were added by the parser. None if the pieces do not
     give the content, which means the parser was not followed exactly.
     """
     joined = "".join(piece for piece, _ in pieces)
-    if joined.strip() != content:
+    if joined.strip(space) != content:
         return None
-    lead = len(joined) - len(joined.lstrip())
+    lead = len(joined) - len(joined.lstrip(space))
     segments: list[tuple[int, int, int]] = []
     offset = 0
     for piece, source in pieces:
@@ -629,12 +636,14 @@ def _heading_pieces(state: StateBlock, line: int) -> list[tuple[str, int | None]
     return [(src[position:maximum], position)]
 
 
-def _cell_pieces(state: StateBlock, line: int) -> list[list[tuple[str, int | None]]]:
+def _cell_pieces(
+    state: StateBlock, line: int, space: str | None
+) -> list[list[tuple[str, int | None]]]:
     """A table row's cells as the table rule splits them, with their source offsets."""
     start = state.bMarks[line] + state.tShift[line]
     raw = state.src[start : state.eMarks[line]]
-    text = raw.strip()
-    base = start + len(raw) - len(raw.lstrip())
+    text = raw.strip(space)
+    base = start + len(raw) - len(raw.lstrip(space))
     cells: list[list[tuple[str, int | None]]] = []
     current: list[tuple[str, int | None]] = []
     position = last = 0
@@ -674,13 +683,15 @@ def _record_inline(name: str, state: StateBlock, tokens: list[Token]) -> None:
                 pieces = _heading_pieces(state, token.map[0])
                 token.meta["_provenance"] = _provenance(pieces, token.content)
     elif name == "table":
+        options = cast(dict[str, object], state.md.options)
+        space = _JS_SPACE if options.get("ss_profile") == PROFILE else None
         cells: list[list[tuple[str, int | None]]] = []
         for token in tokens:
             if token.type == "tr_open" and token.map is not None:
-                cells = _cell_pieces(state, token.map[0])
+                cells = _cell_pieces(state, token.map[0], space)
             elif token.type == "inline":
                 pieces = cells.pop(0) if cells else []
-                token.meta["_provenance"] = _provenance(pieces, token.content)
+                token.meta["_provenance"] = _provenance(pieces, token.content, space)
 
 
 def _instrumented(name: str, rule: BlockRule) -> BlockRule:
@@ -756,13 +767,21 @@ def _instrument(md: MarkdownIt) -> None:
     md.inline.ruler.__cache__ = None
 
 
-def _make(*, documents: bool = True) -> MarkdownIt:
+def _make(*, documents: bool = True, profile: str = PROFILE) -> MarkdownIt:
     md = MarkdownIt(
         "js-default",
-        {"html": False, "linkify": False, "typographer": False, "maxNesting": MAX_NESTING},
+        {
+            "html": False,
+            "linkify": False,
+            "typographer": False,
+            "maxNesting": MAX_NESTING,
+            "ss_profile": profile,
+        },
     )
     md.validateLink = _validate_link  # type: ignore[method-assign]
     md.inline.ruler.at("backticks", _backticks)
+    if profile == PROFILE:
+        md.block.ruler.at("table", partial(table, trim=js_trim))
     if documents:
         front_matter_plugin(md)
         plugin_front_matter = next(
@@ -795,16 +814,18 @@ def _make(*, documents: bool = True) -> MarkdownIt:
 _local = threading.local()
 
 
-def markdown(*, documents: bool = True) -> MarkdownIt:
+def markdown(*, documents: bool = True, profile: str = PROFILE) -> MarkdownIt:
     """This thread's parser. Parses share no state, but the rulers' caches are not locked."""
-    key = "md" if documents else "comment_md"
+    if profile not in PROFILES:
+        raise ValueError(f"unsupported Markdown profile {profile}")
+    key = ("md" if documents else "comment_md") + profile
     md = cast(MarkdownIt | None, getattr(_local, key, None))
     if md is None:
-        md = _make(documents=documents)
+        md = _make(documents=documents, profile=profile)
         setattr(_local, key, md)
     return md
 
 
-def tokens(text: str, *, documents: bool = True) -> list[Token]:
+def tokens(text: str, *, documents: bool = True, profile: str = PROFILE) -> list[Token]:
     """The tokens of ``text``, with positions recorded in their ``meta``."""
-    return markdown(documents=documents).parse(text, {})
+    return markdown(documents=documents, profile=profile).parse(text, {})
