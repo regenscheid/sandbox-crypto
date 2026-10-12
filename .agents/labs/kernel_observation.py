@@ -4,10 +4,12 @@
 
 Use a reviewed frozen worker with PROJECT=lab26. This helper starts no services,
 changes no settings and only accepts the marked, owned loopback lab. Stages:
-init, active, disconnected, reconnected. Root restarts the owned worker without
-idle suspension between active/disconnected, then enables suspend_after=3 and
+init, active, restarted, reconnected. Root restarts the owned worker without
+idle suspension between active/restarted, then enables suspend_after=3 and
 restarts it again immediately before reconnected. That stage includes idle
 polling in the same process, without an operator pause after the warmup cell.
+Startup recovery reconnects remembered endpoints before serving requests; the
+restart stage therefore expects an already healthy channel, not a detached one.
 """
 
 from __future__ import annotations
@@ -227,7 +229,7 @@ class Checks:
         assert same["result"]["kernel"] == pins
         self.save("active-complete", True)
 
-    async def disconnected(self) -> None:
+    async def restarted(self) -> None:
         assert self.values.get("active-complete") is True
         before = birth_rows()
         env = await self.success("GET", f"/v1/environments/{ENVIRONMENT}")
@@ -236,35 +238,28 @@ class Checks:
         for _ in range(15):
             results.append(await self.observe())
             await asyncio.sleep(0.2)
-        assert all(status == 503 for status, _ in results), results
-        try:
-            await self.worker.observe_kernels(ExecutionContext(**self.context()))
-        except WorkerAPIError as error:
-            if error.kind is not ErrorKind.UNAVAILABLE:
-                raise AssertionError("Unexpected disconnected observer error kind") from error
-            self.save(
-                "bounded-worker-client-unavailable",
-                {"kind": error.kind.value, "status": error.status},
-            )
-        else:
-            raise AssertionError("Disconnected worker client returned a false empty success")
+        pins = [self.values["initial"]["result"]["kernel"]]
+        assert all(status == 200 and value["kernels"] == pins for status, value in results)
+        official = await self.worker.observe_kernels(ExecutionContext(**self.context()))
+        assert official.model_dump(mode="json")["kernels"] == pins
+        self.save("bounded-worker-client-after-startup-recovery", official.model_dump(mode="json"))
         assert birth_rows() == before
         assert await self.success("GET", f"/v1/environments/{ENVIRONMENT}") == env
-        self.save("disconnected-observations", results)
-        self.save("disconnected-births-unchanged", before)
-        self.save("disconnected-environment-unchanged", env)
-        self.save("disconnected-complete", True)
+        self.save("startup-recovered-observations", results)
+        self.save("startup-recovered-births-unchanged", before)
+        self.save("startup-recovered-environment-unchanged", env)
+        self.save("restarted-complete", True)
 
     async def reconnected(self) -> None:
-        assert self.values.get("disconnected-complete") is True
+        assert self.values.get("restarted-complete") is True
         assert marked()["openshell"]["environments"].get("suspend_after") == 3
         explicit = await self.success("POST", "/v1/kernels/status", {"context": self.context()})
         assert explicit["kernels"] == [self.values["initial"]["result"]["kernel"]]
         observed = await self.observe()
         assert observed[0] == 200
         assert observed[1]["kernels"] == explicit["kernels"]
-        self.save("ordinary-status-reconnects", explicit)
-        self.save("observer-after-ordinary-reconnect", observed)
+        self.save("ordinary-status-after-startup-recovery", explicit)
+        self.save("observer-after-ordinary-status", observed)
         same = await self.cell(
             "global-after-worker-restart",
             "import json,pathlib\nprint(json.dumps({'value':lab26_value,'boot':"
@@ -304,6 +299,17 @@ class Checks:
             assert await self.success("GET", f"/v1/environments/{ENVIRONMENT}") == env
             await asyncio.sleep(0.2)
         assert all(status == 503 for status, _ in stopped)
+        try:
+            await self.worker.observe_kernels(ExecutionContext(**self.context()))
+        except WorkerAPIError as error:
+            if error.kind is not ErrorKind.UNAVAILABLE:
+                raise AssertionError("Unexpected stopped observer error kind") from error
+            self.save(
+                "bounded-worker-client-unavailable",
+                {"kind": error.kind.value, "status": error.status},
+            )
+        else:
+            raise AssertionError("Stopped worker client returned a false empty success")
         assert birth_rows() == before
         self.save("stopped-observations-do-not-wake", stopped)
         self.save(
@@ -327,7 +333,7 @@ class Checks:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("stage", choices=("init", "active", "disconnected", "reconnected"))
+    parser.add_argument("stage", choices=("init", "active", "restarted", "reconnected"))
     args = parser.parse_args()
     marked(create=args.stage == "init")
     if args.stage == "init":
