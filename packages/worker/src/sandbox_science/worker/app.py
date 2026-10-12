@@ -41,6 +41,7 @@ from sandbox_science.contracts import (
     ExecutionRequest,
     Identifier,
     KernelRestartRequest,
+    KernelStatusRequest,
     ListFilesRequest,
     PolicyRevisionRequest,
     ProvisionOperation,
@@ -242,6 +243,7 @@ def create_app(
             web.get("/v1/executions/{execution_id}/events", events),
             web.post("/v1/executions/{execution_id}/cancel", cancel),
             web.post("/v1/kernels/restart", restart_kernel),
+            web.post("/v1/kernels/status", kernel_status),
             web.post("/v1/sessions/close", close_session),
             web.post("/v1/files/read", read_file),
             web.post("/v1/files/write", write_file),
@@ -857,3 +859,10 @@ async def get_artifact_content(request: web.Request) -> web.StreamResponse:
             "Content-Security-Policy": "sandbox; default-src 'none'",
         },
     )
+
+
+async def kernel_status(request: web.Request) -> web.Response:
+    """Running kernels only in the caller's authenticated project/session/environment."""
+    body = KernelStatusRequest.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    return _json(await request.app[MANAGER].kernel_status(body))
