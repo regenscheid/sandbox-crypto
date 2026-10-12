@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance and GUI distribution-notice HTTP acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
@@ -12,8 +12,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 16195,
-      "sha256": "6585956c2588006e2386d30402e82898b5ac86e458b85a6bb47f6ce469ecd66d"
+      "bytes": 16898,
+      "sha256": "158a5e608235d715581fa21dd560fe17e09d0dc9f27917aa5df70945badf5610"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -524,6 +524,18 @@
       "category": "agent-source-investigation",
       "bytes": 56150,
       "sha256": "0bc2cfc76ed52eea7a6b96cd966a17bd28d8083d5f95adfbca6b169fa9fb7be3"
+    },
+    {
+      "path": "agent-reports/workspace-license-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 208015,
+      "sha256": "52ea2e5fc7e5a3b62c5cc1306e74e71c91403f83060f474a4e63e2b440cb7c2e"
+    },
+    {
+      "path": "agent-reports/workspace-license-notices-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 4225,
+      "sha256": "6899ede7df235f52c6adfe9e64c5ccea2a7cd50fb8a3f28b8282b6590688b0a8"
     }
   ]
 }
