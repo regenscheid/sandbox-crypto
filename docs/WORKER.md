@@ -115,9 +115,10 @@ commits remain owned. These tests establish the catalog boundary, not sandbox pu
 
 The control store's [publication outbox](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
 now supplies complete pinned catalog plans and exact project-scoped revision content.
-Its source transaction records each canonical change coherently. Network delivery and
-worker acknowledgement reconciliation remain separate work; this prerequisite enables
-no environment writes or mirror capability.
+Its source transaction records each canonical change coherently. The internal
+[manual delivery journal](LIVING-DOCUMENTS.md#manual-catalog-delivery) now transfers
+complete pinned targets through these routes and reconciles exact worker storage
+acknowledgements. It enables no environment writes or mirror capability.
 
 ## Behavior worth knowing
 
