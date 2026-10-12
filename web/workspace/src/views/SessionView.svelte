@@ -3,8 +3,10 @@
   import { api } from '../lib/api';
   import { formatTime } from '../lib/format';
   import { projectHref } from '../lib/router';
+  import { kernelPanelScope } from '../lib/kernels';
   import ErrorMessage from './ErrorMessage.svelte';
   import JobsPanel from './JobsPanel.svelte';
+  import KernelPanel from './KernelPanel.svelte';
   import RunSection from './RunSection.svelte';
   const reviewComponent = import('./ReviewsPanel.svelte');
 
@@ -36,6 +38,10 @@
     </dd>
   </dl>
 
+  {@const kernelScope = kernelPanelScope(projectId, sessionId, detail)}
+  {#if kernelScope}
+    <KernelPanel {projectId} {sessionId} environmentId={kernelScope.environmentId} />
+  {/if}
   <JobsPanel {projectId} {sessionId} />
   {#await reviewComponent then component}
     {@const Reviews = component.default}
