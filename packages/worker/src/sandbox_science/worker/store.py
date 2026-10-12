@@ -32,6 +32,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.output_observations import Gap, OutputPage, OutputReport, OutputScope
 
 from .errors import WorkerError
+from .kernel_revisions import KernelStarts
 from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
 
@@ -197,6 +198,7 @@ class Store:
         self._db.execute("PRAGMA synchronous=FULL")
         self._db.executescript(_SCHEMA)
         self.observations = ObservationJournal(self._db)
+        self.kernel_starts = KernelStarts(self._db)
         for table in ("executor_endpoints", "executor_recycles"):
             columns = {str(row[1]) for row in self._db.execute(f"PRAGMA table_info({table})")}
             for name in ("sandbox", "sandbox_id"):

@@ -40,7 +40,9 @@ from sandbox_science.contracts import (
     JobRequest,
     JobStatus,
     KernelInfo,
+    KernelListing,
     KernelRestartRequest,
+    KernelStatusRequest,
     ListFilesRequest,
     Lockfile,
     PolicyRevisionRequest,
@@ -478,6 +480,12 @@ class WorkerClient:
     async def capabilities(self, environment_id: str) -> Capabilities:
         return await self._call(
             "GET", "/v1/capabilities", Capabilities, params={"environment_id": environment_id}
+        )
+
+    async def kernel_status(self, context: ExecutionContext) -> KernelListing:
+        """This context's running kernels with durable birth/current package revisions."""
+        return await self._call(
+            "POST", "/v1/kernels/status", KernelListing, KernelStatusRequest(context=context)
         )
 
     async def restart_kernel(

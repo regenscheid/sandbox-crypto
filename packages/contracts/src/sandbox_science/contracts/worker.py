@@ -284,6 +284,36 @@ class KernelInfo(Contract):
     kernel_id: Identifier
     language: Language
     generation: Annotated[int, Field(ge=1)]
+    start_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
+    """Revision observed at this kernel's birth, never inferred from a later cell."""
+    current_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
+    revision_status: Literal["current", "predates", "unknown"] = "unknown"
+
+    @model_validator(mode="after")
+    def _revision_status(self) -> Self:
+        expected = "unknown"
+        if self.start_revision is not None and self.current_revision is not None:
+            if self.start_revision > self.current_revision:
+                raise ValueError("kernel start revision is ahead of current revision")
+            expected = "current" if self.start_revision == self.current_revision else "predates"
+        if self.revision_status != expected:
+            raise ValueError("kernel revision status does not match its revisions")
+        return self
+
+
+class KernelStatusRequest(Contract):
+    """Inspect this session's running kernels without starting or restarting one."""
+
+    context: ExecutionContext
+
+
+class KernelListing(Contract):
+    """A bounded, session-scoped observation of running kernels."""
+
+    environment_id: Identifier
+    session_id: Identifier
+    current_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
+    kernels: tuple[KernelInfo, ...] = Field(default=(), max_length=2)
 
 
 IsolationTier = Annotated[int, Field(ge=0, le=3)]
@@ -367,6 +397,8 @@ class Result(Contract):
     outputs: tuple[RichOutput, ...] = ()
     error: ErrorInfo | None = None
     kernel: KernelInfo | None = None
+    running_kernels: tuple[KernelInfo, ...] = Field(default=(), max_length=2)
+    """This session's running kernels as observed at completion; no live broadcast."""
     state_lost: bool = False
     """The kernel restarted before this cell, so earlier state is gone."""
     elapsed_seconds: Annotated[float, Field(ge=0, allow_inf_nan=False)] = 0.0
@@ -415,6 +447,8 @@ class Execution(Contract):
     started_at: datetime | None = None
     ended_at: datetime | None = None
     location: Location | None = None
+    kernel: KernelInfo | None = None
+    """The kernel observed at this cell's start; retained even if it is replaced mid-cell."""
     result: Result | None = None
     last_seq: Annotated[int, Field(ge=0)] = 0
     """The sequence number of the latest event."""
