@@ -122,6 +122,13 @@ Its source transaction records each canonical change coherently. The internal
 complete pinned targets through these routes and reconciles exact worker storage
 acknowledgements. It enables no environment writes or mirror capability.
 
+The control-side [worker document source adapter](WORKER-DOCUMENT-SOURCE.md) consumes
+trusted immutable captures with established publication/context identity. It retains
+exact raw refusals or submits named delegated patches, committing source, raw bytes,
+quota accounting, receipts and publication metadata atomically. It exposes no worker
+route, filesystem capture/restore or writer guard; every receipt denies restoration
+authority. Transport authentication and real OpenShell acceptance remain open.
+
 ## Behavior worth knowing
 
 - **Durability.** An execution is stored before it is dispatched, and each event before it is delivered. A client that loses its stream asks again with `after`, and receives each event once; a replay reads the store a page at a time. An execution's last two events (its terminal state and its result) and its final record are checked and stored in one transaction.

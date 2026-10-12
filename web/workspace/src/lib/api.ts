@@ -158,10 +158,10 @@ export interface MathRepairAnswer {
   cached?: boolean;
 }
 
-/** Who wrote a revision (living documents, LD-10): a user, an agent run, an import or
- * the platform, with what identifies each. */
+/** Who wrote a revision (living documents, LD-10): a user, an agent run, worker code,
+ * an import or the platform, with what identifies each. */
 export interface Author {
-  kind: 'user' | 'agent' | 'import' | 'platform';
+  kind: 'user' | 'agent' | 'worker' | 'import' | 'platform';
   user?: string;
   session_id?: string;
   run_id?: string;
@@ -171,6 +171,11 @@ export interface Author {
   tool_call?: string;
   import_id?: string;
   service?: string;
+  worker_binding?: string;
+  environment_id?: string;
+  incarnation?: string;
+  execution_id?: string;
+  attempt_id?: string;
 }
 
 export interface DocumentInfo {
