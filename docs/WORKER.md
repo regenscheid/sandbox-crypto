@@ -163,6 +163,42 @@ authority. Transport authentication and real OpenShell acceptance remain open.
   - Reads refuse anything but a regular file without waiting for it (a FIFO, say), and hash in a thread, so a large file does not hold up other sessions.
   - Writes to the shared area need `expected_sha256` or `create_only`.
 
+## Bounded artifact capture
+
+`POST /v1/artifacts` requires executor `artifact_capture_protocol=1`; ordinary file
+reads retain their existing protocol. Internal `capture_read` carries a fresh
+`cap-` ID, scoped path/session, exact offset/range/byte cap, hash flag and remaining
+budget. `capture_cancel` addresses only that owned helper. Both successful protocol
+replies carry the exact ID and explicit `cleaned: true` only after actual cleanup
+or a no-helper pre-admission refusal. Capture-specific failure data is bounded;
+generic executor errors confer no cleanup proof. Active duplicate IDs cannot claim
+cleanup. Recent cancellation tombstones are bounded and IDs are never retry tokens.
+
+The fixed sandbox Python `-I -S` helper streams the initial hash under a preflight
+and growth byte cap, reads only regular nofollow sources, retains at most 8 MiB and
+checks its opened file identity. Publication verifies all range stamps/sizes and
+the final copied-byte hash. No rich code/import/renderer or researcher environment
+is loaded. Source paths remain mutable; this is exact retained content, not proof
+of writer closure, a producer, an atomic path snapshot or complete output inventory.
+
+Four FULL-durable publication leases globally, two per environment, reserve before
+dispatch; two actual helpers per executor have no queue. The default 30-second
+operation budget includes waits and host blob work. It is distinct from the one-second
+cleanup-ACK attempt and actual TERM/KILL/drain lifetime. Unkillable filesystem waits
+retain guest ownership/capacity. Host threads remain owned before FD close/reuse.
+Temporary helpers cancel on daemon bridge detach; research jobs/kernels retain their
+existing survival semantics. Environment release and worker shutdown drain host work.
+
+Unknown cleanup persists a bounded held lease across restart. Exact same-incarnation
+ACK may reconcile a host-drained hold; confirmed original-VM deletion or the existing
+verified recycle fence can mark matching guest ownership clean. Neither a logical
+environment deletion, observed replacement, blank legacy binding nor a new incarnation
+is proof. Active host leases remain counted until their actual work ends. Corrupt
+leases fail closed; crashed foreign active owners need explicit operator investigation
+because guest proof cannot prove their host threads exited. No automatic repair or
+new VM recycle trigger is added. See [capture limits and recovery](ARTIFACTS.md#bounded-worker-capture-prerequisite)
+for exact bounds, client-disconnect semantics and the source/runtime validation boundary.
+
 ## Background jobs
 
 A `JobRequest` (`kind: job`) supplies a shell script or argv, a purpose and expected

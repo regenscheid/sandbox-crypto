@@ -7,9 +7,12 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 import sqlite3
+import time
 from collections.abc import Generator, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -79,6 +82,18 @@ CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
     record TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS artifact_capture_leases (
+    publication_id TEXT PRIMARY KEY,
+    environment_id TEXT NOT NULL,
+    incarnation TEXT NOT NULL,
+    capture_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    guest_clean INTEGER NOT NULL,
+    sandbox TEXT NOT NULL,
+    sandbox_id TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS artifact_capture_helper
+ON artifact_capture_leases(capture_id) WHERE capture_id != '';
 CREATE TABLE IF NOT EXISTS provisions (
     provision_id TEXT PRIMARY KEY,
     operation_key TEXT NOT NULL UNIQUE,
@@ -132,6 +147,20 @@ CREATE TABLE IF NOT EXISTS provision_steps (
 
 
 @dataclass(frozen=True, slots=True)
+class CaptureLease:
+    """Durable capture admission; a held lease never expires on a clock or reconnect."""
+
+    publication_id: str
+    environment_id: str
+    incarnation: str = ""
+    capture_id: str = ""
+    phase: str = "active"
+    guest_clean: int = 0
+    sandbox: str = ""
+    sandbox_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class RevisionRecord:
     """An environment's revision and the fingerprint of its installed packages (W3).
 
@@ -160,6 +189,7 @@ class KernelRecord:
 class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        self._path = path
         self._db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
@@ -224,6 +254,224 @@ class Store:
 
     def close(self) -> None:
         self._db.close()
+
+    def capture_leases(self) -> tuple[CaptureLease, ...]:
+        """Read at most four bounded lease records; corrupt state holds all admission."""
+        rows = self._db.execute(
+            "SELECT substr(publication_id,1,29), substr(environment_id,1,129),"
+            " substr(incarnation,1,29), substr(capture_id,1,29), substr(phase,1,7),"
+            " CASE WHEN typeof(guest_clean)='integer' THEN guest_clean ELSE NULL END,"
+            " substr(sandbox,1,129), substr(sandbox_id,1,129)"
+            " FROM artifact_capture_leases LIMIT 5"
+        ).fetchall()
+        if len(rows) > 4:
+            raise ValueError("capture admission state exceeds its bound; cleanup is unknown")
+        leases: list[CaptureLease] = []
+        for row in rows:
+            publication, environment, incarnation, capture_id, phase, clean, sandbox, sandbox_id = (
+                row
+            )
+            if (
+                not isinstance(publication, str)
+                or re.fullmatch(r"pub-[0-9a-f]{24}", publication) is None
+                or not isinstance(environment, str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", environment) is None
+                or not isinstance(incarnation, str)
+                or (incarnation != "" and re.fullmatch(r"inc-[0-9a-f]{24}", incarnation) is None)
+                or not isinstance(capture_id, str)
+                or (capture_id != "" and re.fullmatch(r"cap-[0-9a-f]{24}", capture_id) is None)
+                or bool(incarnation) != bool(capture_id)
+                or phase not in ("active", "held")
+                or type(clean) is not int
+                or clean not in (0, 1)
+                or not isinstance(sandbox, str)
+                or not isinstance(sandbox_id, str)
+                or bool(sandbox) != bool(sandbox_id)
+                or (
+                    sandbox != ""
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", sandbox) is None
+                )
+                or (
+                    sandbox_id != ""
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", sandbox_id) is None
+                )
+            ):
+                raise ValueError("capture admission state is corrupt; cleanup is unknown")
+            leases.append(
+                CaptureLease(
+                    publication,
+                    environment,
+                    incarnation,
+                    capture_id,
+                    phase,
+                    clean,
+                    sandbox,
+                    sandbox_id,
+                )
+            )
+        return tuple(leases)
+
+    def reserve_capture(self, publication_id: str, environment_id: str) -> CaptureLease:
+        """Atomically count durable admission across connections, before any dispatch await."""
+        if (
+            re.fullmatch(r"pub-[0-9a-f]{24}", publication_id) is None
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", environment_id) is None
+        ):
+            raise ValueError("invalid capture admission identity")
+        with self._transaction():
+            leases = self.capture_leases()
+            if (
+                len(leases) >= 4
+                or sum(item.environment_id == environment_id for item in leases) >= 2
+            ):
+                raise ValueError("capture admission limit reached; prior cleanup may be unknown")
+            lease = CaptureLease(publication_id, environment_id)
+            self._db.execute(
+                "INSERT INTO artifact_capture_leases VALUES (?,?,?,?,?,?,?,?)",
+                (publication_id, environment_id, "", "", "active", 0, "", ""),
+            )
+            return lease
+
+    def dispatch_capture(
+        self,
+        lease: CaptureLease,
+        incarnation: str,
+        capture_id: str,
+        binding: tuple[str, str] | None = None,
+    ) -> CaptureLease:
+        """Pin the exact helper/incarnation before sending, fenced by the prior lease."""
+        if binding is not None and any(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value) is None for value in binding
+        ):
+            raise ValueError("capture VM binding is corrupt; cleanup is unknown")
+        if (
+            re.fullmatch(r"inc-[0-9a-f]{24}", incarnation) is None
+            or re.fullmatch(r"cap-[0-9a-f]{24}", capture_id) is None
+            or (lease.incarnation and lease.incarnation != incarnation)
+            or (lease.sandbox and (lease.sandbox, lease.sandbox_id) != binding)
+        ):
+            raise ValueError("capture endpoint identity changed; cleanup is unknown")
+        result = self._db.execute(
+            "UPDATE artifact_capture_leases SET incarnation=?,capture_id=?,guest_clean=0,"
+            " sandbox=?,sandbox_id=?"
+            " WHERE publication_id=? AND environment_id=? AND incarnation=? AND capture_id=?"
+            " AND phase='active' AND guest_clean=0 AND sandbox=? AND sandbox_id=?",
+            (
+                incarnation,
+                capture_id,
+                *(binding or ("", "")),
+                lease.publication_id,
+                lease.environment_id,
+                lease.incarnation,
+                lease.capture_id,
+                lease.sandbox,
+                lease.sandbox_id,
+            ),
+        )
+        if result.rowcount != 1:
+            raise ValueError("capture admission was displaced; cleanup is unknown")
+        return CaptureLease(
+            lease.publication_id,
+            lease.environment_id,
+            incarnation,
+            capture_id,
+            sandbox=(binding or ("", ""))[0],
+            sandbox_id=(binding or ("", ""))[1],
+        )
+
+    def capture_binding(self, environment_id: str, incarnation: str) -> tuple[str, str] | None:
+        """A clipped original endpoint binding for one exact daemon incarnation."""
+        row = self._db.execute(
+            "SELECT substr(sandbox,1,129), substr(sandbox_id,1,129) FROM executor_endpoints"
+            " WHERE environment_id=? AND incarnation=?",
+            (environment_id, incarnation),
+        ).fetchone()
+        if row is None:
+            raise ValueError("capture endpoint incarnation changed before dispatch")
+        if row == ("", ""):
+            return None
+        if any(
+            not isinstance(value, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value) is None
+            for value in row
+        ):
+            raise ValueError("capture VM binding is corrupt; cleanup is unknown")
+        return row[0], row[1]
+
+    def finish_capture(self, lease: CaptureLease, *, certain: bool) -> bool:
+        """Called only after actual host work drains; retain unknown guest ownership."""
+        with self._transaction():
+            found = next(
+                (
+                    item
+                    for item in self.capture_leases()
+                    if item.publication_id == lease.publication_id
+                ),
+                None,
+            )
+            if found is None or (
+                found.environment_id,
+                found.incarnation,
+                found.capture_id,
+                found.phase,
+                found.sandbox,
+                found.sandbox_id,
+            ) != (
+                lease.environment_id,
+                lease.incarnation,
+                lease.capture_id,
+                "active",
+                lease.sandbox,
+                lease.sandbox_id,
+            ):
+                raise ValueError("capture completion was displaced; cleanup is unknown")
+            if certain or found.guest_clean == 1:
+                self._db.execute(
+                    "DELETE FROM artifact_capture_leases WHERE publication_id=?",
+                    (lease.publication_id,),
+                )
+                return True
+            self._db.execute(
+                "UPDATE artifact_capture_leases SET phase='held' WHERE publication_id=?",
+                (lease.publication_id,),
+            )
+            return False
+
+    def acknowledge_capture(self, lease: CaptureLease) -> None:
+        """Release one held exact tuple after a same-incarnation positive cleanup ACK."""
+        result = self._db.execute(
+            "DELETE FROM artifact_capture_leases WHERE publication_id=? AND environment_id=?"
+            " AND incarnation=? AND capture_id=? AND phase='held' AND sandbox=? AND sandbox_id=?",
+            (
+                lease.publication_id,
+                lease.environment_id,
+                lease.incarnation,
+                lease.capture_id,
+                lease.sandbox,
+                lease.sandbox_id,
+            ),
+        )
+        if result.rowcount != 1:
+            raise ValueError("capture cleanup acknowledgement was displaced")
+
+    def fenced_captures(
+        self, environment_id: str, incarnation: str, sandbox: str, sandbox_id: str
+    ) -> None:
+        """Verified original-VM termination; active host work still owns its rows."""
+        if not sandbox or not sandbox_id:
+            raise ValueError("capture cleanup needs the original immutable VM binding")
+        with self._transaction():
+            self.capture_leases()  # Corrupt state cannot inherit an unrelated lifecycle proof.
+            self._db.execute(
+                "UPDATE artifact_capture_leases SET guest_clean=1"
+                " WHERE environment_id=? AND incarnation=? AND sandbox=? AND sandbox_id=?",
+                (environment_id, incarnation, sandbox, sandbox_id),
+            )
+            self._db.execute(
+                "DELETE FROM artifact_capture_leases WHERE environment_id=? AND incarnation=?"
+                " AND phase='held' AND sandbox=? AND sandbox_id=?",
+                (environment_id, incarnation, sandbox, sandbox_id),
+            )
 
     @contextlib.contextmanager
     def _transaction(self) -> Generator[None, None, None]:
@@ -347,6 +595,85 @@ class Store:
             (environment_id,),
         ).fetchall()
         return [found for row in rows if (found := _readable(str(row[0]), row[1])) is not None]
+
+    def producer_hint(
+        self, project_id: str, environment_id: str, session_id: str, path: str, deadline: float
+    ) -> str | None:
+        """A bounded, unproven hint from the last 256 terminal rows, never lineage.
+
+        LIMIT precedes the path predicate. Corrupt/large records are unknown, and
+        only small scalar projections cross the SQLite/Python boundary.
+        """
+        shared = path.startswith("shared/")
+        try:
+            with contextlib.closing(
+                sqlite3.connect(self._path.resolve().as_uri() + "?mode=ro", uri=True, timeout=0.1)
+            ) as database:
+                database.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                return self._producer_hint(
+                    database, project_id, environment_id, session_id, path, shared
+                )
+        except sqlite3.DatabaseError:
+            _log.warning("artifact producer hint unavailable; attribution remains unknown")
+            return None
+
+    @staticmethod
+    def _producer_hint(
+        database: sqlite3.Connection,
+        project_id: str,
+        environment_id: str,
+        session_id: str,
+        path: str,
+        shared: bool,
+    ) -> str | None:
+        row = database.execute(
+            "WITH recent AS MATERIALIZED ("
+            " SELECT rowid AS execution_row FROM executions"
+            " WHERE environment_id = ? AND terminal = 1"
+            " AND (? OR session_id = ?) ORDER BY rowid DESC LIMIT 256"
+            "), bounded AS NOT MATERIALIZED ("
+            " SELECT CASE WHEN length(CAST(record AS BLOB)) <= 65536"
+            " THEN CASE WHEN json_valid(record) THEN record ELSE '{}' END"
+            " ELSE '{}' END AS record FROM executions"
+            " JOIN recent ON executions.rowid = recent.execution_row"
+            ") SELECT substr(json_extract(record, '$.attempt_id'), 1, 29) AS attempt,"
+            " substr(json_extract(record, '$.ended_at'), 1, 65)"
+            " FROM bounded WHERE json_extract(record, '$.context.project_id') = ?"
+            " AND json_extract(record, '$.context.environment_id') = ?"
+            " AND (? OR json_extract(record, '$.context.session_id') = ?)"
+            " AND json_type(record, '$.ended_at') = 'text'"
+            " AND length(json_extract(record, '$.ended_at')) <= 64"
+            " AND json_type(record, '$.attempt_id') = 'text'"
+            " AND length(json_extract(record, '$.attempt_id')) = 28"
+            " AND json_type(record, '$.result.written_files') = 'array'"
+            " AND json_array_length(record, '$.result.written_files') <= 1000"
+            " AND EXISTS(SELECT 1 FROM json_each(record, '$.result.written_files')"
+            " WHERE type = 'text' AND value = ?)"
+            " ORDER BY json_extract(record, '$.ended_at') DESC LIMIT 1",
+            (
+                environment_id,
+                shared,
+                session_id,
+                project_id,
+                environment_id,
+                shared,
+                session_id,
+                path,
+            ),
+        ).fetchone()
+        attempt = row[0] if row else None
+        try:
+            ended = datetime.fromisoformat(row[1]) if row else None
+        except ValueError:
+            return None
+        return (
+            attempt
+            if isinstance(attempt, str)
+            and re.fullmatch(r"att-[0-9a-f]{24}", attempt)
+            and ended is not None
+            and ended.tzinfo is not None
+            else None
+        )
 
     def finish(
         self, execution: Execution, events: Sequence[Event], source_seq: int | None = None

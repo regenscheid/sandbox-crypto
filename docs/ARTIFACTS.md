@@ -57,6 +57,88 @@ replacing living document files (LD-49 remains open).
 
 ## Intent, transfer and recovery
 
+### Bounded worker capture prerequisite
+
+Worker publication now requires executor `artifact_capture_protocol=1`. A legacy
+executor receives a visible `unsupported` refusal; ordinary `read_file` behavior
+is unchanged. This prerequisite bounds the previously unbounded first whole-file
+hash before any automatic execution-output inventory is enabled.
+
+Each range runs fixed stdlib-only code in a sandbox child using Python `-I -S`,
+fixed arguments and a minimal environment. The child opens parents relative to
+held directory descriptors with no symlink traversal, opens the final entry
+nonblocking, then proves it is regular before reading. It refuses an initially
+oversized file before hashing; growth consumes at most the byte cap plus one.
+The first pass hashes the whole file while retaining only the requested range.
+Later bounded ranges must match its stat identity stamp and size. The final copied
+blob must match the first exact SHA-256 and size. This proves retained bytes, not
+atomic source capture or writer/producer identity.
+
+| Capture resource | Bound |
+| --- | ---: |
+| Source size | Configured worker maximum, capped at 1 GiB |
+| One retained range / hash read block | 8 MiB / 1 MiB |
+| Helper input / bounded reply overhead | 16 KiB / 16 KiB |
+| Durable admitted publications, global / environment | 4 / 2 |
+| Actual guest helpers per executor | 2 |
+| Operation budget, including lock waits and host I/O | 30 seconds by default |
+| Cleanup acknowledgement attempt, including transport write | 1 second |
+
+There is no capture admission queue. The programmatic operation budget can be
+0.05–60 seconds; no deployed configuration is changed. The worker's existing
+1 GiB publication default remains. The helper streams hashes instead of allocating
+the whole source. A private four-thread host pool owns blob operations without
+occupying the default executor with blocked work.
+
+Timeout/cancellation sends TERM, then KILL after 0.2 seconds to the exact owned
+helper and drains stdout/process wait. Fixed helper code creates no descendants.
+Repeated cancellation cannot discard a spawn, close a blob FD while its thread
+still uses it, or release actual helper capacity before exit. Filesystem I/O stuck
+in an unkillable kernel wait may outlive the budget and cleanup grace. The guest
+pool retains that real task and slot; no strict wall-time/reap guarantee is made.
+The host wire request may be cancelled after its bounded cleanup-ACK attempt,
+but this is never evidence of guest cleanup.
+
+FULL-synchronous SQLite leases reserve global/environment capacity before any
+dispatch await and persist each exact helper ID, incarnation and known original
+sandbox name/immutable ID before sending. A positive capture/cancel reply must
+name that exact helper and explicitly prove cleanup. Generic errors, lost replies,
+transport closure and a new incarnation do not release admission. Once actual host
+work drains, missing proof leaves a durable `held` lease. Only exact same-incarnation
+cleanup ACK on reconnect or an existing verified stop/delete fence for its original
+VM may resolve guest uncertainty. A verified VM fence marks an active host lease
+guest-clean but never releases it before host completion. Corrupt state fails closed.
+
+The lifecycle still assumes one active worker owns its host tasks. Atomic SQL
+admission also counts other connections, but an `active` row left by a crashed or
+foreign worker has no proof of host cleanup and remains a conservative hold.
+There is no lease expiry, automatic operator repair or new-incarnation reset.
+Unknown legacy/local-backend bindings cannot borrow a managed VM's deletion proof.
+A clean held slot may require a same-daemon reconnect after a lost late ACK.
+
+The bounded client publication request has a 10-second deadline; the server's
+default budget is 30 seconds. Default aiohttp handlers can continue after peer
+disconnect. A client timeout therefore means an unknown outcome, not immediate
+remote cancellation. Existing durable control publication intent handles this
+uncertainty without retrying the mutable path. The worker's unproven last-writer
+hint now searches only the newest 256 scoped terminal records with a separate
+64 KiB per-record cap; only row IDs are materialized. Larger, corrupt or older
+records produce `unknown`, never lineage proof.
+
+Local hostile tests cover sparse/growing/special sources, malformed replies,
+repeated cancellation, delayed spawn, blocked host I/O, lost transports, corrupt
+lease metadata, exact original-binding fences and actual HTTP disconnect behavior.
+Real OpenShell acceptance is a separate required gate; the marked Lab22 recipe is
+in [the lab guide](../.agents/labs/README.md#lab22-bounded-artifact-capture).
+
+Automatic execution-output inventory remains open. `written_files` is a bounded
+executor-reported before/after stat manifest, not a complete mutation journal or
+proof of which process wrote a path. Concurrent writers, restored metadata,
+deleted/transient paths and invalid-path aliases require explicit coverage limits.
+Future capture must pin the trusted execution/attempt and original incarnation;
+later source bytes are observations at capture time, not fabricated attempt-end
+bytes or producer/input lineage. LD-49's stronger writer proof remains separate.
+
 An artifact operation is separate from document operations, keyed by trusted
 project/session and operation ID. Before the worker RPC, the inventory reserves a
 bounded durable intent binding the exact request, publishing context and worker

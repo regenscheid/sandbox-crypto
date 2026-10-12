@@ -141,6 +141,16 @@ inventory remains open, alongside imports, observed-input lineage, retention/del
 workflows and rich PDF/GUI consumers.
 Actual producer remains unknown; a worker last-writer hint is not provenance proof.
 
+Before automatic reported-output capture, complete the [bounded worker capture
+prerequisite](ARTIFACTS.md#bounded-worker-capture-prerequisite): fixed sandbox helper,
+size/growth/hash limits, owned spawn/reap/blob I/O and durable unknown-cleanup
+admission. Local source/tests are in progress, with independent review and marked
+real OpenShell Lab22 required before merge. This adds no automatic discovery.
+Then design a durable bounded execution/attempt/path observation journal with exact
+original-incarnation binding and honest incomplete-manifest coverage. Current
+`written_files` stat differences cannot prove all writes, producer identity, inputs
+or attempt-end source bytes; RA-5/RA-F2/CR-F6 remain open.
+
 Support attributed user edits and revision-checked agent patches; demonstrate stale-patch reconciliation and orphaned anchors. Use one TeX-preserving renderer across research views. Evaluate PDF.js navigation against exact page/region anchors while retaining worker extraction/rendering. Assumption changes should identify dependent claims/reviews for reconsideration, not silently rewrite conclusions.
 
 The worker document-catalog prerequisite is implemented, but runtime document publication, direct-edit integration and `ss-doc` remain open (LD-49 to LD-52). Before enabling replacement/removal, complete the [protected-filesystem feasibility prerequisite](../.agents/docs/agent-reports/document-writer-guard-2026-10-12.md): prove arbitrary writable handle/mmap lifetime, namespace exclusion, exact capture/acknowledgement revalidation, bounded admission and monitor/controller failure/restart behavior under OpenShell. FUSE is a proposed boundary requiring implementation and real VM acceptance, not a selected or validated capability. Hold uncertain writer state; helper-only locks and ordinary VM recycling do not satisfy the requirement while preserving healthy kernels. Continue independent control outbox/source adapter/helper-contract work without claiming a runtime mirror.

@@ -1,5 +1,19 @@
 # Plan changes
 
+## 2026-10-12 — bounded artifact capture prerequisite
+
+Bound the worker's first whole-file hash before enabling automatic execution-output
+inventory: fixed sandbox-only stdlib helper, regular nofollow sources, preflight/growth
+byte caps, operation budget and actual spawn/reap/blob ownership. Add four/two FULL-durable
+global/environment admission leases because transport loss cannot prove guest cleanup.
+Exact helper/incarnation ACK or verified original immutable VM termination can resolve
+guest uncertainty; active host ownership still drains before release. No expiry, implicit
+new-incarnation reset, execution exemption, deployment change or fabricated lineage.
+The unproven last-writer hint has a 256-terminal-record scoped horizon and separate
+64 KiB record cap, materializing only row IDs. Source/tests and
+CP13 union are in progress; independent exact review, all gates and marked Lab22 remain
+required. Automatic fan-out and LD-49 writer proof remain open. [Boundary](../docs/ARTIFACTS.md#bounded-worker-capture-prerequisite).
+
 ## 2026-10-12 — sticky recovery admission prerequisite
 
 Implement CP-13 execution refusal independently of the deferred Restorer: atomically persist install hold, require guest acknowledgement and exact saved internal-step authority, fence actual process/kernel launch after waits, and conservatively classify startup/legacy peers. Sticky state is bound to the original immutable sandbox and survives abandonment/daemon recycle. Required cancellation-owned durable operation drain precedes confirmed deletion cleanup/reuse; observed replacement stop/delete is refused. Matching package lists never clear uncertainty. [As built](../docs/RECOVERY-FENCE.md); marked Lab21 helper added. Root's first predecessor cancel/restart pass passed and was completely removed. Final original-binding proof correction requires a guard before guest mutation and atomic clear revalidation, including API compositions without optional release. Corrected-source review, combined gates and fresh offline/delete-reuse acceptance remain pending. No runtime pins, security policy, provider or running service changes.

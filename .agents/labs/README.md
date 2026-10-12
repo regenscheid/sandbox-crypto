@@ -143,3 +143,26 @@ positive/negative checks, explicit offline variant and teardown boundary are in
 Root coordinates the run only after exact-source review. The helper's marker and
 lab21 client scope are mandatory; it never runs against real project data. Keep
 both source checkouts unchanged while lab worker/middleware/cache processes use them.
+
+## Lab22: bounded artifact capture
+
+Root coordinates the disposable run after exact source review. Start `lab_up.sh`
+and `PROJECT=lab22 worker_up.sh` from the frozen reviewed tree. Stop only its
+transient worker, add top-level `max_artifact_size = 1048576` to that disposable
+`worker/worker.toml`, then restart that same lab worker. The default production
+setting is unchanged. Run:
+
+```bash
+.venv/bin/python -I .agents/labs/artifact_capture.py init prepare verify
+```
+
+The mandatory marker, lab22-scoped synthetic client and exact 1 MiB setting guard
+the helper. It checks exact binary/empty content hashes and retained bytes,
+regular/sparse oversize and symlink/FIFO refusal within ten seconds, repeated
+failure/success admission, healthy executions and ordinary file reads. It starts
+no services and changes only its fresh managed sandbox/session. Record the actual
+guest Python version; current runtime images use 3.14 while supported CI is 3.12/3.13.
+Archive `evidence/artifact-capture.json`, worker logs and explicit teardown evidence,
+then use `lab_down.sh` to remove all Lab22 sandboxes/services/state. Lost-bridge,
+blocked host-thread and corrupt-state tests remain local hostile probes, not claims
+about induced OpenShell failures. No arbitrary stuck filesystem-I/O bound is asserted.
