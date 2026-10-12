@@ -98,6 +98,8 @@ Write the report as `.agents/docs/agent-reports/babbage-openshell-lab-N-<date>.m
 
 Run `uv run python .agents/labs/failed_run.py` from the source worktree. It creates a marked `failed-run-browser-*` temporary directory and drives the actual CLI against synthetic loopback HTTP peers: a completed file read followed by a hostile model error. No research code, real model or VM runs. It verifies exit 1, exact partial transcript retention, absent provider-error text and synthetic credentials, and owned peer/child cleanup. Serve the printed state directory with the fresh production workspace build; verify Failed run, partial transcript, retained tool content and no Answer heading. Close the tab, stop the transient server and remove only the marked fixture directory.
 
+[Acceptance on 2026-10-12](../docs/agent-reports/failed-run-records-2026-10-12.md) records signed source, exact CLI/browser evidence, final gates and complete teardown.
+
 ## Document editing browser acceptance
 
 This control-store slice needs no OpenShell VM. Run

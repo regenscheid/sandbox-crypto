@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings and pinned artifact review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
@@ -12,8 +12,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 15402,
-      "sha256": "752986df204bbf7fefc575ec52a3e1dcc22d8dc404df323f66884e2ccbef87d1"
+      "bytes": 16195,
+      "sha256": "6585956c2588006e2386d30402e82898b5ac86e458b85a6bb47f6ce469ecd66d"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -458,6 +458,24 @@
       "category": "source-investigation",
       "bytes": 12709,
       "sha256": "33aa358f483987c7c4c531a01ff7e93ff03c3f7cca6a4ab6cdc2999e24cd743e"
+    },
+    {
+      "path": "agent-reports/failed-run-2026-10-12.jpg",
+      "category": "browser-evidence",
+      "bytes": 129233,
+      "sha256": "43bfb568e904adb25991f097ec8b31ff23e95d9cf9e4932726dff7b59c32e347"
+    },
+    {
+      "path": "agent-reports/failed-run-evidence-2026-10-12.json",
+      "category": "browser-evidence",
+      "bytes": 107728,
+      "sha256": "c1d9e2b87f5f87eb53aad2a350ec4162c7aa2fecd2d0ee7e6b771f790e4044c3"
+    },
+    {
+      "path": "agent-reports/failed-run-records-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 4450,
+      "sha256": "07472b430d42917b6029f67955b80cf76314af449aa651fa4656d48a3de3227d"
     },
     {
       "path": "agent-reports/finding-prose-confirmed-2026-10-12.jpg",
