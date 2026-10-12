@@ -1,6 +1,6 @@
 # babbage labs
 
-Scripts for running the platform against a real OpenShell gateway on babbage, as labs 9 to 17 did. Each lab's report is in [`../docs/agent-reports/`](../docs/agent-reports/). These scripts are agents' tooling, not product code: they assume babbage's setup and are kept here so that the next lab does not start from nothing.
+Scripts for running the platform against a real OpenShell gateway on babbage, as labs 9 to 20 did. Each lab's report is in [`../docs/agent-reports/`](../docs/agent-reports/). These scripts are agents' tooling, not product code: they assume babbage's setup and are kept here so that the next lab does not start from nothing.
 
 ## Prerequisites
 
@@ -64,6 +64,31 @@ and the lab worker, inspect the `lab19/gui` session and cancel its job in the GU
 then run `job_harness.py notices` in a fresh process. Evidence is in `$LAB/evidence`;
 copy the token-free records before teardown. The watcher is scripted with shortened
 intervals; this does not test a real model's judgment.
+
+## Executor recovery (lab 20)
+
+Start a fresh disposable lab and worker with `PROJECT=lab20 bash worker_up.sh`.
+Keep daemon transport enabled. Run from the isolated branch under test:
+
+```bash
+.venv/bin/python -I .agents/labs/recovery.py envs running offline normal refused cancelled kernel noisy timeout daemon_loss sandbox_loss idle_daemon_loss
+```
+
+The core checks deliberately stop/restart only the worker. The loss checks kill
+the unique sandbox daemon after checking its PID/start identity, delete a sandbox,
+and check an idle endpoint with no unfinished executions. They must only target
+this disposable lab. A same-incarnation reconnect must fill any legacy endpoint's
+original sandbox name and immutable ID before testing daemon loss; inspect
+`executor_endpoints` in the disposable worker database and confirm no pending
+`executor_recycles` intent. Killing before that backfill correctly refuses
+automatic replacement of an unidentified legacy binding.
+
+During a managed VM fence the script retries only definite fenced HTTP 503
+refusals under the same operation ID, for at most 60 seconds. Other failures
+propagate. Evidence distinguishes boot/start identity from numeric PID reuse and
+checks preserved workspace/Python-prefix files, lost old kernel state, and an
+unaffected second environment. Copy `$LAB/evidence/recovery.json` before teardown;
+retain failed probes separately, as [lab 20's report](../docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md) does.
 
 ## Reports
 

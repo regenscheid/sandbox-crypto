@@ -3,9 +3,9 @@
 
 docs/specs/tools.md defines the behavior. Every execution is persisted before
 it is dispatched, and every event before it is delivered, so a client can
-reconnect and replay, and a restarted worker reports unfinished attempts as
-``lost`` instead of running them again. What an executor sends is untrusted:
-it is checked and bounded before it changes any state, and every execution
+reconnect and replay. A restarted worker reconciles daemon attempts and reports
+unrecoverable attempts as ``lost`` instead of running them again. What an executor
+sends is untrusted: it is checked and bounded before it changes any state, and every execution
 reaches a terminal state whatever the executor does.
 """
 
@@ -23,6 +23,7 @@ import re
 import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
@@ -85,7 +86,7 @@ from sandbox_science.policy.model import Resources
 from .artifacts import Blobs
 from .backends import Backend
 from .channel import ExecutorChannel, Message
-from .errors import WorkerError
+from .errors import ExecutorRefusalError, WorkerError
 from .isolation import probe
 from .revisions import Prepared, Revisions, package_commands
 from .shared_sync import SharedSync
@@ -93,6 +94,8 @@ from .store import KernelRecord, Store
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
+_REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
+_SOURCE_EVENT: ContextVar[tuple[str, int] | None] = ContextVar("executor_source", default=None)
 
 SHARED_TIMEOUT = 120.0
 """The longest one step of the shared files' sync may take around a call (D79)."""
@@ -137,6 +140,11 @@ LOCKFILE_TIMEOUT = 120.0
 _EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
 
 
+class _DaemonIncarnationError(WorkerError):
+    def __init__(self) -> None:
+        super().__init__(ErrorKind.UNAVAILABLE, "the sandbox executor incarnation was lost")
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -175,6 +183,7 @@ class _Live:
     execution: Execution
     environment_id: str
     changed: asyncio.Future[None]
+    final_source_seq: int | None = None
     limit: int = DEFAULT_OUTPUT_LIMIT
     cancel_requested: bool = False
     dispatched: bool = False
@@ -287,7 +296,14 @@ class ExecutionManager:
         self._channels: set[ExecutorChannel] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closing = False
+        self._recovering: set[str] = set()
+        self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}
+        self._daemon_fences: dict[str, asyncio.Task[None]] = {}
+        self._quarantined: set[str] = set()
         self.job_resources: Callable[[str], Resources] | None = None
+        self.confirmed_daemon_loss: Callable[[str], Awaitable[bool]] | None = None
+        self.daemon_identity: Callable[[str], tuple[str, str] | None] | None = None
+        self.recycle_daemon: Callable[[str, str, str], Awaitable[None]] | None = None
         self._closing_sessions: dict[tuple[str, str, str], int] = {}
         self._released_environments: dict[str, int] = {}
         self.notices: Notices | None = None
@@ -295,33 +311,238 @@ class ExecutionManager:
         self._noticed: dict[tuple[str, str], datetime] = {}
 
     async def start(self) -> None:
-        """Report attempts a previous run left unfinished as lost.
-
-        One record that cannot be finished is logged and skipped: it never
-        stops the others, or the worker.
-        """
+        """Recover known daemon executions without ever resubmitting a command."""
+        daemon_enabled = getattr(getattr(self.backend, "settings", None), "daemon", False)
+        endpoints = tuple(set(self.store.endpoints()) | set(self.store.pending_recycles()))
+        if endpoints and not daemon_enabled:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "sandbox daemon endpoints remain; explicitly release or recycle their "
+                "sandboxes before disabling daemon transport; startup refused",
+            )
+        recovery: dict[str, list[_Live]] = {key: [] for key in endpoints}
         for execution_id, execution in self.store.unfinished():
+            if execution is None:
+                self.store.mark_terminal(execution_id)
+                continue
+            last = max(execution.last_seq, self.store.last_seq(execution_id))
+            saved = self.store.recovery(execution_id)
             try:
-                if execution is None:
-                    self.store.mark_terminal(execution_id)
+                request = _REQUEST.validate_json(saved[0]) if saved is not None else None
+            except ValueError:
+                request = None
+                saved = None
+            live = self._track(
+                execution.model_copy(update={"last_seq": last}),
+                request.output_limit_bytes if request else DEFAULT_OUTPUT_LIMIT,
+            )
+            live.events, live.stored = self.store.event_usage(execution_id)
+            if saved is not None and saved[1] and daemon_enabled:
+                live.dispatched = True
+                live.cancel_requested = saved[3] or execution.origin is not None
+                recovery.setdefault(execution.context.environment_id, []).append(live)
+            else:
+                self._lose(live, "the worker that restarted without a recoverable daemon dispatch")
+        for environment_id, lives in recovery.items():
+            await self._recover(environment_id, lives, startup=True)
+
+    async def _recover(
+        self, environment_id: str, lives: list[_Live], *, startup: bool = False
+    ) -> None:
+        if environment_id in self._recovering or self._closing:
+            return
+        self._recovering.add(environment_id)
+        retry = False
+        try:
+            # Keep an existing watchdog across reconnects. At startup reconstruct one
+            # absolute deadline, including its original grace, rather than refreshing it.
+            for live in lives:
+                if live.execution.state in TERMINAL_STATES:
                     continue
-                # Events are stored as they happen, the record only now and then.
-                last = max(execution.last_seq, self.store.last_seq(execution_id))
-                live = self._track(execution.model_copy(update={"last_seq": last}))
-                self._finish(
-                    live,
-                    ExecutionState.LOST,
-                    Result(
-                        error=ErrorInfo(
-                            kind=ErrorKind.INTERNAL,
-                            message="the worker restarted during this attempt; "
-                            "its outcome is unknown",
-                        )
-                    ),
-                )
-            except Exception:
-                _log.exception("could not report execution %s as lost", execution_id)
-                self._live.pop(execution_id, None)
+                saved = self.store.recovery(live.execution.execution_id)
+                if saved is not None and (live.watchdog is None or live.watchdog.done()):
+                    request = _REQUEST.validate_json(saved[0])
+                    elapsed = max(
+                        0.0,
+                        (
+                            _now() - (live.execution.started_at or live.execution.submitted_at)
+                        ).total_seconds(),
+                    )
+                    live.watchdog = self._spawn(
+                        self._watch(live, request.timeout_seconds - elapsed)
+                    )
+            if self.confirmed_daemon_loss is not None and await self.confirmed_daemon_loss(
+                environment_id
+            ):
+                self.store.forget_endpoint(environment_id)
+                self._quarantined.discard(environment_id)
+                for live in lives:
+                    self._lose(live, "the sandbox that was deleted, stopped or replaced")
+                return
+            channel: ExecutorChannel | None = None
+            for attempt in range(5):
+                try:
+                    environment = await self._environment(environment_id)
+                    channel = environment.channel
+                    if channel is not None:
+                        break
+                except WorkerError:
+                    if self.confirmed_daemon_loss is not None and await self.confirmed_daemon_loss(
+                        environment_id
+                    ):
+                        self.store.forget_endpoint(environment_id)
+                        self._quarantined.discard(environment_id)
+                        for live in lives:
+                            self._lose(live, "the sandbox that was deleted, stopped or replaced")
+                        return
+                    if attempt == 4:
+                        break
+                    await asyncio.sleep(0.2 * (attempt + 1))
+            if channel is None:
+                if startup:
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE,
+                        "cannot reconcile the sandbox daemon; startup refused",
+                    )
+                retry = True
+                return
+            try:
+                await self._reconcile_unknown(channel)
+            except WorkerError as exc:
+                await channel.shutdown()
+                if startup:
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE,
+                        "cannot quiesce unknown daemon tasks; startup refused",
+                    ) from exc
+                channel = None
+            for live in lives:
+                if live.execution.state in TERMINAL_STATES:
+                    continue
+                saved = self.store.recovery(live.execution.execution_id)
+                if channel is None or saved is None or channel.incarnation != saved[1]:
+                    self._lose(live, "the sandbox executor incarnation")
+                    continue
+                live.channel = channel
+                live.dispatched = True
+                environment = self._environments.get(environment_id)
+                if environment is not None:
+                    environment.running.add(live.execution.execution_id)
+                if live.cancel_requested:
+                    self.store.cancel_intent(live.execution.execution_id)
+                    if live.cancel_watchdog is None or live.cancel_watchdog.done():
+                        live.cancel_watchdog = self._spawn(self._watch_cancel(live))
+                    try:
+                        async with asyncio.timeout(CANCEL_GRACE):
+                            await self._send_cancel(live)
+                            if live.execution.origin is not None:
+                                # Withdrawn provisioning ownership cannot leave an
+                                # installer running while the service starts accepting work.
+                                while live.execution.state not in TERMINAL_STATES:
+                                    await self._replay(live, channel)
+                                    if live.execution.state not in TERMINAL_STATES:
+                                        await asyncio.sleep(0.05)
+                    except (WorkerError, TimeoutError):
+                        await channel.shutdown()
+                        self._lose(live, "the executor that did not confirm recovery cancellation")
+                        continue
+                try:
+                    await self._replay(live, channel)
+                except WorkerError:
+                    await channel.close()
+                    break
+            if channel is not None:
+                self._poll(environment_id, channel)
+        finally:
+            self._recovering.discard(environment_id)
+            remaining = [
+                live
+                for live in lives
+                if live.execution.state not in TERMINAL_STATES
+                and live.channel is not None
+                and live.channel.closed
+            ]
+            if (remaining or retry) and not self._closing:
+                self._spawn(self._retry_recovery(environment_id, lives))
+
+    async def _retry_recovery(self, environment_id: str, lives: list[_Live]) -> None:
+        await asyncio.sleep(1)
+        await self._recover(environment_id, lives)
+
+    async def _reconcile_unknown(self, channel: ExecutorChannel) -> None:
+        """Withdraw control-created tasks whose ownership did not survive the worker.
+
+        Reconciliation can only cancel IDs; no sandbox claim can create work or widen
+        the saved limits of a known attempt.
+        """
+        known = {
+            key for key, live in self._live.items() if live.execution.state not in TERMINAL_STATES
+        }
+        try:
+            async with asyncio.timeout(CANCEL_GRACE):
+                reply = await channel.request("active")
+                raw: Any = reply.get("executions")
+                if (
+                    not isinstance(raw, list)
+                    or len(cast(list[object], raw)) > 128
+                    or any(
+                        not isinstance(key, str) or re.fullmatch(r"exe-[0-9a-f]{24}", key) is None
+                        for key in cast(list[object], raw)
+                    )
+                ):
+                    raise WorkerError(ErrorKind.UNAVAILABLE, "invalid executor reconciliation")
+                unknown = set(cast(list[str], raw)) - known
+                for key in unknown:
+                    await channel.request("cancel", execution=key)
+                while unknown:
+                    reply = await channel.request("active")
+                    raw = reply.get("executions")
+                    if not isinstance(raw, list) or len(cast(list[object], raw)) > 128:
+                        raise WorkerError(ErrorKind.UNAVAILABLE, "invalid executor reconciliation")
+                    unknown.intersection_update(
+                        item for item in cast(list[object], raw) if isinstance(item, str)
+                    )
+                    if unknown:
+                        await asyncio.sleep(0.05)
+        except TimeoutError as exc:
+            raise WorkerError(ErrorKind.UNAVAILABLE, "unknown executor tasks did not stop") from exc
+
+    def _poll(self, environment_id: str, channel: ExecutorChannel) -> None:
+        previous = self._pollers.get(environment_id)
+        if previous is not None and not previous[1].done():
+            if previous[0] is channel:
+                return
+            previous[1].cancel()
+        self._pollers[environment_id] = (
+            channel,
+            self._spawn(self._poll_daemon(environment_id, channel)),
+        )
+
+    async def _replay(self, live: _Live, channel: ExecutorChannel) -> None:
+        saved = self.store.recovery(live.execution.execution_id)
+        reply = await channel.request(
+            "replay",
+            execution=live.execution.execution_id,
+            after=saved[2] if saved else 0,
+            reply_timeout=30,
+        )
+        if reply.get("found") is not True and live.execution.state not in TERMINAL_STATES:
+            self._lose(live, "the executor with no retained execution record")
+
+    async def _poll_daemon(self, environment_id: str, channel: ExecutorChannel) -> None:
+        while not self._closing and not channel.closed:
+            try:
+                for live in list(self._live.values()):
+                    if (
+                        live.channel is channel
+                        and live.execution.state not in TERMINAL_STATES
+                        and live.final is None
+                    ):
+                        await self._replay(live, channel)
+            except WorkerError:
+                await channel.close()
+                return
+            await asyncio.sleep(0.1)
 
     async def release(self, environment_id: str) -> None:
         """Stop an environment's executor before its sandbox goes away.
@@ -359,7 +580,9 @@ class ExecutionManager:
         channel = environment.channel
         if channel is not None:
             self._channels.discard(channel)
-            await channel.close()
+            await channel.shutdown()
+            if not self.store.recycle_needed(environment_id):
+                self.store.forget_endpoint(environment_id)
 
     async def activity(self, environment_id: str) -> Activity | None:
         """What an environment is doing now; None when its executor cannot say."""
@@ -416,13 +639,27 @@ class ExecutionManager:
         return True
 
     async def close(self) -> None:
-        """Stop every executor. Attempts still running are reported lost."""
+        """Detach daemon bridges; stop stdio executors and report their attempts lost."""
         self._closing = True
-        for task in list(self._tasks):
+        tasks = list(self._tasks)
+        for task in tasks:
             task.cancel()
-        await asyncio.gather(*(channel.close() for channel in self._channels))
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(
+            *(
+                channel.detach() if channel.daemon_token else channel.close()
+                for channel in self._channels
+            )
+        )
         for live in list(self._live.values()):
-            if live.execution.state not in TERMINAL_STATES:
+            saved = self.store.recovery(live.execution.execution_id)
+            recoverable = (
+                getattr(getattr(self.backend, "settings", None), "daemon", False)
+                and live.dispatched
+                and saved is not None
+                and bool(saved[1])
+            )
+            if live.execution.state not in TERMINAL_STATES and not recoverable:
                 self._lose(live, "the worker")
 
     def _lose(self, live: _Live, what: str) -> None:
@@ -461,7 +698,7 @@ class ExecutionManager:
             execution,
             execution.context.environment_id,
             asyncio.get_running_loop().create_future(),
-            limit,
+            limit=limit,
         )
         self._live[execution.execution_id] = live
         return live
@@ -477,8 +714,12 @@ class ExecutionManager:
     def _emit(self, live: _Live, make: Callable[[int, datetime], Event]) -> None:
         seq = live.execution.last_seq + 1
         event = make(seq, _now())
-        self.store.add_event(event)
         live.execution = live.execution.model_copy(update={"last_seq": seq})
+        source = _SOURCE_EVENT.get()
+        acknowledged = (
+            source[1] if source is not None and source[0] == live.execution.execution_id else None
+        )
+        self.store.commit_event(live.execution, event, acknowledged)
         self._changed(live)
 
     def _state(self, live: _Live, state: ExecutionState) -> None:
@@ -496,7 +737,11 @@ class ExecutionManager:
             return
         execution_id = live.execution.execution_id
         final, events = self._final(live.execution, state, result)
-        self.store.finish(final, events)
+        source = _SOURCE_EVENT.get()
+        acknowledged = live.final_source_seq
+        if acknowledged is None and source is not None and source[0] == execution_id:
+            acknowledged = source[1]
+        self.store.finish(final, events, acknowledged)
         live.execution = final
         self._changed(live)
         environment = self._environments.get(live.environment_id)
@@ -565,35 +810,122 @@ class ExecutionManager:
 
     async def _environment(self, environment_id: str) -> _Environment:
         while True:
+            fence = self._daemon_fences.get(environment_id)
+            if fence is not None:
+                await asyncio.shield(fence)
+                continue
             environment = self._environments.setdefault(environment_id, _Environment())
+            if self.store.recycle_needed(environment_id):
+                async with environment.lock:
+                    if not self.store.recycle_needed(environment_id):
+                        continue
+                    fence = self._start_daemon_fence(environment_id)
+                await asyncio.shield(fence)
+                continue
             # Marked used before anything waits, so that suspension leaves it alone.
             environment.last_used = time.monotonic()
             if environment.channel is None or environment.channel.closed:
                 # Outside the lock: preparing may start a stopped sandbox under the
                 # environments' own lock, which suspension holds while it takes this one.
                 await self.backend.prepare(environment_id)
-            async with environment.lock:
-                if self._environments.get(environment_id) is not environment:
-                    continue  # released meanwhile, by a suspension or a deletion: start over
-                await self._open(environment_id, environment)
+            try:
+                async with environment.lock:
+                    if (
+                        self._environments.get(environment_id) is not environment
+                        or environment_id in self._daemon_fences
+                    ):
+                        continue  # released or fenced while this request waited
+                    await self._open(environment_id, environment)
+            except _DaemonIncarnationError:
+                fence = self._start_daemon_fence(environment_id)
+                await asyncio.shield(fence)
+                continue
             return environment
+
+    def _start_daemon_fence(self, environment_id: str) -> asyncio.Task[None]:
+        self._quarantined.add(environment_id)
+        fence = self._daemon_fences.get(environment_id)
+        if fence is None:
+            fence = self._spawn(self._recycle_daemon(environment_id))
+            self._daemon_fences[environment_id] = fence
+            fence.add_done_callback(partial(self._fence_done, environment_id))
+        return fence
+
+    def _fence_done(self, environment_id: str, task: asyncio.Task[None]) -> None:
+        if self._daemon_fences.get(environment_id) is task:
+            self._daemon_fences.pop(environment_id, None)
+
+    async def _recycle_daemon(self, environment_id: str) -> None:
+        """Fence the whole VM, outside the execution lock, before publishing a replacement.
+
+        OpenShell can refuse a peer's /proc/environ after its ancestor daemon dies.
+        Owner-mark scans alone cannot prove its escaped children have stopped. Keep
+        the old endpoint durable until the managed lifecycle confirms stop/start.
+        """
+        if self.recycle_daemon is None:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "executor incarnation lost; replacement refused until the sandbox is recycled",
+            )
+        binding = self.store.recycle_binding(environment_id)
+        if binding is None:
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "original sandbox identity was not recorded; replacement refused until "
+                "an operator confirms cleanup of the original sandbox",
+            )
+        await self.recycle_daemon(environment_id, *binding)
+        self.store.finish_recycle(environment_id)
+        self._quarantined.discard(environment_id)
 
     async def _open(self, environment_id: str, environment: _Environment) -> None:
         """Start the environment's executor unless one runs. Hold its lock."""
         if environment.channel is None or environment.channel.closed:
+            identity = self.daemon_identity(environment_id) if self.daemon_identity else None
             channel = await self.backend.open(
                 environment_id,
                 partial(self._on_event, environment_id),
                 partial(self._on_closed, environment_id),
             )
             self._channels.add(channel)
+            if (
+                self.daemon_identity is not None
+                and self.daemon_identity(environment_id) != identity
+            ):
+                await channel.shutdown()
+                raise WorkerError(ErrorKind.UNAVAILABLE, "environment binding changed during open")
+            previous = self.store.endpoint_incarnation(environment_id)
+            previous_binding = self.store.endpoint_binding(environment_id)
+            if (
+                self.backend.name == "openshell"
+                and channel.daemon_token is not None
+                and previous is not None
+                and (
+                    channel.incarnation != previous
+                    or (previous_binding is not None and previous_binding != identity)
+                )
+            ):
+                self.store.require_recycle(environment_id, previous)
+                self._quarantined.add(environment_id)
+                await channel.shutdown()
+                for live in list(self._live.values()):
+                    saved = self.store.recovery(live.execution.execution_id)
+                    if (
+                        live.environment_id == environment_id
+                        and live.dispatched
+                        and saved is not None
+                        and saved[1] == previous
+                        and live.execution.state not in TERMINAL_STATES
+                    ):
+                        self._lose(live, "the sandbox executor incarnation")
+                raise _DaemonIncarnationError()
             try:
                 hostname, languages, features = self._describe(environment_id, channel.hello)
                 self._observe(environment_id, channel.hello.get("environment"), "")
                 declared = self.backend.isolation_tier
                 isolation = await probe(channel, declared, self.state_dir)
             except Exception:
-                await channel.close()  # never leave an executor running unused
+                await channel.shutdown()  # never leave an executor running unused
                 raise
             if isolation.tier < declared:
                 _log.warning(
@@ -615,6 +947,8 @@ class ExecutionManager:
             environment.languages = languages
             environment.features = features
             environment.channel = channel
+            if channel.daemon_token is not None:
+                self.store.remember_endpoint(environment_id, channel.incarnation, identity)
 
     async def forget_revisions(self, environment_id: str) -> None:
         """Forget a deleted environment's revisions, and delete the lockfiles only they
@@ -718,6 +1052,24 @@ class ExecutionManager:
             environment.last_used = time.monotonic()
 
     async def _on_closed(self, environment_id: str, channel: ExecutorChannel) -> None:
+        self._channels.discard(channel)
+        if channel.daemon_token is not None and (self._closing or not channel.detaching):
+            poller = self._pollers.get(environment_id)
+            if poller is not None and poller[0] is channel:
+                self._pollers.pop(environment_id, None)
+                if poller[1] is not asyncio.current_task():
+                    poller[1].cancel()
+            environment = self._environments.get(environment_id)
+            if environment is not None and environment.channel is channel:
+                environment.channel = None
+            if not self._closing:
+                lives = [
+                    live
+                    for live in self._live.values()
+                    if live.channel is channel and live.execution.state not in TERMINAL_STATES
+                ]
+                self._spawn(self._recover(environment_id, lives))
+            return
         # The executions sent to this executor end with it, whether or not its
         # environment's record still names it.
         for live in list(self._live.values()):
@@ -754,6 +1106,15 @@ class ExecutionManager:
                     f"operation {request.operation_id} was submitted with a different request",
                 )
             return self.get(execution_id), False
+        if (
+            request.context.environment_id in self._quarantined
+            or request.context.environment_id in self._daemon_fences
+            or self.store.recycle_needed(request.context.environment_id)
+        ):
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "the environment is fenced until its sandbox executor is safely recycled",
+            )
         job: JobDetails | None = None
         execution_id = new_id("exe")
         if isinstance(request, JobRequest):
@@ -828,6 +1189,7 @@ class ExecutionManager:
             job=job,
         )
         self.store.insert_execution(execution, digest)
+        self.store.remember_request(execution_id, request.model_dump_json())
         live = self._track(execution, request.output_limit_bytes)
         self._state(live, ExecutionState.QUEUED)
         self.store.update_execution(live.execution)
@@ -839,7 +1201,15 @@ class ExecutionManager:
         try:
             await self._send(live, request)
         except WorkerError as error:
-            self._fail(live, error.info())
+            if (
+                live.dispatched
+                and not isinstance(error, ExecutorRefusalError)
+                and live.channel is not None
+                and live.channel.daemon_token is not None
+            ):
+                await live.channel.close()
+            else:
+                self._fail(live, error.info())
         except Exception as exc:
             _log.exception("dispatching execution %s failed", live.execution.execution_id)
             self._fail(
@@ -935,16 +1305,20 @@ class ExecutionManager:
         live.dispatched = True
         live.dispatched_at = time.monotonic()
         live.channel = channel
-        await channel.request(request.kind, **fields)
+        if channel.daemon_token is not None:
+            self.store.dispatch_incarnation(execution_id, channel.incarnation)
         live.watchdog = self._spawn(self._watch(live, request.timeout_seconds))
+        await channel.request(request.kind, **fields)
+        if channel.daemon_token is not None:
+            self._poll(request.context.environment_id, channel)
 
     async def _watch(self, live: _Live, timeout: float) -> None:
-        await asyncio.sleep(timeout + WATCHDOG_GRACE)
-        if live.execution.state in TERMINAL_STATES:
+        await asyncio.sleep(max(0, timeout + WATCHDOG_GRACE))
+        if live.execution.state in TERMINAL_STATES or live.final is not None:
             return
         _log.warning("execution %s overran its limit; cancelling it", live.execution.execution_id)
         with contextlib.suppress(WorkerError):
-            await self._send_cancel(live)
+            await self.cancel(live.execution.execution_id)
         await asyncio.sleep(LOST_GRACE)
         self._finish(
             live,
@@ -964,16 +1338,48 @@ class ExecutionManager:
             live is None
             or live.environment_id != environment_id
             or not live.dispatched
+            or live.channel is None
             or live.final is not None  # it ended; only its sync is left
             or live.execution.state in TERMINAL_STATES
         ):
             return
+        source = message.get("source_seq")
+        if live.channel.daemon_token is not None:
+            if message.get("_bridge") != live.channel.bridge_id:
+                return
+            saved = self.store.recovery(live.execution.execution_id)
+            previous = saved[2] if saved else 0
+            if not isinstance(source, int) or isinstance(source, bool) or not 0 < source < 2**62:
+                return
+            if source <= previous:
+                return
+            source_from = message.get("source_from")
+            if source != previous + 1 and (
+                not isinstance(source_from, int)
+                or isinstance(source_from, bool)
+                or source_from != previous + 1
+            ):
+                self._lose(live, "the executor with an invalid replay range")
+                return
+        token = _SOURCE_EVENT.set(
+            (live.execution.execution_id, source)
+            if isinstance(source, int)
+            and not isinstance(source, bool)
+            and live.channel.daemon_token
+            else None
+        )
         try:
             if message.get("event") == "revision":
                 # Its lockfile is checked in a thread; this executor's next events wait.
                 await self._revised(environment_id, live, message)
             else:
                 self._apply(live, environment_id, message)
+            if (
+                isinstance(source, int)
+                and message.get("event") != "end"
+                and live.channel.daemon_token
+            ):
+                self.store.source_cursor(live.execution.execution_id, source)
         except Exception:
             _log.exception("execution %s: an event from the executor failed", execution_id)
             if message.get("event") == "end":  # the execution must end all the same
@@ -986,6 +1392,8 @@ class ExecutionManager:
                         )
                     ),
                 )
+        finally:
+            _SOURCE_EVENT.reset(token)
 
     def _apply(self, live: _Live, environment_id: str, message: Message) -> None:
         execution_id = live.execution.execution_id
@@ -1056,6 +1464,13 @@ class ExecutionManager:
                         )
                     }
                 )
+            if message.get("recovery_compacted") is True:
+                live.notices.append(
+                    "The executor retained a compact recovery result after journal pressure; "
+                    "whole job stdout/stderr logs remain in the workspace."
+                )
+            source = _SOURCE_EVENT.get()
+            live.final_source_seq = source[1] if source is not None else None
             live.final = (state, result)
             if live.cancel_watchdog is not None:
                 live.cancel_watchdog.cancel()
@@ -1200,7 +1615,7 @@ class ExecutionManager:
 
     async def _cancel_quietly(self, live: _Live) -> None:
         with contextlib.suppress(WorkerError):
-            await self._send_cancel(live)
+            await self.cancel(live.execution.execution_id)
 
     def _result(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> Result:
         """The executor's result, checked and bounded by the attempt's output limit."""
@@ -1438,7 +1853,7 @@ class ExecutionManager:
                     if live.channel is not None:
                         channels.add(live.channel)
                     self._lose(live, "the executor that did not confirm job cancellation")
-            await asyncio.gather(*(channel.close() for channel in channels))
+            await asyncio.gather(*(channel.shutdown() for channel in channels))
 
     def _running_jobs(self, environment_id: str) -> list[Execution]:
         return [
@@ -1577,12 +1992,13 @@ class ExecutionManager:
     async def cancel(self, execution_id: str, project_id: str | None = None) -> Execution:
         execution = self.get(execution_id, project_id)
         live = self._live.get(execution_id)
-        if live is None or live.execution.state in TERMINAL_STATES:
+        if live is None or live.execution.state in TERMINAL_STATES or live.final is not None:
             return execution
         already_requested = live.cancel_requested
+        self.store.cancel_intent(execution_id)
         live.cancel_requested = True
         if live.dispatched and not already_requested:
-            if execution.kind == "job":
+            if execution.kind == "job" or (live.channel is not None and live.channel.daemon_token):
                 live.cancel_watchdog = self._spawn(self._watch_cancel(live))
             try:
                 await self._send_cancel(live)
@@ -1607,7 +2023,7 @@ class ExecutionManager:
         channel = live.channel
         self._lose(live, "the executor that did not confirm job cancellation")
         if channel is not None:
-            await channel.close()
+            await channel.shutdown()
 
     async def _send_cancel(self, live: _Live) -> None:
         if live.execution.state not in (ExecutionState.CANCELLING, *TERMINAL_STATES):

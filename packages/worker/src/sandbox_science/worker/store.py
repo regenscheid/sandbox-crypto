@@ -83,6 +83,25 @@ CREATE TABLE IF NOT EXISTS provisions (
     record TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS provisions_environment ON provisions (environment_id, finished);
+CREATE TABLE IF NOT EXISTS executor_endpoints (
+    environment_id TEXT PRIMARY KEY,
+    incarnation TEXT NOT NULL,
+    sandbox TEXT NOT NULL DEFAULT '',
+    sandbox_id TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS executor_recycles (
+    environment_id TEXT PRIMARY KEY,
+    incarnation TEXT NOT NULL,
+    sandbox TEXT NOT NULL DEFAULT '',
+    sandbox_id TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS execution_recovery (
+    execution_id TEXT PRIMARY KEY,
+    request TEXT NOT NULL,
+    incarnation TEXT NOT NULL DEFAULT '',
+    source_seq INTEGER NOT NULL DEFAULT 0,
+    cancelled INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS package_status (
     environment_id TEXT PRIMARY KEY,
     status TEXT NOT NULL,
@@ -125,6 +144,13 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=NORMAL")
         self._db.executescript(_SCHEMA)
+        for table in ("executor_endpoints", "executor_recycles"):
+            columns = {str(row[1]) for row in self._db.execute(f"PRAGMA table_info({table})")}
+            for name in ("sandbox", "sandbox_id"):
+                if name not in columns:
+                    self._db.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
+                    )
 
     def close(self) -> None:
         self._db.close()
@@ -252,12 +278,124 @@ class Store:
         ).fetchall()
         return [found for row in rows if (found := _readable(str(row[0]), row[1])) is not None]
 
-    def finish(self, execution: Execution, events: Sequence[Event]) -> None:
+    def finish(
+        self, execution: Execution, events: Sequence[Event], source_seq: int | None = None
+    ) -> None:
         """Store an execution's last events and its terminal record in one transaction."""
         with self._transaction():
             for event in events:
                 self.add_event(event)
             self.update_execution(execution)
+            if source_seq is not None:
+                self.source_cursor(execution.execution_id, source_seq)
+
+    def endpoints(self) -> tuple[str, ...]:
+        return tuple(
+            str(row[0]) for row in self._db.execute("SELECT environment_id FROM executor_endpoints")
+        )
+
+    def endpoint_incarnation(self, environment_id: str) -> str | None:
+        row = self._db.execute(
+            "SELECT incarnation FROM executor_endpoints WHERE environment_id = ?",
+            (environment_id,),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def endpoint_binding(self, environment_id: str) -> tuple[str, str] | None:
+        return self._executor_binding("executor_endpoints", environment_id)
+
+    def recycle_binding(self, environment_id: str) -> tuple[str, str] | None:
+        return self._executor_binding("executor_recycles", environment_id)
+
+    def _executor_binding(self, table: str, environment_id: str) -> tuple[str, str] | None:
+        query = (
+            "SELECT sandbox, sandbox_id FROM executor_endpoints WHERE environment_id = ?"
+            if table == "executor_endpoints"
+            else "SELECT sandbox, sandbox_id FROM executor_recycles WHERE environment_id = ?"
+        )
+        row = self._db.execute(query, (environment_id,)).fetchone()
+        return (str(row[0]), str(row[1])) if row and row[0] and row[1] else None
+
+    def pending_recycles(self) -> tuple[str, ...]:
+        return tuple(
+            str(row[0]) for row in self._db.execute("SELECT environment_id FROM executor_recycles")
+        )
+
+    def recycle_needed(self, environment_id: str) -> bool:
+        return (
+            self._db.execute(
+                "SELECT 1 FROM executor_recycles WHERE environment_id = ?", (environment_id,)
+            ).fetchone()
+            is not None
+        )
+
+    def require_recycle(self, environment_id: str, incarnation: str) -> None:
+        binding = self.endpoint_binding(environment_id) or ("", "")
+        self._db.execute(
+            "INSERT OR IGNORE INTO executor_recycles VALUES (?, ?, ?, ?)",
+            (environment_id, incarnation, *binding),
+        )
+
+    def finish_recycle(self, environment_id: str) -> None:
+        with self._transaction():
+            self._db.execute(
+                "DELETE FROM executor_endpoints WHERE environment_id = ?", (environment_id,)
+            )
+            self._db.execute(
+                "DELETE FROM executor_recycles WHERE environment_id = ?", (environment_id,)
+            )
+
+    def remember_endpoint(
+        self, environment_id: str, incarnation: str, binding: tuple[str, str] | None = None
+    ) -> None:
+        self._db.execute(
+            "INSERT INTO executor_endpoints VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(environment_id) DO UPDATE SET incarnation=excluded.incarnation, "
+            "sandbox=excluded.sandbox, sandbox_id=excluded.sandbox_id",
+            (environment_id, incarnation, *(binding or ("", ""))),
+        )
+
+    def forget_endpoint(self, environment_id: str) -> None:
+        self.finish_recycle(environment_id)
+
+    def remember_request(self, execution_id: str, request: str) -> None:
+        self._db.execute(
+            "INSERT INTO execution_recovery(execution_id, request) VALUES (?, ?)",
+            (execution_id, request),
+        )
+
+    def recovery(self, execution_id: str) -> tuple[str, str, int, bool] | None:
+        row = self._db.execute(
+            "SELECT request, incarnation, source_seq, cancelled FROM execution_recovery "
+            "WHERE execution_id = ?",
+            (execution_id,),
+        ).fetchone()
+        return (str(row[0]), str(row[1]), int(row[2]), bool(row[3])) if row else None
+
+    def dispatch_incarnation(self, execution_id: str, incarnation: str) -> None:
+        self._db.execute(
+            "UPDATE execution_recovery SET incarnation = ? WHERE execution_id = ?",
+            (incarnation, execution_id),
+        )
+
+    def cancel_intent(self, execution_id: str) -> None:
+        self._db.execute(
+            "UPDATE execution_recovery SET cancelled = 1 WHERE execution_id = ?", (execution_id,)
+        )
+
+    def source_cursor(self, execution_id: str, sequence: int) -> None:
+        self._db.execute(
+            "UPDATE execution_recovery SET source_seq = MAX(source_seq, ?) WHERE execution_id = ?",
+            (sequence, execution_id),
+        )
+
+    def commit_event(self, execution: Execution, event: Event, source_seq: int | None) -> None:
+        """Worker numbering, state and source acknowledgment commit atomically."""
+        with self._transaction():
+            self.add_event(event)
+            self.update_execution(execution)
+            if source_seq is not None:
+                self.source_cursor(execution.execution_id, source_seq)
 
     # Events.
 
@@ -266,6 +404,18 @@ class Store:
             "INSERT INTO events VALUES (?, ?, ?)",
             (event.execution_id, event.seq, _EVENT.dump_json(event).decode()),
         )
+
+    def event_usage(self, execution_id: str) -> tuple[int, int]:
+        """Recover already charged output without parsing historical stream payloads."""
+        row = self._db.execute(
+            "SELECT COUNT(*), COALESCE(SUM(CASE json_extract(event, '$.type') "
+            "WHEN 'stream' THEN length(CAST(json_extract(event, '$.text') AS BLOB)) "
+            "ELSE (SELECT SUM(length(CAST(value AS BLOB))) "
+            "FROM json_each(events.event, '$.output.data')) END), 0) FROM events "
+            "WHERE execution_id = ? AND json_extract(event, '$.type') IN ('stream', 'output')",
+            (execution_id,),
+        ).fetchone()
+        return (int(row[0]), int(row[1])) if row else (0, 0)
 
     def last_seq(self, execution_id: str) -> int:
         """The highest stored sequence number: the record's own ``last_seq`` may lag behind it."""

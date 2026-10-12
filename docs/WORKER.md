@@ -72,7 +72,7 @@ Every request that may change something (all but `GET` and the file reads) is lo
 ## Behavior worth knowing
 
 - **Durability.** An execution is stored before it is dispatched, and each event before it is delivered. A client that loses its stream asks again with `after`, and receives each event once; a replay reads the store a page at a time. An execution's last two events (its terminal state and its result) and its final record are checked and stored in one transaction.
-- **Restarts.** When the worker starts, it reports attempts a previous run left unfinished as `lost`, numbering their last events after the highest stored one. It never runs them again. A record that no longer validates is logged, no longer counted as unfinished, and reads as an `internal` error; it does not stop the start. SIGTERM and SIGINT stop the worker cleanly: executors stop, and attempts still running end as `lost` ("the worker stopped").
+- **Restarts.** OpenShell uses a sandbox executor daemon by default. Worker shutdown detaches its bridge; research jobs, calls and kernels continue within their existing limits. A restarted worker reconnects to the same daemon incarnation and reconciles the same execution and attempt IDs, replaying numbered events without submitting commands again. The source cursor, worker event numbering and terminal result commit together; a crash during the shared files' final sync replays the end and retries that sync. Saved cancellation intent is sent again. If the sandbox or daemon incarnation is gone, or no execution record remains in its bounded history, the outcome is explicitly `lost`. Unreadable worker records do not block startup; their daemon work is cancelled during reconciliation. The development stdio transport still stops its executor and reports unfinished attempts `lost` on worker shutdown.
 - **Untrusted executors.** Research code shares the executor's sandbox and can take it over, so the worker trusts nothing it sends:
   - Each line is decoded on its own: at most 16 MiB and 100,000 objects and arrays, invalid UTF-8 and lone surrogates replaced, non-finite numbers made null. A line that does not decode is dropped and the connection carries on. Events count only from the executor an execution was sent to.
   - Results are checked and bounded by the attempt's output limit (stream texts, outputs, errors, `written_files`), and must survive a round trip through JSON in one event line, or they are shrunk. Malformed replies to file operations are `internal` errors.
@@ -85,7 +85,7 @@ Every request that may change something (all but `GET` and the file reads) is lo
   - A different fingerprint counts the revision up. Each revision records whether a package command made it through the environment's wrappers (managed) or not (unmanaged), the attempt behind it, and a lockfile ([package commands](#package-commands)).
   - Every execution's location gives the revision it started under, after any wait for a package command, and its result the revision it ended under; `overlapping_change` marks an attempt the packages changed under. The harness tells the model either way.
   - Files the packages own, and installs into other Conda environments under `envs/`, do not count.
-- **Kernel generations.** Kernels die with their executor. When the worker starts a new executor for an environment, the next result reports `state_lost`, and the generation keeps counting up from the last one the worker reported. A restart is never hidden.
+- **Kernel generations.** A kernel's globals and generation survive worker and bridge restarts in the same daemon incarnation. A new daemon, sandbox restart, explicit kernel restart or lifecycle shutdown loses that state. The next result reports `state_lost`, and the generation keeps counting up from the last one the worker reported.
 - **Kernels.** An interrupted cell ends `cancelled` (or `timed_out`), with the kernel's own error, `KeyboardInterrupt` for Python. A cell cancelled while its kernel starts never runs. A restart does not wait for the running cell: that cell ends `cancelled`, and queued cells run on the new kernel.
 - **Watchdog.** An execution still running 30 seconds past its own limit is cancelled by the worker. If no result follows within another 60 seconds, it is reported `lost`.
 - **Written files.** The executor lists the regular files in the session workspace and the shared area before and after each attempt. The result names those the attempt created or changed (`written_files`, at most 1,000). An attempt running at the same time in the session may contribute some of them. The lists come from the executor, so research code that takes it over can name the wrong attempt.
@@ -130,9 +130,9 @@ accepted jobs is busy and cannot be suspended as idle. Every direct job cancel h
 also bound cancel acknowledgment and completion together. In both paths, an executor that cannot confirm them within 30 seconds is disconnected
 and affected outcomes become `lost`, rather than blocking lifecycle operations for days.
 Package commands take their existing environment turns, and shared files sync before and
-after jobs as they do calls. A worker restart still loses in-flight jobs: the executor
-currently ends with its stdio connection. Partial whole logs stay at their recorded paths;
-the executor daemon is the next slice. `wake_session` records completion intent for the
+after jobs as they do calls. The sandbox daemon lets in-flight jobs survive worker and
+bridge restarts; whole logs stay at their recorded paths. A lost daemon incarnation
+reports an unknown outcome and retains any partial log files. `wake_session` records completion intent for the
 harness; the worker itself does not start model turns or implement a wake scheduler.
 
 ## Leftover processes
@@ -142,7 +142,7 @@ A shell call may not leave processes running (tools spec, Shell 8). The executor
 - **Adoption.** The executor makes itself a child subreaper (`prctl(PR_SET_CHILD_SUBREAPER)`), so a process whose parent exits stays below the executor instead of going to the sandbox's init. It reaps the adopted processes it kills.
 - **Attribution.** A process belongs to a call if it is in the session the call's command began, carries the call's mark, or descends from such a process without a mark of its own. Below the executor, a process with no mark at all has replaced its environment to get away; the next call to end takes it.
 
-When a call ends, times out or is cancelled, everything that belongs to it gets SIGTERM (on a timeout or cancel), then SIGKILL, in a few rounds that catch processes forked meanwhile. Each process's start time is checked again just before its signal, so a process ID reused since the scan is left alone. Kernels and their processes carry their own marks and survive other calls; when a kernel stops or restarts, what it started ends with it. When stdin closes, the executor ends everything below it.
+When a call ends, times out or is cancelled, everything that belongs to it gets SIGTERM (on a timeout or cancel), then SIGKILL, in a few rounds that catch processes forked meanwhile. Each process's start time is checked again just before its signal, so a process ID reused since the scan is left alone. Kernels and their processes carry their own marks and survive other calls; when a kernel stops or restarts, what it started ends with it. An explicit daemon shutdown ends everything below it. Closing a bridge only detaches; in the development stdio transport, stdin EOF also shuts the executor down.
 
 What is guaranteed, and what is not:
 - **Guaranteed:** processes that stay in the call's session or keep its mark, wherever in the sandbox's `/proc` they are, including those that left its process group with `setsid` or job control (`set -m`), and orphans of the call.
@@ -390,7 +390,76 @@ The worker sends one JSON object per line; each carries an `id` and an `op`. The
 - **Events.** `shell` and `cell` reply when they are accepted, then send events: `{"type": "event", "execution": …, "event": "state" | "stream" | "output" | "revision" | "end", …}`. The `end` event carries the terminal state and the result fields of `Result`.
 - **Packages.** The `running` state event carries the packages' fingerprint as the attempt starts (`environment`), and the `end` event's result their fingerprint as it ends and whether a package command was still running (`environment_changing`). A `revision` event, sent before either of those shows its change, carries a fingerprint, `managed`, the execution that caused the change (`cause`), the package commands (`commands`, the last 8, and `omitted_commands`) and the lockfile ([package commands](#package-commands)).
 - **Hygiene.** The executor keeps the protocol on its own file descriptor and sends anything else that writes to stdout to stderr. Where the sandbox allows it, the executor is not dumpable, so research code cannot open that descriptor through `/proc` (not under OpenShell v0.1.3; see "Running under OpenShell").
-- **Shutdown.** When stdin closes, it stops every command and kernel, and anything left below it, and exits. It sends no `end` for the attempts it stops then: the worker reports them `lost`.
+- **Shutdown.** A stdio executor stops its commands and kernels on stdin EOF. A daemon bridge instead detaches on EOF; environment deletion or idle suspension requests explicit `daemon_shutdown`, which reaps commands and kernels before acknowledging. Cancellation has its own 30-second deadline; a daemon that cannot confirm it is shut down and affected outcomes become `lost`. A new daemon reaps marked processes belonging to its endpoint's old incarnation, checking process start times against PID reuse. Research code that deliberately disguises its process ownership remains within the sandbox and outside the process hygiene guarantee above.
+
+### Sandbox daemon and recovery
+
+The uploaded `daemon.py` uses only the standard library and runs inside the sandbox;
+the trusted worker never runs research commands. Its bridge connects through
+`openshell sandbox exec` to a Linux abstract Unix socket, so no workspace socket path,
+symlink, FIFO or stale PID file is followed. A private token in the worker's state
+(`daemon-tokens/<environment>`, mode 0600) selects the endpoint and authenticates both
+peers with fresh HMAC nonces. Bootstrap passes it on stdin, never in argv, environment
+variables or across the Unix socket. Only one bridge may be active; a second is refused.
+Worker event callbacks are fenced to their current bridge. Keep this state directory
+with the worker's database when moving or restarting that worker. Confirmed deleted,
+stopped or replaced sandboxes become `lost` and their stale endpoints are forgotten.
+A transient gateway failure retries during live recovery; startup refuses readiness
+until remembered live daemons can be reconciled and unknown installers quiesced.
+One unreachable live environment therefore delays availability for the pool, rather
+than exposing an API while its control-created tasks may still be running.
+Disabling daemon transport while remembered endpoints remain also refuses startup.
+Explicitly release those environments or recycle their sandboxes through the daemon
+transport first, so an old installer cannot continue beside a new stdio executor.
+
+An authenticated new daemon incarnation in an existing OpenShell environment fences
+the whole managed sandbox before replacement work can run. OpenShell may deny a peer's
+`/proc/<pid>/environ` after the ancestor daemon dies, so owner-mark scans cannot prove
+escaped children stopped. The worker persists recycle intent, refuses new submissions,
+stops the same sandbox, confirms its unchanged identity and `Stopped` phase, then starts
+it and waits for `Ready`. Stop/start preserves its writable disk, packages and policy
+binding; attempts with unknown outcomes and kernel state are lost. Concurrent opens
+share that lifecycle fence. The endpoint records the original sandbox name and immutable
+ID; recycle intent copies that binding, and the lifecycle lock checks it again before
+touching the VM. A concurrent delete/recreate cannot redirect cleanup to another healthy
+sandbox. Its intent survives worker crashes and is cleared only after the lifecycle
+fence completes or the original VM is independently confirmed stopped or absent;
+intent alone never proves processes already died. Failure keeps replacement work refused.
+An unmanaged static binding has no managed lifecycle hook: an operator must confirm
+cleanup of its original sandbox and retire its obsolete worker recovery records before
+replacement work resumes. Same-incarnation
+worker or bridge reconnects do not stop the sandbox. Transport/authentication failures
+alone do not establish incarnation loss and never initiate this recycle.
+Legacy endpoints can learn their original binding on a same-incarnation reconnect.
+If their incarnation changed before that binding was recorded, automatic replacement
+refuses until an operator confirms cleanup of the original sandbox and removes its
+obsolete worker recovery records; the current environment binding is insufficient proof.
+
+The daemon adds `source_seq` to each execution event. `replay` reads bounded pages after
+a source cursor; `active` lists at most 128 accepted unfinished requests. Admission
+reserves capacity before asynchronous dispatch. A definite refusal has a retained
+terminal outcome, including when the reply connection is lost. Unknown control-created
+requests are cancelled during startup. Known provisioning-origin requests are cancelled
+and reaped before startup completes because their operation and grants do not survive
+a worker restart; ordinary research jobs can continue.
+
+The memory journal has a 64 MiB aggregate budget, a 2 MiB stream allowance per
+execution, at most 128 active and 4,096 retained execution records. Running lifecycle
+state and terminal snapshots are pinned separately from removable output chunks.
+Rollover produces an explicit omitted-output stream marker and preserves the same
+attempt; it does not rerun or lose a running job. Final output normally keeps the
+caller's approved limit. Under aggregate pressure a terminal result may use a compact
+snapshot (up to 64 KiB), with a recovery notice and truncation markers; full job logs
+remain in the workspace. Old ended records can eventually be evicted. Recovery of a
+worker-unacknowledged execution after that bounded retention reports `lost`, naming the
+limitation. Daemon memory and kernels do not survive daemon or sandbox death.
+
+Local daemon fixtures cover restart, bridge loss, cancellation, refusal, journal
+rollover, authentication, admission bursts and incarnation cleanup. [OpenShell lab
+20](../.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md) separately
+verified same-attempt restart, offline completion and timeout, kernel continuity,
+whole logs, and the managed VM fence after daemon loss. The initial owner-marker
+cleanup failure remains recorded beside the corrected runtime checks.
 
 ## Settings
 
@@ -403,6 +472,7 @@ kernel_idle_timeout = 28800          # optional: stop kernels unused for 8 hours
 shared_sync = true                   # keep each project's shared/ in step across its environments (D79)
 
 [openshell]
+daemon = true                  # default: reconnect to a sandbox-lifetime executor
 cli = "~/.local/opt/openshell-0.1.3/bin/openshell"
 python = "/opt/sandbox-science/bin/python"   # with ipykernel and jupyter_client; the base images' interpreter
 project_root = "/sandbox/project"
@@ -461,7 +531,7 @@ The local runs are then skipped; setting only some of the variables is an error.
 
 ## Not yet done
 
-- **Survival across worker restarts.** The executor serves one stdio connection, so it ends when the worker restarts, and kernels end with it. The planned fix is a daemon in the sandbox listening on a socket, with the worker reconnecting through `openshell sandbox exec`. Background jobs, which run for hours (D83, [tools](specs/tools.md#background-jobs)), need it to survive a worker restart.
+- **Survival across sandbox or daemon restarts.** Recovery currently uses the sandbox daemon's bounded in-memory journal. Jobs and kernel globals survive worker and bridge restarts, but a new daemon incarnation reports unknown outcomes as `lost`. There is no disk journal for surviving daemon death.
 - **Environment lifecycle.** The worker creates, revises, suspends and deletes sandboxes ([environments](#environments)), and provisions them ([provisioning operations](#provisioning-operations)). Restoring a revision after a failed install, and rebuilding an environment from a lockfile, come next (W3). Policy revisions enter the store only through the operator's command; an approval path from the GUI, with re-authentication for widening (D54), comes later.
 - **Data grants.** Scoped grants of project data, and session containers beside the project container.
 - **Large outputs.** A rich output over the limit is replaced by a note; the spec's spill to a referenced file is not implemented.
