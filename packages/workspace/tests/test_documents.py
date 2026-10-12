@@ -269,3 +269,154 @@ async def test_the_answers_are_read_in_a_thread(
     paths = [f"/api/v0/projects/p1/documents/{documents['ff']}"] * 4
     answers = await asyncio.gather(*(get(client, path) for path in paths))
     assert len({json.dumps(answer, sort_keys=True) for answer in answers}) == 1
+
+
+async def post_change(
+    client: TestClient[Any, Any],
+    document: str,
+    body: dict[str, Any],
+    *,
+    project: str = "p1",
+    status: int = 200,
+) -> Any:
+    response = await client.post(
+        f"/api/v0/projects/{project}/documents/{document}/changes",
+        json=body,
+        headers={"Origin": str(client.make_url("/")).rstrip("/")},
+    )
+    assert response.status == status, await response.text()
+    return await response.json()
+
+
+async def test_user_edit_attribution_base_conflict_and_retained_patch(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    doc = documents["ff"]
+    result = await post_change(
+        client,
+        doc,
+        {
+            "action": "patch",
+            "base": 1,
+            "reason": "User equation",
+            "operation_id": "edit",
+            "operations": [
+                {"op": "replace", "block": documents["paragraph"], "markdown": "User $p = 19$."}
+            ],
+        },
+    )
+    assert result["outcome"] == "conflict"
+    assert result["revision"] == 2
+    assert result["conflicts"][0]["changed_by"][0]["author"]["kind"] == "agent"
+    preview = await get(
+        client, f"/api/v0/projects/p1/documents/{doc}/patches/{result['patch_id']}/preview"
+    )
+    assert preview["base"] == 2
+    assert "User $p = 19$." in preview["proposed"]
+    applied = await post_change(
+        client,
+        doc,
+        {
+            "action": "apply_patch",
+            "base": 2,
+            "reason": "Reviewed",
+            "operation_id": "apply",
+            "patch_id": result["patch_id"],
+        },
+    )
+    assert applied["outcome"] == "accepted"
+    latest = await get(client, f"/api/v0/projects/p1/documents/{doc}")
+    assert latest["revision"]["author"]["kind"] == "user"
+    assert latest["revision"]["accepted_by"]["kind"] == "user"
+    assert "User $p = 19$." in latest["text"]
+
+
+async def test_write_ownership_unknown_fields_and_csrf(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    body = {
+        "action": "source",
+        "base": 2,
+        "reason": "edit",
+        "operation_id": "edit",
+        "text": "Changed.",
+    }
+    await post_change(client, documents["other"], body, status=404)
+    await post_change(client, documents["ff"], {**body, "author": {"kind": "agent"}}, status=400)
+    await post_change(client, documents["ff"], {**body, "base": True}, status=400)
+    path = f"/api/v0/projects/p1/documents/{documents['ff']}/changes"
+    for headers in ({}, {"Origin": "https://untrusted.invalid"}):
+        response = await client.post(path, json=body, headers=headers)
+        assert response.status == 403
+    latest = await get(client, f"/api/v0/projects/p1/documents/{documents['ff']}")
+    assert latest["document"]["head"] == 2
+
+
+async def test_source_body_bound_revert_and_promote(
+    client: TestClient[Any, Any], documents: dict[str, str]
+) -> None:
+    doc = documents["notes"]
+    text = "User draft " + "word " * 15000
+    changed = await post_change(
+        client,
+        doc,
+        {
+            "action": "source",
+            "base": 1,
+            "reason": "long edit",
+            "operation_id": "long",
+            "text": text,
+        },
+    )
+    assert changed["outcome"] == "applied"
+    await post_change(
+        client,
+        doc,
+        {
+            "action": "source",
+            "base": 2,
+            "reason": "too long",
+            "operation_id": "too-long",
+            "text": "x" * (1024 * 1024 + 1),
+        },
+        status=400,
+    )
+    await post_change(
+        client,
+        doc,
+        {
+            "action": "promote",
+            "base": 1,
+            "reason": "move",
+            "operation_id": "old",
+            "name": "project-notes",
+        },
+        status=409,
+    )
+    moved = await post_change(
+        client,
+        doc,
+        {
+            "action": "promote",
+            "base": 2,
+            "reason": "move",
+            "operation_id": "move",
+            "name": "project-notes",
+        },
+    )
+    assert moved["document_id"] == doc
+    restored = await post_change(
+        client,
+        doc,
+        {
+            "action": "revert",
+            "base": 2,
+            "reason": "restore",
+            "operation_id": "restore",
+            "target": 1,
+        },
+    )
+    assert restored["revision"] == 3
+    latest = await get(client, f"/api/v0/projects/p1/documents/{doc}")
+    assert latest["document"]["scope"] == "project"
+    assert latest["text"] == "Notes.\n"

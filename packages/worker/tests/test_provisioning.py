@@ -1644,10 +1644,7 @@ async def _longest_stall(action: Callable[[], Awaitable[Any]]) -> tuple[float, A
     return max(gaps), result
 
 
-@pytest.mark.asyncio
-async def test_review2_l1_checking_a_lockfile_in_a_thread_holds_the_interpreter_briefly(
-    tmp_path: Path,
-) -> None:
+async def _check_lockfile_responsiveness(tmp_path: Path) -> None:
     # pydantic held the GIL for 0.6 s while it built an error for each of 1.5 million
     # unknown keys; a lockfile of the largest shape is checked an entry at a time.
     revisions = Revisions(Store(tmp_path / "worker.sqlite3"), Blobs(tmp_path / "lockfiles"))
@@ -1674,6 +1671,30 @@ async def test_review2_l1_checking_a_lockfile_in_a_thread_holds_the_interpreter_
             assert worst < 0.25, worst
     finally:
         revisions.store.close()
+
+
+def test_review2_l1_checking_a_lockfile_in_a_thread_holds_the_interpreter_briefly(
+    tmp_path: Path,
+) -> None:
+    # Keep the original 0.25 s bound and hostile inputs, but measure in a fresh
+    # interpreter: an unrelated full-suite heap collection must not be attributed
+    # to the lockfile validator. Deterministic byte/count/shape tests also run here.
+    done = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            "import asyncio,runpy,sys; from pathlib import Path; "
+            "scope=runpy.run_path(sys.argv[1]); "
+            "asyncio.run(scope['_check_lockfile_responsiveness'](Path(sys.argv[2])))",
+            str(Path(__file__).resolve()),
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
 
 
 @pytest.mark.asyncio

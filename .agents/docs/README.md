@@ -13,6 +13,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 - [OpenShell v0.1.3 lab 20 on babbage, 2026-10-12 — in progress](agent-reports/babbage-openshell-lab-20-2026-10-12.md): worker restart and offline replay checks passed; the initial daemon-loss cleanup probe failed and blocks merge. Correction and final teardown remain pending.
 
+- [Document editing browser acceptance, 2026-10-12](agent-reports/document-editing-2026-10-12.md): retained source/block drafts, concurrent conflicts, reviewed patches, stable-ID reverts and workbook promotion. [Evidence](agent-reports/document-editing-evidence-2026-10-12.json), [conflict view](agent-reports/document-editing-conflict-2026-10-12.jpg), [accepted suggestion](agent-reports/document-editing-accepted-patch-2026-10-12.jpg).
+
 - [OpenShell v0.1.3 lab 19 on babbage, 2026-10-12](agent-reports/babbage-openshell-lab-19-2026-10-12.md): background jobs, policy quotas, full logs, event reconnection, cancellation and lifecycle cleanup; real browser waits, watcher notes and cancellation; durable completion notices after a harness process restart. [Recorded evidence](agent-reports/babbage-openshell-lab-19-evidence-2026-10-12.json), [GUI view](agent-reports/babbage-openshell-lab-19-gui-2026-10-12.jpg).
 
 - [OpenShell v0.1.3 lab 18 on babbage, 2026-10-12](agent-reports/babbage-openshell-lab-18-2026-10-12.md): the provisioning tool with real dry runs and pinned installs, exact file-set grants and withdrawal, independent environments, all nine catalog probes, and cancellation and worker restart after linking began. [Recorded evidence](agent-reports/babbage-openshell-lab-18-evidence-2026-10-12.json).
