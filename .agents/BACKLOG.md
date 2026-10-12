@@ -174,6 +174,9 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] Independent adversarial review and [browser acceptance](docs/agent-reports/consistency-review-2026-10-12.md), including the corrected exact confirmation scope and retained author-work retry
   - [ ] Immutable shell artifact inventories, live control-application message/final-answer transport, idle wake-up, shared monetary accounting and D82 mechanical findings
 - [ ] Ledger and board (D24; [spec drafted](../docs/specs/ledger.md)); linking their records to the separate review-finding lifecycle
+- [ ] Immutable artifact inventory ([as built](../docs/ARTIFACTS.md), approved research-artifacts spec)
+  - [ ] Explicit harness-publication prerequisite: stable scoped logical IDs, immutable exact bytes/revisions, pinned/latest internal reads, trusted publishing provenance, durable intent/pin/hold, bounded transfer and atomic event/receipt replay; implemented and independently reviewed, with 50 focused cases and combined 9,415 Python/431 web tests plus all required gates passing locally; fresh PR CI/merge pending
+  - [ ] Automatic execution-output inventory (RA-5/RA-F2), consistency evidence ingestion, observed inputs/kernel lineage, imports/MCP binary results, tombstone/retention workflows, public read/download routes, PDF anchors and rich previews
 - [ ] Approvals in the GUI, with re-authentication for high-risk ones (D54); policy revisions from the GUI
 - [ ] Environments in the GUI (Conda provisioning, CP-26): each environment's revisions with the package differences between them, licenses with AGPL flagged, probe status per revision, and the provisioning operations waiting, with their permission requests' files
 - [ ] Previews of rich artifacts (HTML, SVG, notebook output, PDFs) on a separate origin in sandboxed frames (D54); the PDF viewer
