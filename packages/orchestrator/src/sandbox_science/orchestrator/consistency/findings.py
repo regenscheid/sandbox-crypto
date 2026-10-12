@@ -24,7 +24,7 @@ from sandbox_science.orchestrator.documents.models import Author
 
 from .finding_schema import LEGACY_FIELDS, projection
 from .models import ConfirmationInput, EvidenceAnchor, FindingInput, FindingResponse, ReviewConfig
-from .store import ReviewStore, bounded_json, digest, dump, identifier, text
+from .store import MAX_ITEM_BYTES, ReviewStore, bounded_json, digest, dump, identifier, text
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
@@ -667,16 +667,18 @@ class Findings:
             self.store.owner(run, owner)
             pinned = db.execute(
                 (
-                    "SELECT payload,evidence_id FROM review_evidence WHERE review_id=? AND "
+                    "SELECT substr(CAST(payload AS BLOB),1,?),evidence_id FROM review_evidence "
+                    "WHERE review_id=? AND "
                     "kind='finding' AND json_extract(locator,'$.finding')=? AND "
                     "json_extract(locator,'$.revision')=?"
                 ),
-                (review, value.finding, value.expected),
+                (MAX_ITEM_BYTES + 1, review, value.finding, value.expected),
             ).fetchone()
             if pinned is None:
                 raise DocumentError(
                     POLICY_DENIED, "finding response is outside the confirmation snapshot"
                 )
+            pinned_finding = bounded_json(pinned[0], MAX_ITEM_BYTES)
             found = self._get(db, project, session, value.finding)
             if found["origin"] == "math":
                 raise DocumentError(
@@ -698,6 +700,9 @@ class Findings:
                     raise DocumentError(
                         CONFLICT, "response explanation changed during confirmation"
                     )
+                from sandbox_science.orchestrator.documents.project_macros import (
+                    dump as macro_dump,
+                )
                 from sandbox_science.orchestrator.documents.project_macros import exists
 
                 if exists(db):
@@ -711,9 +716,26 @@ class Findings:
                         raise DocumentError(
                             CONFLICT, "response macro context changed during confirmation"
                         )
+                    if value.decision != "inconclusive":
+                        response = cast(Json, pinned_finding.get("response") or {})
+                        raw_context = response.get("macro_context")
+                        context = cast(Json, raw_context) if isinstance(raw_context, dict) else {}
+                        # The snapshot resolved these exact immutable anchors and
+                        # setting. Overall review coverage is a separate guard;
+                        # ambiguity must not become a definitive source decision.
+                        if (
+                            context.get("known") is not True
+                            or context.get("held") is not False
+                            or context.get("key") != digest(macro_dump({**macro, "known": True}))
+                            or any(a.get("unknown") for a in macro["anchors"])
+                        ):
+                            raise DocumentError(
+                                POLICY_DENIED,
+                                "response macro context is held or unknown; decide inconclusive",
+                            )
             config = ReviewConfig.model_validate_json(run["config"])
             if value.decision in ("confirm", "reject"):
-                self.confirmation_reads(db, review, json.loads(pinned[0]), pinned[1])
+                self.confirmation_reads(db, review, pinned_finding, pinned[1])
             if value.decision in ("confirm", "reject", "inconclusive"):
                 if run["kind"] != "confirmation" or found["status"] != "claimed fixed":
                     raise DocumentError(
