@@ -4,6 +4,7 @@
   import { formatTime } from '../lib/format';
   import { projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
+  import JobsPanel from './JobsPanel.svelte';
   import RunSection from './RunSection.svelte';
 
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
@@ -33,6 +34,8 @@
       {detail.session.closed_at ? `closed ${formatTime(detail.session.closed_at)}` : 'open'}
     </dd>
   </dl>
+
+  <JobsPanel {projectId} {sessionId} />
 
   <h2>Runs</h2>
   {#if detail.runs.length === 0}

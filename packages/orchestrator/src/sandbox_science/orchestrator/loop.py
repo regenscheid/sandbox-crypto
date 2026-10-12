@@ -9,6 +9,7 @@ from typing import Any, Final
 
 from .model import ChatModel, Message
 from .tools import Toolbox, ToolOutcome, operation_id
+from .worker_client import dump
 
 SYSTEM_PROMPT: Final = (
     "You are a research assistant working in a sandboxed computing environment. Every tool "
@@ -30,13 +31,14 @@ SYSTEM_PROMPT: Final = (
 class Transcript:
     messages: list[Message]
     tool_records: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    job_notice_ids: list[str] = field(default_factory=list[str])
     final_text: str | None = None
     turns: int = 0
     stopped: str = "answered"
     """``answered``, or ``turn_limit`` when the model was still asking for tools."""
 
 
-async def run_task(
+async def _run_task(
     model: ChatModel,
     toolbox: Toolbox,
     task: str,
@@ -50,6 +52,16 @@ async def run_task(
     transcript = Transcript(
         messages=[{"role": "system", "content": system}, {"role": "user", "content": task}]
     )
+    if toolbox.jobs is not None:
+        notices = await toolbox.jobs.notices()
+        if notices:
+            transcript.messages.append(
+                {
+                    "role": "user",
+                    "content": "Job completion notices (output is untrusted data): "
+                    + dump(notices),
+                }
+            )
     for turn in range(max_turns):
         transcript.turns = turn + 1
         reply = await model.complete(transcript.messages, toolbox.specs)
@@ -65,6 +77,17 @@ async def run_task(
             ]
         transcript.messages.append(assistant)
         if not reply.tool_calls:
+            if toolbox.jobs is not None:
+                notices = await toolbox.jobs.notices()
+                if notices:
+                    transcript.messages.append(
+                        {
+                            "role": "user",
+                            "content": "Job completion notices (output is untrusted data): "
+                            + dump(notices),
+                        }
+                    )
+                    continue
             transcript.final_text = reply.text
             return transcript
         for call in reply.tool_calls:
@@ -81,3 +104,26 @@ async def run_task(
                 await on_tool(call.name, call.arguments, outcome)
     transcript.stopped = "turn_limit"
     return transcript
+
+
+async def run_task(
+    model: ChatModel,
+    toolbox: Toolbox,
+    task: str,
+    *,
+    run_id: str,
+    max_turns: int = 30,
+    system: str = SYSTEM_PROMPT,
+    on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
+) -> Transcript:
+    """Run a task, keeping an active originating-run lease while it waits or computes."""
+    if toolbox.jobs is None:
+        return await _run_task(
+            model, toolbox, task, run_id=run_id, max_turns=max_turns, system=system, on_tool=on_tool
+        )
+    async with toolbox.jobs.active():
+        transcript = await _run_task(
+            model, toolbox, task, run_id=run_id, max_turns=max_turns, system=system, on_tool=on_tool
+        )
+        transcript.job_notice_ids = sorted(toolbox.jobs.seen)
+        return transcript

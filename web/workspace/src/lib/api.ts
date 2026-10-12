@@ -2,7 +2,7 @@
 /**
  * The workspace API, version 0 (packages/workspace, api.py and documents.py): read-only
  * views of the harness's projects, sessions and runs and of the project's living
- * documents, and repairs of LaTeX by the reviewer model (mathrepair.py). The session
+ * documents, live job status and cancellation, and repairs of LaTeX by the reviewer model (mathrepair.py). The session
  * cookie travels with every request, and the browser adds the `Origin` header the server
  * requires of a POST; there is nothing else to send.
  */
@@ -49,6 +49,50 @@ export interface SessionDetail {
   project_id: string;
   session: Session;
   runs: RunEntry[];
+}
+
+export interface BackgroundJob {
+  job_id: string;
+  state: string;
+  purpose: string;
+  expected_progress: string;
+  elapsed_seconds: number;
+  exit_code: number | null;
+  stdout: string;
+  stderr: string;
+  cpu_seconds: number | null;
+  memory_bytes: number | null;
+  logs: { stdout: string; stderr: string };
+  worker_restart: string;
+  error?: string | null;
+  checkin?: JobCheckin | null;
+}
+
+export interface JobCheckin {
+  job_id: string;
+  alias: string;
+  model: string | null;
+  at: string;
+  state: 'fine' | 'needs_attention';
+  note: string;
+}
+
+export interface JobWait {
+  run_id: string;
+  state: 'waiting';
+  job_ids: string[];
+  mode: 'all' | 'first';
+  started_at: string;
+  watcher: string | null;
+  checkins: JobCheckin[];
+  connected: boolean;
+}
+
+export interface JobListing {
+  enabled: boolean;
+  jobs: BackgroundJob[];
+  truncated: boolean;
+  waits: JobWait[];
 }
 
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
@@ -277,6 +321,10 @@ export const api = {
     get<{ project: Project }>(`/projects/${part(project)}`).then((found) => found.project),
   session: (project: string, session: string) =>
     get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`),
+  jobs: (project: string, session: string) =>
+    get<JobListing>(`/projects/${part(project)}/sessions/${part(session)}/jobs`),
+  cancelJob: (project: string, session: string, job: string) =>
+    post(`/projects/${part(project)}/sessions/${part(session)}/jobs/${part(job)}/cancel`, {}),
   run: (project: string, session: string, run: string) =>
     get<RunRecord>(`/projects/${part(project)}/sessions/${part(session)}/runs/${part(run)}`),
   documents: (project: string) =>

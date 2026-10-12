@@ -27,13 +27,15 @@ Every route needs `Authorization: Bearer <token>`: the pool's own token, which a
 
 | Route | Request → response |
 | --- | --- |
-| `GET /v1/capabilities?environment_id=…` | → `Capabilities`: kernel languages, features (`pdf` where the environment has pdf_oxide) and the location (pool, backend, sandbox, host, and the [isolation tier](#isolation-tiers) in effect, declared and probed). The ID must be an identifier |
-| `POST /v1/executions` | `ShellRequest`, `CellRequest` or `PdfRequest` ([PDFs](#pdfs)) → `Execution`. Status is 201 when created, 200 when the project already has the operation ID with the same request, and 409 when it has it with a different one. Operation IDs are kept per project |
+| `GET /v1/capabilities?environment_id=…` | → `Capabilities`: kernel languages, features (`jobs`, and `pdf` where the environment has pdf_oxide) and the location (pool, backend, sandbox, host, and the [isolation tier](#isolation-tiers) in effect, declared and probed). The ID must be an identifier |
+| `POST /v1/executions` | `ShellRequest`, `JobRequest`, `CellRequest` or `PdfRequest` ([PDFs](#pdfs)) → `Execution`. Status is 201 when created, 200 when the project already has the operation ID with the same request, and 409 when it has it with a different one. Operation IDs are kept per project |
 | `GET /v1/executions/{id}` | → `Execution`, with its result once terminal |
 | `GET /v1/executions/{id}/events?after=N` | → NDJSON stream of `Event`s after sequence number `N`, ending with a `result` event, or at once if the execution has ended and `N` is its last event. While nothing happens, an empty line comes every 15 seconds. No line is longer than `MAX_EVENT_BYTES` (32 MiB) |
 | `POST /v1/executions/{id}/cancel` | → `Execution`. A running shell call gets SIGTERM, then SIGKILL; a running cell is interrupted; a queued cell is dropped |
+| `GET /v1/jobs?project_id=P&session_id=S&environment_id=E&after=ID&limit=N` | → `JobListing`: jobs in that session, oldest first, at most `N` (default 100, maximum 500); `next_after` is the last returned execution ID, and `truncated` says there is another page |
+| `GET /v1/jobs/{id}` | → `JobStatus`: execution, bounded current stdout/stderr head and tail, observed process CPU seconds and resident-memory bytes; finished jobs use their stored result. The optional `project_id` query has the same meaning as on execution routes |
 | `POST /v1/kernels/restart` | `KernelRestartRequest` → `KernelInfo`, with the new generation. A cell running on the kernel ends, `cancelled` |
-| `POST /v1/sessions/close` | `SessionCloseRequest` → `SessionClosed`: stops the session's kernels in that environment and lists them. Running cells end `cancelled` ("the session was closed"), queued ones never start, and the next cell starts a new generation that reports `state_lost`. Files and shell calls are untouched, and an environment without an executor starts none |
+| `POST /v1/sessions/close` | `SessionCloseRequest` → `SessionClosed`: stops the session's kernels in that environment and lists them. Running cells end `cancelled` ("the session was closed"), queued ones never start, and the next cell starts a new generation that reports `state_lost`. Jobs are cancelled and reaped; files and foreground shell calls are untouched, and an environment without an executor starts none |
 | `POST /v1/files/read`, `/write`, `/list` | `ReadFileRequest` → `FileContent`; `WriteFileRequest` → `WriteFileResult`; `ListFilesRequest` → `FileListing` |
 | `POST /v1/artifacts` | `PublishRequest` → `ArtifactRef` (201). A `media_type` must be `type/subtype`, with optional `; name=value` parameters |
 | `GET /v1/artifacts/{id}`, `/content` | → `ArtifactRef`, or the bytes with `X-Content-SHA256`, as a download (`Content-Disposition: attachment`, `nosniff` and a sandboxing content security policy), so no media type turns them into a page |
@@ -93,6 +95,45 @@ Every request that may change something (all but `GET` and the file reads) is lo
   - The file tools refuse absolute paths, `..` and paths through symlinks. They open one directory at a time, relative to the last, without following a symlink, the workspace and the shared area themselves included.
   - Reads refuse anything but a regular file without waiting for it (a FIFO, say), and hash in a thread, so a large file does not hold up other sessions.
   - Writes to the shared area need `expected_sha256` or `create_only`.
+
+## Background jobs
+
+A `JobRequest` (`kind: job`) supplies a shell script or argv, a purpose and expected
+progress. Submission returns its `Execution` immediately. Its ID, numbered events,
+idempotency, cancellation and written files use the same lifecycle as calls. It can run
+beside foreground tools and outlive the initiating HTTP connection, turn and orchestrator.
+The `jobs` capability advertises this support. Kernels do not run background cells.
+
+`Execution.job` stores the purpose, expected progress, actual time limit and whole-log
+paths, `.jobs/<execution ID>/stdout.log` and `stderr.log`, in the session workspace.
+Inline and live status output stay bounded; the file API reads whole logs in ranges.
+The executor writes chunks in threads through held regular-file descriptors, creating
+parents without following symlinks and logs exclusively. A write failure such as a full
+disk terminates and reaps the job and reports failure with bounded output and an explicit
+warning that whole logs may be incomplete. Logs share the workspace's disk limits;
+separate filesystem quota enforcement is still part of the resource-limit work.
+Like all session files, research code can change these files; they are research output,
+not trusted audit records.
+
+Job limits come from the project's policy and pool ceiling ([policy](POLICY.md#background-job-resources)):
+24 hours by default, seven days at most, four active jobs per project/session and eight
+per environment. Queued accepted jobs reserve slots before any dispatch waits. A request
+above a concurrency bound is refused with active job IDs; explicit time limits above the
+maximum are refused. Omit `timeout_seconds` to select the policy default; JSON clients
+must preserve omission rather than serialize a default value as an explicit request.
+Retrying an operation with the same original request returns its execution even after
+policy changes; an omitted timeout and an explicit timeout are different requests.
+
+Closing a session cancels its jobs in that environment, including queued jobs. Deleting
+an environment cancels its jobs before dropping its executor, and an environment with
+accepted jobs is busy and cannot be suspended as idle. Every direct job cancel has a completion watchdog of its own; session close and deletion
+also bound cancel acknowledgment and completion together. In both paths, an executor that cannot confirm them within 30 seconds is disconnected
+and affected outcomes become `lost`, rather than blocking lifecycle operations for days.
+Package commands take their existing environment turns, and shared files sync before and
+after jobs as they do calls. A worker restart still loses in-flight jobs: the executor
+currently ends with its stdio connection. Partial whole logs stay at their recorded paths;
+the executor daemon is the next slice. `wake_session` records completion intent for the
+harness; the worker itself does not start model turns or implement a wake scheduler.
 
 ## Leftover processes
 
@@ -291,7 +332,7 @@ Package managers run from a shell call or a kernel take turns in their environme
   - Every field has a pattern: printable ASCII, without the spaces, line breaks or path separators a value could use to pass for another.
   - The executor names conda.anaconda.org's channels; the worker names the cache's, from its `package_cache` setting, whatever the executor wrote. Hosts compare in one spelling: lower case, without a trailing dot, an IP address in its one form (`167772165` and `0xa.0.0.5` are `10.0.0.5`). It refuses a lockfile that fails a pattern, holds a URL that does not parse, or names the cache's host in any other way, and, when the cache's URL has a port, one that holds its `host:port` anywhere.
 - **Storage.** The worker checks, names and hashes a lockfile in a thread, never on its event loop, and stores it in a store of its own (`<state_dir>/lockfiles`) by the SHA-256 of its JSON, up to 8 MiB.
-  - Its shape comes first: known keys only, at most 20,000 entries in each section, each an object of known keys. Only then are values checked, an entry at a time, so that a hostile lockfile costs little memory to refuse and holds the interpreter (CPython's GIL) only briefly at a time. A failure is logged by the entry, its count of errors and the first.
+  - Its shape comes first: known keys only, at most 20,000 entries in each section, each an object of known keys. Only then are values checked, an entry at a time, so that a hostile lockfile costs little memory to refuse and holds the interpreter (CPython's GIL) only briefly at a time. A failure is logged by the entry, its count of errors and the first. Canonical JSON is assembled one bounded entry at a time, enforcing the exact 8 MiB byte cap including framing before appending each fragment; unchanged lockfiles retain their existing JSON bytes and SHA-256.
   - The executor sends a lockfile with each attempt's last change. The worker keeps one for each attempt and checks at most 4 for each execution, those it asks for when the execution starts and ends included. A revision left without one gets the current lockfile asked for, in the background (`lockfile`), while it is current; revision 0 gets its own when the first execution starts.
   - Each environment keeps its newest 500 revisions, and lockfiles for its newest 50 in 64 MiB at most. A lockfile no revision names is deleted, and a worker deletes those a crash left when it starts.
   - Deleting an environment, or the worker giving one up because its sandbox is gone or came back as another, deletes its revisions and their lockfiles; and when the worker creates an environment, it forgets the revisions recorded under its ID before (D78): a sandbox made by hand, or an earlier environment of the ID, had them. The store thus holds at most an environment's share for each environment the worker keeps. There is no quota across environments: one would let an environment's executor push out, or shut out, another project's lockfiles.

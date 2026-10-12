@@ -98,6 +98,8 @@ Run the same W2 fixtures on the Kubernetes test cluster through the unchanged wo
 
 ### W3 — Make project/session state durable (M2)
 
+The current execution work is background jobs (D83), followed by an executor daemon in each sandbox. Jobs first reuse the worker's execution identity, durable event history, cancellation and package/shared-data boundaries; add independent time and concurrency limits, whole output logs, session job tools, durable completion notices, waits and bounded watcher check-ins. Verify these against a real OpenShell VM. Until the daemon exists, a worker restart still makes a running job `lost`; do not count restart survival as complete. Then add a reconnectable executor, reconcile the same attempts after disconnects and worker restarts, and test event replay, cancellation while disconnected and sandbox loss before claiming survival. Automatic session wake-up and project-wide model spend accounting also need the long-running control application; a CLI-only run must report those as unavailable.
+
 Create the persistent default project environment and separate kernels/workspaces for two workbooks. Create a third workbook with a dedicated environment from the base image. Demonstrate that project-installed tools are absent from the new dedicated environment while granted shared data and project records remain available.
 
 Serialize package mutations in shared environments and advance their recorded revision. Publish outputs through the artifact interface. Exercise two sessions writing the same versioned resource and return an explicit conflict. For mutable shared files, choose a managed write/lease mechanism or present conflicting copies; a writable shared mount alone does not meet the requirement.
@@ -148,4 +150,4 @@ A small exact Sage result should reproduce without producer kernel memory and re
 | Shared UI/kernel libraries | W2/W4 native math, output, anchor and security behavior | Jupyter-protocol kernels; candidate PDF.js/KaTeX integrations |
 | New database or additional service | Actual store/availability limitation | Logical modules in the control application on one embedded store (D12) |
 
-Immediate next work is W0/W1 plus track P. Detailed policy rules and research categories can be refined against the working slice; another broad planning round is unnecessary before writing the behavior specs and the first slice.
+The M1 exit run passed on babbage (lab 9); provisioning's runtime checks passed in lab 18. Background jobs passed lab 19, including harness and browser checks. Current work is W3 executor recovery alongside W4 document editing, followed by comments, automatic review and the ledger, in the order in [.agents/handoff.md](../.agents/handoff.md). The M2 exit run still needs a real model gateway and connector authorization from the user. Keep the backlog and runtime evidence beside each completed slice; draft-spec questions do not block the already-decided infrastructure work.

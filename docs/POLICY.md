@@ -149,6 +149,26 @@ Other work continues while a request waits (`hold_scope: operation`). A denied o
 
 Policy and ceiling files use a strict YAML dialect, so that what a reviewer reads is what is enforced. Explicit tags, aliases, merge keys and duplicate keys are errors. Mapping keys are text, and every key has a value: a key written without one (for example with its value commented out) is an error, never "off". Numbers are plain decimals (YAML 1.1 would read `0443` as 291 and `1:20` as 80), booleans are `true` or `false` (not `yes` or `on`), quoted values are not converted (`"yes"` is not true), and dates must be quoted. Double-quoted strings may not use backslash escapes. So that nothing hides from someone reading the file in an editor or diff: every value fits on one line (a quoted string cannot swallow lines that look like settings), and block scalars (`|`, `>`) are not used; settings are ASCII, while comments may use other scripts; lines are at most 160 columns wide (wide characters count twice) and indented at most 48 columns; a run of four or more spaces inside a line is allowed only to align a comment; a value containing `#` must be the last thing on its line, or the rest of the line would read like a comment; and tabs, blank-looking characters (such as U+2800 or Hangul fillers) and whitespace other than the ASCII space are rejected. Positions of values and comments come from PyYAML's own scanner, so the check sees the file exactly as it is parsed. Numbers must be finite. Invisible and bidirectional formatting characters, Unicode line and paragraph separators and stray carriage returns are rejected; a leading byte-order mark and CRLF line ends are accepted. Path prefixes are printable ASCII. `memory` and `workspace_disk` must be positive.
 
+### Background job resources
+
+Background shell jobs (D83) have limits separate from a call's `wall_time`:
+
+| Resource | Default when omitted at both layers | Meaning |
+| --- | --- | --- |
+| `job_wall_time_default` | `24h` | Job limit when the request omits its time limit |
+| `job_wall_time_max` | `7d` | Largest explicit job limit; also bounds the default |
+| `jobs_per_session` | 4 | Active accepted jobs per project/session, including queued jobs |
+| `jobs_per_environment` | 8 | Active accepted jobs in an environment, across sessions |
+
+The pool ceiling clamps each project value; an omitted project value takes the pool's
+value. Durations are positive whole-second policy strings and cannot exceed seven days.
+Concurrency limits are strict positive integers, at most 1,024. If the default exceeds
+the effective maximum, the worker uses the maximum. A request can ask for a shorter
+positive limit; requesting more than the maximum is refused, as is exceeding either
+concurrency bound. Call `wall_time` does not shorten a job's separate limit. Limits are
+checked when a job is accepted; policy changes do not silently rerun or shorten existing
+jobs. The same sandbox policy, network path and environment resource limits apply.
+
 ### Monitors
 
 Threshold rules, such as egress volume, live in `monitors`, not in `network.rules`. They never decide whether an operation may proceed; they add findings when usage crosses a threshold. A threshold written as an access rule could never fire: every access rule that matches the same traffic outranks a rule that names no host or method.
