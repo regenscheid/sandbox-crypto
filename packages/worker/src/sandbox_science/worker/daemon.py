@@ -139,6 +139,7 @@ class Daemon:
         history.sequence += 1
         message = {**message, "source_seq": history.sequence}
         if message.get("event") == "end":
+            message = executor.bounded_observations(message)
             history.ended = True
             # Preserve ordinary final output. A separate small snapshot survives journal
             # pressure; only that fallback advertises recovery output compaction.

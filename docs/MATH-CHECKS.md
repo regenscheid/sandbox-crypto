@@ -221,5 +221,5 @@ tests, 43 opt-in skips, two existing warnings; 441 web and 24 post-build math ch
 Fresh [comment/reply browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md)
 passed against the frozen source/helper; all disposable state was removed. This
 extends durable source coverage to comments/replies, with ledger/finding prose,
-model repair proposals and idle dispatch still open. Fresh PR CI is required
-before merge.
+model repair proposals and idle dispatch still open. PR #87 merged at `d2b133f` after all three fresh CI checks passed
+on `16bb1308`.
