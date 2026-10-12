@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
@@ -56,6 +57,7 @@ from sandbox_science.contracts import (
     WriteFileRequest,
     WriteFileResult,
 )
+from sandbox_science.contracts.artifact_inventory import MAX_ARTIFACT_BYTES, ArtifactSnapshot
 from sandbox_science.contracts.documents import (
     CatalogContentChunk,
     CatalogDelta,
@@ -500,6 +502,92 @@ class WorkerClient:
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         return await self._call("POST", "/v1/artifacts", ArtifactRef, request)
+
+    async def publish_snapshot(self, request: PublishRequest) -> ArtifactRef:
+        """Bounded metadata publication for durable control ingestion; never redirect."""
+        body = request.model_dump_json()
+        if len(body.encode()) > 16 * 1024:
+            raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "artifact publish request is too large")
+        try:
+            async with self._http().post(
+                f"{self.base_url}/v1/artifacts",
+                data=body,
+                headers={**self._headers, "Content-Type": "application/json"},
+                timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
+            ) as response:
+                payload = await _bounded_body(
+                    response.content, 16 * 1024 if response.status == 201 else 8192
+                )
+                if response.status >= 400:
+                    raise _error(payload, response.status)
+                if response.status != 201:
+                    raise WorkerAPIError(
+                        ErrorKind.INTERNAL, "unexpected artifact publication status"
+                    )
+                return ArtifactSnapshot.model_validate_json(payload)
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE,
+                "artifact publication transport failed; outcome may be unknown",
+            ) from exc
+        except (ValidationError, RecursionError, UnicodeError) as exc:
+            raise WorkerAPIError(
+                ErrorKind.INTERNAL, "invalid artifact publication metadata; outcome may be unknown"
+            ) from exc
+
+    async def verified_artifact_content(
+        self, reference: ArtifactRef, *, max_bytes: int = MAX_ARTIFACT_BYTES
+    ) -> bytes:
+        """Fetch exact project/hash/size-bound bytes, with total deadline and hard cap."""
+        try:
+            snapshot = ArtifactSnapshot.model_validate(reference.model_dump())
+        except (ValidationError, UnicodeError) as exc:
+            raise WorkerAPIError(
+                ErrorKind.INVALID_REQUEST, "invalid supplied artifact reference"
+            ) from exc
+        if (
+            type(max_bytes) is not int
+            or not 0 <= max_bytes <= MAX_ARTIFACT_BYTES
+            or snapshot.size > max_bytes
+        ):
+            raise WorkerAPIError(
+                ErrorKind.INVALID_REQUEST, "artifact exceeds control transfer limit"
+            )
+        try:
+            async with self._http().get(
+                f"{self.base_url}/v1/artifacts/{snapshot.artifact_id}/content",
+                params={"project_id": snapshot.project_id},
+                headers=self._headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
+                auto_decompress=False,
+            ) as response:
+                if response.status >= 400:
+                    raise _error(await _bounded_body(response.content, 8192), response.status)
+                if response.status != 200:
+                    raise WorkerAPIError(ErrorKind.INTERNAL, "unexpected artifact content status")
+                if response.headers.get("X-Content-SHA256") != snapshot.sha256:
+                    raise WorkerAPIError(ErrorKind.INTERNAL, "artifact content hash header differs")
+                if response.content_length is not None and response.content_length != snapshot.size:
+                    raise WorkerAPIError(ErrorKind.INTERNAL, "artifact content size header differs")
+                if response.headers.get("Content-Encoding", "identity") != "identity":
+                    raise WorkerAPIError(
+                        ErrorKind.INTERNAL, "encoded artifact transfer is unsupported"
+                    )
+                data = await _bounded_body(response.content, snapshot.size)
+                if (
+                    len(data) != snapshot.size
+                    or hashlib.sha256(data).hexdigest() != snapshot.sha256
+                ):
+                    raise WorkerAPIError(
+                        ErrorKind.INTERNAL, "artifact content fails exact size/hash verification"
+                    )
+                return data
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise WorkerAPIError(
+                ErrorKind.UNAVAILABLE, "artifact content transport failed"
+            ) from exc
 
     async def artifact_content(self, artifact_id: str, *, project_id: str | None = None) -> bytes:
         try:

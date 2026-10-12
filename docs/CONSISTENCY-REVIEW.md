@@ -58,6 +58,13 @@ outputs, file contents and a shell artifact inventory are explicitly omitted and
 coverage incomplete. No missing-evidence assessment can become a failing missing-action
 finding, and an incomplete/unchecked window cannot become passed.
 
+The [immutable artifact inventory](ARTIFACTS.md) now provides internal pinned bytes,
+metadata and events for explicit harness publication. Successful tool records retain
+its canonical receipt beside the worker snapshot. This first slice does not connect
+those bytes to reviewer grants or establish automatic shell output coverage; file
+and rich evidence therefore remain omitted by the current feed. Producer and
+observed inputs remain explicitly unknown rather than inferred from a path hint.
+
 Confirmation snapshots explicitly grant the original finding evidence and response
 anchors under their original evidence IDs, scoped to the same project/session. They
 also pin claimed-fix and user replacement revisions from durable transition payloads,
