@@ -28,6 +28,30 @@ All state goes under `~/.local/state/openshell-lab`, and every service runs as a
 6. To test a branch before it merges, restart the worker unit from that branch's worktree (`<worktree>/.venv/bin/sandbox-science-worker serve --settings worker.toml`, working directory `$LAB/worker`). Do not switch branches in the main checkout while a lab runs: the cache and the middleware run from its editable install.
 7. `bash lab_down.sh` deletes every sandbox, stops every lab unit (the forward unit included, which restarts forever otherwise), removes the lab directory and checks that no process, port, OpenShell path or driver socket is left. Labs are always torn down completely.
 
+## Provisioning (lab 18)
+
+Start a fresh lab as above, register the synthetic provider, and run the worker with
+`PROJECT=lab18 bash worker_up.sh`. The worker offers both `minimal` and `crypto-base`.
+From the repository root, run:
+
+```bash
+.venv/bin/python -I .agents/labs/provision.py envs basics pip approvals pins probes cancel restart
+```
+
+This creates separate disposable environments and checks the real dry runs, pinned
+installs, lockfiles, capability probes, independent histories, channel and AGPL refusals,
+and an escalated install denied then approved. It deliberately answers the lab's permission
+requests through the operator CLI, fetches a file outside an active grant, and checks that
+the grant ends with its operation. The catalog checks add `python-flint` to `crypto-base`
+before running all nine probes. The last two parts observe new `conda-meta` records through
+OpenShell before cancelling an install or restarting the lab worker; both must leave a
+visible `needs_recovery` status. Run them only against this disposable lab worker.
+
+The script writes API results under `$LAB/evidence/`, without the client token. Keep the
+observations needed for the report before `lab_down.sh` removes that directory. Parts may
+be selected separately; `verify` resumes checks after the two initial capability installs.
+The full sequence expects fresh environments. Tear the lab down as above after finishing.
+
 ## Reports
 
 Write the report as `.agents/docs/agent-reports/babbage-openshell-lab-N-<date>.md`, in the style of the earlier ones (what ran where, results tables, findings, cleanup), add a line to `.agents/docs/README.md`, and add the file to `.agents/docs/INVENTORY.json` with its size and SHA-256 (rebuild the README's entry too). Cite the lab where docs state what it showed. Tokens are synthetic and never written to the report or the logs kept.

@@ -4,8 +4,8 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 
 ## Where things stand
 
-- **main** is at the merge of PR #67. No pull requests are open, no agents are running, no lab is up, and every agent worktree has been removed.
-- **The user paused new work before a break.** Their words: "don't stop things in process, but start anything new. i want to a take a break soon", read as *don't start anything new*, which they did not correct. Everything in process then finished and merged. **Ask the user before starting the queued work below.**
+- **Resume update, 2026-10-12:** the user resumed work here after the pause below. Lab 18 passed and was completely removed; its [report](docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md) and recorded evidence are committed with reusable checks. Background jobs, then the executor daemon, are next. Main already included PR #68 when this continuation began.
+- **The user paused new work before a break.** Their words: "don't stop things in process, but start anything new. i want to a take a break soon", read as *don't start anything new*, which they did not correct. Everything in process then finished and merged. **This pause was lifted when the user said "we can continue here" on 2026-10-11.**
 - **Milestones** ([roadmap](../docs/ROADMAP.md), [implementation plan](../docs/IMPLEMENTATION-PLAN.md)):
   - M0: specs and decisions, nearly done. Approved: Conda provisioning, research artifacts, consistency review. Decided on their main questions: living documents, ledger. Still drafts for the user to review: tools, PDF sources, skills, plans and delegation.
   - M1: done (its exit run passed in lab 9).
@@ -31,7 +31,7 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
 ## What the user expects
 
 Standing instructions, given over the session:
-- **Keep advancing the plan autonomously**, installing software as needed (but see the pause above). **Merge pull requests into main** once CI is green. **Use several agents in parallel.**
+- **Keep advancing the plan autonomously**, installing software as needed (the pause above was lifted). **Merge pull requests into main** once CI is green. **Use several agents in parallel.**
 - **Decision requests in plain language**: the practical effect, an example, and a recommendation, before asking. The user is a cryptography researcher; explain platform terms (they asked what "shell" and "turn" mean).
 - **Bug reports for upstream projects** go in `.agents/upstream/`, one file each; filing them is the user's call.
 - Never enter real credentials; test tokens are visibly synthetic (`test-secret-…`).
@@ -65,7 +65,7 @@ Nothing here blocks the queued work: each item has a default in place.
 
 ## Queued work, in the suggested order
 
-1. **Lab 18 on babbage** for the provisioning tool, with the checks #64 lists:
+1. **Lab 18 on babbage — completed 2026-10-12** ([report](docs/agent-reports/babbage-openshell-lab-18-2026-10-12.md)) for the provisioning tool, with the checks #64 lists:
    - real dry-run output and pins in a sandbox;
    - CP-F1 to F4, F8 and F10;
    - the grant ending with its operation;
