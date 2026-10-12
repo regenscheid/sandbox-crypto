@@ -96,6 +96,11 @@ class MathJobs:
         self.store, self.documents, self.limits = store, store.documents, limits or MathLimits()
 
     def _fence(self, db: sqlite3.Connection, check: str, owner: str) -> tuple[Any, ...]:
+        from .comment_math import CommentMath, metadata
+
+        comment = metadata(db, check)
+        if comment is not None:
+            return CommentMath(self).fence(db, check, owner, comment)
         row = db.execute(
             (
                 "SELECT substr(CAST(j.document AS "
@@ -133,8 +138,10 @@ class MathJobs:
                     "UPDATE math_sources SET retry_requested=1 WHERE project=? AND "
                     "completed=target AND EXISTS(SELECT 1 FROM math_jobs j WHERE "
                     "j.document=math_sources.document AND j.revision=target AND "
+                    "NOT EXISTS(SELECT 1 FROM math_comment_jobs c WHERE c.check_id=j.check_id) AND "
                     "j.rowid=(SELECT max(k.rowid) FROM math_jobs k WHERE "
-                    "k.document=j.document AND k.revision=j.revision) AND "
+                    "k.document=j.document AND k.revision=j.revision AND NOT EXISTS "
+                    "(SELECT 1 FROM math_comment_jobs c WHERE c.check_id=k.check_id)) AND "
                     "j.state='finished' AND (j.unavailable>0 OR (? IS NOT NULL AND "
                     "j.configuration!=?)))"
                 ),
@@ -144,12 +151,18 @@ class MathJobs:
                     dump(configuration) if configuration else None,
                 ),
             )
+            from .comment_math import CommentMath
+
+            CommentMath(self).retry(db, project, dump(configuration) if configuration else None)
 
     def claim(self, project: str, owner: str) -> str | None:
         now = self.store.clock()
         if not math.isfinite(now) or abs(now) > 1e18:
             raise DocumentError(INTERNAL, "invalid math clock")
         with self.documents._write() as db:
+            from .comment_math import reconcile
+
+            reconcile(db, project)
             # Mixed-version writers may append valid immutable revisions without
             # the new scheduling hook. Reconcile only authoritative head metadata;
             # history still proves each queued revision's individual block owner.
@@ -206,7 +219,9 @@ class MathJobs:
                 (project,),
             ).fetchone()
             if source is None:
-                return None
+                from .comment_math import CommentMath
+
+                return CommentMath(self).claim(db, project, owner, now)
             if (
                 len(source[0]) > 128
                 or type(source[1]) is not int
@@ -325,6 +340,11 @@ class MathJobs:
                         not isinstance(value[name], int | float) or not math.isfinite(value[name])
                     ):
                         raise ValueError
+                from .comment_math import metadata
+
+                comment = metadata(db, check)
+                if comment is not None:
+                    value["comment"] = comment
                 return value
             except (ValueError, TypeError, UnicodeDecodeError):
                 raise DocumentError(INTERNAL, "stored math job exceeds its schema bounds") from None
@@ -362,6 +382,13 @@ class MathJobs:
         change/removal cannot relabel earlier work. Unknown is recorded only after
         reaching the beginning, never because a page budget ran out.
         """
+        from .comment_math import CommentMath, metadata
+
+        with self.documents._read() as db:
+            assert db is not None  # noqa: S101 - canonical store initialized
+            comment = metadata(db, check)
+        if comment is not None:
+            return CommentMath(self).attribution(check, owner, blocks)
         with self.documents._read() as db:
             assert db is not None  # noqa: S101 - writer initialized the canonical store
             document, revision, _, cursor = self._fence(db, check, owner)
@@ -469,6 +496,11 @@ class MathJobs:
                     ),
                     (document,),
                 )
+                db.execute(
+                    "UPDATE comment_math_sources SET blocked='math observation quota reached' "
+                    "WHERE entry_id=(SELECT entry_id FROM math_comment_jobs WHERE check_id=?)",
+                    (check,),
+                )
                 return False
             db.execute(
                 "UPDATE math_jobs SET lease_until=? WHERE check_id=?",
@@ -566,16 +598,25 @@ class MathJobs:
                     ),
                     (self.store.clock(), check),
                 )
-                db.execute(
-                    (
-                        "UPDATE math_sources SET completed=max(completed,?),blocked=NULL WHERE "
-                        "document=?"
-                    ),
-                    (revision, document),
-                )
+                if "comment" in job:
+                    from .comment_math import CommentMath
+
+                    CommentMath(self).finish(db, job)
+                else:
+                    db.execute(
+                        (
+                            "UPDATE math_sources SET completed=max(completed,?),blocked=NULL WHERE "
+                            "document=?"
+                        ),
+                        (revision, document),
+                    )
 
     def load(self, job: Json) -> Mapped:
         """Bound bytes before parsing and bind job/project/hash to actual source."""
+        if "comment" in job:
+            from .comment_math import CommentMath
+
+            return CommentMath(self).load(job)
         with self.documents._read() as db:
             assert db is not None  # noqa: S101 - canonical writer initialized
             row = db.execute(
@@ -599,9 +640,18 @@ class MathJobs:
         except (ValueError, TypeError, KeyError, RecursionError):
             raise DocumentError(INTERNAL, "pinned math source identity is invalid") from None
 
+    def effective_macros(self, job: Json, mapped: Mapped) -> dict[str, str]:
+        if "comment" in job:
+            from .comment_math import CommentMath
+
+            return CommentMath(self).macros(job)
+        return mapped.parsed.front_matter.macros if mapped.parsed.front_matter else {}
+
     async def step(self, check: str, owner: str, checker: Checker | None) -> bool:
         """One bounded provenance page or formula batch; False means durable pending."""
         job = await threaded(self.job, check)
+        if job["state"] == "finished":
+            return True
         mapped = await threaded(self.load, job)
         if job["cursor"] > len(mapped.parsed.spans):
             raise DocumentError(INTERNAL, "math cursor exceeds the pinned span count")
@@ -610,7 +660,7 @@ class MathJobs:
         proofs = await threaded(self.attribution, check, owner, blocks)
         if proofs is None or not await threaded(self.capacity, check, owner):
             return False
-        macros = mapped.parsed.front_matter.macros if mapped.parsed.front_matter else {}
+        macros = await threaded(self.effective_macros, job, mapped)
         formulas: list[Formula] = []
         for index, span in selected:
             block = mapped.parsed.blocks[span.block]
@@ -764,7 +814,7 @@ class MathJobs:
                 if len(row[0]) > 128 or len(row[1]) > 128 or len(row[3]) > 32:
                     raise DocumentError(INTERNAL, "stored math listing identity exceeds its bound")
             rows = [(r[0].decode(), r[1].decode(), r[2], r[3].decode(), *r[4:]) for r in rows]
-            checks = [
+            checks: list[Json] = [
                 dict(
                     zip(
                         (
@@ -785,6 +835,14 @@ class MathJobs:
                 )
                 for r in rows[:20]
             ]
+            from .comment_math import metadata
+            from .comment_math import queue as comment_queue
+
+            for entry in checks:
+                comment = metadata(db, entry["check_id"])
+                entry["kind"] = "comment" if comment else "document"
+                if comment:
+                    entry["comment"] = comment
             queue = [
                 dict(zip(("document", "target", "completed", "blocked", "running"), r, strict=True))
                 for r in db.execute(
@@ -810,11 +868,12 @@ class MathJobs:
                 entry["document"] = entry["document"].decode()
                 if entry["blocked"] is not None:
                     entry["blocked"] = entry["blocked"].decode()
+            comments = comment_queue(db, project)
             return {
                 "checks": checks,
                 "next_after": checks[-1]["check_id"] if len(rows) > 20 else None,
-                "queue": queue[:20],
-                "queue_more": len(queue) > 20,
+                "queue": queue[:20] + comments[:20],
+                "queue_more": len(queue) > 20 or len(comments) > 20,
             }
 
     def evidence(self, project: str, check: str, *, after: int = 0, span: object = None) -> Json:

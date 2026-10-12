@@ -1,9 +1,10 @@
-# Document math checks
+# Durable text math checks
 
 Document revisions now connect durable save scheduling, the isolated renderer,
 mechanical findings and closing-round delivery (D82, document portion of LD-53
-to LD-55 and CR-36 to CR-38). Comments, replies, ledger entries and finding prose
-are outside this slice. The renderer remains unavailable until configured by the
+to LD-55 and CR-36 to CR-38). [Comments and replies](COMMENT-MATH.md) add immutable body revisions under the
+same checker and delivery bounds. Ledger entries and finding prose remain outside
+these slices. The renderer remains unavailable until configured by the
 operator; an unavailable check never establishes rejection or a fix.
 
 `orchestrator.mathcheck.MathChecker` runs one formula in a fresh Node process.
@@ -202,5 +203,5 @@ Final combined validation passed 9,459 Python tests (43 opt-in skips) on Python
 Python/Svelte/TypeScript checks, Python/npm license checks, protocol generation
 and both GUI/math builds. The actual Node boundary runs against the built math
 bundle. The supported Python 3.12 matrix remains unchanged; fresh PR CI and merge
-are separate delivery gates. Comment/reply, ledger and finding-prose checks,
+are separate delivery gates. Comment/reply checks have their own additive [slice and validation boundary](COMMENT-MATH.md). Ledger and finding-prose checks,
 idle scheduling and automatic history compaction remain open.

@@ -147,8 +147,9 @@ async def test_manual_request_is_queued_without_invented_wake(client, review_dat
     assert "Idle sessions do not start" in value["detail"]
 
 
+@pytest.mark.parametrize("source", ["document", "comment"])
 async def test_mechanical_math_evidence_is_scoped_bounded_and_separate_from_review(
-    client, state_dir: Path
+    client, state_dir: Path, source: str
 ) -> None:
     import hashlib
 
@@ -162,8 +163,28 @@ async def test_mechanical_math_evidence_is_scoped_bounded_and_separate_from_revi
         kind="agent", session_id="a", run_id="math-fixture", role="main", model="scripted"
     )
     doc = documents.create(
-        "p1", name="math", title="Math", text=r"$\unknown{x}$" + "\n", author=author, session_id="a"
+        "p1",
+        name="math",
+        title="Math",
+        text=r"$\unknown{x}$" + "\n" if source == "document" else "Context.",
+        author=author,
+        session_id="a",
     ).document_id
+    entry: str | None = None
+    if source == "comment":
+        from sandbox_science.orchestrator.documents.annotations import Annotations
+
+        entry = Annotations(documents).change(
+            "p1",
+            doc,
+            {
+                "action": "create",
+                "anchor": {"revision": 1, "block": "b1"},
+                "body": r"$\unknown{x}$",
+                "operation_id": "comment-source",
+            },
+            author,
+        )["entry_id"]
 
     class Scripted:
         def identity(self) -> dict[str, object]:
@@ -189,6 +210,10 @@ async def test_mechanical_math_evidence_is_scoped_bounded_and_separate_from_revi
     check = jobs.claim("p1", "fixture")
     assert check
     assert await jobs.step(check, "fixture", Scripted())
+    if source == "comment":
+        check = jobs.claim("p1", "fixture")
+        assert check
+        assert await jobs.step(check, "fixture", Scripted())
     documents.close()
     base = "/api/v0/projects/p1/sessions/a"
     response = await client.get(base + "/math-checks")
@@ -198,6 +223,8 @@ async def test_mechanical_math_evidence_is_scoped_bounded_and_separate_from_revi
     assert response.status == 200
     body = await response.json()
     assert body["check"]["document"] == doc
+    if source == "comment":
+        assert body["check"]["comment"]["entry_id"] == entry
     assert body["observations"][0]["owner"]["author"]["session_id"] == "a"
     finding = (await (await client.get(base + "/findings")).json())["findings"][0]
     assert finding["origin"] == "math"

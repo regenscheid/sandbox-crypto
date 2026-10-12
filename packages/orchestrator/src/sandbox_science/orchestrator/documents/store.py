@@ -478,6 +478,18 @@ class DocumentStore:
             from .mathqueue import prepare as prepare_math
 
             prepare_math(db)
+            from .comment_bodies import SCHEMA as COMMENT_BODY_SCHEMA
+
+            for statement in COMMENT_BODY_SCHEMA:
+                db.execute(statement)
+            db.execute(
+                "INSERT OR IGNORE INTO "
+                "comment_math_sources(entry_id,document,project,target,blocked) "
+                "SELECT e.entry_id,t.document_id,d.project_id,0,"
+                "'Legacy body identity is unknown; automatic math attribution is excluded' "
+                "FROM annotation_entries e JOIN annotation_threads t USING(thread_id) "
+                "JOIN documents d ON d.document_id=t.document_id WHERE e.kind IN ('create','reply')"
+            )
             db.execute("COMMIT")
         finally:
             if db.in_transaction:
