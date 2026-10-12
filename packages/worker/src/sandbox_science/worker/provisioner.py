@@ -43,6 +43,7 @@ from typing import Any, Final, Protocol
 from pydantic import ValidationError
 
 from sandbox_science.contracts import (
+    TERMINAL_STATES,
     ErrorInfo,
     ErrorKind,
     Execution,
@@ -238,6 +239,16 @@ class Provisioner:
             stop = self._cut_short(record, "restarted")
             finished = _validated(record, **self._fields(record, stop), seq=record.seq + 1)
             self.store.update_provision(finished)
+        # No ready ACK between classifications: a later unfinished install may
+        # establish recovery even when the first queued operation never started.
+        for environment in {record.request.context.environment_id for record in unfinished}:
+            try:
+                await self.manager.sync_package_gate(environment)
+            except WorkerError:
+                _log.warning(
+                    "environment %s remains admission-closed after startup classification",
+                    environment,
+                )
 
     async def submit(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
         """The operation for ``request.operation_id``, created and queued if it is new."""
@@ -259,6 +270,7 @@ class Provisioner:
                     f"operation {request.operation_id} was submitted with a different request",
                 )
             return self.get(provision_id), False
+        self.manager.package_admission(environment_id)
         if not self.supports(environment_id):
             raise WorkerError(
                 ErrorKind.UNSUPPORTED,
@@ -360,10 +372,38 @@ class Provisioner:
         )
 
     async def forget(self, environment_id: str) -> None:
-        """Cancel a deleted environment's operations."""
-        for provision_id in list(self._queues.get(environment_id, ())):
-            with contextlib.suppress(WorkerError):
-                await self.cancel(provision_id)
+        """Drain old operations before their binding/fence can be forgotten or reused.
+
+        The environment owns this required hook through repeated caller cancellation.
+        A terminal task with a failed classification write is not a durable drain.
+        """
+        operations = [
+            op
+            for op in self._ops.values()
+            if op.record.request.context.environment_id == environment_id
+        ]
+        failure: WorkerError | None = None
+        for op in operations:
+            op.cancelled.set()
+            try:
+                if op.step is not None:
+                    await self.manager.cancel(op.step)
+            except WorkerError as exc:
+                failure = exc
+            finally:
+                if op.task is not None and not op.task.done():
+                    op.task.cancel()
+        await asyncio.gather(
+            *(op.task for op in operations if op.task is not None), return_exceptions=True
+        )
+        for op in operations:
+            self._stopped(op)  # retry a classification whose first SQL write failed
+        if not self.store.provisioning_finished(environment_id):
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE, "old provisioning classification is not durably finished"
+            )
+        if failure is not None:
+            raise failure
 
     async def close(self) -> None:
         """End every operation still running: each is recorded as failed."""
@@ -391,8 +431,9 @@ class Provisioner:
 
     def _update(self, op: _Op, **changes: Any) -> None:
         """Change the operation's record, store it, and wake whoever waits on it."""
-        op.record = _validated(op.record, **changes, seq=op.record.seq + 1)
-        self.store.update_provision(op.record)
+        record = _validated(op.record, **changes, seq=op.record.seq + 1)
+        self.store.update_provision(record)
+        op.record = record
         changed, op.changed = op.changed, asyncio.get_running_loop().create_future()
         changed.set_result(None)
 
@@ -481,6 +522,16 @@ class Provisioner:
     async def _operate(self, op: _Op) -> None:
         request = op.record.request
         environment_id = request.context.environment_id
+        try:
+            self.manager.package_admission(environment_id)
+        except WorkerError as exc:
+            raise _Stop(
+                ProvisionOutcome.FAILED,
+                "environment_changed",
+                "queue",
+                exc.info(),
+                next_step="The environment needs recovery; this operation did not run.",
+            ) from None
         governing = self._governing(environment_id)
         self._update(
             op,
@@ -587,6 +638,11 @@ class Provisioner:
             argv=tuple(argv),
             timeout_seconds=min(timeout, float(MAX_TIMEOUT_SECONDS)),
             output_limit_bytes=limit,
+        )
+        self.store.authorize_provision_step(
+            op.record.provision_id,
+            request.operation_id,
+            hashlib.sha256(request.model_dump_json().encode()).hexdigest(),
         )
         execution, _ = await self.manager.submit(request, origin=op.record.provision_id)
         self._update(op, executions=(*op.record.executions, execution.execution_id))
@@ -1066,6 +1122,18 @@ class Provisioner:
                 ErrorInfo(kind=ErrorKind.INTERNAL, message=str(exc)),
                 next_step="Nothing was installed.",
             ) from None
+        # INSTALLING and its hold were one SQL commit. No installer can be
+        # submitted until the exact guest incarnation acknowledges that hold.
+        try:
+            await self.manager.sync_package_gate(environment_id)
+        except WorkerError as exc:
+            raise _Stop(
+                ProvisionOutcome.FAILED,
+                "install_failed",
+                "download",
+                ErrorInfo(kind=exc.kind, message=str(exc)),
+                next_step="The admission hold was not acknowledged; nothing was installed.",
+            ) from None
         execution = await self._execute(
             op,
             argv,
@@ -1100,6 +1168,11 @@ class Provisioner:
             argv=("true",),
             timeout_seconds=LOOK_TIMEOUT,
             output_limit_bytes=1024,
+        )
+        self.store.authorize_provision_step(
+            op.record.provision_id,
+            request.operation_id,
+            hashlib.sha256(request.model_dump_json().encode()).hexdigest(),
         )
         try:
             execution, _ = await self.manager.submit(request, origin=op.record.provision_id)
@@ -1148,17 +1221,6 @@ class Provisioner:
                 stage,
             )
         if changed and before is not None and after is not None:
-            if await self._same_packages(environment_id, before, after):
-                raise _Stop(
-                    ProvisionOutcome.FAILED,
-                    reason,
-                    stage,
-                    error,
-                    notes=(
-                        f"the packages' records changed (revision {before} to {after}), but "
-                        f"revision {after}'s lockfile lists the packages of revision {before}",
-                    ),
-                )
             if self.restorer is not None and await self.restorer.restore(environment_id, before):
                 raise _Stop(
                     ProvisionOutcome.ROLLED_BACK,
@@ -1250,12 +1312,17 @@ class Provisioner:
                 steps.append(step)
         if not steps:
             return True  # the install step was never submitted
-        return steps[-1].started_at is None and steps[-1].state is not ExecutionState.LOST
+        return (
+            steps[-1].started_at is None
+            and steps[-1].state in TERMINAL_STATES
+            and steps[-1].state is not ExecutionState.LOST
+        )
 
     def _mark(self, environment_id: str, provision_id: str, good: int | None) -> int | None:
         """Mark the environment as needing recovery (CP-13), unless an earlier operation
         did, whose mark holds; return the mark's last revision known good."""
         self.store.set_package_status(environment_id, "needs_recovery", provision_id, good)
+        self.manager.refresh_package_gate(environment_id)
         marked = self.store.package_status(environment_id)
         return marked[2] if marked is not None else good
 
@@ -1268,11 +1335,6 @@ class Provisioner:
         else:
             known = f"the worker holds no lockfile of revision {good}, the last known good"
         return f"{what} The worker cannot restore an earlier revision yet. Tell the user: {known}."
-
-    async def _same_packages(self, environment_id: str, before: int, after: int) -> bool:
-        old = await self._lockfile(environment_id, before)
-        new = await self._lockfile(environment_id, after)
-        return old is not None and new is not None and (old.conda, old.pip) == (new.conda, new.pip)
 
     async def _settle(
         self,
@@ -1456,6 +1518,7 @@ class Provisioner:
         reason = f"its operation ended {stop.outcome.value}"
         await self._close(op.record.provision_id, op.record.permission_request, reason)
         self._update(op, **self._fields(op.record, stop))
+        self.manager.refresh_package_gate(op.record.request.context.environment_id)
         _log.info(
             "provisioning %s ended %s%s",
             op.record.provision_id,
