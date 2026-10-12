@@ -100,6 +100,12 @@ Run `uv run python .agents/labs/failed_run.py` from the source worktree. It crea
 
 [Acceptance on 2026-10-12](../docs/agent-reports/failed-run-records-2026-10-12.md) records signed source, exact CLI/browser evidence, final gates and complete teardown.
 
+## Original-LaTeX clipboard acceptance
+
+Run `uv run python .agents/labs/math_copy.py --static web/workspace/dist --info /tmp/math-copy-browser-info.json --cleanup /tmp/math-copy-browser-cleanup.json` on the frozen production build. The helper creates marked disposable project/document state and serves the actual workspace plus a synthetic loopback repair peer. Its random login URL is written only to the private info file. No real model, worker, VM or research execution is used.
+
+Open that login URL, then the fixture document. Use real keyboard Copy and paste into the document editor's unsaved source field to verify inline/display, mixed prose, table cells, partial selections, heuristic/model repair, Unicode fallback and skipped formulas. Compare against the saved source, including delimiters and body whitespace, with Markdown quote/list structure excluded from the formula itself. Ordinary editor/code copying must keep its normal behavior. Do not save pasted acceptance text. Close the tab and send SIGTERM to the owned helper; it closes both listeners, removes private info/marked state and writes a public cleanup record. Remove only the owned public cleanup file after archiving the result.
+
 ## Document editing browser acceptance
 
 This control-store slice needs no OpenShell VM. Run
