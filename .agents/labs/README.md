@@ -1,0 +1,33 @@
+# babbage labs
+
+Scripts for running the platform against a real OpenShell gateway on babbage, as labs 9 to 17 did. Each lab's report is in [`../docs/agent-reports/`](../docs/agent-reports/). These scripts are agents' tooling, not product code: they assume babbage's setup and are kept here so that the next lab does not start from nothing.
+
+## Prerequisites
+
+- OpenShell 0.1.3 unpacked at `~/.local/opt/openshell-0.1.3/bin` (gateway, driver and CLI).
+- The images in the local Docker store, which OpenShell's VM driver reads directly: `sandbox-science/minimal:02f85b3`, `sandbox-science/crypto-base:02f85b3`, `sandbox-science/mcp-proxy:d27e41a` and `sandbox-science/orchestrator:174e72e` (built from `images/`; see [images](../../docs/IMAGES.md)). Only create, tag or remove `sandbox-science/*` images: the Docker store is shared with the user's own projects, and is never pruned.
+- `uv sync --locked` in the repository, whose `.venv` the scripts run (`R`, by default the repository these scripts are in).
+
+## Running a lab
+
+All state goes under `~/.local/state/openshell-lab`, and every service runs as a transient `systemd-run --user` unit named `openshell-lab-*`. Nothing persistent is installed.
+
+1. `bash lab_up.sh`: the gateway (VM driver, mTLS), the policy middleware and the package cache, on loopback ports 17670, 50051 and 8090. It fails if the lab directory exists or a port is busy.
+2. `source ~/.local/state/openshell-lab/env.sh` in each shell that runs `openshell`. It points `XDG_CONFIG_HOME` and the other XDG directories at the lab, so **`gh` does not work in that shell**: run `gh` in another.
+3. The example policy names the provider `github-readonly`; register it with a synthetic token before creating environments:
+
+   ```bash
+   openshell provider profile import -f examples/openshell/profiles/github-token.yaml
+   GITHUB_TOKEN="test-secret-lab-github-$(openssl rand -hex 8)" openshell provider create --name github-readonly --type github-token --credential GITHUB_TOKEN
+   ```
+4. `bash worker_up.sh`: the worker on 127.0.0.1:8100 with `[openshell.environments]`, a client limited to `$PROJECT` (default `lab17`, token in `$LAB/worker/client-a.token`) and the example policy granted to that project (digest in `$LAB/policy.digest`).
+5. Checks, through the worker's API (they use project `lab17`, environments `lab17-a` and `lab17-c`):
+   - `python -I checks.py $LAB/worker/client-a.token $(cat $LAB/policy.digest) envs sync mmap packages cancel idioms orphans revisions`: any subset of the parts, in order. `envs` creates the two environments first.
+   - `python -I budget.py $LAB/worker/client-a.token header|budget`: the cache's per-sandbox header and budgets (restart the cache with `sandbox_rate = 0.5` and `sandbox_burst = 2` in `$LAB/cache.toml` for `budget`, then restore it).
+   - `bash forward.sh`: the MCP proxy in its own sandbox, with its forward run as the example unit runs it, across a stop and start.
+6. To test a branch before it merges, restart the worker unit from that branch's worktree (`<worktree>/.venv/bin/sandbox-science-worker serve --settings worker.toml`, working directory `$LAB/worker`). Do not switch branches in the main checkout while a lab runs: the cache and the middleware run from its editable install.
+7. `bash lab_down.sh` deletes every sandbox, stops every lab unit (the forward unit included, which restarts forever otherwise), removes the lab directory and checks that no process, port, OpenShell path or driver socket is left. Labs are always torn down completely.
+
+## Reports
+
+Write the report as `.agents/docs/agent-reports/babbage-openshell-lab-N-<date>.md`, in the style of the earlier ones (what ran where, results tables, findings, cleanup), add a line to `.agents/docs/README.md`, and add the file to `.agents/docs/INVENTORY.json` with its size and SHA-256 (rebuild the README's entry too). Cite the lab where docs state what it showed. Tokens are synthetic and never written to the report or the logs kept.
