@@ -5,7 +5,7 @@ The workspace is the research GUI (W4, D80). It shows the harness's records: the
 - `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static files: an `index.html`, one script, one stylesheet and KaTeX's fonts.
 - `packages/workspace` (`sandbox_science.workspace`): the server, in the project's Python on aiohttp, with the command `sandbox-science-workspace`. It serves the built files and a JSON API, handles login, and asks the reviewer model for math repairs when it is configured to.
 
-Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Documents can be edited as Markdown source or by block, with conflicts and retained patches reviewed explicitly. Comments, the ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
+Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Documents can be edited as Markdown source or by block, with conflicts and retained patches reviewed explicitly. Document comments and addressed work requests are available. The ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
 
 ## Building and running
 
@@ -313,7 +313,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 
 ## Not built yet
 
-- Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents; comments and anchors; the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)); and review findings ([consistency review](specs/consistency-review.md)).
+- Rich-text editing, automatic source conflict merging, declining suggestions in the GUI, and restoring deleted documents; artifact/PDF anchors and annotation export; the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)); and review findings ([consistency review](specs/consistency-review.md)).
 - The project's macros, beneath a document's (LD-28).
 - Approvals in the GUI, with re-authentication for high-risk ones (D54), and policy revisions from the GUI.
 - Previews of rich artifacts on a separate origin (D54), and the PDF viewer.
