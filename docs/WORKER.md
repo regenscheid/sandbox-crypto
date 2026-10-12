@@ -115,6 +115,12 @@ and both production builds. Independent adversarial review covered retained iden
 old receipt replay, stage expiry, project/authentication denial and cancellation while SQL
 commits remain owned. These tests establish the catalog boundary, not sandbox publication.
 
+The control store's [publication outbox](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
+now supplies complete pinned catalog plans and exact project-scoped revision content.
+Its source transaction records each canonical change coherently. Network delivery and
+worker acknowledgement reconciliation remain separate work; this prerequisite enables
+no environment writes or mirror capability.
+
 ## Behavior worth knowing
 
 - **Durability.** An execution is stored before it is dispatched, and each event before it is delivered. A client that loses its stream asks again with `after`, and receives each event once; a replay reads the store a page at a time. An execution's last two events (its terminal state and its result) and its final record are checked and stored in one transaction.
