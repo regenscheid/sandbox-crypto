@@ -7,6 +7,8 @@ describe('authors and changes in words', () => {
     [{ kind: 'user' as const, user: 'user' }, 'the user'],
     [{ kind: 'import' as const, user: 'user', import_id: 'import-1' }, 'an import by the user'],
     [{ kind: 'platform' as const, service: 'merge' }, "the platform's merge"],
+    [{ kind: 'worker' as const, environment_id: 'env', incarnation: 'inc' }, 'worker code in environment env, incarnation inc'],
+    [{ kind: 'worker' as const, environment_id: 'env', incarnation: 'inc', session_id: 's' }, 'worker code in environment env, incarnation inc, session s'],
     [
       { kind: 'agent' as const, session_id: 's1', run_id: 'run-1', role: 'main', model: 'm' },
       'agent run run-1 of session s1, m',
