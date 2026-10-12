@@ -111,8 +111,8 @@ agreed effective context; contradictory, missing or unproved contexts hold check
 and definitive reviewer explanation decisions, allowing only an inconclusive
 reviewer outcome. Project-only diagnostic display has a visible warning. Setting
 changes queue bounded lazy current-head refresh during active runs, with no idle
-scheduler or unbounded settings-write fan-out. Renderer configuration remains
-operator-owned/default unavailable. Whole-LaTeX documents, ledger context and
+scheduler or unbounded settings-write fan-out. Mechanical renderer configuration
+remains operator-owned/default unavailable. Whole-LaTeX documents, ledger context and
 export staging remain separate. See [project macros](../PROJECT-MACROS.md).
 
 ### References and embedded artifacts
