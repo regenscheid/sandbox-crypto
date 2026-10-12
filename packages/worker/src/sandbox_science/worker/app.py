@@ -196,6 +196,13 @@ def create_app(
         environments.confirmed_deleted.append(manager.forget_package_gate)
         environments.reusing.append(manager.guard_package_reuse)
 
+        async def confirmed_capture_cleanup(environment_id: str) -> None:
+            info = environments.get(environment_id)
+            if info.sandbox_id and environments.records.deletion_confirmed(info):
+                await manager.confirm_capture_cleanup(environment_id, info.sandbox, info.sandbox_id)
+
+        environments.confirmed_deleted.append(confirmed_capture_cleanup)
+
         def job_resources(environment_id: str) -> Resources:
             if environments.busy(environment_id):
                 raise WorkerError(ErrorKind.UNAVAILABLE, "the environment is changing")

@@ -385,9 +385,14 @@ class Daemon:
         except (OSError, ValueError, TimeoutError, ConnectionError, asyncio.IncompleteReadError):
             pass
         finally:
-            if claimed and self.writer is writer:
-                self.writer = None
-            writer.close()
+            try:
+                if claimed and self.writer is writer:
+                    self.writer = None
+                    # Research jobs survive bridge detach, temporary file readers do not.
+                    # Snapshot admission before another controller can enter.
+                    await self.executor.captures.cancel_active()
+            finally:
+                writer.close()
 
     async def handle_request(self, writer: asyncio.StreamWriter, request: Message) -> None:
         """Fence a queued handler too, before it can submit or cancel anything."""
