@@ -12,10 +12,12 @@ docs/specs/tools.md.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hmac
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, cast
@@ -50,11 +52,21 @@ from sandbox_science.contracts import (
     WorkerErrorResponse,
     WriteFileRequest,
 )
+from sandbox_science.contracts.documents import (
+    MAX_CATALOG_PAGE_BYTES,
+    MAX_CONTENT_BODY,
+    CatalogContentChunk,
+    CatalogDelta,
+    CatalogSnapshot,
+    CatalogSnapshotPage,
+    CatalogStatus,
+)
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
 from sandbox_science.policy import effective_resources
 from sandbox_science.policy.model import Resources
 
+from .documents_catalog import DocumentsCatalog
 from .environments import Environments
 from .errors import WorkerError
 from .manager import ExecutionManager
@@ -66,6 +78,9 @@ _log = logging.getLogger(__name__)
 MANAGER: Final = web.AppKey("manager", ExecutionManager)
 ENVIRONMENTS: Final = web.AppKey("environments", Environments)
 PROVISIONER: Final = web.AppKey("provisioner", Provisioner)
+DOCUMENT_CATALOG: Final = web.AppKey("document_catalog", DocumentsCatalog)
+CATALOG_WORK: Final = web.AppKey("catalog_work", set[asyncio.Task[CatalogStatus]])
+CATALOG_EXECUTOR: Final = web.AppKey("catalog_executor", ThreadPoolExecutor)
 CREATING: Final = web.AppKey("creating", dict[str, set[str]])
 """The environments each limited client is creating right now, which its limit counts too."""
 MAX_BODY: Final = 16 * 1024 * 1024
@@ -88,6 +103,7 @@ class Client:
     name: str
     projects: frozenset[str] | None
     max_environments: int | None = None
+    document_catalog: bool = False
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -108,13 +124,17 @@ def create_app(
     environments: Environments | None = None,
     clients: Sequence[ClientSettings] = (),
     provisioner: Provisioner | None = None,
+    document_catalog: DocumentsCatalog | None = None,
 ) -> web.Application:
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
-    pool = Client("pool", None)
+    pool = Client("pool", None, document_catalog=True)
     by_digest = {
-        c.token_sha256: Client(c.name, frozenset(c.projects), c.max_environments) for c in clients
+        c.token_sha256: Client(
+            c.name, frozenset(c.projects), c.max_environments, c.document_catalog
+        )
+        for c in clients
     }
     if token_digest(token) in by_digest:
         raise ValueError("a client has the pool's own token")
@@ -154,6 +174,21 @@ def create_app(
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app[MANAGER] = manager
     app[CREATING] = {}
+    if document_catalog is not None:
+        app[DOCUMENT_CATALOG] = document_catalog
+        app[CATALOG_WORK] = set()
+        app[CATALOG_EXECUTOR] = ThreadPoolExecutor(max_workers=1, thread_name_prefix="catalog")
+        app.on_cleanup.append(_drain_catalog)
+        app.add_routes(
+            [
+                web.get("/v1/document-catalog/{project_id}", document_catalog_status),
+                web.post("/v1/document-catalog/{project_id}/snapshots", document_catalog_begin),
+                web.post("/v1/document-catalog/{project_id}/deltas", document_catalog_delta),
+                web.post("/v1/document-catalog/{project_id}/pages", document_catalog_page),
+                web.post("/v1/document-catalog/{project_id}/content", document_catalog_content),
+                web.post("/v1/document-catalog/{project_id}/commit", document_catalog_commit),
+            ]
+        )
     if environments is not None:
         app[ENVIRONMENTS] = environments
         environments.deleted.append(manager.forget_revisions)
@@ -207,6 +242,101 @@ def create_app(
         ]
     )
     return app
+
+
+def _catalog(request: web.Request) -> tuple[DocumentsCatalog, str]:
+    if not _client(request).document_catalog:
+        raise WorkerError(ErrorKind.POLICY_DENIED, "document catalog needs control permission")
+    project = _identifier(request.match_info["project_id"], "project_id")
+    _visible(request, project, "document catalog")
+    return request.app[DOCUMENT_CATALOG], project
+
+
+async def _drain_catalog(app: web.Application) -> None:
+    # A disconnected HTTP caller must not leave an admitted commit behind the
+    # database close. Shielded SQL tasks keep their receipts and drain on cleanup.
+    while app[CATALOG_WORK]:
+        await asyncio.gather(*tuple(app[CATALOG_WORK]), return_exceptions=True)
+    app[CATALOG_EXECUTOR].shutdown(wait=True)
+
+
+async def _catalog_call[T](
+    request: web.Request, operation: Callable[[T], CatalogStatus], body: T
+) -> CatalogStatus:
+    work = request.app[CATALOG_WORK]
+    if len(work) >= request.app[DOCUMENT_CATALOG].limits.max_pending_requests:
+        raise WorkerError(ErrorKind.UNAVAILABLE, "catalog request capacity is occupied")
+
+    async def execute() -> CatalogStatus:
+        return await asyncio.get_running_loop().run_in_executor(
+            request.app[CATALOG_EXECUTOR], operation, body
+        )
+
+    task = asyncio.create_task(execute())
+    work.add(task)
+
+    def finished(completed: asyncio.Task[CatalogStatus]) -> None:
+        work.discard(completed)
+        if not completed.cancelled():
+            completed.exception()
+
+    task.add_done_callback(finished)
+    return await asyncio.shield(task)
+
+
+async def _catalog_body[T: BaseModel](request: web.Request, model: type[T], limit: int) -> T:
+    # Bound even chunked bodies before Pydantic/JSON/base64 decoding allocates them.
+    data = bytearray()
+    while part := await request.content.read(min(16_384, limit + 1 - len(data))):
+        data.extend(part)
+        if len(data) > limit:
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "catalog request exceeds byte limit")
+    return model.model_validate_json(bytes(data))
+
+
+async def document_catalog_status(request: web.Request) -> web.Response:
+    catalog, project = _catalog(request)
+    return _json(await _catalog_call(request, catalog.status, project))
+
+
+async def document_catalog_begin(request: web.Request) -> web.Response:
+    catalog, project = _catalog(request)
+    body = await _catalog_body(request, CatalogSnapshot, MAX_CATALOG_PAGE_BYTES)
+    if body.project_id != project:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "catalog project does not match route")
+    return _json(await _catalog_call(request, catalog.begin, body))
+
+
+async def document_catalog_page(request: web.Request) -> web.Response:
+    catalog, project = _catalog(request)
+    body = await _catalog_body(request, CatalogSnapshotPage, MAX_CATALOG_PAGE_BYTES)
+    if body.project_id != project:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "catalog project does not match route")
+    return _json(await _catalog_call(request, catalog.page, body))
+
+
+async def document_catalog_delta(request: web.Request) -> web.Response:
+    catalog, project = _catalog(request)
+    body = await _catalog_body(request, CatalogDelta, MAX_CATALOG_PAGE_BYTES)
+    if body.target.project_id != project:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "catalog project does not match route")
+    return _json(await _catalog_call(request, catalog.delta, body))
+
+
+async def document_catalog_content(request: web.Request) -> web.Response:
+    catalog, project = _catalog(request)
+    body = await _catalog_body(request, CatalogContentChunk, MAX_CONTENT_BODY)
+    if body.project_id != project:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "catalog project does not match route")
+    return _json(await _catalog_call(request, catalog.content, body))
+
+
+async def document_catalog_commit(request: web.Request) -> web.Response:
+    catalog, project = _catalog(request)
+    body = await _catalog_body(request, CatalogSnapshot, MAX_CATALOG_PAGE_BYTES)
+    if body.project_id != project:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "catalog project does not match route")
+    return _json(await _catalog_call(request, catalog.commit, body))
 
 
 def _summary(exc: ValidationError) -> str:
