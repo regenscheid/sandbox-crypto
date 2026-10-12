@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-five OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
@@ -12,8 +12,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 18487,
-      "sha256": "2eb08f5f038a94f48426558d509f534c3ee6b1468e31a13e93d88271a72d8f76"
+      "bytes": 19107,
+      "sha256": "5219e462d7d5bad2b922263d2334e1a9e14eb409b79b4851f16eaeb68fe29152"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -212,6 +212,18 @@
       "category": "runtime-evidence",
       "bytes": 200670,
       "sha256": "6b8ce007f6c7f1e111244dc01f7c3a94debbcd93c7e6f157b5c1e91f1b1c3f64"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-25-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 6762,
+      "sha256": "3d65a11810f8e8b1a0f811899c94690f60cddb4e348ea0fa1a88bd9716eb38fe"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-25-evidence-2026-10-12.json",
+      "category": "runtime-evidence",
+      "bytes": 204935,
+      "sha256": "1f89881098c764f301b1b0570b561bea1d8ef04175d39580f750dec6e808a044"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",

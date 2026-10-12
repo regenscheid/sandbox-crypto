@@ -81,4 +81,4 @@ validation and delivery remain root-owned gates.
 
 ## Final integration gates
 
-Root final combined gates on signed `9419abec` passed 9,817 Python tests (43 opt-in skips, two existing serializer warnings), 571 web tests including the 1,076-source differential corpus, 24 post-build math cases, both production builds and locked/static/license/protocol checks. Source/test/helper/configuration stayed unchanged; subsequent edits describe acceptance and tracking only. Fresh exact-head PR CI and merge remain required.
+Root final combined gates on signed `9419abec` passed 9,817 Python tests (43 opt-in skips, two existing serializer warnings), 571 web tests including the 1,076-source differential corpus, 24 post-build math cases, both production builds and locked/static/license/protocol checks. Source/test/helper/configuration stayed unchanged; subsequent edits describe acceptance and tracking only. PR #94 merged at actual main `12ddc60` after all four fresh exact-head checks passed on signed `5418ae3` (run `38304095754`).
