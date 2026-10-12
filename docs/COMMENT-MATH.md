@@ -116,12 +116,26 @@ and final combined gates are separate from these local fixtures.
 
 ## Validation boundary
 
-Signed source `c1142e1` and signed exact-main union `7fa43e6` were independently
-reviewed. Predecessor combined gates on Python 3.13.15 passed 9,613 tests (43 opt-in
-skips, two existing warnings), 441 web tests, 24 post-build math checks and all
-locked/static/license/protocol checks/builds. Root's preliminary browser run then
-found a shared document/comment dependency-only reflag-budget bug. The correction
-separates exact assessment refresh from failed block edits and covers accepted
-owner reconciliation, old persisted caches, USER decisions and bounded corrupt
-proofs. Final corrected-source gates, fresh native browser acceptance and PR CI
-remain pending. The supported Python 3.12 matrix is unchanged.
+Signed source `c1142e1` and exact-main union `7fa43e6` passed predecessor review
+and combined gates (9,613 Python tests). Preliminary browser acceptance then found
+the shared dependency-only reflag-budget bug. Final signed source `77ecc171` and
+helper SHA `972b459ba8223cb374818098e375c948ddddbee3dc817ac0b5027051b116a62e`
+passed independent exact-head review, including accepted-owner reconciliation,
+old persisted caches, USER decisions and bounded corrupt proofs. Seventy-eight
+focused cases and all corrected-source gates pass: 9,631 Python tests on 3.13.15
+(43 opt-in skips, two existing Pydantic serializer warnings), 441 web tests,
+24 post-build math checks, locked/static/license/protocol checks and both builds.
+The supported Python 3.12 matrix is unchanged.
+
+Fresh root-owned [browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md)
+used actual local KaTeX 0.18.9/Node 24.20.0 and synthetic state. It verified
+dependency-only zero reflags, two actual failed edits/unaddressed, unavailable
+holds, USER-only-own-body editing, independent body/reply drafts across reload
+and stale 409, explicit current-head adoption/save, and MAIN correction of a
+delegated reply with immutable original author/history. Exact accepted evidence
+and confirmed-fixed history, a distinct removal reason and session-b isolation
+passed. Final capture had no warning/error logs. The browser tab, transient server
+and marked state were removed at 13:50:58.272097 UTC. No model, worker or provider
+calls occurred. Source/test/helper/assets stayed frozen through gates and final
+acceptance. Fresh PR CI is required before merge; ledger/finding-prose math,
+model repair proposals, idle scheduling and automatic compaction remain open.

@@ -221,6 +221,16 @@ Agents answer through `document_reply`, naming the request ID and, if they chang
 
 These annotations currently cover living documents. Other artifact types' PDF/image/table/notebook anchors and annotation export sidecars remain future work.
 
+The additive [comment/reply math slice](COMMENT-MATH.md) passed independent review
+at signed `77ecc171`, final combined gates (9,631 Python/43 opt-in skips/two existing
+warnings, 441 web/24 post-build math checks and all required checks/builds), and
+fresh [browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md).
+It preserves ordinary body edit authority, immutable original/correcting history,
+exact CAS drafts and shared mechanical delivery; dependency refresh spends no
+failed-block opportunity. Complete browser/server/marked-state cleanup was verified
+at 13:50:58.272097 UTC. Fresh PR CI is required before merge. Ledger/finding-prose
+math, model repair proposals and idle scheduling remain open.
+
 ## Checkpoint triggers
 
 The [consistency review](CONSISTENCY-REVIEW.md) consumes durable session-attributed agent and worker revisions, counting the characters they wrote and structural blocks they added, never as artifact revisions (CR-10 as amended, LD-40). USER revisions and worker changes without an established session do not trigger a session review. The reviewer reads bounded immutable revision evidence; checkpoint, terminal and confirmation windows retain their own durable state.
