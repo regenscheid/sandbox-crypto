@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
-  import { reviews, type Review, type Finding, type Evidence } from '../lib/reviews';
+  import { reviews, type Review, type Finding, type Evidence, type MathJob, type MathQueue } from '../lib/reviews';
   import type { Json } from '../lib/api';
   import FindingCard from './FindingCard.svelte';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -9,11 +9,14 @@
   let unreviewed = $state<Json[]>([]), selected = $state<Review | null>(null), evidence = $state<Evidence[]>([]), nextEvidence = $state<number | null>(null);
   let output = $state(''), outputReview = $state(''), outputId = $state(''), nextOutput = $state<number | null>(null);
   let records = $state<Json[]>([]), nextRecord = $state<number | null>(null), busy = $state(false), error = $state<unknown>(null), notice = $state('');
-  let selection = 0, readGeneration = 0;
+  let checks = $state<MathJob[]>([]), queue = $state<MathQueue[]>([]), nextCheck = $state<string | null>(null), queueMore = $state(false);
+  let mathOutput = $state(''), mathId = $state(''), mathNext = $state<number | null>(null);
+  let selection = 0, readGeneration = 0, mathGeneration = 0;
   async function refresh() {
     busy = true; error = null;
     try {
-      const [r, f] = await Promise.all([reviews.list(projectId, sessionId), reviews.findings(projectId, sessionId)]);
+      const [r, f, m] = await Promise.all([reviews.list(projectId, sessionId), reviews.findings(projectId, sessionId), reviews.math(projectId,sessionId)]);
+      checks = m.checks; queue = m.queue; nextCheck = m.next_after; queueMore = !!m.queue_more;
       listed = r.reviews; if (selected) selected = listed.find(item => item.review_id === selected?.review_id) ?? selected; nextReview = r.next_after; unreviewed = r.unreviewed; findings = f.findings; nextFinding = f.next_after;
     } catch (caught) { error = caught; } finally { busy = false; }
   }
@@ -68,6 +71,17 @@
     } catch (caught) { if (generation === selection) error = caught; }
     finally { if (generation === selection) busy = false; }
   }
+  async function moreChecks() {
+    try { const m = await reviews.math(projectId,sessionId,nextCheck); checks = [...checks,...m.checks]; nextCheck = m.next_after; }
+    catch(caught) { error = caught; }
+  }
+  async function mathEvidence(id: string, after = 0) {
+    const generation = ++mathGeneration, previous = mathOutput;
+    try { const result = await reviews.mathEvidence(projectId,sessionId,id,after);
+      if (generation !== mathGeneration) return;
+      mathOutput = after ? previous + '\n' + JSON.stringify(result.observations,null,2) : JSON.stringify(result,null,2); mathId = id; mathNext = result.next_after;
+    } catch(caught) { if (generation === mathGeneration) error = caught; }
+  }
   async function request() { try { notice = (await reviews.request(projectId, sessionId)).detail; } catch (caught) { error = caught; } }
 </script>
 <section aria-label="Consistency reviews">
@@ -90,6 +104,13 @@
   {#each records as record, index (index)}<details><summary>Audit record {index + 1}</summary><pre>{JSON.stringify(record, null, 2)}</pre></details>{/each}
 {/if}
 {#if output}<h3>Pinned evidence preview</h3><pre aria-label="Pinned evidence preview">{output}</pre>{#if nextOutput !== null}<button onclick={() => read(outputReview, outputId, nextOutput!)}>Read next evidence slice</button>{/if}{/if}
+<h3>Document math checks</h3>
+<p class="muted">Mechanical checks use the operator-configured renderer. Unavailable, queued and quota-held work cannot establish a fix. Checks with no eligible author remain visible here.</p>
+{#if queue.length}<details open><summary>Pending document revisions</summary><pre>{JSON.stringify(queue,null,2)}</pre>{#if queueMore}<p>Additional documents remain queued.</p>{/if}</details>{/if}
+{#if !checks.length}<p>No document math checks recorded.</p>{/if}
+<ul>{#each checks as check (check.check_id)}<li><button onclick={() => mathEvidence(check.check_id)}>Math revision {check.revision} · {check.state} · {check.rejected} rejected · {check.unavailable} unavailable</button><code>{check.document}</code></li>{/each}</ul>
+{#if nextCheck}<button onclick={moreChecks}>Load more math checks</button>{/if}
+{#if mathOutput}<h4>Mechanical evidence and author provenance</h4><pre aria-label="Document math check">{mathOutput}</pre>{#if mathNext !== null}<button onclick={() => mathEvidence(mathId,mathNext!)}>Read next math evidence page</button>{/if}{/if}
 <h3>Findings</h3>{#if !findings.length}<p>No consistency findings recorded.</p>{/if}
 {#each findings as finding (finding.finding_id)}<FindingCard {projectId} {sessionId} {finding} changed={refresh} {read} />{/each}
 {#if nextFinding}<button disabled={busy} onclick={() => more('findings')}>Load more findings</button>{/if}

@@ -42,6 +42,7 @@ from sandbox_science.contracts.worker import Language
 
 from .consistency.controller import AUTHOR_NAMES, ReviewController
 from .documents.errors import DocumentError
+from .documents.mathcontroller import MathController
 from .documents.tool import NAMES as DOCUMENT_TOOLS
 from .documents.tool import DocumentTool, with_notices
 from .jobs import BACKGROUND, JOB_SPECS, JobTools
@@ -280,12 +281,14 @@ class Toolbox:
         documents: DocumentTool | None = None,
         jobs: JobTools | None = None,
         reviews: ReviewController | None = None,
+        math_checks: MathController | None = None,
     ) -> None:
         self.client = client
         self.context = context
         self.output_chars = output_chars
         self.languages = tuple(languages)
         self.reviews = reviews
+        self.math_checks = math_checks
         self.documents = documents
         self.jobs = jobs if BACKGROUND in features else None
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]

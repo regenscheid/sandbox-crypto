@@ -145,3 +145,77 @@ async def test_manual_request_is_queued_without_invented_wake(client, review_dat
     value = await result.json()
     assert value["queued"]
     assert "Idle sessions do not start" in value["detail"]
+
+
+async def test_mechanical_math_evidence_is_scoped_bounded_and_separate_from_review(
+    client, state_dir: Path
+) -> None:
+    import hashlib
+
+    from sandbox_science.orchestrator.documents import Author
+    from sandbox_science.orchestrator.documents.mathjobs import MathJobs
+    from sandbox_science.orchestrator.mathcheck import MathCheck
+
+    documents = DocumentStore(store_path(state_dir))
+    store = ReviewStore(documents)
+    author = Author(
+        kind="agent", session_id="a", run_id="math-fixture", role="main", model="scripted"
+    )
+    doc = documents.create(
+        "p1", name="math", title="Math", text=r"$\unknown{x}$" + "\n", author=author, session_id="a"
+    ).document_id
+
+    class Scripted:
+        def identity(self) -> dict[str, object]:
+            return {"bundle_sha256": "a" * 64, "launcher_sha256": "b" * 64, "engine": "0.18.9"}
+
+        async def check_many(self, formulas):
+            return [
+                MathCheck(
+                    id=f.id,
+                    status="rejected",
+                    error="Synthetic parse error",
+                    remedy="x",
+                    input_sha256=hashlib.sha256(f.model_dump_json().encode()).hexdigest(),
+                    bundle_sha256="a" * 64,
+                    launcher_sha256="b" * 64,
+                    engine="0.18.9",
+                    runtime="22.12.0",
+                )
+                for f in formulas
+            ]
+
+    jobs = MathJobs(store)
+    check = jobs.claim("p1", "fixture")
+    assert check
+    assert await jobs.step(check, "fixture", Scripted())
+    documents.close()
+    base = "/api/v0/projects/p1/sessions/a"
+    response = await client.get(base + "/math-checks")
+    assert response.status == 200
+    assert (await response.json())["checks"][0]["check_id"] == check
+    response = await client.get(base + f"/math-checks/{check}?span=m1")
+    assert response.status == 200
+    body = await response.json()
+    assert body["check"]["document"] == doc
+    assert body["observations"][0]["owner"]["author"]["session_id"] == "a"
+    finding = (await (await client.get(base + "/findings")).json())["findings"][0]
+    assert finding["origin"] == "math"
+    assert finding["review_id"] is None
+    assert finding["source"]["check"] == check
+    assert (await client.get(base + f"/math-checks/{check}?span=m1%27%20OR%201=1")).status == 400
+    assert (await client.get(base + f"/math-checks/{check}?after=-1")).status == 400
+    assert (await client.get(base + "/math-checks?after=not-a-math-id")).status == 400
+    assert (
+        await client.get(f"/api/v0/projects/other/sessions/a/math-checks/{check}")
+    ).status == 404
+    for suffix in ("/math-checks", f"/math-checks/{check}"):
+        assert (await client.get("/api/v0/projects/p1/sessions/missing" + suffix)).status == 404
+        assert (await client.get("/api/v0/projects/p1/sessions/" + suffix)).status == 404
+    # A valid session may inspect project-wide USER/no-session evidence, without
+    # acquiring another session's finding or changing its owner.
+    assert (await client.get("/api/v0/projects/p1/sessions/b/math-checks")).status == 200
+    assert (await client.get(f"/api/v0/projects/p1/sessions/b/math-checks/{check}")).status == 200
+    assert (
+        await client.get(f"/api/v0/projects/p1/sessions/b/findings/{finding['finding_id']}")
+    ).status == 404

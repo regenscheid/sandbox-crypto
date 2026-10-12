@@ -12,6 +12,7 @@ from aiohttp import hdrs, web
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentError
+from sandbox_science.orchestrator.documents.mathjobs import MathJobs
 
 from . import api, documents
 
@@ -21,6 +22,8 @@ Json = dict[str, Any]
 
 def add_routes(app: web.Application) -> None:
     base = "/api/v0/projects/{project}/sessions/{session}"
+    app.router.add_get(base + "/math-checks", math_checks)
+    app.router.add_get(base + "/math-checks/{check}", math_evidence)
     app.router.add_get(base + "/reviews", listing)
     app.router.add_post(base + "/reviews", request_review)
     app.router.add_get(base + "/reviews/{review}", manifest)
@@ -155,4 +158,22 @@ async def respond(request: web.Request) -> web.Response:
         return documents.api_error(DocumentError("invalid_request", "invalid finding response"))
     return await answer(
         request, lambda s, p, sid: Findings(s).respond(p, sid, raw, USER), writer=True
+    )
+
+
+async def math_checks(request: web.Request) -> web.Response:
+    return await answer(
+        request, lambda s, p, sid: MathJobs(s).listing(p, after=request.query.get("after"))
+    )
+
+
+async def math_evidence(request: web.Request) -> web.Response:
+    return await answer(
+        request,
+        lambda s, p, sid: MathJobs(s).evidence(
+            p,
+            request.match_info["check"],
+            after=integer(request, "after", 0, 20000),
+            span=request.query.get("span"),
+        ),
     )
