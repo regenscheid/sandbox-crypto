@@ -13,7 +13,7 @@
       "path": "README.md",
       "category": "archive-index",
       "bytes": 17676,
-      "sha256": "df560ea4481ecc4e6e223d43df3af984cd6ec24441b9e4adf012f6b03266b1fd"
+      "sha256": "162abf4a72ebc913d18b4c9fbf03b3003e576b9aaca8dedf0e21daacbe604fa1"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -358,7 +358,7 @@
       "sha256": "9e59e003657991be608d5667b578e64aa28fcd6526c74f35ec61479fb2209e8f"
     },
     {
-      "path": "agent-reports/copy-latex-browser-2026-10-12.png",
+      "path": "agent-reports/copy-latex-browser-2026-10-12.jpg",
       "category": "browser-evidence",
       "bytes": 146494,
       "sha256": "1958ef05b66151b26cab51bb8eef0cd153a967e6f02588226c32715ee9bbbf68"
@@ -535,13 +535,13 @@
       "path": "agent-reports/workspace-copy-latex-2026-10-12.md",
       "category": "runtime-validation",
       "bytes": 5306,
-      "sha256": "8547f96755381ca6b656ab31727d446750cd7d37c857e3e34883662ceec697bc"
+      "sha256": "e2d6528abd60ab550a67a332da48afceae1f48c88567a2af65d8f4a4d02b8ea0"
     },
     {
       "path": "agent-reports/workspace-copy-latex-evidence-2026-10-12.json",
       "category": "browser-evidence",
       "bytes": 40290,
-      "sha256": "46986c076c679d50f8c23707caa345da645a894fbd21708a4ebf878e64997eba"
+      "sha256": "5f0514b7634172ea69bd0f37cb0f30f6846d307bb8e22c6d1a16411b083c1cb6"
     },
     {
       "path": "agent-reports/workspace-license-evidence-2026-10-12.json",
