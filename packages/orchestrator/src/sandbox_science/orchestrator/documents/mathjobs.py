@@ -23,7 +23,6 @@ from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.consistency.store import ReviewStore, dump
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
 
-from .blocks import parse
 from .engine import attach
 from .errors import CONFLICT, INTERNAL, DocumentError
 from .identity import Mapped
@@ -690,7 +689,7 @@ class MathJobs:
         ):
             raise DocumentError(INTERNAL, "math job digest does not bind the immutable source")
         try:
-            return attach(parse(row[0].decode()), json.loads(row[1]))
+            return attach(row[0].decode(), json.loads(row[1]))
         except (ValueError, TypeError, KeyError, RecursionError):
             raise DocumentError(INTERNAL, "pinned math source identity is invalid") from None
 

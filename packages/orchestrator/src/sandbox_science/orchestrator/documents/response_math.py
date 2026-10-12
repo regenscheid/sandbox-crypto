@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.consistency import response_bodies as bodies
 
-from .blocks import parse
 from .engine import attach
 from .errors import CONFLICT, INTERNAL, DocumentError
 from .identity import Mapped
@@ -167,7 +166,7 @@ class ResponseMath:
             or saved["held"]
         ):
             raise DocumentError(INTERNAL, "response math digest does not bind its exact field")
-        return attach(parse(saved["body"], documents=False), saved["block_map"])
+        return attach(saved["body"], saved["block_map"], documents=False)
 
     def attribution(self, check: str, owner: str, blocks: set[str]) -> dict[str, Json]:
         with self.documents._read() as db:

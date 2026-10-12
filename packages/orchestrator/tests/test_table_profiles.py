@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from sandbox_science.orchestrator.documents import USER, DocumentError, DocumentStore, table_rule
+from sandbox_science.orchestrator.documents import engine as engine_module
 from sandbox_science.orchestrator.documents import store as store_module
 from sandbox_science.orchestrator.documents.blocks import parse
 from sandbox_science.orchestrator.documents.engine import attach, block_map
@@ -100,6 +101,25 @@ def test_saved_maps_choose_their_exact_profile_and_mode(documents: bool) -> None
     assert loaded.parsed.profile == LEGACY_PROFILE
     assert (loaded.parsed.front_matter is not None) == documents
     assert json.loads(json.dumps(stored)) == stored
+    assert attach(source, stored, documents=documents) == legacy
+
+
+def test_saved_history_never_tries_the_current_profile_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = "\ufeff| $h$ |\n| --- |\n"
+    legacy = fresh(parse(source, profile=LEGACY_PROFILE), Allocator(0, 0))
+    stored = block_map(legacy, compare(None, legacy))
+    seen: list[str] = []
+
+    def historical(source: str, *, documents: bool, profile: str):
+        seen.append(profile)
+        assert profile == LEGACY_PROFILE
+        return parse(source, documents=documents, profile=profile)
+
+    monkeypatch.setattr(engine_module, "parse", historical)
+    assert attach(source, stored) == legacy
+    assert seen == [LEGACY_PROFILE]
 
 
 @pytest.mark.parametrize("profile", [None, {}, "ss-markdown-0", "ss-markdown-3"])
