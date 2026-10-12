@@ -190,8 +190,9 @@ describe("a document's macros", () => {
       `not rendered: its macros expand to more than ${MAX_EXPANDED} characters`,
     );
     // The equation is a block of its own, which no server's block map names here.
-    expect(rendered.html).toMatch(/^<div data-unmatched="" class="math math-skipped">/);
-    expect(rendered.html).toContain('<span class="math math-inline"><span class="katex">');
+    const shown = rendered.html.replace(/ data-math-source="[^"]*"/g, '');
+    expect(shown).toMatch(/^<div data-unmatched="" class="math math-skipped">/);
+    expect(shown).toContain('<span class="math math-inline"><span class="katex">');
   });
 
   it('are left out when they define others, use an argument twice, or are too many or long', () => {

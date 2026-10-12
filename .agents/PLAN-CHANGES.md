@@ -1,8 +1,12 @@
 # Plan changes
 
+## 2026-10-12 — copy original formula LaTeX
+
+Implement the existing W4/LD-44 copy requirement in the shared GUI renderer. The copy-only escaped source metadata retains parser delimiters and untrimmed original math, including repaired and Unicode views. An app-scoped copy handler uses a cloned selection range, expands partial formulas and preserves surrounding text; normal editor/code/non-math copying remains ordinary. Original math is never inferred from a repair annotation or the diagnostic display. No new dependency, route, CSP exception, worker or architecture decision. Independently reviewed signed union `837962af` retains exact feature/helper `1902131` and actual main `05ba353`. Fresh combined checks passed 501 web tests (29 copy cases), 195 focused Python cases, 24 post-build math checks, both builds and all locked/static/license/protocol checks. Full Python 9,749/43/two warnings is explicitly reused from unchanged backend source `123b2e6` plus fresh #90/#91 CI; the new helper is separately reviewed and preflighted. Root-owned [browser acceptance](docs/agent-reports/workspace-copy-latex-2026-10-12.md) passed 19 native Copy→paste cases on the exact production build, including partial, mixed/table and repaired/as-written formulas, unchanged ranges and ordinary code/editor handling. No source edit was saved; complete cleanup passed at 18:38:03.217625 UTC. This slice is locally accepted; fresh feature PR CI and merge remain pending.
+
 ## 2026-10-12 — bundled GUI distribution notices
 
-Independently reviewed signed union `1032cd4` integrates merged main `c6ccce6`. Fresh validation passed 472 web tests (27 notice cases), 24 post-build math cases, both builds and all locked/static/license/protocol checks. Full Python 9,749/43/two warnings is explicitly reused from unchanged signed `123b2e6` and fresh #90 CI. Root-owned [HTTP distribution acceptance](docs/agent-reports/workspace-license-notices-2026-10-12.md) served all 70 built files exactly and verified complete cleanup. Fresh exact-head PR CI remains required before merge. Embedded React and Svelte adaptations and glyph-derived SVG attribution are included; the separate isolated math-checker notice copier remains a tracked follow-on.
+Independently reviewed signed union `1032cd4` integrates merged main `c6ccce6`. Fresh validation passed 472 web tests (27 notice cases), 24 post-build math cases, both builds and all locked/static/license/protocol checks. Full Python 9,749/43/two warnings is explicitly reused from unchanged signed `123b2e6` and fresh #90 CI. Root-owned [HTTP distribution acceptance](docs/agent-reports/workspace-license-notices-2026-10-12.md) served all 70 built files exactly and verified complete cleanup. PR #91 merged at actual main `05ba353` after all fresh checks passed (run `38290115991`). Embedded React and Svelte adaptations and glyph-derived SVG attribution are included; the separate isolated math-checker notice copier remains a tracked follow-on.
 
 Implement the existing W4 notice-shipping backlog item with a production build
 plugin: actual emitted npm module/runtime-helper coverage, complete primary local
@@ -15,7 +19,7 @@ remains the existing font/SVG asset terms; the platform-code allowlist does not
 change. No new dependency, service, route/UI or math-check copier change.
 Signed milestone `6b2b6bb` is preserved by independently reviewed actual-main
 union `1032cd4`; final integrated checks and HTTP acceptance passed as recorded
-above. Fresh PR CI remains the merge gate. See
+above. PR #91 merged after its fresh exact-head CI passed. See
 [distribution](../docs/WORKSPACE.md#building-and-running) and
 [primary inputs](../web/workspace/licenses/README.md).
 
