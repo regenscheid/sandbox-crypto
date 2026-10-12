@@ -8,13 +8,16 @@ Written 2026-10-11 at the end of a long session, for the next agent. Read this f
   assessment found the first worker whole-file hash was unbounded. The independent
   bounded helper/ownership slice now preserves ordinary reads, fails visibly on
   legacy capture peers and retains durable admission for unknown guest cleanup.
-  Original immutable VM proof and actual host drain are distinct. CP13's signed
-  source is unioned; root owns its runtime acceptance. Capture source review, all
-  combined gates and marked Lab22 remain pending. No automatic output discovery,
+  Original immutable VM proof and actual host drain are distinct. Independent review
+  cleared signed source `cbcfc7e`; final-source gates passed 9,592 Python tests/43
+  skips, 60 capture/lifecycle cases, 436 web/24 post-build math checks and all required
+  checks/builds. CP13's signed source and acceptance docs are unioned; the final
+  docs-only union changes no product/test/configuration/helper bytes. Exact combined
+  review, marked Lab22 and fresh CI remain pending. No automatic output discovery,
   attempt-end bytes, producer/input lineage or closed-writer claim is enabled.
   See [capture boundary](../docs/ARTIFACTS.md#bounded-worker-capture-prerequisite).
 
-- **CP-13 admission continuation:** [sticky recovery fence](../docs/RECOVERY-FENCE.md) source and the marked `.agents/labs/recovery_gate.py` helper are implemented locally. Main `999de27` is integrated. Root's first cancel/restart Lab21 pass on predecessor `ef77f6d` passed and was completely removed. The final original-binding proof correction is in local review/gates; a fresh offline/delete-reuse Lab21 remains pending on that corrected source. Restorer and operator clear are separate follow-ons. No lab/service was started by the source author.
+- **CP-13 admission continuation:** [sticky recovery fence](../docs/RECOVERY-FENCE.md) signed source `e320236` is independently reviewed and passed final local gates: 9,532 Python tests (43 opt-in skips), 436 web tests, 24 post-build math checks, locked/static/license/protocol checks and both builds. Main `999de27` is integrated. Root's first cancel/restart [Lab21](docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) pass used predecessor `ef77f6d`; the final fresh pass used exact `e320236` and proved graceful worker-offline recovery, protected-work refusal, preserved existing kernel/files/history/lockfile/peer and explicit idempotent delete/reuse with a new immutable sandbox/boot. Both labs are completely removed; final teardown was independently verified at 12:13:54 UTC. Fresh PR CI is required before merge; no source/helper edits followed the runtime freeze. Restorer and operator clear remain separate follow-ons. No lab/service was started by the source author.
 
 - **Current continuation, 2026-10-12:** main `999de27` includes PR #69 through #84 with fresh CI successful, including catalog #76, outbox #77, source adapter #79, atomic fixture #80, manual delivery #81 and artifact inventory #82. Document-revision D82 now has independently reviewed signed source and [real browser acceptance](docs/agent-reports/document-math-2026-10-12.md). Its exact artifact source union passed final combined gates: 9,459 Python tests (43 opt-in skips), 434 web tests, locked/static/license/protocol checks and both builds. One manually constructed CLI test namespace needed three optional math defaults; its cleanup assertions and timeouts are unchanged, and the final full rerun passed. Rebuilt GUI bytes match the browser archive. D82 PR #83 and artifact evidence PR #84 merged after all fresh CI jobs passed. Main #84 validation recorded 9,494 Python/436 web tests. Renderer configuration remains operator-owned/default unavailable. Full LD-53 comments/replies/ledger/finding-prose coverage and idle dispatch remain open. Normal development is Python 3.13; the supported 3.12 CI matrix remains.
 
@@ -70,7 +73,7 @@ Nothing here blocks the queued work: each item has a default in place.
   - Formulas that define macros are shown as written, where LD-28 would apply the definition.
   - Front-matter macro limits (#67): 200 macros, 1,000 characters each, none defining another or using an argument twice, at most 2,000 characters of expansion per formula.
   - D85, the SQLite control store.
-  - D84's details: one permission request per install; a waiting operation keeps its environment's turn; Conda and pip packages in separate requests; pip from wheels only; AGPL exceptions in the policy; a catalog only the platform extends; the CP-13 admission prerequisite now refuses new work in local source; Lab21 runtime acceptance remains pending.
+  - D84's details: one permission request per install; a waiting operation keeps its environment's turn; Conda and pip packages in separate requests; pip from wheels only; AGPL exceptions in the policy; a catalog only the platform extends; the CP-13 admission prerequisite refuses new work and passed Lab21, with fresh PR CI/merge pending; restoration remains open.
   - 60 model repairs per browser session per hour.
   - Whether to file `.agents/upstream/katex-trycombinechars-quadratic-splice.md`.
   - KaTeX in a Web Worker as a slice of its own.

@@ -135,7 +135,7 @@ The [report](../docs/agent-reports/consistency-review-2026-10-12.md) records the
 coverage issue, correction, browser interactions and limits.
 
 
-## Lab21: sticky recovery admission (runtime gate pending)
+## Lab21: sticky recovery admission
 
 The source helper is [`recovery_gate.py`](recovery_gate.py); the reviewed-tree setup,
 positive/negative checks, explicit offline variant and teardown boundary are in
@@ -143,6 +143,16 @@ positive/negative checks, explicit offline variant and teardown boundary are in
 Root coordinates the run only after exact-source review. The helper's marker and
 lab21 client scope are mandatory; it never runs against real project data. Keep
 both source checkouts unchanged while lab worker/middleware/cache processes use them.
+
+The [Lab21 report](../docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) records both runs.
+The predecessor cancel/restart run used signed `ef77f6d`; the final fresh graceful
+worker-offline and confirmed delete/reuse run used signed `e320236`. Root verified
+both labs completely removed, with the final independent teardown at 12:13:54 UTC.
+Real managed VMs proved preserved kernel globals/boot identity, queued-start
+refusal and missing markers, recovery files/history/lockfile access and a healthy
+peer. The final explicit rebuild used a new immutable sandbox/boot and admitted
+fresh work. Legacy unknown-binding/replacement and abrupt-death cases remain
+adversarial local evidence, distinct from the real graceful-stop run.
 
 ## Lab22: bounded artifact capture
 

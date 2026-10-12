@@ -96,6 +96,8 @@ Repeated cancellation cannot discard a spawn, close a blob FD while its thread
 still uses it, or release actual helper capacity before exit. Filesystem I/O stuck
 in an unkillable kernel wait may outlive the budget and cleanup grace. The guest
 pool retains that real task and slot; no strict wall-time/reap guarantee is made.
+Host filesystem threads likewise retain their lease and FD until actual return,
+even after the operation deadline.
 The host wire request may be cancelled after its bounded cleanup-ACK attempt,
 but this is never evidence of guest cleanup.
 
@@ -128,6 +130,11 @@ records produce `unknown`, never lineage proof.
 Local hostile tests cover sparse/growing/special sources, malformed replies,
 repeated cancellation, delayed spawn, blocked host I/O, lost transports, corrupt
 lease metadata, exact original-binding fences and actual HTTP disconnect behavior.
+Independent review cleared signed source `cbcfc7e`. Final-source local gates passed
+60 capture/lifecycle cases, 9,592 Python tests (43 opt-in skips), 436 web tests and
+24 post-build math checks, plus locked/static/license/protocol checks and both builds.
+The CP13 acceptance-document union changes no product, test, configuration or helper
+bytes; exact combined-head review and fresh CI remain required.
 Real OpenShell acceptance is a separate required gate; the marked Lab22 recipe is
 in [the lab guide](../.agents/labs/README.md#lab22-bounded-artifact-capture).
 
