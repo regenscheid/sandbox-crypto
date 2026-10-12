@@ -609,10 +609,11 @@ async def test_h4_publication_stops_at_the_size_first_reported(
         status, artifact = await started.post(
             "/v1/artifacts", {"context": CONTEXT, "path": "a.bin"}
         )
-        assert status == 201, artifact
-        assert artifact["size"] == 8 * 1024 * 1024
-        blob = started.manager.blobs.path(artifact["sha256"])
-        assert blob.stat().st_size == 8 * 1024 * 1024
+        # Protected capture now rejects contradictory EOF metadata rather than
+        # accepting a peer's size as a stopping hint. No bytes become an artifact.
+        assert status == 500, artifact
+        assert not (tmp_path / "artifacts" / "blobs").exists()
+        assert list((tmp_path / "artifacts" / "tmp").iterdir()) == []
     finally:
         await started.manager.close()
         store.close()
@@ -643,7 +644,7 @@ async def test_m1_publication_hashes_the_file_once(
         request = channel.request
 
         async def recording(op: str, **fields: Any) -> Message:
-            if op == "read":
+            if op == "capture_read":
                 reads.append(fields)
             return await request(op, **fields)
 

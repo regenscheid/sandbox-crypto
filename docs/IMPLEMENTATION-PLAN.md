@@ -1,8 +1,8 @@
 # Detailed implementation plan
 
-Updated: 2026-10-12. Engineering sequence beneath the milestone [roadmap](ROADMAP.md). Track P has the policy library, OpenShell compiler, policy middleware, package cache and event store. W1/W2 provide the [worker service](WORKER.md), harness and native math execution. M1 passed its babbage exit run; provisioning, background jobs and executor recovery have real OpenShell acceptance. W4 has the [workspace](WORKSPACE.md) GUI with document editing, comments, consistency review and document-only mechanical math findings checked in the browser. Main `999de27` includes PR #69 through #84 with fresh CI green; D82 passed final combined local gates (9,459 Python/434 web tests and all required checks/builds), PR #83 merged after fresh CI passed, and #84 recorded 9,494 Python/436 web tests. The integrated M2 research workflow remains open. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [consistency review](CONSISTENCY-REVIEW.md).
+Updated: 2026-10-12. Engineering sequence beneath the milestone [roadmap](ROADMAP.md). Track P has the policy library, OpenShell compiler, policy middleware, package cache and event store. W1/W2 provide the [worker service](WORKER.md), harness and native math execution. M1 passed its babbage exit run; provisioning, background jobs and executor recovery have real OpenShell acceptance. W4 has the [workspace](WORKSPACE.md) GUI with document editing, comments, consistency review and document-only mechanical math findings checked in the browser. Main `73c07aa` includes PR #69 through #85 with fresh CI green; D82 passed final combined local gates (9,459 Python/434 web tests and all required checks/builds), PR #83 merged after fresh CI passed, and #84 recorded 9,494 Python/436 web tests. The integrated M2 research workflow remains open. Confirmed product requirements stay in [decisions](DECISIONS.md); this plan incorporates the [consistency review](CONSISTENCY-REVIEW.md).
 
-The [CP-13 sticky admission prerequisite](RECOVERY-FENCE.md) is implemented and independently reviewed at signed `e320236`. Final combined gates passed 9,532 Python tests (43 opt-in skips), 436 web tests, 24 post-build math checks, locked/static/license/protocol checks and both builds. Root-owned [OpenShell Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) passed real linking cancellation, graceful worker-offline/reconnect and explicit confirmed delete/reuse, preserving existing research state and refusing new protected work. Both labs are completely removed; fresh PR CI is required before merge. Restoring/clearing package state remains open; no package-list comparison proves recovery.
+The [CP-13 sticky admission prerequisite](RECOVERY-FENCE.md) is implemented and independently reviewed at signed `e320236`. Final combined gates passed 9,532 Python tests (43 opt-in skips), 436 web tests, 24 post-build math checks, locked/static/license/protocol checks and both builds. Root-owned [OpenShell Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) passed real linking cancellation, graceful worker-offline/reconnect and explicit confirmed delete/reuse, preserving existing research state and refusing new protected work. Both labs are completely removed; PR #85 merged after all three fresh CI checks passed. Restoring/clearing package state remains open; no package-list comparison proves recovery.
 
 ## First implementation slice
 
@@ -84,6 +84,14 @@ Implement the worker API against OpenShell only (D52). Keep it backend-neutral b
 
 **Exit evidence:** the W1 fixture runs through the worker service on OpenShell, with mirror-only egress and the adversarial suite passing; the conformance suite is runnable against a backend adapter without harness changes.
 
+The existing external conformance/probe and linux/amd64 profile acceptance now passed
+in [Lab23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) on frozen
+main `73c07aa`: 23 unchanged external cases per minimal/crypto-base profile, with
+23 local variants intentionally skipped per run. Both Python 3.14.8 guests retained
+effective/declared tier 3 and their original distinct boots. The complete lab and
+owned fixtures were removed. This does not certify Sage-specific functionality,
+arm64, Kubernetes or multi-platform images; it changes no product/image/test code.
+
 ### W2 — Certify babbage execution with math/source capabilities (M1, phase 1)
 
 Map one backend adapter to the selected runtime. If using OpenShell, pin matching components and let its gateway own the chosen driver lifecycle. In phase 1 that is the MicroVM driver on babbage; supporting every local engine is unnecessary. Hosted Kubernetes certification is W2h in phase 2.
@@ -136,10 +144,27 @@ The bounded explicit-publication reviewer consumer uses durable atomic feed/curs
 exact raw UTF-8 source copies and scoped pinned finding/fix grants. Unsupported content
 remains incomplete; no parser or worker authority is added. Independent review, final
 combined local gates and [browser/API acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md)
-passed; fresh PR CI remains its merge gate. Automatic execution-output
+passed; PR #84 merged after all three fresh CI checks passed. Automatic execution-output
 inventory remains open, alongside imports, observed-input lineage, retention/deletion
 workflows and rich PDF/GUI consumers.
 Actual producer remains unknown; a worker last-writer hint is not provenance proof.
+
+Before automatic reported-output capture, complete the [bounded worker capture
+prerequisite](ARTIFACTS.md#bounded-worker-capture-prerequisite): fixed sandbox helper,
+size/growth/hash limits, owned spawn/reap/blob I/O and durable unknown-cleanup
+admission. Independent review cleared signed source `cbcfc7e`; final-source local
+gates passed 60 capture/lifecycle cases, 9,592 Python/43 skips, 436 web/24 post-build
+math checks and all required checks/builds. Independent review cleared signed combined
+freeze `b535856`; root-owned [OpenShell Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md)
+passed exact binary/empty retention, prompt regular/sparse/symlink/FIFO refusals and
+healthy publication/read/execution access on Python 3.14.8. Zero capture leases/helpers
+and complete teardown were independently verified. Actual main PR #85 ancestry and
+acceptance docs change no product/test/configuration/helper bytes. Final docs review
+and fresh PR CI remain required before merge. This adds no automatic discovery.
+Then design a durable bounded execution/attempt/path observation journal with exact
+original-incarnation binding and honest incomplete-manifest coverage. Current
+`written_files` stat differences cannot prove all writes, producer identity, inputs
+or attempt-end source bytes; RA-5/RA-F2/CR-F6 remain open.
 
 Support attributed user edits and revision-checked agent patches; demonstrate stale-patch reconciliation and orphaned anchors. Use one TeX-preserving renderer across research views. Evaluate PDF.js navigation against exact page/region anchors while retaining worker extraction/rendering. Assumption changes should identify dependent claims/reviews for reconsideration, not silently rewrite conclusions.
 
