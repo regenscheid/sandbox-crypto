@@ -163,6 +163,48 @@ authority. Transport authentication and real OpenShell acceptance remain open.
   - Reads refuse anything but a regular file without waiting for it (a FIFO, say), and hash in a thread, so a large file does not hold up other sessions.
   - Writes to the shared area need `expected_sha256` or `create_only`.
 
+## Bounded artifact capture
+
+`POST /v1/artifacts` requires executor `artifact_capture_protocol=1`; ordinary file
+reads retain their existing protocol. Internal `capture_read` carries a fresh
+`cap-` ID, scoped path/session, exact offset/range/byte cap, hash flag and remaining
+budget. `capture_cancel` addresses only that owned helper. Both successful protocol
+replies carry the exact ID and explicit `cleaned: true` only after actual cleanup
+or a no-helper pre-admission refusal. Capture-specific failure data is bounded;
+generic executor errors confer no cleanup proof. Active duplicate IDs cannot claim
+cleanup. Recent cancellation tombstones are bounded and IDs are never retry tokens.
+
+The fixed sandbox Python `-I -S` helper streams the initial hash under a preflight
+and growth byte cap, reads only regular nofollow sources, retains at most 8 MiB and
+checks its opened file identity. Publication verifies all range stamps/sizes and
+the final copied-byte hash. No rich code/import/renderer or researcher environment
+is loaded. Source paths remain mutable; this is exact retained content, not proof
+of writer closure, a producer, an atomic path snapshot or complete output inventory.
+
+Four FULL-durable publication leases globally, two per environment, reserve before
+dispatch; two actual helpers per executor have no queue. The default 30-second
+operation budget includes waits and host blob work. It is distinct from the one-second
+cleanup-ACK attempt and actual TERM/KILL/drain lifetime. Unkillable filesystem waits
+retain guest ownership/capacity. Host threads remain owned before FD close/reuse.
+Temporary helpers cancel on daemon bridge detach; research jobs/kernels retain their
+existing survival semantics. Environment release and worker shutdown drain host work.
+
+Unknown cleanup persists a bounded held lease across restart. Exact same-incarnation
+ACK may reconcile a host-drained hold; confirmed original-VM deletion or the existing
+verified recycle fence can mark matching guest ownership clean. Neither a logical
+environment deletion, observed replacement, blank legacy binding nor a new incarnation
+is proof. Active host leases remain counted until their actual work ends. Corrupt
+leases fail closed; crashed foreign active owners need explicit operator investigation
+because guest proof cannot prove their host threads exited. No automatic repair or
+new VM recycle trigger is added. See [capture limits and recovery](ARTIFACTS.md#bounded-worker-capture-prerequisite)
+for exact bounds and client-disconnect semantics. Independent review cleared signed
+freeze `b535856`; root-owned [OpenShell Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md)
+passed exact binary/empty retention, prompt oversize/symlink/FIFO refusal and healthy
+publication/read/execution access on Python 3.14.8 with a disposable 1 MiB limit.
+Independent inspection found zero capture leases/helpers, and complete teardown was
+verified. Lost transport, blocked host work and corrupt-state cases remain local hostile
+evidence. Final documentation review and fresh PR CI remain the delivery gates.
+
 ## Background jobs
 
 A `JobRequest` (`kind: job`) supplies a shell script or argv, a purpose and expected
@@ -430,7 +472,7 @@ An agent asks for a capability or for packages, and the worker decides, installs
   6. **Install** (CP-10, CP-14): `micromamba install` with the request's specs, pinned to exactly the decided files, or `pip install --require-hashes --no-deps --only-binary :all:` with exactly the resolved distributions, in the environment's turn, under the policy's wall time (its `resources.wall_time`, under the pool's cap; one hour when it names none; at most a day). The pins are `channel/subdir::name==version=build`, one for each decided file, in `MAMBA_PINNED_PACKAGES`: micromamba 2.9, the images' (ARG `MICROMAMBA_VERSION`), reads them there as `pinned_packages`, so the solve links those versions and builds, and the environment's history records the request's specs, not the pins. A pin holds a package to its name, version and build, not to its channel, so the channel each package came from is checked after the install. Checked offline with mamba 2.9, over HTTP in the cache's layout: the worker's own command installed the pinned builds, real dry-run output passed the strict parser, and a pinned build the index no longer offers failed the solve, at `resolve`, with nothing changed. The change is a managed revision whose `operation` names the operation. A file beyond the decided set (another version, build or channel) is still refused at its download if the policy escalates it, noted in the result if the policy allows it, and, if it declares the AGPL, ends the operation `needs_recovery` (`agpl_license`).
   7. **Probe** (CP-21 to CP-24): a capability's probes, or for packages a version check of each in the new revision's lockfile, recorded as `import_check`. Results belong to the revision they ran at (`probes` in its history entry). A probe that fails leaves the revision standing (CP-23).
 - **Records** (CP-16, CP-17): the operation (`ProvisionOperation`) keeps the request, the catalog revision, the revision when it was requested and those before and after its install, the policy revision, each resolved file with the policy's action and rule, the permission request, the package changes (from the two lockfiles), the probes, its executions, timings, and, short of completion, the stage where it stopped (`queue`, `check`, `resolve`, `permission`, `download`, `link`, `post-link` or `probe`), a reason, the error and what to do next. A revision is the operation's only when its install's own package commands made it (managed): a change seen only after a step, or made by another execution meanwhile, is no operation's. A probe that ran at no revision the worker could tell has none. The tool's result reports from these records (CP-25).
-- **Failures** (CP-13, in part): a failed install with a proved unchanged revision ends `failed`. A changed or uncertain install ends `needs_recovery`, preserving the earliest owner and last known good revision/lockfile. Matching package lists are not restoration proof. The [sticky recovery admission fence](RECOVERY-FENCE.md) persists and acknowledges an exact install hold before dispatch, then refuses new ordinary executions, provisioning and kernel restart after recovery is required. Already running calls/kernels, status, cancellation and files remain available. Ordinary work waiting behind a live install is rechecked at actual launch, and only exact registered internal steps can use that install's exemption. Failed hold persistence or synchronization prevents installation. Unknown effects, worker restart, stale ownership and malformed retained state never silently reopen admission. Independent review and [OpenShell Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) pass on signed source `e320236`, including graceful worker-offline/reconnect, preserved research/recovery access and exact original-binding delete/reuse; both disposable labs are removed. Final local gates pass 9,532 Python/436 web tests plus 24 post-build math checks; fresh PR CI is required before merge. Restoring packages and an operator clear command remain unimplemented; `Restorer` is the explicit later seam, not an enabled capability.
+- **Failures** (CP-13, in part): a failed install with a proved unchanged revision ends `failed`. A changed or uncertain install ends `needs_recovery`, preserving the earliest owner and last known good revision/lockfile. Matching package lists are not restoration proof. The [sticky recovery admission fence](RECOVERY-FENCE.md) persists and acknowledges an exact install hold before dispatch, then refuses new ordinary executions, provisioning and kernel restart after recovery is required. Already running calls/kernels, status, cancellation and files remain available. Ordinary work waiting behind a live install is rechecked at actual launch, and only exact registered internal steps can use that install's exemption. Failed hold persistence or synchronization prevents installation. Unknown effects, worker restart, stale ownership and malformed retained state never silently reopen admission. Independent review and [OpenShell Lab21](../.agents/docs/agent-reports/babbage-openshell-lab-21-2026-10-12.md) pass on signed source `e320236`, including graceful worker-offline/reconnect, preserved research/recovery access and exact original-binding delete/reuse; both disposable labs are removed. Final local gates pass 9,532 Python/436 web tests plus 24 post-build math checks; PR #85 merged after all three fresh CI checks passed. Restoring packages and an operator clear command remain unimplemented; `Restorer` is the explicit later seam, not an enabled capability.
 
 - **Restarts.** Before readiness, canonical recovery/unfinished-operation state closes admission, all unfinished operations are classified, and the final guest gate is synchronized. Legacy live daemons without the gate refuse new protected work while keeping healthy kernels and status/file access; prior legacy waiters are not claimed fenced. Operations do not survive a worker restart: a stopping worker ends those still running (`worker_restarted`), and a starting one ends any a crash left, withdrawing their permission requests. Each ends `failed`, or `needs_recovery` if its install had started and nobody saw it end: it may have changed the packages, and nothing looked.
 - **Trust.** The dry runs run in the sandbox, whose code can forge their output. The decision is the worker's forecast of the middleware's, made with the same library and checked against it in the tests; the middleware's decision on each download is what holds, and the grant is for exact paths at the cache, to one sandbox and policy revision, while the operation lasts. A forged dry run can only ask for other files, which the request lists by path for the operator to see; names that disagree with their paths fail the resolve. The AGPL check reads the licenses packages declare; it keeps honest installs within the licensing policy, not a hostile sandbox.
@@ -580,6 +622,15 @@ sandbox-science-harness run --worker http://127.0.0.1:8100 --token-file worker.t
 ```
 
 ## Conformance suite
+
+The unchanged suite passed against both linux/amd64 OpenShell research profiles in
+[Lab23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md), using frozen
+main `73c07aa`: 23 external cases passed per profile, and 23 local variants were
+intentionally skipped per run. Both actual Python 3.14.8 guests retained declared
+and effective tier 3, with separate stable boot IDs and no isolation-probe findings.
+The lab and its owned fixtures were completely removed. Crypto-base advertised
+Sage, but this suite tested Python only. No other architecture/backend or new
+Sage assertion is implied; capture Lab22 used the separate `b535856` source.
 
 `packages/worker/tests/test_conformance.py` runs the [execution-tools fixtures](specs/tools.md#acceptance-fixtures) through the worker API alone, so it checks any backend without the harness (D52). It covers shell calls, the location and the isolation probe, kernels (state, interrupt, restart, death, streaming, reconnection), output bounds, cancellation, the file tools' confinement and publication. A backend passes only if the probe leaves its declared tier standing. CI runs it against a worker with the local backend that the suite starts. To check a worker that is already running, such as one with the OpenShell backend in a lab, set:
 

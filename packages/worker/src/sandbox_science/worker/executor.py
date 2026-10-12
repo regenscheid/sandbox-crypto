@@ -73,8 +73,9 @@ def _sibling(name: str) -> ModuleType:
 
 
 if TYPE_CHECKING:
-    from . import provisioning
+    from . import capture, provisioning
 else:
+    capture = _sibling("capture")
     provisioning = _sibling("provisioning")
 
 PROTOCOL = 1
@@ -1285,6 +1286,7 @@ class Executor:
         kernel_idle: float | None = None,
     ) -> None:
         self.root = root
+        self.captures = capture.Pool(root)
         self.owner_prefix = ""
         self.kernel_idle = kernel_idle
         """Stop a kernel nobody has used for this many seconds; None keeps them."""
@@ -1377,6 +1379,8 @@ class Executor:
             "close_session": self.op_close_session,
             "usage": self.op_usage,
             "read": self.op_read,
+            "capture_read": self.op_capture_read,
+            "capture_cancel": self.op_capture_cancel,
             "write": self.op_write,
             "list": self.op_list,
             "lockfile": self.op_lockfile,
@@ -1401,6 +1405,7 @@ class Executor:
 
     async def finish_shutdown(self, requester: asyncio.Task[Any] | None) -> None:
         self.closing = True
+        await self.captures.close()
         if self.reaper is not None:
             self.reaper.cancel()
         running = list(self.running.values())
@@ -1719,6 +1724,7 @@ class Executor:
             subreaper=self.subreaper,
             not_dumpable=self.protected,
             features=available_features(),
+            artifact_capture_protocol=capture.PROTOCOL,
             environment=await self.baseline(),
         )
 
@@ -2601,6 +2607,46 @@ class Executor:
         hashed = request.get("hash", True) is not False
         reply = await asyncio.to_thread(read_range, descriptor, offset, length, hashed, str(path))
         await self.reply(request, **reply)
+
+    async def op_capture_read(self, request: Message) -> None:
+        """A bounded read/hash helper; ordinary file reads retain their legacy protocol."""
+        data = {
+            "session": request.get("session"),
+            "path": request.get("path"),
+            "offset": request.get("offset"),
+            "length": request.get("length"),
+            "max_bytes": request.get("max_bytes"),
+            "hash": request.get("hash"),
+        }
+        try:
+            result = await self.captures.read(
+                request.get("capture_id"), data, request.get("timeout")
+            )
+        except asyncio.CancelledError:
+            await self.reply(
+                request,
+                capture_id=request.get("capture_id"),
+                cleaned=True,
+                capture_error={"kind": "cancelled", "message": "capture cancelled after cleanup"},
+            )
+            return
+        except capture.CaptureError as exc:
+            await self.reply(
+                request,
+                capture_id=request.get("capture_id"),
+                cleaned=exc.cleaned,
+                capture_error={"kind": exc.kind, "message": exc.message},
+            )
+            return
+        await self.reply(request, **result, capture_id=request["capture_id"], cleaned=True)
+
+    async def op_capture_cancel(self, request: Message) -> None:
+        """End only the named capture helper, with cleanup acknowledged after reap."""
+        capture_id = request.get("capture_id")
+        if not isinstance(capture_id, str) or re.fullmatch(r"cap-[0-9a-f]{24}", capture_id) is None:
+            raise ToolError("invalid_request", "invalid capture ID")
+        await self.captures.cancel(capture_id)
+        await self.reply(request, capture_id=capture_id, cleaned=True)
 
     async def op_write(self, request: Message) -> None:
         path = request.get("path")

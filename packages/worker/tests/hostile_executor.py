@@ -207,6 +207,8 @@ def read(request: dict[str, Any]) -> None:
     offset = int(request.get("offset", 0))
     chunk = b"A" * (8 * MiB)
     fields: dict[str, Any] = {"modified": time.time(), "offset": offset, "eof": False}
+    if request.get("op") == "capture_read":
+        fields.update(capture_id=request["capture_id"], cleaned=True, stamp="1" * 64)
     if MODE == "noeof":  # a consistent file, but no range ever says it is the last
         fields.update(size=len(chunk), content_b64=base64.b64encode(chunk).decode())
         fields["sha256"] = hashlib.sha256(chunk).hexdigest()
@@ -246,6 +248,7 @@ for line in sys.stdin.buffer:
             languages=["python"],
             location=location,
             package_gate="gate-" + "0" * 24,
+            artifact_capture_protocol=1,
             **fields,
         )
     elif op == "package_gate":
@@ -264,8 +267,10 @@ for line in sys.stdin.buffer:
     elif op in ("shell", "cell"):
         reply(request["id"])
         run(request["execution"])
-    elif op == "read":
+    elif op in ("read", "capture_read"):
         read(request)
+    elif op == "capture_cancel":
+        reply(request["id"], capture_id=request["capture_id"], cleaned=True)
     elif op == "cancel":
         reply(request["id"], found=False)  # it ignores cancellation
     else:
