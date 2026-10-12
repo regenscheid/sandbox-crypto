@@ -8,8 +8,9 @@ server stops. Browsers send a host's cookies to every port on it, so the cookie'
 carries the server's port, and two workspaces on one machine keep their sessions apart.
 Every ``/api/`` route needs a session. A request with any method other than GET or HEAD
 also needs an ``Origin`` that is this server's own, so that a page on another site
-cannot act through the user's browser; nothing here answers CORS. Two routes take a
-POST: logout, and ``/api/v0/math-repair``, which asks the reviewer model to repair one
+cannot act through the user's browser; nothing here answers CORS. POST routes include
+logout, job cancellation, and ``/api/v0/math-repair``, which asks the reviewer model to
+repair one
 expression (mathrepair.py) within the limits of the browser session. With a loopback
 listener, every request must also name this server in ``Host`` (localhost, 127.0.0.1,
 ::1 or the address it listens on, with its port), which stops a DNS name rebound to
@@ -42,9 +43,11 @@ from aiohttp import hdrs, web
 
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
+from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from . import api, documents
+from . import api, documents, jobs
 from .mathrepair import (
     MathRepairService,
     RepairRequestError,
@@ -204,6 +207,8 @@ def create_app(
     max_run_bytes: int = api.MAX_RUN_BYTES,
     math_repair: MathRepairService | None = None,
     document_store: DocumentStore | None = None,
+    job_worker: WorkerClient | None = None,
+    job_state: JobState | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -299,6 +304,10 @@ def create_app(
     async def close_repairs(app: web.Application) -> None:
         await repairs.close()
 
+    async def close_job_worker(app: web.Application) -> None:
+        if job_worker is not None:
+            await job_worker.close()
+
     async def close_documents(app: web.Application) -> None:
         app[documents.DOCUMENTS].close()
 
@@ -309,8 +318,10 @@ def create_app(
     app.on_response_prepare.append(secure)
     app.on_cleanup.append(close_repairs)
     app.on_cleanup.append(close_documents)
+    app.on_cleanup.append(close_job_worker)
     api.add_routes(app)
     documents.add_routes(app)
+    jobs.add_routes(app, job_worker, job_state)
     app.router.add_post("/api/v0/logout", logout)
     app.router.add_post("/api/v0/math-repair", repair_math)
     app.router.add_get("/api/{tail:.*}", no_route)

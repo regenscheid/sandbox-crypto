@@ -7,8 +7,9 @@ sandbox-science-workspace serve --state-dir DIR --static DIR [--listen 127.0.0.1
     [--model-url http://127.0.0.1:4000 --reviewer-model reviewer --api-key-file key]
 ```
 
-``--state-dir`` is the harness's state directory, whose records the workspace reads and
-never changes. ``--static`` is the web app's build (``web/workspace/dist``). The server
+``--state-dir`` is the harness's state directory, whose project and run records the
+workspace reads. With a worker connection it also serves live job status and cancellation.
+``--static`` is the web app's build (``web/workspace/dist``). The server
 listens on a loopback address unless ``--allow-remote`` allows another one; it speaks
 plain HTTP, so on another address the login URL and the session cookie cross the
 network unencrypted. At each start it makes a new login token and prints the login URL
@@ -16,7 +17,8 @@ once, on standard output.
 
 With ``--model-url``, ``--reviewer-model`` and ``--api-key-file``, the page may ask the
 reviewer model, through the model gateway, to repair math that KaTeX rejects
-(mathrepair.py); the gateway is then the one host the server connects to. Without them,
+(mathrepair.py); the server then contacts that gateway as well as a configured job
+worker. Without them,
 or with ``--reviewer-model off``, it never does.
 """
 
@@ -35,7 +37,9 @@ from typing import Final
 
 from aiohttp import web
 
+from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .app import create_app
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
@@ -148,6 +152,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     command.add_argument(
         "--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR")
     )
+    command.add_argument("--worker", help="worker URL for live jobs and cancellation")
+    command.add_argument("--worker-token-file", type=Path, help="worker key (server only)")
     repairs = command.add_argument_group(
         "math repairs", "repairs of LaTeX that KaTeX rejects, by the reviewer model"
     )
@@ -184,6 +190,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.state_dir.is_dir():
         print(f"error: there is no state directory {args.state_dir}", file=sys.stderr)
         return 1
+    job_worker = None
+    job_state = None
+    if args.worker is not None or args.worker_token_file is not None:
+        if args.worker is None or args.worker_token_file is None:
+            parser.error("--worker and --worker-token-file must be given together")
+        if not args.worker.startswith(("http://", "https://")):
+            parser.error("--worker must be an http or https URL")
+        try:
+            token = args.worker_token_file.read_text().strip()
+            if not token:
+                raise ValueError("worker token file is empty")
+            job_worker = WorkerClient(args.worker, token)
+            job_state = JobState(args.state_dir)
+        except (OSError, UnicodeError, ValueError) as exc:
+            parser.error(f"cannot configure job worker: {exc}")
     login_token = secrets.token_urlsafe(32)
     try:
         app = create_app(
@@ -192,6 +213,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             login_token=login_token,
             check_host=loopback,
             math_repair=repair,
+            job_worker=job_worker,
+            job_state=job_state,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)

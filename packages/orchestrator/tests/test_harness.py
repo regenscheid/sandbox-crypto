@@ -51,6 +51,8 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.jobs import JobTools
+from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import (
     ModelError,
@@ -849,7 +851,7 @@ async def test_worker_errors_keep_their_kind(client: WorkerClient) -> None:
 async def test_the_pdf_tools_read_cite_and_render_in_the_sandbox(client: WorkerClient) -> None:
     pdf_oxide = pytest.importorskip("pdf_oxide")
     capabilities = await client.capabilities(CONTEXT.environment_id)
-    assert capabilities.features == ("pdf",)
+    assert capabilities.features == ("jobs", "pdf")
     toolbox = Toolbox(client, CONTEXT, features=capabilities.features)
     assert {"pdf_info", "pdf_pages", "pdf_search", "pdf_render"} <= {s.name for s in toolbox.specs}
     note = "# A Note on GF(17)\n\nFor every a in GF(17), a^17 = a.\n"
@@ -1052,3 +1054,28 @@ async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None
     # A package command still running at the end: the packages may be half installed.
     changing = _describe(execution("4", "4", overlapping=True), 1000, replayed=False)
     assert "still changing" in changing["environment_changed"]
+
+
+async def test_background_job_tools_cross_real_worker_boundary(
+    client: WorkerClient, tmp_path: Path
+) -> None:
+    jobs = JobTools(client, CONTEXT, run_id="job-run", state=JobState(tmp_path), poll_seconds=0.01)
+    text, _ = await jobs.start(
+        {
+            "script": "echo progress; echo result > job-result.txt; sleep 0.1",
+            "purpose": "test long computation",
+            "expected_progress": "progress then result",
+        },
+        "job-op",
+    )
+    job_id = json.loads(text)["job_id"]
+    listing, _ = await jobs.list({}, "list")
+    assert job_id in [job["job_id"] for job in json.loads(listing)["jobs"]]
+    outcome, _ = await asyncio.wait_for(jobs.wait({"job_ids": [job_id]}, "wait"), 5)
+    assert json.loads(outcome)["reason"] == "ended"
+    status, record = await jobs.status({"job_id": job_id}, "status")
+    value = json.loads(status)
+    assert value["state"] == "succeeded"
+    assert "progress" in value["stdout"]
+    assert "job-result.txt" in value["written_files"]
+    assert record["execution"]["kind"] == "job"

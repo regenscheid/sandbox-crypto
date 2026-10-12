@@ -401,6 +401,11 @@ class DocumentStore:
         self._db: sqlite3.Connection | None = None
         self._cache: OrderedDict[tuple[str, int, str], Mapped] = OrderedDict()
 
+    def initialize(self) -> None:
+        """Open or initialize the control store before another control component adds tables."""
+        with self._lock:
+            self._connection()
+
     def close(self) -> None:
         with self._lock:
             if self._db is not None:

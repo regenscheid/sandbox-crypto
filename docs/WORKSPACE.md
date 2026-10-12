@@ -1,11 +1,11 @@
 # Research workspace
 
-The workspace is the research GUI (W4, D80). Its first slice is a read-only view of the harness's records: the projects, their sessions and environments, and each session's runs, with the agent's messages, its tool calls and their results, and the LaTeX in them rendered; and the project's living documents, each revision with the server's block IDs, and who changed what ([living documents](#living-documents)). LaTeX that KaTeX rejects is repaired where it can be, by rules or by the reviewer model, and marked ([math repairs](#math-repairs)). It has two parts:
+The workspace is the research GUI (W4, D80). It shows the harness's records: the projects, their sessions and environments, and each session's runs, with the agent's messages, its tool calls and their results, and the LaTeX in them rendered; and the project's living documents, each revision with the server's block IDs, and who changed what ([living documents](#living-documents)). LaTeX that KaTeX rejects is repaired where it can be, by rules or by the reviewer model, and marked ([math repairs](#math-repairs)). It has two parts:
 
 - `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static files: an `index.html`, one script, one stylesheet and KaTeX's fonts.
 - `packages/workspace` (`sandbox_science.workspace`): the server, in the project's Python on aiohttp, with the command `sandbox-science-workspace`. It serves the built files and a JSON API, handles login, and asks the reviewer model for math repairs when it is configured to.
 
-Editing documents, comments, the ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
+Session pages also show live background jobs, waits and watcher notes, with cancellation ([background jobs](#background-jobs)). Editing documents, comments, the ledger and board, and approvals are not built yet ([not built yet](#not-built-yet)).
 
 ## Building and running
 
@@ -25,7 +25,7 @@ Log in by opening this URL; it works until the server stops:
     http://127.0.0.1:8200/login?token=…
 ```
 
-Open it in a browser on the same machine. `--state-dir` is the directory the harness keeps its records in (`sandbox-science-harness … --state-dir`); the server reads them and changes none. A session's runs appear once the harness keeps them, which it does for every `run --state-dir` ([run records](#run-records)).
+Open it in a browser on the same machine. `--state-dir` is the directory the harness keeps its records in (`sandbox-science-harness … --state-dir`); the server reads project and run records. With a worker connection, it also reads job control state and can cancel a job through the worker. A session's runs appear once the harness keeps them, which it does for every `run --state-dir` ([run records](#run-records)).
 
 `--listen` defaults to `127.0.0.1:8200`, and port 0 picks a free port. The server refuses an address that is not loopback unless `--allow-remote` is given. It speaks plain HTTP, so on another address the login URL and the session cookie cross the network unencrypted, and it then accepts any host name ([authentication](#authentication)). Placing the GUI on another machine is W5's work.
 
@@ -36,7 +36,7 @@ uv run sandbox-science-workspace serve --state-dir harness-state --static web/wo
     --model-url http://127.0.0.1:4000 --reviewer-model reviewer --api-key-file workspace.key
 ```
 
-**The server's network reach.** It listens where `--listen` says. Its one outbound connection is to the model gateway at `--model-url`, for math repairs; without that setting it opens none.
+**The server's network reach.** It listens where `--listen` says. It can contact the model gateway at `--model-url` for math repairs, and the worker at `--worker` for live job views and cancellation. Without either setting it opens no outbound connection.
 
 For work on the app itself, `npm run dev` serves it with Vite and passes `/api` and `/login` to a server on port 8200. Log in through the dev server's port. Logging out does not work there, since the dev server is another origin, and Vite's pages do not carry the server's headers.
 
@@ -49,7 +49,7 @@ Login works like Jupyter's, for one user on their own machine (threat model, zon
 - **Login token.** At each start the server makes a random token (32 bytes, 43 URL-safe characters) and prints the login URL once, on standard output; it neither logs nor stores the token. A restart makes a new token and ends every session.
 - **Login.** `GET /login?token=…` compares the token in constant time. A match sets the session cookie `sandbox_science_workspace-<port>` (32 random bytes; HttpOnly, SameSite=Strict, Path `/`, and Secure over HTTPS) and redirects to `/`, so the token leaves the address bar. Browsers send a host's cookies to every port on it, so the name carries the port, and two workspaces on one machine keep their sessions apart. The server keeps only the cookies' SHA-256 digests, in memory. A session lasts until the server stops or the user logs out (`POST /api/v0/logout`); past 64 sessions, the oldest ends.
 - **The API needs the session.** Every route under `/api/` answers 401 without it.
-- **Changes need the server's own origin.** A request with any method other than GET or HEAD must carry an `Origin` equal to the server's own (scheme and `Host`); a missing or `null` origin is refused. Nothing answers CORS: no route takes preflights or sets `Access-Control-*` headers. SameSite=Strict also keeps the cookie off requests started by other sites. The routes that take a POST yet are logout and [math repairs](#math-repairs); approvals and edits will.
+- **Changes need the server's own origin.** A request with any method other than GET or HEAD must carry an `Origin` equal to the server's own (scheme and `Host`); a missing or `null` origin is refused. Nothing answers CORS: no route takes preflights or sets `Access-Control-*` headers. SameSite=Strict also keeps the cookie off requests started by other sites. The routes that take a POST are logout, [math repairs](#math-repairs), and [job cancellation](#background-jobs); approvals and edits will.
 - **The server's own names.** On a loopback address, every request must name the server in `Host`: `localhost`, `127.0.0.1`, `[::1]` or the address it listens on, with its port. A page whose own host name an attacker rebinds to 127.0.0.1 (DNS rebinding) is refused, and could not use the cookie in any case, since the cookie belongs to the name the user logged in with. With `--allow-remote` this check is off, because the names that reach the server are not known.
 - **What remains.** Cookies are not bound to ports, so any other web server on the same host name receives the session cookie when the browser visits it, as with Jupyter. On the user's own machine only the user's services listen there; research code runs in sandboxes that cannot reach the host's loopback, except on the worker's local backend, which is for tests.
 
@@ -215,6 +215,31 @@ Errors are `{"error": {"kind", "message"}}` with the worker API's kinds: 400 `in
 
 Reading the harness's state directory directly is this slice's arrangement: the workspace runs beside the harness and imports the orchestrator's store (the one deployable member importing another, in the [conventions](../.agents/CONVENTIONS.md)). W5 gives the control application an API of its own for the GUI to use.
 
+## Background jobs
+
+With `--worker URL --worker-token-file FILE`, session pages show all active jobs and
+20 recently ended jobs, including state, elapsed time, CPU and memory when available,
+output head and latest tail, watcher progress notes and failures. The browser asks only
+the workspace server, every three seconds. Keys never enter the browser; the server
+uses the recorded session's environment and checks job ownership before viewing or
+cancelling. The Cancel job button uses a POST under the same authentication and Origin
+guard as other writes. Output and watcher text are escaped plain text.
+
+Active waits show what the agent waits on, for how long, and the watcher alias, or say
+that check-ins are off when no watcher was configured. An expired harness heartbeat is
+shown as disconnected. Job completion and attention notes stay available after a wait
+ends. Running jobs currently become lost when the worker restarts, until the executor
+daemon is built. See [background jobs as built](BACKGROUND-JOBS.md) for the harness
+API, durable notices, watcher budgets and the current message boundary and wake limits.
+
+```bash
+uv run sandbox-science-workspace serve --state-dir harness-state --static web/workspace/dist \
+    --worker http://127.0.0.1:8100 --worker-token-file worker.key
+```
+
+Without a worker connection the jobs panel reports that live job views are unavailable.
+Project, session, run and document views continue to work.
+
 ## Run records
 
 With `--state-dir`, the harness keeps every run of a session, the same record `--transcript` writes, beside the projects' records:
@@ -234,6 +259,7 @@ Runs have a tree of their own because project IDs may contain dots: a project's 
 | `started_at`, `ended_at` | When the run started and ended, in UTC |
 | `stopped` | `answered`, or `turn_limit` when the model was still asking for tools |
 | `final_text` | The answer |
+| `job_notice_ids` | Completion IDs represented by this run; acknowledged after the run is saved |
 | `messages` | The conversation in the OpenAI chat format the harness uses, system prompt first |
 | `tools` | One record per tool call, in order: its name, its arguments as the model wrote them, and its outcome (the worker's execution record, or an artifact, an error kind, …) |
 

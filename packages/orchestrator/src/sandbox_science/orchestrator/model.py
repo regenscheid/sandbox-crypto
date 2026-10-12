@@ -43,6 +43,8 @@ class ModelTurn:
     finish_reason: str | None = None
     model: str | None = None
     """The model that answered, as the gateway names it: the resolved model."""
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class ChatModel(Protocol):
@@ -181,6 +183,8 @@ def _parse_completion(text: str) -> ModelTurn:
         tool_calls=tuple(calls),
         finish_reason=finish if isinstance(finish, str) else None,
         model=resolved if isinstance(resolved, str) else None,
+        input_tokens=_usage(data, "prompt_tokens"),
+        output_tokens=_usage(data, "completion_tokens"),
     )
 
 
@@ -228,3 +232,11 @@ class ScriptedModel:
         if not self._turns:
             return ModelTurn(text="(the script has ended)", model="scripted")
         return self._turns.pop(0)
+
+
+def _usage(data: object, key: str) -> int | None:
+    usage = _object(data).get("usage")
+    if not isinstance(usage, dict):
+        return None
+    value = cast(dict[str, object], usage).get(key)
+    return value if type(value) is int and value >= 0 else None
