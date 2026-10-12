@@ -2,7 +2,7 @@
 
 Working folder for a cryptography/math research workbench with independently deployable orchestration and sandboxed compute.
 
-**Status, 2026-10-12:** the worker, policy services, harness and web workspace are implemented in slices. Real OpenShell VM checks cover isolated execution, provisioning, shared data, background jobs and [worker restart recovery](.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md); the document editing GUI passed browser acceptance. The project ledger, automatic consistency review, full control-application scheduler and other deployment targets remain in the plan. Development follows [the conventions](.agents/CONVENTIONS.md); [STATUS](.agents/STATUS.md) and [BACKLOG](.agents/BACKLOG.md) track progress.
+**Status, 2026-10-12:** the worker, policy services, harness and web workspace are implemented in slices. Real OpenShell VM checks cover isolated execution, provisioning, shared data, background jobs and [worker restart recovery](.agents/docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md); the document editing and comments GUI passed browser acceptance. The project ledger, automatic consistency review, full control-application scheduler and other deployment targets remain in the plan. Development follows [the conventions](.agents/CONVENTIONS.md); [STATUS](.agents/STATUS.md) and [BACKLOG](.agents/BACKLOG.md) track progress.
 
 ## Terminology
 

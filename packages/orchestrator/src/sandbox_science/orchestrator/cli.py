@@ -57,6 +57,7 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
+from .documents.annotations import Annotations
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
 from .jobs import JobTools
@@ -213,6 +214,7 @@ async def _run(args: argparse.Namespace) -> int:
         "messages": transcript.messages,
         "tools": transcript.tool_records,
         "job_notice_ids": transcript.job_notice_ids,
+        "work_request_ids": transcript.work_request_ids,
     }
     return _keep(args, fields, 0 if transcript.stopped == "answered" else 3)
 
@@ -245,7 +247,25 @@ def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> i
             JobState(args.state_dir).acknowledge(
                 record.context, record.run_id, record.job_notice_ids
             )
-        except (ProjectError, OSError, ValueError, RecursionError, sqlite3.Error) as exc:
+            if record.work_request_ids:
+                documents = DocumentStore(store_path(args.state_dir), producer="harness")
+                try:
+                    Annotations(documents).acknowledge(
+                        record.context.project_id,
+                        record.context.session_id,
+                        record.run_id,
+                        record.work_request_ids,
+                    )
+                finally:
+                    documents.close()
+        except (
+            ProjectError,
+            DocumentError,
+            OSError,
+            ValueError,
+            RecursionError,
+            sqlite3.Error,
+        ) as exc:
             print(f"error: the run's record could not be kept: {exc}", file=sys.stderr)
             status = 1
     return status

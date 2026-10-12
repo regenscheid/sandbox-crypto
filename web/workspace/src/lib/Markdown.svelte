@@ -17,13 +17,15 @@
   import type { Mismatch } from './attach';
   import { renderDocument, renderMarkdown, textState, whenMathTime } from './markdown';
   import type { DocumentInput } from './markdown';
+  import { NO_MACROS, type MacroSet } from './macros';
   import { pageRepairs } from './mathrepair';
 
   let {
     source,
     document = null,
+    macros = NO_MACROS,
     mismatches = $bindable([]),
-  }: { source: string; document?: DocumentInput | null; mismatches?: Mismatch[] } = $props();
+  }: { source: string; document?: DocumentInput | null; macros?: MacroSet; mismatches?: Mismatch[] } = $props();
   /** Counts what makes this text render again: repairs it waits for, or its turn in a go. */
   let arrivals = $state(0);
   let element: HTMLDivElement | undefined = $state();
@@ -32,7 +34,7 @@
 
   const rendered = $derived.by(() => {
     void arrivals;
-    if (document === null) return { ...renderMarkdown(source, pageRepairs, kept), mismatches: [] };
+    if (document === null) return { ...renderMarkdown(source, pageRepairs, kept, macros), mismatches: [] };
     return renderDocument(source, document, pageRepairs, kept);
   });
 

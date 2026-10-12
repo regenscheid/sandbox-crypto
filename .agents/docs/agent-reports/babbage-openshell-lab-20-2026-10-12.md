@@ -97,8 +97,8 @@ the final eight core checks with that successful revised sequence.
 
 ## Integrated validation and limits
 
-Final integrated validation passed: 9,051 Python tests (43 integration/environment
-skips), 414 web tests, Ruff format/lint (337 files), strict Pyright, Svelte and
+Integrated validation before the completed comments slice was merged passed:
+9,051 Python tests (43 integration/environment skips), 414 web tests, Ruff format/lint (337 files), strict Pyright, Svelte and
 TypeScript checks, production build, generated-proto consistency and Python/npm
 license checks. Independent adversarial review cleared the daemon,
 binding-pinned lifecycle source, final fixture and report. Remote CI remains
