@@ -362,7 +362,6 @@ async def test_closing_a_session_stops_its_kernels_only(worker: Worker) -> None:
     after = await worker.run("op-a3", kind="cell", code="x")
     assert after["result"]["error"]["name"] == "NameError"
     assert after["result"]["state_lost"] is True
-    assert after["result"]["error"]["name"] == "NameError"
     assert after["result"]["kernel"]["generation"] == generation + 1
     kept = await run_in(other, "op-b2", "y")
     assert kept["result"]["outputs"][0]["data"]["text/plain"] == "'other'"
@@ -459,6 +458,7 @@ async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker
     after = await worker.run("op-r3", kind="cell", code="x")
     assert after["kernel_state_lost"] is True
     assert after["result"]["state_lost"] is True
+    assert after["result"]["error"]["name"] == "NameError"
 
 
 async def test_status_before_start_and_failed_birth_commit_do_not_consume_kernel_identity(
