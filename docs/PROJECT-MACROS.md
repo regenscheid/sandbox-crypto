@@ -134,7 +134,7 @@ contradictory, agreed and legacy-unknown explanation contexts, allowed
 inconclusive outcomes and independent explicit USER decisions. The effective
 context guard is separate from overall snapshot coverage.
 
-Final combined validation on product union `8797a55` passed 9,852 Python tests
+Macro/table validation on product union `8797a55` passed 9,852 Python tests
 on Python 3.13.15 (43 opt-in skips, two existing Pydantic serializer warnings),
 575 web tests and 24 post-build math checks. Locked Python/npm installs,
 formatting, lint, strict Python/Svelte/TypeScript checks, license checks,
@@ -147,6 +147,18 @@ used the frozen product and helper-only child `0489692`, actual local KaTeX
 It exercised setting conflicts and retained drafts, document overrides,
 current versus saved numbered contexts, inherited-context refresh, project
 isolation and exact mechanical evidence without dependency-only reflags.
-The tab, helper/listeners, marked state and private login file were removed;
-complete teardown was verified at 20:45:41.981467 UTC on 2026-10-12. Source,
-helper and build bytes stayed frozen throughout acceptance.
+The tab, helper/listeners, marked state and private login file were removed.
+The first fixture cleaned up at 20:45:41.981467 UTC and a separate fresh
+conflict/save confirmation fixture at 20:50:28.600027 UTC on 2026-10-12. Root
+verified both cleanups. Source, helper and build bytes stayed frozen throughout
+acceptance.
+
+The signed candidate union `33a9811` combines these macros and the accepted table
+profile with reviewed CP-12 candidate `f8a72f68`; this candidate was not yet
+merged main at validation time. Its full Python gate passed 9,893 tests with
+43 opt-in skips and the same two existing warnings in 341.61 seconds. Fresh
+combined gates also passed 575 web tests, 24 post-build math checks, both builds
+and all required locked/static/license/protocol checks. All 76 archived build-file
+hashes and the helper hash remained identical after this rebuild, so native
+acceptance is reused for those unchanged artifacts with its original source pin.
+Fresh delivery CI and eventual actual-main ancestry remain separate gates.
