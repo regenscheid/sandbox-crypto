@@ -1,13 +1,13 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty OpenShell runtime lab records, document editing, comments and consistency review browser acceptance and a proposed document mirror interface plan (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty OpenShell runtime lab records, document editing, comments and consistency review browser acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 9968,
-      "sha256": "c86f8e08a99490306c0cc765dfef50bc3b48aa2c21aea4458027eba5e6a59ed9"
+      "bytes": 10398,
+      "sha256": "8b51bd6f3f20ee34932b8567a39476ce9f39c8423c4d85512dd2ea979c91179a"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-10-2026-10-11.md",
@@ -282,8 +282,14 @@
     {
       "path": "agent-reports/document-mirror-plan-2026-10-12.md",
       "category": "implementation-plan",
-      "bytes": 7901,
-      "sha256": "485757f81d701e4fe9275134a74ba1b607e226b8b5284344cc6ac39774c12429"
+      "bytes": 8642,
+      "sha256": "f770822156b6ae8cfcce754dce7ea028d25bf018175232f2d44895848b55b3fd"
+    },
+    {
+      "path": "agent-reports/document-writer-guard-2026-10-12.md",
+      "category": "source-investigation",
+      "bytes": 12709,
+      "sha256": "33aa358f483987c7c4c531a01ff7e93ff03c3f7cca6a4ab6cdc2999e24cd743e"
     },
     {
       "path": "agent-reports/openscience-desktop.md",
