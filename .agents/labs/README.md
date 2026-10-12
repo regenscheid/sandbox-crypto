@@ -290,3 +290,10 @@ records root-owned acceptance on signed `f7bb0a3`, helper SHA
 The local renderer confirmed only child math findings; scientific confirmation
 used a fresh pinned reviewer fixture and retained an inconclusive overall verdict.
 Complete disposable teardown was independently verified at 15:37:06.734290 UTC.
+
+
+## Lab25: kernel start revisions
+
+Root-owned [Lab25 acceptance](../docs/agent-reports/babbage-openshell-lab-25-2026-10-12.md) passed on signed `629e27d`, using [`kernel_revision.py`](kernel_revision.py), SHA `132aee5c`. A real networkx install changed revision 0→1; A retained its start/global, B started current, graceful worker restart preserved the same VM/kernel, and explicit kernel restart removed the old global. Full teardown was independently verified. This is sequential CP-F7 kernel-revision continuation, not a new concurrency/overlap rerun.
+
+For a separately coordinated fresh run, root freezes the reviewed source and starts `lab_up.sh` followed by `PROJECT=lab25 worker_up.sh`. Supply only visibly synthetic provider credentials through private lab state. Run `.venv/bin/python -I .agents/labs/kernel_revision.py init before`. Gracefully stop/restart only the owned worker, keep its state/VM, wait for its API listener, then run the same helper with `after`. Retain endpoint incarnation/immutable VM bindings before and after. Copy only token-free evidence before `lab_down.sh`; verify all owned units, VM, ports, state and driver sockets removed. The helper starts no services and accepts only its marked lab25 scope.
