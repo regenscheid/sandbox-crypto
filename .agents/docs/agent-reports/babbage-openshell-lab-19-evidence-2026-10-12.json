@@ -1,0 +1,1532 @@
+{
+  "worker_commit": "4d563f7",
+  "host": "babbage",
+  "host_kernel": "7.0.0-38-generic",
+  "worker_checks": {
+    "environment": {
+      "environment_id": "lab19-a",
+      "project_id": "lab19",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-f5944ea1f11faa12",
+      "sandbox_id": "0222e4f4-1574-4e1f-bc1e-c35ab22da9b3",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T04:41:05.365164Z",
+      "updated_at": "2026-10-12T04:51:43.603756Z"
+    },
+    "parallel_and_reconnect": {
+      "submit_seconds": 0.014220329991076142,
+      "job": {
+        "execution_id": "exe-00824f352ada97de02ab0dfc",
+        "attempt_id": "att-937c828e45b4f393088b4031",
+        "operation_id": "parallel-1791780696867531548",
+        "kind": "job",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "main",
+          "environment_id": "lab19-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "succeeded",
+        "submitted_at": "2026-10-12T04:51:44.751982Z",
+        "started_at": "2026-10-12T04:51:44.769817Z",
+        "ended_at": "2026-10-12T04:51:49.798707Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-f5944ea1f11faa12",
+          "hostname": "ss-f5944ea1f11faa12",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+              "hostname": "ss-f5944ea1f11faa12",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": 0,
+          "signal": null,
+          "status": null,
+          "execution_count": null,
+          "stdout": {
+            "name": "stdout",
+            "text": "done\n",
+            "total_bytes": 5,
+            "truncated": false
+          },
+          "stderr": {
+            "name": "stderr",
+            "text": "",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "outputs": [],
+          "error": null,
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 5.034792794,
+          "sandbox_started_at": "2026-10-12T04:51:44.702558Z",
+          "sandbox_ended_at": "2026-10-12T04:51:49.737352Z",
+          "written_files": [
+            ".jobs/exe-00824f352ada97de02ab0dfc/stderr.log",
+            ".jobs/exe-00824f352ada97de02ab0dfc/stdout.log"
+          ],
+          "written_files_truncated": false,
+          "environment_revision": "0",
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 5,
+        "job": {
+          "purpose": "Lab 19: parallel",
+          "expected_progress": "The lab asserts its output.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-00824f352ada97de02ab0dfc/stdout.log",
+          "stderr_path": ".jobs/exe-00824f352ada97de02ab0dfc/stderr.log"
+        },
+        "origin": null
+      },
+      "foreground": {
+        "execution_id": "exe-9172b38d84505fcd1419652b",
+        "attempt_id": "att-c3708bb5902b000ce27687ed",
+        "operation_id": "foreground-1791780696867531548",
+        "kind": "shell",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "main",
+          "environment_id": "lab19-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "succeeded",
+        "submitted_at": "2026-10-12T04:51:44.754709Z",
+        "started_at": "2026-10-12T04:51:44.771866Z",
+        "ended_at": "2026-10-12T04:51:44.787293Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-f5944ea1f11faa12",
+          "hostname": "ss-f5944ea1f11faa12",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+              "hostname": "ss-f5944ea1f11faa12",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": 0,
+          "signal": null,
+          "status": null,
+          "execution_count": null,
+          "stdout": {
+            "name": "stdout",
+            "text": "foreground\n",
+            "total_bytes": 11,
+            "truncated": false
+          },
+          "stderr": {
+            "name": "stderr",
+            "text": "",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "outputs": [],
+          "error": null,
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 0.022294887000000152,
+          "sandbox_started_at": "2026-10-12T04:51:44.706154Z",
+          "sandbox_ended_at": "2026-10-12T04:51:44.728449Z",
+          "written_files": [],
+          "written_files_truncated": false,
+          "environment_revision": "0",
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 5,
+        "job": null,
+        "origin": null
+      },
+      "events": [
+        {
+          "execution_id": "exe-00824f352ada97de02ab0dfc",
+          "seq": 1,
+          "time": "2026-10-12T04:51:44.752109Z",
+          "type": "state",
+          "state": "queued"
+        },
+        {
+          "execution_id": "exe-00824f352ada97de02ab0dfc",
+          "seq": 2,
+          "time": "2026-10-12T04:51:44.769872Z",
+          "type": "state",
+          "state": "running"
+        },
+        {
+          "execution_id": "exe-00824f352ada97de02ab0dfc",
+          "seq": 3,
+          "time": "2026-10-12T04:51:49.775608Z",
+          "type": "stream",
+          "name": "stdout",
+          "text": "done\n"
+        },
+        {
+          "execution_id": "exe-00824f352ada97de02ab0dfc",
+          "seq": 4,
+          "time": "2026-10-12T04:51:49.798707Z",
+          "type": "state",
+          "state": "succeeded"
+        },
+        {
+          "execution_id": "exe-00824f352ada97de02ab0dfc",
+          "seq": 5,
+          "time": "2026-10-12T04:51:49.798707Z",
+          "type": "result",
+          "execution": {
+            "execution_id": "exe-00824f352ada97de02ab0dfc",
+            "attempt_id": "att-937c828e45b4f393088b4031",
+            "operation_id": "parallel-1791780696867531548",
+            "kind": "job",
+            "context": {
+              "project_id": "lab19",
+              "session_id": "main",
+              "environment_id": "lab19-a",
+              "policy_revision": null,
+              "actor": "agent"
+            },
+            "state": "succeeded",
+            "submitted_at": "2026-10-12T04:51:44.751982Z",
+            "started_at": "2026-10-12T04:51:44.769817Z",
+            "ended_at": "2026-10-12T04:51:49.798707Z",
+            "location": {
+              "pool_id": "babbage",
+              "backend": "openshell",
+              "sandbox_id": "ss-f5944ea1f11faa12",
+              "hostname": "ss-f5944ea1f11faa12",
+              "isolation_tier": 3,
+              "declared_isolation_tier": 3,
+              "isolation_evidence": {
+                "kernel": "separate",
+                "sentinel": "hidden",
+                "findings": [],
+                "sandbox": {
+                  "kernel_release": "6.12.76",
+                  "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+                  "hostname": "ss-f5944ea1f11faa12",
+                  "machine_id": null,
+                  "seccomp": "filter",
+                  "no_new_privs": true,
+                  "capabilities": "0000000000000000",
+                  "uid": 1000,
+                  "hypervisor": true,
+                  "sys_vendor": null,
+                  "product_name": null
+                },
+                "error": null
+              },
+              "environment_revision": "0"
+            },
+            "result": {
+              "exit_code": 0,
+              "signal": null,
+              "status": null,
+              "execution_count": null,
+              "stdout": {
+                "name": "stdout",
+                "text": "done\n",
+                "total_bytes": 5,
+                "truncated": false
+              },
+              "stderr": {
+                "name": "stderr",
+                "text": "",
+                "total_bytes": 0,
+                "truncated": false
+              },
+              "outputs": [],
+              "error": null,
+              "kernel": null,
+              "state_lost": false,
+              "elapsed_seconds": 5.034792794,
+              "sandbox_started_at": "2026-10-12T04:51:44.702558Z",
+              "sandbox_ended_at": "2026-10-12T04:51:49.737352Z",
+              "written_files": [
+                ".jobs/exe-00824f352ada97de02ab0dfc/stderr.log",
+                ".jobs/exe-00824f352ada97de02ab0dfc/stdout.log"
+              ],
+              "written_files_truncated": false,
+              "environment_revision": "0",
+              "overlapping_change": false,
+              "notices": []
+            },
+            "last_seq": 5,
+            "job": {
+              "purpose": "Lab 19: parallel",
+              "expected_progress": "The lab asserts its output.",
+              "wake_session": false,
+              "timeout_seconds": 86400.0,
+              "stdout_path": ".jobs/exe-00824f352ada97de02ab0dfc/stdout.log",
+              "stderr_path": ".jobs/exe-00824f352ada97de02ab0dfc/stderr.log"
+            },
+            "origin": null
+          }
+        }
+      ]
+    },
+    "live_and_whole_output": {
+      "live": {
+        "execution": {
+          "execution_id": "exe-366db722cc0f52f55b95f287",
+          "attempt_id": "att-54f1cfebe262150e20c35eef",
+          "operation_id": "output-1791780696867531548",
+          "kind": "job",
+          "context": {
+            "project_id": "lab19",
+            "session_id": "main",
+            "environment_id": "lab19-a",
+            "policy_revision": null,
+            "actor": "agent"
+          },
+          "state": "running",
+          "submitted_at": "2026-10-12T04:51:49.851637Z",
+          "started_at": "2026-10-12T04:51:49.869059Z",
+          "ended_at": null,
+          "location": {
+            "pool_id": "babbage",
+            "backend": "openshell",
+            "sandbox_id": "ss-f5944ea1f11faa12",
+            "hostname": "ss-f5944ea1f11faa12",
+            "isolation_tier": 3,
+            "declared_isolation_tier": 3,
+            "isolation_evidence": {
+              "kernel": "separate",
+              "sentinel": "hidden",
+              "findings": [],
+              "sandbox": {
+                "kernel_release": "6.12.76",
+                "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+                "hostname": "ss-f5944ea1f11faa12",
+                "machine_id": null,
+                "seccomp": "filter",
+                "no_new_privs": true,
+                "capabilities": "0000000000000000",
+                "uid": 1000,
+                "hypervisor": true,
+                "sys_vendor": null,
+                "product_name": null
+              },
+              "error": null
+            },
+            "environment_revision": "0"
+          },
+          "result": null,
+          "last_seq": 3,
+          "job": {
+            "purpose": "Lab 19: output",
+            "expected_progress": "The lab asserts its output.",
+            "wake_session": false,
+            "timeout_seconds": 86400.0,
+            "stdout_path": ".jobs/exe-366db722cc0f52f55b95f287/stdout.log",
+            "stderr_path": ".jobs/exe-366db722cc0f52f55b95f287/stderr.log"
+          },
+          "origin": null
+        },
+        "stdout": {
+          "name": "stdout",
+          "text": "head\n",
+          "total_bytes": 5,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "cpu_seconds": 0.02,
+        "memory_bytes": 9756672
+      },
+      "job": {
+        "execution_id": "exe-366db722cc0f52f55b95f287",
+        "attempt_id": "att-54f1cfebe262150e20c35eef",
+        "operation_id": "output-1791780696867531548",
+        "kind": "job",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "main",
+          "environment_id": "lab19-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "succeeded",
+        "submitted_at": "2026-10-12T04:51:49.851637Z",
+        "started_at": "2026-10-12T04:51:49.869059Z",
+        "ended_at": "2026-10-12T04:51:50.922183Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-f5944ea1f11faa12",
+          "hostname": "ss-f5944ea1f11faa12",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+              "hostname": "ss-f5944ea1f11faa12",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": 0,
+          "signal": null,
+          "status": null,
+          "execution_count": null,
+          "stdout": {
+            "name": "stdout",
+            "text": "head\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[\u2026 14987 bytes omitted \u2026]\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\ntail\n",
+            "total_bytes": 16011,
+            "truncated": true
+          },
+          "stderr": {
+            "name": "stderr",
+            "text": "",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "outputs": [],
+          "error": null,
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 1.0583483129999998,
+          "sandbox_started_at": "2026-10-12T04:51:49.803672Z",
+          "sandbox_ended_at": "2026-10-12T04:51:50.862020Z",
+          "written_files": [
+            ".jobs/exe-366db722cc0f52f55b95f287/stderr.log",
+            ".jobs/exe-366db722cc0f52f55b95f287/stdout.log"
+          ],
+          "written_files_truncated": false,
+          "environment_revision": "0",
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 6,
+        "job": {
+          "purpose": "Lab 19: output",
+          "expected_progress": "The lab asserts its output.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-366db722cc0f52f55b95f287/stdout.log",
+          "stderr_path": ".jobs/exe-366db722cc0f52f55b95f287/stderr.log"
+        },
+        "origin": null
+      },
+      "log": {
+        "path": ".jobs/exe-366db722cc0f52f55b95f287/stdout.log",
+        "sha256": "922f292a79b6aca40d04ca0523065009542c73655d1ca28753427fd118742569",
+        "size": 16011,
+        "modified_at": "2026-10-12T04:51:50.845235Z",
+        "offset": 0,
+        "content_b64": "aGVhZAp4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4CnRhaWwK",
+        "eof": true
+      }
+    },
+    "timeout_and_quota": {
+      "timeout": {
+        "execution_id": "exe-8a5bc5fb601d0ff36ebfa352",
+        "attempt_id": "att-a9e8f599b954c87fdbe794ed",
+        "operation_id": "timeout-1791780696867531548",
+        "kind": "job",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "main",
+          "environment_id": "lab19-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "timed_out",
+        "submitted_at": "2026-10-12T04:51:50.944317Z",
+        "started_at": "2026-10-12T04:51:50.955111Z",
+        "ended_at": "2026-10-12T04:51:52.017222Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-f5944ea1f11faa12",
+          "hostname": "ss-f5944ea1f11faa12",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+              "hostname": "ss-f5944ea1f11faa12",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": null,
+          "signal": 15,
+          "status": null,
+          "execution_count": null,
+          "stdout": {
+            "name": "stdout",
+            "text": "before timeout\n",
+            "total_bytes": 15,
+            "truncated": false
+          },
+          "stderr": {
+            "name": "stderr",
+            "text": "",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "outputs": [],
+          "error": {
+            "kind": "timed_out",
+            "message": "exceeded the 1 s limit",
+            "name": null,
+            "value": null,
+            "traceback": []
+          },
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 1.0639884960000003,
+          "sandbox_started_at": "2026-10-12T04:51:50.892931Z",
+          "sandbox_ended_at": "2026-10-12T04:51:51.956920Z",
+          "written_files": [
+            ".jobs/exe-8a5bc5fb601d0ff36ebfa352/stderr.log",
+            ".jobs/exe-8a5bc5fb601d0ff36ebfa352/stdout.log"
+          ],
+          "written_files_truncated": false,
+          "environment_revision": "0",
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 5,
+        "job": {
+          "purpose": "Lab 19: timeout",
+          "expected_progress": "The lab asserts its output.",
+          "wake_session": false,
+          "timeout_seconds": 1.0,
+          "stdout_path": ".jobs/exe-8a5bc5fb601d0ff36ebfa352/stdout.log",
+          "stderr_path": ".jobs/exe-8a5bc5fb601d0ff36ebfa352/stderr.log"
+        },
+        "origin": null
+      },
+      "refusal": {
+        "error": {
+          "kind": "policy_denied",
+          "message": "job concurrency limit reached; active jobs: exe-dc822b905e370335ee6c7050, exe-f41d97a84097509c75d43902, exe-f063e64fa0fcba02f2f5c5e8, exe-50ede9647f8db08a0d997f11",
+          "name": null,
+          "value": null,
+          "traceback": []
+        }
+      },
+      "list": {
+        "jobs": [
+          {
+            "execution_id": "exe-dc822b905e370335ee6c7050",
+            "attempt_id": "att-e41a917f9764979d79205189",
+            "operation_id": "quota-0-1791780696867531548",
+            "kind": "job",
+            "context": {
+              "project_id": "lab19",
+              "session_id": "quota-1791780696867531548",
+              "environment_id": "lab19-a",
+              "policy_revision": null,
+              "actor": "agent"
+            },
+            "state": "queued",
+            "submitted_at": "2026-10-12T04:51:52.064043Z",
+            "started_at": null,
+            "ended_at": null,
+            "location": {
+              "pool_id": "babbage",
+              "backend": "openshell",
+              "sandbox_id": "ss-f5944ea1f11faa12",
+              "hostname": "ss-f5944ea1f11faa12",
+              "isolation_tier": 3,
+              "declared_isolation_tier": 3,
+              "isolation_evidence": {
+                "kernel": "separate",
+                "sentinel": "hidden",
+                "findings": [],
+                "sandbox": {
+                  "kernel_release": "6.12.76",
+                  "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+                  "hostname": "ss-f5944ea1f11faa12",
+                  "machine_id": null,
+                  "seccomp": "filter",
+                  "no_new_privs": true,
+                  "capabilities": "0000000000000000",
+                  "uid": 1000,
+                  "hypervisor": true,
+                  "sys_vendor": null,
+                  "product_name": null
+                },
+                "error": null
+              },
+              "environment_revision": "0"
+            },
+            "result": null,
+            "last_seq": 1,
+            "job": {
+              "purpose": "Lab 19: quota-0",
+              "expected_progress": "The lab asserts its output.",
+              "wake_session": false,
+              "timeout_seconds": 86400.0,
+              "stdout_path": ".jobs/exe-dc822b905e370335ee6c7050/stdout.log",
+              "stderr_path": ".jobs/exe-dc822b905e370335ee6c7050/stderr.log"
+            },
+            "origin": null
+          },
+          {
+            "execution_id": "exe-f41d97a84097509c75d43902",
+            "attempt_id": "att-00239f4d34f2267b4256e893",
+            "operation_id": "quota-1-1791780696867531548",
+            "kind": "job",
+            "context": {
+              "project_id": "lab19",
+              "session_id": "quota-1791780696867531548",
+              "environment_id": "lab19-a",
+              "policy_revision": null,
+              "actor": "agent"
+            },
+            "state": "queued",
+            "submitted_at": "2026-10-12T04:51:52.065333Z",
+            "started_at": null,
+            "ended_at": null,
+            "location": {
+              "pool_id": "babbage",
+              "backend": "openshell",
+              "sandbox_id": "ss-f5944ea1f11faa12",
+              "hostname": "ss-f5944ea1f11faa12",
+              "isolation_tier": 3,
+              "declared_isolation_tier": 3,
+              "isolation_evidence": {
+                "kernel": "separate",
+                "sentinel": "hidden",
+                "findings": [],
+                "sandbox": {
+                  "kernel_release": "6.12.76",
+                  "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+                  "hostname": "ss-f5944ea1f11faa12",
+                  "machine_id": null,
+                  "seccomp": "filter",
+                  "no_new_privs": true,
+                  "capabilities": "0000000000000000",
+                  "uid": 1000,
+                  "hypervisor": true,
+                  "sys_vendor": null,
+                  "product_name": null
+                },
+                "error": null
+              },
+              "environment_revision": "0"
+            },
+            "result": null,
+            "last_seq": 1,
+            "job": {
+              "purpose": "Lab 19: quota-1",
+              "expected_progress": "The lab asserts its output.",
+              "wake_session": false,
+              "timeout_seconds": 86400.0,
+              "stdout_path": ".jobs/exe-f41d97a84097509c75d43902/stdout.log",
+              "stderr_path": ".jobs/exe-f41d97a84097509c75d43902/stderr.log"
+            },
+            "origin": null
+          },
+          {
+            "execution_id": "exe-f063e64fa0fcba02f2f5c5e8",
+            "attempt_id": "att-0b5ec2fa2fbb905c5696195f",
+            "operation_id": "quota-2-1791780696867531548",
+            "kind": "job",
+            "context": {
+              "project_id": "lab19",
+              "session_id": "quota-1791780696867531548",
+              "environment_id": "lab19-a",
+              "policy_revision": null,
+              "actor": "agent"
+            },
+            "state": "queued",
+            "submitted_at": "2026-10-12T04:51:52.065706Z",
+            "started_at": null,
+            "ended_at": null,
+            "location": {
+              "pool_id": "babbage",
+              "backend": "openshell",
+              "sandbox_id": "ss-f5944ea1f11faa12",
+              "hostname": "ss-f5944ea1f11faa12",
+              "isolation_tier": 3,
+              "declared_isolation_tier": 3,
+              "isolation_evidence": {
+                "kernel": "separate",
+                "sentinel": "hidden",
+                "findings": [],
+                "sandbox": {
+                  "kernel_release": "6.12.76",
+                  "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+                  "hostname": "ss-f5944ea1f11faa12",
+                  "machine_id": null,
+                  "seccomp": "filter",
+                  "no_new_privs": true,
+                  "capabilities": "0000000000000000",
+                  "uid": 1000,
+                  "hypervisor": true,
+                  "sys_vendor": null,
+                  "product_name": null
+                },
+                "error": null
+              },
+              "environment_revision": "0"
+            },
+            "result": null,
+            "last_seq": 1,
+            "job": {
+              "purpose": "Lab 19: quota-2",
+              "expected_progress": "The lab asserts its output.",
+              "wake_session": false,
+              "timeout_seconds": 86400.0,
+              "stdout_path": ".jobs/exe-f063e64fa0fcba02f2f5c5e8/stdout.log",
+              "stderr_path": ".jobs/exe-f063e64fa0fcba02f2f5c5e8/stderr.log"
+            },
+            "origin": null
+          },
+          {
+            "execution_id": "exe-50ede9647f8db08a0d997f11",
+            "attempt_id": "att-6a773dc8cff1fcaa11948b2c",
+            "operation_id": "quota-3-1791780696867531548",
+            "kind": "job",
+            "context": {
+              "project_id": "lab19",
+              "session_id": "quota-1791780696867531548",
+              "environment_id": "lab19-a",
+              "policy_revision": null,
+              "actor": "agent"
+            },
+            "state": "queued",
+            "submitted_at": "2026-10-12T04:51:52.066028Z",
+            "started_at": null,
+            "ended_at": null,
+            "location": {
+              "pool_id": "babbage",
+              "backend": "openshell",
+              "sandbox_id": "ss-f5944ea1f11faa12",
+              "hostname": "ss-f5944ea1f11faa12",
+              "isolation_tier": 3,
+              "declared_isolation_tier": 3,
+              "isolation_evidence": {
+                "kernel": "separate",
+                "sentinel": "hidden",
+                "findings": [],
+                "sandbox": {
+                  "kernel_release": "6.12.76",
+                  "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+                  "hostname": "ss-f5944ea1f11faa12",
+                  "machine_id": null,
+                  "seccomp": "filter",
+                  "no_new_privs": true,
+                  "capabilities": "0000000000000000",
+                  "uid": 1000,
+                  "hypervisor": true,
+                  "sys_vendor": null,
+                  "product_name": null
+                },
+                "error": null
+              },
+              "environment_revision": "0"
+            },
+            "result": null,
+            "last_seq": 1,
+            "job": {
+              "purpose": "Lab 19: quota-3",
+              "expected_progress": "The lab asserts its output.",
+              "wake_session": false,
+              "timeout_seconds": 86400.0,
+              "stdout_path": ".jobs/exe-50ede9647f8db08a0d997f11/stdout.log",
+              "stderr_path": ".jobs/exe-50ede9647f8db08a0d997f11/stderr.log"
+            },
+            "origin": null
+          }
+        ],
+        "truncated": false,
+        "next_after": "exe-50ede9647f8db08a0d997f11"
+      }
+    },
+    "session_close_and_orphan_cleanup": {
+      "closed": {
+        "kernels": []
+      },
+      "job": {
+        "execution_id": "exe-800cb838f44c1e821b4c80d2",
+        "attempt_id": "att-cb66ca62c08439d67cc8a6c3",
+        "operation_id": "close-1791780696867531548",
+        "kind": "job",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "closing",
+          "environment_id": "lab19-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "cancelled",
+        "submitted_at": "2026-10-12T04:51:52.483289Z",
+        "started_at": "2026-10-12T04:51:52.498720Z",
+        "ended_at": "2026-10-12T04:51:53.279477Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-f5944ea1f11faa12",
+          "hostname": "ss-f5944ea1f11faa12",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+              "hostname": "ss-f5944ea1f11faa12",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": null,
+          "signal": 15,
+          "status": null,
+          "execution_count": null,
+          "stdout": {
+            "name": "stdout",
+            "text": "started\n",
+            "total_bytes": 8,
+            "truncated": false
+          },
+          "stderr": {
+            "name": "stderr",
+            "text": "",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "outputs": [],
+          "error": {
+            "kind": "cancelled",
+            "message": "cancelled on request",
+            "name": null,
+            "value": null,
+            "traceback": []
+          },
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 0.7854383110000001,
+          "sandbox_started_at": "2026-10-12T04:51:52.434381Z",
+          "sandbox_ended_at": "2026-10-12T04:51:53.219819Z",
+          "written_files": [
+            ".jobs/exe-800cb838f44c1e821b4c80d2/stderr.log",
+            ".jobs/exe-800cb838f44c1e821b4c80d2/stdout.log",
+            "job-child.pid"
+          ],
+          "written_files_truncated": false,
+          "environment_revision": "0",
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 6,
+        "job": {
+          "purpose": "Lab 19: close",
+          "expected_progress": "The lab asserts its output.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-800cb838f44c1e821b4c80d2/stdout.log",
+          "stderr_path": ".jobs/exe-800cb838f44c1e821b4c80d2/stderr.log"
+        },
+        "origin": null
+      },
+      "check": {
+        "execution_id": "exe-4af148c20807c8ee02fa8cba",
+        "attempt_id": "att-a4d23e6026bcb7c1c3a1601f",
+        "operation_id": "child-stopped-1791780696867531548",
+        "kind": "shell",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "closing",
+          "environment_id": "lab19-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "succeeded",
+        "submitted_at": "2026-10-12T04:51:53.383789Z",
+        "started_at": "2026-10-12T04:51:53.397940Z",
+        "ended_at": "2026-10-12T04:51:53.451824Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-f5944ea1f11faa12",
+          "hostname": "ss-f5944ea1f11faa12",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "50bea13d-8026-43db-8bac-51391f418fa8",
+              "hostname": "ss-f5944ea1f11faa12",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": 0,
+          "signal": null,
+          "status": null,
+          "execution_count": null,
+          "stdout": {
+            "name": "stdout",
+            "text": "child stopped\n",
+            "total_bytes": 14,
+            "truncated": false
+          },
+          "stderr": {
+            "name": "stderr",
+            "text": "",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "outputs": [],
+          "error": null,
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 0.05731317100000055,
+          "sandbox_started_at": "2026-10-12T04:51:53.334620Z",
+          "sandbox_ended_at": "2026-10-12T04:51:53.391933Z",
+          "written_files": [],
+          "written_files_truncated": false,
+          "environment_revision": "0",
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 5,
+        "job": null,
+        "origin": null
+      }
+    },
+    "environment_delete_cancels_accepted_job": {
+      "environment": {
+        "environment_id": "lab19-delete",
+        "project_id": "lab19",
+        "profile": "minimal",
+        "image": "sandbox-science/minimal:02f85b3",
+        "sandbox": "ss-7b3f6c4844cd3f74",
+        "sandbox_id": "d4adac1e-7bb4-4be7-a949-b972dee13851",
+        "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+        "providers": [
+          "github-readonly"
+        ],
+        "state": "deleted",
+        "findings": [
+          "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+          "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+          "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+          "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+          "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+          "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+          "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+          "info: monitors: evaluated from the middleware's request records",
+          "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+        ],
+        "admitted_hosts": [],
+        "created_at": "2026-10-12T04:49:35.751111Z",
+        "updated_at": "2026-10-12T04:52:01.424902Z"
+      },
+      "job": {
+        "execution_id": "exe-00d420c15ad17c7d4230c0bd",
+        "attempt_id": "att-b87062ea0632bcc9799a9991",
+        "operation_id": "delete-1791780696867531548",
+        "kind": "job",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "main",
+          "environment_id": "lab19-delete",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "cancelled",
+        "submitted_at": "2026-10-12T04:52:00.089422Z",
+        "started_at": null,
+        "ended_at": "2026-10-12T04:52:00.122243Z",
+        "location": null,
+        "result": {
+          "exit_code": null,
+          "signal": null,
+          "status": null,
+          "execution_count": null,
+          "stdout": null,
+          "stderr": null,
+          "outputs": [],
+          "error": {
+            "kind": "cancelled",
+            "message": "cancelled before it started",
+            "name": null,
+            "value": null,
+            "traceback": []
+          },
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 0.0,
+          "sandbox_started_at": null,
+          "sandbox_ended_at": null,
+          "written_files": [],
+          "written_files_truncated": false,
+          "environment_revision": null,
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 3,
+        "job": {
+          "purpose": "Lab 19: delete only this disposable environment",
+          "expected_progress": "Cancellation before the sandbox is deleted.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-00d420c15ad17c7d4230c0bd/stdout.log",
+          "stderr_path": ".jobs/exe-00d420c15ad17c7d4230c0bd/stderr.log"
+        },
+        "origin": null
+      },
+      "recreated": {
+        "environment_id": "lab19-delete",
+        "project_id": "lab19",
+        "profile": "minimal",
+        "image": "sandbox-science/minimal:02f85b3",
+        "sandbox": "ss-6620a27d0f8c5195",
+        "sandbox_id": "4a142da3-8291-4163-965f-833470687ead",
+        "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+        "providers": [
+          "github-readonly"
+        ],
+        "state": "ready",
+        "findings": [
+          "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+          "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+          "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+          "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+          "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+          "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+          "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+          "info: monitors: evaluated from the middleware's request records",
+          "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+        ],
+        "admitted_hosts": [],
+        "created_at": "2026-10-12T04:52:01.612216Z",
+        "updated_at": "2026-10-12T04:52:08.120851Z"
+      },
+      "next_job": {
+        "execution_id": "exe-d73bacc3a578af238a01dbb7",
+        "attempt_id": "att-af5a0b771a84be99b14f5540",
+        "operation_id": "recreated-1791780696867531548",
+        "kind": "job",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "main",
+          "environment_id": "lab19-delete",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "succeeded",
+        "submitted_at": "2026-10-12T04:52:08.127420Z",
+        "started_at": "2026-10-12T04:52:09.746521Z",
+        "ended_at": "2026-10-12T04:52:09.769016Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-6620a27d0f8c5195",
+          "hostname": "ss-6620a27d0f8c5195",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "f73c75f5-d531-40d5-b415-baa25d923fc4",
+              "hostname": "ss-6620a27d0f8c5195",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": 0,
+          "signal": null,
+          "status": null,
+          "execution_count": null,
+          "stdout": {
+            "name": "stdout",
+            "text": "recreated\n",
+            "total_bytes": 10,
+            "truncated": false
+          },
+          "stderr": {
+            "name": "stderr",
+            "text": "",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "outputs": [],
+          "error": null,
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 0.02736705199999978,
+          "sandbox_started_at": "2026-10-12T04:52:09.698529Z",
+          "sandbox_ended_at": "2026-10-12T04:52:09.725896Z",
+          "written_files": [
+            ".jobs/exe-d73bacc3a578af238a01dbb7/stderr.log",
+            ".jobs/exe-d73bacc3a578af238a01dbb7/stdout.log"
+          ],
+          "written_files_truncated": false,
+          "environment_revision": "0",
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 5,
+        "job": {
+          "purpose": "Lab 19: recreate the deleted environment",
+          "expected_progress": "A new job succeeds after recreation.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-d73bacc3a578af238a01dbb7/stdout.log",
+          "stderr_path": ".jobs/exe-d73bacc3a578af238a01dbb7/stderr.log"
+        },
+        "origin": null
+      }
+    },
+    "job_prevents_idle_suspend": {
+      "busy": {
+        "environment_id": "lab19-a",
+        "project_id": "lab19",
+        "profile": "minimal",
+        "image": "sandbox-science/minimal:02f85b3",
+        "sandbox": "ss-f5944ea1f11faa12",
+        "sandbox_id": "0222e4f4-1574-4e1f-bc1e-c35ab22da9b3",
+        "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+        "providers": [
+          "github-readonly"
+        ],
+        "state": "ready",
+        "findings": [
+          "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+          "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+          "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+          "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+          "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+          "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+          "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+          "info: monitors: evaluated from the middleware's request records",
+          "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+        ],
+        "admitted_hosts": [],
+        "created_at": "2026-10-12T04:41:05.365164Z",
+        "updated_at": "2026-10-12T04:52:16.394353Z"
+      },
+      "job": {
+        "execution_id": "exe-68d649a7b1e52bca0ad7d3a8",
+        "attempt_id": "att-449aec61d97a37a1915a2d36",
+        "operation_id": "idle-1791780696867531548",
+        "kind": "job",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "main",
+          "environment_id": "lab19-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "succeeded",
+        "submitted_at": "2026-10-12T04:52:09.852159Z",
+        "started_at": "2026-10-12T04:52:17.369548Z",
+        "ended_at": "2026-10-12T04:52:29.399508Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-f5944ea1f11faa12",
+          "hostname": "ss-f5944ea1f11faa12",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "2c6c26d8-f1a2-4391-b3d6-25b06c21281e",
+              "hostname": "ss-f5944ea1f11faa12",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": 0,
+          "signal": null,
+          "status": null,
+          "execution_count": null,
+          "stdout": {
+            "name": "stdout",
+            "text": "kept alive\n",
+            "total_bytes": 11,
+            "truncated": false
+          },
+          "stderr": {
+            "name": "stderr",
+            "text": "",
+            "total_bytes": 0,
+            "truncated": false
+          },
+          "outputs": [],
+          "error": null,
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 12.032943833000001,
+          "sandbox_started_at": "2026-10-12T04:52:17.322533Z",
+          "sandbox_ended_at": "2026-10-12T04:52:29.355478Z",
+          "written_files": [
+            ".jobs/exe-68d649a7b1e52bca0ad7d3a8/stderr.log",
+            ".jobs/exe-68d649a7b1e52bca0ad7d3a8/stdout.log"
+          ],
+          "written_files_truncated": false,
+          "environment_revision": "0",
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 5,
+        "job": {
+          "purpose": "Lab 19: idle",
+          "expected_progress": "The lab asserts its output.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-68d649a7b1e52bca0ad7d3a8/stdout.log",
+          "stderr_path": ".jobs/exe-68d649a7b1e52bca0ad7d3a8/stderr.log"
+        },
+        "origin": null
+      },
+      "idle": {
+        "environment_id": "lab19-a",
+        "project_id": "lab19",
+        "profile": "minimal",
+        "image": "sandbox-science/minimal:02f85b3",
+        "sandbox": "ss-f5944ea1f11faa12",
+        "sandbox_id": "0222e4f4-1574-4e1f-bc1e-c35ab22da9b3",
+        "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+        "providers": [
+          "github-readonly"
+        ],
+        "state": "stopped",
+        "findings": [
+          "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+          "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+          "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+          "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+          "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+          "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+          "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+          "info: monitors: evaluated from the middleware's request records",
+          "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+        ],
+        "admitted_hosts": [],
+        "created_at": "2026-10-12T04:41:05.365164Z",
+        "updated_at": "2026-10-12T04:52:36.581706Z"
+      }
+    },
+    "worker_restart_explicitly_lost_before_daemon": {
+      "job": {
+        "execution_id": "exe-71421993fddc23e269c9b01b",
+        "attempt_id": "att-52154fbcd1f31a46ef7bf12d",
+        "operation_id": "restart-1791780696867531548",
+        "kind": "job",
+        "context": {
+          "project_id": "lab19",
+          "session_id": "main",
+          "environment_id": "lab19-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "lost",
+        "submitted_at": "2026-10-12T04:52:45.346172Z",
+        "started_at": "2026-10-12T04:52:45.358973Z",
+        "ended_at": "2026-10-12T04:52:45.469037Z",
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-f5944ea1f11faa12",
+          "hostname": "ss-f5944ea1f11faa12",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "e406523e-044f-4b86-af28-a91f4fb27bcb",
+              "hostname": "ss-f5944ea1f11faa12",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": {
+          "exit_code": null,
+          "signal": null,
+          "status": null,
+          "execution_count": null,
+          "stdout": null,
+          "stderr": null,
+          "outputs": [],
+          "error": {
+            "kind": "internal",
+            "message": "the worker stopped during this attempt; its outcome is unknown; partial whole logs remain at .jobs/exe-71421993fddc23e269c9b01b/stdout.log and .jobs/exe-71421993fddc23e269c9b01b/stderr.log",
+            "name": null,
+            "value": null,
+            "traceback": []
+          },
+          "kernel": null,
+          "state_lost": false,
+          "elapsed_seconds": 0.0,
+          "sandbox_started_at": null,
+          "sandbox_ended_at": null,
+          "written_files": [],
+          "written_files_truncated": false,
+          "environment_revision": null,
+          "overlapping_change": false,
+          "notices": []
+        },
+        "last_seq": 5,
+        "job": {
+          "purpose": "Lab 19: restart",
+          "expected_progress": "The lab asserts its output.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-71421993fddc23e269c9b01b/stdout.log",
+          "stderr_path": ".jobs/exe-71421993fddc23e269c9b01b/stderr.log"
+        },
+        "origin": null
+      },
+      "retained_log": {
+        "path": ".jobs/exe-71421993fddc23e269c9b01b/stdout.log",
+        "sha256": "6c34d6129b17d922b5c6d9115a8437a346913c733accd4b13885e7cc3873c802",
+        "size": 15,
+        "modified_at": "2026-10-12T04:52:45.295640Z",
+        "offset": 0,
+        "content_b64": "YmVmb3JlIHJlc3RhcnQK",
+        "eof": true
+      }
+    }
+  },
+  "daemon_launch_prerequisite": {
+    "start_code": 0,
+    "start_seconds": 0.041882632998749614,
+    "read_code": 0,
+    "stdout": "survived\n",
+    "stderr": "",
+    "sandbox": "ss-f5944ea1f11faa12"
+  },
+  "harness_commit": "600d688",
+  "harness_checks": {
+    "context": {
+      "project_id": "lab19",
+      "session_id": "gui",
+      "environment_id": "lab19-default-30836e09471b",
+      "policy_revision": null,
+      "actor": "agent"
+    },
+    "job_id": "exe-639d10399a3cb0643cdf296c",
+    "phase": "attention",
+    "main_model_calls": 3,
+    "watcher_calls": 2,
+    "checkins": [
+      {
+        "job_id": "exe-639d10399a3cb0643cdf296c",
+        "alias": "lab-watcher",
+        "model": "lab-watcher",
+        "at": "2026-10-12T05:06:05.132408+00:00",
+        "state": "fine",
+        "note": "The start marker is present.",
+        "input_tokens": 50,
+        "output_tokens": 12
+      },
+      {
+        "job_id": "exe-639d10399a3cb0643cdf296c",
+        "alias": "lab-watcher",
+        "model": "lab-watcher",
+        "at": "2026-10-12T05:06:15.190726+00:00",
+        "state": "needs_attention",
+        "note": "Lab check asks for human attention.",
+        "input_tokens": 55,
+        "output_tokens": 15
+      }
+    ],
+    "wait": {
+      "reason": "needs_attention",
+      "checkin": {
+        "job_id": "exe-639d10399a3cb0643cdf296c",
+        "alias": "lab-watcher",
+        "model": "lab-watcher",
+        "at": "2026-10-12T05:06:15.190726+00:00",
+        "state": "needs_attention",
+        "note": "Lab check asks for human attention.",
+        "input_tokens": 55,
+        "output_tokens": 15
+      },
+      "jobs": [
+        {
+          "job_id": "exe-639d10399a3cb0643cdf296c",
+          "state": "running",
+          "purpose": "Lab 19 GUI and watcher acceptance",
+          "expected_progress": "Print the start marker, then remain running.",
+          "elapsed_seconds": 20.18407,
+          "exit_code": null,
+          "error": null,
+          "stdout": "progress: started\n",
+          "stderr": "",
+          "written_files": [],
+          "written_files_truncated": false,
+          "platform_notices": [],
+          "cpu_seconds": 0.0,
+          "memory_bytes": 4984832,
+          "logs": {
+            "stdout": ".jobs/exe-639d10399a3cb0643cdf296c/stdout.log",
+            "stderr": ".jobs/exe-639d10399a3cb0643cdf296c/stderr.log"
+          },
+          "worker_restart": "running jobs become lost until the executor daemon is available"
+        }
+      ]
+    },
+    "watcher_intervals_seconds": [
+      10,
+      10
+    ],
+    "notice_after_process_restart": "delivered once, saved, acknowledged",
+    "next_run_notice_ids": []
+  }
+}

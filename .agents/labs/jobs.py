@@ -262,7 +262,34 @@ class Checks:
         deleted = await self.api("DELETE", f"/v1/environments/{environment}")
         done = await self.finish(job)
         assert done["state"] == "cancelled", done
-        self.save("environment_delete_cancels_accepted_job", {"environment": deleted, "job": done})
+        recreated = await self.api(
+            "POST",
+            "/v1/environments",
+            {
+                "environment_id": environment,
+                "project_id": PROJECT,
+                "profile": "minimal",
+                "policy": (LAB / "policy.digest").read_text().strip(),
+            },
+        )
+        next_job = await self.api(
+            "POST",
+            "/v1/executions",
+            {
+                "kind": "job",
+                "operation_id": f"recreated-{STAMP}",
+                "context": {**self.context(), "environment_id": environment},
+                "script": "printf 'recreated\\n'",
+                "purpose": "Lab 19: recreate the deleted environment",
+                "expected_progress": "A new job succeeds after recreation.",
+            },
+        )
+        next_done = await self.finish(next_job)
+        assert next_done["state"] == "succeeded", next_done
+        self.save(
+            "environment_delete_cancels_accepted_job",
+            {"environment": deleted, "job": done, "recreated": recreated, "next_job": next_done},
+        )
 
     async def idle(self) -> None:
         # The operator must set suspend_after=3 in this disposable worker's settings.
@@ -343,6 +370,14 @@ async def main() -> None:
         headers={"Authorization": f"Bearer {token}"},
         timeout=aiohttp.ClientTimeout(total=180),
     ) as http:
+        async with asyncio.timeout(30):
+            while True:
+                try:
+                    async with http.get(URL + f"/v1/environments/{ENVIRONMENT}") as response:
+                        assert response.status in {200, 404}, await response.text()
+                    break
+                except aiohttp.ClientConnectorError:
+                    await asyncio.sleep(0.1)
         checks = Checks(http)
         for part in parts:
             await getattr(checks, part)()

@@ -12,11 +12,11 @@ if [ -f "$LAB/env.sh" ]; then
   done
   echo "sandboxes left: ${n:-0}"
 fi
-systemctl --user stop openshell-lab-mcp-forward openshell-lab-worker openshell-lab-gateway openshell-lab-middleware openshell-lab-cache openshell-lab-echo 2>/dev/null
+systemctl --user stop openshell-lab-workspace openshell-lab-mcp-forward openshell-lab-worker openshell-lab-gateway openshell-lab-middleware openshell-lab-cache openshell-lab-echo 2>/dev/null
 sleep 2
 [ -d "$LAB" ] && echo "removing $(du -sh "$LAB" | cut -f1) in $LAB" && rm -rf -- "$LAB"
 ls -d /tmp/os-1000-* >/dev/null 2>&1 && echo "driver socket dirs left in /tmp" || echo "no driver socket dirs in /tmp"
-ss -ltn | grep -E ':(8090|8080|8100|50051|17670)\b' || echo "lab ports free"
-pgrep -u "$USER" -a -f 'openshell|sandbox-science-(policy-middleware|package-cache|worker)|echo_server.py|executor.py --stdio' | grep -v pgrep || echo "no lab processes"
+ss -ltn | grep -E ':(8090|8080|8100|8101|50051|17670)\b' || echo "lab ports free"
+pgrep -u "$USER" -a -f 'openshell|sandbox-science-(policy-middleware|package-cache|worker|workspace)|echo_server.py|executor.py --stdio' | grep -v pgrep || echo "no lab processes"
 compgen -G "$HOME/.config/openshell*" >/dev/null || compgen -G "$HOME/.local/state/openshell*" >/dev/null || compgen -G "$HOME/.local/share/openshell*" >/dev/null \
   && echo "OpenShell paths remain" || echo "no OpenShell paths under ~/.config, ~/.local/state, ~/.local/share"
