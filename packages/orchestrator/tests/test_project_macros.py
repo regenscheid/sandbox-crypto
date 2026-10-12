@@ -315,6 +315,95 @@ async def test_anchored_response_agreement_or_explicit_ambiguity(stores, same):
     assert finding_payload["response"]["macro_context"]["held"] is (not same)
 
 
+@pytest.mark.parametrize("context", ["agreed", "conflicting", "unknown"])
+@pytest.mark.parametrize("decision", ["confirm", "reject", "inconclusive"])
+def test_confirmation_requires_exact_available_explanation_context(
+    stores, monkeypatch, context, decision
+):
+    from sandbox_science.orchestrator.documents import project_macros
+
+    docs, reviews, _ = stores
+    change(docs, {r"\F": "project"})
+    documents = []
+    for name in ("one", "two"):
+        definition = name if context == "conflicting" else "agreed"
+        documents.append(
+            docs.create(
+                "p",
+                name=name,
+                title=name,
+                session_id="s",
+                author=MAIN,
+                text=f"---\nmacros:\n  '\\F': '{definition}'\n---\n\nEvidence.",
+            ).document_id
+        )
+    reviews.ingest_documents("p", "s")
+    original = dispatch(reviews)
+    evidence = [
+        e for e in reviews.manifest("p", "s", original)["evidence"] if e["kind"] == "document"
+    ]
+    finding = raise_finding(
+        reviews, original, anchors=[{"evidence": e["evidence"]} for e in evidence]
+    )["finding_id"]
+    reviews.finish("p", "s", original, "owner", "findings", "Original anchored finding")
+    api = Findings(reviews)
+    with monkeypatch.context() as legacy:
+        if context == "unknown":
+            # A valid older response writer retained the body but no macro pins.
+            legacy.setattr(project_macros, "response_saved", lambda *_args, **_kw: None)
+        api.respond(
+            "p",
+            "s",
+            {
+                "finding": finding,
+                "expected": 1,
+                "action": "fix",
+                "explanation": r"Corrected $\F$",
+                "revisions": [(documents[0], 1)],
+                "operation_id": "claim",
+            },
+            MAIN,
+        )
+    confirmation = dispatch(reviews, "confirmation")
+    read_confirmation(reviews, confirmation)
+    payload = {
+        "finding": finding,
+        "expected": 2,
+        "decision": decision,
+        "explanation": "Exact pinned explanation assessment",
+        "anchors": [anchor(reviews, confirmation, "finding")],
+        "operation_id": "decide",
+    }
+    if context != "agreed" and decision != "inconclusive":
+        with pytest.raises(DocumentError, match="macro context is held or unknown"):
+            api.confirm("p", "s", confirmation, "owner", payload)
+        assert api.get("p", "s", finding)["status"] == "claimed fixed"
+        # The diagnostic context creates no new restriction on explicit USER decisions.
+        user_decision = api.respond(
+            "p",
+            "s",
+            {
+                "finding": finding,
+                "expected": 2,
+                "action": "confirm",
+                "explanation": "Explicit USER decision",
+                "operation_id": "user-confirm",
+            },
+            USER,
+        )
+        assert user_decision["status"] == "confirmed fixed"
+    else:
+        result = api.confirm("p", "s", confirmation, "owner", payload)
+        assert (
+            result["status"]
+            == {
+                "confirm": "confirmed fixed",
+                "reject": "open",
+                "inconclusive": "inconclusive",
+            }[decision]
+        )
+
+
 @pytest.mark.asyncio
 async def test_effective_context_quota_holds_without_vetoing_source_or_settings(
     stores, monkeypatch

@@ -67,8 +67,8 @@ retains its resolved effective definitions, warnings and context identity.
 Comment attempts retain their existing exact body and parent document macro
 revision pins. Thread history is explicitly displayed under the selected
 document's diagnostic context, not claimed as its original render; exact checked
-context remains in check evidence. MAIN fix/rebut explanation sources pin their original finding's
-document anchors at source creation, keeping those anchors through subsequent
+context remains in check evidence. MAIN fix/rebut explanation sources pin their
+original finding's document anchors at source creation, keeping those anchors through subsequent
 body corrections. Their current check combines those immutable anchors with
 the attempt's pinned project setting. Body history also retains its save-time
 project revision. Sources with no document anchors use the project setting.
@@ -78,11 +78,13 @@ that agreed context is used. Conflicting, missing or unproved contexts hold
 mechanical checks as unavailable and produce no authoritative math finding or
 removal decision. The GUI may show project-only diagnostic rendering, accompanied
 by an explicit warning. Reviewer snapshots include the explanation's diagnostic
-context and are incomplete when that context is held; scientific decisions and
-explicit USER authority remain independent of mechanical rendering.
+context and are incomplete when that context is held. A reviewer may record an
+inconclusive outcome but cannot confirm or reject an explanation under a held or
+unknown context. Explicit USER decisions remain available, and mechanical child
+findings never resolve the scientific parent.
 
-Reviewer explanation confirmations fence both exact body revision/digest and
-project setting revision/digest. A setting change during review makes that
+Reviewer explanation confirmations fence exact body revision/digest, effective
+context identity and project setting revision/digest. A setting change during review makes that
 confirmation stale. Confirmation eligibility and retry identity include the
 new setting revision, so an ended old-context review does not prevent a fresh
 confirmation. No new reviewer tool category or source editing privilege is
@@ -126,3 +128,8 @@ The preliminary source milestone passed 219 affected Python cases and 128
 focused frontend cases, with Ruff, formatting, Pyright and Svelte/TypeScript
 checks clear. These are affected-path results, not the final combined full-suite
 or native-browser gate.
+
+The confirmation correction passed 228 affected Python cases, including
+contradictory, agreed and legacy-unknown explanation contexts, allowed
+inconclusive outcomes and independent explicit USER decisions. The effective
+context guard is separate from overall snapshot coverage.
