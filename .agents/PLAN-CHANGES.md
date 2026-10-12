@@ -4,6 +4,7 @@ Dated log of changes to the plan, decisions and conventions ([conventions](CONVE
 
 ## 2026-10-11
 
+- **Handoff and lab scripts** ([handoff](handoff.md), [labs](labs/README.md)). A handoff for the next agent: where the work stopped, the user's standing instructions and pending decisions, the queued work, and how slices, reviews, labs and merges have been done. The babbage lab scripts, kept so far in a session's scratchpad, move to `.agents/labs/`, with paths relative to the repository and the forward unit stopped at teardown. CONVENTIONS lists both.
 - **Living documents' first slice, server side (D85 proposed;** [living documents](../docs/LIVING-DOCUMENTS.md)**).**
   - **D85, proposed:** the control application's first embedded store is an SQLite database in the harness's state directory, `control.sqlite3`, holding living documents: append-only revisions with their block maps, patches, operation IDs and events, each change one `BEGIN IMMEDIATE` transaction. Projects and runs stay JSON files for now.
   - **Spec:** the living-documents draft gains a status line naming what is implemented, and open question 15: a `\(…\)` that single dollars would make ambiguous is kept as written rather than becoming the `$$…$$` LD-41 drafts, which this dialect displays apart from its sentence. Recommended as built; the user decides. The specs index no longer says nothing is implemented.

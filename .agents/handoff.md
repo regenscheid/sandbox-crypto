@@ -1,0 +1,130 @@
+# Handoff
+
+Written 2026-10-11 at the end of a long session, for the next agent. Read this first, then [STATUS.md](STATUS.md) (phase, progress, open questions), [BACKLOG.md](BACKLOG.md) (the checklist), [CONVENTIONS.md](CONVENTIONS.md) (how code and docs are written), and [DECISIONS.md](../docs/DECISIONS.md) (D01 to D85). Those files are kept current; this one says what they do not: where the work stopped, how it has been done, and what the user expects.
+
+## Where things stand
+
+- **main** is at the merge of PR #67. No pull requests are open, no agents are running, no lab is up, and every agent worktree has been removed.
+- **The user paused new work before a break.** Their words: "don't stop things in process, but start anything new. i want to a take a break soon", read as *don't start anything new*, which they did not correct. Everything in process then finished and merged. **Ask the user before starting the queued work below.**
+- **Milestones** ([roadmap](../docs/ROADMAP.md), [implementation plan](../docs/IMPLEMENTATION-PLAN.md)):
+  - M0: specs and decisions, nearly done. Approved: Conda provisioning, research artifacts, consistency review. Decided on their main questions: living documents, ledger. Still drafts for the user to review: tools, PDF sources, skills, plans and delegation.
+  - M1: done (its exit run passed in lab 9).
+  - M2, phase 1 on babbage: roughly 40%. Most of the infrastructure is built; most of the research workspace (W4) is left.
+  - M3 to M5: not started beyond keeping the design compatible.
+
+### Merged on 2026-10-11 (the latest first)
+
+| PR | What |
+| --- | --- |
+| #67 | Living documents, first slice: parser with stable block and math IDs (both parsers checked on shared cases in CI), an SQLite control store (D85, proposed), the agent's document tool with rebased or rejected patches, save-time math normalization, front-matter macros with bounds, and a read-only document view and history in the GUI |
+| #66, #65 | Background jobs (D83, confirmed): the tools spec's section, with agents waiting on jobs and a low-cost watcher model checking them. Specified, not built |
+| #64 | The provisioning tool (D84, proposed): `provision` and `provision_status`, dry runs in the sandbox, AGPL refusal, policy decisions, file-set permission requests honored by the middleware as grants, installs in the environment's turn, probes, failure records |
+| #63 | Lab 17 report |
+| #62 | A user unit that keeps the MCP proxy's forward up across sandbox restarts (`examples/systemd`) |
+| #61 | Math repairs in the workspace, adapted from the user's cscience-crypto code (MIT): delimiters, rule repairs, the reviewer model, Unicode fallback, a lexer that refuses formulas defining macros, a page-wide KaTeX time budget |
+| #60, #59, #57 | Spec drafts and the user's decisions on living documents, the ledger, research artifacts and consistency review (D65 amended, D81, D82) |
+| #58 | The workspace GUI, first slice (D80): Svelte app and aiohttp server, read-only |
+| #56, #55 | Per-sandbox package-cache budgets; event-store checkpoints in the journal |
+| #54 | Package commands take turns, with a revision and a lockfile for each change (Conda provisioning, first slice) |
+| #53 | Shared data across a project's environments (D79) |
+
+## What the user expects
+
+Standing instructions, given over the session:
+- **Keep advancing the plan autonomously**, installing software as needed (but see the pause above). **Merge pull requests into main** once CI is green. **Use several agents in parallel.**
+- **Decision requests in plain language**: the practical effect, an example, and a recommendation, before asking. The user is a cryptography researcher; explain platform terms (they asked what "shell" and "turn" mean).
+- **Bug reports for upstream projects** go in `.agents/upstream/`, one file each; filing them is the user's call.
+- Never enter real credentials; test tokens are visibly synthetic (`test-secret-…`).
+- No sudo, and no change to system or security settings. No persistent configuration (such as systemd units in `~/.config`) without permission; transient `systemd-run --user` units are fine.
+- Downloaded files are untrusted: put them in their own directory, check checksums, and run Python on them with `-I`. npm installs use `--ignore-scripts`.
+- Docker is shared with the user's own projects: only create, tag or remove `sandbox-science/*` images, and never prune.
+- Tear labs down completely. Never run destructive commands on real data, even as a test.
+- Commits are signed through the user's SSH configuration (plain `git commit`). No attribution lines in commits or pull request descriptions. Branch before committing; main changes only through merged pull requests.
+
+## Waiting on the user
+
+Nothing here blocks the queued work: each item has a default in place.
+
+- **Blockers:**
+  - a real model needs the user's LiteLLM gateway URL and a virtual key, without which the M2 exit run cannot pass;
+  - crypto-research-mcp needs the user's OAuth consent for the connector auth service.
+- **Decisions from this session, each with a recommendation:**
+  - LD-41: `\(x\)` followed by a digit, or holding a dollar or a line break, stays in backslash form, since `$$…$$` would render it as displayed math.
+  - The escaped-bracket rule (#61): within a paragraph, `\[…\]` is math only when padded inside both brackets or holding `\ ^ _ = { } + < >` outside Markdown escapes, and `\[^1\]` stays a footnote.
+  - Formulas that define macros are shown as written, where LD-28 would apply the definition.
+  - Front-matter macro limits (#67): 200 macros, 1,000 characters each, none defining another or using an argument twice, at most 2,000 characters of expansion per formula.
+  - D85, the SQLite control store.
+  - D84's details: one permission request per install; a waiting operation keeps its environment's turn; Conda and pip packages in separate requests; pip from wheels only; AGPL exceptions in the policy; a catalog only the platform extends; `needs_recovery` does not block executions yet.
+  - 60 model repairs per browser session per hour.
+  - Whether to file `.agents/upstream/katex-trycombinechars-quadratic-splice.md`.
+  - KaTeX in a Web Worker as a slice of its own.
+  - Living documents' question 15 (spec index): stray and renamed files under `documents/`, edits from overlapping calls, and the helper working only during a call.
+  - Background jobs' details: 24 hours by default and 7 days at most; 4 at once in a session and 8 in an environment; closing a session cancels its jobs; no background cells.
+- **The four draft specs:** tools and PDF sources are built and running as drafted (recommend approving them as drafted); skills, and plans and delegation, have real choices (seven open questions each), to go through with the user one question at a time when the work reaches them.
+- **Older questions:** STATUS.md's *Questions with a recommendation* (images, the MCP proxy, the event-store timer, the GUI's origins, PSF-2.0 and MIT-0 in tier 1, the crypto-analysis-skills copyright holder).
+
+## Queued work, in the suggested order
+
+1. **Lab 18 on babbage** for the provisioning tool, with the checks #64 lists:
+   - real dry-run output and pins in a sandbox;
+   - CP-F1 to F4, F8 and F10;
+   - the grant ending with its operation;
+   - the catalog's probes (python-flint unchecked);
+   - an install cut short.
+
+   Use [`labs/`](labs/README.md).
+2. **Background jobs** (D83; [tools spec](../docs/specs/tools.md#background-jobs)), then **the executor daemon** that lets jobs, and where possible calls and kernels, survive a worker restart ([worker](../docs/WORKER.md#not-yet-done)).
+3. **W4, living documents slice 2:**
+   - user edits and conflicts in the GUI (LD-13, LD-14);
+   - comments, anchors and work requests (LD-21 to LD-24), with the research-artifacts spec's annotations;
+   - then the files under `documents/` in every environment, direct edits merged, and the `ss-doc` helper (LD-49 to LD-52), which are worker work;
+   - then math findings (LD-53 to LD-55, D82), which need KaTeX on the server (Node or an embedded engine, to choose).
+4. **W4, automatic consistency review** (approved spec), built and tested with a scripted reviewer.
+5. **W4, the ledger, board and frontier** ([ledger](../docs/specs/ledger.md)).
+6. **The rest of W4:**
+   - the PDF viewer with anchors;
+   - skills and the external crypto skill pack;
+   - plans and delegation;
+   - chat in the GUI;
+   - approvals in the GUI (D54).
+
+   Skills, and plans and delegation, need the user's review of their specs first.
+7. **Provisioning slice 3:**
+   - restoring a revision after a failed install (CP-13, CP-20);
+   - disk limits;
+   - uninstall and upgrade;
+   - the GUI (CP-26).
+8. **Worker:**
+   - environment IDs per project, and limits per client;
+   - a flaky timing test in `packages/worker/tests/test_provisioning.py` (a 0.25 s bound that took 0.298 s once on Python 3.12 in CI).
+9. **MCP:** connector auth (blocked), the proxy's refinements in the backlog. **A real model** (blocked). Then the **M2 exit run**: paper → Sage → document → the user's feedback → automatic review → board update, on babbage.
+
+## How the work has been done
+
+- **One slice per agent**, launched with `isolation: "worktree"` and a written brief.
+- **What a brief holds:**
+  - the spec requirements and fixtures to implement, and what is out of scope;
+  - the files to read;
+  - the conventions and the user's constraints above;
+  - a scratch directory of the agent's own in the session scratchpad, which agents share;
+  - "open a PR, make CI green, do not merge, and report in your final message".
+
+  Agents report only in their final message, and follow-ups go to the same agent (SendMessage), which keeps its context.
+- **Adversarial review for every substantial code PR**, by a separate agent that does not modify the repository. It reports findings by severity, each with a file and line, a scenario, a probe and a fix. The author fixes them, then the reviewer verifies the fixes and looks for regressions the fixes caused. Repeat until nothing critical, high or medium remains. Rounds have always found real problems, including in fixes: #53, #54 and #61 each took three.
+- **Labs on babbage** check what only OpenShell shows: the seccomp filter, the VM's file system, the middleware's headers. Run a lab before merging when a PR's behavior depends on the runtime, testing the branch from its worktree's virtual environment.
+- **Merging:**
+  - `gh pr merge N --merge`, then in the main checkout `git fetch && git merge --ff-only origin/main && uv sync --locked`;
+  - then remove the merged worktrees with `git worktree remove` once they are clean and their commit is on main;
+  - decision numbers go to the next free D-number on main at merge time: two branches once both took D83, and renumbered.
+- **Docs move with the code:** STATUS, BACKLOG and PLAN-CHANGES change in the same pull request. Lab reports go in `.agents/docs/agent-reports/`, with the index and `INVENTORY.json` hashes.
+
+## Gotchas
+
+- **The lab's `env.sh` breaks `gh`.** It points `XDG_CONFIG_HOME` at the lab, so `gh` in that shell asks to log in; use another shell.
+- **Watching CI too early.** `gh pr checks N --watch` started right after `gh pr create` can exit at once with "no checks reported". Wait a few seconds.
+- **Agent transcripts are huge.** Never read an agent's output file directly; extract the last tool calls with a short script if you must check on one.
+- **The forward unit restarts forever.** It runs with `Restart=always` and no start limit, and is stopped explicitly; `labs/lab_down.sh` now does it.
+- **The main checkout is live during a lab.** The lab's cache and middleware run from the main checkout's editable install, so don't switch branches there during a lab: use worktrees.
+- **AppArmor and Claude Desktop.** babbage restricts unprivileged user namespaces through AppArmor, and Claude Desktop's shells are exempt, so qualification checks run through `systemd-run --user` (see the memory note).
+- **The scratchpad is per session.** The lab scripts were copied to [`labs/`](labs/README.md) for that reason. Briefs and probes from this session are not kept.
+- **A memory directory is loaded each session.** It is at `~/.claude/projects/-home-andy-Git-Projects-sandbox-crypto/memory/` and has notes on babbage's AppArmor, decision requests, autonomous merging, and these lab and CI gotchas.
