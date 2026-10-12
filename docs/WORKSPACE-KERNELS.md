@@ -86,19 +86,38 @@ repeated caller cancellation and shuts down its private executor before the
 shared WorkerClient closes. It never cancels or restarts research kernels when a
 read times out.
 
-## Delivery boundary
+## Visible Session-view polling
 
-This backend is the prerequisite for visible Session-view polling. It does not
-provide a GUI by itself, a background scheduler, SSE, durable agent inbox/cursor,
-save-before-ACK delivery, browser-offline alerts, idle agent wake or automatic
-kernel restart. Those remain separate from whole CP-12 completion. A later
-frontend must own visible-tab polling, cancellation and view-generation checks;
-retained transcript output alone is not a live transport.
+The open Session view mounts a passive kernel panel for its exact loaded project,
+session and environment. It shows current, predates or unknown revision status,
+generation and exact start/current revisions, with the worker receipt time. Empty
+and unavailable are distinct. A previous observation remains explicitly dated and
+labeled as an unknown current state when polling fails or pauses.
+
+One request is owned until actual settlement, with an eight-second deadline and
+12 KiB response limit. Successful polls schedule the next read three seconds after
+completion; errors back off to at most thirty seconds. Hidden pages pause reads.
+Visibility, view replacement, unmount and logout invalidate old replies even if
+their transport ignores abort. Logout starts a sticky page-lifetime read fence,
+including for a panel mounted while the logout HTTP request is pending. A new
+login requires a page reload before these reads resume.
+
+The browser validates exact scope, aware receipt time, unique kernel/language
+identities and revision/status coherence. JavaScript cannot represent the entire
+worker integer range exactly: unsafe generation or revision integers refuse the
+observation rather than displaying rounded pins. No new restart action is added.
+
+This is visible-session eventual observation. Background scheduling, SSE, durable
+agent inbox/cursor and save-before-ACK delivery, browser-offline alerts, idle agent
+wake and automatic restart remain separate from whole CP-12 completion. Retained
+transcript output alone is not a live transport.
 
 Local tests cover bounded registry reads, special files and growth, strict damaged
 records, complete close/reopen ABA, revoked login, actual WorkerClient HTTP
 composition and negative peers, immediate admission, HTTP disconnect behavior,
 response deadlines, repeated cancellation and shutdown ordering. No real OpenShell
 or browser acceptance of this new workspace path has been performed by this
-backend author. The existing Lab26 validates the worker observer; the new proxy
-and polling path still require root-owned end-to-end runtime acceptance.
+backend or frontend author. The existing Lab26 validates the worker observer;
+the integrated proxy and polling path still require root-owned end-to-end runtime
+acceptance. The marked Lab27 helpers prepare that acceptance without expanding
+worker permissions or enabling a model or document converter.
