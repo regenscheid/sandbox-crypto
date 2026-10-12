@@ -711,9 +711,64 @@ class Environments:
             if info is not None:
                 await self._start(info)
 
+    async def recycle_executor(self, environment_id: str, sandbox: str, sandbox_id: str) -> None:
+        """Stop/start the same managed VM to fence a dead daemon's unknown descendants.
+
+        Stop preserves the writable disk and policy binding. No executor-manager
+        callback runs under this lifecycle lock: its unused replacement is already
+        shut down, and its persisted old endpoint fences admission until we return.
+        """
+        async with self._lock(environment_id):
+            info = self.records.get(environment_id)
+            if info is None or info.state not in (EnvironmentState.READY, EnvironmentState.STOPPED):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    "executor incarnation lost; recycle the unmanaged sandbox before retrying",
+                )
+            if (info.sandbox, info.sandbox_id) != (sandbox, sandbox_id):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE,
+                    "environment binding changed; original sandbox cleanup must be confirmed",
+                )
+            document = await self.cli.sandbox(info.sandbox)
+            if document is None or document.get("id") != info.sandbox_id:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "original sandbox is gone or its identity changed"
+                )
+            await self.cli.run("sandbox", "stop", info.sandbox)
+            # A command acknowledgement alone is not proof the old processes stopped.
+            try:
+                async with asyncio.timeout(min(self.settings.create_timeout, _RESUME_TIMEOUT)):
+                    while True:
+                        document = await self.cli.sandbox(info.sandbox)
+                        if document is None or document.get("id") != info.sandbox_id:
+                            raise WorkerError(
+                                ErrorKind.UNAVAILABLE,
+                                f"sandbox {info.sandbox} changed while stopping",
+                            )
+                        if document.get("phase") == "Stopped":
+                            break
+                        if document.get("phase") in _DEAD_PHASES:
+                            raise WorkerError(
+                                ErrorKind.UNAVAILABLE, "sandbox failed while stopping"
+                            )
+                        await asyncio.sleep(_POLL_SECONDS)
+            except TimeoutError as exc:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "sandbox did not confirm stopping; replacement refused"
+                ) from exc
+            # Record only a confirmed stop: the startup loss check treats STOPPED as
+            # proof cleanup happened. A crash before this is recovered from live phase.
+            stopped = info.model_copy(
+                update={"state": EnvironmentState.STOPPED, "updated_at": datetime.now(UTC)}
+            )
+            self.records.save(stopped)
+            self._start_failures.pop(environment_id, None)
+            await self._start(stopped, pinned=True)
+
     # Steps.
 
-    async def _start(self, info: EnvironmentInfo) -> EnvironmentInfo:
+    async def _start(self, info: EnvironmentInfo, *, pinned: bool = False) -> EnvironmentInfo:
         """Start a stopped environment's sandbox; return any other environment unchanged.
 
         The sandbox's actual phase decides: a stop that failed left it ready. A start
@@ -722,12 +777,23 @@ class Environments:
         if info.state is EnvironmentState.READY:
             # Its sandbox must still be the one the worker created, not another under its name.
             document = await self.cli.sandbox(info.sandbox)
+            if pinned and (document is None or document.get("id") != info.sandbox_id):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "sandbox identity changed before replacement start"
+                )
             if document is None or document.get("id") != info.sandbox_id:
                 found = None if document is None else document.get("id")
                 await self._abandon(
                     info, f"sandbox {info.sandbox} is {found or 'gone'}, not {info.sandbox_id}"
                 )
-            return info
+            if document.get("phase") != "Stopped":
+                return info
+            # A worker may have stopped after the VM stopped but before persisting
+            # STOPPED. Its live phase recovers that gap without starting another VM.
+            info = info.model_copy(
+                update={"state": EnvironmentState.STOPPED, "updated_at": datetime.now(UTC)}
+            )
+            self.records.save(info)
         if info.state is not EnvironmentState.STOPPED:
             return info
         failed = self._start_failures.get(info.environment_id)
@@ -741,6 +807,10 @@ class Environments:
         timeout = min(self.settings.create_timeout, _RESUME_TIMEOUT)
         try:
             document = await self.cli.sandbox(info.sandbox)
+            if pinned and (document is None or document.get("id") != info.sandbox_id):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "sandbox identity changed before replacement start"
+                )
             if document is None:
                 await self._abandon(info, f"sandbox {info.sandbox} is gone")
             elif document.get("phase") != "Ready":
@@ -751,6 +821,10 @@ class Environments:
             raise
         self._start_failures.pop(info.environment_id, None)
         if sandbox_id != info.sandbox_id:
+            if pinned:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "sandbox came back as another; replacement refused"
+                )
             # OpenShell keeps a stopped sandbox's identity; another one is not this environment's.
             await self._abandon(
                 info, f"sandbox {info.sandbox} came back as {sandbox_id}, not {info.sandbox_id}"

@@ -1,0 +1,1299 @@
+{
+  "environment": {
+    "environment": {
+      "environment_id": "lab20-a",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-edcf0ecf1858a969",
+      "sandbox_id": "15800d5e-e582-4244-9cff-2e426efc472b",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T05:47:22.119946Z",
+      "updated_at": "2026-10-12T05:47:36.866494Z"
+    },
+    "warm": {
+      "execution_id": "exe-7830f3bba3709c79937e758d",
+      "attempt_id": "att-c8cbd859495df68e54abb3a1",
+      "operation_id": "warm-1791784042023202778",
+      "kind": "shell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T05:47:36.874358Z",
+      "started_at": "2026-10-12T05:47:38.858915Z",
+      "ended_at": "2026-10-12T05:47:38.864196Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "ready",
+          "total_bytes": 5,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.019180852999999942,
+        "sandbox_started_at": "2026-10-12T05:47:38.714011Z",
+        "sandbox_ended_at": "2026-10-12T05:47:38.733192Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    }
+  },
+  "running_across_restart": {
+    "before": {
+      "execution": {
+        "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+        "attempt_id": "att-7b3e67fca1ee84e40d701e2f",
+        "operation_id": "running-1791784042023202778",
+        "kind": "job",
+        "context": {
+          "project_id": "lab20",
+          "session_id": "main",
+          "environment_id": "lab20-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "running",
+        "submitted_at": "2026-10-12T05:47:38.904385Z",
+        "started_at": "2026-10-12T05:47:38.964379Z",
+        "ended_at": null,
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-edcf0ecf1858a969",
+          "hostname": "ss-edcf0ecf1858a969",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+              "hostname": "ss-edcf0ecf1858a969",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": null,
+        "last_seq": 3,
+        "job": {
+          "purpose": "Lab20 running",
+          "expected_progress": "The acceptance check asserts its output.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-b7db6ea88114d6ad7bede16c/stdout.log",
+          "stderr_path": ".jobs/exe-b7db6ea88114d6ad7bede16c/stderr.log"
+        },
+        "origin": null
+      },
+      "stdout": {
+        "name": "stdout",
+        "text": "before\n",
+        "total_bytes": 7,
+        "truncated": false
+      },
+      "stderr": {
+        "name": "stderr",
+        "text": "",
+        "total_bytes": 0,
+        "truncated": false
+      },
+      "cpu_seconds": 0.0,
+      "memory_bytes": 5107712
+    },
+    "job": {
+      "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+      "attempt_id": "att-7b3e67fca1ee84e40d701e2f",
+      "operation_id": "running-1791784042023202778",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T05:47:38.904385Z",
+      "started_at": "2026-10-12T05:47:38.964379Z",
+      "ended_at": "2026-10-12T05:47:51.058041Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "before\nafter\n",
+          "total_bytes": 13,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 12.030848187,
+        "sandbox_started_at": "2026-10-12T05:47:38.871784Z",
+        "sandbox_ended_at": "2026-10-12T05:47:50.902632Z",
+        "written_files": [
+          ".jobs/exe-b7db6ea88114d6ad7bede16c/stderr.log",
+          ".jobs/exe-b7db6ea88114d6ad7bede16c/stdout.log",
+          "attempts-1791784042023202778.txt"
+        ],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 6,
+      "job": {
+        "purpose": "Lab20 running",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-b7db6ea88114d6ad7bede16c/stdout.log",
+        "stderr_path": ".jobs/exe-b7db6ea88114d6ad7bede16c/stderr.log"
+      },
+      "origin": null
+    },
+    "attempt_pids": [
+      "580"
+    ],
+    "events": [
+      {
+        "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+        "seq": 1,
+        "time": "2026-10-12T05:47:38.904502Z",
+        "type": "state",
+        "state": "queued"
+      },
+      {
+        "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+        "seq": 2,
+        "time": "2026-10-12T05:47:38.964413Z",
+        "type": "state",
+        "state": "running"
+      },
+      {
+        "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+        "seq": 3,
+        "time": "2026-10-12T05:47:38.964667Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "before\n"
+      },
+      {
+        "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+        "seq": 4,
+        "time": "2026-10-12T05:47:50.940485Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "after\n"
+      },
+      {
+        "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+        "seq": 5,
+        "time": "2026-10-12T05:47:51.058041Z",
+        "type": "state",
+        "state": "succeeded"
+      },
+      {
+        "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+        "seq": 6,
+        "time": "2026-10-12T05:47:51.058041Z",
+        "type": "result",
+        "execution": {
+          "execution_id": "exe-b7db6ea88114d6ad7bede16c",
+          "attempt_id": "att-7b3e67fca1ee84e40d701e2f",
+          "operation_id": "running-1791784042023202778",
+          "kind": "job",
+          "context": {
+            "project_id": "lab20",
+            "session_id": "main",
+            "environment_id": "lab20-a",
+            "policy_revision": null,
+            "actor": "agent"
+          },
+          "state": "succeeded",
+          "submitted_at": "2026-10-12T05:47:38.904385Z",
+          "started_at": "2026-10-12T05:47:38.964379Z",
+          "ended_at": "2026-10-12T05:47:51.058041Z",
+          "location": {
+            "pool_id": "babbage",
+            "backend": "openshell",
+            "sandbox_id": "ss-edcf0ecf1858a969",
+            "hostname": "ss-edcf0ecf1858a969",
+            "isolation_tier": 3,
+            "declared_isolation_tier": 3,
+            "isolation_evidence": {
+              "kernel": "separate",
+              "sentinel": "hidden",
+              "findings": [],
+              "sandbox": {
+                "kernel_release": "6.12.76",
+                "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+                "hostname": "ss-edcf0ecf1858a969",
+                "machine_id": null,
+                "seccomp": "filter",
+                "no_new_privs": true,
+                "capabilities": "0000000000000000",
+                "uid": 1000,
+                "hypervisor": true,
+                "sys_vendor": null,
+                "product_name": null
+              },
+              "error": null
+            },
+            "environment_revision": "0"
+          },
+          "result": {
+            "exit_code": 0,
+            "signal": null,
+            "status": null,
+            "execution_count": null,
+            "stdout": {
+              "name": "stdout",
+              "text": "before\nafter\n",
+              "total_bytes": 13,
+              "truncated": false
+            },
+            "stderr": {
+              "name": "stderr",
+              "text": "",
+              "total_bytes": 0,
+              "truncated": false
+            },
+            "outputs": [],
+            "error": null,
+            "kernel": null,
+            "state_lost": false,
+            "elapsed_seconds": 12.030848187,
+            "sandbox_started_at": "2026-10-12T05:47:38.871784Z",
+            "sandbox_ended_at": "2026-10-12T05:47:50.902632Z",
+            "written_files": [
+              ".jobs/exe-b7db6ea88114d6ad7bede16c/stderr.log",
+              ".jobs/exe-b7db6ea88114d6ad7bede16c/stdout.log",
+              "attempts-1791784042023202778.txt"
+            ],
+            "written_files_truncated": false,
+            "environment_revision": "0",
+            "overlapping_change": false,
+            "notices": []
+          },
+          "last_seq": 6,
+          "job": {
+            "purpose": "Lab20 running",
+            "expected_progress": "The acceptance check asserts its output.",
+            "wake_session": false,
+            "timeout_seconds": 86400.0,
+            "stdout_path": ".jobs/exe-b7db6ea88114d6ad7bede16c/stdout.log",
+            "stderr_path": ".jobs/exe-b7db6ea88114d6ad7bede16c/stderr.log"
+          },
+          "origin": null
+        }
+      }
+    ]
+  },
+  "completion_while_offline": {
+    "job": {
+      "execution_id": "exe-44c9b6a2b1aadb66f8a2f1b0",
+      "attempt_id": "att-1872c9bd95035d5f8a3fa79d",
+      "operation_id": "offline-1791784042023202778",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T05:47:51.099643Z",
+      "started_at": "2026-10-12T05:47:51.159836Z",
+      "ended_at": "2026-10-12T05:47:58.394841Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "before offline\nfinished offline\n",
+          "total_bytes": 32,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 4.022103990999998,
+        "sandbox_started_at": "2026-10-12T05:47:51.064902Z",
+        "sandbox_ended_at": "2026-10-12T05:47:55.087007Z",
+        "written_files": [
+          ".jobs/exe-44c9b6a2b1aadb66f8a2f1b0/stderr.log",
+          ".jobs/exe-44c9b6a2b1aadb66f8a2f1b0/stdout.log"
+        ],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 6,
+      "job": {
+        "purpose": "Lab20 offline",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-44c9b6a2b1aadb66f8a2f1b0/stdout.log",
+        "stderr_path": ".jobs/exe-44c9b6a2b1aadb66f8a2f1b0/stderr.log"
+      },
+      "origin": null
+    },
+    "events": [
+      {
+        "execution_id": "exe-44c9b6a2b1aadb66f8a2f1b0",
+        "seq": 1,
+        "time": "2026-10-12T05:47:51.099778Z",
+        "type": "state",
+        "state": "queued"
+      },
+      {
+        "execution_id": "exe-44c9b6a2b1aadb66f8a2f1b0",
+        "seq": 2,
+        "time": "2026-10-12T05:47:51.159872Z",
+        "type": "state",
+        "state": "running"
+      },
+      {
+        "execution_id": "exe-44c9b6a2b1aadb66f8a2f1b0",
+        "seq": 3,
+        "time": "2026-10-12T05:47:51.160114Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "before offline\n"
+      },
+      {
+        "execution_id": "exe-44c9b6a2b1aadb66f8a2f1b0",
+        "seq": 4,
+        "time": "2026-10-12T05:47:58.380957Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "finished offline\n"
+      },
+      {
+        "execution_id": "exe-44c9b6a2b1aadb66f8a2f1b0",
+        "seq": 5,
+        "time": "2026-10-12T05:47:58.394841Z",
+        "type": "state",
+        "state": "succeeded"
+      },
+      {
+        "execution_id": "exe-44c9b6a2b1aadb66f8a2f1b0",
+        "seq": 6,
+        "time": "2026-10-12T05:47:58.394841Z",
+        "type": "result",
+        "execution": {
+          "execution_id": "exe-44c9b6a2b1aadb66f8a2f1b0",
+          "attempt_id": "att-1872c9bd95035d5f8a3fa79d",
+          "operation_id": "offline-1791784042023202778",
+          "kind": "job",
+          "context": {
+            "project_id": "lab20",
+            "session_id": "main",
+            "environment_id": "lab20-a",
+            "policy_revision": null,
+            "actor": "agent"
+          },
+          "state": "succeeded",
+          "submitted_at": "2026-10-12T05:47:51.099643Z",
+          "started_at": "2026-10-12T05:47:51.159836Z",
+          "ended_at": "2026-10-12T05:47:58.394841Z",
+          "location": {
+            "pool_id": "babbage",
+            "backend": "openshell",
+            "sandbox_id": "ss-edcf0ecf1858a969",
+            "hostname": "ss-edcf0ecf1858a969",
+            "isolation_tier": 3,
+            "declared_isolation_tier": 3,
+            "isolation_evidence": {
+              "kernel": "separate",
+              "sentinel": "hidden",
+              "findings": [],
+              "sandbox": {
+                "kernel_release": "6.12.76",
+                "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+                "hostname": "ss-edcf0ecf1858a969",
+                "machine_id": null,
+                "seccomp": "filter",
+                "no_new_privs": true,
+                "capabilities": "0000000000000000",
+                "uid": 1000,
+                "hypervisor": true,
+                "sys_vendor": null,
+                "product_name": null
+              },
+              "error": null
+            },
+            "environment_revision": "0"
+          },
+          "result": {
+            "exit_code": 0,
+            "signal": null,
+            "status": null,
+            "execution_count": null,
+            "stdout": {
+              "name": "stdout",
+              "text": "before offline\nfinished offline\n",
+              "total_bytes": 32,
+              "truncated": false
+            },
+            "stderr": {
+              "name": "stderr",
+              "text": "",
+              "total_bytes": 0,
+              "truncated": false
+            },
+            "outputs": [],
+            "error": null,
+            "kernel": null,
+            "state_lost": false,
+            "elapsed_seconds": 4.022103990999998,
+            "sandbox_started_at": "2026-10-12T05:47:51.064902Z",
+            "sandbox_ended_at": "2026-10-12T05:47:55.087007Z",
+            "written_files": [
+              ".jobs/exe-44c9b6a2b1aadb66f8a2f1b0/stderr.log",
+              ".jobs/exe-44c9b6a2b1aadb66f8a2f1b0/stdout.log"
+            ],
+            "written_files_truncated": false,
+            "environment_revision": "0",
+            "overlapping_change": false,
+            "notices": []
+          },
+          "last_seq": 6,
+          "job": {
+            "purpose": "Lab20 offline",
+            "expected_progress": "The acceptance check asserts its output.",
+            "wake_session": false,
+            "timeout_seconds": 86400.0,
+            "stdout_path": ".jobs/exe-44c9b6a2b1aadb66f8a2f1b0/stdout.log",
+            "stderr_path": ".jobs/exe-44c9b6a2b1aadb66f8a2f1b0/stderr.log"
+          },
+          "origin": null
+        }
+      }
+    ]
+  },
+  "connected_result_retains_requested_budget": {
+    "execution_id": "exe-a699a074cc697cda295e2f01",
+    "state": "succeeded",
+    "inline_bytes": 600000,
+    "truncated": false
+  },
+  "definite_refusal_ends": {
+    "execution_id": "exe-866cdf266ee5a3934f2e9cf4",
+    "attempt_id": "att-b0fa3afca649d873486f520d",
+    "operation_id": "refused-1791784042023202778",
+    "kind": "shell",
+    "context": {
+      "project_id": "lab20",
+      "session_id": "main",
+      "environment_id": "lab20-a",
+      "policy_revision": null,
+      "actor": "agent"
+    },
+    "state": "failed",
+    "submitted_at": "2026-10-12T05:47:58.831728Z",
+    "started_at": null,
+    "ended_at": "2026-10-12T05:47:58.839665Z",
+    "location": {
+      "pool_id": "babbage",
+      "backend": "openshell",
+      "sandbox_id": "ss-edcf0ecf1858a969",
+      "hostname": "ss-edcf0ecf1858a969",
+      "isolation_tier": 3,
+      "declared_isolation_tier": 3,
+      "isolation_evidence": {
+        "kernel": "separate",
+        "sentinel": "hidden",
+        "findings": [],
+        "sandbox": {
+          "kernel_release": "6.12.76",
+          "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+          "hostname": "ss-edcf0ecf1858a969",
+          "machine_id": null,
+          "seccomp": "filter",
+          "no_new_privs": true,
+          "capabilities": "0000000000000000",
+          "uid": 1000,
+          "hypervisor": true,
+          "sys_vendor": null,
+          "product_name": null
+        },
+        "error": null
+      },
+      "environment_revision": "0"
+    },
+    "result": {
+      "exit_code": null,
+      "signal": null,
+      "status": null,
+      "execution_count": null,
+      "stdout": null,
+      "stderr": null,
+      "outputs": [],
+      "error": {
+        "kind": "invalid_request",
+        "message": "working directory 'missing-lab20-directory' does not exist",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "kernel": null,
+      "state_lost": false,
+      "elapsed_seconds": 0.0,
+      "sandbox_started_at": null,
+      "sandbox_ended_at": null,
+      "written_files": [],
+      "written_files_truncated": false,
+      "environment_revision": null,
+      "overlapping_change": false,
+      "notices": []
+    },
+    "last_seq": 3,
+    "job": null,
+    "origin": null
+  },
+  "cancel_after_reconnect": {
+    "job": {
+      "execution_id": "exe-e09a20313cfb0b1f32276e89",
+      "attempt_id": "att-19caf8ccf05ee0e4948d7cb1",
+      "operation_id": "cancelled-1791784042023202778",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "cancelled",
+      "submitted_at": "2026-10-12T05:47:58.934926Z",
+      "started_at": "2026-10-12T05:47:59.034285Z",
+      "ended_at": "2026-10-12T05:48:00.398574Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": 15,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "before cancel\n",
+          "total_bytes": 14,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": {
+          "kind": "cancelled",
+          "message": "cancelled on request",
+          "name": null,
+          "value": null,
+          "traceback": []
+        },
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 1.4415218349999996,
+        "sandbox_started_at": "2026-10-12T05:47:58.901438Z",
+        "sandbox_ended_at": "2026-10-12T05:48:00.342961Z",
+        "written_files": [
+          ".jobs/exe-e09a20313cfb0b1f32276e89/stderr.log",
+          ".jobs/exe-e09a20313cfb0b1f32276e89/stdout.log"
+        ],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 6,
+      "job": {
+        "purpose": "Lab20 cancelled",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-e09a20313cfb0b1f32276e89/stdout.log",
+        "stderr_path": ".jobs/exe-e09a20313cfb0b1f32276e89/stderr.log"
+      },
+      "origin": null
+    },
+    "events": [
+      {
+        "execution_id": "exe-e09a20313cfb0b1f32276e89",
+        "seq": 1,
+        "time": "2026-10-12T05:47:58.935027Z",
+        "type": "state",
+        "state": "queued"
+      },
+      {
+        "execution_id": "exe-e09a20313cfb0b1f32276e89",
+        "seq": 2,
+        "time": "2026-10-12T05:47:59.034360Z",
+        "type": "state",
+        "state": "running"
+      },
+      {
+        "execution_id": "exe-e09a20313cfb0b1f32276e89",
+        "seq": 3,
+        "time": "2026-10-12T05:47:59.034724Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "before cancel\n"
+      },
+      {
+        "execution_id": "exe-e09a20313cfb0b1f32276e89",
+        "seq": 4,
+        "time": "2026-10-12T05:48:00.354005Z",
+        "type": "state",
+        "state": "cancelling"
+      },
+      {
+        "execution_id": "exe-e09a20313cfb0b1f32276e89",
+        "seq": 5,
+        "time": "2026-10-12T05:48:00.398574Z",
+        "type": "state",
+        "state": "cancelled"
+      },
+      {
+        "execution_id": "exe-e09a20313cfb0b1f32276e89",
+        "seq": 6,
+        "time": "2026-10-12T05:48:00.398574Z",
+        "type": "result",
+        "execution": {
+          "execution_id": "exe-e09a20313cfb0b1f32276e89",
+          "attempt_id": "att-19caf8ccf05ee0e4948d7cb1",
+          "operation_id": "cancelled-1791784042023202778",
+          "kind": "job",
+          "context": {
+            "project_id": "lab20",
+            "session_id": "main",
+            "environment_id": "lab20-a",
+            "policy_revision": null,
+            "actor": "agent"
+          },
+          "state": "cancelled",
+          "submitted_at": "2026-10-12T05:47:58.934926Z",
+          "started_at": "2026-10-12T05:47:59.034285Z",
+          "ended_at": "2026-10-12T05:48:00.398574Z",
+          "location": {
+            "pool_id": "babbage",
+            "backend": "openshell",
+            "sandbox_id": "ss-edcf0ecf1858a969",
+            "hostname": "ss-edcf0ecf1858a969",
+            "isolation_tier": 3,
+            "declared_isolation_tier": 3,
+            "isolation_evidence": {
+              "kernel": "separate",
+              "sentinel": "hidden",
+              "findings": [],
+              "sandbox": {
+                "kernel_release": "6.12.76",
+                "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+                "hostname": "ss-edcf0ecf1858a969",
+                "machine_id": null,
+                "seccomp": "filter",
+                "no_new_privs": true,
+                "capabilities": "0000000000000000",
+                "uid": 1000,
+                "hypervisor": true,
+                "sys_vendor": null,
+                "product_name": null
+              },
+              "error": null
+            },
+            "environment_revision": "0"
+          },
+          "result": {
+            "exit_code": null,
+            "signal": 15,
+            "status": null,
+            "execution_count": null,
+            "stdout": {
+              "name": "stdout",
+              "text": "before cancel\n",
+              "total_bytes": 14,
+              "truncated": false
+            },
+            "stderr": {
+              "name": "stderr",
+              "text": "",
+              "total_bytes": 0,
+              "truncated": false
+            },
+            "outputs": [],
+            "error": {
+              "kind": "cancelled",
+              "message": "cancelled on request",
+              "name": null,
+              "value": null,
+              "traceback": []
+            },
+            "kernel": null,
+            "state_lost": false,
+            "elapsed_seconds": 1.4415218349999996,
+            "sandbox_started_at": "2026-10-12T05:47:58.901438Z",
+            "sandbox_ended_at": "2026-10-12T05:48:00.342961Z",
+            "written_files": [
+              ".jobs/exe-e09a20313cfb0b1f32276e89/stderr.log",
+              ".jobs/exe-e09a20313cfb0b1f32276e89/stdout.log"
+            ],
+            "written_files_truncated": false,
+            "environment_revision": "0",
+            "overlapping_change": false,
+            "notices": []
+          },
+          "last_seq": 6,
+          "job": {
+            "purpose": "Lab20 cancelled",
+            "expected_progress": "The acceptance check asserts its output.",
+            "wake_session": false,
+            "timeout_seconds": 86400.0,
+            "stdout_path": ".jobs/exe-e09a20313cfb0b1f32276e89/stdout.log",
+            "stderr_path": ".jobs/exe-e09a20313cfb0b1f32276e89/stderr.log"
+          },
+          "origin": null
+        }
+      }
+    ]
+  },
+  "kernel_survives_restart": {
+    "first": {
+      "execution_id": "exe-ae9366b178a3091e1c660355",
+      "attempt_id": "att-6f157346b1424379149c1298",
+      "operation_id": "kernel-before-1791784042023202778",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T05:48:00.462131Z",
+      "started_at": "2026-10-12T05:48:01.452282Z",
+      "ended_at": "2026-10-12T05:48:01.454979Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "ok",
+        "execution_count": 1,
+        "stdout": {
+          "name": "stdout",
+          "text": "17\n",
+          "total_bytes": 3,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 1
+        },
+        "state_lost": false,
+        "elapsed_seconds": 0.9538351509999998,
+        "sandbox_started_at": "2026-10-12T05:48:00.430197Z",
+        "sandbox_ended_at": "2026-10-12T05:48:01.384032Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    },
+    "second": {
+      "execution_id": "exe-b1ff8660cbb490dfaae6102f",
+      "attempt_id": "att-19950f601291b14dc5b92aa6",
+      "operation_id": "kernel-after-1791784042023202778",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T05:48:02.757250Z",
+      "started_at": "2026-10-12T05:48:02.849031Z",
+      "ended_at": "2026-10-12T05:48:02.851656Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "ok",
+        "execution_count": 2,
+        "stdout": {
+          "name": "stdout",
+          "text": "18\n",
+          "total_bytes": 3,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 1
+        },
+        "state_lost": false,
+        "elapsed_seconds": 0.012947994999997547,
+        "sandbox_started_at": "2026-10-12T05:48:02.730884Z",
+        "sandbox_ended_at": "2026-10-12T05:48:02.743832Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    }
+  },
+  "noisy_completion_while_offline": {
+    "job": {
+      "execution_id": "exe-0f52e8d543ee2890abd35bb9",
+      "attempt_id": "att-3eca4bb0a211641532d278a2",
+      "operation_id": "noisy-1791784042023202778",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T05:48:02.879844Z",
+      "started_at": "2026-10-12T05:48:02.954332Z",
+      "ended_at": "2026-10-12T05:48:12.346364Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "before noise\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[\u2026 2998994 bytes omitted \u2026]\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxtail\n",
+          "total_bytes": 3000018,
+          "truncated": true
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 3.06602161,
+        "sandbox_started_at": "2026-10-12T05:48:02.844280Z",
+        "sandbox_ended_at": "2026-10-12T05:48:05.910302Z",
+        "written_files": [
+          ".jobs/exe-0f52e8d543ee2890abd35bb9/stderr.log",
+          ".jobs/exe-0f52e8d543ee2890abd35bb9/stdout.log"
+        ],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 6,
+      "job": {
+        "purpose": "Lab20 noisy",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-0f52e8d543ee2890abd35bb9/stdout.log",
+        "stderr_path": ".jobs/exe-0f52e8d543ee2890abd35bb9/stderr.log"
+      },
+      "origin": null
+    },
+    "log_bytes": 3000018,
+    "log_sha256": "56e35d61df938d29c25426f9b2dd1aa5ffee83db7063da6a3256b5d008dfbacd",
+    "event_count": 6
+  },
+  "timeout_while_offline": {
+    "execution_id": "exe-a219f0dd508178a266b493cc",
+    "attempt_id": "att-51dd1f172f506a39c6a4010f",
+    "operation_id": "timeout-1791784042023202778",
+    "kind": "job",
+    "context": {
+      "project_id": "lab20",
+      "session_id": "main",
+      "environment_id": "lab20-a",
+      "policy_revision": null,
+      "actor": "agent"
+    },
+    "state": "timed_out",
+    "submitted_at": "2026-10-12T05:48:12.775265Z",
+    "started_at": "2026-10-12T05:48:12.853429Z",
+    "ended_at": "2026-10-12T05:48:19.123771Z",
+    "location": {
+      "pool_id": "babbage",
+      "backend": "openshell",
+      "sandbox_id": "ss-edcf0ecf1858a969",
+      "hostname": "ss-edcf0ecf1858a969",
+      "isolation_tier": 3,
+      "declared_isolation_tier": 3,
+      "isolation_evidence": {
+        "kernel": "separate",
+        "sentinel": "hidden",
+        "findings": [],
+        "sandbox": {
+          "kernel_release": "6.12.76",
+          "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+          "hostname": "ss-edcf0ecf1858a969",
+          "machine_id": null,
+          "seccomp": "filter",
+          "no_new_privs": true,
+          "capabilities": "0000000000000000",
+          "uid": 1000,
+          "hypervisor": true,
+          "sys_vendor": null,
+          "product_name": null
+        },
+        "error": null
+      },
+      "environment_revision": "0"
+    },
+    "result": {
+      "exit_code": null,
+      "signal": 15,
+      "status": null,
+      "execution_count": null,
+      "stdout": {
+        "name": "stdout",
+        "text": "before timeout\n",
+        "total_bytes": 15,
+        "truncated": false
+      },
+      "stderr": {
+        "name": "stderr",
+        "text": "",
+        "total_bytes": 0,
+        "truncated": false
+      },
+      "outputs": [],
+      "error": {
+        "kind": "timed_out",
+        "message": "exceeded the 3 s limit",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "kernel": null,
+      "state_lost": false,
+      "elapsed_seconds": 3.048991766999997,
+      "sandbox_started_at": "2026-10-12T05:48:12.744030Z",
+      "sandbox_ended_at": "2026-10-12T05:48:15.793021Z",
+      "written_files": [
+        ".jobs/exe-a219f0dd508178a266b493cc/stderr.log",
+        ".jobs/exe-a219f0dd508178a266b493cc/stdout.log"
+      ],
+      "written_files_truncated": false,
+      "environment_revision": "0",
+      "overlapping_change": false,
+      "notices": []
+    },
+    "last_seq": 5,
+    "job": {
+      "purpose": "Lab20 timeout",
+      "expected_progress": "The acceptance check asserts its output.",
+      "wake_session": false,
+      "timeout_seconds": 3.0,
+      "stdout_path": ".jobs/exe-a219f0dd508178a266b493cc/stdout.log",
+      "stderr_path": ".jobs/exe-a219f0dd508178a266b493cc/stderr.log"
+    },
+    "origin": null
+  }
+}

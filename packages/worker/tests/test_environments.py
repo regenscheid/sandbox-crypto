@@ -49,6 +49,9 @@ from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend, OpenShellBackend
 from sandbox_science.worker.cli import _backend as cli_backend  # pyright: ignore[reportPrivateUsage]
+from sandbox_science.worker.cli import (
+    _confirmed_daemon_loss as confirmed_daemon_loss,  # pyright: ignore[reportPrivateUsage]
+)
 from sandbox_science.worker.cli import main
 from sandbox_science.worker.environments import (
     MAX_RECORDED,
@@ -139,7 +142,11 @@ elif command == ["sandbox", "get"]:
     out = json.dumps({"id": box["id"], "name": name, "phase": box.get("phase", "Ready"),
                       "configuration_admission": {"state": "accepted", "error": ""}})
 elif command == ["sandbox", "stop"]:
-    sandboxes[argv[2]]["phase"] = "Stopped"
+    if state.get("fail_stop"):
+        fail("synthetic stop failure")
+    sandboxes[argv[2]]["phase"] = state.get("phase_on_stop", "Stopped")
+    if state.get("new_id_on_stop"):
+        sandboxes[argv[2]]["id"] = str(uuid.uuid4())
     out = "stopped"
 elif command == ["sandbox", "start"]:
     box = sandboxes[argv[2]]
@@ -1013,6 +1020,128 @@ async def test_an_environment_in_use_is_not_suspended(setup: Setup) -> None:
     assert not await setup.environments.suspend("env-1", time.monotonic())
     assert setup.environments.get("env-1").state is EnvironmentState.READY
     assert setup.fake.calls("sandbox", "stop") == []
+
+
+async def test_lost_executor_recycle_keeps_disk_identity_binding_and_lifecycle_order(
+    setup: Setup,
+) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    await setup.environments.recycle_executor("env-1", info.sandbox, info.sandbox_id or "")
+    ready = setup.environments.get("env-1")
+    assert ready.state is EnvironmentState.READY
+    assert ready.sandbox_id == info.sandbox_id
+    assert setup.environments.store.binding(info.sandbox_id or "") == setup.policy
+    commands = [call[:2] for call in setup.fake.read()["calls"]]
+    assert commands.index(["sandbox", "stop"]) < commands.index(["sandbox", "start"])
+    assert setup.released == []  # no manager callback under the lifecycle lock
+
+
+async def test_recycle_stop_failure_is_not_recorded_as_confirmed_stopped(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.update(fail_stop=True)
+    with pytest.raises(WorkerError, match="synthetic stop failure"):
+        await setup.environments.recycle_executor("env-1", info.sandbox, info.sandbox_id or "")
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+    assert setup.fake.calls("sandbox", "start") == []
+
+
+async def test_recycle_waits_for_actual_stop_and_refuses_changed_identity(
+    setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.update(phase_on_stop="Ready")
+    monkeypatch.setattr(environments_module, "_RESUME_TIMEOUT", 0.1)
+    monkeypatch.setattr(environments_module, "_POLL_SECONDS", 0.01)
+    with pytest.raises(WorkerError, match="did not confirm stopping"):
+        await setup.environments.recycle_executor("env-1", info.sandbox, info.sandbox_id or "")
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+    assert setup.fake.calls("sandbox", "start") == []
+    setup.fake.update(phase_on_stop="Stopped", new_id_on_stop=True)
+    with pytest.raises(WorkerError, match="changed while stopping"):
+        await setup.environments.recycle_executor("env-1", info.sandbox, info.sandbox_id or "")
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+    assert setup.fake.calls("sandbox", "start") == []
+
+
+async def test_resume_recovers_crash_after_actual_stop_before_record_update(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    await setup.environments.cli.run("sandbox", "stop", info.sandbox)
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+    await setup.environments.resume("env-1")
+    assert setup.environments.get("env-1").state is EnvironmentState.READY
+    assert setup.environments.get("env-1").sandbox_id == info.sandbox_id
+    assert len(setup.fake.calls("sandbox", "start")) == 1
+
+
+async def test_recycle_refuses_start_with_a_replaced_sandbox(setup: Setup) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.fake.update(new_id_on_start=True)
+    with pytest.raises(WorkerError, match="came back as"):
+        await setup.environments.recycle_executor("env-1", info.sandbox, info.sandbox_id or "")
+    assert setup.environments.get("env-1").state is EnvironmentState.STOPPED
+
+
+async def test_waiting_recycle_does_not_touch_a_rebound_healthy_environment(setup: Setup) -> None:
+    old, _ = await setup.environments.create(setup.request())
+    async with setup.environments._lock("env-1"):
+        waiting = asyncio.create_task(
+            setup.environments.recycle_executor("env-1", old.sandbox, old.sandbox_id or "")
+        )
+        await asyncio.sleep(0)
+        # A lifecycle owner finished replacing the binding before this fence got its lock.
+        current = old.model_copy(update={"sandbox": "new-healthy", "sandbox_id": "new-id"})
+        setup.environments.records.save(current)
+    with pytest.raises(WorkerError, match="environment binding changed"):
+        await waiting
+    assert setup.fake.calls("sandbox", "stop") == []
+    assert setup.fake.calls("sandbox", "start") == []
+    assert setup.environments.get("env-1") == current
+
+
+@pytest.mark.parametrize("phase", ["Ready", "Deleting", "Error", "Completed", "Stopped"])
+async def test_recycle_intent_requires_actual_termination_and_clears_quarantine(
+    setup: Setup, phase: str
+) -> None:
+    info, _ = await setup.environments.create(setup.request())
+    setup.environments.records.save(info.model_copy(update={"state": EnvironmentState.STOPPED}))
+    state = setup.fake.read()
+    state["sandboxes"][info.sandbox]["phase"] = phase
+    setup.fake.write(state)
+    settings = Settings(
+        token_file=setup.tmp / "synthetic-token",
+        state_dir=setup.state_dir,
+        openshell=setup.settings.model_copy(
+            update={"env": {"FAKE_OPENSHELL_STATE": str(setup.fake.path)}}
+        ),
+    )
+    store = Store(setup.tmp / "recycle-worker.sqlite")
+    manager = ExecutionManager(
+        store,
+        OpenShellBackend(setup.settings, setup.state_dir),
+        Blobs(setup.tmp / "recycle-blobs"),
+        pool_id="test",
+        max_artifact_size=1 << 20,
+        state_dir=setup.state_dir,
+    )
+    try:
+        store.remember_endpoint("env-1", "inc-" + "1" * 24, (info.sandbox, info.sandbox_id or ""))
+        store.require_recycle("env-1", "inc-" + "1" * 24)
+        manager._quarantined.add("env-1")
+
+        async def confirmed(environment: str) -> bool:
+            return await confirmed_daemon_loss(
+                settings, manager, setup.environments, store, environment
+            )
+
+        assert await confirmed("env-1") is (phase == "Stopped")
+        if phase == "Stopped":
+            manager.confirmed_daemon_loss = confirmed
+            await manager._recover("env-1", [], startup=True)
+            assert not store.recycle_needed("env-1")
+            assert "env-1" not in manager._quarantined
+    finally:
+        await manager.close()
+        store.close()
 
 
 async def test_create_and_revise_start_a_suspended_environment(setup: Setup) -> None:

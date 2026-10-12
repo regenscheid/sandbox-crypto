@@ -1,0 +1,2709 @@
+{
+  "environment": {
+    "environment": {
+      "environment_id": "lab20-a",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-edcf0ecf1858a969",
+      "sandbox_id": "15800d5e-e582-4244-9cff-2e426efc472b",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T05:47:22.119946Z",
+      "updated_at": "2026-10-12T05:47:36.866494Z"
+    },
+    "warm": {
+      "execution_id": "exe-7830f3bba3709c79937e758d",
+      "attempt_id": "att-c8cbd859495df68e54abb3a1",
+      "operation_id": "warm-1791784042023202778",
+      "kind": "shell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T05:47:36.874358Z",
+      "started_at": "2026-10-12T05:47:38.858915Z",
+      "ended_at": "2026-10-12T05:47:38.864196Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "ready",
+          "total_bytes": 5,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.019180852999999942,
+        "sandbox_started_at": "2026-10-12T05:47:38.714011Z",
+        "sandbox_ended_at": "2026-10-12T05:47:38.733192Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    }
+  },
+  "running_across_restart": {
+    "before": {
+      "execution": {
+        "execution_id": "exe-3fd5e7296827e33d23b73c27",
+        "attempt_id": "att-39a2794115b4063cedb6d660",
+        "operation_id": "running-1791787373296929610",
+        "kind": "job",
+        "context": {
+          "project_id": "lab20",
+          "session_id": "main",
+          "environment_id": "lab20-a",
+          "policy_revision": null,
+          "actor": "agent"
+        },
+        "state": "running",
+        "submitted_at": "2026-10-12T06:42:53.312700Z",
+        "started_at": "2026-10-12T06:42:53.399254Z",
+        "ended_at": null,
+        "location": {
+          "pool_id": "babbage",
+          "backend": "openshell",
+          "sandbox_id": "ss-edcf0ecf1858a969",
+          "hostname": "ss-edcf0ecf1858a969",
+          "isolation_tier": 3,
+          "declared_isolation_tier": 3,
+          "isolation_evidence": {
+            "kernel": "separate",
+            "sentinel": "hidden",
+            "findings": [],
+            "sandbox": {
+              "kernel_release": "6.12.76",
+              "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+              "hostname": "ss-edcf0ecf1858a969",
+              "machine_id": null,
+              "seccomp": "filter",
+              "no_new_privs": true,
+              "capabilities": "0000000000000000",
+              "uid": 1000,
+              "hypervisor": true,
+              "sys_vendor": null,
+              "product_name": null
+            },
+            "error": null
+          },
+          "environment_revision": "0"
+        },
+        "result": null,
+        "last_seq": 3,
+        "job": {
+          "purpose": "Lab20 running",
+          "expected_progress": "The acceptance check asserts its output.",
+          "wake_session": false,
+          "timeout_seconds": 86400.0,
+          "stdout_path": ".jobs/exe-3fd5e7296827e33d23b73c27/stdout.log",
+          "stderr_path": ".jobs/exe-3fd5e7296827e33d23b73c27/stderr.log"
+        },
+        "origin": null
+      },
+      "stdout": {
+        "name": "stdout",
+        "text": "before\n",
+        "total_bytes": 7,
+        "truncated": false
+      },
+      "stderr": {
+        "name": "stderr",
+        "text": "",
+        "total_bytes": 0,
+        "truncated": false
+      },
+      "cpu_seconds": 0.0,
+      "memory_bytes": 5087232
+    },
+    "job": {
+      "execution_id": "exe-3fd5e7296827e33d23b73c27",
+      "attempt_id": "att-39a2794115b4063cedb6d660",
+      "operation_id": "running-1791787373296929610",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:42:53.312700Z",
+      "started_at": "2026-10-12T06:42:53.399254Z",
+      "ended_at": "2026-10-12T06:43:05.448817Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "before\nafter\n",
+          "total_bytes": 13,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 12.027569204999963,
+        "sandbox_started_at": "2026-10-12T06:42:53.246611Z",
+        "sandbox_ended_at": "2026-10-12T06:43:05.274180Z",
+        "written_files": [
+          ".jobs/exe-3fd5e7296827e33d23b73c27/stderr.log",
+          ".jobs/exe-3fd5e7296827e33d23b73c27/stdout.log",
+          "attempts-1791787373296929610.txt"
+        ],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 6,
+      "job": {
+        "purpose": "Lab20 running",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-3fd5e7296827e33d23b73c27/stdout.log",
+        "stderr_path": ".jobs/exe-3fd5e7296827e33d23b73c27/stderr.log"
+      },
+      "origin": null
+    },
+    "attempt_pids": [
+      "895"
+    ],
+    "events": [
+      {
+        "execution_id": "exe-3fd5e7296827e33d23b73c27",
+        "seq": 1,
+        "time": "2026-10-12T06:42:53.313027Z",
+        "type": "state",
+        "state": "queued"
+      },
+      {
+        "execution_id": "exe-3fd5e7296827e33d23b73c27",
+        "seq": 2,
+        "time": "2026-10-12T06:42:53.399327Z",
+        "type": "state",
+        "state": "running"
+      },
+      {
+        "execution_id": "exe-3fd5e7296827e33d23b73c27",
+        "seq": 3,
+        "time": "2026-10-12T06:42:53.399789Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "before\n"
+      },
+      {
+        "execution_id": "exe-3fd5e7296827e33d23b73c27",
+        "seq": 4,
+        "time": "2026-10-12T06:43:05.434073Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "after\n"
+      },
+      {
+        "execution_id": "exe-3fd5e7296827e33d23b73c27",
+        "seq": 5,
+        "time": "2026-10-12T06:43:05.448817Z",
+        "type": "state",
+        "state": "succeeded"
+      },
+      {
+        "execution_id": "exe-3fd5e7296827e33d23b73c27",
+        "seq": 6,
+        "time": "2026-10-12T06:43:05.448817Z",
+        "type": "result",
+        "execution": {
+          "execution_id": "exe-3fd5e7296827e33d23b73c27",
+          "attempt_id": "att-39a2794115b4063cedb6d660",
+          "operation_id": "running-1791787373296929610",
+          "kind": "job",
+          "context": {
+            "project_id": "lab20",
+            "session_id": "main",
+            "environment_id": "lab20-a",
+            "policy_revision": null,
+            "actor": "agent"
+          },
+          "state": "succeeded",
+          "submitted_at": "2026-10-12T06:42:53.312700Z",
+          "started_at": "2026-10-12T06:42:53.399254Z",
+          "ended_at": "2026-10-12T06:43:05.448817Z",
+          "location": {
+            "pool_id": "babbage",
+            "backend": "openshell",
+            "sandbox_id": "ss-edcf0ecf1858a969",
+            "hostname": "ss-edcf0ecf1858a969",
+            "isolation_tier": 3,
+            "declared_isolation_tier": 3,
+            "isolation_evidence": {
+              "kernel": "separate",
+              "sentinel": "hidden",
+              "findings": [],
+              "sandbox": {
+                "kernel_release": "6.12.76",
+                "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+                "hostname": "ss-edcf0ecf1858a969",
+                "machine_id": null,
+                "seccomp": "filter",
+                "no_new_privs": true,
+                "capabilities": "0000000000000000",
+                "uid": 1000,
+                "hypervisor": true,
+                "sys_vendor": null,
+                "product_name": null
+              },
+              "error": null
+            },
+            "environment_revision": "0"
+          },
+          "result": {
+            "exit_code": 0,
+            "signal": null,
+            "status": null,
+            "execution_count": null,
+            "stdout": {
+              "name": "stdout",
+              "text": "before\nafter\n",
+              "total_bytes": 13,
+              "truncated": false
+            },
+            "stderr": {
+              "name": "stderr",
+              "text": "",
+              "total_bytes": 0,
+              "truncated": false
+            },
+            "outputs": [],
+            "error": null,
+            "kernel": null,
+            "state_lost": false,
+            "elapsed_seconds": 12.027569204999963,
+            "sandbox_started_at": "2026-10-12T06:42:53.246611Z",
+            "sandbox_ended_at": "2026-10-12T06:43:05.274180Z",
+            "written_files": [
+              ".jobs/exe-3fd5e7296827e33d23b73c27/stderr.log",
+              ".jobs/exe-3fd5e7296827e33d23b73c27/stdout.log",
+              "attempts-1791787373296929610.txt"
+            ],
+            "written_files_truncated": false,
+            "environment_revision": "0",
+            "overlapping_change": false,
+            "notices": []
+          },
+          "last_seq": 6,
+          "job": {
+            "purpose": "Lab20 running",
+            "expected_progress": "The acceptance check asserts its output.",
+            "wake_session": false,
+            "timeout_seconds": 86400.0,
+            "stdout_path": ".jobs/exe-3fd5e7296827e33d23b73c27/stdout.log",
+            "stderr_path": ".jobs/exe-3fd5e7296827e33d23b73c27/stderr.log"
+          },
+          "origin": null
+        }
+      }
+    ]
+  },
+  "completion_while_offline": {
+    "job": {
+      "execution_id": "exe-6c0900de74f1139c9accaf5b",
+      "attempt_id": "att-359653589e8691098de63ab1",
+      "operation_id": "offline-1791787373296929610",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:43:05.493115Z",
+      "started_at": "2026-10-12T06:43:05.550022Z",
+      "ended_at": "2026-10-12T06:43:12.849854Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "before offline\nfinished offline\n",
+          "total_bytes": 32,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 4.026867669999774,
+        "sandbox_started_at": "2026-10-12T06:43:05.425420Z",
+        "sandbox_ended_at": "2026-10-12T06:43:09.452289Z",
+        "written_files": [
+          ".jobs/exe-6c0900de74f1139c9accaf5b/stderr.log",
+          ".jobs/exe-6c0900de74f1139c9accaf5b/stdout.log"
+        ],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 6,
+      "job": {
+        "purpose": "Lab20 offline",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-6c0900de74f1139c9accaf5b/stdout.log",
+        "stderr_path": ".jobs/exe-6c0900de74f1139c9accaf5b/stderr.log"
+      },
+      "origin": null
+    },
+    "events": [
+      {
+        "execution_id": "exe-6c0900de74f1139c9accaf5b",
+        "seq": 1,
+        "time": "2026-10-12T06:43:05.493260Z",
+        "type": "state",
+        "state": "queued"
+      },
+      {
+        "execution_id": "exe-6c0900de74f1139c9accaf5b",
+        "seq": 2,
+        "time": "2026-10-12T06:43:05.550140Z",
+        "type": "state",
+        "state": "running"
+      },
+      {
+        "execution_id": "exe-6c0900de74f1139c9accaf5b",
+        "seq": 3,
+        "time": "2026-10-12T06:43:05.550727Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "before offline\n"
+      },
+      {
+        "execution_id": "exe-6c0900de74f1139c9accaf5b",
+        "seq": 4,
+        "time": "2026-10-12T06:43:12.839332Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "finished offline\n"
+      },
+      {
+        "execution_id": "exe-6c0900de74f1139c9accaf5b",
+        "seq": 5,
+        "time": "2026-10-12T06:43:12.849854Z",
+        "type": "state",
+        "state": "succeeded"
+      },
+      {
+        "execution_id": "exe-6c0900de74f1139c9accaf5b",
+        "seq": 6,
+        "time": "2026-10-12T06:43:12.849854Z",
+        "type": "result",
+        "execution": {
+          "execution_id": "exe-6c0900de74f1139c9accaf5b",
+          "attempt_id": "att-359653589e8691098de63ab1",
+          "operation_id": "offline-1791787373296929610",
+          "kind": "job",
+          "context": {
+            "project_id": "lab20",
+            "session_id": "main",
+            "environment_id": "lab20-a",
+            "policy_revision": null,
+            "actor": "agent"
+          },
+          "state": "succeeded",
+          "submitted_at": "2026-10-12T06:43:05.493115Z",
+          "started_at": "2026-10-12T06:43:05.550022Z",
+          "ended_at": "2026-10-12T06:43:12.849854Z",
+          "location": {
+            "pool_id": "babbage",
+            "backend": "openshell",
+            "sandbox_id": "ss-edcf0ecf1858a969",
+            "hostname": "ss-edcf0ecf1858a969",
+            "isolation_tier": 3,
+            "declared_isolation_tier": 3,
+            "isolation_evidence": {
+              "kernel": "separate",
+              "sentinel": "hidden",
+              "findings": [],
+              "sandbox": {
+                "kernel_release": "6.12.76",
+                "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+                "hostname": "ss-edcf0ecf1858a969",
+                "machine_id": null,
+                "seccomp": "filter",
+                "no_new_privs": true,
+                "capabilities": "0000000000000000",
+                "uid": 1000,
+                "hypervisor": true,
+                "sys_vendor": null,
+                "product_name": null
+              },
+              "error": null
+            },
+            "environment_revision": "0"
+          },
+          "result": {
+            "exit_code": 0,
+            "signal": null,
+            "status": null,
+            "execution_count": null,
+            "stdout": {
+              "name": "stdout",
+              "text": "before offline\nfinished offline\n",
+              "total_bytes": 32,
+              "truncated": false
+            },
+            "stderr": {
+              "name": "stderr",
+              "text": "",
+              "total_bytes": 0,
+              "truncated": false
+            },
+            "outputs": [],
+            "error": null,
+            "kernel": null,
+            "state_lost": false,
+            "elapsed_seconds": 4.026867669999774,
+            "sandbox_started_at": "2026-10-12T06:43:05.425420Z",
+            "sandbox_ended_at": "2026-10-12T06:43:09.452289Z",
+            "written_files": [
+              ".jobs/exe-6c0900de74f1139c9accaf5b/stderr.log",
+              ".jobs/exe-6c0900de74f1139c9accaf5b/stdout.log"
+            ],
+            "written_files_truncated": false,
+            "environment_revision": "0",
+            "overlapping_change": false,
+            "notices": []
+          },
+          "last_seq": 6,
+          "job": {
+            "purpose": "Lab20 offline",
+            "expected_progress": "The acceptance check asserts its output.",
+            "wake_session": false,
+            "timeout_seconds": 86400.0,
+            "stdout_path": ".jobs/exe-6c0900de74f1139c9accaf5b/stdout.log",
+            "stderr_path": ".jobs/exe-6c0900de74f1139c9accaf5b/stderr.log"
+          },
+          "origin": null
+        }
+      }
+    ]
+  },
+  "connected_result_retains_requested_budget": {
+    "execution_id": "exe-6ac2a1aedcb256530aefe77e",
+    "state": "succeeded",
+    "inline_bytes": 600000,
+    "truncated": false
+  },
+  "definite_refusal_ends": {
+    "execution_id": "exe-0bb9ca4b8bbecd76aaf247d6",
+    "attempt_id": "att-c863220f01a5ef4ef7b79c50",
+    "operation_id": "refused-1791787373296929610",
+    "kind": "shell",
+    "context": {
+      "project_id": "lab20",
+      "session_id": "main",
+      "environment_id": "lab20-a",
+      "policy_revision": null,
+      "actor": "agent"
+    },
+    "state": "failed",
+    "submitted_at": "2026-10-12T06:43:13.219886Z",
+    "started_at": null,
+    "ended_at": "2026-10-12T06:43:13.225690Z",
+    "location": {
+      "pool_id": "babbage",
+      "backend": "openshell",
+      "sandbox_id": "ss-edcf0ecf1858a969",
+      "hostname": "ss-edcf0ecf1858a969",
+      "isolation_tier": 3,
+      "declared_isolation_tier": 3,
+      "isolation_evidence": {
+        "kernel": "separate",
+        "sentinel": "hidden",
+        "findings": [],
+        "sandbox": {
+          "kernel_release": "6.12.76",
+          "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+          "hostname": "ss-edcf0ecf1858a969",
+          "machine_id": null,
+          "seccomp": "filter",
+          "no_new_privs": true,
+          "capabilities": "0000000000000000",
+          "uid": 1000,
+          "hypervisor": true,
+          "sys_vendor": null,
+          "product_name": null
+        },
+        "error": null
+      },
+      "environment_revision": "0"
+    },
+    "result": {
+      "exit_code": null,
+      "signal": null,
+      "status": null,
+      "execution_count": null,
+      "stdout": null,
+      "stderr": null,
+      "outputs": [],
+      "error": {
+        "kind": "invalid_request",
+        "message": "working directory 'missing-lab20-directory' does not exist",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "kernel": null,
+      "state_lost": false,
+      "elapsed_seconds": 0.0,
+      "sandbox_started_at": null,
+      "sandbox_ended_at": null,
+      "written_files": [],
+      "written_files_truncated": false,
+      "environment_revision": null,
+      "overlapping_change": false,
+      "notices": []
+    },
+    "last_seq": 3,
+    "job": null,
+    "origin": null
+  },
+  "cancel_after_reconnect": {
+    "job": {
+      "execution_id": "exe-fb0680784f7e12ab3b8de901",
+      "attempt_id": "att-1aec39af3d26e457d3207312",
+      "operation_id": "cancelled-1791787373296929610",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "cancelled",
+      "submitted_at": "2026-10-12T06:43:13.322594Z",
+      "started_at": "2026-10-12T06:43:13.383823Z",
+      "ended_at": "2026-10-12T06:43:14.821432Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": 15,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "before cancel\n",
+          "total_bytes": 14,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": {
+          "kind": "cancelled",
+          "message": "cancelled on request",
+          "name": null,
+          "value": null,
+          "traceback": []
+        },
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 1.4377380820001235,
+        "sandbox_started_at": "2026-10-12T06:43:13.253813Z",
+        "sandbox_ended_at": "2026-10-12T06:43:14.691552Z",
+        "written_files": [
+          ".jobs/exe-fb0680784f7e12ab3b8de901/stderr.log",
+          ".jobs/exe-fb0680784f7e12ab3b8de901/stdout.log"
+        ],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 6,
+      "job": {
+        "purpose": "Lab20 cancelled",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-fb0680784f7e12ab3b8de901/stdout.log",
+        "stderr_path": ".jobs/exe-fb0680784f7e12ab3b8de901/stderr.log"
+      },
+      "origin": null
+    },
+    "events": [
+      {
+        "execution_id": "exe-fb0680784f7e12ab3b8de901",
+        "seq": 1,
+        "time": "2026-10-12T06:43:13.322674Z",
+        "type": "state",
+        "state": "queued"
+      },
+      {
+        "execution_id": "exe-fb0680784f7e12ab3b8de901",
+        "seq": 2,
+        "time": "2026-10-12T06:43:13.383895Z",
+        "type": "state",
+        "state": "running"
+      },
+      {
+        "execution_id": "exe-fb0680784f7e12ab3b8de901",
+        "seq": 3,
+        "time": "2026-10-12T06:43:13.384289Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "before cancel\n"
+      },
+      {
+        "execution_id": "exe-fb0680784f7e12ab3b8de901",
+        "seq": 4,
+        "time": "2026-10-12T06:43:14.739029Z",
+        "type": "state",
+        "state": "cancelling"
+      },
+      {
+        "execution_id": "exe-fb0680784f7e12ab3b8de901",
+        "seq": 5,
+        "time": "2026-10-12T06:43:14.821432Z",
+        "type": "state",
+        "state": "cancelled"
+      },
+      {
+        "execution_id": "exe-fb0680784f7e12ab3b8de901",
+        "seq": 6,
+        "time": "2026-10-12T06:43:14.821432Z",
+        "type": "result",
+        "execution": {
+          "execution_id": "exe-fb0680784f7e12ab3b8de901",
+          "attempt_id": "att-1aec39af3d26e457d3207312",
+          "operation_id": "cancelled-1791787373296929610",
+          "kind": "job",
+          "context": {
+            "project_id": "lab20",
+            "session_id": "main",
+            "environment_id": "lab20-a",
+            "policy_revision": null,
+            "actor": "agent"
+          },
+          "state": "cancelled",
+          "submitted_at": "2026-10-12T06:43:13.322594Z",
+          "started_at": "2026-10-12T06:43:13.383823Z",
+          "ended_at": "2026-10-12T06:43:14.821432Z",
+          "location": {
+            "pool_id": "babbage",
+            "backend": "openshell",
+            "sandbox_id": "ss-edcf0ecf1858a969",
+            "hostname": "ss-edcf0ecf1858a969",
+            "isolation_tier": 3,
+            "declared_isolation_tier": 3,
+            "isolation_evidence": {
+              "kernel": "separate",
+              "sentinel": "hidden",
+              "findings": [],
+              "sandbox": {
+                "kernel_release": "6.12.76",
+                "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+                "hostname": "ss-edcf0ecf1858a969",
+                "machine_id": null,
+                "seccomp": "filter",
+                "no_new_privs": true,
+                "capabilities": "0000000000000000",
+                "uid": 1000,
+                "hypervisor": true,
+                "sys_vendor": null,
+                "product_name": null
+              },
+              "error": null
+            },
+            "environment_revision": "0"
+          },
+          "result": {
+            "exit_code": null,
+            "signal": 15,
+            "status": null,
+            "execution_count": null,
+            "stdout": {
+              "name": "stdout",
+              "text": "before cancel\n",
+              "total_bytes": 14,
+              "truncated": false
+            },
+            "stderr": {
+              "name": "stderr",
+              "text": "",
+              "total_bytes": 0,
+              "truncated": false
+            },
+            "outputs": [],
+            "error": {
+              "kind": "cancelled",
+              "message": "cancelled on request",
+              "name": null,
+              "value": null,
+              "traceback": []
+            },
+            "kernel": null,
+            "state_lost": false,
+            "elapsed_seconds": 1.4377380820001235,
+            "sandbox_started_at": "2026-10-12T06:43:13.253813Z",
+            "sandbox_ended_at": "2026-10-12T06:43:14.691552Z",
+            "written_files": [
+              ".jobs/exe-fb0680784f7e12ab3b8de901/stderr.log",
+              ".jobs/exe-fb0680784f7e12ab3b8de901/stdout.log"
+            ],
+            "written_files_truncated": false,
+            "environment_revision": "0",
+            "overlapping_change": false,
+            "notices": []
+          },
+          "last_seq": 6,
+          "job": {
+            "purpose": "Lab20 cancelled",
+            "expected_progress": "The acceptance check asserts its output.",
+            "wake_session": false,
+            "timeout_seconds": 86400.0,
+            "stdout_path": ".jobs/exe-fb0680784f7e12ab3b8de901/stdout.log",
+            "stderr_path": ".jobs/exe-fb0680784f7e12ab3b8de901/stderr.log"
+          },
+          "origin": null
+        }
+      }
+    ]
+  },
+  "kernel_survives_restart": {
+    "first": {
+      "execution_id": "exe-ef749865fa74e67561209310",
+      "attempt_id": "att-006815df42451f17fba26a34",
+      "operation_id": "kernel-before-1791787373296929610",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:43:14.844982Z",
+      "started_at": "2026-10-12T06:43:15.439515Z",
+      "ended_at": "2026-10-12T06:43:15.442030Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "ok",
+        "execution_count": 1,
+        "stdout": {
+          "name": "stdout",
+          "text": "17\n",
+          "total_bytes": 3,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 2
+        },
+        "state_lost": true,
+        "elapsed_seconds": 0.5816729439998198,
+        "sandbox_started_at": "2026-10-12T06:43:14.776343Z",
+        "sandbox_ended_at": "2026-10-12T06:43:15.358016Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    },
+    "second": {
+      "execution_id": "exe-33edded25022e49cfd6be1bd",
+      "attempt_id": "att-5da74cf385e124525913e3c4",
+      "operation_id": "kernel-after-1791787373296929610",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:43:16.737590Z",
+      "started_at": "2026-10-12T06:43:16.785189Z",
+      "ended_at": "2026-10-12T06:43:16.787797Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "ok",
+        "execution_count": 2,
+        "stdout": {
+          "name": "stdout",
+          "text": "18\n",
+          "total_bytes": 3,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 2
+        },
+        "state_lost": false,
+        "elapsed_seconds": 0.013420945999769174,
+        "sandbox_started_at": "2026-10-12T06:43:16.677333Z",
+        "sandbox_ended_at": "2026-10-12T06:43:16.690753Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    }
+  },
+  "noisy_completion_while_offline": {
+    "job": {
+      "execution_id": "exe-da0ae3305ec01b4746c0021f",
+      "attempt_id": "att-97018858bf1de218e25d089d",
+      "operation_id": "noisy-1791787373296929610",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:43:16.861954Z",
+      "started_at": "2026-10-12T06:43:16.889494Z",
+      "ended_at": "2026-10-12T06:43:26.273864Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "before noise\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n[\u2026 2998994 bytes omitted \u2026]\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxtail\n",
+          "total_bytes": 3000018,
+          "truncated": true
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 3.043342577000203,
+        "sandbox_started_at": "2026-10-12T06:43:16.791931Z",
+        "sandbox_ended_at": "2026-10-12T06:43:19.835274Z",
+        "written_files": [
+          ".jobs/exe-da0ae3305ec01b4746c0021f/stderr.log",
+          ".jobs/exe-da0ae3305ec01b4746c0021f/stdout.log"
+        ],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 6,
+      "job": {
+        "purpose": "Lab20 noisy",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-da0ae3305ec01b4746c0021f/stdout.log",
+        "stderr_path": ".jobs/exe-da0ae3305ec01b4746c0021f/stderr.log"
+      },
+      "origin": null
+    },
+    "log_bytes": 3000018,
+    "log_sha256": "56e35d61df938d29c25426f9b2dd1aa5ffee83db7063da6a3256b5d008dfbacd",
+    "event_count": 6
+  },
+  "timeout_while_offline": {
+    "execution_id": "exe-51e4aade223ceb0baf074571",
+    "attempt_id": "att-34aa56c810ba457aa030c456",
+    "operation_id": "timeout-1791787373296929610",
+    "kind": "job",
+    "context": {
+      "project_id": "lab20",
+      "session_id": "main",
+      "environment_id": "lab20-a",
+      "policy_revision": null,
+      "actor": "agent"
+    },
+    "state": "timed_out",
+    "submitted_at": "2026-10-12T06:43:26.532732Z",
+    "started_at": "2026-10-12T06:43:26.577155Z",
+    "ended_at": "2026-10-12T06:43:32.987209Z",
+    "location": {
+      "pool_id": "babbage",
+      "backend": "openshell",
+      "sandbox_id": "ss-edcf0ecf1858a969",
+      "hostname": "ss-edcf0ecf1858a969",
+      "isolation_tier": 3,
+      "declared_isolation_tier": 3,
+      "isolation_evidence": {
+        "kernel": "separate",
+        "sentinel": "hidden",
+        "findings": [],
+        "sandbox": {
+          "kernel_release": "6.12.76",
+          "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+          "hostname": "ss-edcf0ecf1858a969",
+          "machine_id": null,
+          "seccomp": "filter",
+          "no_new_privs": true,
+          "capabilities": "0000000000000000",
+          "uid": 1000,
+          "hypervisor": true,
+          "sys_vendor": null,
+          "product_name": null
+        },
+        "error": null
+      },
+      "environment_revision": "0"
+    },
+    "result": {
+      "exit_code": null,
+      "signal": 15,
+      "status": null,
+      "execution_count": null,
+      "stdout": {
+        "name": "stdout",
+        "text": "before timeout\n",
+        "total_bytes": 15,
+        "truncated": false
+      },
+      "stderr": {
+        "name": "stderr",
+        "text": "",
+        "total_bytes": 0,
+        "truncated": false
+      },
+      "outputs": [],
+      "error": {
+        "kind": "timed_out",
+        "message": "exceeded the 3 s limit",
+        "name": null,
+        "value": null,
+        "traceback": []
+      },
+      "kernel": null,
+      "state_lost": false,
+      "elapsed_seconds": 3.062082767999982,
+      "sandbox_started_at": "2026-10-12T06:43:26.463552Z",
+      "sandbox_ended_at": "2026-10-12T06:43:29.525636Z",
+      "written_files": [
+        ".jobs/exe-51e4aade223ceb0baf074571/stderr.log",
+        ".jobs/exe-51e4aade223ceb0baf074571/stdout.log"
+      ],
+      "written_files_truncated": false,
+      "environment_revision": "0",
+      "overlapping_change": false,
+      "notices": []
+    },
+    "last_seq": 5,
+    "job": {
+      "purpose": "Lab20 timeout",
+      "expected_progress": "The acceptance check asserts its output.",
+      "wake_session": false,
+      "timeout_seconds": 3.0,
+      "stdout_path": ".jobs/exe-51e4aade223ceb0baf074571/stdout.log",
+      "stderr_path": ".jobs/exe-51e4aade223ceb0baf074571/stderr.log"
+    },
+    "origin": null
+  },
+  "fence_admission_refusals": 33,
+  "daemon_loss_before_child_check": {
+    "killed": {
+      "daemon_pid": 572,
+      "start_time": "632"
+    },
+    "child_pid": 600,
+    "job": {
+      "execution_id": "exe-9cc7cc3eb739f312f09df257",
+      "attempt_id": "att-ce92b68aad99ca6f460ccaa9",
+      "operation_id": "daemon-loss-1791787511781144001",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "lost",
+      "submitted_at": "2026-10-12T06:45:12.800804Z",
+      "started_at": "2026-10-12T06:45:12.883190Z",
+      "ended_at": "2026-10-12T06:45:14.201844Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "25d07128-598f-4f27-a4fa-d1bb6a859359",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": null,
+        "stderr": null,
+        "outputs": [],
+        "error": {
+          "kind": "internal",
+          "message": "the sandbox executor incarnation stopped during this attempt; its outcome is unknown; partial whole logs remain at .jobs/exe-9cc7cc3eb739f312f09df257/stdout.log and .jobs/exe-9cc7cc3eb739f312f09df257/stderr.log",
+          "name": null,
+          "value": null,
+          "traceback": []
+        },
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.0,
+        "sandbox_started_at": null,
+        "sandbox_ended_at": null,
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": null,
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": {
+        "purpose": "Lab20 daemon-loss",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-9cc7cc3eb739f312f09df257/stdout.log",
+        "stderr_path": ".jobs/exe-9cc7cc3eb739f312f09df257/stderr.log"
+      },
+      "origin": null
+    },
+    "fresh": {
+      "execution_id": "exe-67c42b29787e96c93617089f",
+      "attempt_id": "att-7356fb68e71d3dd6d6485207",
+      "operation_id": "after-loss-1791787511781144001",
+      "kind": "shell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:45:20.989396Z",
+      "started_at": "2026-10-12T06:45:22.186330Z",
+      "ended_at": "2026-10-12T06:45:22.189636Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "ae157dd4-5227-4dcc-a70f-1bfddec11796",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "fresh",
+          "total_bytes": 5,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.021045830000000265,
+        "sandbox_started_at": "2026-10-12T06:45:22.041957Z",
+        "sandbox_ended_at": "2026-10-12T06:45:22.063003Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    }
+  },
+  "daemon_loss_reaps_escaped_child": {
+    "killed": {
+      "daemon_pid": 572,
+      "start_time": "632"
+    },
+    "child_pid": 600,
+    "job": {
+      "execution_id": "exe-9cc7cc3eb739f312f09df257",
+      "attempt_id": "att-ce92b68aad99ca6f460ccaa9",
+      "operation_id": "daemon-loss-1791787511781144001",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "lost",
+      "submitted_at": "2026-10-12T06:45:12.800804Z",
+      "started_at": "2026-10-12T06:45:12.883190Z",
+      "ended_at": "2026-10-12T06:45:14.201844Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "25d07128-598f-4f27-a4fa-d1bb6a859359",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": null,
+        "stderr": null,
+        "outputs": [],
+        "error": {
+          "kind": "internal",
+          "message": "the sandbox executor incarnation stopped during this attempt; its outcome is unknown; partial whole logs remain at .jobs/exe-9cc7cc3eb739f312f09df257/stdout.log and .jobs/exe-9cc7cc3eb739f312f09df257/stderr.log",
+          "name": null,
+          "value": null,
+          "traceback": []
+        },
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.0,
+        "sandbox_started_at": null,
+        "sandbox_ended_at": null,
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": null,
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": {
+        "purpose": "Lab20 daemon-loss",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-9cc7cc3eb739f312f09df257/stdout.log",
+        "stderr_path": ".jobs/exe-9cc7cc3eb739f312f09df257/stderr.log"
+      },
+      "origin": null
+    },
+    "other_job": {
+      "execution_id": "exe-199adf943d1a86904e63aefb",
+      "attempt_id": "att-a9d7c651618e4701da17be20",
+      "operation_id": "other-daemon-loss-1791787511781144001",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "lost",
+      "submitted_at": "2026-10-12T06:45:13.002415Z",
+      "started_at": "2026-10-12T06:45:13.091058Z",
+      "ended_at": "2026-10-12T06:45:14.202246Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "25d07128-598f-4f27-a4fa-d1bb6a859359",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": null,
+        "stderr": null,
+        "outputs": [],
+        "error": {
+          "kind": "internal",
+          "message": "the sandbox executor incarnation stopped during this attempt; its outcome is unknown; partial whole logs remain at .jobs/exe-199adf943d1a86904e63aefb/stdout.log and .jobs/exe-199adf943d1a86904e63aefb/stderr.log",
+          "name": null,
+          "value": null,
+          "traceback": []
+        },
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.0,
+        "sandbox_started_at": null,
+        "sandbox_ended_at": null,
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": null,
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": {
+        "purpose": "Lab20 other-daemon-loss",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-199adf943d1a86904e63aefb/stdout.log",
+        "stderr_path": ".jobs/exe-199adf943d1a86904e63aefb/stderr.log"
+      },
+      "origin": null
+    },
+    "fresh": {
+      "execution_id": "exe-67c42b29787e96c93617089f",
+      "attempt_id": "att-7356fb68e71d3dd6d6485207",
+      "operation_id": "after-loss-1791787511781144001",
+      "kind": "shell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:45:20.989396Z",
+      "started_at": "2026-10-12T06:45:22.186330Z",
+      "ended_at": "2026-10-12T06:45:22.189636Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "ae157dd4-5227-4dcc-a70f-1bfddec11796",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "fresh",
+          "total_bytes": 5,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.021045830000000265,
+        "sandbox_started_at": "2026-10-12T06:45:22.041957Z",
+        "sandbox_ended_at": "2026-10-12T06:45:22.063003Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    },
+    "old_child": {
+      "boot": "25d07128-598f-4f27-a4fa-d1bb6a859359",
+      "start": "9663"
+    },
+    "child_after_recovery": {
+      "boot": "ae157dd4-5227-4dcc-a70f-1bfddec11796",
+      "start": "737",
+      "state": "S"
+    },
+    "environment_before": {
+      "environment_id": "lab20-a",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-edcf0ecf1858a969",
+      "sandbox_id": "15800d5e-e582-4244-9cff-2e426efc472b",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T05:47:22.119946Z",
+      "updated_at": "2026-10-12T06:43:41.669884Z"
+    },
+    "environment_after": {
+      "environment_id": "lab20-a",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-edcf0ecf1858a969",
+      "sandbox_id": "15800d5e-e582-4244-9cff-2e426efc472b",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T05:47:22.119946Z",
+      "updated_at": "2026-10-12T06:45:20.916886Z"
+    },
+    "preserved_files": {
+      "execution_id": "exe-b0864bddcf51a24277adfc46",
+      "attempt_id": "att-f5e5d034e77cbdf9eb6b3751",
+      "operation_id": "preserved-after-loss-1791787511781144001",
+      "kind": "shell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:45:22.205328Z",
+      "started_at": "2026-10-12T06:45:22.290361Z",
+      "ended_at": "2026-10-12T06:45:22.293221Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "ae157dd4-5227-4dcc-a70f-1bfddec11796",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "workspace and Python prefix preserved\n",
+          "total_bytes": 38,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.06065593200000041,
+        "sandbox_started_at": "2026-10-12T06:45:22.168439Z",
+        "sandbox_ended_at": "2026-10-12T06:45:22.229095Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    },
+    "kernel_after_loss": {
+      "execution_id": "exe-8ce0135b70a63a8f62fc989c",
+      "attempt_id": "att-00e382c1752af7a54a4db8dd",
+      "operation_id": "kernel-after-loss-1791787511781144001",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "failed",
+      "submitted_at": "2026-10-12T06:45:22.307336Z",
+      "started_at": "2026-10-12T06:45:23.119253Z",
+      "ended_at": "2026-10-12T06:45:23.328979Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "ae157dd4-5227-4dcc-a70f-1bfddec11796",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "error",
+        "execution_count": 1,
+        "stdout": {
+          "name": "stdout",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": {
+          "kind": "exception",
+          "message": "NameError: name 'lab20_lost_kernel' is not defined",
+          "name": "NameError",
+          "value": "name 'lab20_lost_kernel' is not defined",
+          "traceback": [
+            "---------------------------------------------------------------------------",
+            "NameError                                 Traceback (most recent call last)",
+            "Cell In[1], line 1\n----> 1 print(lab20_lost_kernel)\n",
+            "NameError: name 'lab20_lost_kernel' is not defined"
+          ]
+        },
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 4
+        },
+        "state_lost": true,
+        "elapsed_seconds": 0.9129369470000004,
+        "sandbox_started_at": "2026-10-12T06:45:22.270846Z",
+        "sandbox_ended_at": "2026-10-12T06:45:23.183784Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 4,
+      "job": null,
+      "origin": null
+    }
+  },
+  "confirmed_sandbox_loss_preserves_other_environment": {
+    "removed_environment": {
+      "environment_id": "lab20-a",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-edcf0ecf1858a969",
+      "sandbox_id": "15800d5e-e582-4244-9cff-2e426efc472b",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T05:47:22.119946Z",
+      "updated_at": "2026-10-12T06:45:20.916886Z"
+    },
+    "delete": "\u2713 Deleted sandbox ss-edcf0ecf1858a969\n",
+    "job": {
+      "execution_id": "exe-ae0669a7ec9cae8017976abd",
+      "attempt_id": "att-a99feccbf8de137d88652085",
+      "operation_id": "sandbox-loss-1791787511781144001",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "lost",
+      "submitted_at": "2026-10-12T06:45:33.075688Z",
+      "started_at": "2026-10-12T06:45:33.187324Z",
+      "ended_at": "2026-10-12T06:45:34.523510Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "ae157dd4-5227-4dcc-a70f-1bfddec11796",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": null,
+        "stderr": null,
+        "outputs": [],
+        "error": {
+          "kind": "internal",
+          "message": "the sandbox that was deleted, stopped or replaced stopped during this attempt; its outcome is unknown; partial whole logs remain at .jobs/exe-ae0669a7ec9cae8017976abd/stdout.log and .jobs/exe-ae0669a7ec9cae8017976abd/stderr.log",
+          "name": null,
+          "value": null,
+          "traceback": []
+        },
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.0,
+        "sandbox_started_at": null,
+        "sandbox_ended_at": null,
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": null,
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": {
+        "purpose": "Lab20 sandbox-loss",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-ae0669a7ec9cae8017976abd/stdout.log",
+        "stderr_path": ".jobs/exe-ae0669a7ec9cae8017976abd/stderr.log"
+      },
+      "origin": null
+    },
+    "events": [
+      {
+        "execution_id": "exe-ae0669a7ec9cae8017976abd",
+        "seq": 1,
+        "time": "2026-10-12T06:45:33.075764Z",
+        "type": "state",
+        "state": "queued"
+      },
+      {
+        "execution_id": "exe-ae0669a7ec9cae8017976abd",
+        "seq": 2,
+        "time": "2026-10-12T06:45:33.187396Z",
+        "type": "state",
+        "state": "running"
+      },
+      {
+        "execution_id": "exe-ae0669a7ec9cae8017976abd",
+        "seq": 3,
+        "time": "2026-10-12T06:45:33.187790Z",
+        "type": "stream",
+        "name": "stdout",
+        "text": "before sandbox loss\n"
+      },
+      {
+        "execution_id": "exe-ae0669a7ec9cae8017976abd",
+        "seq": 4,
+        "time": "2026-10-12T06:45:34.523510Z",
+        "type": "state",
+        "state": "lost"
+      },
+      {
+        "execution_id": "exe-ae0669a7ec9cae8017976abd",
+        "seq": 5,
+        "time": "2026-10-12T06:45:34.523510Z",
+        "type": "result",
+        "execution": {
+          "execution_id": "exe-ae0669a7ec9cae8017976abd",
+          "attempt_id": "att-a99feccbf8de137d88652085",
+          "operation_id": "sandbox-loss-1791787511781144001",
+          "kind": "job",
+          "context": {
+            "project_id": "lab20",
+            "session_id": "main",
+            "environment_id": "lab20-a",
+            "policy_revision": null,
+            "actor": "agent"
+          },
+          "state": "lost",
+          "submitted_at": "2026-10-12T06:45:33.075688Z",
+          "started_at": "2026-10-12T06:45:33.187324Z",
+          "ended_at": "2026-10-12T06:45:34.523510Z",
+          "location": {
+            "pool_id": "babbage",
+            "backend": "openshell",
+            "sandbox_id": "ss-edcf0ecf1858a969",
+            "hostname": "ss-edcf0ecf1858a969",
+            "isolation_tier": 3,
+            "declared_isolation_tier": 3,
+            "isolation_evidence": {
+              "kernel": "separate",
+              "sentinel": "hidden",
+              "findings": [],
+              "sandbox": {
+                "kernel_release": "6.12.76",
+                "boot_id": "ae157dd4-5227-4dcc-a70f-1bfddec11796",
+                "hostname": "ss-edcf0ecf1858a969",
+                "machine_id": null,
+                "seccomp": "filter",
+                "no_new_privs": true,
+                "capabilities": "0000000000000000",
+                "uid": 1000,
+                "hypervisor": true,
+                "sys_vendor": null,
+                "product_name": null
+              },
+              "error": null
+            },
+            "environment_revision": "0"
+          },
+          "result": {
+            "exit_code": null,
+            "signal": null,
+            "status": null,
+            "execution_count": null,
+            "stdout": null,
+            "stderr": null,
+            "outputs": [],
+            "error": {
+              "kind": "internal",
+              "message": "the sandbox that was deleted, stopped or replaced stopped during this attempt; its outcome is unknown; partial whole logs remain at .jobs/exe-ae0669a7ec9cae8017976abd/stdout.log and .jobs/exe-ae0669a7ec9cae8017976abd/stderr.log",
+              "name": null,
+              "value": null,
+              "traceback": []
+            },
+            "kernel": null,
+            "state_lost": false,
+            "elapsed_seconds": 0.0,
+            "sandbox_started_at": null,
+            "sandbox_ended_at": null,
+            "written_files": [],
+            "written_files_truncated": false,
+            "environment_revision": null,
+            "overlapping_change": false,
+            "notices": []
+          },
+          "last_seq": 5,
+          "job": {
+            "purpose": "Lab20 sandbox-loss",
+            "expected_progress": "The acceptance check asserts its output.",
+            "wake_session": false,
+            "timeout_seconds": 86400.0,
+            "stdout_path": ".jobs/exe-ae0669a7ec9cae8017976abd/stdout.log",
+            "stderr_path": ".jobs/exe-ae0669a7ec9cae8017976abd/stderr.log"
+          },
+          "origin": null
+        }
+      }
+    ],
+    "healthy_before": {
+      "environment_id": "lab20-b",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-f8926cc9b2910a95",
+      "sandbox_id": "103cb69c-7bd9-4a1c-9084-305920ef99a8",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T06:45:23.565825Z",
+      "updated_at": "2026-10-12T06:45:30.127624Z"
+    },
+    "healthy_after": {
+      "environment_id": "lab20-b",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-f8926cc9b2910a95",
+      "sandbox_id": "103cb69c-7bd9-4a1c-9084-305920ef99a8",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T06:45:23.565825Z",
+      "updated_at": "2026-10-12T06:45:30.127624Z"
+    },
+    "first_cell": {
+      "execution_id": "exe-602e52f47eca2d3c4b08e66b",
+      "attempt_id": "att-64b2352fa2955f9779fa8df7",
+      "operation_id": "healthy-before-loss-1791787511781144001",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-b",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:45:30.135430Z",
+      "started_at": "2026-10-12T06:45:33.002242Z",
+      "ended_at": "2026-10-12T06:45:33.006468Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-f8926cc9b2910a95",
+        "hostname": "ss-f8926cc9b2910a95",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "b3f89dab-6c45-4250-b79a-015208a54197",
+            "hostname": "ss-f8926cc9b2910a95",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "ok",
+        "execution_count": 1,
+        "stdout": {
+          "name": "stdout",
+          "text": "27\n",
+          "total_bytes": 3,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 1
+        },
+        "state_lost": false,
+        "elapsed_seconds": 1.0012468059999993,
+        "sandbox_started_at": "2026-10-12T06:45:31.925537Z",
+        "sandbox_ended_at": "2026-10-12T06:45:32.926784Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    },
+    "second_cell": {
+      "execution_id": "exe-d859b96ce8b99e218e24a2df",
+      "attempt_id": "att-e81c3bed77555b31c7b4630a",
+      "operation_id": "healthy-after-loss-1791787511781144001",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-b",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:45:34.719383Z",
+      "started_at": "2026-10-12T06:45:34.786584Z",
+      "ended_at": "2026-10-12T06:45:34.791271Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-f8926cc9b2910a95",
+        "hostname": "ss-f8926cc9b2910a95",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "b3f89dab-6c45-4250-b79a-015208a54197",
+            "hostname": "ss-f8926cc9b2910a95",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "ok",
+        "execution_count": 2,
+        "stdout": {
+          "name": "stdout",
+          "text": "28\n",
+          "total_bytes": 3,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 1
+        },
+        "state_lost": false,
+        "elapsed_seconds": 0.010305127999998831,
+        "sandbox_started_at": "2026-10-12T06:45:34.688895Z",
+        "sandbox_ended_at": "2026-10-12T06:45:34.699199Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    }
+  },
+  "idle_endpoint_loss_without_unfinished_rows": {
+    "environment_before": {
+      "environment_id": "lab20-b",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-f8926cc9b2910a95",
+      "sandbox_id": "103cb69c-7bd9-4a1c-9084-305920ef99a8",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T06:45:23.565825Z",
+      "updated_at": "2026-10-12T06:45:30.127624Z"
+    },
+    "environment_after": {
+      "environment_id": "lab20-b",
+      "project_id": "lab20",
+      "profile": "minimal",
+      "image": "sandbox-science/minimal:02f85b3",
+      "sandbox": "ss-f8926cc9b2910a95",
+      "sandbox_id": "103cb69c-7bd9-4a1c-9084-305920ef99a8",
+      "policy": "sha256:46b8fef7686bf41866d22f6d15259b990488840a0ac3dc8fc93dd597d243ec16",
+      "providers": [
+        "github-readonly"
+      ],
+      "state": "ready",
+      "findings": [
+        "info: network: endpoints for public hosts are limited to public address ranges, less the addresses the library always denies (cloud metadata, administration endpoints, the ceiling's denied addresses, MCP servers), so OpenShell refuses names that resolve to them, as the library's wildcard rule does",
+        "warning: network: rules for '*' and the default action reach other hosts and addresses only once the worker has admitted them on demand: OpenShell refuses the first connection to one and drafts a proposal, which the worker answers (D69, stricter)",
+        "warning: services: platform services must have private addresses, so that no endpoint for a public host reaches them",
+        "info: credentials.providers: each provider's credential is bound to its hosts on port 443; OpenShell substitutes it there only, after the middleware has decided, and refuses requests that carry its placeholder anywhere else. Providers named here need profiles without endpoints",
+        "info: network_middlewares: every admitted HTTP request, including those to hosts bound to provider credentials, is decided by the policy middleware before OpenShell injects credentials; if the middleware fails or times out, OpenShell blocks the request",
+        "info: escalation: escalated requests are denied with reason code approval_required and a pending request is recorded; the agent retries once the request is approved",
+        "warning: network_middlewares: requests whose body exceeds the middleware's registered max_payload_bytes (at most 4 MiB) are blocked, so larger uploads fail",
+        "info: monitors: evaluated from the middleware's request records",
+        "info: resources: applied by the compute driver and the LiteLLM virtual key, not by network policy"
+      ],
+      "admitted_hosts": [],
+      "created_at": "2026-10-12T06:45:23.565825Z",
+      "updated_at": "2026-10-12T06:45:43.168859Z"
+    },
+    "killed": {
+      "daemon_pid": 573,
+      "start_time": "648"
+    },
+    "old_boot": "b3f89dab-6c45-4250-b79a-015208a54197",
+    "new_boot": "16227ca8-3393-4f6d-98b8-6819d4cd830e",
+    "fresh": {
+      "execution_id": "exe-b7604cc3141f498ab1ac1f56",
+      "attempt_id": "att-921600b49c05600d0f1d7f66",
+      "operation_id": "idle-loss-fresh-1791787511781144001",
+      "kind": "shell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-b",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:45:44.799373Z",
+      "started_at": "2026-10-12T06:45:44.926184Z",
+      "ended_at": "2026-10-12T06:45:44.932688Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-f8926cc9b2910a95",
+        "hostname": "ss-f8926cc9b2910a95",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "16227ca8-3393-4f6d-98b8-6819d4cd830e",
+            "hostname": "ss-f8926cc9b2910a95",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": 0,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": {
+          "name": "stdout",
+          "text": "ready",
+          "total_bytes": 5,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.02008827499999999,
+        "sandbox_started_at": "2026-10-12T06:45:44.781498Z",
+        "sandbox_ended_at": "2026-10-12T06:45:44.801586Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    },
+    "seeded_kernel": {
+      "execution_id": "exe-fe974bbe3083bce147cdab35",
+      "attempt_id": "att-a1f084e6e962a796aab25193",
+      "operation_id": "idle-loss-seed-1791787511781144001",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-b",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "succeeded",
+      "submitted_at": "2026-10-12T06:45:34.825290Z",
+      "started_at": "2026-10-12T06:45:34.892698Z",
+      "ended_at": "2026-10-12T06:45:34.896979Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-f8926cc9b2910a95",
+        "hostname": "ss-f8926cc9b2910a95",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "b3f89dab-6c45-4250-b79a-015208a54197",
+            "hostname": "ss-f8926cc9b2910a95",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "ok",
+        "execution_count": 3,
+        "stdout": {
+          "name": "stdout",
+          "text": "42\n",
+          "total_bytes": 3,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": null,
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 1
+        },
+        "state_lost": false,
+        "elapsed_seconds": 0.011078238999999712,
+        "sandbox_started_at": "2026-10-12T06:45:34.793263Z",
+        "sandbox_ended_at": "2026-10-12T06:45:34.804341Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": null,
+      "origin": null
+    },
+    "kernel": {
+      "execution_id": "exe-b674512fa5c9273d825be646",
+      "attempt_id": "att-6ea8213063e192526b4fdffb",
+      "operation_id": "idle-loss-kernel-1791787511781144001",
+      "kind": "cell",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-b",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "failed",
+      "submitted_at": "2026-10-12T06:45:45.087901Z",
+      "started_at": "2026-10-12T06:45:45.867932Z",
+      "ended_at": "2026-10-12T06:45:46.083919Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-f8926cc9b2910a95",
+        "hostname": "ss-f8926cc9b2910a95",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "16227ca8-3393-4f6d-98b8-6819d4cd830e",
+            "hostname": "ss-f8926cc9b2910a95",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": "error",
+        "execution_count": 1,
+        "stdout": {
+          "name": "stdout",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "stderr": {
+          "name": "stderr",
+          "text": "",
+          "total_bytes": 0,
+          "truncated": false
+        },
+        "outputs": [],
+        "error": {
+          "kind": "exception",
+          "message": "NameError: name 'lab20_idle_1791787511781144001' is not defined",
+          "name": "NameError",
+          "value": "name 'lab20_idle_1791787511781144001' is not defined",
+          "traceback": [
+            "---------------------------------------------------------------------------",
+            "NameError                                 Traceback (most recent call last)",
+            "Cell In[1], line 1\n----> 1 print(lab20_idle_1791787511781144001)\n",
+            "NameError: name 'lab20_idle_1791787511781144001' is not defined"
+          ]
+        },
+        "kernel": {
+          "kernel_id": "krn-main-python",
+          "language": "python",
+          "generation": 2
+        },
+        "state_lost": true,
+        "elapsed_seconds": 0.9124540869999995,
+        "sandbox_started_at": "2026-10-12T06:45:45.050100Z",
+        "sandbox_ended_at": "2026-10-12T06:45:45.962554Z",
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": "0",
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 4,
+      "job": null,
+      "origin": null
+    }
+  }
+}
