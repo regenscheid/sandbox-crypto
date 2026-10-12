@@ -130,8 +130,11 @@ The [immutable artifact inventory prerequisite](ARTIFACTS.md) retains explicit
 harness publications with stable scoped path IDs, immutable exact bytes/revisions,
 trusted publishing attribution, bounded transfer and durable uncertain-outcome
 holds. Internal pinned/latest reads and atomic events are the consumer boundary.
-Automatic execution-output inventory and reviewer ingestion remain open, alongside
-imports, observed-input lineage, retention/deletion workflows and PDF/GUI consumers.
+The bounded explicit-publication reviewer consumer uses durable atomic feed/cursors,
+exact raw UTF-8 source copies and scoped pinned finding/fix grants. Unsupported content
+remains incomplete; no parser or worker authority is added. Automatic execution-output
+inventory remains open, alongside imports, observed-input lineage, retention/deletion
+workflows and rich PDF/GUI consumers.
 Actual producer remains unknown; a worker last-writer hint is not provenance proof.
 
 Support attributed user edits and revision-checked agent patches; demonstrate stale-patch reconciliation and orphaned anchors. Use one TeX-preserving renderer across research views. Evaluate PDF.js navigation against exact page/region anchors while retaining worker extraction/rendering. Assumption changes should identify dependent claims/reviews for reconsideration, not silently rewrite conclusions.

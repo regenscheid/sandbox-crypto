@@ -12,6 +12,7 @@ from typing import Any, cast
 from pydantic import ValidationError
 
 from sandbox_science.contracts import new_id
+from sandbox_science.contracts.artifact_inventory import ArtifactLink, ArtifactRevisionRef
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
     INVALID_REQUEST,
@@ -22,7 +23,7 @@ from sandbox_science.orchestrator.documents.errors import (
 from sandbox_science.orchestrator.documents.models import Author
 
 from .models import ConfirmationInput, EvidenceAnchor, FindingInput, FindingResponse, ReviewConfig
-from .store import ReviewStore, digest, dump, identifier, text
+from .store import ReviewStore, bounded_json, digest, dump, identifier, text
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
@@ -343,8 +344,14 @@ class Findings:
                 ),
                 (project, session, dedupe),
             ).fetchone()
-            incomplete = value.assessment == "missing_evidence" or (
-                value.category == "missing_action" and not run["coverage_complete"]
+            incomplete = (
+                value.assessment == "missing_evidence"
+                or (value.category == "missing_action" and not run["coverage_complete"])
+                or any(
+                    not anchor["complete"]
+                    and ("artifact" in anchor["locator"] or "operation" in anchor["locator"])
+                    for anchor in anchors
+                )
             )
             status = "inconclusive" if incomplete else "open"
             if existing:
@@ -502,8 +509,25 @@ class Findings:
             raise DocumentError(POLICY_DENIED, "only the user and session main agent may respond")
         if author.kind != "user" and value.action in ("confirm", "dismiss", "reopen"):
             raise DocumentError(POLICY_DENIED, "the author cannot confirm or dismiss findings")
-        if value.action == "fix" and not value.evidence and not value.revisions:
+        if (
+            value.action == "fix"
+            and not value.evidence
+            and not value.revisions
+            and not value.artifact_revisions
+        ):
             raise DocumentError(INVALID_REQUEST, "a claimed fix needs changed evidence references")
+        target = self.get(project, session, value.finding)
+        relevant_artifacts = {
+            a["locator"]["artifact"]["artifact_id"]
+            for a in target["anchors"]
+            if isinstance(a["locator"].get("artifact"), dict)
+        }
+        artifact_pins: list[Json] = []
+        for ref in value.artifact_revisions:
+            if ref.artifact_id not in relevant_artifacts:
+                raise DocumentError(POLICY_DENIED, "changed artifact is unrelated to this finding")
+            self.store.artifact_pin(project, session, ref)
+            artifact_pins.append(ref.model_dump(mode="json"))
         pinned: list[Json] = []
         for document, number in value.revisions:
             if type(number) is not int or not 1 <= number <= 999999999:
@@ -526,12 +550,18 @@ class Findings:
                 raise DocumentError(NOT_FOUND, "response evidence is outside this session")
             anchors.append(self.validate_anchor(project, session, row[0], a))
         actor = author.actor
-        fingerprint = digest(dump([session, value.model_dump(mode="json"), author.role]))
+        canonical = value.model_dump(mode="json")
+        if not value.artifact_revisions:
+            # Old operation receipts predate this optional field. Their exact
+            # canonical digest remains valid across an upgrade.
+            canonical.pop("artifact_revisions")
+        fingerprint = digest(dump([session, canonical, author.role]))
         payload = {
             "action": value.action,
             "explanation": value.explanation,
             "anchors": anchors,
             "revisions": pinned,
+            "artifact_revisions": artifact_pins,
             "author": author.model_dump(mode="json"),
         }
         with self.store.documents._write() as db:
@@ -648,7 +678,7 @@ class Findings:
             (review,),
         ):
             location = json.loads(locator)
-            if location.get("returned_characters", 0) > 0:
+            if location.get("returned_characters", 0) > 0 or location.get("empty_source"):
                 reads.setdefault(evidence, []).append(location)
 
         def covered(evidence: str, block: str | None = None) -> bool:
@@ -663,7 +693,7 @@ class Findings:
                 if location["start"] > end:
                     return False
                 end = max(end, location["start"] + location["returned_characters"])
-            return total > 0 and end >= total
+            return (total > 0 and end >= total) or any(r.get("empty_source") for r in ranges)
 
         response_entry = cast(Json, pinned.get("response") or {})
         response = cast(Json, response_entry.get("payload", {}))
@@ -676,6 +706,33 @@ class Findings:
                 POLICY_DENIED,
                 "read the pinned finding and original/response evidence before deciding",
             )
+        for anchor in anchors:
+            item = db.execute(
+                "SELECT kind,complete FROM review_evidence WHERE evidence_id=?",
+                (anchor["evidence"],),
+            ).fetchone()
+            if item is not None and item[0] == "artifact" and not item[1]:
+                raise DocumentError(
+                    POLICY_DENIED, "artifact content is unavailable for confirmation"
+                )
+        artifact_pins = response.get("artifact_revisions", [])
+        for ref in artifact_pins:
+            available_artifacts = db.execute(
+                "SELECT evidence_id,substr(cast(locator AS BLOB),1,4097),complete "
+                "FROM review_evidence e WHERE kind='artifact' AND "
+                "(review_id=? OR EXISTS(SELECT 1 FROM review_grants g WHERE "
+                "g.review_id=? AND g.evidence_id=e.evidence_id)) LIMIT 257",
+                (review, review),
+            ).fetchall()
+            if not any(
+                complete
+                and covered(evidence)
+                and bounded_json(locator, 4096).get("artifact") == ref
+                for evidence, locator, complete in available_artifacts
+            ):
+                raise DocumentError(
+                    POLICY_DENIED, "read the exact changed artifact before deciding"
+                )
         revisions = cast(list[Json], response.get("revisions", []))
         if revisions:
             available = list(
@@ -735,18 +792,41 @@ class Findings:
                     (project, session),
                 )
             ]
-        prepared: list[tuple[Json, list[Json]]] = []
+        prepared: list[tuple[Json, list[Json], list[Json]]] = []
         for finding in found:
             replacements: list[Json] = []
+            artifact_replacements: list[Json] = []
+            replaceable = True
             for a in finding["anchors"]:
                 location = a["locator"]
+                if "artifact" in location and self.store.artifacts is not None:
+                    old_ref = ArtifactRevisionRef.model_validate(location["artifact"])
+                    latest = self.store.artifacts.resolve(
+                        project,
+                        ArtifactLink(
+                            project_id=project,
+                            artifact_id=old_ref.artifact_id,
+                            mode="latest",
+                        ),
+                    ).reference
+                    if latest.revision <= old_ref.revision:
+                        replaceable = False
+                        break
+                    try:
+                        self.store.artifact_pin(project, session, latest)
+                    except DocumentError:
+                        # No cross-session grant is inferred from a shared artifact head.
+                        replaceable = False
+                        break
+                    artifact_replacements.append(latest.model_dump(mode="json"))
+                    continue
                 if "document" not in location:
-                    replacements = []
+                    replaceable = False
                     break
                 document, number = location["document"], location["revision"]
                 current = self.store.documents.document(project, document)
                 if current.head <= number:
-                    replacements = []
+                    replaceable = False
                     break
                 old, new = (
                     self.store.documents.mapped(project, document, number),
@@ -759,7 +839,7 @@ class Findings:
                         and new_i is not None
                         and old.parsed.blocks[old_i].text == new.parsed.blocks[new_i].text
                     ):
-                        replacements = []
+                        replaceable = False
                         break
                 replacements.append(
                     {
@@ -771,10 +851,10 @@ class Findings:
                         "block": a.get("block"),
                     }
                 )
-            if replacements:
-                prepared.append((finding, replacements))
+            if replaceable and (replacements or artifact_replacements):
+                prepared.append((finding, replacements, artifact_replacements))
         with self.store.documents._write() as db:
-            for finding, replacements in prepared:
+            for finding, replacements, artifact_replacements in prepared:
                 current = self._get(db, project, session, finding["finding_id"])
                 if current["status"] == "open" and current["revision"] == finding["revision"]:
                     self._transition(
@@ -783,5 +863,8 @@ class Findings:
                         "superseded",
                         "platform:supersession",
                         "The anchored revisions changed; no fix was confirmed.",
-                        {"replacements": replacements},
+                        {
+                            "replacements": replacements,
+                            "artifact_replacements": artifact_replacements,
+                        },
                     )

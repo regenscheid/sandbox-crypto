@@ -5,7 +5,7 @@
 The harness can retain explicit `publish` results in the canonical control store
 when run with `--state-dir`. This is the first bounded slice of the approved
 [research-artifacts specification](specs/research-artifacts.md), supporting the
-ledger, future consistency evidence and PDF anchors. It does not parse rich content
+ledger, bounded consistency evidence and future PDF anchors. It does not parse rich content
 or depend on document writer closure. Existing worker publication remains available
 without a state directory, with its existing `ArtifactRef` and behavior.
 
@@ -136,13 +136,64 @@ artifact cases, 431 web tests and the 24-test built Node/KaTeX boundary. Locked
 dependency, formatting, lint, strict type, license and protocol checks and both
 production builds passed. Independent review cleared the exact combined source,
 including receipt substitution, cancellation ownership and existing parameterized
-worker media metadata. Fresh PR CI and merge remain the delivery gate.
+worker media metadata. PR #82 merged with all three fresh CI checks green; the consumer below has its own validation boundary.
 
 Successful tool records include `artifact_inventory` with a pinned control receipt,
 beside the original `artifact` worker snapshot. Internal `resolve`, `content`,
-`list` and `events` methods form the evidence read boundary. The current consistency
-feed still treats rich/file evidence as omitted; it does not yet consume these
-retained bytes or claim complete shell artifact coverage. Automatic execution-output
-inventory (RA-5/RA-F2), imports/MCP binary results, deletions/tombstones, retention
-drop workflows, observed inputs/kernel lineage, public read/download routes,
-ledger integration, rich previews and PDF parsing/anchors remain separate slices.
+`list` and `events` methods form the evidence read boundary. A consumer can request
+a smaller `content(max_bytes=...)` limit: the SQLite BLOB prefix itself is bounded
+before Python allocation, including corrupt rows whose stored size is incorrect.
+Empty BLOBs return exact empty bytes rather than SQLite's NULL substring result.
+
+### Explicit-publication consistency consumer
+
+With the inventory present, the live review controller consumes its durable events,
+not the tool callback's metadata. Each session advances an independent project-event
+cursor; only events attributed to that publishing session grant content. Shared
+artifacts still need an explicit publication/evidence grant in that session. One
+safe point scans at most ten events and ten unseen unresolved operations; a terminal
+boundary scans at most 100 of each through a pinned event head. Feed inserts and the
+source cursor commit together. Identical replay and concurrent ingestors cannot
+count a new revision twice; reproductions count zero new revisions. Remaining work
+is explicit incomplete ingestion and resumes at the next live boundary.
+
+A source copy is at most 64 KiB of exact verified bytes, decoded as strict UTF-8.
+The initial allowlist is `text/plain`, `text/markdown`, `text/csv`,
+`text/tab-separated-values` and `application/json`, with no parameter or only a
+UTF-8/US-ASCII charset parameter. JSON and Markdown remain raw strings, never parsed
+or rendered. Quotes, backslashes, CRLF and a BOM are preserved. Binary control
+characters, other media/charsets, invalid UTF-8, oversized or unavailable bytes
+produce metadata-only incomplete evidence with a reason. No clipped source is
+labelled complete. `review_read` returns source characters, the pinned original
+byte SHA and availability separately from the evidence JSON digest. Empty output
+returns empty text and an audited empty-source marker, never invented source lines.
+A snapshot's copied text cannot change when the worker path or artifact head changes.
+
+An unresolved operation gets one finite `artifact:operation:<ID>` observation:
+unknown remote outcome is distinct from a known worker snapshot whose control bytes
+are not retained. Neither grants source content or initiates a worker request. A
+later successful retention emits its normal event. Old uncertainty belongs to its
+own reviewed window and does not make every future window incomplete. This is a
+first uncertainty observation, not an audit of every transfer retry.
+
+Author fix claims can carry typed exact `artifact_revisions`. They must identify
+artifacts anchored by that finding and exact revisions already observed for the
+same project/session. Confirmation pins those references from the durable transition
+and requires full audited exposure of original, response and changed source; missing
+artifact content cannot be confirmed from metadata. Whole-artifact anchors are
+supported; physical line, parsed block and PDF-region anchors remain separate work.
+Supersession records an observed newer revision and never claims that the fix worked.
+The reviewer still has only snapshot grants, with no artifact lookup tool, worker
+client, download, filesystem, parser, renderer or execution authority.
+
+The consumer owns a private single-thread executor and at most eight admitted SQL
+units. Cancellation detaches the await; shutdown drains actual work before the
+borrowed control store closes. Focused hostile/HTTP/API and synthetic fixture tests
+cover this boundary; final combined review/gates and browser acceptance remain the
+handoff gate until their evidence is recorded.
+
+Automatic execution-output inventory (RA-5/RA-F2/CRF-6), imports/MCP binary results,
+deletions/tombstones, retention drop workflows, observed inputs/kernel lineage,
+public read/download routes, ledger integration, rich previews and PDF parsing/anchors
+remain separate slices. Explicit publication does not prove an atomic source pass
+or the stronger living-document writer-closure boundary.

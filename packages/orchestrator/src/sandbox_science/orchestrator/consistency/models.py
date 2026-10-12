@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from sandbox_science.contracts import Identifier
+from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.contracts.model import Contract
 
 ReviewType = Literal["checkpoint", "terminal", "confirmation"]
@@ -93,6 +94,7 @@ class FindingResponse(Contract):
     evidence: tuple[EvidenceAnchor, ...] = Field(default=(), max_length=8)
     # New document revisions are validated and pinned before claiming a fix.
     revisions: tuple[tuple[DocumentID, RevisionNumber], ...] = Field(default=(), max_length=16)
+    artifact_revisions: tuple[ArtifactRevisionRef, ...] = Field(default=(), max_length=16)
     operation_id: OperationID
 
 
