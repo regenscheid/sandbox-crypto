@@ -73,7 +73,7 @@ Nothing here blocks the queued work: each item has a default in place.
    - an install cut short.
 
    Use [`labs/`](labs/README.md).
-2. **Background jobs: first slice complete** (D83; [as built](../docs/BACKGROUND-JOBS.md), [lab 19](docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md)). **The executor daemon** is in development: jobs, and where possible calls and kernels, must survive worker restarts with authoritative replay. Automatic wake-up, the live message inbox, persisted watcher settings and the shared spend ledger remain later control-application work.
+2. **Background jobs: first slice complete** (D83; [as built](../docs/BACKGROUND-JOBS.md), [lab 19](docs/agent-reports/babbage-openshell-lab-19-2026-10-12.md)). **The executor daemon** is under lab 20 acceptance: ordinary worker reconnect, offline completion, kernel continuity and bounded replay passed, but the initial daemon-loss probe left an escaped child alive under OpenShell. A verified same-sandbox stop/start fence is being implemented before replacement readiness; the slice remains unmerged. [In-progress report](docs/agent-reports/babbage-openshell-lab-20-2026-10-12.md). Its requirement remains: jobs, and where possible calls and kernels, must survive worker restarts with authoritative replay. Automatic wake-up, the live message inbox, persisted watcher settings and the shared spend ledger remain later control-application work.
 3. **W4, living documents slice 2:**
    - user edits and conflicts in the GUI (LD-13, LD-14);
    - comments, anchors and work requests (LD-21 to LD-24), with the research-artifacts spec's annotations;

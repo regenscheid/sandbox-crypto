@@ -1,0 +1,174 @@
+{
+  "runtime_commit": "85fda95666ad36299935fcdcaed8f8bfe0178d9a",
+  "outcome": "failed",
+  "jobs": [
+    {
+      "execution_id": "exe-8b27d67e6b7aef4830c1342b",
+      "attempt_id": "att-00c89fa733bd1d764a8ec219",
+      "operation_id": "daemon-loss-1791784290043602154",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "lost",
+      "submitted_at": "2026-10-12T05:51:30.064212Z",
+      "started_at": "2026-10-12T05:51:30.135810Z",
+      "ended_at": "2026-10-12T05:52:31.508182Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": null,
+        "stderr": null,
+        "outputs": [],
+        "error": {
+          "kind": "internal",
+          "message": "the sandbox executor incarnation stopped during this attempt; its outcome is unknown; partial whole logs remain at .jobs/exe-8b27d67e6b7aef4830c1342b/stdout.log and .jobs/exe-8b27d67e6b7aef4830c1342b/stderr.log",
+          "name": null,
+          "value": null,
+          "traceback": []
+        },
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.0,
+        "sandbox_started_at": null,
+        "sandbox_ended_at": null,
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": null,
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": {
+        "purpose": "Lab20 daemon-loss",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-8b27d67e6b7aef4830c1342b/stdout.log",
+        "stderr_path": ".jobs/exe-8b27d67e6b7aef4830c1342b/stderr.log"
+      },
+      "origin": null
+    },
+    {
+      "execution_id": "exe-4bbae4b7fffd2164e58281c4",
+      "attempt_id": "att-4f4667b964bf331a587e9bcc",
+      "operation_id": "daemon-loss-1791784350255113209",
+      "kind": "job",
+      "context": {
+        "project_id": "lab20",
+        "session_id": "main",
+        "environment_id": "lab20-a",
+        "policy_revision": null,
+        "actor": "agent"
+      },
+      "state": "lost",
+      "submitted_at": "2026-10-12T05:52:30.258043Z",
+      "started_at": "2026-10-12T05:52:30.278407Z",
+      "ended_at": "2026-10-12T05:52:31.508600Z",
+      "location": {
+        "pool_id": "babbage",
+        "backend": "openshell",
+        "sandbox_id": "ss-edcf0ecf1858a969",
+        "hostname": "ss-edcf0ecf1858a969",
+        "isolation_tier": 3,
+        "declared_isolation_tier": 3,
+        "isolation_evidence": {
+          "kernel": "separate",
+          "sentinel": "hidden",
+          "findings": [],
+          "sandbox": {
+            "kernel_release": "6.12.76",
+            "boot_id": "02881711-c1b7-4a6f-8bf7-fe7fddfa04f0",
+            "hostname": "ss-edcf0ecf1858a969",
+            "machine_id": null,
+            "seccomp": "filter",
+            "no_new_privs": true,
+            "capabilities": "0000000000000000",
+            "uid": 1000,
+            "hypervisor": true,
+            "sys_vendor": null,
+            "product_name": null
+          },
+          "error": null
+        },
+        "environment_revision": "0"
+      },
+      "result": {
+        "exit_code": null,
+        "signal": null,
+        "status": null,
+        "execution_count": null,
+        "stdout": null,
+        "stderr": null,
+        "outputs": [],
+        "error": {
+          "kind": "internal",
+          "message": "the sandbox executor incarnation stopped during this attempt; its outcome is unknown; partial whole logs remain at .jobs/exe-4bbae4b7fffd2164e58281c4/stdout.log and .jobs/exe-4bbae4b7fffd2164e58281c4/stderr.log",
+          "name": null,
+          "value": null,
+          "traceback": []
+        },
+        "kernel": null,
+        "state_lost": false,
+        "elapsed_seconds": 0.0,
+        "sandbox_started_at": null,
+        "sandbox_ended_at": null,
+        "written_files": [],
+        "written_files_truncated": false,
+        "environment_revision": null,
+        "overlapping_change": false,
+        "notices": []
+      },
+      "last_seq": 5,
+      "job": {
+        "purpose": "Lab20 daemon-loss",
+        "expected_progress": "The acceptance check asserts its output.",
+        "wake_session": false,
+        "timeout_seconds": 86400.0,
+        "stdout_path": ".jobs/exe-4bbae4b7fffd2164e58281c4/stdout.log",
+        "stderr_path": ".jobs/exe-4bbae4b7fffd2164e58281c4/stderr.log"
+      },
+      "origin": null
+    }
+  ],
+  "observed_orphan": {
+    "parent_pid": 798,
+    "escaped_child_pid": 800,
+    "replacement_daemon_pid": 830,
+    "finding": "Child still live after daemon SIGKILL and replacement readiness; peer environ reads denied in OpenShell."
+  }
+}

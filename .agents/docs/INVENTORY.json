@@ -6,8 +6,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 7426,
-      "sha256": "8cd4468d307d3d189ff6a79f944cb8b96df8db2bb6af1d30de7b5893e0648e3d"
+      "bytes": 7707,
+      "sha256": "672d7e3071488c35b79d5f66b4129f91cbaf997fad58cfc8b7d3a367e83027a4"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-2-2026-10-10.md",
@@ -164,6 +164,24 @@
       "category": "runtime-validation",
       "bytes": 42764,
       "sha256": "982e2a6f1ae1096444f316169c3a58fe025da03583a065c5a0edaf43468fa48c"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-20-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 3567,
+      "sha256": "f7b430a02426cdfdad2e86388461d1dd9af061ef3f048e2cae5749be953c735c"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-20-initial-evidence-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 43459,
+      "sha256": "80398be53bb5f7fee9f3150f78c759dfa5544a70c1c2c47a134bb4af7bbb3f14"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-20-initial-failure-2026-10-12.json",
+      "category": "runtime-validation",
+      "bytes": 5824,
+      "sha256": "64ad1ab497490904bc9bbf8984a418f6fd0549592a49dc9a71ce572fbdff33ab"
     }
   ]
 }

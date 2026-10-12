@@ -13,6 +13,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -35,8 +36,8 @@ class Checks:
         self.path = LAB / "evidence/recovery.json"
         self.evidence = json.loads(self.path.read_text()) if self.path.exists() else {}
 
-    def context(self) -> dict[str, str]:
-        return {"project_id": PROJECT, "session_id": "main", "environment_id": ENVIRONMENT}
+    def context(self, environment: str = ENVIRONMENT) -> dict[str, str]:
+        return {"project_id": PROJECT, "session_id": "main", "environment_id": environment}
 
     async def api(self, method: str, path: str, body: Any = None) -> dict[str, Any]:
         async with self.http.request(method, URL + path, json=body) as response:
@@ -61,10 +62,12 @@ class Checks:
         self.path.write_text(json.dumps(self.evidence, indent=2) + "\n")
         print(f"PASS {name}", flush=True)
 
-    async def submit(self, name: str, *, kind: str = "job", **kwargs: Any) -> dict[str, Any]:
+    async def submit(
+        self, name: str, *, kind: str = "job", environment: str = ENVIRONMENT, **kwargs: Any
+    ) -> dict[str, Any]:
         body = {
             "kind": kind,
-            "context": self.context(),
+            "context": self.context(environment),
             "operation_id": f"{name}-{STAMP}",
             **kwargs,
         }
@@ -144,6 +147,36 @@ class Checks:
         assert [event["seq"] for event in values] == list(range(1, job["last_seq"] + 1))
         assert sum(event["type"] == "result" for event in values) == 1
         return values
+
+    async def operator(self, *command: str, sandbox: str | None = None) -> str:
+        """Use the lab gateway directly for failure injection in its disposable VM."""
+        if sandbox is None:
+            sandbox = (await self.api("GET", f"/v1/environments/{ENVIRONMENT}"))["sandbox"]
+        return await self.gateway(
+            "sandbox", "exec", sandbox, "--no-tty", "--no-login-shell", "--", *command
+        )
+
+    async def gateway(self, *arguments: str) -> str:
+        """Run the operator CLI only against this disposable gateway."""
+        env = {
+            **os.environ,
+            "XDG_CONFIG_HOME": str(LAB / "config"),
+            "XDG_STATE_HOME": str(LAB / "state"),
+            "XDG_DATA_HOME": str(LAB / "data"),
+            "OPENSHELL_LOCAL_TLS_DIR": str(LAB / "state/openshell/tls"),
+            "OPENSHELL_TELEMETRY_ENABLED": "false",
+        }
+        done = await asyncio.to_thread(
+            subprocess.run,
+            [str(Path.home() / ".local/opt/openshell-0.1.3/bin/openshell"), *arguments],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        assert done.returncode == 0, done.stdout + done.stderr
+        return done.stdout
 
     async def envs(self) -> None:
         value = await self.api(
@@ -293,6 +326,203 @@ class Checks:
         assert "before timeout" in done["result"]["stdout"]["text"], done
         self.save("timeout_while_offline", done)
 
+    async def daemon_loss(self) -> None:
+        before_environment = await self.api("GET", f"/v1/environments/{ENVIRONMENT}")
+        marker = f"lab20-preserved-{STAMP}"
+        prepare = """import pathlib,sysconfig
+pathlib.Path('daemon-recycle-workspace.txt').write_text(MARKER)
+prefix=pathlib.Path(sysconfig.get_path('purelib'))/'lab20_recycle_marker.py'
+prefix.write_text('VALUE = '+repr(MARKER)+'\\n')
+print(MARKER)
+""".replace("MARKER", repr(marker))
+        prepared = await self.finish(
+            await self.submit(
+                "prepare-daemon-loss",
+                kind="shell",
+                argv=["/opt/sandbox-science/bin/python", "-I", "-c", prepare],
+            )
+        )
+        assert prepared["state"] == "succeeded", prepared
+        kernel = await self.finish(
+            await self.submit("kernel-before-loss", kind="cell", code="lab20_lost_kernel = 99")
+        )
+        assert kernel["state"] == "succeeded", kernel
+        child_file = f"daemon-loss-child-{STAMP}.pid"
+        script = (
+            'python -u -c "import subprocess,time,pathlib; '
+            "child=subprocess.Popen(['setsid','sleep','180']); "
+            f"pathlib.Path('{child_file}').write_text(str(child.pid)); "
+            "print('escaped child ready',flush=True); time.sleep(180)\""
+        )
+        job = await self.submit("daemon-loss", script=script)
+        await self.live(job, "escaped child ready")
+        child = int(await self.file(child_file))
+        old_child = json.loads(
+            await self.operator(
+                "/opt/sandbox-science/bin/python",
+                "-I",
+                "-c",
+                "import json,pathlib; "
+                "print(json.dumps({'boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),"
+                "'start':pathlib.Path('/proc/"
+                + str(child)
+                + "/stat').read_text().rsplit(')',1)[1].split()[19]}))",
+            )
+        )
+        other_job = await self.submit(
+            "other-daemon-loss", script="printf 'second job ready\\n'; sleep 180"
+        )
+        await self.live(other_job, "second job ready")
+        # Only inspect command arguments and process identity: bootstrap tokens are
+        # supplied on stdin and are never read or included in the evidence.
+        kill = """import json,os,pathlib,signal
+found=[]
+for path in pathlib.Path('/proc').glob('[0-9]*/cmdline'):
+    try:
+        words=path.read_bytes().split(b'\\0')
+        if any(word.endswith(b'/daemon.py') for word in words) and b'--serve' in words:
+            pid=int(path.parent.name)
+            stamp=(path.parent/'stat').read_text().rsplit(')',1)[1].split()[19]
+            found.append((pid,stamp))
+    except (OSError,ValueError):
+        pass
+assert len(found)==1,found
+pid,stamp=found[0]
+assert pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[19]==stamp
+os.kill(pid,signal.SIGKILL)
+print(json.dumps({'daemon_pid':pid,'start_time':stamp}))
+"""
+        killed = json.loads(
+            await self.operator("/opt/sandbox-science/bin/python", "-I", "-c", kill)
+        )
+        done = await self.finish(job)
+        assert done["state"] == "lost", done
+        other_done = await self.finish(other_job)
+        assert other_done["state"] == "lost", other_done
+        fresh = await self.finish(
+            await self.submit("after-loss", kind="shell", script="printf fresh")
+        )
+        assert fresh["state"] == "succeeded", fresh
+        after_environment = await self.api("GET", f"/v1/environments/{ENVIRONMENT}")
+        assert before_environment["sandbox_id"] == after_environment["sandbox_id"]
+        assert before_environment["sandbox"] == after_environment["sandbox"]
+        preserved = await self.finish(
+            await self.submit(
+                "preserved-after-loss",
+                kind="shell",
+                argv=[
+                    "/opt/sandbox-science/bin/python",
+                    "-I",
+                    "-c",
+                    "import pathlib,lab20_recycle_marker; "
+                    "assert lab20_recycle_marker.VALUE == " + repr(marker) + "; "
+                    "assert pathlib.Path('daemon-recycle-workspace.txt').read_text() == "
+                    + repr(marker)
+                    + "; print('workspace and Python prefix preserved')",
+                ],
+            )
+        )
+        assert preserved["state"] == "succeeded", preserved
+        lost_kernel = await self.finish(
+            await self.submit("kernel-after-loss", kind="cell", code="print(lab20_lost_kernel)")
+        )
+        assert lost_kernel["state"] == "failed", lost_kernel
+        assert "NameError" in json.dumps(lost_kernel), lost_kernel
+        self.save(
+            "daemon_loss_before_child_check",
+            {"killed": killed, "child_pid": child, "job": done, "fresh": fresh},
+        )
+        observed = json.loads(
+            await self.operator(
+                "/opt/sandbox-science/bin/python",
+                "-I",
+                "-c",
+                "import json,pathlib; "
+                "p=pathlib.Path('/proc/" + str(child) + "/stat'); "
+                "stat=p.read_text().rsplit(')',1)[1].split() if p.exists() else None; "
+                "print(json.dumps({'boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),"
+                "'start':stat[19] if stat else None,'state':stat[0] if stat else None}))",
+            )
+        )
+        assert (
+            observed["boot"] != old_child["boot"]
+            or observed["start"] != old_child["start"]
+            or observed["state"] in {None, "Z", "X"}
+        ), observed
+        self.save(
+            "daemon_loss_reaps_escaped_child",
+            {
+                "killed": killed,
+                "child_pid": child,
+                "job": done,
+                "other_job": other_done,
+                "fresh": fresh,
+                "old_child": old_child,
+                "child_after_recovery": observed,
+                "environment_before": before_environment,
+                "environment_after": after_environment,
+                "preserved_files": preserved,
+                "kernel_after_loss": lost_kernel,
+            },
+        )
+
+    async def sandbox_loss(self) -> None:
+        healthy_id = "lab20-b"
+        healthy = await self.api(
+            "POST",
+            "/v1/environments",
+            {
+                "environment_id": healthy_id,
+                "project_id": PROJECT,
+                "profile": "minimal",
+                "policy": (LAB / "policy.digest").read_text().strip(),
+            },
+        )
+        first = await self.finish(
+            await self.submit(
+                "healthy-before-loss",
+                kind="cell",
+                environment=healthy_id,
+                code="healthy_kernel = 27; print(healthy_kernel)",
+            )
+        )
+        assert first["state"] == "succeeded", first
+        removed = await self.api("GET", f"/v1/environments/{ENVIRONMENT}")
+        job = await self.submit("sandbox-loss", script="printf 'before sandbox loss\\n'; sleep 180")
+        await self.live(job, "before sandbox loss")
+        await self.stop()
+        # Delete this exact disposable VM, never an aggregate selector.
+        assert removed["environment_id"] == "lab20-a"
+        deleted = await self.gateway("sandbox", "delete", removed["sandbox"])
+        await self.start()
+        done = await self.finish(job)
+        assert done["state"] == "lost", done
+        second = await self.finish(
+            await self.submit(
+                "healthy-after-loss",
+                kind="cell",
+                environment=healthy_id,
+                code="print(healthy_kernel + 1)",
+            )
+        )
+        assert second["state"] == "succeeded", second
+        assert "28" in second["result"]["stdout"]["text"], second
+        after = await self.api("GET", f"/v1/environments/{healthy_id}")
+        assert healthy["sandbox_id"] == after["sandbox_id"], after
+        self.save(
+            "confirmed_sandbox_loss_preserves_other_environment",
+            {
+                "removed_environment": removed,
+                "delete": deleted,
+                "job": done,
+                "events": await self.events(done),
+                "healthy_before": healthy,
+                "healthy_after": after,
+                "first_cell": first,
+                "second_cell": second,
+            },
+        )
+
 
 async def main() -> None:
     parts = sys.argv[1:] or [
@@ -305,6 +535,8 @@ async def main() -> None:
         "kernel",
         "noisy",
         "timeout",
+        "daemon_loss",
+        "sandbox_loss",
     ]
     if set(parts) - {
         "envs",
@@ -316,6 +548,8 @@ async def main() -> None:
         "kernel",
         "noisy",
         "timeout",
+        "daemon_loss",
+        "sandbox_loss",
     }:
         raise SystemExit("Unknown check; see this file's usage.")
     async with aiohttp.ClientSession(
