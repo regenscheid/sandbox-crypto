@@ -201,3 +201,7 @@ Keep source/tests frozen, retain pytest/JUnit/capability/state records, and remo
 both VMs, services, lab state and only the owned fixture roots afterward. No new
 helper or service setup is introduced here. Lab23 validates old main separately
 from capture Lab22 and adds no capture fault/ownership claim or platform parity.
+
+## Disposable comment/reply math browser fixture
+
+See [comment math](../../docs/COMMENT-MATH.md#disposable-acceptance-fixture). `.agents/labs/comment_math.py create` requires explicit absolute Node/launcher/bundle paths and creates marked temporary synthetic state only. `main-fix`, `concurrent-user-edit` and `audit` require its marker before opening a writer. Actual local KaTeX runs; no model/worker/service is contacted. This is a browser fixture, not an OpenShell lab; coordinate any browser/server separately.

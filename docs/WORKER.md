@@ -203,7 +203,9 @@ passed exact binary/empty retention, prompt oversize/symlink/FIFO refusal and he
 publication/read/execution access on Python 3.14.8 with a disposable 1 MiB limit.
 Independent inspection found zero capture leases/helpers, and complete teardown was
 verified. Lost transport, blocked host work and corrupt-state cases remain local hostile
-evidence. Final documentation review and fresh PR CI remain the delivery gates.
+evidence. Exact source `ea31757` merged as PR #86 at `9c07725` after all three
+fresh CI checks passed (run `38251872668`, 13:01:50 UTC); both Lab22/Lab23 archives
+are preserved.
 
 ## Background jobs
 

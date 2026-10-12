@@ -118,9 +118,16 @@ reflag. A late result is retained as evidence but cannot change newer canonical
 state. Same-head retries consult the latest exact attempt, so an older rejection
 cannot cause a new handoff while current evidence is pending or unavailable.
 
-A changed failing block or effective renderer/macro input can reflag the same
-finding. Duplicate checks, unchanged spans, unrelated edits and restarted attempts
-do not consume the two-reflag budget. Two failing changes leave it unaddressed.
+A newly proved edit to the failing block can reflag the same finding. Macro and
+renderer dependency changes refresh the exact assessment and audit history without
+consuming either failed-patch opportunity when the block owner revision is unchanged.
+Dependency refresh preserves unaddressed and explicit USER resolutions; a previously
+mechanically accepted formula can reopen on a new rejection. Available accepted
+checks also update the assessed block owner. Previous ownership is reconciled from
+the last immutable available observation, including pre-fix accepted rows; missing
+or invalid proof never consumes a reflag. Duplicate checks, unchanged spans,
+unrelated edits and restarted attempts do not consume the two-reflag budget.
+Two failing block edits leave it unaddressed.
 Current prose, error, evidence and eligible session attribution follow the new
 check, while append-only history keeps the prior assessment and owner.
 

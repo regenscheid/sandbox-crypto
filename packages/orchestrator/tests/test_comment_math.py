@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from typing import Literal
 from unittest.mock import patch as mock_patch
 
 import pytest
@@ -257,9 +259,248 @@ async def test_macro_revision_pins_all_spans_and_stale_attempt(stores):
     checker = ScriptedChecker()
     await drain(reviews, checker)
     assert [f.macros for f in checker.calls] == [{r"\foo": "z"}] * 2
-    assert all(f["reflags"] == 1 for f in get(reviews))
+    assert all(f["reflags"] == 0 for f in get(reviews))
     assert all(f["anchors"][0]["locator"]["revision"] == 2 for f in get(reviews))
     assert Annotations(docs).body("p", doc, source["entry_id"])["revision"] == 1
+
+
+class ChangedChecker(ScriptedChecker):
+    def __init__(
+        self, generation, status: Literal["accepted", "rejected", "unavailable"] = "rejected"
+    ):
+        super().__init__(status, error=f"Configuration {generation} rejected the formula")
+        self.bundle = str(generation) * 64
+
+    def identity(self):
+        return {**super().identity(), "bundle_sha256": self.bundle}
+
+    async def check_many(self, formulas):
+        return [
+            answer.model_copy(update={"bundle_sha256": self.bundle})
+            for answer in await super().check_many(formulas)
+        ]
+
+
+def source_fixture(docs, kind):
+    text = "---\nmacros:\n  '\\foo': 'x'\n---\n\n"
+    doc = create(
+        docs, USER if kind == "comment" else MAIN, text + ("Context." if kind == "comment" else BAD)
+    )
+    entry = comment(docs, doc)["entry_id"] if kind == "comment" else None
+    return doc, entry
+
+
+def edit_formula(docs, doc, entry, tex, operation):
+    if entry:
+        edit(docs, doc, entry, f"${tex}$", op=operation)
+    else:
+        from .test_document_math import patch
+
+        patch(docs, doc, tex, operation)
+
+
+def change_macro(docs, doc, value, operation):
+    head = docs.document("p", doc).head
+    text = docs.revision("p", doc).text
+    result = docs.edit_source(
+        "p",
+        doc,
+        base=head,
+        text=text.replace("'x'", f"'{value}'"),
+        author=USER,
+        reason="Unrelated macro dependency",
+        operation_id=operation,
+    )
+    assert result.outcome == "applied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["document", "comment"])
+async def test_dependency_refresh_preserves_failed_block_budget(stores, kind):
+    docs, reviews, _ = stores
+    doc, entry = source_fixture(docs, kind)
+    await drain(reviews, ScriptedChecker())
+    for index, value in enumerate(("y", "z"), 1):
+        head = docs.document("p", doc).head
+        # Replace either prior dependency value without changing the formula block.
+        text = docs.revision("p", doc).text
+        result = docs.edit_source(
+            "p",
+            doc,
+            base=head,
+            text=text.replace("'x'", f"'{value}'").replace("'y'", f"'{value}'"),
+            author=USER,
+            reason="Macro dependency",
+            operation_id=f"macro-{index}",
+        )
+        assert result.outcome == "applied"
+        await drain(reviews, ScriptedChecker(error=f"Macro {value} error"))
+        found = get(reviews)[0]
+        assert (found["status"], found["reflags"], found["source"]["owner_revision"]) == (
+            "open",
+            0,
+            1,
+        )
+        assert f"Macro {value} error" in found["statement"]
+        assert found["anchors"][0]["locator"]["revision"] == head + 1
+    for generation in (1, 2):
+        checker = ChangedChecker(generation)
+        MathJobs(reviews).retry_unavailable("p", checker.identity())
+        await drain(reviews, checker)
+        assert get(reviews)[0]["reflags"] == 0
+        assert f"Configuration {generation}" in get(reviews)[0]["statement"]
+    # Actual failed author block edits still consume exactly two opportunities.
+    for index in (1, 2):
+        edit_formula(docs, doc, entry, rf"\unknown{{edit{index}}}", f"body-{index}")
+        await drain(reviews, ChangedChecker(2))
+        assert get(reviews)[0]["reflags"] == index
+    assert get(reviews)[0]["status"] == "unaddressed"
+    checker = ChangedChecker(3)
+    MathJobs(reviews).retry_unavailable("p", checker.identity())
+    await drain(reviews, checker)
+    assert (get(reviews)[0]["status"], get(reviews)[0]["reflags"]) == ("unaddressed", 2)
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    history = Findings(reviews).get("p", "s", get(reviews)[0]["finding_id"])["history"]
+    assert sum(h["payload"]["action"] == "mechanical_reflag" for h in history) == 2
+    assert history[-1]["payload"]["action"] == "mechanical_dependency_refresh"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["document", "comment"])
+@pytest.mark.parametrize("legacy_cache", [False, True])
+async def test_accepted_owner_and_legacy_cache_do_not_make_dependency_a_failed_edit(
+    stores, kind, legacy_cache
+):
+    docs, reviews, _ = stores
+    doc, entry = source_fixture(docs, kind)
+    await drain(reviews, ScriptedChecker())
+    edit_formula(docs, doc, entry, "x", "accepted-edit")
+    await drain(reviews, ScriptedChecker("accepted"))
+    found = get(reviews)[0]
+    assert found["status"] == "confirmed fixed"
+    assert found["source"]["owner_revision"] == 2
+    if legacy_cache:
+        # Faithful old-code state: accepted observation/check pointer was saved,
+        # but the mutable cached owner/identity still described the rejection.
+        with docs._write() as db:
+            db.execute("UPDATE math_finding_state SET owner_revision=1,input_sha256=?", ("f" * 64,))
+    # An intervening unavailable retry cannot hide the prior available proof.
+    MathJobs(reviews).retry_unavailable("p", {"operator": "unavailable"})
+    await drain(reviews, ScriptedChecker("unavailable"))
+    checker = ChangedChecker(1)
+    MathJobs(reviews).retry_unavailable("p", checker.identity())
+    await drain(reviews, checker)
+    found = get(reviews)[0]
+    assert (found["status"], found["reflags"], found["source"]["owner_revision"]) == ("open", 0, 2)
+    edit_formula(docs, doc, entry, r"\unknown{failed-edit}", "real-failed-edit")
+    await drain(reviews, checker)
+    assert get(reviews)[0]["reflags"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["document", "comment"])
+@pytest.mark.parametrize(
+    ("action", "status"), [("confirm", "confirmed fixed"), ("dismiss", "withdrawn")]
+)
+async def test_dependency_refresh_preserves_explicit_user_decision(stores, kind, action, status):
+    from sandbox_science.orchestrator.consistency.findings import Findings
+
+    docs, reviews, _ = stores
+    doc, _ = source_fixture(docs, kind)
+    await drain(reviews, ScriptedChecker())
+    found = get(reviews)[0]
+    Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": found["finding_id"],
+            "expected": found["revision"],
+            "action": action,
+            "explanation": "Explicit USER decision",
+            "operation_id": "decision",
+        },
+        USER,
+    )
+    change_macro(docs, doc, "z", "macro")
+    await drain(reviews, ScriptedChecker(error="New dependency error"))
+    for generation in (1, 2):
+        checker = ChangedChecker(generation)
+        MathJobs(reviews).retry_unavailable("p", checker.identity())
+        await drain(reviews, checker)
+        current = get(reviews)[0]
+        assert (current["status"], current["reflags"]) == (status, 0)
+        assert f"Configuration {generation}" in current["statement"]
+        assert MathNotices(reviews).pending("p", "s", "closing", set()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "{broken",
+        "x" * 20_000_000,
+        json.dumps({"owner": {"revision": 1}}),
+        json.dumps({"owner": {"revision": 1, "author": {"kind": "agent"}}}),
+        json.dumps({"owner": {"revision": 2, "author": MAIN.model_dump(mode="json")}}),
+    ],
+)
+async def test_previous_assessment_and_user_decision_json_are_bounded_before_parse(stores, payload):
+    import tracemalloc
+
+    from sandbox_science.orchestrator.consistency.mechanical import MechanicalFindings
+
+    docs, reviews, _ = stores
+    doc, entry = source_fixture(docs, "comment")
+    await drain(reviews, ScriptedChecker())
+    found = get(reviews)[0]
+    edit_formula(docs, doc, entry, "x", "new-source")
+    jobs = MathJobs(reviews)
+    check = jobs.claim("p", "owner")
+    assert check
+    job = jobs.job(check)
+    with docs._write() as db:
+        mechanism = MechanicalFindings(reviews)
+        anchor = found["anchors"][0]
+        item = {"block": anchor["block"], "span": anchor["math"]}
+        assert mechanism._previous_owner(db, job, item) == 1
+        db.execute("DROP TRIGGER math_observations_update")
+        db.execute("UPDATE math_observations SET payload=?", (payload,))
+        # Only the new scalar decision path is tested; ordinary full history reads
+        # deliberately retain their separate existing contracts.
+        db.execute("DROP TRIGGER review_transitions_update")
+        db.execute("UPDATE review_transitions SET payload=?", (payload,))
+        tracemalloc.start()
+        try:
+            assert mechanism._previous_owner(db, job, item) is None
+            assert mechanism._user_resolved(db, {**found, "status": "confirmed fixed"})
+            assert tracemalloc.get_traced_memory()[1] < 100_000
+        finally:
+            tracemalloc.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor", ["unknown", "x" * 20_000_000, "platform:math\0unknown"])
+async def test_unknown_retained_resolution_actor_is_bounded_and_preserved(stores, actor):
+    import tracemalloc
+
+    from sandbox_science.orchestrator.consistency.mechanical import MechanicalFindings
+
+    docs, reviews, _ = stores
+    source_fixture(docs, "comment")
+    await drain(reviews, ScriptedChecker())
+    found = get(reviews)[0]
+    with docs._write() as db:
+        db.execute("DROP TRIGGER review_transitions_update")
+        db.execute("UPDATE review_transitions SET actor=?", (actor,))
+        tracemalloc.start()
+        try:
+            assert MechanicalFindings(reviews)._user_resolved(
+                db, {**found, "status": "confirmed fixed"}
+            )
+            assert tracemalloc.get_traced_memory()[1] < 100_000
+        finally:
+            tracemalloc.stop()
 
 
 @pytest.mark.asyncio

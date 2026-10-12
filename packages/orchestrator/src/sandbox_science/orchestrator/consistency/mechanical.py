@@ -5,8 +5,11 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+import json
 import sqlite3
-from typing import Any
+from typing import Any, cast
+
+from pydantic import ValidationError
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.documents.comment_bodies import source_key
@@ -52,6 +55,77 @@ class MechanicalFindings:
             is not None
         )
 
+    def _previous_owner(self, db: sqlite3.Connection, job: Json, item: Json) -> int | None:
+        # The old accepted-result path did not update the owner cache. Use the
+        # immutable last available assessment instead, including across intervening
+        # unavailable attempts. The global observation quota bounds this SQL scan;
+        # only a bounded owner projection crosses into Python, never a body.
+        row = db.execute(
+            (
+                "SELECT CASE WHEN typeof(o.payload)='text' AND "
+                "length(CAST(o.payload AS BLOB))<=32768 THEN CASE WHEN "
+                "json_valid(o.payload) THEN CASE WHEN "
+                "json_type(o.payload,'$.owner')='object' THEN "
+                "substr(CAST(json_extract(o.payload,'$.owner') AS BLOB),1,8193) "
+                "END END END,j.revision FROM math_jobs j "
+                "JOIN math_observations o USING(check_id) "
+                "LEFT JOIN math_comment_jobs c USING(check_id) WHERE j.document=? "
+                "AND c.entry_id IS ? AND o.block=? AND o.span=? "
+                "AND o.status IN ('accepted','rejected') AND j.revision<=? "
+                "AND j.rowid<(SELECT rowid FROM math_jobs WHERE check_id=?) "
+                "ORDER BY j.rowid DESC LIMIT 1"
+            ),
+            (
+                job["document"],
+                job.get("comment", {}).get("entry_id"),
+                item["block"],
+                item["span"],
+                job["revision"],
+                job["check_id"],
+            ),
+        ).fetchone()
+        if not row or row[0] is None or len(row[0]) > 8192:
+            return None
+        try:
+            raw: object = json.loads(row[0])
+            if not isinstance(raw, dict):
+                return None
+            proof = cast(Json, raw)
+            if set(proof) != {"revision", "author"}:
+                return None
+            value = proof["revision"]
+            if type(value) is not int or type(row[1]) is not int or not 1 <= value <= row[1]:
+                return None
+            Author.model_validate(proof["author"])
+        except (ValueError, TypeError, RecursionError, ValidationError):
+            return None
+        return value
+
+    def _user_resolved(self, db: sqlite3.Connection, current: Json) -> bool:
+        if current["status"] == "withdrawn":
+            return True
+        if current["status"] != "confirmed fixed":
+            return False
+        # Unknown retained decision metadata conservatively preserves resolution.
+        valid = (
+            "CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=32768 "
+            "THEN json_valid(payload) ELSE 0 END"
+        )
+        row = db.execute(
+            (
+                f"SELECT CASE WHEN {valid} THEN CASE WHEN "  # noqa: S608 - fixed SQL guards
+                "typeof(actor)='text' AND length(CAST(actor AS BLOB))<=128 THEN "
+                "NOT (actor='platform:math' AND coalesce(json_extract(payload,'$.action'),'') "
+                "IN ('mechanical_accept','mechanical_removal')) ELSE 1 END ELSE 1 END "
+                "FROM review_transitions WHERE finding_id=? "
+                f"AND CASE WHEN {valid} THEN "
+                "coalesce(json_extract(payload,'$.action'),'') "
+                "!='mechanical_dependency_refresh' ELSE 1 END ORDER BY revision DESC LIMIT 1"
+            ),
+            (current["finding_id"],),
+        ).fetchone()
+        return row is None or bool(row[0])
+
     def observe(self, db: sqlite3.Connection, job: Json, item: Json) -> None:
         # Old results remain immutable observations, but cannot alter current
         # findings, owner exclusion, CAS heads or closing notices.
@@ -94,6 +168,12 @@ class MechanicalFindings:
                 (job["revision"], job["check_id"], exclusion, row[0]),
             )
             if answer["status"] == "accepted":
+                db.execute(
+                    "UPDATE math_finding_state SET input_sha256=?,"
+                    "owner_revision=coalesce(?,owner_revision) "
+                    "WHERE finding_id=?",
+                    (identity, item["owner"]["revision"], row[0]),
+                )
                 if current["status"] not in ("confirmed fixed", "withdrawn"):
                     self.findings._transition(
                         db,
@@ -129,7 +209,13 @@ class MechanicalFindings:
             )
             previous_session = current["session"]
             current["session"] = author.session_id
-            status = "unaddressed" if current["reflags"] + 1 >= 2 else "open"
+            previous_owner = self._previous_owner(db, job, item)
+            block_edit = previous_owner is not None and item["owner"]["revision"] != previous_owner
+            status = "unaddressed" if current["reflags"] + int(block_edit) >= 2 else "open"
+            if not block_edit and (
+                current["status"] == "unaddressed" or self._user_resolved(db, current)
+            ):
+                status = current["status"]
             result = self.findings._transition(
                 db,
                 current,
@@ -139,11 +225,15 @@ class MechanicalFindings:
                 {
                     "check": job["check_id"],
                     "anchors": anchors,
-                    "action": "mechanical_reflag",
+                    "action": "mechanical_reflag"
+                    if block_edit
+                    else "mechanical_dependency_refresh",
                     "previous_session": previous_session,
+                    "previous_owner_revision": previous_owner,
+                    "block_edit_proven": block_edit,
                     "owner": item["owner"],
                 },
-                reflag=current["reflags"] < 2,
+                reflag=block_edit and current["reflags"] < 2,
             )
             db.execute(
                 "UPDATE math_finding_state SET input_sha256=?,owner_revision=? WHERE finding_id=?",
