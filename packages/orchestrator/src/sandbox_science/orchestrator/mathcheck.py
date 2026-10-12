@@ -238,7 +238,7 @@ class MathChecker:
                         )
         except TimeoutError:
             return unavailable("math checker deadline exceeded")
-        except (OSError, ValueError, ExceptionGroup):
+        except (OSError, ValueError, RecursionError, ExceptionGroup):
             return unavailable("math checker unavailable or invalid response")
         finally:
             self._pending -= 1

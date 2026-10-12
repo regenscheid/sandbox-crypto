@@ -72,6 +72,21 @@ async def test_response_mismatch_is_inconclusive(
 
 
 @pytest.mark.asyncio
+async def test_deeply_nested_reply_is_inconclusive_and_reaped(tmp_path: Path) -> None:
+    pidfile = tmp_path / "pid"
+    checker = fixture_checker(
+        tmp_path,
+        f"open({str(pidfile)!r},'w').write(str(os.getpid()))\nprint('['*16000+'0'+']'*16000)\n",
+    )
+    result = await checker.check(Formula(id="m1", tex="x"))
+    assert result.status == "unavailable"
+    assert result.remedy is None
+    assert checker._pending == 0
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pidfile.read_text()), 0)
+
+
+@pytest.mark.asyncio
 async def test_chunked_answer_and_provenance(tmp_path: Path) -> None:
     raw = answer().removeprefix("print(").removesuffix(")\n")
     checker = fixture_checker(
