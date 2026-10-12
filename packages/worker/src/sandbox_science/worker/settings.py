@@ -58,6 +58,7 @@ from pydantic import (
 
 from sandbox_science.contracts import Identifier
 
+from .documents_catalog import CatalogLimits
 from .package_clients import check_cache_url
 
 MIN_TOKEN: Final = 32
@@ -162,6 +163,9 @@ class ClientSettings(_Model):
     max_environments: Annotated[int, Field(ge=1, le=1000)] = 8
     """The most environments the client's projects may have at once, deleted ones aside.
     Each is a sandbox, a VM with the VM driver, so a client cannot fill the pool's host."""
+    document_catalog: bool = Field(default=False, strict=True)
+    """Explicit control-service permission to ingest/status document catalogs. Ordinary
+    execution clients remain denied, even for their own projects."""
 
 
 class Settings(_Model):
@@ -173,6 +177,8 @@ class Settings(_Model):
     max_artifact_size: Annotated[int, Field(gt=0)] = 1 << 30
     shared_sync: bool = True
     """Keep each project's ``shared/`` area in step across its environments (D79)."""
+    document_catalog: CatalogLimits = Field(default_factory=CatalogLimits)
+    """Durable catalog budgets; environment publication remains disabled."""
     kernel_idle_timeout: Annotated[float, Field(gt=0)] | None = None
     """Stop a kernel nobody has used for this many seconds; its session's next cell reports
     the lost state. Unset keeps kernels until they are closed, restarted or die."""
