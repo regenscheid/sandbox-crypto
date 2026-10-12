@@ -202,14 +202,20 @@ uv run python packages/orchestrator/tests/fixtures/artifact_review_browser_fixtu
 The helper refuses unrelated state/claims, verifies both seeded byte hashes, reads
 original and changed grants through ScriptedModel, and records confirmation. It proves
 plumbing and scoped evidence exposure, not model judgment. Remove the disposable
-server and directory after acceptance. The consumer milestone passed35 new cases,132 affected component/API cases and2 raw
-preview SSR cases, with Ruff/strict pyright green. These are local evidence; its
-separate combined gates and browser acceptance must be recorded before completion.
+server and directory after acceptance. The consumer passed 35 new cases, 144 affected
+component/API cases and two raw-preview SSR cases. Its independently reviewed D82/main
+source union passed 9,494 Python tests (43 opt-in skips), 436 web tests, locked/static/
+license/protocol checks and both builds. [Browser/API acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md)
+verified pinned raw reads, empty/incomplete sources, scope, delayed selection and the
+exact attributed fix. The scripted checks establish plumbing and authority; no live
+model, worker or OpenShell VM was used. Disposable state was removed. Fresh PR CI
+remains the merge gate.
 
 Shell-written artifact inventory/revisions (CRF-6), full rich-output/file evidence,
 project spend accounting, ledger-specific evidence, automatic idle turns and a persistent
 chat host/push view remain deferred. Mathematical-renderability findings (CR-36–38 and
-CRF-14) await the separate bounded KaTeX checker integration; browser rendering is not
+CRF-14) have a separate [document-revision integration](MATH-CHECKS.md); comments,
+ledger fields and finding prose remain open. Browser rendering is not
 presented as an automatic review verdict. Historical finding selection and supersession
 inspection are bounded; omitted snapshot context is explicit incomplete coverage.
 

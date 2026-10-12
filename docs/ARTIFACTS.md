@@ -197,9 +197,14 @@ client, download, filesystem, parser, renderer or execution authority.
 
 The consumer owns a private single-thread executor and at most eight admitted SQL
 units. Cancellation detaches the await; shutdown drains actual work before the
-borrowed control store closes. Focused hostile/HTTP/API and synthetic fixture tests
-cover this boundary; final combined review/gates and browser acceptance remain the
-handoff gate until their evidence is recorded.
+borrowed control store closes. Independent adversarial review, 35 focused cases,
+144 affected component/API cases and two raw-preview SSR cases cover this boundary.
+The D82/main source union passed 9,494 Python tests (43 opt-in skips), 436 web tests,
+locked/static/license/protocol checks and both production builds.
+[Browser/API acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md)
+verified exact original/changed bytes, empty and incomplete sources, scoped fix claims
+and delayed selection. The synthetic state and server were removed; no live model,
+worker or OpenShell VM was used for that browser check. Fresh PR CI remains the merge gate.
 
 Automatic execution-output inventory (RA-5/RA-F2/CRF-6), imports/MCP binary results,
 deletions/tombstones, retention drop workflows, observed inputs/kernel lineage,
