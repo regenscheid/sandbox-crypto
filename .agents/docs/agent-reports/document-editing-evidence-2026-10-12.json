@@ -1,0 +1,1420 @@
+{
+  "fixture": {
+    "fixture": "disposable-document-editing",
+    "project": "editing-demo",
+    "document": "doc-dfae7e3bffa7160e3e1a075b",
+    "paragraph": "b2",
+    "patch": "patch-7db91dde52342e96f910b457",
+    "workbook": "doc-0ba4e9a520866a5bfca4ee3e"
+  },
+  "documents": [
+    {
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "project_id": "editing-demo",
+      "scope": "project",
+      "session_id": null,
+      "name": "notes",
+      "title": "Research notes",
+      "created_at": "2026-10-12T05:28:37.035811Z",
+      "created_by": {
+        "kind": "user",
+        "user": "user",
+        "session_id": null,
+        "run_id": null,
+        "role": null,
+        "model": null,
+        "alias": null,
+        "tool_call": null,
+        "import_id": null,
+        "service": null
+      },
+      "created_session": null,
+      "takes_suggestions": false,
+      "head": 9,
+      "deleted": false
+    },
+    {
+      "document_id": "doc-0ba4e9a520866a5bfca4ee3e",
+      "project_id": "editing-demo",
+      "scope": "project",
+      "session_id": null,
+      "name": "workbook",
+      "title": "Workbook notes",
+      "created_at": "2026-10-12T05:28:37.040717Z",
+      "created_by": {
+        "kind": "agent",
+        "user": null,
+        "session_id": "session-a",
+        "run_id": "run-demo",
+        "role": "main",
+        "model": null,
+        "alias": null,
+        "tool_call": null,
+        "import_id": null,
+        "service": null
+      },
+      "created_session": "session-a",
+      "takes_suggestions": false,
+      "head": 1,
+      "deleted": false
+    }
+  ],
+  "history": {
+    "document": {
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "project_id": "editing-demo",
+      "scope": "project",
+      "session_id": null,
+      "name": "notes",
+      "title": "Research notes",
+      "created_at": "2026-10-12T05:28:37.035811Z",
+      "created_by": {
+        "kind": "user",
+        "user": "user",
+        "session_id": null,
+        "run_id": null,
+        "role": null,
+        "model": null,
+        "alias": null,
+        "tool_call": null,
+        "import_id": null,
+        "service": null
+      },
+      "created_session": null,
+      "takes_suggestions": false,
+      "head": 9,
+      "deleted": false
+    },
+    "revisions": [
+      {
+        "number": 1,
+        "created_at": "2026-10-12T05:28:37.036052+00:00",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "accepted_by": null,
+        "reason": "created",
+        "base": null,
+        "parent": null,
+        "patch_id": null,
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [],
+        "added": [
+          "b1",
+          "b2",
+          "b3",
+          "b4",
+          "b5",
+          "b6"
+        ],
+        "moved": [],
+        "removed": []
+      },
+      {
+        "number": 2,
+        "created_at": "2026-10-12T05:28:37.039610+00:00",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "accepted_by": null,
+        "reason": "Agent updates equation",
+        "base": 1,
+        "parent": 1,
+        "patch_id": "patch-b2203ad030498404e48ab4e8",
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "moved": [],
+        "removed": []
+      },
+      {
+        "number": 3,
+        "created_at": "2026-10-12T05:32:41.136926+00:00",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "accepted_by": null,
+        "reason": "User edit",
+        "base": 2,
+        "parent": 2,
+        "patch_id": "patch-f844ceffa9a5af5903e334a6",
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [
+          "b6"
+        ],
+        "added": [],
+        "moved": [],
+        "removed": []
+      },
+      {
+        "number": 4,
+        "created_at": "2026-10-12T05:33:05.167896+00:00",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "accepted_by": null,
+        "reason": "Concurrent browser acceptance edit",
+        "base": 3,
+        "parent": 3,
+        "patch_id": "patch-015395a3f35e6c82fc0722eb",
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "moved": [],
+        "removed": []
+      },
+      {
+        "number": 5,
+        "created_at": "2026-10-12T05:33:12.034951+00:00",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "accepted_by": null,
+        "reason": "User edit",
+        "base": 4,
+        "parent": 4,
+        "patch_id": "patch-8bdd8f16bb2ebb2e3759a2a7",
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "moved": [],
+        "removed": []
+      },
+      {
+        "number": 6,
+        "created_at": "2026-10-12T05:33:25.648898+00:00",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "accepted_by": null,
+        "reason": "Concurrent browser acceptance edit",
+        "base": 5,
+        "parent": 5,
+        "patch_id": "patch-106c52be889c5bcc14c19787",
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "moved": [],
+        "removed": []
+      },
+      {
+        "number": 7,
+        "created_at": "2026-10-12T05:33:40.207591+00:00",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "accepted_by": null,
+        "reason": "User edit",
+        "base": 6,
+        "parent": 6,
+        "patch_id": "patch-60902b1b1803f3b45fc03755",
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [],
+        "added": [
+          "b7"
+        ],
+        "moved": [],
+        "removed": [
+          "b2"
+        ]
+      },
+      {
+        "number": 8,
+        "created_at": "2026-10-12T05:34:02.834705+00:00",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "accepted_by": null,
+        "reason": "Restore revision 2",
+        "base": 7,
+        "parent": 7,
+        "patch_id": null,
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [
+          "b6"
+        ],
+        "added": [
+          "b2"
+        ],
+        "moved": [],
+        "removed": [
+          "b7"
+        ]
+      },
+      {
+        "number": 9,
+        "created_at": "2026-10-12T05:34:09.832003+00:00",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "accepted_by": {
+          "kind": "user",
+          "user": "user"
+        },
+        "reason": "User reviewed and applied patch patch-7db91dde52342e96f910b457",
+        "base": 8,
+        "parent": 8,
+        "patch_id": "patch-7db91dde52342e96f910b457",
+        "tombstone": false,
+        "normalized": false,
+        "warnings": 0,
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "moved": [],
+        "removed": []
+      }
+    ],
+    "blocks": {
+      "b1": [
+        {
+          "revision": 1,
+          "status": "added",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        }
+      ],
+      "b2": [
+        {
+          "revision": 1,
+          "status": "added",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        },
+        {
+          "revision": 2,
+          "status": "changed",
+          "author": {
+            "kind": "agent",
+            "session_id": "session-a",
+            "run_id": "run-demo",
+            "role": "main"
+          }
+        },
+        {
+          "revision": 4,
+          "status": "changed",
+          "author": {
+            "kind": "agent",
+            "session_id": "session-a",
+            "run_id": "run-demo",
+            "role": "main"
+          }
+        },
+        {
+          "revision": 5,
+          "status": "changed",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        },
+        {
+          "revision": 6,
+          "status": "changed",
+          "author": {
+            "kind": "agent",
+            "session_id": "session-a",
+            "run_id": "run-demo",
+            "role": "main"
+          }
+        },
+        {
+          "revision": 7,
+          "status": "removed",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        },
+        {
+          "revision": 8,
+          "status": "added",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        },
+        {
+          "revision": 9,
+          "status": "changed",
+          "author": {
+            "kind": "agent",
+            "session_id": "session-a",
+            "run_id": "run-demo",
+            "role": "main"
+          }
+        }
+      ],
+      "b3": [
+        {
+          "revision": 1,
+          "status": "added",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        }
+      ],
+      "b4": [
+        {
+          "revision": 1,
+          "status": "added",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        }
+      ],
+      "b5": [
+        {
+          "revision": 1,
+          "status": "added",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        }
+      ],
+      "b6": [
+        {
+          "revision": 1,
+          "status": "added",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        },
+        {
+          "revision": 3,
+          "status": "changed",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        },
+        {
+          "revision": 8,
+          "status": "changed",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        }
+      ],
+      "b7": [
+        {
+          "revision": 7,
+          "status": "added",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        },
+        {
+          "revision": 8,
+          "status": "removed",
+          "author": {
+            "kind": "user",
+            "user": "user"
+          }
+        }
+      ]
+    },
+    "patches": [
+      {
+        "patch_id": "patch-b2203ad030498404e48ab4e8",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:28:37.040070Z",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "session_id": "session-a",
+        "base": 1,
+        "reason": "Agent updates equation",
+        "operations": [
+          {
+            "op": "replace",
+            "block": "b2",
+            "markdown": "Current agent equation $x = 2$."
+          }
+        ],
+        "state": "applied",
+        "revision": 2,
+        "details": {}
+      },
+      {
+        "patch_id": "patch-7db91dde52342e96f910b457",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:28:37.040540Z",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "session_id": "session-a",
+        "base": 1,
+        "reason": "Proposal conflicts with current equation",
+        "operations": [
+          {
+            "op": "replace",
+            "block": "b2",
+            "markdown": "Retained proposal $x = 3$."
+          }
+        ],
+        "state": "accepted",
+        "revision": 9,
+        "details": {},
+        "decided_at": "2026-10-12T05:34:09.833024Z",
+        "decided_by": {
+          "kind": "user",
+          "user": "user"
+        }
+      },
+      {
+        "patch_id": "patch-f844ceffa9a5af5903e334a6",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:32:41.138288Z",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "base": 2,
+        "reason": "User edit",
+        "operations": [
+          {
+            "op": "replace",
+            "block": "b6",
+            "markdown": "User-reviewed conclusion."
+          }
+        ],
+        "state": "applied",
+        "revision": 3,
+        "details": {}
+      },
+      {
+        "patch_id": "patch-015395a3f35e6c82fc0722eb",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:33:05.168807Z",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "session_id": "session-a",
+        "base": 3,
+        "reason": "Concurrent browser acceptance edit",
+        "operations": [
+          {
+            "op": "replace",
+            "block": "b2",
+            "markdown": "Concurrent agent equation $x = 4$."
+          }
+        ],
+        "state": "applied",
+        "revision": 4,
+        "details": {}
+      },
+      {
+        "patch_id": "patch-11cb5f913456c3061330153c",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:33:07.599004Z",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "base": 3,
+        "reason": "User edit",
+        "operations": [
+          {
+            "op": "replace",
+            "block": "b2",
+            "markdown": "User resolved equation $x = 5$."
+          }
+        ],
+        "state": "conflicted",
+        "details": {
+          "conflicts": [
+            {
+              "block": "b2",
+              "kind": "paragraph",
+              "why": "changed",
+              "at_base": "Current agent equation $x = 2$.",
+              "now": "Concurrent agent equation $x = 4$.",
+              "changed_by": [
+                {
+                  "revision": 4,
+                  "author": {
+                    "kind": "agent",
+                    "session_id": "session-a",
+                    "run_id": "run-demo",
+                    "role": "main"
+                  }
+                }
+              ]
+            }
+          ],
+          "current": 4
+        }
+      },
+      {
+        "patch_id": "patch-8bdd8f16bb2ebb2e3759a2a7",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:33:12.035690Z",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "base": 4,
+        "reason": "User edit",
+        "operations": [
+          {
+            "op": "replace",
+            "block": "b2",
+            "markdown": "User resolved equation $x = 5$."
+          }
+        ],
+        "state": "applied",
+        "revision": 5,
+        "details": {}
+      },
+      {
+        "patch_id": "patch-106c52be889c5bcc14c19787",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:33:25.649869Z",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "session_id": "session-a",
+        "base": 5,
+        "reason": "Concurrent browser acceptance edit",
+        "operations": [
+          {
+            "op": "replace",
+            "block": "b2",
+            "markdown": "Concurrent agent equation $x = 4$."
+          }
+        ],
+        "state": "applied",
+        "revision": 6,
+        "details": {}
+      },
+      {
+        "patch_id": "patch-28617f51442712b60b4e3ac4",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:33:29.479141Z",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "base": 5,
+        "reason": "User edit",
+        "operations": [
+          {
+            "op": "delete",
+            "block": "b2"
+          },
+          {
+            "op": "insert",
+            "markdown": "Source user draft $x = 9$.",
+            "before": "b3",
+            "after": null,
+            "at": null
+          }
+        ],
+        "state": "conflicted",
+        "details": {
+          "conflicts": [
+            {
+              "block": "b2",
+              "kind": "paragraph",
+              "why": "changed",
+              "at_base": "User resolved equation $x = 5$.",
+              "now": "Concurrent agent equation $x = 4$.",
+              "changed_by": [
+                {
+                  "revision": 6,
+                  "author": {
+                    "kind": "agent",
+                    "session_id": "session-a",
+                    "run_id": "run-demo",
+                    "role": "main"
+                  }
+                }
+              ]
+            }
+          ],
+          "current": 6
+        }
+      },
+      {
+        "patch_id": "patch-60902b1b1803f3b45fc03755",
+        "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+        "created_at": "2026-10-12T05:33:40.208272Z",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "base": 6,
+        "reason": "User edit",
+        "operations": [
+          {
+            "op": "delete",
+            "block": "b2"
+          },
+          {
+            "op": "insert",
+            "markdown": "Source user resolution $x = 9$.",
+            "before": "b3",
+            "after": null,
+            "at": null
+          }
+        ],
+        "state": "applied",
+        "revision": 7,
+        "details": {}
+      }
+    ]
+  },
+  "current": {
+    "info": {
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "number": 9,
+      "created_at": "2026-10-12T05:34:09.832003Z",
+      "author": {
+        "kind": "agent",
+        "user": null,
+        "session_id": "session-a",
+        "run_id": "run-demo",
+        "role": "main",
+        "model": null,
+        "alias": null,
+        "tool_call": null,
+        "import_id": null,
+        "service": null
+      },
+      "accepted_by": {
+        "kind": "user",
+        "user": "user",
+        "session_id": null,
+        "run_id": null,
+        "role": null,
+        "model": null,
+        "alias": null,
+        "tool_call": null,
+        "import_id": null,
+        "service": null
+      },
+      "session_id": "session-a",
+      "base": 8,
+      "parent": 8,
+      "reason": "User reviewed and applied patch patch-7db91dde52342e96f910b457",
+      "operations": [
+        {
+          "op": "replace",
+          "block": "b2",
+          "markdown": "Retained proposal $x = 3$."
+        }
+      ],
+      "patch_id": "patch-7db91dde52342e96f910b457",
+      "sha256": "66bfd2080483edcef9cc4c4850a61aa288f8c6ee8f424e3a8418c03ecae0cedc",
+      "tombstone": false,
+      "normalized": {
+        "converted": {},
+        "kept": []
+      },
+      "warnings": [],
+      "parser": {
+        "profile": "ss-markdown-1",
+        "markdown-it-py": "4.2.0",
+        "mdit-py-plugins": "0.6.1"
+      }
+    },
+    "text": "# Research notes\n\nRetained proposal $x = 3$.\n\n::: lemma\nA nested statement $y$.\n:::\n\n| Input | Result |\n| --- | --- |\n| 1 | 1 |\n\nUntouched conclusion.\n",
+    "block_map": {
+      "profile": "ss-markdown-1",
+      "blocks": [
+        {
+          "id": "b1",
+          "kind": "heading",
+          "parent": null,
+          "lines": [
+            0,
+            1
+          ],
+          "start": 0,
+          "end": 16,
+          "hash": "e562ed5e775e8095947ae476bd038b45920bc0dae1246f0a3cce313b6c5451f1",
+          "status": "kept",
+          "structural": "heading",
+          "attrs": {
+            "level": 1
+          },
+          "spans": []
+        },
+        {
+          "id": "b2",
+          "kind": "paragraph",
+          "parent": null,
+          "lines": [
+            2,
+            3
+          ],
+          "start": 18,
+          "end": 44,
+          "hash": "e02f356b3721e3af445e76931763710a59db926135959f627ad022db4a919d22",
+          "status": "changed",
+          "structural": null,
+          "attrs": {},
+          "spans": [
+            {
+              "id": "m1",
+              "kind": "inline",
+              "hash": "b8478134ca41533393dbf434adc69d580346a7ed2c7ecbf7cdd67a7caf0926fc",
+              "status": "changed"
+            }
+          ]
+        },
+        {
+          "id": "b3",
+          "kind": "container",
+          "parent": null,
+          "lines": [
+            4,
+            7
+          ],
+          "start": 46,
+          "end": 83,
+          "hash": "3a15e771e238d4f2fa3f0a80cad147f2683e92850df2872d133eec52aed78481",
+          "status": "kept",
+          "structural": "container",
+          "attrs": {
+            "container": "lemma",
+            "info": null
+          },
+          "spans": []
+        },
+        {
+          "id": "b4",
+          "kind": "paragraph",
+          "parent": "b3",
+          "lines": [
+            5,
+            6
+          ],
+          "start": 56,
+          "end": 79,
+          "hash": "bd31d6805d03c0366a66f07ec27e4ebd1c438f0118cbd743cbf4c4151d6ca502",
+          "status": "kept",
+          "structural": null,
+          "attrs": {},
+          "spans": [
+            {
+              "id": "m2",
+              "kind": "inline",
+              "hash": "a1fce4363854ff888cff4b8e7875d600c2682390412a8cf79b37d0b11148b0fa",
+              "status": "kept"
+            }
+          ]
+        },
+        {
+          "id": "b5",
+          "kind": "table",
+          "parent": null,
+          "lines": [
+            8,
+            11
+          ],
+          "start": 85,
+          "end": 127,
+          "hash": "496a828cfa3e8be30ff9281a0d1ea57bfa48f8d6d37ecb2ba5d87154a38575b9",
+          "status": "kept",
+          "structural": "table",
+          "attrs": {},
+          "spans": []
+        },
+        {
+          "id": "b6",
+          "kind": "paragraph",
+          "parent": null,
+          "lines": [
+            12,
+            13
+          ],
+          "start": 129,
+          "end": 150,
+          "hash": "db8be59bbc3fe70219fc88b85446266f899cb660435dc15eaa36278f8a351837",
+          "status": "kept",
+          "structural": null,
+          "attrs": {},
+          "spans": []
+        }
+      ],
+      "removed": [],
+      "removed_spans": []
+    }
+  },
+  "events": [
+    {
+      "seq": 1,
+      "time": "2026-10-12T05:28:37.035931Z",
+      "kind": "document.created",
+      "producer": "harness",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "name": "notes",
+        "title": "Research notes",
+        "scope": "project",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        }
+      }
+    },
+    {
+      "seq": 2,
+      "time": "2026-10-12T05:28:37.038309Z",
+      "kind": "document.revision_created",
+      "producer": "harness",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 1,
+        "base": null,
+        "parent": null,
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "author_kind": "user",
+        "changed": [],
+        "added": [
+          "b1",
+          "b2",
+          "b3",
+          "b4",
+          "b5",
+          "b6"
+        ],
+        "removed": [],
+        "moved": [],
+        "structural_added": [
+          {
+            "id": "b1",
+            "kind": "heading"
+          },
+          {
+            "id": "b3",
+            "kind": "container"
+          },
+          {
+            "id": "b5",
+            "kind": "table"
+          }
+        ],
+        "agent_characters": 0,
+        "normalized": false,
+        "tombstone": false
+      }
+    },
+    {
+      "seq": 3,
+      "time": "2026-10-12T05:28:37.040171Z",
+      "kind": "document.revision_created",
+      "producer": "harness",
+      "project_id": "editing-demo",
+      "session_id": "session-a",
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 2,
+        "base": 1,
+        "parent": 1,
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "author_kind": "agent",
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "removed": [],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 11,
+        "normalized": false,
+        "tombstone": false,
+        "patch_id": "patch-b2203ad030498404e48ab4e8"
+      }
+    },
+    {
+      "seq": 4,
+      "time": "2026-10-12T05:28:37.040565Z",
+      "kind": "document.patch_conflicted",
+      "producer": "harness",
+      "project_id": "editing-demo",
+      "session_id": "session-a",
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "patch_id": "patch-7db91dde52342e96f910b457",
+        "base": 1,
+        "current": 2,
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "conflicts": [
+          {
+            "block": "b2",
+            "kind": "paragraph",
+            "why": "changed",
+            "at_base": "Original equation $x = 1$.",
+            "now": "Current agent equation $x = 2$.",
+            "changed_by": [
+              {
+                "revision": 2,
+                "author": {
+                  "kind": "agent",
+                  "session_id": "session-a",
+                  "run_id": "run-demo",
+                  "role": "main"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "seq": 5,
+      "time": "2026-10-12T05:28:37.040745Z",
+      "kind": "document.created",
+      "producer": "harness",
+      "project_id": "editing-demo",
+      "session_id": "session-a",
+      "document_id": "doc-0ba4e9a520866a5bfca4ee3e",
+      "payload": {
+        "name": "workbook",
+        "title": "Workbook notes",
+        "scope": "session",
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        }
+      }
+    },
+    {
+      "seq": 6,
+      "time": "2026-10-12T05:28:37.041189Z",
+      "kind": "document.revision_created",
+      "producer": "harness",
+      "project_id": "editing-demo",
+      "session_id": "session-a",
+      "document_id": "doc-0ba4e9a520866a5bfca4ee3e",
+      "payload": {
+        "revision": 1,
+        "base": null,
+        "parent": null,
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "author_kind": "agent",
+        "changed": [],
+        "added": [
+          "b1"
+        ],
+        "removed": [],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 13,
+        "normalized": false,
+        "tombstone": false
+      }
+    },
+    {
+      "seq": 7,
+      "time": "2026-10-12T05:32:41.138355Z",
+      "kind": "document.revision_created",
+      "producer": "workspace",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 3,
+        "base": 2,
+        "parent": 2,
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "author_kind": "user",
+        "changed": [
+          "b6"
+        ],
+        "added": [],
+        "removed": [],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 0,
+        "normalized": false,
+        "tombstone": false,
+        "patch_id": "patch-f844ceffa9a5af5903e334a6"
+      }
+    },
+    {
+      "seq": 8,
+      "time": "2026-10-12T05:33:05.168894Z",
+      "kind": "document.revision_created",
+      "producer": "harness",
+      "project_id": "editing-demo",
+      "session_id": "session-a",
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 4,
+        "base": 3,
+        "parent": 3,
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "author_kind": "agent",
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "removed": [],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 4,
+        "normalized": false,
+        "tombstone": false,
+        "patch_id": "patch-015395a3f35e6c82fc0722eb"
+      }
+    },
+    {
+      "seq": 9,
+      "time": "2026-10-12T05:33:07.599089Z",
+      "kind": "document.patch_conflicted",
+      "producer": "workspace",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "patch_id": "patch-11cb5f913456c3061330153c",
+        "base": 3,
+        "current": 4,
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "conflicts": [
+          {
+            "block": "b2",
+            "kind": "paragraph",
+            "why": "changed",
+            "at_base": "Current agent equation $x = 2$.",
+            "now": "Concurrent agent equation $x = 4$.",
+            "changed_by": [
+              {
+                "revision": 4,
+                "author": {
+                  "kind": "agent",
+                  "session_id": "session-a",
+                  "run_id": "run-demo",
+                  "role": "main"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "seq": 10,
+      "time": "2026-10-12T05:33:12.035733Z",
+      "kind": "document.revision_created",
+      "producer": "workspace",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 5,
+        "base": 4,
+        "parent": 4,
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "author_kind": "user",
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "removed": [],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 0,
+        "normalized": false,
+        "tombstone": false,
+        "patch_id": "patch-8bdd8f16bb2ebb2e3759a2a7"
+      }
+    },
+    {
+      "seq": 11,
+      "time": "2026-10-12T05:33:25.649972Z",
+      "kind": "document.revision_created",
+      "producer": "harness",
+      "project_id": "editing-demo",
+      "session_id": "session-a",
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 6,
+        "base": 5,
+        "parent": 5,
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "author_kind": "agent",
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "removed": [],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 13,
+        "normalized": false,
+        "tombstone": false,
+        "patch_id": "patch-106c52be889c5bcc14c19787"
+      }
+    },
+    {
+      "seq": 12,
+      "time": "2026-10-12T05:33:29.479227Z",
+      "kind": "document.patch_conflicted",
+      "producer": "workspace",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "patch_id": "patch-28617f51442712b60b4e3ac4",
+        "base": 5,
+        "current": 6,
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "conflicts": [
+          {
+            "block": "b2",
+            "kind": "paragraph",
+            "why": "changed",
+            "at_base": "User resolved equation $x = 5$.",
+            "now": "Concurrent agent equation $x = 4$.",
+            "changed_by": [
+              {
+                "revision": 6,
+                "author": {
+                  "kind": "agent",
+                  "session_id": "session-a",
+                  "run_id": "run-demo",
+                  "role": "main"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "seq": 13,
+      "time": "2026-10-12T05:33:40.208309Z",
+      "kind": "document.revision_created",
+      "producer": "workspace",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 7,
+        "base": 6,
+        "parent": 6,
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "author_kind": "user",
+        "changed": [],
+        "added": [
+          "b7"
+        ],
+        "removed": [
+          "b2"
+        ],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 0,
+        "normalized": false,
+        "tombstone": false,
+        "patch_id": "patch-60902b1b1803f3b45fc03755"
+      }
+    },
+    {
+      "seq": 14,
+      "time": "2026-10-12T05:34:02.835677Z",
+      "kind": "document.revision_created",
+      "producer": "workspace",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 8,
+        "base": 7,
+        "parent": 7,
+        "author": {
+          "kind": "user",
+          "user": "user"
+        },
+        "author_kind": "user",
+        "changed": [
+          "b6"
+        ],
+        "added": [
+          "b2"
+        ],
+        "removed": [
+          "b7"
+        ],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 0,
+        "normalized": false,
+        "tombstone": false
+      }
+    },
+    {
+      "seq": 15,
+      "time": "2026-10-12T05:34:09.833208Z",
+      "kind": "document.revision_created",
+      "producer": "workspace",
+      "project_id": "editing-demo",
+      "session_id": "session-a",
+      "document_id": "doc-dfae7e3bffa7160e3e1a075b",
+      "payload": {
+        "revision": 9,
+        "base": 8,
+        "parent": 8,
+        "author": {
+          "kind": "agent",
+          "session_id": "session-a",
+          "run_id": "run-demo",
+          "role": "main"
+        },
+        "author_kind": "agent",
+        "changed": [
+          "b2"
+        ],
+        "added": [],
+        "removed": [],
+        "moved": [],
+        "structural_added": [],
+        "agent_characters": 16,
+        "normalized": false,
+        "tombstone": false,
+        "patch_id": "patch-7db91dde52342e96f910b457",
+        "accepted_by": {
+          "kind": "user",
+          "user": "user"
+        }
+      }
+    },
+    {
+      "seq": 16,
+      "time": "2026-10-12T05:34:16.858797Z",
+      "kind": "document.promoted",
+      "producer": "workspace",
+      "project_id": "editing-demo",
+      "session_id": null,
+      "document_id": "doc-0ba4e9a520866a5bfca4ee3e",
+      "payload": {
+        "from_session": "session-a",
+        "name": "workbook",
+        "reason": "Move workbook document to project",
+        "author": {
+          "kind": "user",
+          "user": "user"
+        }
+      }
+    }
+  ]
+}
