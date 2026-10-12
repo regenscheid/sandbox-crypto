@@ -212,3 +212,14 @@ and both GUI/math builds. The actual Node boundary runs against the built math
 bundle. The supported Python 3.12 matrix remains unchanged; fresh PR CI and merge
 are separate delivery gates. Comment/reply checks have their own additive [slice and validation boundary](COMMENT-MATH.md). Ledger and finding-prose checks,
 idle scheduling and automatic history compaction remain open.
+
+The additive comment/reply slice also corrected shared dependency-only reflag
+accounting: macro/renderer changes refresh evidence but only a new proved failing
+block edit spends an author opportunity. Final signed `77ecc171` passed independent
+review, 78 focused document/comment cases and all combined gates (9,631 Python
+tests, 43 opt-in skips, two existing warnings; 441 web and 24 post-build math checks).
+Fresh [comment/reply browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md)
+passed against the frozen source/helper; all disposable state was removed. This
+extends durable source coverage to comments/replies, with ledger/finding prose,
+model repair proposals and idle dispatch still open. Fresh PR CI is required
+before merge.
