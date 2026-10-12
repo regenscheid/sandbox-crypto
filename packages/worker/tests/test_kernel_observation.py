@@ -1,0 +1,399 @@
+# SPDX-License-Identifier: MIT
+"""Existing-channel observations must not become execution or idle keepalives."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+import pytest_asyncio
+
+from sandbox_science.contracts import ExecutionContext, KernelStatusRequest
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.worker import manager as manager_module
+from sandbox_science.worker.channel import ExecutorChannel, Message
+from sandbox_science.worker.errors import WorkerError
+
+from .test_service import CONTEXT, TOKEN, ClientFactory, Worker, start_worker
+
+pytestmark = pytest.mark.asyncio
+REQUEST = KernelStatusRequest(context=ExecutionContext.model_validate(CONTEXT))
+
+
+@pytest_asyncio.fixture
+async def observer(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Worker]:
+    worker, store = await start_worker(aiohttp_client, tmp_path)
+    try:
+        yield worker
+    finally:
+        await worker.manager.close()
+        store.close()
+
+
+async def test_actual_client_observes_only_after_explicit_connection(
+    observer: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = observer.manager
+
+    async def forbidden(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("observation invoked environment lifecycle")
+
+    async with WorkerClient(
+        str(observer.client.make_url("")), TOKEN, session=observer.client.session
+    ) as client:
+        with monkeypatch.context() as closed:
+            closed.setattr(manager, "_environment", forbidden)
+            closed.setattr(manager.backend, "prepare", forbidden)
+            with pytest.raises(WorkerAPIError) as error:
+                await client.observe_kernels(REQUEST.context)
+            assert error.value.kind == "unavailable"
+            assert manager._environments == {}
+        explicit = await client.kernel_status(REQUEST.context)
+        assert explicit.kernels == ()
+        environment = manager._environments["env1"]
+        environment.last_used = before = time.monotonic() - 60
+        with monkeypatch.context() as opened:
+            opened.setattr(manager, "_environment", forbidden)
+            opened.setattr(manager.backend, "prepare", forbidden)
+            result = await client.observe_kernels(REQUEST.context)
+        assert result.kernels == ()
+        assert result.current_revision == explicit.current_revision
+        assert result.observed_at.utcoffset() is not None
+        assert environment.last_used == before
+        assert environment.requests == 0
+        assert manager._kernel_observations == {}
+
+
+async def test_live_kernel_pins_and_recovery_hold_remain_readonly(observer: Worker) -> None:
+    await observer.run("observe-seed", kind="cell", code="observation_value = 1729")
+    manager = observer.manager
+    assert manager.revisions.observe("env1", "b" * 32) == 1
+    manager.store.set_package_status("env1", "needs_recovery", "prv-synthetic", 0)
+    before = list(manager.store._db.iterdump())
+    environment = manager._environments["env1"]
+    environment.last_used = touched = time.monotonic() - 60
+    result = await manager.observe_kernels(REQUEST)
+    assert len(result.kernels) == 1
+    assert (result.kernels[0].start_revision, result.current_revision) == (0, 1)
+    assert result.kernels[0].revision_status == "predates"
+    other = await manager.observe_kernels(
+        KernelStatusRequest(context=REQUEST.context.model_copy(update={"session_id": "other"}))
+    )
+    assert other.kernels == ()
+    assert list(manager.store._db.iterdump()) == before
+    assert environment.last_used == touched
+    assert environment.requests == 0
+    assert manager.store.package_gate("env1").mode == "needs_recovery"
+
+
+@pytest.mark.parametrize("reply", [[], [{"kernel_id": "k", "language": "python", "generation": 1}]])
+async def test_idle_release_wins_while_an_observer_rpc_is_blocked(
+    observer: Worker, monkeypatch: pytest.MonkeyPatch, reply: list[dict[str, object]]
+) -> None:
+    await observer.run("observe-open", kind="shell", script="true")
+    manager = observer.manager
+    started, release = asyncio.Event(), asyncio.Event()
+    request = ExecutorChannel.request
+
+    async def delayed(channel: ExecutorChannel, op: str, **fields: Any) -> Message:
+        if op == "kernels":
+            started.set()
+            await release.wait()
+            return {"kernels": reply}
+        return await request(channel, op, **fields)
+
+    monkeypatch.setattr(ExecutorChannel, "request", delayed)
+    pending = asyncio.create_task(manager.observe_kernels(REQUEST))
+    try:
+        await started.wait()
+        assert manager._environments["env1"].requests == 0
+        assert await asyncio.wait_for(manager.release_if_idle("env1", time.monotonic()), 1)
+        release.set()
+        with pytest.raises(WorkerError) as error:
+            await pending
+        assert error.value.kind == "unavailable"
+        assert "env1" not in manager._environments
+        assert manager._kernel_observations == {}
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+@pytest.mark.parametrize("change", ["object", "channel", "incarnation", "detaching", "fence"])
+async def test_delayed_empty_reply_cannot_pass_a_changed_connection(
+    observer: Worker, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    await observer.run("observe-open", kind="shell", script="true")
+    manager = observer.manager
+    environment = manager._environments["env1"]
+    channel = environment.channel
+    assert channel is not None
+    request = ExecutorChannel.request
+    incarnation = channel.incarnation
+
+    async def changed(peer: ExecutorChannel, op: str, **fields: Any) -> Message:
+        if op == "kernels":
+            if change == "object":
+                manager._environments["env1"] = type(environment)(channel=channel)
+            elif change == "channel":
+                environment.channel = None
+            elif change == "incarnation":
+                monkeypatch.setattr(channel, "incarnation", "inc-" + "f" * 24)
+            elif change == "detaching":
+                monkeypatch.setattr(channel, "detaching", True)
+            else:
+                manager._quarantined.add("env1")
+            return {"kernels": []}
+        return await request(peer, op, **fields)
+
+    monkeypatch.setattr(ExecutorChannel, "request", changed)
+    try:
+        with pytest.raises(WorkerError) as error:
+            await manager.observe_kernels(REQUEST)
+        assert error.value.kind == "unavailable"
+        assert manager._kernel_observations == {}
+    finally:
+        # Test corruption must not hide the actually owned process from teardown.
+        manager._environments["env1"] = environment
+        environment.channel = channel
+        channel.incarnation = incarnation
+        channel.detaching = False
+        manager._quarantined.discard("env1")
+
+
+async def test_waiting_lifecycle_and_observer_limits_do_not_queue(observer: Worker) -> None:
+    await observer.run("observe-open", kind="shell", script="true")
+    manager = observer.manager
+    environment = manager._environments["env1"]
+    channel = environment.channel
+    assert channel is not None
+    await environment.lock.acquire()
+    lifecycle = asyncio.create_task(manager.release_if_idle("env1", time.monotonic()))
+    try:
+        await asyncio.sleep(0)
+        for _ in range(10):
+            with pytest.raises(WorkerError):
+                await manager.observe_kernels(REQUEST)
+        assert manager._kernel_observations == {}
+        assert environment.requests == 0
+    finally:
+        environment.lock.release()
+    assert await asyncio.wait_for(lifecycle, 1)
+    assert "env1" not in manager._environments
+
+
+async def test_global_and_per_environment_admission_owned_until_cancellation(
+    observer: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await observer.run("observe-open", kind="shell", script="true")
+    manager = observer.manager
+    environment = manager._environments["env1"]
+    started = asyncio.Event()
+    count = 0
+    request = ExecutorChannel.request
+
+    async def blocked(channel: ExecutorChannel, op: str, **fields: Any) -> Message:
+        nonlocal count
+        if op == "kernels":
+            count += 1
+            if count == manager_module.MAX_KERNEL_OBSERVATIONS:
+                started.set()
+            await asyncio.Event().wait()
+        return await request(channel, op, **fields)
+
+    monkeypatch.setattr(ExecutorChannel, "request", blocked)
+    tasks: list[asyncio.Task[Any]] = []
+    try:
+        for index in range(manager_module.MAX_KERNEL_OBSERVATIONS):
+            name = f"env-{index}"
+            manager._environments[name] = type(environment)(channel=environment.channel)
+            context = REQUEST.context.model_copy(update={"environment_id": name})
+            tasks.append(
+                asyncio.create_task(manager.observe_kernels(KernelStatusRequest(context=context)))
+            )
+        await asyncio.wait_for(started.wait(), 1)
+        for name in ("env-0", "env1"):
+            with pytest.raises(WorkerError, match="capacity"):
+                await manager.observe_kernels(
+                    KernelStatusRequest(
+                        context=REQUEST.context.model_copy(update={"environment_id": name})
+                    )
+                )
+        assert len(manager._kernel_observations) == manager_module.MAX_KERNEL_OBSERVATIONS
+    finally:
+        for task in tasks:
+            task.cancel()
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    assert manager._kernel_observations == {}
+    assert environment.requests == 0
+    for index in range(manager_module.MAX_KERNEL_OBSERVATIONS):
+        manager._environments.pop(f"env-{index}")
+
+
+async def test_whole_deadline_includes_actual_channel_write_lock(
+    observer: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await observer.run("observe-open", kind="shell", script="true")
+    manager = observer.manager
+    environment = manager._environments["env1"]
+    channel = environment.channel
+    assert channel is not None
+    before = environment.last_used
+    monkeypatch.setattr(manager_module, "KERNEL_OBSERVATION_TIMEOUT", 0.05)
+    await channel._write_lock.acquire()
+    try:
+        with pytest.raises(WorkerError) as error:
+            await asyncio.wait_for(manager.observe_kernels(REQUEST), 0.5)
+        assert error.value.kind == "unavailable"
+        assert channel._pending == {}
+        assert not channel.closed
+    finally:
+        channel._write_lock.release()
+    assert environment.last_used == before
+    assert manager._kernel_observations == {}
+    assert (await manager.observe_kernels(REQUEST)).kernels == ()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        {},
+        [{}],
+        [{"kernel_id": "k", "language": "python", "generation": True}],
+        [{"kernel_id": "k", "language": "python", "generation": 1}] * 2,
+    ],
+)
+async def test_invalid_or_duplicate_kernel_identity_is_unavailable(
+    observer: Worker, monkeypatch: pytest.MonkeyPatch, raw: object
+) -> None:
+    await observer.run("observe-open", kind="shell", script="true")
+    request = ExecutorChannel.request
+
+    async def malformed(channel: ExecutorChannel, op: str, **fields: Any) -> Message:
+        if op == "kernels":
+            return {"kernels": raw}
+        return await request(channel, op, **fields)
+
+    monkeypatch.setattr(ExecutorChannel, "request", malformed)
+    status, response = await observer.post("/v1/kernels/observe", {"context": CONTEXT})
+    assert status == 503, response
+    assert observer.manager._kernel_observations == {}
+
+
+async def test_unauthenticated_observation_never_reaches_manager(observer: Worker) -> None:
+    response = await observer.client.post("/v1/kernels/observe", json={"context": CONTEXT})
+    assert response.status == 401
+    assert observer.manager._environments == {}
+
+
+async def test_unhealthy_existing_connections_refuse_before_rpc(
+    observer: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await observer.run("observe-open", kind="shell", script="true")
+    manager = observer.manager
+    environment = manager._environments["env1"]
+    channel = environment.channel
+    assert channel is not None
+    untouched = environment.last_used
+    before = list(manager.store._db.iterdump())
+
+    async def forbidden(*args: Any, **kwargs: Any) -> Message:
+        raise AssertionError("unhealthy observer dispatched a query")
+
+    for condition in (
+        "closed",
+        "detaching",
+        "missing",
+        "shutdown",
+        "recovering",
+        "fence",
+        "quarantined",
+        "released",
+        "session_closing",
+        "recycle",
+        "legacy",
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(ExecutorChannel, "request", forbidden)
+            if condition in ("closed", "detaching"):
+                patch.setattr(channel, condition, True)
+            elif condition == "missing":
+                patch.setattr(environment, "channel", None)
+            elif condition == "shutdown":
+                patch.setattr(manager, "_closing", True)
+            elif condition in ("recovering", "quarantined", "released"):
+                attribute = {
+                    "recovering": "_recovering",
+                    "quarantined": "_quarantined",
+                    "released": "_released_environments",
+                }[condition]
+                patch.setattr(manager, attribute, {"env1"})
+            elif condition == "fence":
+                patch.setattr(manager, "_daemon_fences", {"env1": asyncio.current_task()})
+            elif condition == "session_closing":
+                patch.setattr(manager, "_closing_sessions", {("p1", "env1", "s1"): 1})
+            elif condition == "recycle":
+                patch.setattr(manager.store, "recycle_needed", lambda _: True)
+            else:
+                patch.setitem(channel.hello, "kernel_revision_protocol", True)
+            with pytest.raises(WorkerError) as error:
+                await manager.observe_kernels(REQUEST)
+            assert error.value.kind == ("unsupported" if condition == "legacy" else "unavailable")
+            assert manager._kernel_observations == {}
+        assert environment.requests == 0
+        assert environment.last_used == untouched
+    assert list(manager.store._db.iterdump()) == before
+
+
+@pytest.mark.parametrize(
+    "old_reply", [[], [{"kernel_id": "k", "language": "python", "generation": 1}]]
+)
+async def test_completed_session_close_invalidates_only_its_active_observer(
+    observer: Worker, monkeypatch: pytest.MonkeyPatch, old_reply: list[dict[str, object]]
+) -> None:
+    from sandbox_science.contracts import SessionCloseRequest
+
+    await observer.run("observe-close-seed", kind="cell", code="close_value = 1729")
+    manager = observer.manager
+    environment = manager._environments["env1"]
+    started, release = asyncio.Event(), asyncio.Event()
+    request = ExecutorChannel.request
+
+    async def delayed(channel: ExecutorChannel, op: str, **fields: Any) -> Message:
+        if op == "kernels":
+            started.set()
+            await release.wait()
+            return {"kernels": old_reply}
+        return await request(channel, op, **fields)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ExecutorChannel, "request", delayed)
+        pending = asyncio.create_task(manager.observe_kernels(REQUEST))
+        try:
+            await started.wait()
+            # Closing another session must not invalidate this scoped token.
+            other = REQUEST.context.model_copy(update={"session_id": "other"})
+            await manager.close_session(SessionCloseRequest(context=other))
+            assert manager._kernel_observations["env1"].valid
+            closed = await asyncio.wait_for(
+                manager.close_session(SessionCloseRequest(context=REQUEST.context)), 1
+            )
+            assert len(closed.kernels) == 1
+            assert manager._closing_sessions == {}
+            assert manager._environments["env1"] is environment
+            assert not manager._kernel_observations["env1"].valid
+            release.set()
+            with pytest.raises(WorkerError) as error:
+                await pending
+            assert error.value.kind == "unavailable"
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+    assert manager._kernel_observations == {}
+    assert (await manager.observe_kernels(REQUEST)).kernels == ()

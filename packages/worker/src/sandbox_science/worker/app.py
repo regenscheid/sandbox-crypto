@@ -93,7 +93,7 @@ _MEDIA_TYPE = TypeAdapter[str](MediaType)
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 _CLIENT: Final = "sandbox_science.client"
 _MAX_TOKEN: Final = 4096
-_READS: Final = frozenset({"/v1/files/read", "/v1/files/list"})
+_READS: Final = frozenset({"/v1/files/read", "/v1/files/list", "/v1/kernels/observe"})
 """Requests that change nothing, though sent with POST: not logged as changes."""
 
 
@@ -244,6 +244,7 @@ def create_app(
             web.post("/v1/executions/{execution_id}/cancel", cancel),
             web.post("/v1/kernels/restart", restart_kernel),
             web.post("/v1/kernels/status", kernel_status),
+            web.post("/v1/kernels/observe", observe_kernels),
             web.post("/v1/sessions/close", close_session),
             web.post("/v1/files/read", read_file),
             web.post("/v1/files/write", write_file),
@@ -866,3 +867,10 @@ async def kernel_status(request: web.Request) -> web.Response:
     body = KernelStatusRequest.model_validate_json(await _body(request))
     _context(request, body.context, hide=True)
     return _json(await request.app[MANAGER].kernel_status(body))
+
+
+async def observe_kernels(request: web.Request) -> web.Response:
+    """Inspect an existing connection without invoking the environment lifecycle."""
+    body = KernelStatusRequest.model_validate_json(await _body(request))
+    _context(request, body.context, hide=True)
+    return _json(await request.app[MANAGER].observe_kernels(body))
