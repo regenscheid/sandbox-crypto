@@ -96,7 +96,7 @@ Nothing here blocks the queued work: each item has a default in place.
    - the GUI (CP-26).
 8. **Worker:**
    - environment IDs per project, and limits per client;
-   - a flaky timing test in `packages/worker/tests/test_provisioning.py` (a 0.25 s bound that took 0.298 s once on Python 3.12 in CI).
+   - the recorded lockfile timing flake is addressed: the original hostile inputs and 0.25 s bound run in a fresh interpreter, and deterministic canonical-byte/size-cap checks accompany bounded per-entry serialization. This excludes prior test heap history, while host scheduling remains a limit of timing checks.
 9. **MCP:** connector auth (blocked), the proxy's refinements in the backlog. **A real model** (blocked). Then the **M2 exit run**: paper → Sage → document → the user's feedback → automatic review → board update, on babbage.
 
 ## How the work has been done
