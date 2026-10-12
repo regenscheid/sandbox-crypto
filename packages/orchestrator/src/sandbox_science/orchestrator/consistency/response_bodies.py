@@ -422,6 +422,48 @@ class ResponseBodies:
                 )
             )
 
+    def _replay(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        author: Author,
+        value: ResponseEdit,
+        fingerprint: str,
+    ) -> Json | None:
+        row = db.execute(
+            "SELECT substr(CAST(fingerprint AS BLOB),1,65),"
+            "substr(CAST(result AS BLOB),1,65537) FROM review_operations "
+            "WHERE project=? AND actor=? AND operation_id=?",
+            (project, author.actor, value.operation_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if row[0] != fingerprint.encode():
+            raise DocumentError(CONFLICT, "operation ID already names another finding mutation")
+        if not isinstance(row[1], bytes) or len(row[1]) > 65536:
+            raise DocumentError(INTERNAL, "retained response receipt exceeds its bounds")
+        try:
+            retained = bounded_json(row[1], 65536)
+            canonical = projection(
+                read(
+                    db,
+                    value.finding,
+                    value.response_revision,
+                    value.base + 1,
+                    project=project,
+                    session=session,
+                    full=False,
+                )
+            )
+            if retained != canonical or canonical["sha256"] != digest(value.body):
+                raise ValueError
+        except (ValueError, TypeError, KeyError, RecursionError):
+            raise DocumentError(
+                INTERNAL, "response receipt does not bind its immutable body"
+            ) from None
+        return {**canonical, "replayed": True}
+
     def edit(self, project: str, session: str, raw: object, author: Author) -> Json:
         from .findings import Findings
 
@@ -442,7 +484,7 @@ class ResponseBodies:
         findings = Findings(self.store)
         with self.store.documents._read() as db:
             assert db is not None  # noqa: S101 - writer initialized
-            replay = findings._replay(db, project, author.actor, value.operation_id, fingerprint)
+            replay = self._replay(db, project, session, author, value, fingerprint)
             if replay:
                 return replay
             current = read(
@@ -452,7 +494,7 @@ class ResponseBodies:
             raise DocumentError(CONFLICT, "response source changed since this edit was drafted")
         prepared = prepare(value.body, author, current)
         with self.store.documents._write() as db:
-            replay = findings._replay(db, project, author.actor, value.operation_id, fingerprint)
+            replay = self._replay(db, project, session, author, value, fingerprint)
             if replay:
                 return replay
             found = findings._get(db, project, session, value.finding)

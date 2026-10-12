@@ -480,3 +480,51 @@ async def test_ordinary_tool_uses_trusted_main_context_and_bounded_reads(stores)
     assert (
         ResponseBodies(reviews).get("p", "s", finding, decision)["author"]["run_id"] == "tool-run"
     )
+
+
+def test_response_replay_receipt_is_bounded_and_binds_its_immutable_revision(stores):
+    import json
+    import tracemalloc
+
+    docs, reviews, _ = stores
+    finding, decision = response(reviews)
+    api = ResponseBodies(reviews)
+    initial = api.get("p", "s", finding, decision)
+    payload = {
+        "finding": finding,
+        "response_revision": decision,
+        "expected": decision,
+        "base": 1,
+        "sha256": initial["sha256"],
+        "body": "$x$",
+        "operation_id": "first",
+    }
+    expected = api.edit("p", "s", payload, MAIN)
+    edit(reviews, finding, decision, "$y$", op="later")
+    assert api.edit("p", "s", payload, MAIN)["revision"] == 2
+    for result in (
+        {**expected, "sha256": "f" * 64},
+        {**expected, "revision": 3},
+        {**expected, "author": {"kind": "user"}},
+        {**expected, "finding": "finding-" + "a" * 24},
+    ):
+        with docs._write() as db:
+            db.execute(
+                "UPDATE review_operations SET result=? WHERE operation_id='first'",
+                (json.dumps(result),),
+            )
+        with pytest.raises(DocumentError, match="immutable body"):
+            api.edit("p", "s", payload, MAIN)
+    with docs._write() as db:
+        db.execute(
+            "UPDATE review_operations SET result=? WHERE operation_id='first'",
+            (json.dumps({**expected, "body": "x" * (20 * 1024 * 1024)}),),
+        )
+    tracemalloc.start()
+    try:
+        with pytest.raises(DocumentError, match="bounds"):
+            api.edit("p", "s", payload, MAIN)
+        assert tracemalloc.get_traced_memory()[1] < 300000
+    finally:
+        tracemalloc.stop()
+    assert api.get("p", "s", finding, decision)["body"] == "$y$"
