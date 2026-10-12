@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from sandbox_science.orchestrator import mathcheck
 from sandbox_science.orchestrator.mathcheck import ENGINE, OPTIONS, Formula, MathChecker
 
 
@@ -123,6 +124,60 @@ async def test_deadline_and_cancellation_reap_children(tmp_path: Path) -> None:
     with pytest.raises(ProcessLookupError):
         os.kill(int(pidfile.read_text()), 0)
     assert checker._pending == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["spawn", "cleanup"])
+async def test_repeated_cancellation_keeps_ownership_until_reaped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    children: list[asyncio.subprocess.Process] = []
+    original_spawn = asyncio.create_subprocess_exec
+    original_reap = mathcheck._reap
+
+    async def gated_spawn(*args: str, **kwargs: object) -> asyncio.subprocess.Process:
+        # Forward this private fixture's opaque subprocess keyword arguments unchanged.
+        process = await original_spawn(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+        children.append(process)
+        if phase == "spawn":
+            entered.set()
+            await release.wait()
+        return process
+
+    async def gated_reap(process: asyncio.subprocess.Process) -> None:
+        if phase == "cleanup":
+            entered.set()
+            await release.wait()
+        await original_reap(process)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", gated_spawn)
+    monkeypatch.setattr(mathcheck, "_reap", gated_reap)
+    checker = fixture_checker(tmp_path, "time.sleep(30)\n", timeout=0.2)
+    task = asyncio.create_task(checker.check(Formula(id="m1", tex="x")))
+    try:
+        async with asyncio.timeout(2):
+            await entered.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert checker._pending == 1
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert checker._pending == 0
+        assert children[0].returncode is not None
+        with pytest.raises(ProcessLookupError):
+            os.kill(children[0].pid, 0)
+    finally:
+        release.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        for process in children:
+            await original_reap(process)
 
 
 @pytest.mark.asyncio
