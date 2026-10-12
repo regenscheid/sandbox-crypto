@@ -184,6 +184,55 @@ then use `lab_down.sh` to remove all Lab22 sandboxes/services/state. Lost-bridge
 blocked host-thread and corrupt-state tests remain local hostile probes, not claims
 about induced OpenShell failures. No arbitrary stuck filesystem-I/O bound is asserted.
 
+## Lab24: worker-local output observations
+
+Root-owned [Lab24 acceptance](../docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md)
+passed on signed `35863776` / helper `bcddecd3`, with nineteen terminal markers,
+eighteen bounded reports, partial outputs, raw path/root identity and same-attempt/
+kernel continuity through graceful worker restart. PDF was unavailable. The
+[archive](../docs/agent-reports/babbage-openshell-lab-24-evidence-2026-10-12.json)
+retains source, gate, API, independent inspection and complete teardown evidence;
+cleanup was independently verified at 14:59:02.325873 UTC.
+
+For a separately coordinated rerun, root owns setup, exact signed-source freeze,
+execution, evidence archiving and full teardown; authors must not start a lab themselves.
+Use `lab_up.sh` and `PROJECT=lab24 worker_up.sh` from the frozen reviewed checkout,
+then run:
+
+```bash
+.venv/bin/python -I .agents/labs/output_observations.py init prepare verify checkpoint running
+```
+
+Root then gracefully stops/restarts only that disposable transient worker, retaining
+its state and VM. Do not run another worker against that database. Once ready, run:
+
+```bash
+.venv/bin/python -I .agents/labs/output_observations.py resume restart_verify
+```
+
+The mandatory project/environment marker and lab-scoped settings guard every request
+and read. The helper starts/stops no service. It exercises successful/failed/cancelled
+shell, cell and job paths, timeout, raw invalid-UTF8/root-prefix collisions,
+`not_seen_after`, explicit missing/truncated gaps and healthy execution. If the actual
+profile advertises PDF, it renders a fixed synthetic PDF inside the sandbox and checks
+its output observation; otherwise evidence explicitly records PDF as unavailable.
+Only the marked operator fixture opens `worker/state/worker.sqlite3` read-only and
+uses the internal scoped reader; no public feed is added. It checks original immutable
+VM/attempt pins, same-attempt restart without command replay, exact retained prefix,
+scoped stream identity and unknown producer/input fields. Every exercised outcome
+requires its report except a request refused before start; known partial file paths
+and metadata are required for failed, cancelled and timed-out work. A synthetic
+Python global must remain usable after cancellation and after the worker restart.
+The helper retains the truncation report, then removes only its known 300 fixture
+files before checkpoint/recovery so the recovered path fits below the scan cap.
+
+Archive `evidence/output-observations.json`, logs, source/helper hashes and explicit
+teardown evidence, then remove every Lab24 VM/service/state with `lab_down.sh`.
+Damaged derived SQL, quota/eviction, invalid sidecars and transport uncertainty remain
+local hostile proof unless separately induced and retained in the real lab. This
+acceptance cannot prove every file mutation, writer closure, producer/input lineage,
+attempt-end bytes, automatic inventory or bounded legacy directory-walk I/O.
+
 ## Lab23: external backend and research-profile conformance
 
 The [Lab23 report](../docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md) and

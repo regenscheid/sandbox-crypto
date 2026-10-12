@@ -91,6 +91,10 @@ MAX_DEPTH = 128
 """Directory levels scanned below the session workspace and the shared area."""
 MAX_WRITTEN = 1000
 MAX_PATH_BYTES = 4096
+MAX_OBSERVATION_ENTRIES = 64
+MAX_OBSERVATION_BYTES = 16 * 1024
+MAX_OBSERVATION_SCAN_ENTRIES = 256
+MAX_OBSERVATION_SCAN_BYTES = 64 * 1024
 MAX_OUTPUTS = 10_000
 """Rich outputs a cell returns; one note stands for any beyond them or the limit."""
 STREAM_CHUNK = 64 * 1024
@@ -331,19 +335,67 @@ def _walk(directory: int, names: Sequence[str], path: str, *, create: bool) -> i
     return directory
 
 
-def scan_files(directory: int, prefix: str, files: dict[str, tuple[int, int, int]]) -> bool:
+class SnapshotFiles(dict[str, tuple[int, int, int]]):
+    """Compatibility map plus a separately bounded, lossless metadata sidecar.
+
+    This adds no filesystem operations. The original walk's regular-file/depth/
+    directory limitations remain; its result is never mutation-complete.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.raw: dict[tuple[str, bytes], tuple[int, int, int]] = {}
+        self.raw_bytes = 0
+        self.limited = False
+        self.error = False
+        self.path_omitted = False
+        self.started_ns = time.monotonic_ns()
+        self.finished_ns: int | None = None
+
+    def observe(self, area: str, path: str, stamp: tuple[int, int, int]) -> None:
+        if len(self.raw) >= MAX_OBSERVATION_SCAN_ENTRIES:
+            self.limited = True
+            return
+        raw = os.fsencode(path)
+        if (
+            len(raw) > MAX_PATH_BYTES
+            or b"\0" in raw
+            or any(part in (b"", b".", b"..") for part in raw.split(b"/"))
+        ):
+            self.path_omitted = True
+            return
+        size = len(raw) + 128
+        if self.raw_bytes + size > MAX_OBSERVATION_SCAN_BYTES:
+            self.limited = True
+            return
+        self.raw[(area, raw)] = stamp
+        self.raw_bytes += size
+
+
+def _scan_error(files: dict[str, tuple[int, int, int]]) -> None:
+    if isinstance(files, SnapshotFiles):
+        files.error = True
+
+
+def scan_files(
+    directory: int, prefix: str, files: dict[str, tuple[int, int, int]], *, area: str = "session"
+) -> bool:
     """Add the regular files below ``directory`` (which is consumed) to ``files``.
 
     Depth first, holding open only the directories on the current path. Returns
     True when MAX_SNAPSHOT files stopped the scan.
     """
-    path = [(directory, prefix, _subdirectories(directory, prefix, files))]
+    path = [(directory, prefix, _subdirectories(directory, prefix, files, area, prefix))]
     try:
         while path:
             if len(files) >= MAX_SNAPSHOT:
+                if isinstance(files, SnapshotFiles):
+                    files.limited = True
                 return True
             current, relative, pending = path[-1]
             if not pending or len(path) > MAX_DEPTH:
+                if pending and isinstance(files, SnapshotFiles):
+                    files.limited = True
                 os.close(current)
                 path.pop()
                 continue
@@ -351,9 +403,10 @@ def scan_files(directory: int, prefix: str, files: dict[str, tuple[int, int, int
             try:
                 child = os.open(name, _DIRECTORY, dir_fd=current)
             except OSError:
+                _scan_error(files)
                 continue
             below = f"{relative}{name}/"
-            path.append((child, below, _subdirectories(child, below, files)))
+            path.append((child, below, _subdirectories(child, below, files, area, prefix)))
         return False
     finally:
         for current, _, _ in path:
@@ -361,7 +414,11 @@ def scan_files(directory: int, prefix: str, files: dict[str, tuple[int, int, int
 
 
 def _subdirectories(
-    directory: int, relative: str, files: dict[str, tuple[int, int, int]]
+    directory: int,
+    relative: str,
+    files: dict[str, tuple[int, int, int]],
+    area: str = "session",
+    root_prefix: str = "",
 ) -> list[str]:
     """Record a directory's regular files in ``files``; return its subdirectories' names."""
     names: list[str] = []
@@ -378,11 +435,125 @@ def _subdirectories(
                         continue
                     info = entry.stat(follow_symlinks=False)
                 except OSError:
+                    _scan_error(files)
                     continue
-                files[relative + entry.name] = (info.st_mtime_ns, info.st_size, info.st_ino)
+                stamp = (info.st_mtime_ns, info.st_size, info.st_ino)
+                files[relative + entry.name] = stamp
+                if isinstance(files, SnapshotFiles):
+                    # The namespace may have changed since is_file(). Preserve
+                    # the compatibility map, but do not label special metadata
+                    # as a regular-file observation.
+                    if not stat.S_ISREG(info.st_mode):
+                        files.error = True
+                        continue
+                    # The root is tagged by the caller before legacy textual
+                    # prefixes or printable_path can collapse distinct paths.
+                    files.observe(area, relative[len(root_prefix) :] + entry.name, stamp)
     except OSError:
-        pass
+        _scan_error(files)
     return names
+
+
+def observation_report(before: object, after: object) -> Message | None:
+    """Project only already-observed metadata; missing-after is not a deletion proof."""
+    if not isinstance(before, SnapshotFiles) or not isinstance(after, SnapshotFiles):
+        return None
+    entries: list[Message] = []
+    report: Message = {
+        "protocol": 1,
+        "source": "regular_stat_report_v1",
+        "clock": "executor_monotonic",
+        "before_started_ns": before.started_ns,
+        "before_finished_ns": before.finished_ns,
+        "after_started_ns": after.started_ns,
+        "after_finished_ns": after.finished_ns,
+        "entries": entries,
+        "coverage": {
+            "before_limited": before.limited,
+            "after_limited": after.limited,
+            "before_error": before.error,
+            "after_error": after.error,
+            "path_omitted": before.path_omitted or after.path_omitted,
+            "report_truncated": False,
+        },
+    }
+
+    def metadata(stamp: tuple[int, int, int] | None) -> Message | None:
+        if stamp is None:
+            return None
+        return {"mtime_ns": stamp[0], "size": stamp[1], "inode": stamp[2]}
+
+    for area, raw in sorted(before.raw.keys() | after.raw.keys()):
+        previous, current = before.raw.get((area, raw)), after.raw.get((area, raw))
+        if previous == current:
+            continue
+        kind = "not_seen_after" if current is None else "regular_stat_difference"
+        if current is not None and previous is None and (before.limited or before.error):
+            kind = "regular_observed"
+        entry: Message = {
+            "kind": kind,
+            "area": area,
+            "path_b64": base64.b64encode(raw).decode("ascii"),
+            "before": metadata(previous),
+            "after": metadata(current),
+        }
+        if len(entries) >= MAX_OBSERVATION_ENTRIES:
+            report["coverage"]["report_truncated"] = True
+            break
+        entries.append(entry)
+        # Reserve room for host-side explicit defaults in canonical serialization.
+        if len(encode_line(report)) > MAX_OBSERVATION_BYTES - 512:
+            entries.pop()
+            report["coverage"]["report_truncated"] = True
+            break
+    return report
+
+
+def bounded_observations(message: Message) -> Message:
+    """Keep the independent sidecar bounded before end fitting or recovery compaction."""
+    raw = message.get("output_observations")
+    if raw is None:
+        return message
+    pending: list[tuple[object, int]] = [(raw, 0)]
+    size = nodes = 0
+    while pending:
+        value, depth = pending.pop()
+        nodes += 1
+        if nodes > 2048 or depth > 6:
+            break
+        if isinstance(value, str):
+            if len(value) > 8192:
+                break
+            size += len(value.encode("utf-8", "replace"))
+        elif isinstance(value, dict):
+            if len(cast(dict[object, object], value)) > 64:
+                break
+            pending.extend(
+                (item, depth + 1)
+                for pair in cast(dict[object, object], value).items()
+                for item in pair
+            )
+        elif isinstance(value, (list, tuple)):
+            if len(cast(list[object] | tuple[object, ...], value)) > 64:
+                break
+            pending.extend(
+                (item, depth + 1) for item in cast(list[object] | tuple[object, ...], value)
+            )
+        elif value is None or type(value) in (bool, int):
+            if type(value) is int and value.bit_length() > 64:
+                break
+            size += 24
+        else:
+            break
+        if size > MAX_OBSERVATION_BYTES:
+            break
+    else:
+        try:
+            if len(encode_line({"report": raw})) <= MAX_OBSERVATION_BYTES:
+                return message
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            pass  # invalid derived data must not prevent the terminal result
+    return {**message, "output_observations": None, "observation_omitted": "oversized"}
 
 
 SHARED_REPLY_BYTES = 4 * 1024 * 1024
@@ -1470,14 +1641,20 @@ class Executor:
         Maps each path to its modification time, size and inode number. No
         symlink is followed, to the areas themselves included.
         """
-        files: dict[str, tuple[int, int, int]] = {}
-        for prefix, base in (("", ["sessions", session]), (SHARED + "/", [SHARED])):
+        files = SnapshotFiles()
+        for area, prefix, base in (
+            ("session", "", ["sessions", session]),
+            ("shared", SHARED + "/", [SHARED]),
+        ):
             try:
                 directory = self.open_base(base)
             except (OSError, ToolError):
+                files.error = True
                 continue
-            if scan_files(directory, prefix, files):
+            if scan_files(directory, prefix, files, area=area):
+                files.finished_ns = time.monotonic_ns()
                 return files, True
+        files.finished_ns = time.monotonic_ns()
         return files, False
 
     async def written(
@@ -1487,9 +1664,14 @@ class Executor:
         after = await asyncio.to_thread(self.snapshot, session)
         changed = sorted(path for path, stamp in after[0].items() if before[0].get(path) != stamp)
         names = [printable_path(path) for path in changed[:MAX_WRITTEN]]
+        try:
+            observations = observation_report(before[0], after[0])
+        except Exception:
+            observations = None  # derived metadata must never change research completion
         return {
             "written_files": [name for name in names if len(name.encode()) <= MAX_PATH_BYTES],
             "written_files_truncated": before[1] or after[1] or len(changed) > MAX_WRITTEN,
+            "output_observations": observations,
         }
 
     def tool_path(self) -> str:
@@ -1725,6 +1907,7 @@ class Executor:
             not_dumpable=self.protected,
             features=available_features(),
             artifact_capture_protocol=capture.PROTOCOL,
+            output_observation_protocol=1,
             environment=await self.baseline(),
         )
 
@@ -2067,6 +2250,7 @@ class Executor:
             if running.process is not None:
                 _spawned.discard(running.process.pid)
             self.running.pop(execution, None)
+            observations = written.pop("output_observations", None)
             result = {
                 "exit_code": exit_code,
                 "signal": signal_number,
@@ -2079,7 +2263,9 @@ class Executor:
                 **written,
             }
             if not self.closing:
-                await self.event(execution, "end", state=state, result=result)
+                await self.event(
+                    execution, "end", state=state, result=result, output_observations=observations
+                )
 
     async def pump(
         self,
@@ -2290,7 +2476,10 @@ class Executor:
                 sandbox_ended=time.time(),
             )
             if not self.closing:
-                await self.event(execution, "end", state=state, result=result)
+                observations = result.pop("output_observations", None)
+                await self.event(
+                    execution, "end", state=state, result=result, output_observations=observations
+                )
 
     async def execute(
         self,
@@ -3096,6 +3285,7 @@ def fit_line(message: Message) -> bytes | None:
     An ``end`` event's result gives up output, its largest part first, until it
     fits. A reply that does not fit becomes an error reply.
     """
+    message = bounded_observations(message)
     line = encode_line(message)
     if len(line) <= MAX_LINE:
         return line
