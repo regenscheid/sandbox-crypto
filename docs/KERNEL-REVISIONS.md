@@ -118,7 +118,6 @@ For root-owned disposable CP-F7 acceptance:
    results and cleanup evidence. Root owns this lab; no author-started services,
    VMs or models are part of local validation.
 
-Runtime acceptance, independent exact-head review, fresh CI and merge remain
-pending until their evidence is recorded centrally. Automatic recovery/restoration,
+Root-owned [OpenShell Lab25](../.agents/docs/agent-reports/babbage-openshell-lab-25-2026-10-12.md) passed on signed `629e27d`: Python 3.14.8, real networkx 3.7 provisioning from revision 0 to 1, retained A globals/start, fresh B start, same-VM worker restart and explicit kernel restart. The helper and evidence passed independent review; complete teardown was independently verified at 20:34:35.276855 UTC. This is sequential CP-F7 kernel-revision continuation acceptance, not a new concurrent-linking/overlap rerun. Exact combined gates, fresh CI and merge are recorded centrally. Automatic recovery/restoration,
 uninstall/upgrade, package UI and live cross-session notification remain separate
 backlog work.

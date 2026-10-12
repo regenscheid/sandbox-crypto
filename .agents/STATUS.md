@@ -1,6 +1,6 @@
 # Status
 
-Updated: 2026-10-12. Main `1890db0` includes PR #69 through #93 after their fresh CI gates; normal development uses Python 3.13, with supported Python 3.12 retained in the matrix.
+Updated: 2026-10-12. Main `12ddc60` includes PR #69 through #94 after their fresh CI gates; normal development uses Python 3.13, with supported Python 3.12 retained in the matrix.
 
 **Phase:** 1 (babbage), milestone M1: its exit run passed on babbage ([lab 9](docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M0's specs and decisions still await the user's review. **Focus:** toward M2: the research workspace, following background jobs and executor recovery acceptance.
 
@@ -8,17 +8,13 @@ Background jobs have worker/API and harness/GUI implementations, independent adv
 
 ## Active parallel implementation
 
-The user requested additional parallel agents on 2026-10-12. Three isolated branches
-start from actual main `1890db0`: CP-12 kernel start revisions and stale-kernel
-disclosure; LD-28 bounded project macros with document overrides and exact math
-contexts; and the known Unicode table-parser parity fix. Each has separate source
-ownership. Root coordinates tracking, independent reviews, final integration and
-runtime acceptance. These items remain open until their own merge and required
-evidence; ongoing implementation is not milestone completion.
+The user requested additional parallel agents on 2026-10-12. Unicode table parity merged as PR #94 at actual main `12ddc60` after all four fresh checks passed (run `38304095754`). CP-12 kernel tracking passed independently reviewed local implementation and root-owned OpenShell Lab25; its actual-main union and delivery gates are in progress. LD-28 project macros passed independent source review and is integrating actual main for full checks and root-owned browser acceptance. Root owns tracking, final integration and acceptance; remaining delivery is not milestone completion.
 
 ## Recent progress
 
-- **Unicode table parser parity:** independently reviewed signed source `4cdb40f` and central-tracking union `9419abec` preserve exact source/profile/history boundaries. Root final combined gates on signed `9419abec` passed 9,817 Python tests (43 opt-in skips, two existing serializer warnings), 571 web tests including the 1,076-source differential corpus, 24 post-build math cases, both production builds and locked/static/license/protocol checks. Source/test/helper/configuration stayed unchanged; subsequent edits describe acceptance and tracking only. Fresh exact-head PR CI and merge remain required. See [scope](../docs/TABLE-PARSER-PARITY.md).
+- **Kernel start revisions** (CP-12; [scope](../docs/KERNEL-REVISIONS.md)): signed `629e27d` preserves independently reviewed product `2135e16`; signed union `3fa211c` integrates actual table main `12ddc60`. Root-owned [OpenShell Lab25](docs/agent-reports/babbage-openshell-lab-25-2026-10-12.md) passed real networkx provisioning, exact stale/current start pins, preserved globals and immutable VM through worker restart, explicit restart and scoped refusal. Helper/results and complete teardown independently verified at 20:34:35.276855 UTC. Final combined gates pass 9,858 Python/43 skips/two existing warnings, 571 web, 24 math and all required checks/builds. Product remains exact Lab25; a test-only UUID-owner correction isolates parallel fixture cleanup. Exact final review and fresh PR CI remain delivery gates; automatic live/cross-session disclosure remains open.
+
+- **Unicode table parser parity:** independently reviewed signed source `4cdb40f` and central-tracking union `9419abec` preserve exact source/profile/history boundaries. Root final combined gates on signed `9419abec` passed 9,817 Python tests (43 opt-in skips, two existing serializer warnings), 571 web tests including the 1,076-source differential corpus, 24 post-build math cases, both production builds and locked/static/license/protocol checks. Source/test/helper/configuration stayed unchanged; subsequent edits describe acceptance and tracking only. PR #94 merged at actual main `12ddc60` after all four fresh exact-head checks passed on signed `5418ae3` (run `38304095754`). See [scope](../docs/TABLE-PARSER-PARITY.md).
 
 - **Isolated math distribution notices:** `impl/math-license-notices` starts at merged main `05ba353`. The shared checked collector emits code-only KaTeX MIT, React Apache and glyph-derived SVG OFL notices, project MIT, the unchanged launcher and complete six-file hashes; the established copier entry point verifies final coverage. No fonts/CSS/Svelte runtime, dependencies, platform-code allowlist or renderer behavior change. Independent review and root six-file acceptance pass. Final gates passed 486 web tests (41 notice cases), 24 post-build math cases, both builds and locked/static/license/protocol checks. Source-identical full Python 9,749/43/two warnings is explicitly reused. Actual main `b2f2e62` (merged PR #92) is integrated at signed `fe19020`; fresh combined 515 web tests/check/build pass, and all 70 GUI files match root copy-accepted bytes exactly. The unchanged six-file math distribution/build/24 results and backend baseline are explicitly reused. Independent exact-head review cleared signed `a4be274`; PR #93 merged at actual main `1890db0` after all four fresh checks passed (run `38295449131`). See [build evidence](docs/agent-reports/math-license-notices-2026-10-12.md).
 
