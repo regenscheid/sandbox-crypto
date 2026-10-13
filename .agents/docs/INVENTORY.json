@@ -30,14 +30,14 @@
     {
       "path": "../../docs/KERNEL-NOTICE-LINEAGE.md",
       "category": "implementation-boundary",
-      "bytes": 7705,
-      "sha256": "9d87e13129ee7edc6e1fd1545c5f13c7669b4ef32ec4f78ef89870866b7564cd"
+      "bytes": 7759,
+      "sha256": "d47e7179506f02c6573c286251749bbe6017143525a52aae0568935af5959d5b"
     },
     {
       "path": "../../docs/KERNEL-NOTICES.md",
       "category": "implementation-boundary",
-      "bytes": 10115,
-      "sha256": "a640e3adb7df177654f63b74f3043a027d1388bde646c9a5e913f53df35938af"
+      "bytes": 10169,
+      "sha256": "b04720539bee4251746f72f18fd2fdb1adce8a20998f83ff843d0e017f692015"
     },
     {
       "path": "../../docs/KERNEL-REVISIONS.md",
@@ -54,8 +54,8 @@
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 49643,
-      "sha256": "6b5b999ff716d4ed5c1a5c93c11a054fb2601a0612da5ddba682fb1f75ff3869"
+      "bytes": 49697,
+      "sha256": "0ded56fb292bfa9552bb220834ccc862e3b658344830079c5437d98e5f1317ae"
     },
     {
       "path": "../../docs/PILOT-COMPUTATIONS.md",
@@ -138,8 +138,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 26881,
-      "sha256": "01edf38dc0fdea7966e5cf176a77f1b54d3d987fe4ea24f5e0d192ef65a8180e"
+      "bytes": 26953,
+      "sha256": "1a75429a36cbe4110837d3a9a6684df79c9d41db516e562e6ef8df6142dc1f7a"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",

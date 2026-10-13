@@ -1,5 +1,11 @@
 # Plan changes
 
+## 2026-10-13 — kernel delivery merged; provisioning local gates complete
+
+PR #109 merged at `cef64a0` on independently reviewed signed `778fddd` after all four fresh CI checks passed (run `38390367460`). Primary main is clean/synced, locked dependencies checked and tree-exact the reviewed head. Lab29 report/archive remain immutable at their original runtime/source pins. Mark only the explicit stateful MAIN delivery subtask complete; idle scheduling, automatic replacement reconciliation and broader CP-12 remain open.
+
+Read-only CP-26 union `69a1a3b` passes 10,768 Python/43 opt-in skips/two existing warnings in 384.97s, 746 web/24 math and all required checks/builds. Actual main `cef64a0` is integrated at signed `6caed69`, with the tree and all 737 gate inputs unchanged. Lab30 source-pinned helper preparation/independent review and actual worker/browser acceptance remain in process; no runtime is started and no fresh CP-26 delivery CI is claimed. Operator answers and lockfile differences remain separate.
+
 ## 2026-10-13 — read-only provisioning union under combined validation
 
 Signed union `69a1a3b` integrates independently clear worker/contracts `52e3cdd`, authenticated proxy/client `ca44fa4` and GUI `9ac79f6`, with 18 exact feature paths and 737 frozen product/test/build inputs. Original retained-JSON ambiguity and canonical project-root replacement findings are corrected and independently rechecked. Static/locked/protocol/license checks, 746 web/30 files, zero check errors/warnings, both builds and 24 post-build math pass; full Python is running. Lab30 helper preparation is separate, with no runtime started. The remaining CP-26 lockfile difference display and operator-domain permission answers are not included. Kernel `778fddd` has final archive clearance and open PR #109; fresh CI is the remaining delivery gate. Existing D84 requirements and authorization are unchanged.
