@@ -76,6 +76,7 @@ from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
 from .plan_tools import PlanTools
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
 from .session_plans import SessionPlans
+from .stock_prompts import TEMPLATE_IDS
 from .tools import Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -294,6 +295,7 @@ async def _run(args: argparse.Namespace) -> int:
                             run_id=run_id,
                             max_turns=args.max_turns,
                             on_tool=show,
+                            research_template=getattr(args, "research_template", None),
                         )
                 finally:
                     try:
@@ -695,6 +697,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--min-isolation-tier", type=int, default=3)
     run.add_argument("--allow-unisolated", action="store_true")
     run.add_argument("--max-turns", type=int, default=30)
+    run.add_argument(
+        "--research-template",
+        choices=TEMPLATE_IDS,
+        help="optional original research framing; preserves offered tools and permissions",
+    )
     run.add_argument(
         "--run-id",
         help="name the run (default: a new random ID). Under a reused ID, a call identical "
