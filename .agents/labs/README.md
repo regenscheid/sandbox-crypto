@@ -347,7 +347,11 @@ Lab30 first real attempt at `f964a050` is explicitly partial: GP installation an
 standard-library description with no production imports or external effects.
 Its separately selected active modes measure a fixed synthetic plan-tool task
 through production `run_task` and canonical progress reads; all non-plan calls
-are refused before dispatch. Root owns calibration and any finite-budget model
-pilot with explicit private configuration. Source adoption does not establish
-model compliance or actual worker/progress ordering. See
+are refused before dispatch. Root's positive and missing-progress scripted
+controls completed on 2026-10-13, with the expected pass and progress refusal;
+both fixtures were removed and independently checked. See the
+[calibration report](../docs/agent-reports/planning-evaluation-2026-10-13.md).
+Root owns any finite-budget model pilot with explicit private configuration;
+none has run. These controls do not establish model compliance or actual
+worker/progress ordering. See
 [the bounded recipe and limits](../../docs/PLANNING-EVALUATION.md).

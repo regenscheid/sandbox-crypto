@@ -8,10 +8,15 @@ durable progress and viewer/editor are already implemented; see
 [session plans](SESSION-PLANS.md), [plan tools](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) and
 [the workspace reader](SESSION-PLAN-WORKSPACE.md).
 
-This adoption is source-only. No calibration or real model pilot has run for
-this helper. An actual model pilot remains blocked on root-provided existing
-model configuration and an explicitly selected finite budget. The helper adds
-no approval gate or provider configuration discovery.
+Root ran the positive and deliberately missing-progress scripted controls on
+2026-10-13 through the production local path. The positive met the evaluator's
+criteria; the negative correctly failed its progress criterion. Both fixtures
+were removed, with independent source/result and cleanup review. The
+[calibration report](../.agents/docs/agent-reports/planning-evaluation-2026-10-13.md)
+records exact source, budgets, exit-evidence qualifications and retained failures.
+No real model pilot has run. That separate pilot remains blocked on
+root-provided existing model configuration and an explicitly selected finite
+budget. The helper adds no approval gate or provider configuration discovery.
 
 ## Default and active modes
 
@@ -29,9 +34,9 @@ arguments. Ten installed production files must match the reviewed byte hashes;
 loaded modules must also resolve to that repository. No changes to the pinned
 production inputs are accepted by this helper.
 
-Root may first run the two small scripted controls against the same production
-path, each with a new output file. For example, the positive control's eight
-calls include its final answer:
+Root ran the two small scripted controls against the same production path,
+each with a new output file. A future repeat must also use fresh outputs. For
+example, the positive control's eight calls include its final answer:
 
 ```bash
 uv run --no-sync python .agents/labs/planning_progress_evaluation.py calibrate \
@@ -43,8 +48,8 @@ uv run --no-sync python .agents/labs/planning_progress_evaluation.py calibrate \
 
 The `missing-progress` control deliberately omits in-progress assertions and
 must fail the progress criterion. It is a calibration of the evaluator, not a
-successful planning result. Root owns both active controls; the author has not
-executed them.
+successful planning result. Root owns active controls; the helper author and
+independent reviewers did not replay the calibration.
 
 `pilot` uses the same fixed task and production path with a root-selected
 existing model configuration. The private configuration must be a current-user
@@ -106,5 +111,7 @@ setup/publication failure.
 This helper proves no actual worker-start/progress ordering, live USER-edit
 race, browser delivery, saved `RunRecord`/notice ACK behavior, scientific
 correctness, provider wire receipt or durable call/spend accounting. Root owns
-later calibration, one small finite model pilot before broader cases, evidence
-review and complete cleanup.
+any future calibration, one small finite model pilot before broader cases,
+evidence review and complete cleanup. The completed scripted controls establish
+the local measurement path and its deliberate negative, rather than model
+adherence to planning guidance.
