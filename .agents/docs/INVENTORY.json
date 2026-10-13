@@ -36,14 +36,26 @@
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 37285,
-      "sha256": "826891c7e3053f23c5c1de651a0218b68ecbb7fb3d15aa61b02b214d8244f00a"
+      "bytes": 37639,
+      "sha256": "d5a7bc3c071847977b2926f43a8149adfd55d54090eae36fb2fe170d7fc24d2f"
     },
     {
       "path": "../../docs/PROJECT-MACROS.md",
       "category": "implementation-boundary",
       "bytes": 9784,
       "sha256": "b86fa8d38f48d690da3f1465853371747e1e11fd193036e5fc815de86f84e0f9"
+    },
+    {
+      "path": "../../docs/SESSION-PLAN-WORKSPACE.md",
+      "category": "implementation-boundary",
+      "bytes": 7757,
+      "sha256": "589fb0e45f0d5bb18032a5c41d05ca4d4f5285efb39ed12ca26d30b8264e2b51"
+    },
+    {
+      "path": "../../docs/SESSION-PLANS.md",
+      "category": "implementation-boundary",
+      "bytes": 11743,
+      "sha256": "a290a8d376fe5038ab63ea679bad85578bc29f590d09232b3d8c618de34f4520"
     },
     {
       "path": "../../docs/WORKSPACE-KERNELS.md",
@@ -54,8 +66,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 21944,
-      "sha256": "71cdb67e49de04814df926c2862ef71e7b23365a599f17bcfeb510918dd878c9"
+      "bytes": 22361,
+      "sha256": "e42ad5063cc0ad9d4823195a1473925df2ce38fdb51de30990340ef5f42f0c39"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -710,6 +722,36 @@
       "category": "browser-evidence",
       "bytes": 59555,
       "sha256": "85d85837cb82abcf4f43183f0550a57bcb062961bd8f616a9386f8be25afcac6"
+    },
+    {
+      "path": "agent-reports/session-planning-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 7318,
+      "sha256": "95e35952808c2cf8a2af40f54e6a949bbbaa84d39c800bf290c710686d5d5442"
+    },
+    {
+      "path": "agent-reports/session-planning-evidence-2026-10-12.json",
+      "category": "runtime-evidence",
+      "bytes": 227406,
+      "sha256": "65a7ece1f21960ebf9ae73cc4c210090ef07db3eaa361d570c986365b3b40578"
+    },
+    {
+      "path": "agent-reports/session-planning-finished-2026-10-12.jpg",
+      "category": "runtime-screenshot",
+      "bytes": 191068,
+      "sha256": "a92dde4aa6dbaefd8a94046e1b41377257fbbb1bb218f8845264d8d20a9a18d2"
+    },
+    {
+      "path": "agent-reports/session-planning-initial-2026-10-12.jpg",
+      "category": "runtime-screenshot",
+      "bytes": 159227,
+      "sha256": "f3415243a0356edd1e8c333e2571f756d4bbf35d5fa817cb9ca6c7b7512cfc3b"
+    },
+    {
+      "path": "agent-reports/session-planning-revised-2026-10-12.jpg",
+      "category": "runtime-screenshot",
+      "bytes": 173956,
+      "sha256": "f3252790f974218df44df0cf58e402b9c4b54c0a41daee3c464e6a08b86a5c88"
     },
     {
       "path": "agent-reports/workspace-copy-latex-2026-10-12.md",
