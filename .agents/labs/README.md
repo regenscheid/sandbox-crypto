@@ -1,12 +1,15 @@
 # babbage labs
 
-Lab32's `provisioning_revision_packages.py` reads the exact recorded package/license
-inventory of a fresh canonical project. Root must separately admit a clean signed
-head after final adopted-helper review. Root owns the harmless baseline cell, one
-GP operation, original VM, services, browser, idle proofs and teardown. The helper
-owns scoped initialization, the temporary workspace and bounded GET/SQL/blob
-proofs. Preserve the preliminary untyped-export failure and corrected-source
-review. Runtime acceptance remains pending.
+Lab32's `provisioning_revision_packages.py` reads exact recorded package/license
+inventories. Root-owned acceptance on signed `6d4c448`/helper `c85126d4` passed
+worker/workspace/native paging and separately qualified stopped-VM reads. The old
+helper failed on legitimate executor-endpoint retirement; its idle-read never ran.
+External reviewed `5c830a3a`/reader `0f2bfc5e` proved 30 paired reads with truthful
+empty current endpoints and unchanged SQL between original-VM Stopped proofs.
+All owned runtime/private state is removed and independently audited. Corrected
+helper `5c830a3a` was adopted only after teardown, with scoped checks and eleven
+retained-row AST replays; no second corrected-helper runtime is claimed. Root
+owns final report/archive, independent delivery review and fresh CI.
 
 Scripts for running the platform against a real OpenShell gateway on babbage, as labs 9 to 20 did. Each lab's report is in [`../docs/agent-reports/`](../docs/agent-reports/). These scripts are agents' tooling, not product code: they assume babbage's setup and are kept here so that the next lab does not start from nothing.
 
@@ -348,3 +351,18 @@ Export only the helper's bounded public evidence and exact durable run files, wi
 The helper uses production worker/workspace components and bounded typed GET parity/pages. It submits fixed GP and python-flint/queued-GP fixture requests; the root operator answers exact permissions separately. Worker-offline503 and live-worker stopped-VM durable records are distinct. The stopped proof must name the two original managed VMs, exact run/head and a fresh UTC time after terminal provisioning. Public evidence excludes private login/token/config/provider output and raw gateway annotations; private login cleanup owns the exact inode even when write, fsync or descriptor wrapping fails. Actual counts and license/probe flags must be observed, not assumed from guard tests. No full CP-26, recovery, scientific or new operator authority claim follows from this helper.
 
 Lab30 first real attempt at `f964a050` is explicitly partial: GP installation and retained records passed, but the post-install ready overview failed on SQLite empty-BLOB slicing. All owned runtime/private state was removed and independently checked before source changes. Corrected helper acceptance now requires paired worker/GUI ready overview, empty queue and exact current revision immediately after install and after the permission queue drains. Preserve original failed evidence; use a new clean source freeze and fresh lab after worker correction/review/gates.
+
+## Opt-in planning/progress evaluation
+
+[`planning_progress_evaluation.py`](planning_progress_evaluation.py) defaults to a
+standard-library description with no production imports or external effects.
+Its separately selected active modes measure a fixed synthetic plan-tool task
+through production `run_task` and canonical progress reads; all non-plan calls
+are refused before dispatch. Root's positive and missing-progress scripted
+controls completed on 2026-10-13, with the expected pass and progress refusal;
+both fixtures were removed and independently checked. See the
+[calibration report](../docs/agent-reports/planning-evaluation-2026-10-13.md).
+Root owns any finite-budget model pilot with explicit private configuration;
+none has run. These controls do not establish model compliance or actual
+worker/progress ordering. See
+[the bounded recipe and limits](../../docs/PLANNING-EVALUATION.md).
