@@ -12,7 +12,7 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 - [OpenShell Lab31: retained lockfile comparison, 2026-10-13](agent-reports/babbage-openshell-lab-31-2026-10-13.md): actual GP/Flint source pins/blobs, native nine-difference pages in both directions, original-VM stopped reads and complete teardown. [Exact archive](agent-reports/babbage-openshell-lab-31-evidence-2026-10-13.json) retains244records/nineimages, first workspace interruption and root-qualified tuple/list confirmation; independently clear post-teardown helper correction and preserved original failures. Fresh10,878Python/775web/24math product gates are reused only through exact inputs/builds; PR #111 is delivered at `65989b5` after all four fresh checks; unchanged/base license inventory remains separate.
 
-The [internal child-kernel dispatcher boundary](../../docs/RUN-KERNEL-DISPATCH.md) is in progress separately from delivered PR #114. Coherent source and two independent review lanes exist; final source freeze, full gates and actual OpenShell acceptance remain pending. This is a development checkpoint, not a new runtime record.
+The [internal child-kernel dispatcher boundary](../../docs/RUN-KERNEL-DISPATCH.md) has independently clear signed source `28008e1`, exact in actual-main union `7619a4b`. Fresh combined 11,133 Python and required gates pass; 803 web/24 math/76 accepted assets are explicitly reused through exact inputs. Original failures and the interrupted predecessor full run remain unsuccessful evidence. Bounded helper/admission review and real OpenShell acceptance remain pending; this is a source checkpoint, not a new runtime record.
 
 ## Individual agent investigations
 
