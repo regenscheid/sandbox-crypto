@@ -33,7 +33,7 @@ behavior or justify any future reuse; this document imports nothing from it.
 
 This table retains the initial `fe5f4d7` source audit and its gaps. The
 implemented sections below supersede the corrected capability text, absent
-single-MAIN planning tools and missing MAIN/watcher input provenance. It is not an
+single-MAIN planning tools and missing MAIN/watcher/reviewer input provenance. It is not an
 installed prompt library:
 
 | Input | Exact source seam | Current behavior and gap |
@@ -201,7 +201,7 @@ hash is a recorded application input pin, not a copy of historical tool schemas,
 provider-wire attestation or a permission grant. No routing alias, resolved model,
 credentials, task or provider error is added. Ordinary and safely retained failed
 runs preserve existing durable-save-before-ACK behavior. The watcher has its
-separate reservation pins below; reviewer/repair call provenance,
+separate reservation pins below, as does the reviewer. Repair call provenance,
 broader stock-template loading, compaction and live-model quality
 evaluation remain separate.
 
@@ -220,8 +220,32 @@ outside the digest; the prior stored JSON and actual user-message encoding still
 differ. Prompt text, tools, routing, scheduling, budgets, failure/wake/cancel and
 MAIN notice ACK behavior stay unchanged. The envelope bounds overhead per admitted
 call, not total historical storage. No public route, history UI, global retention,
-retry or watcher execution authority is added. Reviewer/repair provenance and the
+retry or watcher execution authority is added. Repair provenance and the
 broader prompt catalog remain separate.
+
+### Implemented reviewer reservation provenance
+
+The [reviewer provenance slice](REVIEWER-PROMPT-PROVENANCE.md) retains the exact
+historical `sandbox-consistency-1` rubric text and ordered five-tool input pins
+with each existing call reservation. The pin and existing call/token counters
+commit atomically. Fresh parameter copies and an immediate pre-call check bind
+the intended input to the actual application call. Historical schemas retain
+names and a hash; reconstructing them requires the matching source/build record.
+
+Writable initialization adds nullable metadata and an immutable-input trigger;
+read-only old databases remain readable without migration or fabricated pins.
+The exact-scope internal reader bounds SQL projection before parsing and reports
+absent, legacy, complete or corrupt. Nominal rubric mismatches refuse rather than
+charging a call under a different rubric. The original rubric, tool definitions,
+evidence grants, budgets, finding decisions and confirmation CAS stay unchanged.
+
+Five reservation/accounting/lease awaits now drain their actual SQL work through
+repeated cancellation. Existing raw tool, evidence, model-observation,
+confirmation and controller thread paths retain their previous lifetime limits;
+this is not whole-runner ownership. A reservation is intended input, not provider
+dispatch, instruction adherence or scientific verification. Per-call/per-review
+metadata bounds do not impose a global journal retention quota. No public history
+API, new model identity, automatic retry or broader review authority is added.
 
 ## Prompt catalog and assembly proposal
 
@@ -490,9 +514,10 @@ and compare actual model inputs, not merely a prompt file's existence.
 
 Current progress: capability-text corrections, immutable single-MAIN planning,
 six tools, read-only committed-progress polling, narrow MAIN input provenance
-and watcher reservation provenance
+and watcher/reviewer reservation provenance
 are implemented. USER editing/approval, effect lineage/liveness, delegated runs,
-other-role provenance, skill loading and compaction below remain separate work.
+repair provenance, broader stock-template loading, skill loading and compaction
+below remain separate work.
 
 1. **Current-role prompt correctness:** fix only inaccurate live capability claims
    in MAIN/start_job/historical reviewer docstring; keep the existing offered-tool

@@ -13,11 +13,13 @@ from pydantic import Field, ValidationError
 
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents.errors import DocumentError
+from sandbox_science.orchestrator.documents.mathjobs import threaded
 from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolCall, ToolSpec
 
 from .findings import Findings
 from .models import ReviewConfig, ReviewerFinish
-from .rubric import RUBRIC
+from .prompt_bundle import assemble_reviewer
+from .rubric import RUBRIC, RUBRIC_VERSION
 from .store import Json, ReviewStore, clipped, dump, text
 
 
@@ -246,7 +248,7 @@ class ReviewerRunner:
             while True:
                 await asyncio.sleep(30)
                 try:
-                    await asyncio.to_thread(
+                    await threaded(
                         self.store.renew, self.project, self.session, self.review, self.owner
                     )
                 except DocumentError:
@@ -278,8 +280,11 @@ class ReviewerRunner:
 
     async def _loop(self) -> None:
         assert self.model is not None  # noqa: S101
+        if self.record["rubric"] != RUBRIC_VERSION:
+            raise ValueError("the reserved review rubric differs from the installed rubric")
+        bundle = assemble_reviewer(RUBRIC, RUBRIC_VERSION, SPECS)
         messages: list[Message] = [
-            {"role": "system", "content": RUBRIC},
+            {"role": "system", "content": bundle.provenance.rubric_text},
             {
                 "role": "user",
                 "content": dump(
@@ -305,13 +310,14 @@ class ReviewerRunner:
             # This is a soft estimate; provider usage is recorded separately and
             # used when higher. Only the gateway's spend cap is a monetary cap.
             estimate = math.ceil(len(encoded) / 4) + math.ceil(self.config.max_output_chars / 4)
-            reservation = await asyncio.to_thread(
+            reservation = await threaded(
                 self.store.reserve_call,
                 self.project,
                 self.session,
                 self.review,
                 estimate,
                 owner=self.owner,
+                prompt_provenance=bundle.provenance,
             )
             if reservation is None:
                 await self._finish(
@@ -320,11 +326,11 @@ class ReviewerRunner:
                     cap=True,
                 )
                 return
-            await asyncio.to_thread(
-                self.store.renew, self.project, self.session, self.review, self.owner
-            )
-            reply = await self.model.complete(messages, SPECS)
-            await asyncio.to_thread(
+            await threaded(self.store.renew, self.project, self.session, self.review, self.owner)
+            passed = bundle.tool_specs()
+            bundle.verify(messages[0], passed)
+            reply = await self.model.complete(messages, passed)
+            await threaded(
                 self.store.call_usage,
                 self.project,
                 self.session,
@@ -433,7 +439,7 @@ class ReviewerRunner:
         cap: bool = False,
     ) -> None:
         try:
-            await asyncio.to_thread(
+            await threaded(
                 self.store.finish,
                 self.project,
                 self.session,
