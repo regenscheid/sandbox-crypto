@@ -1291,7 +1291,10 @@ def final_stage(head: str, marker: dict[str, Any], stage: str) -> None:
     assert server["inputs"] == source_pins(head)
     if stage == "idle-confirm":
         prior = evidence(marker, "idle-read")
-        current = sql_snapshot(marker)
+        # Persisted JSON represents SQLite row tuples as arrays.
+        current = decode(
+            json.dumps(sql_snapshot(marker), allow_nan=False).encode("utf-8"), 2 * 1024 * 1024
+        )
         assert prior["before"] == prior["after"] == current
         proof = gateway_proof(marker, "after", current)
         save(
