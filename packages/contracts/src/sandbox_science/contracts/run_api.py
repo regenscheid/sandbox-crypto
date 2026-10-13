@@ -93,13 +93,21 @@ class RunControlResult(RunAPIModel):
 
 def check_run_execution(value: RunCellExecution) -> None:
     """A nonnull kernel must name this selected binding, never a MAIN kernel."""
-    kernel = value.execution.kernel
-    if kernel is not None and (
-        kernel.kernel_id != run_kernel_id(value.binding, kernel.language)
-        or type(kernel.generation) is not int
-        or not 1 <= kernel.generation < 2**31
-    ):
-        raise ValueError("execution kernel differs from the selected binding")
+    kernels = (
+        value.execution.kernel,
+        value.execution.result.kernel if value.execution.result is not None else None,
+    )
+    language: str | None = None
+    for kernel in kernels:
+        if kernel is not None:
+            if (
+                kernel.kernel_id != run_kernel_id(value.binding, kernel.language)
+                or type(kernel.generation) is not int
+                or not 1 <= kernel.generation < 2**31
+                or (language is not None and language != kernel.language)
+            ):
+                raise ValueError("execution kernel differs from the selected binding")
+            language = kernel.language
 
 
 class RunEventPage(RunAPIModel):
