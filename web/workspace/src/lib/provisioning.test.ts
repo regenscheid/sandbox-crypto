@@ -5,7 +5,7 @@ import type { Project } from './api';
 import EnvironmentPanel from '../views/EnvironmentPanel.svelte';
 import { environmentChoices, provisionData, provisionPath, readProvision, ProvisionReadError, ProvisionReader,
   PROVISION_DEADLINE_MS, type ProvisionObservation, type OperationSummary, type OperationDetail,
-  DIFF_DEADLINE_MS, diffIdentity, differenceKey, type LockfileDiffPage, type CondaEntry, type LockfileDifference, type Selection,
+  DIFF_DEADLINE_MS, PACKAGES_DEADLINE_MS, diffIdentity, differenceKey, packageIdentity, packageKey, type RevisionPackagePage, type LockfileDiffPage, type CondaEntry, type LockfileDifference, type Selection,
   type FilePage, type HistoryPage, type ProbePage, type ProvisionData, type ReadState } from './provisioning';
 const scope = {projectId: 'p', environmentId: 'e'}, time = '2026-10-13T06:00:00Z';
 const common = {project_id: 'p', environment_id: 'e', observed_at: time};
@@ -258,5 +258,114 @@ describe('comparison transport and one-shot ownership', () => {
     const fetch=vi.fn().mockResolvedValueOnce(new Response('arbitrary error',{status:409})).mockResolvedValueOnce(new Response(new Uint8Array([0xff]))).mockResolvedValueOnce(new Response(' '.repeat(65537)));vi.stubGlobal('fetch',fetch);
     await expect(readProvision(scope,diffSelection(),new AbortController().signal)).rejects.toMatchObject({status:409});expect(fetch).toHaveBeenCalledOnce();
     await expect(readProvision(scope,diffSelection(),new AbortController().signal)).rejects.toMatchObject({status:0});await expect(readProvision(scope,diffSelection(),new AbortController().signal)).rejects.toMatchObject({status:0});
+  });
+});
+
+function packageSelection(): Extract<Selection, {kind: 'packages'}> {
+  return {kind: 'packages', offset: 0, revision: {...history().revisions[0]!, lockfile: {sha256: 'd'.repeat(64), size: 1024, conda_packages: 2, pip_distributions: 1}}};
+}
+function packageInventory(): RevisionPackagePage {
+  const s = packageSelection();
+  return {...common, selection: {revision: s.revision.revision, record_sha256: s.revision.record_sha256, lockfile: s.revision.lockfile}, status: 'complete', holds: [], header: {...s.revision.lockfile!, python: '3.13', platform: 'linux-64', skipped: 0}, total: 3, offset: 0, limit: 8, next_offset: null, packages: [
+    {ecosystem: 'conda', name: 'a', location: null, package: {...diffEntry(), name: 'a', license: null}, license: {declared: null, agpl: null}},
+    {ecosystem: 'conda', name: 'unchanged', location: null, package: {...diffEntry(), name: 'unchanged', license: 'AGPL-3.0'}, license: {declared: 'AGPL-3.0', agpl: true}},
+    {ecosystem: 'pip', name: 'pip-pkg', location: 'user', package: {name: 'Pip_Pkg', version: '1', installer: 'uv', location: 'user', url: 'https://example.invalid/<script>', sha256: null}, license: {declared: null, agpl: null}},
+  ]};
+}
+describe('explicit selected revision recorded packages', () => {
+  it('loads one historical raw pin without creating an empty comparison baseline', () => {
+    const s = packageSelection(), v = packageInventory();
+    expect(provisionPath(scope, s)).toBe(`/api/v0/projects/p/environments/e/provisioning/observations/revisions/1/packages?pin=${'b'.repeat(64)}&offset=0&limit=8`);
+    expect(provisionData(v, scope, s)).toEqual(v);
+    expect(v.packages[1]!.license.agpl).toBe(true);
+    for (const offset of [true, -1, 40001, 1.5, 2**53]) expect(() => provisionPath(scope, {...s, offset: offset as number})).toThrow();
+  });
+  it.each([
+    ['scope', (v: RevisionPackagePage) => {v.environment_id = 'foreign';}],
+    ['raw pin', (v: RevisionPackagePage) => {v.selection.record_sha256 = 'a'.repeat(64);}],
+    ['revision', (v: RevisionPackagePage) => {v.selection.revision = 2;}],
+    ['ref', (v: RevisionPackagePage) => {v.selection.lockfile!.size++;}],
+    ['header', (v: RevisionPackagePage) => {v.header!.sha256 = 'f'.repeat(64);}],
+    ['skipped', (v: RevisionPackagePage) => {v.header!.skipped = 1;}],
+    ['total', (v: RevisionPackagePage) => {v.total = 4;v.next_offset = 3;}],
+    ['offset', (v: RevisionPackagePage) => {v.offset = 1;}],
+    ['limit', (v: RevisionPackagePage) => {v.limit = 7;}],
+    ['cursor', (v: RevisionPackagePage) => {v.next_offset = 3;}],
+    ['duplicate', (v: RevisionPackagePage) => {v.packages[1] = v.packages[0]!;}],
+    ['order', (v: RevisionPackagePage) => {v.packages.reverse();}],
+    ['name', (v: RevisionPackagePage) => {v.packages[0]!.name = 'other';}],
+    ['location', (v: RevisionPackagePage) => {v.packages[0]!.location = 'user';}],
+    ['license', (v: RevisionPackagePage) => {v.packages[1]!.license.declared = 'MIT';}],
+    ['AGPL', (v: RevisionPackagePage) => {v.packages[1]!.license.agpl = false;}],
+    ['pip license', (v: RevisionPackagePage) => {v.packages[2]!.license = {declared: 'MIT', agpl: false};}],
+    ['pip identity', (v: RevisionPackagePage) => {v.packages[2]!.name = 'Pip_Pkg';}],
+  ])('refuses incoherent %s', (_name, change) => {const v = packageInventory();change(v);expect(() => provisionData(v, scope, packageSelection())).toThrow(ProvisionReadError);});
+  it('keeps bool and unsafe numeric values out of packages and page metadata', () => {
+    const raw = packageInventory();
+    for (const changed of [{...raw, total: true}, {...raw, total: 2**53}, {...raw, offset: false}, {...raw, header: {...raw.header!, size: true}}, {...raw, packages: [{...raw.packages[0]!, license: {declared: null, agpl: false}}]}]) expect(() => provisionData(changed, scope, packageSelection())).toThrow();
+  });
+  it('follows actual short-page cursors and preserves full cross-page source facts', () => {
+    const v = packageInventory(), first = {...v, packages: v.packages.slice(0, 2), next_offset: 2};
+    expect(provisionData(first, scope, packageSelection())).toEqual(first);
+    const last = {...v, offset: 2, packages: v.packages.slice(2)}, s = {...packageSelection(), offset: 2, expected: packageIdentity(first), previousKey: packageKey(first.packages.at(-1)!)};
+    expect(provisionData(last, scope, s)).toEqual(last);
+    expect(() => provisionData({...last, packages: [v.packages[0]!] }, scope, s)).toThrow();
+    expect(() => provisionData({...last, header: {...last.header!, python: '3.14'}}, scope, s)).toThrow();
+    expect(() => provisionData({...last, packages: []}, scope, s)).toThrow();
+  });
+  it('distinguishes held inventory from validated empty and binds held headers too', () => {
+    const v = packageInventory(), held: RevisionPackagePage = {...v, status: 'held', holds: ['skipped_entries'], header: {...v.header!, skipped: 2}, total: null, next_offset: null, packages: []};
+    expect(provisionData(held, scope, packageSelection())).toEqual(held);
+    for (const changed of [{...held, total: 0}, {...held, holds: []}, {...held, packages: v.packages}, {...held, header: {...held.header!, size: 10}}, {...held, holds: ['blob_missing', 'input_limit']}]) expect(() => provisionData(changed, scope, packageSelection())).toThrow();
+    const s = packageSelection();s.revision.lockfile!.conda_packages = s.revision.lockfile!.pip_distributions = 0;
+    const empty = {...v, selection: {...v.selection, lockfile: s.revision.lockfile}, header: {...s.revision.lockfile!, python: null, platform: null, skipped: 0}, total: 0, packages: []};
+    expect(provisionData(empty, scope, s)).toEqual(empty);
+    const props = {projectId:'p', project:project(), initialSelection:packageSelection(), initialDetail:{phase:'observed' as const,data:held,busy:false}};
+    expect(render(EnvironmentPanel,{props}).body).toContain('packages and licenses are unknown');
+    expect(render(EnvironmentPanel,{props}).body).not.toContain('No package entries');
+    expect(render(EnvironmentPanel,{props:{...props,initialSelection:s,initialDetail:{...props.initialDetail,data:empty}}}).body).toContain('No package entries in this validated retained lockfile');
+  });
+  it('shows unchanged/base/unmanaged metadata, declared AGPL and unknown pip without activated URLs', () => {
+    const s = packageSelection(), data = packageInventory();s.revision.revision = data.selection.revision = 0;
+    const props = {projectId:'p',project:project(),initialSelection:s,initialDetail:{phase:'unavailable' as const,data,busy:false}};
+    const html = render(EnvironmentPanel,{props}).body;
+    expect(html).toContain('revision 0');expect(html).toContain('including unchanged packages');expect(html).toContain('AGPL flagged');expect(html).toContain('AGPL status: unknown');
+    expect(html).toContain('Showing recorded packages 1–3 of 3');expect(html).toContain('Previous selected record');expect(html).toContain('do not certify installed files');
+    expect(html).toContain('&lt;script>');expect(html).not.toContain('<script>');expect(html).not.toContain('href="https://example');expect(html).not.toMatch(/<button[^>]*>\s*(Install|Approve|Cancel|Rebuild)/);
+    expect(render(EnvironmentPanel,{props:{...props,initialDetail:{...props.initialDetail,data:{...data,project_id:'foreign'}}}}).body).not.toContain('AGPL flagged');
+    const historyHtml = render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:{kind:'history',after:-1,target:null},initialDetail:{phase:'observed',data:history(),busy:false}}}).body;
+    expect(historyHtml).toContain('Recorded packages and licenses');
+  });
+});
+describe('package pages share physical transport and one-shot visibility ownership', () => {
+  it('uses12s package deadline and blocks all reader kinds while ignored abort owns fetch', async () => {
+    vi.useFakeTimers();const pending = deferred<Response>(), fetch = vi.fn().mockReturnValue(pending.promise);vi.stubGlobal('fetch',fetch);
+    const first = readProvision(scope,packageSelection(),new AbortController().signal).catch(e=>e);
+    await vi.advanceTimersByTimeAsync(PROVISION_DEADLINE_MS);expect(fetch.mock.calls[0]![1].signal.aborted).toBe(false);
+    await expect(readProvision(scope,diffSelection(),new AbortController().signal)).rejects.toBeInstanceOf(ProvisionReadError);
+    await vi.advanceTimersByTimeAsync(PACKAGES_DEADLINE_MS-PROVISION_DEADLINE_MS);expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true);
+    pending.resolve(new Response(JSON.stringify(packageInventory())));expect(await first).toBeInstanceOf(ProvisionReadError);expect(fetch).toHaveBeenCalledOnce();
+    fetch.mockResolvedValue(new Response(JSON.stringify(overview())));expect(await readProvision(scope,{kind:'summary'},new AbortController().signal)).toEqual(overview());
+  });
+  it('owns ignored body cancellation through drain across another project and selection', async () => {
+    vi.useFakeTimers();const drain=deferred<void>(),cancel=vi.fn().mockReturnValue(drain.promise),fetch=vi.fn().mockResolvedValue(new Response(new ReadableStream({cancel})));vi.stubGlobal('fetch',fetch);
+    const pending=readProvision(scope,packageSelection(),new AbortController().signal).catch(e=>e);await vi.advanceTimersByTimeAsync(PACKAGES_DEADLINE_MS);expect(cancel).toHaveBeenCalledOnce();
+    await expect(readProvision({projectId:'q',environmentId:'f'},{kind:'history',after:-1,target:null},new AbortController().signal)).rejects.toBeInstanceOf(ProvisionReadError);expect(fetch).toHaveBeenCalledOnce();
+    drain.resolve();expect(await pending).toBeInstanceOf(ProvisionReadError);
+  });
+  it('never repolls a selected page after ignored timeout/hide/show and rejects late data', async () => {
+    vi.useFakeTimers();const pending=deferred<ProvisionData>(),states:ReadState[]=[],read=vi.fn().mockReturnValue(pending.promise),owner=new ProvisionReader(read,v=>states.push(v),false,PACKAGES_DEADLINE_MS,true);owners.push(owner);
+    owner.setVisible(true);await vi.advanceTimersByTimeAsync(PACKAGES_DEADLINE_MS);owner.setVisible(false);owner.setVisible(true);pending.resolve(packageInventory());await vi.advanceTimersByTimeAsync(30_000);
+    expect(read).toHaveBeenCalledOnce();expect(states.at(-1)).toMatchObject({phase:'unavailable',busy:false,data:null});owner.setVisible(false);owner.setVisible(true);await vi.advanceTimersByTimeAsync(30_000);expect(read).toHaveBeenCalledOnce();
+  });
+  it('keeps stale pin409 explicit with no fallback and rejects invalid UTF8/overlarge bytes', async () => {
+    const fetch=vi.fn().mockResolvedValueOnce(new Response('raw error',{status:409})).mockResolvedValueOnce(new Response(new Uint8Array([0xff]))).mockResolvedValueOnce(new Response(' '.repeat(65537)));vi.stubGlobal('fetch',fetch);
+    await expect(readProvision(scope,packageSelection(),new AbortController().signal)).rejects.toMatchObject({status:409});expect(fetch).toHaveBeenCalledOnce();
+    await expect(readProvision(scope,packageSelection(),new AbortController().signal)).rejects.toMatchObject({status:0});await expect(readProvision(scope,packageSelection(),new AbortController().signal)).rejects.toMatchObject({status:0});
+  });
+  it('logout prevents late package publication and any new actual read owner', async () => {
+    vi.resetModules();const transport=await import('./provisioning'),auth=await import('./kernels'),pending=deferred<Response>(),fetch=vi.fn().mockReturnValue(pending.promise);vi.stubGlobal('fetch',fetch);
+    const read=transport.readProvision(scope,packageSelection(),new AbortController().signal).catch(e=>e);auth.stopKernelReadsForLogout();pending.resolve(new Response(JSON.stringify(packageInventory())));
+    expect(await read).toBeInstanceOf(transport.ProvisionReadError);await expect(transport.readProvision(scope,packageSelection(),new AbortController().signal)).rejects.toMatchObject({status:401});expect(fetch).toHaveBeenCalledOnce();vi.resetModules();
   });
 });
