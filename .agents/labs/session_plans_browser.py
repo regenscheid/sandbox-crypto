@@ -22,7 +22,7 @@ import socket
 import stat
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,6 +44,7 @@ REPO = Path(__file__).resolve().parents[2]
 PREFIX = "session-plans-browser-"
 MARKER = ".session-plans-fixture"
 VERSION = "synthetic-session-plans-browser-v2"
+RECEIPT_FAULT = ".next-plan-save-unavailable"
 A, B = "plan-project-a", "plan-project-b"
 SCOPES = {"active": (A, "a"), "other": (B, "b"), "closed": (A, "closed")}
 STEPS = ("inspect", "qualify", "report")
@@ -412,6 +413,16 @@ def action(root: Path, name: str) -> dict:
                         remaining_work=("Perform and verify actual research separately",),
                     ),
                 )
+            elif name == "lose-save-response":
+                descriptor = os.open(
+                    anchored / RECEIPT_FAULT,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                )
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(encoded({"owner_id": manifest["owner_id"]}))
+                    stream.flush()
+                    os.fsync(stream.fileno())
             elif name != "inspect":
                 raise ValueError("Unsupported fixed fixture action")
             return {
@@ -422,6 +433,56 @@ def action(root: Path, name: str) -> dict:
             }
         finally:
             documents.close()
+
+
+def withhold_saved_receipt(
+    root: Path, owner: str
+) -> Callable[
+    [web.Request, Callable[[web.Request], Awaitable[web.StreamResponse]]],
+    Awaitable[web.StreamResponse],
+]:
+    """One owned fixture fault: hide a successful save's response after commit."""
+
+    @web.middleware
+    async def middleware(
+        request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+    ) -> web.StreamResponse:
+        if (
+            request.method != "POST"
+            or request.path != f"/api/v0/projects/{A}/sessions/a/plan/changes"
+        ):
+            return await handler(request)
+        path = root / RECEIPT_FAULT
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return await handler(request)
+        try:
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != os.getuid()
+                or before.st_nlink != 1
+                or stat.S_IMODE(before.st_mode) != 0o600
+                or not 0 < before.st_size <= 1024
+            ):
+                raise ValueError("Invalid owned receipt-fault marker")
+            raw = os.read(descriptor, 1025)
+            if len(raw) != before.st_size or json.loads(raw) != {"owner_id": owner}:
+                raise ValueError("Receipt-fault owner mismatch")
+            response = await handler(request)
+            if response.status != 200:
+                return response
+            remove_owned(path, (before.st_dev, before.st_ino))
+            return web.json_response(
+                {"error": {"kind": "unavailable", "message": "Synthetic saved receipt withheld"}},
+                status=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        finally:
+            os.close(descriptor)
+
+    return middleware
 
 
 async def serve(args: argparse.Namespace) -> None:
@@ -440,9 +501,9 @@ async def serve(args: argparse.Namespace) -> None:
         os.chmod(root, 0o700)
         manifest = seed(root, pins)
         token = secrets.token_urlsafe(32)
-        runner = web.AppRunner(
-            create_app(ProjectStore(root), args.static, login_token=token), access_log=None
-        )
+        app = create_app(ProjectStore(root), args.static, login_token=token)
+        app.middlewares.append(withhold_saved_receipt(root, manifest["owner_id"]))
+        runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", args.port).start()
         port = int(runner.addresses[0][1])
@@ -516,7 +577,7 @@ def main() -> None:
     server.add_argument("--info", type=Path, required=True)
     server.add_argument("--cleanup", type=Path, required=True)
     server.add_argument("--port", type=int, default=0, choices=range(65536))
-    for name in ("in-progress", "revise", "finish", "inspect"):
+    for name in ("in-progress", "revise", "finish", "inspect", "lose-save-response"):
         commands.add_parser(name).add_argument("--fixture", type=Path, required=True)
     args = parser.parse_args()
     if args.action == "serve":
