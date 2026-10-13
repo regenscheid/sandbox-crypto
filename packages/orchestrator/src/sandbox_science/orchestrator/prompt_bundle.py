@@ -19,7 +19,7 @@ from .model import ToolSpec
 from .stock_prompts import MAX_TEMPLATE_BYTES, StockPrompt, StockTemplateId
 
 ASSEMBLY_VERSION = "sandbox-main-bundle-1"
-BASE_VERSION = "sandbox-main-1"
+BASE_VERSION = "sandbox-main-2"
 MAX_SYSTEM_BYTES = 64 * 1024
 MAX_SCHEMA_BYTES = 512 * 1024
 MAX_PROVENANCE_BYTES = 16 * 1024
