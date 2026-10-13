@@ -42,8 +42,8 @@
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 40081,
-      "sha256": "3cc6739e92f9d7cc2aaf14a0ab4f8a86e69a39ad72fc3238ba06edaebade5302"
+      "bytes": 41306,
+      "sha256": "4e5c97e0d9bd9ee79b46a3b1c6f7f2b13ff04f4e07ebf12907e9338780f7da5f"
     },
     {
       "path": "../../docs/PROJECT-MACROS.md",
@@ -64,6 +64,12 @@
       "sha256": "a290a8d376fe5038ab63ea679bad85578bc29f590d09232b3d8c618de34f4520"
     },
     {
+      "path": "../../docs/WATCHER-PROMPT-PROVENANCE.md",
+      "category": "implementation-boundary",
+      "bytes": 6644,
+      "sha256": "937a80de8a8f240741fd02dd262cb95600c779a9c830a7ebe0027c30053fc334"
+    },
+    {
       "path": "../../docs/WORKSPACE-KERNELS.md",
       "category": "implementation-boundary",
       "bytes": 8270,
@@ -72,8 +78,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 22891,
-      "sha256": "b26a2168f8236d0b5202c877f79145f1d301fa0a9fc1746f2beb1748bbe4e095"
+      "bytes": 23440,
+      "sha256": "0fb2d2a85bcd9862e00c57c25959e425ff91b00d76b66f84b28d03d5339604ea"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -770,6 +776,18 @@
       "category": "runtime-screenshot",
       "bytes": 173956,
       "sha256": "f3252790f974218df44df0cf58e402b9c4b54c0a41daee3c464e6a08b86a5c88"
+    },
+    {
+      "path": "agent-reports/watcher-prompt-provenance-2026-10-12.md",
+      "category": "implementation-validation",
+      "bytes": 3588,
+      "sha256": "ffe857cd8827281b0da23cf64b85d870213c0f8fc627ae02cac8a0329542a0dc"
+    },
+    {
+      "path": "agent-reports/watcher-prompt-provenance-evidence-2026-10-12.json",
+      "category": "validation-evidence",
+      "bytes": 74166,
+      "sha256": "2ef4c217d9873c783bc5ba81959609e842e03f55078f97e7c4e7ef9ebcff6604"
     },
     {
       "path": "agent-reports/workspace-copy-latex-2026-10-12.md",
