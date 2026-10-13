@@ -5,6 +5,7 @@
   import { documentHref, sessionHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectMacros from './ProjectMacros.svelte';
+  import EnvironmentPanel from './EnvironmentPanel.svelte';
 
   let { projectId }: { projectId: string } = $props();
   const loading = $derived(api.project(projectId));
@@ -101,29 +102,7 @@
     <ErrorMessage {error} />
   {/await}
 
-  <h2>Environments</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Environment</th>
-        <th>Kind</th>
-        <th>Sessions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {#each project.environments as environment (environment.environment_id)}
-        <tr>
-          <td><code>{environment.environment_id}</code></td>
-          <td>{environment.default ? "the project's default" : 'dedicated'}</td>
-          <td>{environment.sessions.join(', ') || '—'}</td>
-        </tr>
-      {/each}
-    </tbody>
-  </table>
-  <p class="muted">
-    These are the harness's records. The environments' live state is on the worker, which this
-    view does not ask yet.
-  </p>
+  <EnvironmentPanel {projectId} {project} />
 {:catch error}
   <ErrorMessage {error} />
 {/await}

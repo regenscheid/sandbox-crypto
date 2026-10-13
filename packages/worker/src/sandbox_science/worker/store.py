@@ -35,6 +35,7 @@ from .errors import WorkerError
 from .kernel_revisions import KernelStarts
 from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
+from .provision_observations import ProvisionObservations
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -197,6 +198,7 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
         self._db.executescript(_SCHEMA)
+        self.provision_observations = ProvisionObservations(self._db)
         self.observations = ObservationJournal(self._db)
         self.kernel_starts = KernelStarts(self._db)
         for table in ("executor_endpoints", "executor_recycles"):

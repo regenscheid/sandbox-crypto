@@ -8,6 +8,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 - [OpenShell Lab29: explicit MAIN kernel notice delivery, 2026-10-13](agent-reports/babbage-openshell-lab-29-2026-10-13.md): authenticated lifetime/configuration mapping, actual historical input and durable save-before-fresh-proof-ACK; twelve worker/component cases, graceful restart, lifetime refusal, actual idle stop/thirty no-wake reads and ordinary resume. [Exact evidence](agent-reports/babbage-openshell-lab-29-evidence-2026-10-13.json) retains 252 original/corrected source/helper/gate/runtime/cleanup records. All owned lab state is removed; full CLI/provider semantics and immutable-VM-ID replacement runtime proof are outside this lab.
 
+- [OpenShell Lab30: read-only provisioning observations, 2026-10-13](agent-reports/babbage-openshell-lab-30-2026-10-13.md): corrected ready-gate overview, exact shared/dedicated package records, separate four/five-file approvals, native browser coverage, offline503 and120no-wake reads with unchangedSQL. [Exact archive](agent-reports/babbage-openshell-lab-30-evidence-2026-10-13.json) preserves393records/tenimages and both failed/corrected attempts; all owned state independently removed. Fresh corrected10,778Python and explicit unchanged746web/24math evidence; comparison and GUI operator answers remain separate.
+
 ## Individual agent investigations
 
 - [Claude Science](agent-reports/claude-science.md): research behavior, skills, review triggers, documents, kernels and execution seams, as evidence for the reimplementation (D03, D11).

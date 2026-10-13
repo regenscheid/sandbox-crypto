@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Final, TypeVar
 
 import aiohttp
@@ -105,6 +106,19 @@ class WorkerAPIError(Exception):
         self.status = status
 
 
+@dataclass(frozen=True)
+class WorkerObservationTransport:
+    """Private in-memory observer binding; the shared session is borrowed, never owned.
+
+    This is not a browser/tool DTO. All configuration and session values are hidden
+    from repr; consumers must not persist or log the copied authorization metadata.
+    """
+
+    base_url: str = field(repr=False)
+    headers: tuple[tuple[str, str], ...] = field(repr=False)
+    session: aiohttp.ClientSession = field(repr=False)
+
+
 class WorkerClient:
     def __init__(
         self,
@@ -135,6 +149,42 @@ class WorkerClient:
         if self._session is None:
             self._session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(sock_connect=10))
         return self._session
+
+    def _observation_configuration(self) -> tuple[str, tuple[tuple[str, str], ...]]:
+        if (
+            type(self.base_url) is not str
+            or not 1 <= len(self.base_url) <= 4096
+            or type(self._headers) is not dict
+            or len(self._headers) != 1
+            or set(self._headers) != {"Authorization"}
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker configuration is unavailable")
+        authorization = self._headers["Authorization"]
+        if type(authorization) is not str or not 1 <= len(authorization) <= 8192:
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker configuration is unavailable")
+        return self.base_url, (("Authorization", authorization),)
+
+    def observation_transport(self) -> WorkerObservationTransport:
+        """Copy bounded trusted configuration and borrow the existing HTTP session.
+
+        Creating the HTTP client does not contact a worker or open an executor.
+        The original WorkerClient still owns session shutdown; an observer owns
+        only its individual request and must drain it before that shutdown.
+        """
+        endpoint, headers = self._observation_configuration()
+        session = self._http()
+        if session.closed:
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker transport is closed")
+        return WorkerObservationTransport(endpoint, headers, session)
+
+    def matches_observation_transport(self, snapshot: WorkerObservationTransport) -> bool:
+        """Recheck original client/config/session identity without creating anything."""
+        return (
+            type(snapshot) is WorkerObservationTransport
+            and self._session is snapshot.session
+            and not snapshot.session.closed
+            and self._observation_configuration() == (snapshot.base_url, snapshot.headers)
+        )
 
     async def _call(
         self,

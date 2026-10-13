@@ -62,6 +62,7 @@ from sandbox_science.contracts.documents import (
     CatalogSnapshotPage,
     CatalogStatus,
 )
+from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
 from sandbox_science.policy import effective_resources
@@ -153,11 +154,18 @@ def create_app(
         # A lookup by the token's hash compares no secret directly.
         return by_digest.get(token_digest(secret))
 
+    def read_observation(request: web.Request) -> bool:
+        resource = request.match_info.route.resource
+        return resource is not None and "/provisioning/observations" in resource.canonical
+
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         client = identify(request.headers.get("Authorization", ""))
         if client is None:
-            return _error(ErrorKind.POLICY_DENIED, "missing or wrong bearer token", 401)
+            response = _error(ErrorKind.POLICY_DENIED, "missing or wrong bearer token", 401)
+            if read_observation(request):
+                response.headers["Cache-Control"] = "no-store"
+            return response
         request[_CLIENT] = client
         try:
             response = await handler(request)
@@ -171,6 +179,8 @@ def create_app(
         except Exception:
             _log.exception("worker API request failed")
             response = _error(ErrorKind.INTERNAL, "internal worker error", 500)
+        if read_observation(request):
+            response.headers["Cache-Control"] = "no-store"
         _audit(request, client, response.status)
         return response
 
@@ -234,6 +244,25 @@ def create_app(
                 revision_lockfile,
             ),
             web.get("/v1/environments/{environment_id}/provisioning", provisioning_queue),
+            web.get(
+                "/v1/environments/{environment_id}/provisioning/observations", observe_provisioning
+            ),
+            web.get(
+                "/v1/environments/{environment_id}/provisioning/observations/operations/{provision_id}",
+                observe_provision_detail,
+            ),
+            web.get(
+                "/v1/environments/{environment_id}/provisioning/observations/operations/{provision_id}/files",
+                observe_provision_files,
+            ),
+            web.get(
+                "/v1/environments/{environment_id}/provisioning/observations/revisions",
+                observe_provision_revisions,
+            ),
+            web.get(
+                "/v1/environments/{environment_id}/provisioning/observations/revisions/{revision}/probes",
+                observe_revision_probes,
+            ),
             web.post("/v1/provisioning", submit_provision),
             web.get("/v1/provisioning/{provision_id}", get_provision),
             web.post("/v1/provisioning/{provision_id}/cancel", cancel_provision),
@@ -746,6 +775,104 @@ async def provisioning_queue(request: web.Request) -> web.Response:
         if info is None or info.project_id != project_id:
             raise WorkerError(ErrorKind.NOT_FOUND, f"no environment {environment_id!r}")
     return _json(_provisioner(request).queue(environment_id))
+
+
+def _observation_scope(request: web.Request, queries: frozenset[str]) -> tuple[str, str, float]:
+    if set(request.query) - queries - {"project_id"} or any(
+        len(request.query.getall(key)) != 1 for key in request.query
+    ):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid observation query")
+    project = _project(request)
+    if project is None:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "project_id is required")
+    environment, _ = _revisions_of(request)
+    info = _environments(request).records.get(environment)
+    if info is None or info.state is EnvironmentState.DELETED or info.project_id != project:
+        raise WorkerError(ErrorKind.NOT_FOUND, "no selected managed environment")
+    _provisioner(request)  # Capability check only; do not call get/queue/wait or a backend.
+    return project, environment, info.created_at.timestamp()
+
+
+def _observation_json(model: BaseModel) -> web.Response:
+    text = model.model_dump_json()
+    if len(text.encode("utf-8")) > MAX_OBSERVATION_BYTES:
+        raise WorkerError(ErrorKind.UNAVAILABLE, "observation response exceeds its bound")
+    return web.json_response(text=text, headers={"Cache-Control": "no-store"})
+
+
+async def observe_provisioning(request: web.Request) -> web.Response:
+    project, environment, since = _observation_scope(request, frozenset())
+    return _observation_json(
+        request.app[MANAGER].store.provision_observations.summary(project, environment, since=since)
+    )
+
+
+async def observe_provision_detail(request: web.Request) -> web.Response:
+    project, environment, since = _observation_scope(request, frozenset({"seq"}))
+    seq = _number(request, "seq", -1, 0, 2**62) if "seq" in request.query else None
+    return _observation_json(
+        request.app[MANAGER].store.provision_observations.detail(
+            project,
+            environment,
+            _identifier(request.match_info["provision_id"], "provision_id"),
+            since=since,
+            seq=seq,
+        )
+    )
+
+
+async def observe_provision_files(request: web.Request) -> web.Response:
+    project, environment, since = _observation_scope(request, frozenset({"seq", "offset", "limit"}))
+    return _observation_json(
+        request.app[MANAGER].store.provision_observations.files(
+            project,
+            environment,
+            _identifier(request.match_info["provision_id"], "provision_id"),
+            since=since,
+            seq=_number(request, "seq", -1, 0, 2**62),
+            offset=_number(request, "offset", 0, 0, 2000),
+            limit=_number(request, "limit", 8, 1, 8),
+        )
+    )
+
+
+async def observe_provision_revisions(request: web.Request) -> web.Response:
+    project, environment, since = _observation_scope(
+        request, frozenset({"after", "limit", "target"})
+    )
+    return _observation_json(
+        request.app[MANAGER].store.provision_observations.revisions(
+            project,
+            environment,
+            since=since,
+            after=_number(request, "after", -1, -1, 2**62),
+            limit=_number(request, "limit", 8, 1, 8),
+            target=_number(request, "target", 0, 0, 2**62) if "target" in request.query else None,
+        )
+    )
+
+
+async def observe_revision_probes(request: web.Request) -> web.Response:
+    project, environment, since = _observation_scope(request, frozenset({"pin", "offset", "limit"}))
+    revision = _identifier(request.match_info["revision"], "revision")
+    if (
+        not revision.isascii()
+        or not revision.isdigit()
+        or len(revision) > 19
+        or int(revision) > 2**62
+    ):
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid revision selection")
+    return _observation_json(
+        request.app[MANAGER].store.provision_observations.probes(
+            project,
+            environment,
+            int(revision),
+            since=since,
+            pin=request.query.get("pin", ""),
+            offset=_number(request, "offset", 0, 0, 64),
+            limit=_number(request, "limit", 8, 1, 8),
+        )
+    )
 
 
 def _execution(request: web.Request) -> Execution:
