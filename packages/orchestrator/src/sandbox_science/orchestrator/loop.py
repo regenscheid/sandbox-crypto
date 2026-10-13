@@ -21,8 +21,11 @@ from .tools import Toolbox, ToolOutcome, operation_id
 from .worker_client import dump
 
 SYSTEM_PROMPT: Final = (
-    "You are a research assistant working in a sandboxed computing environment. Every tool "
-    "runs inside the project's sandbox, never on the machine that hosts this conversation. "
+    "You are a research assistant. Send research code and shell commands through the "
+    "offered tools to the configured worker. Document, review, job and policy bookkeeping "
+    "can run in the control service; it does not execute research code there. Describe "
+    "execution location and isolation only from worker-returned evidence, never from a "
+    "tool name; an explicitly configured development worker can be unisolated. "
     "Use python for computations whose state should persist between calls, shell for "
     "commands, and the file tools to inspect and share files. Publish files that are results. "
     "Report only what the tools actually returned. Network access follows the project's "
