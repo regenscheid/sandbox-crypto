@@ -635,3 +635,28 @@ class ProvisionObservations:
                     "probes": [p.model_dump(mode="json") for p in probes],
                 },
             )
+
+    def selected_pair(
+        self,
+        project: str,
+        environment: str,
+        *,
+        since: float,
+        before: tuple[int, str],
+        after: tuple[int, str],
+    ) -> tuple[RevisionSummary, RevisionSummary]:
+        """Pin exactly two caller-selected retained headers in one bounded read snapshot."""
+        for revision, pin in (before, after):
+            _parameters((revision, 0, 2**62))
+            if type(pin) is not str or re.fullmatch(r"[0-9a-f]{64}", pin) is None:
+                raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid selected revision pin")
+        with self._read(project, environment):
+            selected = tuple(
+                self._revision(environment, revision, since)[1] for revision, _ in (before, after)
+            )
+            if any(
+                row.record_sha256 != pin
+                for row, (_, pin) in zip(selected, (before, after), strict=True)
+            ):
+                raise WorkerError(ErrorKind.CONFLICT, "selected revision record changed")
+            return selected[0], selected[1]
