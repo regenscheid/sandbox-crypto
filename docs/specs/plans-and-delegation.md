@@ -2,6 +2,8 @@
 
 Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specification; conventions in the [index](README.md).
 
+The user explicitly requested a planning phase and live plan progress on 2026-10-12 ([D86](../DECISIONS.md), [original prompt design](../ORCHESTRATOR-PROMPTS.md)). That confirms those product requirements, not every detail or open question in this draft. Plan/progress tools and the runtime planning phase remain unimplemented; the original design introduces no execution approval gate. Its explicit terminal goal-outcome proposal clarifies PD-10 without silently claiming that blocked/skipped work achieved the goal.
+
 ## Scope
 
 How agents organize research work in a session: versioned plans with phases, steps and tracks; progress; delegated agents that work on tracks and return structured outcomes; questions to the user; and the model settings of the three agent roles, main, delegated and reviewer (D61; the decision register leaves role settings to this spec). It also defines agent runs, which the other specs use. The user values this work organization (D04).

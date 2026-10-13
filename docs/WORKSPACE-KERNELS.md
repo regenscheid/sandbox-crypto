@@ -127,4 +127,4 @@ logout fencing. The accepted 70-file production build and source/helper pins are
 retained. All owned services, VMs, browser tabs and private state were removed and
 independently verified. Native hidden-tab pause was not proved because the browser
 automation surface retained visible document state; focused lifecycle tests cover
-that behavior separately. Fresh exact-head PR CI remains the delivery gate.
+that behavior separately. PR #99 merged at `afb049a` after all four fresh exact-head checks passed on reviewed signed `fe5f4d7` (run `38325477608`).

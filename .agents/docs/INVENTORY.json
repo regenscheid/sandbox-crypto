@@ -22,6 +22,12 @@
       "sha256": "7a736b1d5566a77e8a8b86921546bc6c9596a18700813592493a17c55e885143"
     },
     {
+      "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
+      "category": "implementation-design",
+      "bytes": 30490,
+      "sha256": "71188489031d284e668dc5b98b188e3fa2071656701d5fdd94e0ea8ac2da5fac"
+    },
+    {
       "path": "../../docs/PROJECT-MACROS.md",
       "category": "implementation-boundary",
       "bytes": 9784,
@@ -30,14 +36,14 @@
     {
       "path": "../../docs/WORKSPACE-KERNELS.md",
       "category": "implementation-boundary",
-      "bytes": 8197,
-      "sha256": "26cb485a6545d10ebdf27b454c928085a407113ae9848dec719481bb7f9c6d85"
+      "bytes": 8270,
+      "sha256": "001dbde8290e08438135257d677765f4eebb57c8526cf00b2a237d50620adf74"
     },
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 21024,
-      "sha256": "d0df30485db12e8ab85279d0a0690f95500ef29df06ace020af8746ccef50cb7"
+      "bytes": 21422,
+      "sha256": "7741d0a9b445f1d383378b590d6843f2fd50578cff176aceb9b3f841bed2d5ab"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -632,6 +638,18 @@
       "category": "agent-source-investigation",
       "bytes": 56150,
       "sha256": "0bc2cfc76ed52eea7a6b96cd966a17bd28d8083d5f95adfbca6b169fa9fb7be3"
+    },
+    {
+      "path": "agent-reports/orchestrator-prompts-2026-10-12.md",
+      "category": "implementation-validation",
+      "bytes": 2577,
+      "sha256": "71cac54c87b65c00452b289e9eedac62aa5cc82973a7f2d1dc9bacccf57e32f0"
+    },
+    {
+      "path": "agent-reports/orchestrator-prompts-evidence-2026-10-12.json",
+      "category": "validation-evidence",
+      "bytes": 32395,
+      "sha256": "1a24b54c9d47463a531c34eaf40cb76446f144d479806e0020ddee91f47f19b3"
     },
     {
       "path": "agent-reports/project-macros-2026-10-12.md",

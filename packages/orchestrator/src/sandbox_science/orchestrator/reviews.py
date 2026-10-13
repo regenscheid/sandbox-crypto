@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 """When a checkpoint review is due, from the events of a session's document changes (CR-10).
 
-Consistency reviews are not built yet. This module is the part of their trigger that
-living documents feed: CR-10, as amended for LD-40, counts a document revision by its text
+The live reviewer is implemented in ``consistency/``. This historical trigger helper
+describes the document-change window: CR-10, as amended for LD-40, counts a revision by its text
 and its structural blocks, never as an artifact revision, so a few small edits do not
 dispatch a review by themselves. A window gathers the session's agent-written document
 revisions since the last dispatch (its watermark); a review is due once the minimum

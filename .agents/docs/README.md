@@ -2,6 +2,8 @@
 
 This folder keeps the agent source investigations behind the Sandbox Science plan, and records of runtime validation. Source inspection and planning are distinct from runtime validation: only the lab records below report observed behaviour.
 
+- [Original prompts and planning design, 2026-10-12](agent-reports/orchestrator-prompts-2026-10-12.md): independently authored role/stock drafts and narrow current capability corrections; 10,034 fresh Python cases, exact static gates and reused unchanged web/math evidence. [Exact evidence](agent-reports/orchestrator-prompts-evidence-2026-10-12.json). Runtime planning/progress remains separate.
+
 ## Individual agent investigations
 
 - [Claude Science](agent-reports/claude-science.md): research behavior, skills, review triggers, documents, kernels and execution seams, as evidence for the reimplementation (D03, D11).
