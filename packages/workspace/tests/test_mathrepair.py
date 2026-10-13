@@ -13,7 +13,7 @@ import logging
 import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -176,8 +176,15 @@ async def test_one_bounded_request_through_the_gateway_and_its_answer_kept(
         second = await service.repair(wanted, "s2")
     finally:
         await service.close()
-    assert first == RepairAnswer(enabled=True, tex="\\frac{a}{b}", model="sandbox-reviewer")
-    assert first.to_json() == {
+    assert replace(first, input_provenance=None) == RepairAnswer(
+        enabled=True, tex="\\frac{a}{b}", model="sandbox-reviewer"
+    )
+    assert first.input_provenance is not None
+    reply = first.to_json()
+    pin = reply.pop("input_provenance")
+    assert isinstance(pin, dict)
+    assert pin["system_text"] == SYSTEM_PROMPT
+    assert reply == {
         "enabled": True,
         "model": "sandbox-reviewer",
         "tex": "\\frac{a}{b}",
@@ -517,7 +524,9 @@ async def test_the_endpoint_answers_with_the_repair(repairing: TestClient[Any, A
     response = await repairing.post("/api/v0/math-repair", json=body, headers=origin(repairing))
     assert response.status == 200
     assert response.headers["Cache-Control"] == "no-store"
-    assert await response.json() == {
+    answer = await response.json()
+    assert answer.pop("input_provenance")["role"] == "display-repair"
+    assert answer == {
         "enabled": True,
         "model": "rev",
         "tex": "\\frac{1}{2}",
