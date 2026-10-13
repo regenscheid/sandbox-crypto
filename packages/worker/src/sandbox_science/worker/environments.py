@@ -172,13 +172,19 @@ class OpenShellCli:
         try:
             output, errors = await asyncio.wait_for(process.communicate(), timeout)
         except TimeoutError as exc:
-            process.kill()
-            await process.wait()
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await _owned(process.wait())
             raise WorkerError(
                 ErrorKind.UNAVAILABLE, f"openshell {' '.join(args[:2])} took over {timeout:.0f} s"
             ) from exc
         except asyncio.CancelledError:
-            process.kill()
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            # Reap even an already-exited process. Later cancellation cannot
+            # abandon this wait or replace the original caller interruption.
+            with contextlib.suppress(asyncio.CancelledError):
+                await _owned(process.wait())
             raise
         if process.returncode != 0:
             text = _ANSI.sub("", (errors or output).decode("utf-8", "replace")).strip()
