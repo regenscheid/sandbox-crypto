@@ -4,6 +4,12 @@
   "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-three OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
+      "path": "../../docs/DELEGATED-PLAN-PROGRESS.md",
+      "category": "implementation-boundary",
+      "bytes": 7783,
+      "sha256": "0088d5ab6717a57f2477c08a9c2cfdcce429b2850c5bc5d2ce1bc122b41ac54f"
+    },
+    {
       "path": "../../docs/DELEGATION-RECORDS.md",
       "category": "implementation-boundary",
       "bytes": 9477,
@@ -174,8 +180,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 31659,
-      "sha256": "48a31b55eee793c01c27a086e0cb68c2e316bab376b7fe2c4e24c2c524f25471"
+      "bytes": 32198,
+      "sha256": "f1131442b8b5fa0c1c6e0566b4a66ce6bdfb1a51a4283af256baa791a075d005"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -818,6 +824,18 @@
       "category": "browser-evidence",
       "bytes": 146494,
       "sha256": "1958ef05b66151b26cab51bb8eef0cd153a967e6f02588226c32715ee9bbbf68"
+    },
+    {
+      "path": "agent-reports/delegated-plan-progress-2026-10-13.md",
+      "category": "implementation-validation",
+      "bytes": 3148,
+      "sha256": "e785d500720682daf107a14deef0c48d5debb1000846d8a1392cd7269d44e278"
+    },
+    {
+      "path": "agent-reports/delegated-plan-progress-evidence-2026-10-13.json",
+      "category": "implementation-validation",
+      "bytes": 1055478,
+      "sha256": "f1966449aa373ee5688198fc32ce1ec409fa92049d6f678f976f77ed4e842855"
     },
     {
       "path": "agent-reports/delegation-records-2026-10-13.md",
