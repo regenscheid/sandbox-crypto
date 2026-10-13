@@ -9,6 +9,7 @@ silently consume one. Each method owns a SQLite connection and may run in a thre
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Generator, Sequence
@@ -20,6 +21,12 @@ from typing import cast
 from sandbox_science.contracts import ExecutionContext
 
 from .documents import DocumentStore, store_path
+from .watcher_prompt import (
+    MAX_PROVENANCE_BYTES,
+    WatcherProvenance,
+    WatcherProvenanceRead,
+    encode_provenance,
+)
 
 LEASE_SECONDS = 30
 
@@ -54,6 +61,15 @@ class JobState:
                     job TEXT, alias TEXT, requested_at REAL, input TEXT,
                     outcome TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER);
             """)
+            db.execute("BEGIN IMMEDIATE")
+            if (
+                db.execute(
+                    "SELECT 1 FROM pragma_table_info('job_watcher_calls') "
+                    "WHERE name='prompt_provenance'"
+                ).fetchone()
+                is None
+            ):
+                db.execute("ALTER TABLE job_watcher_calls ADD COLUMN prompt_provenance TEXT")
 
     @contextmanager
     def _db(self) -> Generator[sqlite3.Connection]:
@@ -161,8 +177,11 @@ class JobState:
         payload: dict[str, object],
         limit: int,
         due: float,
+        *,
+        provenance: WatcherProvenance | None = None,
     ) -> int | None:
         """Reserve one call from the project's durable hourly watcher budget."""
+        pin = encode_provenance(provenance) if provenance is not None else None
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             now = time.time()
@@ -180,8 +199,8 @@ class JobState:
                 return None
             cursor = db.execute(
                 """INSERT INTO job_watcher_calls
-                (project,session,run,job,alias,requested_at,input,outcome)
-                VALUES (?,?,?,?,?,?,?,?)""",
+                (project,session,run,job,alias,requested_at,input,outcome,prompt_provenance)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     context.project_id,
                     context.session_id,
@@ -191,9 +210,51 @@ class JobState:
                     now,
                     json.dumps(payload),
                     "pending",
+                    pin,
                 ),
             )
             return cursor.lastrowid
+
+    def watcher_provenance(self, context: ExecutionContext, call: int) -> WatcherProvenanceRead:
+        """Internal exact-scope read; never fetch oversized or non-text metadata."""
+        if type(call) is not int or not 1 <= call <= 2**63 - 1:
+            raise ValueError("invalid watcher reservation ID")
+        scope = context.project_id, context.session_id
+        if any(
+            type(value) is not str
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", value) is None
+            for value in scope
+        ):
+            raise ValueError("invalid watcher reservation scope")
+        with self._db() as db:
+            row = db.execute(
+                """SELECT CASE WHEN prompt_provenance IS NULL THEN 0
+                    WHEN typeof(prompt_provenance)='text'
+                      AND length(CAST(prompt_provenance AS BLOB))<=?
+                    THEN 1 ELSE 2 END,
+                  CASE WHEN typeof(prompt_provenance)='text'
+                      AND length(CAST(prompt_provenance AS BLOB))<=?
+                    THEN CAST(prompt_provenance AS BLOB) ELSE NULL END
+                  FROM job_watcher_calls WHERE project=? AND session=? AND id=? LIMIT 1""",
+                (
+                    MAX_PROVENANCE_BYTES,
+                    MAX_PROVENANCE_BYTES,
+                    *scope,
+                    call,
+                ),
+            ).fetchone()
+        if row is None:
+            return WatcherProvenanceRead("absent")
+        if row[0] == 0:
+            return WatcherProvenanceRead("legacy")
+        if row[0] == 1:
+            try:
+                return WatcherProvenanceRead(
+                    "complete", WatcherProvenance.model_validate_json(row[1])
+                )
+            except ValueError:
+                pass
+        return WatcherProvenanceRead("corrupt")
 
     def finish_call(
         self,
