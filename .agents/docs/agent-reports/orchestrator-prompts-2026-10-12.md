@@ -37,4 +37,4 @@ browser, converter or VM was started for this slice.
 Durable plans/progress, their MAIN tools and phase prompts, live GUI updates,
 delegation, approval routing, context compaction and the complete prompt catalog
 are separate implementation work. This change enables none of those tools and
-adds no mandatory approval gate. Fresh exact-head PR CI remains the delivery gate.
+adds no mandatory approval gate. PR #100 merged at `c14d1ea412591aa8793b91da0a071a7d9416286a` after all four fresh exact-head checks passed on independently reviewed signed `02a73c9` (run `38327914825`).
