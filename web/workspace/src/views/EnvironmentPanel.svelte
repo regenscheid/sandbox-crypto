@@ -4,8 +4,8 @@
   import type { Project } from '../lib/api';
   import { formatTime } from '../lib/format';
   import { onKernelLogout } from '../lib/kernels';
-  import { environmentChoices, ProvisionReader, readProvision, diffIdentity, differenceKey, DIFF_DEADLINE_MS, PROVISION_DEADLINE_MS, type ReadState, type Selection,
-    type ProvisionObservation, type OperationDetail, type FilePage, type HistoryPage, type ProbePage, type RevisionSummary, type LockfileDiffPage } from '../lib/provisioning';
+  import { environmentChoices, ProvisionReader, readProvision, diffIdentity, differenceKey, packageIdentity, packageKey, DIFF_DEADLINE_MS, PACKAGES_DEADLINE_MS, PROVISION_DEADLINE_MS, type ReadState, type Selection,
+    type ProvisionObservation, type OperationDetail, type FilePage, type HistoryPage, type ProbePage, type RevisionSummary, type LockfileDiffPage, type RevisionPackagePage } from '../lib/provisioning';
 
   let {projectId, project, initialView = {phase: 'loading', data: null, busy: false}, initialSelection = null, initialDetail = {phase: 'loading', data: null, busy: false}}:
     {projectId: string; project: Project; initialView?: ReadState; initialSelection?: Selection | null; initialDetail?: ReadState} = $props();
@@ -18,6 +18,7 @@
   let before = $state<RevisionSummary | null>(untrack(() => initialSelection?.kind === 'diff' ? initialSelection.before : null));
   let after = $state<RevisionSummary | null>(untrack(() => initialSelection?.kind === 'diff' ? initialSelection.after : null));
   let diffOffsets = $state<number[]>([]);
+  let packageOffsets = $state<number[]>([]);
   let pairKey = $state(untrack(() => JSON.stringify([projectId, project.default_environment_id])));
   const pairInScope = $derived(pairKey === JSON.stringify([projectId, selected?.scope.environmentId]));
   let mounted = $state(false), visible = $state(false), blocked = $state(false);
@@ -34,6 +35,7 @@
   const history = $derived(selection?.kind === 'history' ? selectedData as HistoryPage | null : null);
   const probes = $derived(selection?.kind === 'probes' ? selectedData as ProbePage | null : null);
   const comparison = $derived(selection?.kind === 'diff' ? selectedData as LockfileDiffPage | null : null);
+  const packages = $derived(selection?.kind === 'packages' ? selectedData as RevisionPackagePage | null : null);
   const busy = $derived(view.busy || detail.busy);
   const signedOut = $derived(blocked || view.phase === 'signed_out' || detail.phase === 'signed_out');
   function select(value: Selection): void { if (!busy && !signedOut) selection = value; }
@@ -55,6 +57,17 @@
     const offset = diffOffsets.at(-1)!; diffOffsets = diffOffsets.slice(0, -1);
     select({kind: 'diff', before: selection.before, after: selection.after, offset, expected: diffIdentity(comparison)});
   }
+  function loadPackages(revision: RevisionSummary): void {if (!busy && !signedOut) {packageOffsets = []; select({kind: 'packages', revision, offset: 0});}}
+  function nextPackages(): void {
+    if (busy || signedOut || selection?.kind !== 'packages' || packages?.status !== 'complete' || packages.next_offset === null) return;
+    packageOffsets = [...packageOffsets, packages.offset];
+    select({...selection, offset: packages.next_offset, expected: packageIdentity(packages), previousKey: packageKey(packages.packages.at(-1)!)});
+  }
+  function previousPackages(): void {
+    if (busy || signedOut || selection?.kind !== 'packages' || packages?.status !== 'complete' || !packageOffsets.length) return;
+    const offset = packageOffsets.at(-1)!; packageOffsets = packageOffsets.slice(0, -1);
+    select({kind: 'packages', revision: selection.revision, offset, expected: packageIdentity(packages)});
+  }
   function holdReason(reason: string): string {return {lockfile_unrecorded: 'No lockfile was recorded', blob_missing: 'The recorded lockfile is unavailable or evicted', unsupported_format: 'The retained format is unsupported', skipped_entries: 'The retained lockfile omitted package entries', input_limit: 'The selected input exceeds this reader’s limits'}[reason] ?? 'Unknown input';}
   function environment(value: string): void { if (value !== selected?.scope.environmentId) { selectedId = value; selection = null; } }
   function phaseLabel(phase: ReadState['phase']): string {
@@ -69,7 +82,7 @@
   $effect(() => {
     if (!mounted || !selected) return;
     const scope = selected.scope;
-    view = {phase: 'loading', data: null, busy: false}; selection = null; before = after = null; diffOffsets = [];
+    view = {phase: 'loading', data: null, busy: false}; selection = null; before = after = null; diffOffsets = []; packageOffsets = [];
     let disposed = false;
     const owner = new ProvisionReader(signal => readProvision(scope, {kind: 'summary'}, signal), value => {if (!disposed) {view = value; if (value.phase === 'signed_out') blocked = true;}});
     overviewOwner = owner;
@@ -83,7 +96,7 @@
     detailKey = selectionKey;
     detail = {phase: 'loading', data: null, busy: false};
     let disposed = false;
-    const owner = new ProvisionReader(signal => readProvision(scope, requested, signal), value => {if (!disposed) {detail = value; if (value.phase === 'signed_out') blocked = true; if (requested.kind === 'diff' && value.phase === 'changed') {before = after = null; diffOffsets = [];}}}, false, requested.kind === 'diff' ? DIFF_DEADLINE_MS : PROVISION_DEADLINE_MS, requested.kind === 'diff');
+    const owner = new ProvisionReader(signal => readProvision(scope, requested, signal), value => {if (!disposed) {detail = value; if (value.phase === 'signed_out') blocked = true; if (requested.kind === 'diff' && value.phase === 'changed') {before = after = null; diffOffsets = [];} if (requested.kind === 'packages' && value.phase === 'changed') packageOffsets = []; }}, false, requested.kind === 'diff' ? DIFF_DEADLINE_MS : requested.kind === 'packages' ? PACKAGES_DEADLINE_MS : PROVISION_DEADLINE_MS, requested.kind === 'diff' || requested.kind === 'packages');
     detailOwner = owner;
     const off = onKernelLogout(() => owner.logout());
     return () => {disposed = true; owner.stop(); off(); detailOwner = null;};
@@ -186,13 +199,34 @@
           {#if history.revisions.length === 0}<p>No retained revisions in this selected window.</p>{:else}
             <div class="table-scroll"><table><thead><tr><th>Revision</th><th>Change</th><th>Lockfile</th><th>Probes</th><th>Compare</th></tr></thead><tbody>
               {#each history.revisions as item (item.revision)}<tr><td>{item.revision}<br/><small>{formatTime(item.recorded_at)}</small></td><td>{item.managed === null ? 'origin unknown' : item.managed ? 'managed' : 'unmanaged'}<br/><small>{item.operation ?? item.changed_by ?? 'no producing operation recorded'}</small></td>
-                <td>{item.lockfile ? `${item.lockfile.conda_packages} Conda / ${item.lockfile.pip_distributions} pip` : 'unavailable'}{#if item.lockfile}<br/><code class="digest">{item.lockfile.sha256}</code>{/if}</td>
+                <td>{item.lockfile ? `${item.lockfile.conda_packages} Conda / ${item.lockfile.pip_distributions} pip` : 'unavailable'}{#if item.lockfile}<br/><code class="digest">{item.lockfile.sha256}</code>{/if}<br/><button disabled={busy || signedOut} onclick={() => loadPackages(item)}>Recorded packages and licenses</button></td>
                 <td><button disabled={busy || signedOut} onclick={() => select({kind: 'probes', revision: item, offset: 0})}>{item.probes_total} probe records</button>{#if item.operation}<br/><button disabled={busy || signedOut} onclick={() => {if (item.operation) select({kind: 'retained_operation', provisionId: item.operation});}}>Load current retained operation</button>{/if}</td>
                 <td><button disabled={busy || signedOut} onclick={() => chooseRevision('before', item)}>Use as before</button><button disabled={busy || signedOut} onclick={() => chooseRevision('after', item)}>Use as after</button></td></tr>{/each}
             </tbody></table></div>
           {/if}
           <div class="page-controls"><button disabled={busy || signedOut} onclick={() => select({kind: 'history', after: -1, target: null})}>Refresh history window</button>
             <button disabled={busy || signedOut || history.next_after === null} onclick={() => {if (history.next_after !== null) select({kind: 'history', after: history.next_after, target: history.target});}}>Next revisions</button></div>
+        {:else if packages}
+          <h4>Recorded packages and licenses · revision {packages.selection.revision}</h4>
+          <p class="muted">Dated retained package records, including unchanged packages. The backend verifies the selected raw record and lockfile bytes; this browser does not independently hash them. Current environment changes do not select a newer revision.</p>
+          <details><summary>Selected source proof</summary><pre>{JSON.stringify({selection: packages.selection, verified_header: packages.header}, null, 2)}</pre></details>
+          {#if packages.status === 'held'}
+            <p class="notice"><strong>Recorded package inventory held; packages and licenses are unknown.</strong> An unavailable or incomplete input is not an empty inventory.</p>
+            <ul>{#each packages.holds as hold}<li>{holdReason(hold)}.</li>{/each}</ul>
+          {:else}
+            <p>{packages.total === 0 ? 'No package entries in this validated retained lockfile.' : `Showing recorded packages ${packages.offset + 1}–${packages.offset + packages.packages.length} of ${packages.total}. This page is a subset of the recorded inventory.`}</p>
+            {#each packages.packages as row (packageKey(row))}
+              <article><h5>{row.package.name} {row.package.version} <small>({row.ecosystem}{row.location ? `, ${row.location}` : ''})</small>{#if row.license.agpl}<span class="license-flag">AGPL flagged</span>{/if}</h5>
+                <p>Declared license: <strong>{row.license.declared ?? 'unknown'}</strong>; AGPL status: {row.license.agpl === null ? 'unknown' : row.license.agpl ? 'flagged' : 'not flagged'}.</p>
+                <dl class="facts">{#each Object.entries(row.package) as [field, value]}<dt>{field}</dt><dd class="record-text">{value ?? 'unknown'}</dd>{/each}</dl>
+              </article>
+            {/each}
+            <p class="muted">Conda licenses are declared metadata with the existing AGPL heuristic. Pip licenses remain unknown. Recorded packages do not certify installed files, complete guest inventory, scientific correctness, licensing or permission.</p>
+            <div class="page-controls"><button disabled={busy || signedOut || detail.phase !== 'observed' || !packageOffsets.length} onclick={previousPackages}>Previous packages</button>
+              <button disabled={busy || signedOut || detail.phase !== 'observed' || packages.next_offset === null} onclick={nextPackages}>Next packages</button></div>
+          {/if}
+          {#if detail.phase === 'changed'}<p class="notice">Select the revision again from refreshed history. No newer source was substituted.</p>{/if}
+          <button disabled={busy || signedOut} onclick={() => select({kind: 'history', after: -1, target: null})}>Back to revision history</button>
         {:else if comparison}
           <h4>Lockfile comparison · revision {comparison.before.revision} → {comparison.after.revision}</h4>
           <p class="muted">These are dated retained package records. Advancing the environment head does not select newer sources. Raw revision pins and lockfile byte hashes are verified by the backend, rather than independently hashed by this browser.</p>
