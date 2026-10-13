@@ -312,3 +312,15 @@ Root-owned [Lab26](../docs/agent-reports/babbage-openshell-lab-26-2026-10-12.md)
 ## Lab28: passive original kernel lineage
 
 [Lab28](../docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md) passed on signed `1deb9b7`, helper [`kernel_lineage.py`](kernel_lineage.py) SHA `4d90664b`. For a separately coordinated fresh run, freeze a reviewed clean source and use that exact head with every stage: `.venv/bin/python -I .agents/labs/kernel_lineage.py init --head <exact-head>`, then `before`, `restarted`, `idle`, and `resume` with the same argument. Root starts the owned lab with the documented imported provider profile and obviously synthetic provider, then `PROJECT=lab28 worker_up.sh`. Gracefully restart only its worker between `before` and `restarted`; set owned idle suspension to three seconds and restart/wait before `idle`. During the stopped interval independently retain the exact original gateway VM name/immutable ID/Stopped projection tied to the helper run/source/SHA, without raw credential annotations, before `resume`. A initiates the package change; B is fresh afterward. Missing/legacy/corrupt proof remains local-fixture coverage, and no MAIN notice delivery is tested. Copy token-free evidence before `lab_down.sh`; independently verify complete owned units/VM/listeners/state/XDG/socket removal.
+
+## Synthetic session-plan browser fixture
+
+`session_plans_browser.py` serves the frozen production workspace on loopback over
+an owned marked temporary control store. It starts no worker, model or VM. Root
+uses `serve --info /tmp/OWNED-EVIDENCE/private.json --cleanup
+/tmp/OWNED-EVIDENCE/cleanup.json`, then fixed `inspect`, `in-progress`, `revise`
+and `finish --fixture /tmp/session-plans-browser-...` actions. The evidence
+directory must be current-user owned; the exclusive private info file holds the
+synthetic login URL and must never be archived. Public startup pins source,
+helper, assets and synthetic scopes. SIGTERM drains the app, removes only owned
+state/private info and records cleanup. See [acceptance](../docs/agent-reports/session-planning-2026-10-12.md).

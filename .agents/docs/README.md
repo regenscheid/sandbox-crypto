@@ -16,6 +16,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 ## Local implementation validation
 
+- [Original MAIN planning and live progress, 2026-10-12](agent-reports/session-planning-2026-10-12.md): independently authored single-MAIN core/tools and read-only workspace; 10,312 Python/656 web/24 math gates, actual synthetic browser progress/revision/qualified-outcome/isolation/history/error/logout acceptance and owned cleanup. USER editing, approval decisions and live-model planning quality remain separate.
+
 - [Internal document export-input snapshots, 2026-10-12](agent-reports/document-export-inputs-2026-10-12.md): exact immutable source/parser/TeX/macro pins, durable replay, atomic quotas and unsupported-input holds. [Evidence](agent-reports/document-export-inputs-evidence-2026-10-12.json) retains independent review, 134 affected cases and root combined gates (9,979 Python/575 web/24 math and required checks/builds). Protected staging, worker conversion and actual `.tex`/PDF acceptance remain open; no export runtime was started.
 
 ## Runtime validation

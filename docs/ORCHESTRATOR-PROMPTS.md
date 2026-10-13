@@ -168,7 +168,7 @@ CAS/reread and closing races, same-batch dispatch, bounded event gaps, compact
 large-note reads, immutable replay/model provenance, complete response delivery,
 save/failure/cancellation and actual thread/descriptor cleanup. These deterministic
 tests establish host/tool enforcement, not live-model planning quality. The read-only workspace
-view/API are separate consumers in root integration. USER editing, approval
+view/API are implemented read-only consumers. USER editing, approval
 decisions, delegation, automatic resumed work,
 idle wake, effect-to-step lineage and broader prompt evaluation remain separate.
 
@@ -359,7 +359,7 @@ a live-chat transport. Show authoritative version, current step, activity age,
 blocked/skipped counts and disconnected/pending updates. A delayed browser reply
 cannot replace a newer scope/version or erase an unsaved USER draft. Browser closure
 stops polling, not research. The first read-only live viewer and scoped API are now
-in root integration with the implemented plan core/tools; USER editing, history
+implemented consumers of the plan core/tools; USER editing, history
 pages and effect-to-step lineage remain separate. Final combined/browser delivery
 gates are recorded in central status rather than inferred from this proposal.
 
