@@ -20,6 +20,7 @@ import math
 import mimetypes
 import posixpath
 import re
+import sqlite3
 import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -80,12 +81,14 @@ from sandbox_science.contracts import (
     new_id,
 )
 from sandbox_science.contracts.output_observations import Gap, OutputReport
+from sandbox_science.contracts.run_cells import RunCellRequest
 from sandbox_science.contracts.run_kernels import (
     RunKernelBinding,
     RunKernelEnrollment,
     RunKernelScope,
     checked_run_kernel_binding,
     checked_run_kernel_scope,
+    run_kernel_binding_sha256,
 )
 from sandbox_science.contracts.worker import (
     DEFAULT_OUTPUT_LIMIT,
@@ -109,6 +112,7 @@ from .output_observations import normalize as normalize_observation
 from .package_gate import PackageGate
 from .package_gate import refusal as recovery_refusal
 from .revisions import Prepared, Revisions, package_commands
+from .run_dispatch import RunKernelDispatcher
 from .run_kernels import RunKernelBindings
 from .shared_sync import SharedSync
 from .store import CaptureLease, KernelRecord, Store
@@ -204,6 +208,9 @@ class _Live:
     execution: Execution
     environment_id: str
     changed: asyncio.Future[None]
+    is_run: bool = False
+    run_request: RunCellRequest | None = None
+    run_admission: Callable[[], bool] | None = None
     final_source_seq: int | None = None
     observation: OutputReport | None = None
     observation_gap: Gap | None = "missing"
@@ -374,6 +381,7 @@ class ExecutionManager:
         self._gate_locks: dict[str, asyncio.Lock] = {}
         self._gate_acked: dict[ExecutorChannel, PackageGate] = {}
         self._gate_retries: dict[str, asyncio.Task[Any]] = {}
+        self.run_dispatcher = RunKernelDispatcher(self)
 
     def package_admission(self, environment_id: str) -> PackageGate:
         gate = self.store.package_gate(environment_id)
@@ -499,16 +507,27 @@ class ExecutionManager:
                 self.store.mark_terminal(execution_id)
                 continue
             last = max(execution.last_seq, self.store.last_seq(execution_id))
-            saved = self.store.recovery(execution_id)
+            is_run = False
             try:
-                request = _REQUEST.validate_json(saved[0]) if saved is not None else None
-            except ValueError:
+                is_run = self.store.kernel_scope(execution_id) == "run-v1"
+                saved = self.store.recovery(execution_id)
+                request = (
+                    self.store.run_kernel_state.request(execution)
+                    if is_run
+                    else _REQUEST.validate_json(saved[0])
+                    if saved is not None
+                    else None
+                )
+            except (ValueError, WorkerError, sqlite3.Error):
+                is_run = True  # invalid marker must never enter the legacy mapper
                 request = None
                 saved = None
             live = self._track(
                 execution.model_copy(update={"last_seq": last}),
                 request.output_limit_bytes if request else DEFAULT_OUTPUT_LIMIT,
             )
+            live.is_run = is_run
+            live.run_request = request if isinstance(request, RunCellRequest) else None
             live.events, live.stored = self.store.event_usage(execution_id)
             if saved is not None and saved[1] and daemon_enabled:
                 live.dispatched = True
@@ -535,7 +554,10 @@ class ExecutionManager:
                     continue
                 saved = self.store.recovery(live.execution.execution_id)
                 if saved is not None and (live.watchdog is None or live.watchdog.done()):
-                    request = _REQUEST.validate_json(saved[0])
+                    request = live.run_request if live.is_run else _REQUEST.validate_json(saved[0])
+                    if request is None:
+                        self._lose(live, "the original child selection")
+                        continue
                     elapsed = max(
                         0.0,
                         (
@@ -597,6 +619,18 @@ class ExecutionManager:
                 if channel is None or saved is None or channel.incarnation != saved[1]:
                     self._lose(live, "the sandbox executor incarnation")
                     continue
+                if live.is_run:
+                    try:
+                        if live.run_request is None:
+                            raise WorkerError(
+                                ErrorKind.UNAVAILABLE, "original child selection missing"
+                            )
+                        self.run_dispatcher.proof(
+                            live.run_request.binding, recovery=True, allow_closed=True
+                        )
+                    except WorkerError:
+                        self._lose(live, "the original child VM or selection")
+                        continue
                 live.channel = channel
                 live.dispatched = True
                 environment = self._environments.get(environment_id)
@@ -837,6 +871,7 @@ class ExecutionManager:
             raise asyncio.CancelledError
 
     async def _close(self) -> None:
+        await self.run_dispatcher.drain()
         captures = list(self._captures)
         for task in captures:
             task.cancel()
@@ -1375,6 +1410,10 @@ class ExecutionManager:
         found = self.store.find_operation(request.context.project_id, request.operation_id)
         if found is not None:
             execution_id, existing = found
+            if self.store.kernel_scope(execution_id) != "legacy":
+                raise WorkerError(
+                    ErrorKind.CONFLICT, "operation belongs to internal selected child work"
+                )
             if existing != digest:
                 raise WorkerError(
                     ErrorKind.CONFLICT,
@@ -1472,7 +1511,7 @@ class ExecutionManager:
         self._spawn(self._dispatch(live, request))
         return live.execution, True
 
-    async def _dispatch(self, live: _Live, request: ExecutionRequest) -> None:
+    async def _dispatch(self, live: _Live, request: ExecutionRequest | RunCellRequest) -> None:
         """Send the request to its executor; whatever goes wrong, the execution ends."""
         try:
             await self._send(live, request)
@@ -1503,7 +1542,7 @@ class ExecutionManager:
             environment.last_used = time.monotonic()
         self._finish(live, ExecutionState.FAILED, Result(error=error))
 
-    async def _send(self, live: _Live, request: ExecutionRequest) -> None:
+    async def _send(self, live: _Live, request: ExecutionRequest | RunCellRequest) -> None:
         execution_id = live.execution.execution_id
         if live.cancel_requested or live.execution.state in TERMINAL_STATES:
             self._finish(
@@ -1514,7 +1553,14 @@ class ExecutionManager:
                 ),
             )
             return
-        environment = await self._environment(request.context.environment_id)
+        if isinstance(request, RunCellRequest):
+            if live.run_admission is None:
+                raise WorkerError(ErrorKind.UNAVAILABLE, "child controller admission missing")
+            self.run_dispatcher.admission(live.run_admission)
+            environment, original_channel = self.run_dispatcher.proof(request.binding)
+        else:
+            environment = await self._environment(request.context.environment_id)
+            original_channel = None
         if live.cancel_requested or live.execution.state in TERMINAL_STATES:
             self._finish(
                 live,
@@ -1532,7 +1578,10 @@ class ExecutionManager:
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, "this environment cannot read PDFs (it lacks pdf_oxide)"
             )
-        if isinstance(request, CellRequest) and request.language not in environment.languages:
+        if (
+            isinstance(request, CellRequest | RunCellRequest)
+            and request.language not in environment.languages
+        ):
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, f"no {request.language} kernel in this environment"
             )
@@ -1578,14 +1627,29 @@ class ExecutionManager:
                     ),
                 )
                 return
-        self._package_origin(request, live.execution.origin)
+        self._package_origin(
+            request.cell() if isinstance(request, RunCellRequest) else request,
+            live.execution.origin,
+        )
         if not await self._sync_package_gate(request.context.environment_id, channel):
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,
                 "legacy executor lacks package admission fencing; protected work refused",
             )
         gate = self.store.package_gate(request.context.environment_id)
-        self._package_origin(request, live.execution.origin)
+        self._package_origin(
+            request.cell() if isinstance(request, RunCellRequest) else request,
+            live.execution.origin,
+        )
+        if isinstance(request, RunCellRequest):
+            self.run_dispatcher.check(request.binding, environment, channel)
+            if channel is not original_channel or live.run_admission is None:
+                raise WorkerError(ErrorKind.UNAVAILABLE, "original child connection changed")
+            self.run_dispatcher.admission(live.run_admission)
+            fields.update(
+                run_binding=request.binding.model_dump(mode="json"),
+                run_binding_sha256=run_kernel_binding_sha256(request.binding),
+            )
         if live.execution.origin is not None:
             fields.update(
                 package_operation=live.execution.origin, package_generation=gate.generation
@@ -1613,7 +1677,10 @@ class ExecutionManager:
             return
         _log.warning("execution %s overran its limit; cancelling it", live.execution.execution_id)
         with contextlib.suppress(WorkerError):
-            await self.cancel(live.execution.execution_id)
+            if live.is_run:
+                await self._cancel_selected(live)
+            else:
+                await self.cancel(live.execution.execution_id)
         await asyncio.sleep(LOST_GRACE)
         self._finish(
             live,
@@ -1712,16 +1779,24 @@ class ExecutionManager:
                 )
 
                 def start() -> Execution:
-                    kernel, kernel_state_lost = self._kernel(
-                        environment_id,
-                        live.execution.context.session_id,
-                        message.get("kernel"),
-                        False,
-                        project_id=live.execution.context.project_id,
-                        birth_execution=execution_id if not live.reattached else None,
-                        fingerprint=message.get("environment"),
-                        expected_channel=live.channel,
-                    )
+                    if live.is_run:
+                        kernel, kernel_state_lost = self.run_dispatcher.kernel(
+                            live,
+                            message.get("kernel"),
+                            remember=True,
+                            fingerprint=message.get("environment"),
+                        )
+                    else:
+                        kernel, kernel_state_lost = self._kernel(
+                            environment_id,
+                            live.execution.context.session_id,
+                            message.get("kernel"),
+                            False,
+                            project_id=live.execution.context.project_id,
+                            birth_execution=execution_id if not live.reattached else None,
+                            fingerprint=message.get("environment"),
+                            expected_channel=live.channel,
+                        )
                     if kernel is not None and live.execution.kind == "cell":
                         update.update(
                             kernel=kernel,
@@ -1945,19 +2020,26 @@ class ExecutionManager:
 
     async def _cancel_quietly(self, live: _Live) -> None:
         with contextlib.suppress(WorkerError):
-            await self.cancel(live.execution.execution_id)
+            if live.is_run:
+                await self._cancel_selected(live)
+            else:
+                await self.cancel(live.execution.execution_id)
 
     def _result(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> Result:
         """The executor's result, checked and bounded by the attempt's output limit."""
         after = self._revision_after(environment_id, live, raw)
-        kernel, lost = self._kernel(
-            environment_id,
-            live.execution.context.session_id,
-            raw.get("kernel"),
-            raw.get("state_lost") is True or live.execution.kernel_state_lost,
-            project_id=live.execution.context.project_id,
-            expected_channel=live.channel,
-        )
+        if live.is_run:
+            kernel, lost = self.run_dispatcher.kernel(live, raw.get("kernel"))
+            lost = lost or raw.get("state_lost") is True
+        else:
+            kernel, lost = self._kernel(
+                environment_id,
+                live.execution.context.session_id,
+                raw.get("kernel"),
+                raw.get("state_lost") is True or live.execution.kernel_state_lost,
+                project_id=live.execution.context.project_id,
+                expected_channel=live.channel,
+            )
         pinned = live.execution.kernel
         if (
             kernel is not None
@@ -2161,6 +2243,8 @@ class ExecutionManager:
         if not isinstance(raw, dict):
             return None, state_lost
         raw = cast(dict[str, Any], raw)
+        if "run_binding_sha256" in raw:
+            return None, state_lost
         language = raw.get("language", "python")
         generation = _integer(raw.get("generation", 1), 1, 2**31 - 1)
         if language not in LANGUAGES or generation is None:
@@ -2500,6 +2584,10 @@ class ExecutionManager:
         self,
         request: KernelStatusRequest,
         build: Callable[[ExecutionContext, ExecutorChannel, object], _Observation],
+        *,
+        operation: str = "kernels",
+        fields: dict[str, object] | None = None,
+        protocol: str = "kernel_revision_protocol",
     ) -> _Observation:
         """One bounded admission lane and close token for every passive kernel consumer."""
         context = request.context
@@ -2510,10 +2598,7 @@ class ExecutionManager:
             or len(self._kernel_observations) >= MAX_KERNEL_OBSERVATIONS
         ):
             raise WorkerError(ErrorKind.UNAVAILABLE, "kernel observation capacity is busy")
-        if (
-            type(channel.hello.get("kernel_revision_protocol")) is not int
-            or channel.hello.get("kernel_revision_protocol") != 1
-        ):
+        if type(channel.hello.get(protocol)) is not int or channel.hello.get(protocol) != 1:
             raise WorkerError(ErrorKind.UNSUPPORTED, "legacy executor lacks scoped kernel status")
         incarnation = channel.incarnation
         observer = _KernelObserver((context.project_id, environment_id, context.session_id))
@@ -2522,8 +2607,9 @@ class ExecutionManager:
             try:
                 async with asyncio.timeout(KERNEL_OBSERVATION_TIMEOUT):
                     reply = await channel.request(
-                        "kernels",
+                        operation,
                         session=context.session_id,
+                        **(fields or {}),
                         reply_timeout=KERNEL_OBSERVATION_TIMEOUT,
                     )
             except TimeoutError as exc:
@@ -2724,6 +2810,29 @@ class ExecutionManager:
             await asyncio.shield(live.changed)
 
     async def cancel(self, execution_id: str, project_id: str | None = None) -> Execution:
+        self.get(execution_id, project_id)
+        live = self._live.get(execution_id)
+        if self.store.kernel_scope(execution_id) == "run-v1" or (live is not None and live.is_run):
+            raise WorkerError(
+                ErrorKind.UNSUPPORTED, "selected child cancellation needs its internal dispatcher"
+            )
+        return await self._cancel_execution(execution_id, project_id)
+
+    async def _cancel_selected(self, live: _Live) -> Execution:
+        if not live.is_run:
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "attempt is not selected child work")
+        request = self.store.run_kernel_state.request(live.execution)
+        self.run_dispatcher.get(
+            request.binding, live.execution.execution_id, live.execution.attempt_id
+        )
+        self.run_dispatcher.proof(request.binding, recovery=True, allow_closed=True)
+        return await self._cancel_execution(
+            live.execution.execution_id, live.execution.context.project_id
+        )
+
+    async def _cancel_execution(
+        self, execution_id: str, project_id: str | None = None
+    ) -> Execution:
         execution = self.get(execution_id, project_id)
         live = self._live.get(execution_id)
         if live is None or live.execution.state in TERMINAL_STATES or live.final is not None:
@@ -2768,7 +2877,27 @@ class ExecutionManager:
         channel = live.channel
         if channel is None or channel.closed:
             return
-        await channel.request("cancel", execution=live.execution.execution_id)
+        if live.is_run:
+            request = self.store.run_kernel_state.request(live.execution)
+            environment, original_channel = self.run_dispatcher.proof(
+                request.binding, recovery=True, allow_closed=True
+            )
+            if original_channel is not channel:
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "original child cancellation channel changed"
+                )
+            await channel.request(
+                "run_cancel",
+                execution=live.execution.execution_id,
+                session=request.context.session_id,
+                run_binding=request.binding.model_dump(mode="json"),
+                run_binding_sha256=run_kernel_binding_sha256(request.binding),
+            )
+            self.run_dispatcher.check(
+                request.binding, environment, channel, recovery=True, allow_closed=True
+            )
+        else:
+            await channel.request("cancel", execution=live.execution.execution_id)
 
     async def restart_kernel(self, request: KernelRestartRequest) -> KernelInfo:
         context = request.context
@@ -2811,7 +2940,15 @@ class ExecutionManager:
                 and job.context.session_id == context.session_id
             ]
             await self._cancel_jobs(jobs)
-            return await self._close_session(request)
+            error: Exception | None = None
+            try:
+                self.run_dispatcher.close_session(context)
+            except (WorkerError, ValueError) as exc:
+                error = exc
+            result = await self._close_session(request)
+            if error is not None:
+                raise error
+            return result
         finally:
             if self._closing_sessions[key] == 1:
                 self._closing_sessions.pop(key)
