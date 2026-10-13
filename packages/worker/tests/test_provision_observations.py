@@ -31,6 +31,8 @@ from sandbox_science.contracts.provision_observations import (
     MAX_OBSERVATION_BYTES,
     RevisionProbePage,
 )
+from sandbox_science.contracts.provisioning import CatalogRef
+from sandbox_science.contracts.revisions import LockfileRef
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.environments import Environments
 from sandbox_science.worker.errors import WorkerError
@@ -136,6 +138,117 @@ def test_detail_preserves_request_but_does_not_load_error_or_notes(store: Store)
     assert not result.error_present
     assert result.error_kind is None
     assert result.summary.permission_request == 1
+
+
+@pytest.mark.parametrize("section", ["files", "probes"])
+@pytest.mark.parametrize("corruption", ["string_object", "duplicate", "escaped_duplicate"])
+def test_selected_elements_keep_original_object_type_and_unique_keys(
+    store: Store, section: str, corruption: str
+):
+    if section == "files":
+        value = operation(files=1)
+        insert(store, value)
+        raw = value.model_dump_json()
+        table = "provisions"
+        field, original, alternate = "action", "escalate", "allow"
+    else:
+        entry(store, 0)
+        raw = revision(0).model_dump_json()
+        table = "revision_entries"
+        field, original, alternate = "status", "passed", "failed"
+    if corruption == "string_object":
+        record = json.loads(raw)
+        record[section][0] = json.dumps(record[section][0])
+        raw = json.dumps(record)
+    else:
+        key = field if corruption == "duplicate" else "\\u00" + hex(ord(field[0]))[2:] + field[1:]
+        raw = raw.replace(
+            f'"{field}":"{original}"',
+            f'"{key}":"{alternate}","{field}":"{original}"',
+            1,
+        )
+    store._db.execute(f"UPDATE {table} SET record=?", (raw,))  # noqa: S608
+    if section == "files":
+        with pytest.raises(WorkerError, match="unavailable"):
+            store.provision_observations.files(
+                "p", "env", "prv-one", since=0, seq=0, offset=0, limit=8
+            )
+    else:
+        pin = (
+            store.provision_observations.revisions(
+                "p", "env", since=0, after=-1, limit=8, target=None
+            )
+            .revisions[0]
+            .record_sha256
+        )
+        with pytest.raises(WorkerError, match="unavailable"):
+            store.provision_observations.probes("p", "env", 0, since=0, pin=pin, offset=0, limit=8)
+    assert not store._db.in_transaction
+
+
+@pytest.mark.parametrize("field", ["catalog", "lockfile"])
+def test_compact_nested_projection_rejects_duplicate_keys(store: Store, field: str):
+    if field == "catalog":
+        value = operation().model_copy(update={"catalog": CatalogRef(version=1, sha256="0" * 64)})
+        insert(store, value)
+        raw = value.model_dump_json().replace('"version":1', '"version":2,"version":1')
+        store._db.execute("UPDATE provisions SET record=?", (raw,))
+    else:
+        value = revision(0).model_copy(update={"lockfile": LockfileRef(sha256="a" * 64, size=3)})
+        store.add_revision("env", RevisionRecord(0, value.fingerprint, ""), value)
+        raw = value.model_dump_json().replace('"size":3', '"size":4,"size":3')
+        store._db.execute("UPDATE revision_entries SET record=?", (raw,))
+    if field == "catalog":
+        with pytest.raises(WorkerError, match="unavailable"):
+            store.provision_observations.detail("p", "env", "prv-one", since=0, seq=None)
+    else:
+        with pytest.raises(WorkerError, match="unavailable"):
+            store.provision_observations.revisions(
+                "p", "env", since=0, after=-1, limit=8, target=None
+            )
+    assert not store._db.in_transaction
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        '{"kind":"unavailable","kind":"internal","message":"Synthetic"}',
+        '{"kind":"internal","\\u006bind":"internal","message":"Synthetic"}',
+        '{"kind":null,"message":"Synthetic"}',
+        '{"message":"Synthetic"}',
+        '"internal"',
+    ],
+)
+def test_selected_error_kind_must_be_unambiguous_original_text(store: Store, error: str):
+    insert(store, operation())
+    raw = operation().model_dump_json().replace('"error":null', '"error":' + error)
+    store._db.execute("UPDATE provisions SET record=?", (raw,))
+    with pytest.raises(WorkerError, match="unavailable"):
+        store.provision_observations.detail("p", "env", "prv-one", since=0, seq=None)
+    assert not store._db.in_transaction
+
+
+def test_error_kind_projection_never_materializes_large_unselected_body(store: Store):
+    insert(store, operation())
+    raw = (
+        operation()
+        .model_dump_json()
+        .replace(
+            '"error":null',
+            '"error":' + json.dumps({"kind": "internal", "message": "x" * (2 * 1024 * 1024)}),
+        )
+    )
+    store._db.execute("UPDATE provisions SET record=?", (raw,))
+    tracemalloc.start()
+    try:
+        detail = store.provision_observations.detail("p", "env", "prv-one", since=0, seq=None)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert detail.error_present
+    assert detail.error_kind == ErrorKind.INTERNAL
+    assert peak < 300000
+    assert not store._db.in_transaction
 
 
 def test_exact_file_pages_and_stale_seq(store: Store):

@@ -8,7 +8,7 @@ lifecycle behavior are unchanged. They do not install, cancel, approve, deny,
 rebuild, wake a sandbox, reconnect a guest or run a probe.
 
 All routes are below
-`/v 1/environments/{environment_id}/provisioning/observations` and require
+`/v1/environments/{environment_id}/provisioning/observations` and require
 `project_id`. The bearer client must see that project's recorded managed
 environment. Deleted, unknown and foreign targets return 404, including for the
 pool operator's observation reads. The current environment's creation boundary
@@ -85,6 +85,10 @@ data. Revision hashes stream original SQLite bytes in 64 KiB chunks inside the
 same snapshot. Selected files/probes are individually bounded before parsing. Unselected array
 contents are not asserted valid: a corrupt selected element refuses its page
 rather than being skipped or counted as a displayed complete set.
+Selected elements must be original JSON objects, and duplicate keys (including
+escaped equivalents and nested keys in compact projections) refuse rather than
+choosing one interpretation. The selected error kind requires exactly one original
+text key; the error body remains unmaterialized.
 The full response, including its envelope and cursors, is checked against 64 KiB.
 
 Unknown parameters, invalid indices and missing page pins return 400; unsupported
