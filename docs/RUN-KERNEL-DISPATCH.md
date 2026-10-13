@@ -93,7 +93,7 @@ evidence after eligibility disappears.
 ## Interpreter identity and lineage
 
 The daemon advertises `run_kernel_protocol=1`. Dedicated `run_cell`,
-`run_restart`, `run_kernels` and `run_close` operations carry the complete
+`run_restart`, `run_cancel`, `run_kernels` and `run_close` operations carry the complete
 original binding and its canonical key. Unsupported peers refuse child work.
 The executor maintains a separate child-kernel map keyed by project, session,
 child run and language; legacy MAIN dictionaries and two-language status DTOs
@@ -134,10 +134,11 @@ while preserving MAIN and B. Whole-session and daemon close still drain their
 complete existing ownership scope.
 
 An admitted control task retains its busy counter, channel and borrowed Store
-through timeout/repeated caller cancellation until the actual work settles.
-The manager drains its dispatcher before detaching channels or closing Store
-owners. Cancellation of an outer future alone does not establish that SQL or a
-remote effect stopped.
+through timeout/repeated caller cancellation until its owned host task/request
+work settles. The manager drains its dispatcher before detaching channels or
+closing Store owners. A transport timeout or pending receipt does not prove the
+guest effect settled. Cancellation of an outer future alone does not establish
+that SQL or a remote effect stopped.
 
 ## Passive observations and acceptance limits
 
