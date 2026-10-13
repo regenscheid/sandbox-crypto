@@ -50,7 +50,7 @@ uv run sandbox-science-workspace serve --state-dir harness-state --static web/wo
     --model-url http://127.0.0.1:4000 --reviewer-model reviewer --api-key-file workspace.key
 ```
 
-**The server's network reach.** It listens where `--listen` says. It can contact the model gateway at `--model-url` for math repairs, and the worker at `--worker` for live job views and cancellation. Without either setting it opens no outbound connection.
+**The server's network reach.** It listens where `--listen` says. It can contact the model gateway at `--model-url` for math repairs, and the worker at `--worker` for live job views, cancellation and passive session kernel observations. Without either setting it opens no outbound connection.
 
 For work on the app itself, `npm run dev` serves it with Vite and passes `/api` and `/login` to a server on port 8200. Log in through the dev server's port. Logging out does not work there, since the dev server is another origin, and Vite's pages do not carry the server's headers.
 
@@ -245,6 +245,16 @@ Document comments use `GET /api/v0/projects/{project}/documents/{document}/comme
 Errors are `{"error": {"kind", "message"}}` (document errors also carry `details`) with the worker API's kinds: 400 `invalid_request` for a malformed ID, run name, document name or revision number, or a math repair request that is not one, 401 `policy_denied` without a session, 404 `not_found`, 413 for a request body over 64 KiB (document changes allow 8 MiB of escaped JSON, while document text remains bounded to 1 MiB of UTF-8), 422 `unsupported` for a record over the size limit, 429 `unavailable` for a session that has asked for as many model repairs as it may for now, and 500 `internal` for a damaged record. The server reads the harness's records through the orchestrator's `ProjectStore`, and the documents through its `DocumentStore`, in a thread. JSON that a record cannot carry, a NaN from a tool's output say, is sent as a string.
 
 Reading the harness's state directory directly is this slice's arrangement: the workspace runs beside the harness and imports the orchestrator's store (the one deployable member importing another, in the [conventions](../.agents/CONVENTIONS.md)). W5 gives the control application an API of its own for the GUI to use.
+
+## Session kernels
+
+With the operator worker connection configured, an open session page displays a
+[passive kernel panel](WORKSPACE-KERNELS.md). It reads only its recorded scope and
+shows exact start/current revisions, generation and worker receipt time. Current,
+predates, unknown, empty and unavailable states remain distinct; a previous
+observation stays dated when current state is unknown. Reads pause on hidden
+document state and stop on view replacement/logout. This eventual GUI observation
+does not provide durable agent delivery or grant kernel restart authority.
 
 ## Background jobs
 
