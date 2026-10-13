@@ -43,7 +43,7 @@ from sandbox_science.workspace.app import create_app
 REPO = Path(__file__).resolve().parents[2]
 PREFIX = "session-plans-browser-"
 MARKER = ".session-plans-fixture"
-VERSION = "synthetic-session-plans-browser-v1"
+VERSION = "synthetic-session-plans-browser-v2"
 A, B = "plan-project-a", "plan-project-b"
 SCOPES = {"active": (A, "a"), "other": (B, "b"), "closed": (A, "closed")}
 STEPS = ("inspect", "qualify", "report")
@@ -56,10 +56,15 @@ SOURCES = (
     "packages/orchestrator/src/sandbox_science/orchestrator/tools.py",
     "packages/workspace/src/sandbox_science/workspace/plans.py",
     "packages/workspace/src/sandbox_science/workspace/app.py",
+    "packages/workspace/src/sandbox_science/workspace/plan_edits.py",
+    "packages/workspace/tests/test_plan_edits.py",
     "web/workspace/src/lib/plans.ts",
     "web/workspace/src/lib/plans.test.ts",
     "web/workspace/src/views/PlanPanel.svelte",
     "web/workspace/src/views/SessionView.svelte",
+    "web/workspace/src/lib/planEdits.ts",
+    "web/workspace/src/lib/planEdits.test.ts",
+    "web/workspace/src/views/PlanEditor.svelte",
 )
 
 
@@ -274,6 +279,7 @@ def seed(root: Path, pins: dict) -> dict:
         projects.create(project, "minimal", "sha256:" + "a" * 64)
     for project, session in SCOPES.values():
         projects.open_session(project, session, dedicated=False)
+    projects.open_session(A, "empty", dedicated=False)
     documents = DocumentStore(store_path(root), producer="synthetic-plan-fixture")
     try:
         plans = SessionPlans(documents)
@@ -305,6 +311,7 @@ def seed(root: Path, pins: dict) -> dict:
         "owner_id": owner,
         "scopes": SCOPES,
         "original_refs": refs,
+        "no_plan_scope": [A, "empty"],
         "run_ids": {key: authority(key).run_id for key in SCOPES},
         "activity": "synthetic control-store assertions; no research execution",
         "created_at": datetime.now(UTC).isoformat(),
@@ -360,20 +367,22 @@ def action(root: Path, name: str) -> dict:
                     expected_status_revision=current.head.status_revision,
                 )
             elif name == "revise":
-                if current.head.ref.version != 1:
-                    raise ValueError("Fixed USER revision requires original fixture version")
+                if not 1 <= current.head.ref.version <= 8:
+                    raise ValueError("Fixed USER revision exceeds its fixture version budget")
                 body = current.version.body.model_dump(mode="json")
-                body["phases"][0]["steps"][1]["description"] = CHANGED
+                body["phases"][0]["steps"][1]["description"] = (
+                    CHANGED + f" Competing fixture revision {current.head.ref.version}."
+                )
                 plans.revise(
                     authority("active", user=True),
-                    "fixture-user-revise",
+                    f"fixture-user-revise-{current.head.ref.version}",
                     current.head.ref,
                     PlanBody.model_validate_json(json.dumps(body)),
                     "Synthetic USER intent change; stable IDs retained",
                 )
             elif name == "finish":
-                if current.head.ref.version != 2:
-                    raise ValueError("Qualified finish requires the explicit USER revision")
+                if not 2 <= current.head.ref.version <= 9:
+                    raise ValueError("Qualified finish requires a bounded USER revision")
                 for step, status_ in zip(STEPS, ("completed", "blocked", "skipped"), strict=True):
                     fresh = plans.compact_current(actor)
                     projection = next(item for item in fresh.steps if item.step_id == step)
