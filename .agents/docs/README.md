@@ -1,5 +1,7 @@
 # Planning analyses and research record
 
+The internal [child-attempt recovery journal](../../docs/CHILD-ATTEMPTS.md) preserves exact pending calls and partial transcripts without repeating unknown work. Its [compact source validation record](agent-reports/delegated-child-attempts-evidence-2026-10-13.json) contains12 exact originals: nine actual gate receipts, full11,223-test stdout and two independent review records. It enables no child controller, model or worker route.
+
 This folder keeps the agent source investigations behind the Sandbox Science plan, and records of runtime validation. Source inspection and planning are distinct from runtime validation: only the lab records below report observed behaviour.
 
 - [Internal delegated own-track progress,2026-10-13](agent-reports/delegated-plan-progress-2026-10-13.md): explicit-grant canonical progress, successful-host-model reread assertion, own historical track and cancellation-owned thread/FD. [Exact source/store evidence](agent-reports/delegated-plan-progress-evidence-2026-10-13.json). No active delegated runtime/tool/launcher/grant.
