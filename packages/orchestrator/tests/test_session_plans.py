@@ -7,6 +7,7 @@ import json
 import sqlite3
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
 import pytest
 from pydantic import ValidationError
@@ -30,7 +31,7 @@ from sandbox_science.orchestrator.session_plans import (
 )
 
 
-def actor(role="main", project="p", session="s", **fields):
+def actor(role: Literal["user", "main", "delegated"] = "main", project="p", session="s", **fields):
     return PlanAuthority(
         scope=PlanScope(project_id=project, session_id=session),
         role=role,
@@ -70,7 +71,7 @@ def step(identifier="one", *, title=None, description="Analyze", track="a"):
     )
 
 
-def outcome(status="achieved"):
+def outcome(status: Literal["achieved", "partially_achieved", "not_achieved"] = "achieved"):
     return GoalOutcome(
         status=status,
         summary="Attributed assessment",
@@ -280,7 +281,9 @@ def test_separate_connections_concurrent_cas_one_wins(store):
         with ThreadPoolExecutor(2) as pool:
             results = list(pool.map(change, ((plans, "one"), (second, "two"))))
         assert sum(isinstance(value, DocumentError) for value in results) == 1
-        assert plans.current(actor()).head.ref.version == 2
+        current = plans.current(actor())
+        assert current is not None
+        assert current.head.ref.version == 2
         assert len(plans.events(actor()).items) == 2
     finally:
         other.close()
@@ -356,7 +359,9 @@ def test_replay_restart_and_historical_receipt_after_newer_head(store):
     store.close()
     plans = SessionPlans(store)
     assert made(plans) == first
-    assert plans.current(actor()).head.ref == second.ref
+    current = plans.current(actor())
+    assert current is not None
+    assert current.head.ref == second.ref
     assert rows(store) == before
     with pytest.raises(DocumentError, match="another plan mutation"):
         made(plans, value=body(goal="Different"))
@@ -434,7 +439,9 @@ def test_auxiliary_rows_are_counted_and_failed_quota_mutation_rolls_back(store):
     with pytest.raises(DocumentError, match="quota"):
         update(plans, first.ref)
     assert rows(store) == before
-    assert plans.summary(actor()).progress_cursor == 0
+    summary = plans.summary(actor())
+    assert summary is not None
+    assert summary.progress_cursor == 0
     # The quota belongs to plans; ordinary document writes still succeed.
     result = store.create(
         "p", name="notes", title="Notes", text="Safe", author=Author(kind="user", user="test-user")
@@ -452,7 +459,9 @@ def test_global_and_project_version_quotas_and_tightening(store):
         made(plans, actor(project="third"))
     with pytest.raises(DocumentError, match="quota"):
         SessionPlans(store, limits=PlanLimits(total_versions=1))
-    assert plans.current(actor()).head.ref == first.ref
+    current = plans.current(actor())
+    assert current is not None
+    assert current.head.ref == first.ref
 
 
 def test_progress_and_metadata_quotas_leave_prior_state(store):
@@ -461,7 +470,9 @@ def test_progress_and_metadata_quotas_leave_prior_state(store):
     update(plans, first.ref)
     with pytest.raises(DocumentError, match="quota"):
         update(plans, first.ref, cursor=1, operation="next")
-    assert plans.summary(actor()).progress_cursor == 1
+    summary = plans.summary(actor())
+    assert summary is not None
+    assert summary.progress_cursor == 1
     tiny = DocumentStore(store.path.parent / "tiny.sqlite3")
     try:
         capped = SessionPlans(tiny, limits=PlanLimits(metadata_bytes=1024))
