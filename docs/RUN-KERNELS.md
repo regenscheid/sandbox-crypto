@@ -119,11 +119,11 @@ ownership or cross-request session-lifetime guarantee is implemented here.
 
 ## Companion dispatcher in progress
 
-The [internal child-kernel dispatcher](RUN-KERNEL-DISPATCH.md) is a separate
-unmerged composition under persistence/recovery and executor/lifecycle review.
-Final source freeze, combined gates and real OpenShell acceptance remain pending.
-This enrollment prerequisite alone still performs no dispatch. Its companion
-must move these run-aware paths together:
+The [internal child-kernel dispatcher](RUN-KERNEL-DISPATCH.md) has independently
+reviewed source `28008e1`, integrated at `7619a4b`, with fresh 11,133 Python and
+required static/locked/license/protocol gates passed. Real OpenShell acceptance
+and delivery remain pending. This enrollment prerequisite alone still performs
+no dispatch. Its companion implements these run-aware paths together:
 
 1. A trusted admitted controller supplies the original child scope and enrollment
    before dispatch; fresh session-open/project/grant checks remain caller-owned.
