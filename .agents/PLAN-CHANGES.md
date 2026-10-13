@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-12 — producing repair identity validated
+
+Implement optional bounded static input identity for display-repair answers/cache results at signed `87e2711`, preserving the existing permitted adapted system and actual formatter/zero tools. Independent review found and closed declared-subclass pre-encoding, DEL ASCII expansion and raw Literal counter normalization gaps before final freeze; held `780449b` is not the accepted final source. [Root combined gates](docs/agent-reports/display-repair-input-provenance-2026-10-12.md) at signed `d2c3263` pass 10,508 Python/656 web/24 math and required checks/builds. No dynamic input fingerprint, durable call/spend history, provider dispatch or mathematical verification is inferred; LD-46 stays open. Final delivery review/fresh exact-head CI remain required. USER plan-body backend continues separately under existing D86 authorization; approval/delegation policy is unchanged.
+
 ## 2026-10-12 — repair input identity prerequisite in progress
 
 PR #106 merged at `9b49de9` on reviewed signed `506b160` after all four fresh checks passed (run `38339832550`). Continue the authorized D86 prompt plan with a separate bounded producing-answer repair descriptor: preserve the exact existing MIT-adapted system/formatter/zero tools and existing cache/authority, with explicit process/cache-lifetime limits. Independent readiness agrees this is meaningful without pretending to deliver LD-46 durable project call/cost/budget records. Author/reviewer source work and root gates/delivery are pending. USER plan editing is investigated separately; approval routes remain outside that investigation. No draft policy question is silently confirmed, provider/model called or runtime service enabled. Previous accepted reports/archives stay immutable.
