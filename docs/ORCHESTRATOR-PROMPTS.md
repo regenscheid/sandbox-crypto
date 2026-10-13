@@ -171,9 +171,11 @@ CAS/reread and closing races, same-batch dispatch, bounded event gaps, compact
 large-note reads, immutable replay/model provenance, complete response delivery,
 save/failure/cancellation and actual thread/descriptor cleanup. These deterministic
 tests establish host/tool enforcement, not live-model planning quality. The read-only workspace
-view/API are implemented read-only consumers. USER editing, approval
-decisions, delegation, automatic resumed work,
-idle wake, effect-to-step lineage and broader prompt evaluation remain separate.
+view/API and authenticated [USER text editor](SESSION-PLAN-EDITOR.md) are separately
+implemented consumers. The editor preserves immutable CAS and the same successful-model
+reread fence; a GUI read or save cannot clear it. Approval decisions, delegation,
+automatic resumed work, idle wake, effect-to-step lineage and broader prompt evaluation
+remain separate.
 
 Local author validation: 127 core/adapter/failed-run/prompt cases and 117 affected
 review/math/document/job cases pass; whole-orchestrator Pyright and changed-path
@@ -593,9 +595,12 @@ Current progress: capability-text corrections, immutable single-MAIN planning,
 six tools, read-only committed-progress polling, narrow MAIN input provenance,
 watcher/reviewer reservation provenance, five explicit original research framings,
 general small-scale trial guidance and producing-answer repair identity are
-implemented. USER body-editing backend is separately in progress. USER editing
-frontend/approval, effect lineage/liveness, delegated runs, durable repair
-call/spend records, external prompt/skill loading and compaction remain separate.
+implemented. Authenticated [USER body text editing](SESSION-PLAN-EDITING.md) and its
+[structured GUI](SESSION-PLAN-EDITOR.md) pass independent source review, combined
+local gates and native browser acceptance, including retained conflict drafts and
+exact reconciliation after a committed response is lost. USER approval, effect
+lineage/liveness, delegated runs, durable repair call/spend records, external
+prompt/skill loading and compaction remain separate.
 
 1. **Current-role prompt correctness:** fix only inaccurate live capability claims
    in MAIN/start_job/historical reviewer docstring; keep the existing offered-tool
