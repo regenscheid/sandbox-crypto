@@ -47,6 +47,7 @@ from .documents.mathcontroller import MathController
 from .documents.tool import NAMES as DOCUMENT_TOOLS
 from .documents.tool import DocumentTool, with_notices
 from .jobs import BACKGROUND, JOB_SPECS, JobTools
+from .kernel_delivery import KernelDeliveryController
 from .model import ToolCall, ToolSpec
 from .plan_tools import NAMES as PLAN_TOOLS
 from .plan_tools import PlanTools
@@ -287,6 +288,7 @@ class Toolbox:
         math_checks: MathController | None = None,
         artifacts: ArtifactPublisher | None = None,
         plans: PlanTools | None = None,
+        kernel_notices: KernelDeliveryController | None = None,
     ) -> None:
         self.client = client
         self.context = context
@@ -298,6 +300,7 @@ class Toolbox:
         self.jobs = jobs if BACKGROUND in features else None
         self.artifacts = artifacts
         self.plans = plans
+        self.kernel_notices = kernel_notices
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
         if "sage" in self.languages:
             specs.append(SAGE)
