@@ -579,7 +579,12 @@ class Checks:
         )
         async with asyncio.timeout(budget):
             async with http.request(
-                method, base + path, json=body, allow_redirects=False, auto_decompress=False
+                method,
+                base + path,
+                json=body,
+                allow_redirects=False,
+                auto_decompress=False,
+                timeout=aiohttp.ClientTimeout(total=budget),
             ) as response:
                 raw = bytearray()
                 count = 0
