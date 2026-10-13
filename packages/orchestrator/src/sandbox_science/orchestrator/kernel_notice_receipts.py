@@ -65,25 +65,25 @@ def bounded_kernel_data(value: object) -> bytes:
         nodes += 1
         if nodes > 2048 or depth > 12:
             raise ValueError("kernel delivery exceeds its shape bound")
-        if isinstance(item, BaseModel):
+        kind = type(item)
+        if kind in _known_models():
+            model_type = cast(type[BaseModel], kind)
             # Refuse subclasses before any user-overridable attribute access. A
             # copied model can put undeclared fields directly in __dict__ even
             # though ordinary JSON validation forbids them.
-            if type(item) not in _known_models():
-                raise ValueError("invalid kernel delivery model")
             raw_values = object.__getattribute__(item, "__dict__")
             extras = object.__getattribute__(item, "__pydantic_extra__")
             if type(raw_values) is not dict:
                 raise ValueError("invalid kernel delivery model fields")
             values = cast(dict[str, object], raw_values)
             if (
-                len(values) != len(type(item).model_fields)
-                or values.keys() != type(item).model_fields.keys()
-                or extras
+                len(values) != len(model_type.model_fields)
+                or values.keys() != model_type.model_fields.keys()
+                or extras is not None
             ):
                 raise ValueError("invalid kernel delivery model fields")
             return plain(values, depth + 1)
-        if isinstance(item, dict):
+        if kind is dict:
             mapping = cast(dict[object, object], item)
             if len(mapping) > 32 or any(type(key) is not str for key in mapping):
                 raise ValueError("invalid kernel delivery object")
@@ -91,22 +91,23 @@ def bounded_kernel_data(value: object) -> bytes:
                 str(plain(key, depth + 1)): plain(child, depth + 1)
                 for key, child in mapping.items()
             }
-        if isinstance(item, (tuple, list)):
+        if kind in (tuple, list):
             sequence = cast(tuple[object, ...] | list[object], item)
             if len(sequence) > 16:
                 raise ValueError("kernel delivery exceeds its item bound")
             return [plain(child, depth + 1) for child in sequence]
-        if isinstance(item, datetime):
-            return item.isoformat()
-        if isinstance(item, str):
-            characters += len(item)
+        if kind is datetime:
+            return cast(datetime, item).isoformat()
+        if kind is str:
+            scalar = cast(str, item)
+            characters += len(scalar)
             if characters > MAX_DELIVERY_BYTES:
                 raise ValueError("kernel delivery exceeds its byte bound")
-            item.encode("utf-8", "strict")
-            return item
+            scalar.encode("utf-8", "strict")
+            return scalar
         if item is None or type(item) in (bool, float):
             return item
-        if type(item) is int and item.bit_length() <= 64:
+        if kind is int and cast(int, item).bit_length() <= 64:
             return item
         raise ValueError("invalid kernel delivery scalar")
 
