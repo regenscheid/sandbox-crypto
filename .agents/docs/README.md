@@ -4,6 +4,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 - [Original prompts and planning design, 2026-10-12](agent-reports/orchestrator-prompts-2026-10-12.md): independently authored role/stock drafts and narrow current capability corrections; 10,034 fresh Python cases, exact static gates and reused unchanged web/math evidence. [Exact evidence](agent-reports/orchestrator-prompts-evidence-2026-10-12.json). Runtime planning/progress remains separate.
 
+- [OpenShell Lab28: passive original kernel lineage, 2026-10-12](agent-reports/babbage-openshell-lab-28-2026-10-12.md): retained birth/VM/incarnation and raw/normalized generations, package staleness, worker continuity, actual idle stop/no wake and ordinary resume/loss. [Exact evidence](agent-reports/babbage-openshell-lab-28-evidence-2026-10-12.json) preserves setup failures, independent runtime/cleanup and final combined gates. The companion bounded internal inbox is locally validated; no MAIN delivery is enabled.
+
 ## Individual agent investigations
 
 - [Claude Science](agent-reports/claude-science.md): research behavior, skills, review triggers, documents, kernels and execution seams, as evidence for the reimplementation (D03, D11).
