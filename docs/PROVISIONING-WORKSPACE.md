@@ -1,5 +1,34 @@
 # Read-only provisioning workspace API
 
+## Recorded packages at a selected revision
+
+`GET /api/v0/projects/{project}/environments/{environment}/provisioning/observations/revisions/{revision}/packages?pin={raw_record_sha256}&offset=0&limit=8`
+returns `RevisionPackagePage`. The worker counterpart uses `/v1/environments/`
+and required `project_id`. The canonical raw record hash and full retained lockfile
+reference bind each page. Stale pins refuse with 409, scope failures with 404;
+workspace responses are `no-store`.
+
+Inventories include unchanged/base packages and retained unmanaged revisions,
+independently of an install's files or comparison differences. Entries retain
+canonical ecosystem/name/location ordering, package metadata and declared Conda
+licenses. Pip licenses remain unknown. AGPL text matching reports a declaration;
+it does not certify compliance or installation state. Missing, skipped,
+unsupported or unproved sources stay held. Source URLs are escaped text.
+
+The browser explicitly loads a selected revision and follows bounded next/previous
+pages, without inventory polling. Selection, hide and logout drain the existing
+physical fetch/body owner. Deadlines are worker 8s/client 9s/proxy 10s/browser 12s.
+The worker shares the comparison reader's two global/one environment read lane,
+with 8 MiB lockfiles, 16 KiB entry records, 16 MiB index accounting and 64 KiB
+responses. Reads perform no guest work or keepalive. Component/full gates and
+actual-main source review pass. Root-owned Lab32 passed worker/workspace/native
+inventory paging, all 62 unchanged entries and six GP additions. Separately
+qualified stopped-VM reads preserve actual retired endpoints and unchanged SQL
+between fresh proofs for the original VM. All owned lab state is removed and
+independently audited. The [Lab32 report/archive](../.agents/docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md)
+retains the original helper failure and qualified result; final delivery review
+and fresh CI remain.
+
 The workspace exposes recorded provisioning observations for a project's shared
 environment and retained dedicated environments. This is the read-only API part of
 CP-26 in the [provisioning specification](specs/conda-provisioning.md). It does not

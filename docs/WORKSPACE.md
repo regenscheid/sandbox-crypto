@@ -1,5 +1,13 @@
 # Research workspace
 
+The environment panel explicitly loads a selected revision's
+[recorded packages and declared licenses](PROVISIONING-WORKSPACE.md#recorded-packages-at-a-selected-revision),
+including unchanged/base entries. Bounded next/previous pages retain the exact
+raw-record pin. Missing sources stay held; pip licenses stay unknown. Source URLs
+are escaped text. Selection, hide and logout drain the existing physical request
+owner. There is no inventory polling or package-control action. Fresh integrated
+worker/native-browser Lab32 acceptance remains pending.
+
 The workspace is the research GUI (W4, D80). It shows the harness's records: the projects, their sessions and environments, and each session's runs, with the agent's messages, its tool calls and their results, and the LaTeX in them rendered; and the project's living documents, each revision with the server's block IDs, and who changed what ([living documents](#living-documents)). LaTeX that KaTeX rejects is repaired where it can be, by rules or by the reviewer model, and marked ([math repairs](#math-repairs)). It has two parts:
 
 - `web/workspace/`: the app the browser runs. Svelte 5 with TypeScript, built by Vite into static HTML, scripts, stylesheets, KaTeX's fonts and distribution notices.
