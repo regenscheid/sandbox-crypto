@@ -122,9 +122,13 @@ new Store connection observing the retained state. Corrupt original SQL types
 and 20 MiB TEXT/BLOB operation values refuse without materializing those values
 in Python (the focused peak allocation assertion is below 128 KiB). The local
 synthetic reproduction and first Lab30 unavailable observation remain retained;
-post-correction real runtime acceptance is still separate and root-owned.
+at that author checkpoint, post-correction runtime acceptance was still separate and root-owned.
 The isolated correction passed 60 focused and 330 affected cases, whole
 worker/contracts plus changed-test typing, scoped style/format, locked
 dependencies and all 75 installed license checks. The initial new-test fixture
 used a nonexistent public Store path attribute and a copied raw outcome string;
 its unsuccessful output remains separate from the corrected passing evidence.
+
+## Integrated viewer acceptance
+
+Root-owned [OpenShell Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md) passed on signed clean `220cddd`, with exact corrected reader/GUI parity, real GP/Flint records, separate file approvals, native browser views, offline503 and120 stopped-environment GETs with unchanged SQL. All owned state was removed and independently checked. [PR #110](https://github.com/regenscheid/sandbox-crypto/pull/110) merged at `25159e1` on independently clear signed `70f9d12` after all four fresh checks passed (run `38415726829`). Primary main is clean/synced, locked dependencies checked and tree-identical to the reviewed head. The accepted report/archive remain immutable. The later two-lockfile comparison has separate source/gate/helper evidence and awaits its own runtime acceptance.

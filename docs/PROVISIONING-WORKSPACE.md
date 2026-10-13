@@ -114,3 +114,7 @@ The companion observation-contract source was pinned before and after the affect
 run from its parallel worktree; no worker code was executed. Existing WorkerClient
 method ASTs remain unchanged, with only the bounded observer snapshot/recheck seam
 added. These local results are distinct from root's later integrated gates/runtime.
+
+## Integrated viewer acceptance
+
+Root-owned [OpenShell Lab30](../.agents/docs/agent-reports/babbage-openshell-lab-30-2026-10-13.md) passed on signed clean `220cddd`, with exact corrected reader/GUI parity, real GP/Flint records, separate file approvals, native browser views, offline503 and120 stopped-environment GETs with unchanged SQL. All owned state was removed and independently checked. [PR #110](https://github.com/regenscheid/sandbox-crypto/pull/110) merged at `25159e1` on independently clear signed `70f9d12` after all four fresh checks passed (run `38415726829`). Primary main is clean/synced, locked dependencies checked and tree-identical to the reviewed head. The accepted report/archive remain immutable. The later two-lockfile comparison has separate source/gate/helper evidence and awaits its own runtime acceptance.
