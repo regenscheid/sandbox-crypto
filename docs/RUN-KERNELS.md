@@ -117,10 +117,13 @@ queue, SQL and file ownership through timeout, repeated cancellation and
 shutdown. Cancelling a future is not proof that SQL stopped. No new async
 ownership or cross-request session-lifetime guarantee is implemented here.
 
-## Complete internal dispatcher that remains next
+## Companion dispatcher in progress
 
-The next increment must move all run-aware paths together, rather than adding
-only a caller `run_id` or changing the executor dictionary key:
+The [internal child-kernel dispatcher](RUN-KERNEL-DISPATCH.md) is a separate
+unmerged composition under persistence/recovery and executor/lifecycle review.
+Final source freeze, combined gates and real OpenShell acceptance remain pending.
+This enrollment prerequisite alone still performs no dispatch. Its companion
+must move these run-aware paths together:
 
 1. A trusted admitted controller supplies the original child scope and enrollment
    before dispatch; fresh session-open/project/grant checks remain caller-owned.

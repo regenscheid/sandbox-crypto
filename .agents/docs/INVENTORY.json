@@ -118,10 +118,16 @@
       "sha256": "d05b95d54cf92b3667eb18ba73ec125cb8def3dc564a9c1c8e8f3e6191ec0c4b"
     },
     {
+      "path": "../../docs/RUN-KERNEL-DISPATCH.md",
+      "category": "implementation-boundary",
+      "bytes": 9847,
+      "sha256": "02327f2c471e1ae245a9944dd2c4fd25cec7555ef7a955ec2555138dfe627d8e"
+    },
+    {
       "path": "../../docs/RUN-KERNELS.md",
       "category": "implementation-boundary",
-      "bytes": 10281,
-      "sha256": "27ee73e66f517449152989d94f5ee8dd9d6e8bf6e7c7b7b0219e600f2996baae"
+      "bytes": 10482,
+      "sha256": "4eacefebf3d362474d9370aec300d25fb90b33504b9ef3115d1292ea1eb2ebe9"
     },
     {
       "path": "../../docs/SESSION-PLAN-EDITING.md",
@@ -168,8 +174,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 30550,
-      "sha256": "d9689d16d4a09be3351fee9c1db66c435ed5c38d8d6a3a7bb68e6ff75c3d291f"
+      "bytes": 30880,
+      "sha256": "194faf8afa078d67981643209df6576edf010a7ab38afedfad963e4bb4d9c87a"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
