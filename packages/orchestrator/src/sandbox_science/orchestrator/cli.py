@@ -352,6 +352,11 @@ async def _run(args: argparse.Namespace) -> int:
         "failure": transcript.failure,
         "final_text": transcript.final_text,
         "messages": transcript.messages,
+        "prompt_provenance": (
+            transcript.prompt_provenance.model_dump(mode="json")
+            if transcript.prompt_provenance is not None
+            else None
+        ),
         "tools": transcript.tool_records,
         "job_notice_ids": transcript.job_notice_ids,
         "work_request_ids": transcript.work_request_ids,

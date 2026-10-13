@@ -34,10 +34,16 @@
       "sha256": "7a736b1d5566a77e8a8b86921546bc6c9596a18700813592493a17c55e885143"
     },
     {
+      "path": "../../docs/MAIN-PROMPT-PROVENANCE.md",
+      "category": "implementation-boundary",
+      "bytes": 6978,
+      "sha256": "cbf72710988829f37ed3a3f1b7244f8d2b696e66160b50a04c3c390073cd6912"
+    },
+    {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 37639,
-      "sha256": "d5a7bc3c071847977b2926f43a8149adfd55d54090eae36fb2fe170d7fc24d2f"
+      "bytes": 40081,
+      "sha256": "3cc6739e92f9d7cc2aaf14a0ab4f8a86e69a39ad72fc3238ba06edaebade5302"
     },
     {
       "path": "../../docs/PROJECT-MACROS.md",
@@ -66,8 +72,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 22361,
-      "sha256": "e42ad5063cc0ad9d4823195a1473925df2ce38fdb51de30990340ef5f42f0c39"
+      "bytes": 22891,
+      "sha256": "b26a2168f8236d0b5202c877f79145f1d301fa0a9fc1746f2beb1748bbe4e095"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -650,6 +656,18 @@
       "category": "browser-evidence",
       "bytes": 55786,
       "sha256": "2997f53d7ee2d81d27755defa6f4bec8d7cdac8034dff7616a35301543dd2125"
+    },
+    {
+      "path": "agent-reports/main-prompt-provenance-2026-10-12.md",
+      "category": "implementation-validation",
+      "bytes": 3445,
+      "sha256": "8985414563e3d8a92a6209660fde7424d9cbb4784c90084b7c4b6c6f67eff051"
+    },
+    {
+      "path": "agent-reports/main-prompt-provenance-evidence-2026-10-12.json",
+      "category": "validation-evidence",
+      "bytes": 68311,
+      "sha256": "ba84cd9a6eb8848a883bf5350357c2f102cf75c43b79ed4249f6498c9f9d2f79"
     },
     {
       "path": "agent-reports/math-license-notices-2026-10-12.md",

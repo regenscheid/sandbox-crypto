@@ -31,9 +31,10 @@ behavior or justify any future reuse; this document imports nothing from it.
 
 ## Actual prompt inventory
 
-This table retains the initial `fe5f4d7` source audit and its gaps. The two
-implemented sections below supersede the corrected capability text and absent
-single-MAIN planning tools. It is not a proposed installed prompt library:
+This table retains the initial `fe5f4d7` source audit and its gaps. The
+implemented sections below supersede the corrected capability text, absent
+single-MAIN planning tools and missing MAIN input provenance. It is not an
+installed prompt library:
 
 | Input | Exact source seam | Current behavior and gap |
 | --- | --- | --- |
@@ -73,9 +74,9 @@ worker/bridge recovery on original daemon/sandbox continuity and preserves lost
 outcomes without automatic resubmission; the historical `reviews.py` docstring
 points to the implemented reviewer. The inventory above records the earlier audit
 and its findings. No tool schema, whitelist, policy, dispatch, closing or model-call
-behavior changes in that correction slice. Prompt-bundle version/hash provenance
-and delegation capabilities below remain proposals; the later planning integration
-is separate.
+behavior changes in that correction slice. The later planning and narrow MAIN
+input-provenance integrations are separate. The wider catalog and delegation
+capabilities remain proposals.
 
 [Actual-model-input fixtures](../packages/orchestrator/tests/test_prompt_inputs.py)
 exercise control-side document reads with and without job capability. They inspect
@@ -104,7 +105,8 @@ versioned original `sandbox-main-plan-1` guidance is appended to the actual MAIN
 system input only when these tools are offered. It asks substantive work to
 create/resume a short plan and record progress as work happens; small factual
 answers need no ceremonial plan. The stored system message preserves the wording
-actually used. General prompt-bundle hashes/catalog assembly remain unimplemented.
+actually used. The narrow MAIN input-provenance implementation below now pins
+those bytes and actual offered tools; general catalog assembly remains separate.
 
 Draft activation records workflow state under existing task authorization. It is
 neither USER approval nor a permission grant. The wrapper conservatively permits
@@ -176,6 +178,31 @@ Local author validation: 127 core/adapter/failed-run/prompt cases and 117 affect
 review/math/document/job cases pass; whole-orchestrator Pyright and changed-path
 Ruff/format/license checks pass. Combined delivery gates, fresh PR CI and any
 workspace acceptance belong to the root integration and are not claimed here.
+
+### Implemented MAIN input provenance
+
+The [MAIN provenance slice](MAIN-PROMPT-PROVENANCE.md) assembles one bounded
+owned system/tool bundle for the run. It preserves the existing base text and
+conditional two-newline planning join, all offered schema values/order and grants.
+Each model call gets fresh tool parameter copies; immediately before the call,
+the harness checks the actual system and offered tool pins. Dynamic task, tool
+and notice messages stay outside this system/tool bundle.
+
+Optional retained RunRecord metadata records `sandbox-main-bundle-1`, exact
+component versions/bytes/hashes, rendered system and canonical ordered tool pins.
+`sandbox-main-1` recognizes exact built-in content, including identical caller
+text; it does not attest to its author or origin. Other custom text has no invented
+catalog version. Oversized/unrepresentable custom text keeps its invocation
+behavior with explicitly unavailable metadata; invalid installed inputs refuse
+before a model call. Legacy records stay unknown rather than being backfilled.
+
+Complete metadata validates against the retained first system message. The schema
+hash is a recorded application input pin, not a copy of historical tool schemas,
+provider-wire attestation or a permission grant. No routing alias, resolved model,
+credentials, task or provider error is added. Ordinary and safely retained failed
+runs preserve existing durable-save-before-ACK behavior. Watcher/reviewer/repair
+call provenance, broader stock-template loading, compaction and live-model quality
+evaluation remain separate.
 
 ## Prompt catalog and assembly proposal
 
@@ -298,7 +325,9 @@ Stock task framing examples, in original wording:
 
 ## Durable planning and automatic progress
 
-This is the code-backed interpretation of PD-1–10, not a new mandatory ceremony.
+The single-MAIN core and tools above implement versioned plans and durable
+progress. This section also describes follow-on approval, delegation, effect
+lineage and liveness behavior; those parts remain proposals, not installed tools.
 Create or update a plan for substantive research tasks and explicit planning
 requests; simple factual replies and one-step actions need no ceremony. Resume an
 applicable plan by stable IDs after user steering rather than replacing its history.
@@ -314,17 +343,22 @@ version and operation replay; user and agent edits never silently overwrite one
 another. Bound steps/tracks/text/history and return explicit capacity/conflict
 states; no unresolved history eviction or hidden automatic merge.
 
-The runtime should expose narrow `plan_read`, `plan_create`, `plan_revise`,
-`plan_step_start`, `plan_progress` and `plan_set_status` tools; these names are
-proposals. Each response returns authoritative current version/progress sequence.
-The authenticated USER editor uses the same CAS boundary. A delegate receives only
-its track's write grant. No role field supplied by model text grants that authority.
+The installed tools are `plan_read`, `plan_create`, `plan_revise`, `plan_activate`,
+`plan_progress` and `plan_finish`. Progress records include `in_progress`,
+`completed`, `blocked` and `skipped`; no separate `plan_step_start` tool exists.
+Responses retain exact version/progress pins. Future authenticated USER editing
+must use the same CAS boundary; a future delegate must receive only its track's
+write grant. No role field supplied by model text grants that authority.
+
+The trigger table combines implemented bookkeeping with the explicitly named
+follow-on lifecycle work. It does not claim that effect-to-step links, required
+approval mode, delegated runs or disconnected-liveness records are installed.
 
 | Trigger | Durable action and visible meaning |
 | --- | --- |
 | Planning starts | Save a draft goal/feasibility/outputs/steps. Draft text itself executes nothing. |
 | Execution becomes authorized | Activate the exact version under current project settings. Required approval, when configured, is explicit USER approval of that version; without it, preserve read/plan-only grants. The approval default remains the spec's open question/proposed off default. |
-| Agent begins a step | `plan_step_start` persists in_progress before dependent execution. Subsequent tool context carries the validated step/version. The harness associates effects only from that explicit binding; it never infers a step from prose similarity. |
+| Agent begins a step | `plan_progress` persists an attributed in_progress assertion against exact plan/step pins. Future automatic effect-to-step association requires an explicit binding; it must never infer a step from prose similarity. |
 | Agent produces a result | `plan_progress` appends the agent's completed assertion with pinned evidence; the runtime validates refs/authority and records it immediately. Scientific correctness remains independently reviewable. No end-of-session-only status flush. |
 | Job or child changes state | Save its observed execution/delegation event. Prompt MAIN to reconcile the linked step at the next active safe point; do not mark the step completed automatically from exit0/child status. |
 | A real obstacle appears | Append blocked with the actual missing capability/decision/evidence and partial work. Time/turn/cost limits are observed run outcomes, not invented scientific obstructions. |
@@ -345,13 +379,13 @@ statuses. The implemented single-MAIN core and tools above provide version/progr
 and activation under existing authorization. USER approval decisions, automatic
 effect-to-step links and delegated execution remain separate.
 
-Automatic means the agent maintains the plan via these tools during work, and the
-harness records linked lifecycle/liveness events without user bookkeeping. It does
-not mean a model classifier is allowed to rewrite step status from arbitrary text.
-The final-answer boundary should request reconciliation once for stale active
-steps, within the existing bounded turn/closing budget; it must not invent results,
-loop indefinitely, add a second reviewer budget, or prevent a truthful partial
-answer when a model/store is unavailable.
+The implemented automatic behavior asks the agent to maintain its plan through
+these tools during work, with each mutation durably recorded immediately. Linked
+effect/liveness events remain future work. A model classifier cannot rewrite step
+status from arbitrary text. The installed final-answer boundary rechecks current
+plan-read requirements within the ordinary remaining turn budget. A future stale
+active-step reconciliation must also stay bounded, preserve truthful partial
+answers and avoid inventing results or adding reviewer rounds.
 
 GUI progress reads committed plan/progress events with scoped monotonic cursors.
 Mounted-view polling is an acceptable first UI implementation; it need not wait for
@@ -434,6 +468,11 @@ and compare actual model inputs, not merely a prompt file's existence.
 | Capacity retry | Only configured/user-authorized retry timing and model selection apply; attempt/turn budget and effect reconciliation prevent duplicate work; idle scheduler remains absent. |
 
 ## Small implementation order
+
+Current progress: capability-text corrections, immutable single-MAIN planning,
+six tools, read-only committed-progress polling and narrow MAIN input provenance
+are implemented. USER editing/approval, effect lineage/liveness, delegated runs,
+other-role provenance, skill loading and compaction below remain separate work.
 
 1. **Current-role prompt correctness:** fix only inaccurate live capability claims
    in MAIN/start_job/historical reviewer docstring; keep the existing offered-tool

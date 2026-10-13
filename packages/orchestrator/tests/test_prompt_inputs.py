@@ -14,6 +14,7 @@ from sandbox_science.orchestrator.documents import USER, DocumentStore, Document
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import Message, ModelTurn, ScriptedModel, ToolSpec
+from sandbox_science.orchestrator.prompt_bundle import CompleteProvenance, verify_retained
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
@@ -74,9 +75,12 @@ async def test_actual_model_inputs_keep_control_reads_and_job_recovery_scoped(
         assert transcript.stopped == "answered"
         assert len(model.requests) == len(model.offered) == 2
         assert len(transcript.tool_records) == 1
+        assert isinstance(transcript.prompt_provenance, CompleteProvenance)
         for messages, offered in zip(model.requests, model.offered, strict=True):
             (system,) = [message for message in messages if message["role"] == "system"]
             guidance = str(system["content"])
+            verify_retained(transcript.prompt_provenance, system)
+            assert transcript.prompt_provenance.tools.names == tuple(tool.name for tool in offered)
             assert all(word in guidance for word in ("worker", "control", "evidence", "unisolated"))
             assert "Every tool" not in guidance
             assert "never on the machine" not in guidance
