@@ -115,3 +115,5 @@ Earlier plan snapshots are preserved as git tags rather than copied directories:
 Retrieve a file from a snapshot with `git show <tag>:<path>`, for example `git show plan-03-pre-review:docs/ARCHITECTURE.md`.
 
 [INVENTORY.json](INVENTORY.json) records the preserved report paths, sizes and SHA-256 hashes; it excludes itself.
+
+The next separate CP-26 slice is [bounded worker lockfile comparison](../../docs/LOCKFILE-DIFFERENCES.md), its [authenticated proxy](../../docs/LOCKFILE-DIFF-WORKSPACE.md) and [GUI](../../docs/LOCKFILE-DIFFERENCES-VIEW.md). Source union `dd5718f` passes 10,878Python/775web/24math and independent source review; root helper adoption and actual comparison acceptance remain separate. The initial viewer PR #110 is delivered; its Lab30 evidence is immutable.

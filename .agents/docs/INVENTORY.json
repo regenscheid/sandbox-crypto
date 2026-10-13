@@ -46,6 +46,24 @@
       "sha256": "7a736b1d5566a77e8a8b86921546bc6c9596a18700813592493a17c55e885143"
     },
     {
+      "path": "../../docs/LOCKFILE-DIFF-WORKSPACE.md",
+      "category": "implementation-boundary",
+      "bytes": 5850,
+      "sha256": "4880a12b3902d8fa486be1a05c3b03205b55440b8cb040792f6fec109ff25427"
+    },
+    {
+      "path": "../../docs/LOCKFILE-DIFFERENCES-VIEW.md",
+      "category": "implementation-boundary",
+      "bytes": 5869,
+      "sha256": "59d89011365053aa1377cb4bb6091615f42db4d0576208d871a03b0070d7720f"
+    },
+    {
+      "path": "../../docs/LOCKFILE-DIFFERENCES.md",
+      "category": "implementation-boundary",
+      "bytes": 8367,
+      "sha256": "66d3ca374b09c2da2c72601dbf17bb0e5c2852330a35a91c72f5eec614dc3d51"
+    },
+    {
       "path": "../../docs/MAIN-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
       "bytes": 8217,
@@ -72,20 +90,20 @@
     {
       "path": "../../docs/PROVISIONING-OBSERVATIONS.md",
       "category": "implementation-boundary",
-      "bytes": 8447,
-      "sha256": "5f4ff0f4bc1e231e899215d99baf6ce8504e3bb642db6bb30cec49d84af28055"
+      "bytes": 9306,
+      "sha256": "4c9eab83a8638e8a13c5e245608490c68ecffd0ce3a9dd7b070050837cbb10fa"
     },
     {
       "path": "../../docs/PROVISIONING-WORKSPACE-VIEW.md",
       "category": "implementation-boundary",
-      "bytes": 6301,
-      "sha256": "db87e4222f5bc177b86b885ad7e2898c1f43df5a4bcc27e12ca284635e11ed17"
+      "bytes": 7137,
+      "sha256": "3e4b8fd45d9205539d42ec23b6473e1c91d60393392bb0bea7dad6f4a3cf5961"
     },
     {
       "path": "../../docs/PROVISIONING-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 8294,
-      "sha256": "43ddc772405b8bc829a7b419c65e7a26a78aa239268c28289ce8f8bee49e4b3f"
+      "bytes": 9130,
+      "sha256": "0f12659e70ffda61b0fb425dfac6548b03e864a8deebd0b83bd160b50c924ad1"
     },
     {
       "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
@@ -138,8 +156,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 27084,
-      "sha256": "71e61167b04f29ca9691a3f66e331716e31d1536796c8a4dda59a97e3baee68c"
+      "bytes": 27542,
+      "sha256": "62fbe60b4ab37cf2f5f87bef1959fac397bdaef8e39815f5806520baa88b974c"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
