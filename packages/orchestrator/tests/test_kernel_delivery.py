@@ -1293,3 +1293,56 @@ def test_concurrent_first_inbox_initializers_commit_one_original_identity(tmp_pa
             "ready",
             *results[0][1:],
         )
+
+
+def test_primitive_subclasses_refuse_before_overrides_or_json_encoding(monkeypatch):
+    from sandbox_science.orchestrator import kernel_notice_receipts as receipts
+
+    visits = []
+
+    class Text(str):
+        def __len__(self):
+            visits.append("length")
+            return 1
+
+        def encode(self, *args, **kwargs):
+            visits.append("encoding")
+            return super().encode(*args, **kwargs)
+
+    class Mapping(dict):
+        def items(self):
+            visits.append("mapping")
+            return super().items()
+
+    class Sequence(tuple):
+        def __iter__(self):
+            visits.append("tuple")
+            return super().__iter__()
+
+    class Array(list):
+        def __iter__(self):
+            visits.append("list")
+            return super().__iter__()
+
+    class Timestamp(datetime):
+        def isoformat(self, *args, **kwargs):
+            visits.append("time")
+            return super().isoformat(*args, **kwargs)
+
+    def encoding(*args, **kwargs):
+        visits.append("json")
+        raise AssertionError("rejected host values must not reach encoding")
+
+    values = (
+        Text("x" * 9000),
+        Mapping(x=1),
+        Sequence((1,)),
+        Array([1]),
+        Timestamp(2026, 10, 13, tzinfo=UTC),
+        "x" * 9000,
+    )
+    monkeypatch.setattr(json, "dumps", encoding)
+    for value in values:
+        with pytest.raises(ValueError, match="invalid or oversized"):
+            receipts.bounded_kernel_data(value)
+    assert not visits

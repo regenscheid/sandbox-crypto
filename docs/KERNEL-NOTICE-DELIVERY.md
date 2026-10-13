@@ -89,7 +89,9 @@ Run validation requires matching run/scope and exactly one canonical injected
 USER message. Missing, changed, wrong-role or duplicate inputs refuse. Copied host
 metadata is revalidated under finite shape/character/byte limits: undeclared
 model fields, unknown model types/subclasses and noninteger versions refuse before
-subtype getters or unbounded encoding. These are host-retention integrity checks,
+subtype getters or unbounded encoding. Scalar/container/datetime subclasses also
+refuse before overridable length, iteration, encoding or time formatting. These
+are host-retention integrity checks,
 not an assertion that arbitrary model objects are an authenticated network source.
 
 ## Ownership, cancellation and save-before-ACK
@@ -138,7 +140,7 @@ from corrected passing logs. Local validation does not claim real-worker or
 external-model acceptance. Root owns combined gates, Lab29, complete teardown,
 immutable acceptance archives and fresh CI before merge.
 
-The final scoped affected run passes 425 cases in 4.46 seconds. Whole-orchestrator
+The final scoped affected run passes 426 cases in 4.49 seconds. Whole-orchestrator
 and new-test Pyright, changed-file Ruff/format and all 75 installed-distribution
 license checks pass. No full suite, service, provider, actual model, worker or VM
 was started by this author task; scripted models and disposable local stores were
