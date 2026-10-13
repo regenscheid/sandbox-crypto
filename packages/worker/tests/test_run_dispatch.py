@@ -1063,3 +1063,30 @@ async def test_guest_shutdown_owns_admitted_handler_and_late_cancelled_attempt_t
     assert guest.running == {}
     assert guest.launch_controls == set()
     assert all(kernel.manager is None for kernel in guest.run_kernels.values())
+
+
+@pytest.mark.parametrize("kind", ["control", "kernel"])
+def test_copied_control_or_kernel_field_count_refuses_before_key_iteration_or_sets(
+    manager, monkeypatch, kind
+):
+    from sandbox_science.worker import run_kernel_state
+
+    if kind == "control":
+        receipt, _ = manager.store.run_kernel_state.begin_control(binding(), "close", "close", None)
+        value = receipt.request.model_copy(update={f"extra-{i}": "x" for i in range(2048)})
+    else:
+        value = KernelInfo(kernel_id="synthetic", language="python", generation=1).model_copy(
+            update={f"extra-{i}": "x" for i in range(2048)}
+        )
+
+    def forbidden(*_, **__):
+        pytest.fail("unexpected aggregate key iteration/encoding before field-count refusal")
+
+    monkeypatch.setattr(run_kernel_state, "set", forbidden, raising=False)
+    monkeypatch.setattr(run_kernel_state, "any", forbidden, raising=False)
+    if kind == "control":
+        with pytest.raises(WorkerError):
+            run_kernel_state.checked_control(cast(run_kernel_state.RunControl, value))
+    else:
+        with pytest.raises(WorkerError):
+            run_kernel_state.checked_info(cast(KernelInfo, value))
