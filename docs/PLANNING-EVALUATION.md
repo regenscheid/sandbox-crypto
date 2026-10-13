@@ -37,8 +37,8 @@ calls include its final answer:
 uv run --no-sync python .agents/labs/planning_progress_evaluation.py calibrate \
   --case positive --repo "$PWD" --head "$(git rev-parse HEAD)" \
   --output /tmp/OWNED-EVIDENCE/planning-positive.json \
-  --calls 8 --output-each 256 --output-total 2048 \
-  --input-total 524288 --seconds 60
+  --calls 8 --output-each 64 --output-total 512 \
+  --input-total 1048576 --seconds 30
 ```
 
 The `missing-progress` control deliberately omits in-progress assertions and
@@ -94,13 +94,14 @@ unknown and are never automatically retried. Owned reads and cleanup drain
 through repeated cancellation, so cleanup can outlast the deadline. Fixture
 removal requires its exact owned identity and successful component cleanup.
 
-Public output is bounded to 32 KiB and reserved exclusively before private
-configuration or model work. It contains source/helper pins, fixed criteria,
+Public JSON content is bounded to 32 KiB, plus its final newline, and reserved
+exclusively before private configuration or model work. It contains source/helper pins, fixed criteria,
 budgets, counters and cleanup results. It excludes arbitrary model output,
 transcripts, plan notes, provider errors, private configuration, credential
 values and their hashes. A noncompliant model result remains a failed
-measurement. Exit 0 means the evaluator's criteria passed; exit 3 is an observed
-negative/unknown evaluation, and exit 2 is refusal or setup/publication failure.
+measurement. In active modes, exit 0 means the evaluator's criteria passed; exit
+3 is an observed negative/unknown evaluation, and exit 2 is refusal or
+setup/publication failure.
 
 This helper proves no actual worker-start/progress ordering, live USER-edit
 race, browser delivery, saved `RunRecord`/notice ACK behavior, scientific
