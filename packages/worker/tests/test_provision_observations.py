@@ -23,6 +23,7 @@ from sandbox_science.contracts import (
     ExecutionContext,
     ProbeResult,
     ProvisionOperation,
+    ProvisionOutcome,
     ProvisionRequest,
     ProvisionState,
     ResolvedFile,
@@ -695,3 +696,99 @@ def test_selected_current_detail_is_explicit_and_pinned_reads_do_not_rebase(stor
     assert current.summary.seq == 8
     assert current.summary.state is ProvisionState.FINISHED
     assert store.provision_observations.summary("p", "env", since=0).queue_total == 0
+
+
+def test_real_provision_hold_release_keeps_recorded_empty_ready_summary(store: Store) -> None:
+    """Compose the real terminal producer with its observer, including a new current revision."""
+    entry(store, 0)
+    initial = store.provision_observations.summary("p", "env", since=0)
+    assert initial.current_revision == 0
+    assert initial.gate.mode == "ready"
+    assert not initial.gate.recorded
+    value = operation().model_copy(update={"revision_before": 0})
+    insert(store, value)
+    installing = value.model_copy(update={"state": ProvisionState.INSTALLING, "seq": 1})
+    store.update_provision(installing)
+    held = store.provision_observations.summary("p", "env", since=0)
+    assert held.gate.mode == "hold"
+    assert held.gate.generation == 1
+    assert held.gate.operation == value.provision_id
+    assert held.queue_total == 1
+    entry(store, 1)
+    store.update_provision(
+        installing.model_copy(
+            update={
+                "state": ProvisionState.FINISHED,
+                "outcome": ProvisionOutcome.COMPLETED,
+                "revision_after": 1,
+                "seq": 2,
+            }
+        )
+    )
+    assert store._db.execute(
+        "SELECT typeof(operation),length(operation) FROM package_execution_gates "
+        "WHERE environment_id='env'"
+    ).fetchone() == ("text", 0)
+    before = store._db.total_changes
+    ready = store.provision_observations.summary("p", "env", since=0)
+    assert ready.gate.mode == "ready"
+    assert ready.gate.generation == 2
+    assert ready.gate.recorded
+    assert ready.gate.operation is None
+    assert ready.gate.revision is None
+    assert ready.current_revision == 1
+    assert ready.queue_total == 0
+    assert store._db.total_changes == before
+    assert not store._db.in_transaction
+    path = store._path
+    # A new connection observes the same retained producer state; no backfill/repair.
+    reopened = Store(path)
+    try:
+        observed = reopened.provision_observations.summary("p", "env", since=0)
+        assert observed.gate == ready.gate
+        assert observed.current_revision == ready.current_revision
+        assert observed.queue_total == 0
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("value", [None, b"", b"prv-one", 123, 1.5, "x" * 129, "🧪"])
+def test_ready_operation_empty_text_does_not_admit_original_wrong_sql_types(
+    store: Store, value: object
+) -> None:
+    # Deliberately relaxed isolated corrupt schema permits NULL/non-TEXT scalars.
+    # Canonical production tables are NOT NULL/TEXT; do not change their schema.
+    store._db.execute("ALTER TABLE package_execution_gates RENAME TO original_gate")
+    store._db.execute(
+        "CREATE TABLE package_execution_gates "
+        "(environment_id, generation, mode, operation, revision, binding)"
+    )
+    store._db.execute(
+        "INSERT INTO package_execution_gates VALUES ('env',2,'ready',?,NULL,'')", (value,)
+    )
+    before = store._db.total_changes
+    with pytest.raises(WorkerError) as error:
+        store.provision_observations.summary("p", "env", since=0)
+    assert error.value.kind is ErrorKind.UNAVAILABLE
+    assert store._db.total_changes == before
+    assert not store._db.in_transaction
+
+
+@pytest.mark.parametrize("blob", [False, True])
+def test_ready_operation_large_corruption_refuses_without_materializing_value(
+    store: Store, blob: bool
+) -> None:
+    value = b"x" * (20 * 1024 * 1024) if blob else "x" * (20 * 1024 * 1024)
+    store._db.execute(
+        "INSERT INTO package_execution_gates VALUES ('env',2,'ready',?,NULL,'')", (value,)
+    )
+    tracemalloc.start()
+    try:
+        with pytest.raises(WorkerError) as error:
+            store.provision_observations.summary("p", "env", since=0)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert error.value.kind is ErrorKind.UNAVAILABLE
+    assert peak < 128 * 1024
+    assert not store._db.in_transaction

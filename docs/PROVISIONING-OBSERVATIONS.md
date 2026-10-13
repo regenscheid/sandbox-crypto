@@ -41,6 +41,15 @@ is not a claim that packages work or a VM is ready. Unknown current package
 revision remains null. Missing or inconsistent retained recovery/owner evidence
 refuses rather than becoming an all-clear.
 
+A normal completed provisioning operation releases its recorded gate to ready
+with an empty TEXT operation ID. The observer preserves that producer value as
+JSON null for the operation while keeping the actual generation and
+`recorded=true`. SQLite versions that return NULL for a prefix of an empty BLOB
+must not turn this normal retained state into unavailable. The empty-byte
+normalization applies only after an explicit original TEXT check; actual SQL
+NULL, BLOB, numeric, over-limit or invalid identifiers still refuse. This is a
+read projection correction, not a gate mutation, recovery or admission exemption.
+
 Selecting an operation without `seq` reads its **current retained** bounded
 request, summary, policy/catalog pins, next step and error kind/presence in one
 snapshot. An operation ID found in revision history does not recover its state
@@ -106,3 +115,16 @@ separate root-owned validation.
 Two-lockfile comparisons, installed-package license summaries, authenticated
 operator answers/expiry history, rebuild/recovery controls and full CP-26 delivery
 remain separate work. A workspace cookie is not an operator permission capability.
+
+The ready-gate correction has a real Store producer-composition regression:
+initial ready, installing hold, finished ready, current revision 0 to 1, then a
+new Store connection observing the retained state. Corrupt original SQL types
+and 20 MiB TEXT/BLOB operation values refuse without materializing those values
+in Python (the focused peak allocation assertion is below 128 KiB). The local
+synthetic reproduction and first Lab30 unavailable observation remain retained;
+post-correction real runtime acceptance is still separate and root-owned.
+The isolated correction passed 60 focused and 330 affected cases, whole
+worker/contracts plus changed-test typing, scoped style/format, locked
+dependencies and all 75 installed license checks. The initial new-test fixture
+used a nonexistent public Store path attribute and a copied raw outcome string;
+its unsuccessful output remains separate from the corrected passing evidence.
