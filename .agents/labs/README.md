@@ -372,9 +372,10 @@ worker/progress ordering. See
 [`run_kernel_dispatch.py`](run_kernel_dispatch.py) defaults to a description with
 no production import or runtime effect. Active `prepare`, `run` and read-only
 `inspect` require `--head <exact-signed-clean-runtime-head> --admit`, a fixed
-owned lab and explicit root coordination. Helper-only `a9d437f` is integrated at
-`893f9d0`; final independent helper/setup review and actual acceptance are pending.
-No Lab33 runtime PASS is claimed.
+owned lab and explicit root coordination. Corrected helper-only `91125f4` is integrated at
+`24eac09`, with independent helper/setup/collector source clearance and exact
+original/ready/done producer-to-collector checks. Actual acceptance is pending;
+no Lab33 runtime PASS is claimed.
 
 Root freezes source/helper, starts only the normal gateway/cache/middleware and
 registers the documented endpoint-free profile with a visibly synthetic provider.

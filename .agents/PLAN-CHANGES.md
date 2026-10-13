@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-13 — Lab33 helper source reviewed and original receipt corrected
+
+Before any runtime effect, an actual producer-to-consumer check caught an extra `phase` field in the helper original-VM receipt. Signed helper-only child `91125f4` removes that field before the exclusive write and is adopted at `24eac09`; original `a9d437f`/`2b653983` and all failed/corrected probes remain preserved. Independent source correction and actual original/ready/done schema checks are clear. All 753 product inputs and 174 accepted evidence files remain exact; root helper format/Ruff/type/compile/default-description checks pass. The source-only minimal setup and gateway collector are independently clear. Actual OpenShell acceptance and independent complete owned teardown remain pending; no lab/private/provider state exists yet.
+
 ## 2026-10-13 — bounded child-kernel acceptance helper adopted
 
 Signed helper-only `a9d437f` is integrated at `893f9d0`, preserving all 753 product gate inputs and 174 accepted evidence files. The helper uses one production CLI/app owner without an HTTP listener, canonical two-session/three-child fixtures, exclusive original intents/receipts and finite 20-cell/eight-control/one-VM budgets. Author 51 source/mock guards and fresh root scoped format/Ruff/Pyright/compile checks pass. The fixed root gateway collector has independent 46-case source/mock clearance; this is no runtime result. Final helper and minimal setup review remain pending. Every helper subprocess must receive an explicit sanitized environment because the production backend forwards inherited ordinary variables. No lab or private/provider state has been created. Actual OpenShell acceptance and complete independent teardown remain required.
