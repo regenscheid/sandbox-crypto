@@ -239,7 +239,9 @@ async def test_c1_a_worker_starts_again_after_a_crash(
         )
     # A record that does not validate any more must not stop the start either.
     store._db.execute(  # pyright: ignore[reportPrivateUsage]
-        "INSERT INTO executions VALUES ('exe-bad', 'op-bad', 'd', 'env1', 's1', 0, '{\"x\": 1}')"
+        "INSERT INTO executions(execution_id,operation_id,request_digest,environment_id,"
+        "session_id,terminal,record) VALUES ('exe-bad', 'op-bad', 'd', 'env1', 's1', 0, "
+        "'{\"x\": 1}')"
     )
     store.close()
     started, store = await start_worker(aiohttp_client, tmp_path)
