@@ -20,6 +20,7 @@ from .plan_tools import GUIDANCE, GUIDANCE_VERSION
 from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase
 from .prompt_bundle import MainPromptBundle, PromptProvenance, assemble_main
+from .stock_prompts import select_template
 from .tools import Toolbox, ToolOutcome, operation_id
 from .worker_client import dump
 
@@ -339,6 +340,7 @@ async def run_task(
     run_id: str,
     max_turns: int = 30,
     system: str = SYSTEM_PROMPT,
+    research_template: str | None = None,
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes."""
@@ -367,6 +369,9 @@ async def run_task(
                     toolbox.specs,
                     builtin_content=system == SYSTEM_PROMPT,
                     guidance=(GUIDANCE_VERSION, GUIDANCE) if toolbox.plans is not None else None,
+                    stock=select_template(research_template)
+                    if research_template is not None
+                    else None,
                 )
                 transcript = Transcript(
                     prompt_provenance=bundle.provenance,

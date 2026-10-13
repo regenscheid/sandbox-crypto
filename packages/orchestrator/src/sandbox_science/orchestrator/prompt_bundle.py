@@ -16,6 +16,7 @@ from pydantic import Field, model_validator
 from sandbox_science.contracts.model import Contract, Identifier
 
 from .model import ToolSpec
+from .stock_prompts import MAX_TEMPLATE_BYTES, StockPrompt, StockTemplateId
 
 ASSEMBLY_VERSION = "sandbox-main-bundle-1"
 BASE_VERSION = "sandbox-main-1"
@@ -96,9 +97,64 @@ class UnavailableProvenance(Contract):
     reason: Literal["system_too_large", "system_not_utf8", "metadata_too_large"]
 
 
-PromptProvenance = Annotated[
+LegacyProvenance = Annotated[
     CompleteProvenance | UnavailableProvenance, Field(discriminator="status")
 ]
+
+
+class StockComponent(ContentPin):
+    component: Literal["stock"] = "stock"
+    template_id: StockTemplateId
+    version: Identifier
+
+    @model_validator(mode="after")
+    def _valid(self) -> Self:
+        if (
+            not 1 <= self.bytes <= MAX_TEMPLATE_BYTES
+            or re.fullmatch(rf"sandbox-stock-{self.template_id}-[1-9][0-9]{{0,8}}", self.version)
+            is None
+        ):
+            raise ValueError("invalid retained research template pin")
+        return self
+
+
+SelectedComponent = Annotated[Component | StockComponent, Field(discriminator="component")]
+
+
+class SelectedProvenance(Contract):
+    """Complete selected assembly; v1 serialization and parsing remain separate."""
+
+    status: Literal["complete"] = "complete"
+    assembly_version: Literal["sandbox-main-bundle-2"] = "sandbox-main-bundle-2"
+    role: Literal["main"] = "main"
+    components: tuple[SelectedComponent, ...] = Field(min_length=2, max_length=3)
+    system: ContentPin
+    tools: ToolPin
+    bundle_sha256: Digest
+
+    @model_validator(mode="after")
+    def _valid(self) -> Self:
+        if (
+            self.components[0].component != "main"
+            or self.components[1].component != "stock"
+            or (len(self.components) == 3 and self.components[2].component != "planning")
+        ):
+            raise ValueError("invalid selected MAIN component order")
+        if self.system.bytes > MAX_SYSTEM_BYTES or self.system.bytes != sum(
+            component.bytes for component in self.components
+        ) + 2 * (len(self.components) - 1):
+            raise ValueError("invalid selected system byte accounting")
+        fields = self.model_dump(mode="json", exclude={"bundle_sha256"})
+        if _sha(b"main-prompt-bundle-v2\0", _json(fields)) != self.bundle_sha256:
+            raise ValueError("invalid selected prompt bundle digest")
+        if len(self.model_dump_json().encode()) > MAX_PROVENANCE_BYTES:
+            raise ValueError("selected prompt provenance exceeds its budget")
+        return self
+
+
+# The legacy branch must still accept omitted v1 default fields. A new outer
+# discriminator would require assembly_version and reject those existing inputs.
+PromptProvenance = LegacyProvenance | SelectedProvenance
 
 
 def _text(text: str) -> bytes:
@@ -112,7 +168,7 @@ def _text(text: str) -> bytes:
 
 def verify_retained(provenance: PromptProvenance, first: object) -> None:
     """Check recorded content without reconstructing historical versions from today."""
-    if not isinstance(provenance, CompleteProvenance):
+    if not isinstance(provenance, (CompleteProvenance, SelectedProvenance)):
         return
     if not isinstance(first, dict):
         raise ValueError("prompt provenance requires its recorded system message")
@@ -241,8 +297,11 @@ def assemble_main(
     *,
     builtin_content: bool,
     guidance: tuple[str, str] | None = None,
+    stock: StockPrompt | None = None,
 ) -> MainPromptBundle:
     """Recognized builtin bytes identify content, not who supplied it or permissions."""
+    if stock is not None:
+        return _assemble_selected(system, specs, builtin_content, guidance, stock)
     owned, canonical, names = _tool_bytes(specs)
     try:
         if builtin_content:
@@ -296,4 +355,57 @@ def assemble_main(
         provenance = UnavailableProvenance(reason="system_too_large")
     except UnicodeError:
         provenance = UnavailableProvenance(reason="system_not_utf8")
+    return MainPromptBundle(rendered, provenance, owned, tool_sha)
+
+
+def _assemble_selected(
+    system: str,
+    specs: Sequence[ToolSpec],
+    builtin_content: bool,
+    guidance: tuple[str, str] | None,
+    stock: StockPrompt,
+) -> MainPromptBundle:
+    if not builtin_content:
+        raise ValueError("research templates require the builtin MAIN base")
+    stock.validate()
+    try:
+        base, selected = _text(system), _text(stock.text)
+        planning = _text(guidance[1]) if guidance is not None else None
+        rendered = "\n\n".join([system, stock.text] + ([guidance[1]] if guidance else []))
+        raw = _text(rendered)
+    except (OverflowError, UnicodeError):
+        raise ValueError("installed selected MAIN content exceeds its bounds") from None
+    owned, canonical, names = _tool_bytes(specs)
+    tool_sha = _sha(b"main-tool-schemas-v1\0", canonical)
+    components: list[Component | StockComponent] = [
+        Component(component="main", version=BASE_VERSION, bytes=len(base), sha256=_sha(b"", base)),
+        StockComponent(
+            template_id=stock.template_id,
+            version=stock.version,
+            bytes=len(selected),
+            sha256=_sha(b"", selected),
+        ),
+    ]
+    if guidance is not None and planning is not None:
+        components.append(
+            Component(
+                component="planning",
+                version=guidance[0],
+                bytes=len(planning),
+                sha256=_sha(b"", planning),
+            )
+        )
+    fields = {
+        "status": "complete",
+        "assembly_version": "sandbox-main-bundle-2",
+        "role": "main",
+        "components": [component.model_dump(mode="json") for component in components],
+        "system": {"bytes": len(raw), "sha256": _sha(b"", raw)},
+        "tools": {"bytes": len(canonical), "sha256": tool_sha, "names": names},
+    }
+    if len(_json(fields)) + 100 > MAX_PROVENANCE_BYTES:
+        raise ValueError("installed selected MAIN metadata exceeds its bounds")
+    provenance = SelectedProvenance.model_validate(
+        {**fields, "bundle_sha256": _sha(b"main-prompt-bundle-v2\0", _json(fields))}
+    )
     return MainPromptBundle(rendered, provenance, owned, tool_sha)
