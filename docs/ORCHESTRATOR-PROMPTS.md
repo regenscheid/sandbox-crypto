@@ -5,8 +5,9 @@
 what the harness actually sends to models and proposes independently written
 system/stock prompts, a planning phase and automatic durable progress updates.
 The initial document-only freeze changed no runtime behavior. The narrow
-capability corrections and first stateful MAIN planning integration are described
-below; the larger prompt catalog remains a proposal. The existing
+capability corrections, stateful MAIN planning, five explicit original research
+framings and general small-scale trial guidance are described below; external
+catalog loading and unsupported lifecycle prompts remain proposals. The existing
 [plans/delegation specification](specs/plans-and-delegation.md) and
 [skills specification](specs/skills.md) remain drafts; this design does not silently
 approve all their open questions. Standing authorization for autonomous work must
@@ -181,6 +182,11 @@ workspace acceptance belong to the root integration and are not claimed here.
 
 ### Implemented MAIN input provenance
 
+The original provenance slice retained the earlier base content unchanged. The
+later [small-scale trial guidance](PILOT-COMPUTATIONS.md) intentionally updates the
+current builtin base to `sandbox-main-2`; old `sandbox-main-1` records retain their
+exact historical text and pins. Assembly versions are separate from base versions.
+
 The [MAIN provenance slice](MAIN-PROMPT-PROVENANCE.md) assembles one bounded
 owned system/tool bundle for the run. It preserves the existing base text and
 conditional two-newline planning join, all offered schema values/order and grants.
@@ -190,7 +196,7 @@ and notice messages stay outside this system/tool bundle.
 
 Optional retained RunRecord metadata records `sandbox-main-bundle-1`, exact
 component versions/bytes/hashes, rendered system and canonical ordered tool pins.
-`sandbox-main-1` recognizes exact built-in content, including identical caller
+`sandbox-main-2` recognizes exact current built-in content, including identical caller
 text; it does not attest to its author or origin. Other custom text has no invented
 catalog version. Oversized/unrepresentable custom text keeps its invocation
 behavior with explicitly unavailable metadata; invalid installed inputs refuse
@@ -204,6 +210,42 @@ runs preserve existing durable-save-before-ACK behavior. The watcher has its
 separate reservation pins below, as does the reviewer. Repair call provenance,
 broader stock-template loading, compaction and live-model quality
 evaluation remain separate.
+
+### Implemented optional research framing and general small-scale trials
+
+A template means a short reusable task instruction block. The fixed first-party
+[research framings](STOCK-RESEARCH-PROMPTS.md) are `intake`, `literature`,
+`experiment`, `proof-audit` and `report`, explicitly selected through the trusted
+CLI/caller. A user still describes the task normally. Planning and live progress
+work independently of selecting any framing.
+
+The selected run uses complete-only `sandbox-main-bundle-2`, with exact stock
+ID/version/byte/hash pins between the MAIN base and optional real planning guidance.
+Unselected runs retain the assembly-v1 format, custom/unavailable behavior and old
+record parsing. Selection resolves once, keeps the original task and tools, and
+cannot be changed by quoted task/document/tool text or later catalog mutation.
+There is no automatic classifier, external loader, interpolation or extra call.
+Different custom base plus selection refuses. Historical input verification uses
+the saved text; old catalog entries need not remain installed.
+
+The user additionally requested testing scripts on a small scale before long or
+large computations. [General MAIN pilot guidance](PILOT-COMPUTATIONS.md) applies
+without selecting an experiment framing. Reuse applicable current trial evidence
+or run representative small inputs; check known cases/invariants and output shape,
+resolve failures before scaling, record available runtime/memory and disclose
+missing or nonrepresentative measurements. Qualify nonlinear scaling assumptions.
+When plan tools are offered, record trial, validation evidence and scale decision
+before the large run. Existing authorization/budgets and unknown-effect
+reconciliation remain in force; trivial work needs no ceremonial trial.
+
+This later general guidance deliberately changes the current MAIN base content
+version to `sandbox-main-2`. Stock-alone default-v1 byte comparisons at `5a96c42`
+are historical predecessor evidence; they do not claim that the final pilot base
+equals the earlier default. No stock text/version, planning guidance, offered
+schema/grant, dispatcher, closing budget or notice ACK is changed by the pilot.
+No measurement/cost tool, controller pilot gate or scientific certification is
+introduced. Scripted actual-input/history tests establish assembly and authority;
+live-model instruction adherence and useful research outcomes remain unevaluated.
 
 ### Implemented watcher reservation provenance
 
@@ -355,6 +397,9 @@ compaction drafts must not be installed before their required code paths exist.
 
 Stock task framing examples, in original wording:
 
+The five purposes have separate original runtime text in the implemented fixed
+catalog above; the examples here illustrate their intent.
+
 - **Intake:** identify the question, assumptions and evidence needed; propose the
   smallest decisive check before committing to a long computation.
 - **Literature:** retrieve and inspect sources before using citations; compare
@@ -493,6 +538,7 @@ and compare actual model inputs, not merely a prompt file's existence.
 | --- | --- |
 | Ordinary autonomous task; short answer | No forced approval, plan ceremony or extra model call for a trivial task. |
 | Multi-step run and intermediate result | Draft→active, start→in_progress→completed are committed during the run; evidence/actor/version exact; USER sees updates before the final answer. |
+| Small trial before a long/big computation | General guidance asks for representative pilot evidence, known-case/output checks, failed-trial resolution, available time/memory and qualified scaling recorded through offered plan tools. Input fixtures do not prove live-model adherence or certify the computation. |
 | USER plan edit while model/tool waits | Stale CAS refuses; draft preserved; agent rereads; old-version progress/history remains; no duplicate side effect. |
 | Approval required vs absent | Actual write/execute grants obey exact USER-approved version; quoted approval/child/skill/model text has no effect. No global mandatory approval default introduced. |
 | Terminal plan with blocked/skipped steps | Open pending/in_progress steps refuse completion; explicit outcome/summary/evidence required; achieved refuses blocked/skipped; qualified terminal accounting never displays all-success. |
@@ -514,9 +560,10 @@ and compare actual model inputs, not merely a prompt file's existence.
 
 Current progress: capability-text corrections, immutable single-MAIN planning,
 six tools, read-only committed-progress polling, narrow MAIN input provenance
-and watcher/reviewer reservation provenance
-are implemented. USER editing/approval, effect lineage/liveness, delegated runs,
-repair provenance, broader stock-template loading, skill loading and compaction
+watcher/reviewer reservation provenance, five explicit original research framings
+and general small-scale trial guidance are implemented. USER editing/approval,
+effect lineage/liveness, delegated runs, repair provenance, external prompt loading,
+skill loading and compaction
 below remain separate work.
 
 1. **Current-role prompt correctness:** fix only inaccurate live capability claims
