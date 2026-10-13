@@ -169,11 +169,12 @@ describe('plan polling lifecycle', () => {
 
 describe('plan panel rendering', () => {
   const html = (state: PlanPollState) => render(PlanPanel, {props: {...scope, initialState: state}}).body;
-  it('renders recorded progress/stable IDs with no SSR request or mutation controls', () => {
+  it('renders recorded progress/stable IDs with SSR edit controls disabled and no request', () => {
     const fetch = vi.fn(); vi.stubGlobal('fetch', fetch); const text = html({phase: 'observed', data: observed()});
     expect(text).toContain('Study the construction'); expect(text).toContain('0 of 2 steps completed'); expect(text).toContain('1 in progress');
     expect(text).toContain('Inspect evidence'); expect(text).toContain('inspect'); expect(text).toContain('Researcher');
-    expect(text).toContain('does not prove a job is running'); expect(text).not.toContain('<button'); expect(fetch).not.toHaveBeenCalled();
+    expect(text).toContain('does not prove a job is running'); expect(text).toContain('<fieldset disabled');
+    expect(text).toContain('type="submit" disabled'); expect(text).toContain('Saving does not approve the plan'); expect(fetch).not.toHaveBeenCalled();
   });
   it('shows revised steps pending and labels previous completed assertions', () => {
     const value = observed(); value.plan!.steps[0]!.latest!.status = 'completed'; value.plan!.steps[0]!.matches_current_step = false;
