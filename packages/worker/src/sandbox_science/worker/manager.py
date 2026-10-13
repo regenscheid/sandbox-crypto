@@ -80,6 +80,13 @@ from sandbox_science.contracts import (
     new_id,
 )
 from sandbox_science.contracts.output_observations import Gap, OutputReport
+from sandbox_science.contracts.run_kernels import (
+    RunKernelBinding,
+    RunKernelEnrollment,
+    RunKernelScope,
+    checked_run_kernel_binding,
+    checked_run_kernel_scope,
+)
 from sandbox_science.contracts.worker import (
     DEFAULT_OUTPUT_LIMIT,
     FEATURES,
@@ -102,6 +109,7 @@ from .output_observations import normalize as normalize_observation
 from .package_gate import PackageGate
 from .package_gate import refusal as recovery_refusal
 from .revisions import Prepared, Revisions, package_commands
+from .run_kernels import RunKernelBindings
 from .shared_sync import SharedSync
 from .store import CaptureLease, KernelRecord, Store
 
@@ -2345,6 +2353,67 @@ class ExecutionManager:
                 ErrorKind.UNAVAILABLE, "kernel observation needs an existing healthy connection"
             )
         return environment, channel
+
+    def enroll_run_kernel(
+        self, scope: RunKernelScope, operation_id: str, *, initialize: bool = False
+    ) -> RunKernelEnrollment:
+        """Retain explicit controller attribution on an existing managed VM.
+
+        This internal observation grants no execution or kernel access. No public
+        route, launcher or model tool supplies its authority. Nothing is opened,
+        reconnected, started or kept alive; the caller owns synchronous Store work.
+        The caller must derive the genuine run and scope from its admitted control
+        context; these checks cannot establish that admission on their own.
+        """
+        try:
+            scope = checked_run_kernel_scope(scope)
+        except (ValueError, ValidationError):
+            raise WorkerError(
+                ErrorKind.INVALID_REQUEST, "invalid original run/kernel scope"
+            ) from None
+        context = ExecutionContext(
+            project_id=scope.project_id,
+            session_id=scope.session_id,
+            environment_id=scope.environment_id,
+        )
+        environment, channel = self._observed_environment(context)
+        records = RunKernelBindings(self.store)
+
+        def observed_binding() -> RunKernelBinding:
+            managed = self.daemon_identity(scope.environment_id) if self.daemon_identity else None
+            if channel.daemon_token is None or type(managed) is not tuple or len(managed) != 2:
+                raise WorkerError(ErrorKind.UNAVAILABLE, "original managed run endpoint is unknown")
+            try:
+                return checked_run_kernel_binding(
+                    RunKernelBinding.model_construct(
+                        scope=scope,
+                        sandbox=managed[0],
+                        sandbox_id=managed[1],
+                        incarnation=channel.incarnation,
+                    )
+                )
+            except (ValueError, ValidationError):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "original managed run endpoint is unknown"
+                ) from None
+
+        binding = observed_binding()
+        expected = (binding.incarnation, binding.sandbox, binding.sandbox_id)
+
+        def validate() -> None:
+            current_environment, current_channel = self._observed_environment(context)
+            if (
+                current_environment is not environment
+                or current_channel is not channel
+                or channel.incarnation != binding.incarnation
+                or records.endpoint(scope.environment_id) != expected
+                or observed_binding() != binding
+            ):
+                raise WorkerError(ErrorKind.UNAVAILABLE, "original managed run endpoint changed")
+
+        value = records.enroll(binding, operation_id, initialize=initialize, validate=validate)
+        validate()  # postcommit failure keeps the original audit; no automatic re-enrollment
+        return value
 
     async def observe_kernels(self, request: KernelStatusRequest) -> KernelObservation:
         """Read an existing channel without keeping it alive or waiting on its lifecycle."""
