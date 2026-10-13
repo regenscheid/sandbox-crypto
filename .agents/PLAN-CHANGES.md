@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-13 — repair delivery and autonomous plan editor continuation
+
+PR #107 merged at `7f89853` on independently reviewed signed `979b874` after all four fresh checks passed (run `38343981986`); primary main is clean/synced, locked dependencies checked and its tree matches the reviewed head. Accepted repair report/archive remain at their original source pins. USER plan-body backend `5284009` has 51 focused/271 affected cases and scoped static/license checks passing, with independent review in progress. Human-readable frontend `impl/user-plan-editor` and root browser fixture `709dd5c` continue in parallel; root helper has 14 guard cases and scoped checks passing but has not been served. Combined gates/browser acceptance/delivery remain required. The user explicitly requested continued autonomous work overnight. Approval routes, durable repair accounting, delegation/compaction and other pending plan items remain separate.
+
 ## 2026-10-12 — producing repair identity validated
 
 Implement optional bounded static input identity for display-repair answers/cache results at signed `87e2711`, preserving the existing permitted adapted system and actual formatter/zero tools. Independent review found and closed declared-subclass pre-encoding, DEL ASCII expansion and raw Literal counter normalization gaps before final freeze; held `780449b` is not the accepted final source. [Root combined gates](docs/agent-reports/display-repair-input-provenance-2026-10-12.md) at signed `d2c3263` pass 10,508 Python/656 web/24 math and required checks/builds. No dynamic input fingerprint, durable call/spend history, provider dispatch or mathematical verification is inferred; LD-46 stays open. Final delivery review/fresh exact-head CI remain required. USER plan-body backend continues separately under existing D86 authorization; approval/delegation policy is unchanged.
