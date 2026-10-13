@@ -2,7 +2,7 @@
 
 ## 2026-10-12 — MAIN prompt provenance in process
 
-Continue after single-MAIN planning with a narrow original prompt assembly/provenance slice: exact existing system and conditional planning bytes, owned immutable tool schemas, bounded optional run metadata and truthful custom/legacy states. Installed role wording, offered grants, dispatch, closing and save-before-ACK stay unchanged. A separate author implements it with independent review; root owns union gates and delivery. Watcher, reviewer and display-repair persistence require their own later seams. No provider calls or new prompt text are introduced by this work.
+Continue after single-MAIN planning with a narrow original prompt assembly/provenance slice: exact existing system and conditional planning bytes, owned immutable tool schemas, bounded optional run metadata and truthful custom/legacy states. Installed role wording, offered grants, dispatch, closing and save-before-ACK stay unchanged. A separate author implements it with independent review; root owns union gates and delivery. Watcher, reviewer and display-repair persistence require their own later seams. No provider calls or new prompt text are introduced by this work. PR #102 planning/live-view delivery merged at `25510ab` on independently reviewed signed `1d4205f` after all four fresh checks passed (run `38332303702`); primary main is clean/synced. Reconcile stale proposed tool names and distinguish installed progress/reread guards from future effect/liveness/approval/delegation behavior; refresh the implementation plan current-focus paragraph without changing milestone gates.
 
 ## 2026-10-12 — MAIN planning and live progress integration in process
 
