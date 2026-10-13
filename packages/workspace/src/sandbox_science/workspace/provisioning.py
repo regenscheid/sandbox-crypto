@@ -13,6 +13,7 @@ from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Final, Literal, TypeVar
 
 from aiohttp import hdrs, web
@@ -73,6 +74,7 @@ class ProjectSnapshot:
         digest: bytes,
         record: ProjectRecord,
         environments: tuple[str, ...],
+        root_path: Path,
     ) -> None:
         self.record = record
         self.environments = environments
@@ -80,11 +82,12 @@ class ProjectSnapshot:
         self._root = root
         self._identity = identity
         self._digest = digest
+        self._root_path = root_path
 
     def matches(self, other: ProjectSnapshot) -> bool:
         """Whether the same unchanged canonical record still supplies this authority."""
         before, after = os.fstat(self._root), os.fstat(other._root)
-        return (
+        held_matches = (
             (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
             and self._identity == other._identity
             and _identity(os.fstat(self._descriptor)) == self._identity
@@ -92,7 +95,37 @@ class ProjectSnapshot:
             and self._digest == other._digest
             and self.record == other.record
             and self.environments == other.environments
+            and self._root_path == other._root_path
         )
+        if not held_matches:
+            return False
+        # Two retained descriptors can agree after their directory has ceased to
+        # be the canonical pathname. Prove the pathname's root and leaf as well;
+        # keep these temporary descriptors inside the same owned file operation.
+        current_root = current_file = -1
+        try:
+            current_root = os.open(self._root_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            name = f"{self.record.project_id}.json"
+            current_file = os.open(
+                name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=current_root
+            )
+            current = os.fstat(current_root)
+            current_leaf = os.fstat(current_file)
+            leaf = os.stat(name, dir_fd=current_root, follow_symlinks=False)
+            canonical = os.stat(self._root_path, follow_symlinks=False)
+            return (
+                (current.st_dev, current.st_ino) == (before.st_dev, before.st_ino)
+                and (canonical.st_dev, canonical.st_ino) == (before.st_dev, before.st_ino)
+                and stat.S_ISDIR(canonical.st_mode)
+                and stat.S_ISREG(leaf.st_mode)
+                and _identity(current_leaf) == self._identity
+                and _identity(leaf) == self._identity
+            )
+        finally:
+            if current_file >= 0:
+                os.close(current_file)
+            if current_root >= 0:
+                os.close(current_root)
 
     def close(self) -> None:
         """Release the retained descriptors after their actual owner has drained."""
@@ -113,7 +146,8 @@ def project_snapshot(store: ProjectStore, project: str) -> ProjectSnapshot:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid project ID") from error
     root = descriptor = -1
     try:
-        root = os.open(store.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        root_path = store.root
+        root = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         descriptor = os.open(
             f"{project}.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root
         )
@@ -169,6 +203,7 @@ def project_snapshot(store: ProjectStore, project: str) -> ProjectSnapshot:
             hashlib.sha256(data).digest(),
             record,
             tuple(sorted(environments)),
+            root_path,
         )
         descriptor = root = -1
         return result

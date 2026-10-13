@@ -58,6 +58,9 @@ the file atomically, so a full close/reopen and identical-byte restore still fai
 this check. Any concurrent project-record replacement is conservatively unavailable,
 including an unrelated session change. This proves continuity at receipt, not an
 atomic guarantee over a later mutation or against arbitrary trusted-host tampering.
+The final owned proof also reopens the canonical directory and project pathname
+without following links and compares both to the retained descriptors. Agreement
+between two old held descriptors alone cannot authorize a replaced canonical root.
 
 `WorkerClient.observation_transport()` provides a private in-memory bounded copy of
 the configured endpoint and headers and a borrowed shared HTTP session. Its values
@@ -70,6 +73,9 @@ Each worker read has a five-second whole-call timeout, refuses redirects and
 compressed bodies, and independently caps the streamed response at 64 KiB and 256
 chunks before strict JSON parsing. The full workspace response also fits 64 KiB or
 is refused. No active status/reconnect/create fallback is available.
+Success JSON is decoded as strict UTF-8 and checked for duplicate object keys
+(including escaped-equivalent keys) before Pydantic can normalize a repeated scope,
+sequence or policy action. Non-JSON numeric constants are refused as well.
 
 The proxy responds within a six-second caller budget. It has immediate admission
 limits of eight calls globally, two per original login and one per project/environment
@@ -101,7 +107,7 @@ They do not exercise a real worker, package manager, provider, model or VM. Root
 combined gates, independent review and real browser/OpenShell acceptance remain
 delivery requirements.
 
-The author checkpoint on Python 3.13.15 passes 204 affected tests, including the 72
+The corrected author checkpoint on Python 3.13.15 passes 211 affected tests, including the 79
 new proxy/transport/registry cases, whole workspace/orchestrator typing, scoped Ruff
 and format checks, locked synchronization and the 75-distribution license check.
 The companion observation-contract source was pinned before and after the affected

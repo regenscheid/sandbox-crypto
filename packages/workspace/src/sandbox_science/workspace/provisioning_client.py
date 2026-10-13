@@ -7,7 +7,8 @@ the configured target/headers, never follow redirects, and never use active stat
 
 from __future__ import annotations
 
-from typing import Final, TypeVar
+import json
+from typing import Final, Never, TypeVar
 
 import aiohttp
 from pydantic import BaseModel, ValidationError
@@ -19,6 +20,19 @@ MAX_BYTES: Final = 64 * 1024
 MAX_CHUNKS: Final = 256
 CALL_TIMEOUT: Final = 5.0
 T = TypeVar("T", bound=BaseModel)
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, child in pairs:
+        if key in value:
+            raise ValueError("duplicate observation field")
+        value[key] = child
+    return value
+
+
+def _invalid_constant(value: str) -> Never:
+    raise ValueError("invalid observation number")
 
 
 class ProvisionObserver:
@@ -84,6 +98,15 @@ class ProvisionObserver:
                     raise WorkerAPIError(
                         ErrorKind.UNAVAILABLE, "worker observation is not plain JSON"
                     )
+                # Check raw object uniqueness before Pydantic can normalize an
+                # ambiguous action/scope/pin to its last occurrence. Parsing is
+                # independently bounded above; retain the original JSON bytes
+                # for strict JSON-mode tuple/date/enum validation afterward.
+                json.loads(
+                    payload.decode("utf-8", "strict"),
+                    object_pairs_hook=_unique_object,
+                    parse_constant=_invalid_constant,
+                )
                 return model.model_validate_json(payload, strict=True)
         except (aiohttp.ClientError, TimeoutError, RuntimeError) as error:
             raise WorkerAPIError(

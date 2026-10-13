@@ -226,6 +226,20 @@ class Peer:
             value["record_sha256"] = "d" * 64
         elif self.mode == "operation":
             value["provision_id"] = "prv-another"
+        if self.mode.startswith("duplicate"):
+            raw = json.dumps(value, separators=(",", ":"))
+            if self.mode == "duplicate-scope":
+                raw = raw.replace('"project_id":"p1"', '"project_id":"p2","project_id":"p1"', 1)
+            else:
+                prior = '"action":"escalate"'
+                assert prior in raw
+                first = (
+                    '"\\u0061ction":"deny"'
+                    if self.mode == "duplicate-escaped"
+                    else '"action":"deny"'
+                )
+                raw = raw.replace(prior, first + "," + prior, 1)
+            return web.Response(text=raw, content_type="application/json")
         return web.json_response(value)
 
 
@@ -937,3 +951,68 @@ async def test_postawait_proof_io_error_is_unavailable_and_not_a_partial_success
         assert not proxy._tasks
     finally:
         await proxy.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement", ["root", "file", "root-symlink", "file-symlink"])
+async def test_canonical_path_replacement_after_fresh_read_invalidates_held_proof(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch, replacement: str
+) -> None:
+    store = ProjectStore(state_dir)
+    original = provisioning.ProjectSnapshot.matches
+    observed: list[bool] = []
+
+    def replaced(self: provisioning.ProjectSnapshot, other: provisioning.ProjectSnapshot) -> bool:
+        path = store.root / "p1.json"
+        data = path.read_bytes()
+        if replacement in {"root", "root-symlink"}:
+            previous = store.root.with_name("previous-projects")
+            store.root.rename(previous)
+            if replacement == "root":
+                store.root.mkdir()
+                path.write_bytes(data)
+            else:
+                store.root.symlink_to(previous, target_is_directory=True)
+        elif replacement == "file":
+            next_file = store.root / "replacement.json"
+            next_file.write_bytes(data)
+            os.replace(next_file, path)
+        else:
+            path.unlink()
+            path.symlink_to(store.root / "p2.json")
+        result = original(self, other)
+        observed.append(result)
+        return result
+
+    monkeypatch.setattr(provisioning.ProjectSnapshot, "matches", replaced)
+    proxy = provisioning.ProvisionProxy(store, None)
+    try:
+        with pytest.raises(ProjectError) as error:
+            await proxy.read(
+                "p1", None, provisioning.Selection("environments"), "login", lambda: True
+            )
+        assert error.value.kind is ErrorKind.UNAVAILABLE
+        assert observed in ([], [False])  # nofollow may refuse before returning a boolean
+    finally:
+        await proxy.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["duplicate-scope", "duplicate-action", "duplicate-escaped"])
+async def test_raw_duplicate_scope_and_policy_action_refuse_before_normalization(
+    aiohttp_client: ClientFactory,
+    aiohttp_server: ServerFactory,
+    state_dir: Path,
+    static_dir: Path,
+    mode: str,
+) -> None:
+    peer = Peer()
+    peer.mode = mode
+    client, _, environment = await create(
+        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
+    )
+    response = await client.get(url(environment) + "/operations/prv-1/files?seq=3")
+    assert response.status == 503
+    assert response.headers["Cache-Control"] == "no-store"
+    assert "files" not in await response.json()
+    assert len(peer.calls) == 1
