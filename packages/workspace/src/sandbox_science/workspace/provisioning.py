@@ -42,12 +42,13 @@ MAX_ENVIRONMENTS: Final = 64
 MAX_CALLS: Final = 8
 MAX_LOGIN_CALLS: Final = 2
 CALL_TIMEOUT: Final = 6.0
+DIFF_TIMEOUT: Final = 10.0
 PATH: Final = "/api/v0/projects/{project}/environments/{environment}/provisioning/observations"
 ENVIRONMENTS_PATH: Final = "/api/v0/projects/{project}/provisioning/environments"
 ROUTE_PREFIX: Final = "provisioning-observation-"
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
 T = TypeVar("T")
-Kind = Literal["environments", "summary", "detail", "files", "revisions", "probes"]
+Kind = Literal["environments", "summary", "detail", "files", "revisions", "probes", "lockfile-diff"]
 
 
 class LoginEndedError(Exception):
@@ -231,9 +232,20 @@ class Selection:
     target: int | None = None
     offset: int = 0
     limit: int = 8
+    before: int | None = None
+    before_pin: str | None = None
+    after_pin: str | None = None
 
     def __post_init__(self) -> None:
-        if self.kind not in {"environments", "summary", "detail", "files", "revisions", "probes"}:
+        if self.kind not in {
+            "environments",
+            "summary",
+            "detail",
+            "files",
+            "revisions",
+            "probes",
+            "lockfile-diff",
+        }:
             raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid observation selection")
         if self.kind in {"detail", "files"}:
             try:
@@ -266,6 +278,17 @@ class Selection:
             or not 1 <= self.limit <= 8
         ):
             raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid observation page selection")
+        if self.kind == "lockfile-diff" and (
+            type(self.before) is not int
+            or not 0 <= self.before <= 2**62
+            or self.after < 0
+            or any(
+                type(pin) is not str or re.fullmatch(r"[0-9a-f]{64}", pin) is None
+                for pin in (self.before_pin, self.after_pin)
+            )
+            or self.offset > 80_000
+        ):
+            raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid exact lockfile pair selection")
 
 
 def _number(raw: str, minimum: int, maximum: int = 2**62) -> int:
@@ -287,6 +310,7 @@ def _selection(request: web.Request, kind: Kind) -> Selection:
         "files": {"seq", "offset", "limit"},
         "revisions": {"after", "limit", "target"},
         "probes": {"pin", "offset", "limit"},
+        "lockfile-diff": {"before", "before_pin", "after", "after_pin", "offset", "limit"},
     }[kind]
     query = request.query
     if request.can_read_body or len(query) != len(set(query)) or set(query) - allowed:
@@ -301,6 +325,10 @@ def _selection(request: web.Request, kind: Kind) -> Selection:
         ) from error
     if kind == "files" and "seq" not in query:
         raise ProjectError(ErrorKind.INVALID_REQUEST, "operation selection requires its exact seq")
+    if kind == "lockfile-diff" and not {"before", "before_pin", "after", "after_pin"} <= set(query):
+        raise ProjectError(
+            ErrorKind.INVALID_REQUEST, "comparison requires both exact revision pins"
+        )
     pin = query.get("pin")
     if kind == "probes" and (pin is None or re.fullmatch(r"[0-9a-f]{64}", pin) is None):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "revision selection requires its exact pin")
@@ -312,10 +340,13 @@ def _selection(request: web.Request, kind: Kind) -> Selection:
         if "revision" in request.match_info
         else None,
         pin=pin,
-        after=_number(query.get("after", "-1"), -1),
+        after=_number(query.get("after", "-1"), 0 if kind == "lockfile-diff" else -1),
         target=_number(query["target"], 0) if "target" in query else None,
-        offset=_number(query.get("offset", "0"), 0),
+        offset=_number(query.get("offset", "0"), 0, 80_000 if kind == "lockfile-diff" else 2**62),
         limit=_number(query.get("limit", "8"), 1, 8),
+        before=_number(query["before"], 0) if "before" in query else None,
+        before_pin=query.get("before_pin"),
+        after_pin=query.get("after_pin"),
     )
 
 
@@ -393,6 +424,35 @@ async def _fetch(
                 wanted.limit,
             ):
                 raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned another probe page")
+        case "lockfile-diff":
+            result = await observer.get_diff(
+                f"{path}/lockfile-diff",
+                {
+                    **params,
+                    "before": str(wanted.before),
+                    "before_pin": str(wanted.before_pin),
+                    "after": str(wanted.after),
+                    "after_pin": str(wanted.after_pin),
+                    "offset": str(wanted.offset),
+                    "limit": str(wanted.limit),
+                },
+            )
+            if (
+                result.before.revision,
+                result.before.record_sha256,
+                result.after.revision,
+                result.after.record_sha256,
+                result.offset,
+                result.limit,
+            ) != (
+                wanted.before,
+                wanted.before_pin,
+                wanted.after,
+                wanted.after_pin,
+                wanted.offset,
+                wanted.limit,
+            ):
+                raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned another lockfile pair")
         case _:
             raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid observation selection")
     if (result.project_id, result.environment_id) != (project, environment):
@@ -550,7 +610,9 @@ class ProvisionProxy:
 
         task.add_done_callback(finished)
         try:
-            async with asyncio.timeout(CALL_TIMEOUT):
+            async with asyncio.timeout(
+                DIFF_TIMEOUT if wanted.kind == "lockfile-diff" else CALL_TIMEOUT
+            ):
                 return await asyncio.shield(task)
         except TimeoutError as error:
             task.cancel()
@@ -656,6 +718,7 @@ def add_routes(
         ("files", PATH + "/operations/{operation}/files"),
         ("revisions", PATH + "/revisions"),
         ("probes", PATH + "/revisions/{revision}/probes"),
+        ("lockfile-diff", PATH + "/lockfile-diff"),
     )
     for kind, path in routes:
         app.router.add_get(path, handler(kind), name=ROUTE_PREFIX + kind)
