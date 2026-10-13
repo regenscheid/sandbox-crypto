@@ -340,3 +340,14 @@ Export only the helper's bounded public evidence and exact durable run files, wi
 The helper uses production worker/workspace components and bounded typed GET parity/pages. It submits fixed GP and python-flint/queued-GP fixture requests; the root operator answers exact permissions separately. Worker-offline503 and live-worker stopped-VM durable records are distinct. The stopped proof must name the two original managed VMs, exact run/head and a fresh UTC time after terminal provisioning. Public evidence excludes private login/token/config/provider output and raw gateway annotations; private login cleanup owns the exact inode even when write, fsync or descriptor wrapping fails. Actual counts and license/probe flags must be observed, not assumed from guard tests. No full CP-26, recovery, scientific or new operator authority claim follows from this helper.
 
 Lab30 first real attempt at `f964a050` is explicitly partial: GP installation and retained records passed, but the post-install ready overview failed on SQLite empty-BLOB slicing. All owned runtime/private state was removed and independently checked before source changes. Corrected helper acceptance now requires paired worker/GUI ready overview, empty queue and exact current revision immediately after install and after the permission queue drains. Preserve original failed evidence; use a new clean source freeze and fresh lab after worker correction/review/gates.
+
+## Opt-in planning/progress evaluation
+
+[`planning_progress_evaluation.py`](planning_progress_evaluation.py) defaults to a
+standard-library description with no production imports or external effects.
+Its separately selected active modes measure a fixed synthetic plan-tool task
+through production `run_task` and canonical progress reads; all non-plan calls
+are refused before dispatch. Root owns calibration and any finite-budget model
+pilot with explicit private configuration. Source adoption does not establish
+model compliance or actual worker/progress ordering. See
+[the bounded recipe and limits](../../docs/PLANNING-EVALUATION.md).
