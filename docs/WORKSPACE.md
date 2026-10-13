@@ -231,6 +231,7 @@ All routes need the session and answer JSON. The views of the records are GET (a
 | `/api/v0/projects/{project}` | `project`: the same facts, its `sessions` (each with its environment, whether it is dedicated, when it was opened and closed, and how many runs it keeps), and its `environments`, the default first, each with the sessions in it |
 | `GET` / `POST /api/v0/projects/{project}/macros` | Current versioned setting; POST requires exact `expected`, bounded `macros` and `operation_id`, with server-derived USER identity ([contract](PROJECT-MACROS.md#changing-the-setting)) |
 | `/api/v0/projects/{project}/sessions/{session}` | The `session` and its `runs`, oldest first: each run's `name`, `run_id` and `started_at` |
+| `GET /api/v0/projects/{project}/sessions/{session}/plan` | Bounded read-only current plan/version/progress and explicit goal outcome; recorded closed sessions remain readable ([contract](SESSION-PLAN-WORKSPACE.md)) |
 | `/api/v0/projects/{project}/sessions/{session}/runs/{run}` | The run's record ([run records](#run-records)), at most 64 MiB |
 | `/api/v0/projects/{project}/documents` | `documents`: the project's living documents and its sessions' workbook documents, without the deleted ones: each one's ID, name, title, scope and session, creator, current revision and whether agent patches wait as suggestions |
 | `/api/v0/projects/{project}/documents/{document}` | One revision of a document, by its ID or, for one of the project's own, its name: the current one, or `?revision=N`. Its `document`, its `revision` (author, the user who accepted it, reason, base and parent, warnings, what was normalized, the parsers' versions), its `text`, its front matter's `title`, effective `macros` and `macro_context` (setting revision/hash, anchors, known/held state, warnings and identity), and its `blocks`: each one's `id`, `kind`, `parent`, `depth`, `lines`, `status`, structural kind and attributes, with its formulas' `id`, `kind`, `status` and `tex`. `matched` is false when the server could not parse the revision as its block map was made, and the formulas then come without their TeX |
@@ -245,6 +246,25 @@ Document comments use `GET /api/v0/projects/{project}/documents/{document}/comme
 Errors are `{"error": {"kind", "message"}}` (document errors also carry `details`) with the worker API's kinds: 400 `invalid_request` for a malformed ID, run name, document name or revision number, or a math repair request that is not one, 401 `policy_denied` without a session, 404 `not_found`, 413 for a request body over 64 KiB (document changes allow 8 MiB of escaped JSON, while document text remains bounded to 1 MiB of UTF-8), 422 `unsupported` for a record over the size limit, 429 `unavailable` for a session that has asked for as many model repairs as it may for now, and 500 `internal` for a damaged record. The server reads the harness's records through the orchestrator's `ProjectStore`, and the documents through its `DocumentStore`, in a thread. JSON that a record cannot carry, a NaN from a tool's output say, is sent as a string.
 
 Reading the harness's state directory directly is this slice's arrangement: the workspace runs beside the harness and imports the orchestrator's store (the one deployable member importing another, in the [conventions](../.agents/CONVENTIONS.md)). W5 gives the control application an API of its own for the GUI to use.
+
+## Session plans
+
+The session view includes the [read-only live plan panel](SESSION-PLAN-WORKSPACE.md).
+It displays goal, feasibility, expected outputs, ordered phases, stable step IDs,
+tracks, current completion/in-progress/blocked/skipped counts and attributed update
+times. A changed step intent does not inherit old completion: the previous
+assertion is labeled separately. A completed workflow retains its reported
+achieved/partially-achieved/not-achieved goal outcome and remaining work.
+
+Open visible sessions refresh committed control state every three seconds with
+bounded backoff. Hidden/unmounted views stop admission and fence late responses;
+closed history makes one attempt. Transient unavailability keeps a dated previous
+observation and labels current state unknown; missing sessions and logout clear
+it. Actual request ownership lasts until settlement even when abort is ignored.
+The panel uses plain escaped prose and provides no plan editor, approval control
+or evidence lookup. Recorded progress is not process liveness or scientific
+verification. The initial combined/browser delivery gates are tracked in
+[status](../.agents/STATUS.md).
 
 ## Session kernels
 
@@ -320,7 +340,7 @@ Hash routes, without a router library: `#/`, `#/projects/<project>`, `#/projects
 
 - **Projects:** each project's base profile, policy revision, number of sessions and last change.
 - **Project:** its facts; its sessions, each with its environment (the project's default or its own), number of runs, and whether it is open; its documents, the project's and its sessions' workbooks'; and its environments with the sessions in each. These are the harness's records; the environments' live state is on the worker, which the workspace does not ask yet.
-- **Session:** its environment and state, and its runs, oldest first. The newest is open; the others are fetched when opened.
+- **Session:** its environment/state, live recorded plan/progress, passive kernel observations, background jobs, reviews and its runs, oldest first. The newest is open; the others are fetched when opened.
 - **Run:** when it ran and for how long, its environment and policy revision, and whether it answered. Then the system prompt (folded), the task, and the agent's messages, each with its tool calls: the arguments (code as a block), and the result the model read, laid out: state and exit code, stdout, stderr, outputs, the error and its traceback, platform notices, and where the call ran, with the isolation tier in effect. Anything else in the result shows as JSON, and the call's full record opens on request. Successful runs show their final answer. Failed runs show the retained partial transcript and fixed failure phase, without an Answer heading.
 - **Document:** a revision, the current one unless the address names another: its title, name and scope, its number with links to the revisions before and after it and to the history, its author (with the user who accepted it when it was a suggestion), when it was made and why, whether its delimiters were saved in the dollar form, and its warnings (LD-30). Then where the browser's parse and the server's block map disagree, if they do, and the text, rendered with the server's IDs ([living documents](#living-documents)). A revision that deleted the document says so.
 - **History:** the revisions, newest first, each with its author, reason and the blocks it changed; the revisions that changed each block, folded; and the agents' patches with their states, and the revisions they made.
@@ -366,7 +386,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 - Saving Markdown with its math in the dollar form beyond living documents, which are saved so ([living documents as built](LIVING-DOCUMENTS.md#changes)): ledger entries, and direct edits of document files (LD-41, LD-42, LD-50).
 - Math checks/remediation for ledger entries and excluded finding prose, plus automatic check-history compaction and idle dispatch (remaining LD-53 to LD-55/D82). [Document](MATH-CHECKS.md), [comment/reply](COMMENT-MATH.md) and eligible [MAIN fix/rebut explanation checks](FINDING-PROSE-MATH.md) connect saves, attributed findings and closing delivery; renderer packaging/configuration remains operator-owned.
 - KaTeX in a Web Worker, with a time limit that ends a formula's render ([the backlog](../.agents/BACKLOG.md) says why it waits).
-- Live updates while a run is in progress, and the environments' state from the worker.
+- Streaming the in-progress run transcript, USER plan editing/approval and detailed progress history. The read-only plan panel reads committed progress during a run; passive kernel/job observations have their own scoped views.
 - The end of a session without `session close`.
 - TLS, sessions that survive a restart, and the GUI on another machine than the harness (W5).
 

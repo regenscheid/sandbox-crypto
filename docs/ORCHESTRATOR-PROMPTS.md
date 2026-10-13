@@ -1,10 +1,12 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Orchestrator prompts and durable planning
 
-**Design proposal, 2026-10-12; source audit at `fe5f4d7`.** This document inventories
+**Design and implementation boundaries, 2026-10-12; initial audit at `fe5f4d7`.** This document inventories
 what the harness actually sends to models and proposes independently written
 system/stock prompts, a planning phase and automatic durable progress updates.
-It changes no runtime prompt, tool, model, store or approval rule. The existing
+The initial document-only freeze changed no runtime behavior. The narrow
+capability corrections and first stateful MAIN planning integration are described
+below; the larger prompt catalog remains a proposal. The existing
 [plans/delegation specification](specs/plans-and-delegation.md) and
 [skills specification](specs/skills.md) remain drafts; this design does not silently
 approve all their open questions. Standing authorization for autonomous work must
@@ -29,7 +31,9 @@ behavior or justify any future reuse; this document imports nothing from it.
 
 ## Actual prompt inventory
 
-These are the live entry points, not a proposed installed prompt library:
+This table retains the initial `fe5f4d7` source audit and its gaps. The two
+implemented sections below supersede the corrected capability text and absent
+single-MAIN planning tools. It is not a proposed installed prompt library:
 
 | Input | Exact source seam | Current behavior and gap |
 | --- | --- | --- |
@@ -42,7 +46,7 @@ These are the live entry points, not a proposed installed prompt library:
 | Model adapter | [model.py](../packages/orchestrator/src/sandbox_science/orchestrator/model.py):50,69–141 | Provider-neutral protocol and OpenAI-compatible tool calls; optional token limit and bounded response. No general role prompt catalog, prompt-bundle provenance, planning router or automatic compactor. MAIN has no implemented generic context budget/compaction threshold. |
 | Retained run/audit | [projects.py](../packages/orchestrator/src/sandbox_science/orchestrator/projects.py):153,432; [cli.py](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py):341 | Saved messages retain rendered prompt text; fixed failed-run metadata and partial outcomes survive ordinary failures. Save/fsync precedes notice ACK. This is not a durable running-plan or delegated-run scheduler. |
 
-The current source tree has no plan CRUD/progress tools or durable plan store,
+At that initial audit the source tree had no plan CRUD/progress tools or durable plan store,
 no delegated-run launcher/track authority, no durable question router, and no
 implemented skill catalog/load tools or general context compactor. Tool-role
 restrictions in existing document/reviewer code are useful enforcement seams;
@@ -69,8 +73,9 @@ worker/bridge recovery on original daemon/sandbox continuity and preserves lost
 outcomes without automatic resubmission; the historical `reviews.py` docstring
 points to the implemented reviewer. The inventory above records the earlier audit
 and its findings. No tool schema, whitelist, policy, dispatch, closing or model-call
-behavior changes. Prompt-bundle version/hash provenance and planning/delegation
-capabilities below remain proposals.
+behavior changes in that correction slice. Prompt-bundle version/hash provenance
+and delegation capabilities below remain proposals; the later planning integration
+is separate.
 
 [Actual-model-input fixtures](../packages/orchestrator/tests/test_prompt_inputs.py)
 exercise control-side document reads with and without job capability. They inspect
@@ -78,6 +83,99 @@ the system message and offered tool descriptions at both model calls, preserve
 document injection text as tool data, and prove no plan/delegate tools appear.
 Together with affected job/trigger tests, 30 cases pass. These scripted tests check
 host assembly and capability boundaries, not a live model's instruction adherence.
+
+### Implemented stateful MAIN planning tools
+
+The separate [SessionPlans core](SESSION-PLANS.md) now backs six ordinary tools:
+`plan_read`, `plan_create`, `plan_revise`, `plan_activate`, `plan_progress` and
+`plan_finish`. [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py)
+constructs trusted MAIN attribution from the explicit run's recorded
+project/session, run ID and model alias. The actual resolved model is recorded on
+each mutation when known. Model arguments cannot select USER, another session or
+delegated grants. Each mutation has an explicit operation ID; replay preserves
+its original historical receipt, never advances the current-read pin, and a
+changed resolved model conflicts rather than replacing the original actor. Actual
+tool-call identity is retained separately in the run tool record.
+
+[CLI](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py) installs the
+adapter only for a stateful MAIN run with a resolved recorded open session. A
+stateless run, watcher or reviewer gets no plan tools or planning guidance. The
+versioned original `sandbox-main-plan-1` guidance is appended to the actual MAIN
+system input only when these tools are offered. It asks substantive work to
+create/resume a short plan and record progress as work happens; small factual
+answers need no ceremonial plan. The stored system message preserves the wording
+actually used. General prompt-bundle hashes/catalog assembly remain unimplemented.
+
+Draft activation records workflow state under existing task authorization. It is
+neither USER approval nor a permission grant. The wrapper conservatively permits
+read/revision of `awaiting_approval` but refuses activation, progress, abandonment
+or replacement as a way around the missing trusted USER decision path. Progress
+requires an active plan and exact plan/step/status CAS. Terminal completion uses
+the core's explicit goal outcome and all-current-step guard; blocked/skipped cannot
+produce an achieved outcome. Plan text/evidence remain attributed assertions,
+without scientific verification, permission expansion or automatic effect-to-step
+lineage.
+
+Each adapter operation retains and rechecks the original bounded session-registry
+snapshot. A short project lock precedes control SQL; neither is held across a
+worker await. Any observed registry replacement, including close/reopen ABA or
+an unrelated project edit, conservatively invalidates the old run adapter.
+An explicitly started new run can read retained logical-session history. This is
+a local admission fence, not an atomic control-store-to-guest launch guarantee;
+already admitted work may settle without automatic cancellation or kernel restart.
+
+Active safe points read a bounded summary and at most four scoped event pages of
+16 items. Another actor's event, unread pre-existing plan, corrupt history or an
+incomplete event scan requires a current reread before new effects. A complete
+`plan_read(current)` returns the full bounded body and compact status, fingerprint,
+attribution and CAS projection for every current step. Long notes/evidence/history
+are explicit pages. The read satisfies the fence only after a successful model
+call actually includes that result and its exact ref/status/progress/event pins
+still match. Historical reads, mutation/replay receipts, a failing model call or
+read→effect in the same assistant batch cannot satisfy it.
+
+[Toolbox](../packages/orchestrator/src/sandbox_science/orchestrator/tools.py) uses a
+finite read/observe, cancel and effect classification; unclassified tools receive
+no exemption. Existing capability and policy checks still apply. File/document/
+review reads and existing job/provision status/wait/cancel operations remain
+available; writes, execution, publish, provisioning, policy admission and PDF
+helpers require the plan fence. PDFs are effects because their helpers execute in
+the worker. Plan calls preserve complete JSON instead of ordinary text clipping;
+unrelated document/job notices remain unseen until their existing later paths.
+
+Tool requests are at most 96 KiB UTF-8 and reject unknown authority/scope fields,
+non-strict counters and malformed text. Plan bodies retain the core's 64 KiB cap;
+complete tool responses are at most 256 KiB. History initially requests at most
+eight items and reduces the page size to fit the complete envelope while retaining
+its target cursor. A read that cannot fit refuses rather than omitting steps or
+clearing the reread requirement. No generic transcript compaction is added.
+
+[The loop](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) rechecks
+plan state before model calls and immediately before assigning a final answer,
+including after closing review/math awaits. A pending reread permits at most one
+continuation within the ordinary remaining turn budget, then returns a partial
+`user_message` stop with no stale final answer. It adds no reviewer/math response
+rounds and preserves already completed scientific or explicit USER decisions.
+Plan/progress commits are durable during the run, independent of a later model
+failure, cancellation or failed RunRecord save. Existing notice save-before-ACK
+behavior is unchanged; progress is not a claim that an interrupted effect succeeded.
+Threaded plan work and the registry descriptor are owned and drained before the
+borrowed store closes, including cancellation during adapter construction.
+
+[Focused scripted fixtures](../packages/orchestrator/tests/test_plan_tools.py)
+exercise actual offered-tool/model inputs, live second-connection progress, USER
+CAS/reread and closing races, same-batch dispatch, bounded event gaps, compact
+large-note reads, immutable replay/model provenance, complete response delivery,
+save/failure/cancellation and actual thread/descriptor cleanup. These deterministic
+tests establish host/tool enforcement, not live-model planning quality. The read-only workspace
+view/API are implemented read-only consumers. USER editing, approval
+decisions, delegation, automatic resumed work,
+idle wake, effect-to-step lineage and broader prompt evaluation remain separate.
+
+Local author validation: 127 core/adapter/failed-run/prompt cases and 117 affected
+review/math/document/job cases pass; whole-orchestrator Pyright and changed-path
+Ruff/format/license checks pass. Combined delivery gates, fresh PR CI and any
+workspace acceptance belong to the root integration and are not claimed here.
 
 ## Prompt catalog and assembly proposal
 
@@ -243,8 +341,9 @@ requires every current step to be completed; blocked/skipped require reasons and
 can only support a qualified outcome. Even `achieved` is the author's assertion,
 not independently verified scientific truth. An abandoned plan records why work
 stopped and partial results without forcing its unfinished steps to terminal
-statuses. The internal plan-store prerequisite being developed separately must
-not imply activation/approval, live progress delivery or execution wiring exists.
+statuses. The implemented single-MAIN core and tools above provide version/progress accounting
+and activation under existing authorization. USER approval decisions, automatic
+effect-to-step links and delegated execution remain separate.
 
 Automatic means the agent maintains the plan via these tools during work, and the
 harness records linked lifecycle/liveness events without user bookkeeping. It does
@@ -259,7 +358,10 @@ Mounted-view polling is an acceptable first UI implementation; it need not wait 
 a live-chat transport. Show authoritative version, current step, activity age,
 blocked/skipped counts and disconnected/pending updates. A delayed browser reply
 cannot replace a newer scope/version or erase an unsaved USER draft. Browser closure
-stops polling, not research. None of this GUI or plan storage is implemented today.
+stops polling, not research. The first read-only live viewer and scoped API are now
+implemented consumers of the plan core/tools; USER editing, history
+pages and effect-to-step lineage remain separate. Final combined/browser delivery
+gates are recorded in central status rather than inferred from this proposal.
 
 ## Authority and lifecycle checks that prompts cannot supply
 

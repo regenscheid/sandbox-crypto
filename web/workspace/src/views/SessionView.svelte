@@ -4,9 +4,11 @@
   import { formatTime } from '../lib/format';
   import { projectHref } from '../lib/router';
   import { kernelPanelScope } from '../lib/kernels';
+  import { planPanelScope } from '../lib/plans';
   import ErrorMessage from './ErrorMessage.svelte';
   import JobsPanel from './JobsPanel.svelte';
   import KernelPanel from './KernelPanel.svelte';
+  import PlanPanel from './PlanPanel.svelte';
   import RunSection from './RunSection.svelte';
   const reviewComponent = import('./ReviewsPanel.svelte');
 
@@ -38,6 +40,10 @@
     </dd>
   </dl>
 
+  {@const planScope = planPanelScope(projectId, sessionId, detail)}
+  {#if planScope}
+    <PlanPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />
+  {/if}
   {@const kernelScope = kernelPanelScope(projectId, sessionId, detail)}
   {#if kernelScope}
     <KernelPanel {projectId} {sessionId} environmentId={kernelScope.environmentId} />
