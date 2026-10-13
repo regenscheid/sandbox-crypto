@@ -42,14 +42,20 @@
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 41306,
-      "sha256": "4e5c97e0d9bd9ee79b46a3b1c6f7f2b13ff04f4e07ebf12907e9338780f7da5f"
+      "bytes": 42921,
+      "sha256": "a976c2b0a13db48fbbb8f2af439b0ad426238b29523215afd6baaa0d22ab3fa1"
     },
     {
       "path": "../../docs/PROJECT-MACROS.md",
       "category": "implementation-boundary",
       "bytes": 9784,
       "sha256": "b86fa8d38f48d690da3f1465853371747e1e11fd193036e5fc815de86f84e0f9"
+    },
+    {
+      "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
+      "category": "implementation-boundary",
+      "bytes": 7696,
+      "sha256": "d05b95d54cf92b3667eb18ba73ec125cb8def3dc564a9c1c8e8f3e6191ec0c4b"
     },
     {
       "path": "../../docs/SESSION-PLAN-WORKSPACE.md",
@@ -78,8 +84,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 23440,
-      "sha256": "0fb2d2a85bcd9862e00c57c25959e425ff91b00d76b66f84b28d03d5339604ea"
+      "bytes": 23990,
+      "sha256": "d0b2c0dbde2c68baffb52eb5854d39d9d3a45265fcf4988afb20652b9697f728"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -746,6 +752,18 @@
       "category": "browser-evidence",
       "bytes": 59555,
       "sha256": "85d85837cb82abcf4f43183f0550a57bcb062961bd8f616a9386f8be25afcac6"
+    },
+    {
+      "path": "agent-reports/reviewer-prompt-provenance-2026-10-12.md",
+      "category": "implementation-validation",
+      "bytes": 3561,
+      "sha256": "be3345a0197762c98e894d961fbca36400dab177d5c683ae22aa5fce0238c429"
+    },
+    {
+      "path": "agent-reports/reviewer-prompt-provenance-evidence-2026-10-12.json",
+      "category": "validation-evidence",
+      "bytes": 82222,
+      "sha256": "f1e5df3f98e11137ba11faa3cad1b1f2c93ee5ce3192ad71c74d9be653cf60c4"
     },
     {
       "path": "agent-reports/session-planning-2026-10-12.md",
