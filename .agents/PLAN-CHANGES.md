@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-13 — provisioning acceptance helper adopted
+
+Final immutable helper `630053a3` passes independent source/resource review and 52 guard/SQL/mocked cases. Root adoption removes only a path-inapplicable unused noqa; executable AST is identical, SHA `9be287515dc1482c546c230cb32f5a476ac7e0b0d2b8eadd0c36be15e114bb5f`, and scoped format/style/type/import-help checks pass. Private fsync/fdopen ownership, SQL numeric prefetch and raw error-kind export findings are closed; gateway proof binds original VMs and post-terminal UTC time. Preserve original failed/corrected outputs. Exact signed adoption tie/fresh admission and actual worker/browser acceptance remain required; no runtime is started. Root product/build inputs remain exact the 10,768 Python/746 web/24 math gate. Separate lockfile comparison worker source `248967d` has author48focused/296affected/scoped passes and saved-source independent clearance, pending exact signed tie; no consumer or runtime claim.
+
 ## 2026-10-13 — separate lockfile comparison prerequisite in process
 
 Read-only readiness identifies exact two retained raw-revision/ref selections, bounded nofollow/hash-proved lockfile streams, strict duplicate-free entry parsing and deterministic small pages. Implement a separate worker/contracts prerequisite from signed `e9f1a9d`; keep the accepted first-viewer inputs frozen while Lab30 helper review/worker/browser acceptance continue. Missing/skipped/unsupported inputs stay held; declared Conda licenses and unknown pip licenses remain distinct. No source review clearance, proxy/UI comparison, changed retention, operator authority or runtime completion is implied. This implements existing CP-26 requirements; no new user decision or approval gate is introduced.
