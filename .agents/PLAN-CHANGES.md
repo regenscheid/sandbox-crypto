@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-12 — MAIN prompt provenance in process
+
+Continue after single-MAIN planning with a narrow original prompt assembly/provenance slice: exact existing system and conditional planning bytes, owned immutable tool schemas, bounded optional run metadata and truthful custom/legacy states. Installed role wording, offered grants, dispatch, closing and save-before-ACK stay unchanged. A separate author implements it with independent review; root owns union gates and delivery. Watcher, reviewer and display-repair persistence require their own later seams. No provider calls or new prompt text are introduced by this work.
+
 ## 2026-10-12 — MAIN planning and live progress integration in process
 
 Integrate independently reviewed immutable plan core `4deb2dc`, six MAIN tools/conditional original phase guidance `f31ef29` and live read-only viewer `736b1ca`. Durable progress commits during a run; current-plan reads must reach a successful model call before an edit fence clears. Revised-step fingerprints prevent old completion assertions from silently completing changed work. The viewer passes final 656 web/24 math cases and both builds. The independently reviewed API `7b774f6`, combined Python/static gates and [actual browser acceptance](docs/agent-reports/session-planning-2026-10-12.md) pass on reviewed runtime union `5259f6c`: 10,312 Python/43 skips/two existing warnings, corrected 127 core/API cases, 656 web/24 math and both builds. Independent complete cleanup is verified at 2026-10-13T01:22:48.894078Z; fresh exact-head PR CI is required before merge. USER editing/approval routes, delegation, questions, compaction and prompt-bundle provenance remain separate. PR #101 has merged at `91940ab` after all four fresh checks passed on reviewed signed `ab8dd83` (run `38329083314`). No new mandatory approval gate or live external-model adherence claim is introduced.
