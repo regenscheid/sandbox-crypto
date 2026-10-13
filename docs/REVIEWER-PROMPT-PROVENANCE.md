@@ -1,0 +1,127 @@
+<!-- SPDX-License-Identifier: MIT -->
+# Consistency-reviewer prompt provenance
+
+Each new consistency-reviewer call reservation retains a bounded historical
+rubric and ordered tool-schema pin. The feature identifies intended input; it
+does not add review authority or prove that a provider received the call, obeyed
+the rubric, or verified a scientific result. MAIN and watcher provenance remain
+separate in [MAIN-PROMPT-PROVENANCE.md](MAIN-PROMPT-PROVENANCE.md) and
+[WATCHER-PROMPT-PROVENANCE.md](WATCHER-PROMPT-PROVENANCE.md).
+
+## Actual input
+
+[consistency/prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/prompt_bundle.py)
+assembles one owned reviewer bundle from the unchanged `RUBRIC`,
+`RUBRIC_VERSION="sandbox-consistency-1"` and ordered five `SPECS` in
+[runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py).
+It reuses only MAIN's pure bounded schema encoder, without MAIN role, component
+assembly or custom-system behavior.
+
+The actual schemas, descriptions and order remain `review_manifest`,
+`review_read`, `review_checked`, `review_finding`, `review_decide`. Fresh nested
+parameter copies are passed on every model call; a model cannot mutate the
+module-level definitions or later call inputs through a received schema.
+Verification immediately before `ChatModel.complete` checks the actual first
+system message and the actual passed schema sequence against the reserved pin.
+The existing tool dispatch whitelist, evidence grants, read audits, finding
+operation replay, scientific decisions and confirmation CAS are unchanged.
+
+The fixed first user instruction, dynamic evidence/tool results and final-format
+retry instruction are unchanged and outside this system/tool pin. This is not
+a conversation or complete provider-request hash. No alias, endpoint,
+credential fingerprint, task, evidence, output or exception text is a new
+envelope field. Requested alias and provider-observed `reply.model` remain
+separate existing columns; a missing resolved model is not replaced by an alias.
+
+## Historical envelope and bounds
+
+The envelope contains format version 1, assembly version
+`sandbox-reviewer-bundle-1`, fixed role `reviewer`, bounded rubric version, exact
+rubric text and its UTF-8 byte length/SHA256, ordered tool names/count, canonical
+schema byte length/hash and a bundle digest. The installed rubric is 2,450
+UTF-8 bytes and fits inside the complete 16-KiB envelope ceiling.
+
+Hashes use lowercase hexadecimal SHA256. Canonical JSON uses sorted object
+keys, compact separators, UTF-8 without ASCII escaping and no non-finite values.
+Arrays and tool order remain significant. The schema digest hashes canonical
+ordered `{name,description,parameters}` projections after the byte domain
+`reviewer-tool-schemas-v1\0`. The bundle digest hashes every envelope field
+except `bundle_sha256`, after `reviewer-prompt-bundle-v1\0`. Each domain ends
+with a literal NUL byte. Object-key canonicalization affects hashing; owned
+parameter copies preserve the original insertion order used at the call.
+
+The envelope retains exact historical rubric text, never substituted from
+today's source. It retains **only a hash and names for schemas**, so historical
+schema reconstruction requires the matching source/build record; the digest
+alone cannot recover old parameter definitions or descriptions. These hashes
+are content identity, not authentication or model-behavior evidence.
+
+Installed input must be valid UTF-8 and representable: system at most 64 KiB,
+128 unique bounded tool names, canonical and owned schemas at most 512 KiB,
+depth 32, 32,768 nodes and 4,096 entries per container. Integer decimal and
+JSON-escaping expansion are charged before aggregate schema serialization.
+Metadata itself is capped at 16 KiB, with copied/constructed model fields
+preflighted and revalidated before SQL. These are engineering bounds, not new
+tool grants or a custom prompt loader. Malformed or oversized installed content
+refuses before a model call; there is no custom-input fallback.
+
+## Reservation and legacy reads
+
+[store.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/store.py)
+adds one nullable `prompt_provenance` TEXT column to the existing `review_calls`
+table during writable initialization, inside its existing serialized write
+transaction. There is no database-wide schema-version bump or table rebuild.
+Existing rows retain NULL; old internal callers may omit the optional pin.
+No current-source backfill occurs. An UPDATE-OF trigger protects the input
+column while existing answered/usage updates remain allowed.
+
+`reserve_call(..., prompt_provenance=...)` validates and encodes before the write
+transaction, then inserts the pin with the original reservation and counter
+update atomically. The pin's rubric version must match the canonical review
+header. The runner also refuses a nominal review rubric different from the
+currently installed rubric. Historical reads accept bounded earlier versions
+and their exact saved text, without claiming the current implementation used
+those bytes for a new call.
+
+The internal `call_provenance(project, session, review, call)` requires exact
+scope and a valid positive reservation ID. It joins the call to its canonical
+review and returns `absent`, `legacy`, `complete` or `corrupt`. Read-only databases
+without the new column use a NULL projection without migration. A present
+non-text, oversized, malformed or inconsistent pin is corrupt, never legacy.
+SQL checks metadata type/byte length before Python/JSON allocation, and bounds
+the nominal rubric version before comparison. No call history is added to a
+public API, GUI, manifest or review header.
+
+A committed reservation is a budgeted intended attempt, including when a crash,
+renewal failure, cancellation, timeout or provider failure leaves `answered=0`.
+Pins and charges are not erased, refunded or automatically replayed. Existing
+hourly/per-review/token admission, duplicate-usage behavior and failed-window
+recovery remain unchanged. At most 30 calls add at most 480 KiB of pin metadata
+per review; this is not a global historical disk or RSS quota. No eviction or
+new retention policy is introduced.
+
+## Owned accounting and limits
+
+The reservation, pre-call renew, provider-usage, finish and heartbeat-renew
+awaits use the existing cancellation-owned `threaded` helper. Repeated caller
+cancellation cannot abandon those actual SQL operations. Tests block reserve,
+usage and finish, cancel repeatedly, and require the host/store-close boundary
+to wait until the SQL work drains. Already completed accounting or review
+outcomes remain durable; a late dropped finish cannot overwrite a terminal
+outcome or a replacement owner.
+
+This is a scoped accounting-lifetime correction. Existing raw tool, evidence,
+model-observation, confirmation and controller thread paths are unchanged; it is
+**not** proof of
+whole-runner or whole-controller SQL ownership under every cancellation race.
+No SQL transaction spans a model await.
+
+Deterministic tests use a real local ReviewStore with scripted models to inspect
+the committed pin at actual call entry, check exact schema/text/order and fresh
+copies, preserve alias/resolved-model separation, and exercise failure, timeout,
+owner/counter rollback, concurrent budget, readonly migration, corrupt metadata
+and repeated-cancellation drain. Existing consistency/confirmation fixtures are
+affected regression gates. No model, worker, service, browser or VM is started
+by these tests. Root owns combined delivery gates and fresh CI; provider
+transformations, live model quality and broader prompt catalog work remain
+outside this slice.
