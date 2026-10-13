@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-13 — delegation foundations delivered; child dispatcher in progress
+
+[PR #114](https://github.com/regenscheid/sandbox-crypto/pull/114) merged at `8afb470` on independently clear signed `2d81bd5` after Python 3.12/3.13, web and GitGuardian all passed (run `38454296205`). Primary main is clean/synced, locked dependencies checked and tree-exact the reviewed head. The separate 90/83-record archives and earlier accepted evidence remain immutable; combined local gates retain 11,069 Python and exact-input qualified web/math/build reuse. Root starts a separate dispatcher delivery branch from actual main. The coherent internal child-kernel composition is in progress with independent persistence/recovery and executor/lifecycle reviews. Early quota, replay, queued-close and corrupt-marker probes remain preserved while corrections are verified. No dispatcher source freeze, final gates, runtime acceptance, authenticated controller, launcher/tool/route/grant or new product default is inferred.
+
 ## 2026-10-13 — inventory delivered; delegation foundations prepared
 
 Inventory PR #113 merged at `a080229` on reviewed signed `6c03009` after all four fresh checks passed. The Lab32 report/archive and historical runtime/helper qualifications remain immutable. The related delegation-record and original run/kernel-binding prerequisites are now integrated with that actual main at signed `771438f`; all 749 selected product inputs remain exact to the fresh 11,069-test combined union. Their separate 90/83-record evidence archives have independent clearance. Final combined delivery review and fresh CI remain; no launcher, dispatcher, tool, grant or new default is enabled. The complete internal dispatcher continues separately, preserving legacy request bytes and original child/VM/incarnation identity.
