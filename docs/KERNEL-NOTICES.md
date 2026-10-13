@@ -20,7 +20,7 @@ session, control-owned session-open lifetime and trusted worker binding. Its
 `NoticeScope` also pins the original managed sandbox name, immutable VM ID and
 executor incarnation. Every operation revalidates the typed input; a copied or
 constructed model cannot bypass the positive MAIN rule. These models are internal
-provenance assertions, not authentication credentials. A future adapter must
+provenance assertions, not authentication credentials. The consumer must
 independently authenticate the current MAIN context and refresh its current
 session lifetime and worker binding before **every** record, hold, claim, renew,
 release or ACK. No guest, browser or agent-selected object can supply that proof.
@@ -72,15 +72,14 @@ expired claims may be replaced. Renew/release/ACK require the exact still-live
 receipt and whole claimed set. Partial ACKs, substituted payloads and old-owner
 operations refuse atomically. Renewal does not widen a batch beyond its byte bound.
 
-ACK is a future caller's assertion that a successful model delivery and its run
+ACK is the caller's assertion that a successful model delivery and its run
 were durably saved first. The module cannot verify that assertion and does not
-call ACK itself. Future integration must retain only batches from successful model
+call ACK itself. The integrated consumer must retain only batches from successful model
 calls, fsync the saved run before ACK, and preserve cancellation/failed-save replay.
 ACK atomically compacts only its exact items, retaining the sequence cursor,
 per-language dedup watermark and one bounded last-ACK receipt. Last exact replay
 has no side effects on a later claim. An older receipt displaced by a subsequent
-ACK refuses; indefinite replay history is outside this prerequisite. The future
-RunRecord, rather than these compacted rows, must retain delivery audit evidence.
+ACK refuses; indefinite replay history is outside this prerequisite. The consumer RunRecord, rather than these compacted rows, retains delivery audit evidence.
 
 ## Explicit logical budgets
 
@@ -116,11 +115,15 @@ permanently full enrollment registry requires a future explicit retention policy
 Each synchronous method owns its SQLite connection and FULL/WAL transaction.
 Input JSON is prepared before the transaction; retained reads use SQL byte prefixes
 before parsing. Row counts, strict numeric columns, finite leases, receipt
-structure, hashes and exact payload pins are validated. A future asynchronous
-caller must own and drain actual thread/SQL work before store/context shutdown;
+structure, hashes and exact payload pins are validated. The asynchronous
+consumer owns and drains actual thread/SQL work before store/context shutdown;
 this module introduces no executor, background task or cancellation wrapper.
 
-## Validation and remaining delivery work
+## Current MAIN consumer
+
+The independently reviewed [explicit stateful MAIN consumer](KERNEL-NOTICE-DELIVERY.md) now implements authenticated control lifetime/configuration mapping, bounded owned passive reads, historical version-1 USER input and typed receipt/RunRecord evidence. Successful host return marks delivery; a real fsynced run and fresh original proof precede ACK. Failed first calls, failed saves and cancellation retain the qualified replay/audit boundary. Changed bindings, incomplete lineage or initialized inbox loss refuse rather than re-enroll. [OpenShell Lab29](../.agents/docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md) passes actual worker/package/idle-resume acceptance and independent complete cleanup; final archive/PR CI delivery remains pending. No idle scheduler, automatic replacement reconciliation, delegate routing or full-history guarantee is added. The prerequisite evidence below remains at its original source pins.
+
+## Historical prerequisite validation
 
 The focused suite passes 45 tests. Strict module Pyright reports zero errors and
 warnings; Ruff formatting/lint and the installed Python license check pass. No
@@ -134,12 +137,4 @@ pins prove store behavior only; they do not prove worker lineage authentication.
 
 Root combined local gates on signed `840b48f` pass 10,155 Python cases/43 opt-in skips/two existing warnings and required static checks; unchanged PR #99 web/math/build evidence is explicitly reused. [Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md) validates the separate passive worker lineage, not this inbox's MAIN delivery. Fresh delivery CI remains separate.
 
-Before active MAIN safe-point delivery can be claimed, separately review the
-passive trusted-lineage transport; current control/session/binding authentication;
-bounded owned controller work; transcript fields and platform prose; successful
-model delivery tracking; durable RunRecord save-before-ACK; and cleanup/failure
-fences. Real OpenShell acceptance must show a package change in B, A's retained
-stale kernel learned without A execution, distinct current kernels and session
-scope, unACKed restart replay, preserved globals, and continued idle/no-wake
-behavior. Idle/offline wake, complete event history and task-worker routing remain
-separate work.
+The separately reviewed consumer and Lab29 above now provide the MAIN safe-point and save-before-ACK evidence. The underlying store still trusts its caller's positive saved assertion; it is not a public verifier of arbitrary run files. Worker restart continuity and idle/resume refusal are actual runtime coverage; immutable-VM-ID replacement remains focused source coverage. Idle/offline wake, complete event history and task-worker routing remain separate work.

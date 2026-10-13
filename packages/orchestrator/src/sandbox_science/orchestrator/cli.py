@@ -48,6 +48,8 @@ import json
 import math
 import sqlite3
 import sys
+import threading
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -70,6 +72,7 @@ from .documents.mathjobs import threaded
 from .documents.tool import view_blocks
 from .jobs import JobTools
 from .jobstate import JobState
+from .kernel_delivery import KernelDeliveryController
 from .loop import Interruption, Transcript, run_task
 from .mathcheck import MathChecker
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
@@ -131,6 +134,30 @@ async def _context(args: argparse.Namespace, client: WorkerClient) -> ExecutionC
 
 
 async def _run(args: argparse.Namespace) -> int:
+    """Keep passive delivery ownership through existing cleanup, durable save and ACK."""
+    owners: list[KernelDeliveryController] = []
+    interruption = Interruption()
+    try:
+        try:
+            with interruption.protect():
+                return await _run_main(args, owners)
+        finally:
+            for owner in owners:
+                try:
+                    with interruption.protect():
+                        await owner.close()
+                except Exception:
+                    print(
+                        "kernel notices: cleanup unavailable; delivery may remain unresolved",
+                        file=sys.stderr,
+                    )
+    except BaseException:
+        if interruption.error is not None:
+            raise interruption.error from None
+        raise
+
+
+async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDeliveryController]) -> int:
     model: ChatModel
     if args.script is not None:
         model = ScriptedModel.from_json(json.loads(args.script.read_text()))
@@ -256,6 +283,15 @@ async def _run(args: argparse.Namespace) -> int:
                     else None
                 )
                 plans = None
+                kernel_notices = None
+                if documents is not None and args.state_dir is not None:
+                    kernel_notices = KernelDeliveryController(
+                        ProjectStore(args.state_dir), context, run_id, client
+                    )
+                    # Publish ownership before initialization can persist a baseline
+                    # or cancellation can discard any threaded return value.
+                    notice_owners.append(kernel_notices)
+                    await kernel_notices.initialize()
                 plan_owners: list[PlanTools] = []
 
                 def make_plans() -> PlanTools:
@@ -290,6 +326,7 @@ async def _run(args: argparse.Namespace) -> int:
                                 math_checks=math_checks,
                                 artifacts=artifacts,
                                 plans=plans,
+                                kernel_notices=kernel_notices,
                             ),
                             args.task,
                             run_id=run_id,
@@ -359,6 +396,9 @@ async def _run(args: argparse.Namespace) -> int:
             if transcript.prompt_provenance is not None
             else None
         ),
+        # Keep the original model until the bounded exact-type validator sees it;
+        # dumping first could hide undeclared fields on copied host metadata.
+        "kernel_notice_delivery": transcript.kernel_notice_delivery,
         "tools": transcript.tool_records,
         "job_notice_ids": transcript.job_notice_ids,
         "work_request_ids": transcript.work_request_ids,
@@ -367,14 +407,35 @@ async def _run(args: argparse.Namespace) -> int:
         "math_notice_ids": transcript.math_notice_ids,
         "math_summary": transcript.math_summary,
     }
-    return _keep(
-        args,
-        fields,
-        1 if transcript.failure is not None else 0 if transcript.stopped == "answered" else 3,
+    status = 1 if transcript.failure is not None else 0 if transcript.stopped == "answered" else 3
+    if not notice_owners:
+        return _keep(args, fields, status)
+    owner = notice_owners[0]
+    saved: list[RunRecord] = []
+    cancelled = threading.Event()
+    result = await owner.save(
+        lambda: _keep(
+            args, fields, status, saved=saved.append, may_ack=lambda: not cancelled.is_set()
+        ),
+        cancelled=cancelled,
     )
+    if (
+        saved
+        and saved[0].kernel_notice_delivery is not None
+        and not await owner.acknowledge_saved()
+    ):
+        print("kernel notices: saved delivery remains unresolved", file=sys.stderr)
+    return result
 
 
-def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> int:
+def _keep(
+    args: argparse.Namespace,
+    fields: dict[str, object],
+    status: int,
+    *,
+    saved: Callable[[RunRecord], None] | None = None,
+    may_ack: Callable[[], bool] | None = None,
+) -> int:
     """Write the run's transcript, then keep its record in the project's; ``status``
     unless either fails.
 
@@ -398,6 +459,10 @@ def _keep(args: argparse.Namespace, fields: dict[str, object], status: int) -> i
             if record is None:
                 raise ProjectError(ErrorKind.INVALID_REQUEST, f"the record is invalid: {invalid}")
             ProjectStore(args.state_dir).save_run(record)
+            if saved is not None:
+                saved(record)
+            if may_ack is not None and not may_ack():
+                return status
             # Save first: a crash before this acknowledgement safely repeats notices.
             JobState(args.state_dir).acknowledge(
                 record.context, record.run_id, record.job_notice_ids

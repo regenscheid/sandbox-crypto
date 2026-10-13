@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-eight OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "captured_date": "2026-10-13",
+  "status": "planning and source inspection, twenty-nine OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/DISPLAY-REPAIR-PROVENANCE.md",
@@ -22,16 +22,22 @@
       "sha256": "55126b3baf4eec548b8321689a69c6667de3a34a641c62009ac1f64620b34c9c"
     },
     {
+      "path": "../../docs/KERNEL-NOTICE-DELIVERY.md",
+      "category": "implementation-boundary",
+      "bytes": 9786,
+      "sha256": "4413775a3eca5d90331d935786a0ef5b696cbae447f3469523ab8c3771d2186b"
+    },
+    {
       "path": "../../docs/KERNEL-NOTICE-LINEAGE.md",
       "category": "implementation-boundary",
-      "bytes": 6765,
-      "sha256": "1971e8b48cb4c5cfa751158f8cc0adf5ff68ed6cfe4c597fd2e45c574b412126"
+      "bytes": 7705,
+      "sha256": "9d87e13129ee7edc6e1fd1545c5f13c7669b4ef32ec4f78ef89870866b7564cd"
     },
     {
       "path": "../../docs/KERNEL-NOTICES.md",
       "category": "implementation-boundary",
-      "bytes": 9356,
-      "sha256": "9956e3b087cc8d5966b9d90ea55b2e40ab5558aa241eb4e605c65cc2c698cf5e"
+      "bytes": 10115,
+      "sha256": "a640e3adb7df177654f63b74f3043a027d1388bde646c9a5e913f53df35938af"
     },
     {
       "path": "../../docs/KERNEL-REVISIONS.md",
@@ -48,8 +54,8 @@
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 48874,
-      "sha256": "fc1348b7bebcc65b5b43582904c90a29b8962ff4fc312c9c4930291dcf1290f7"
+      "bytes": 49643,
+      "sha256": "6b5b999ff716d4ed5c1a5c93c11a054fb2601a0612da5ddba682fb1f75ff3869"
     },
     {
       "path": "../../docs/PILOT-COMPUTATIONS.md",
@@ -114,8 +120,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 25747,
-      "sha256": "a3ed3b1d6518a98165b5a2cc748cbdd1eace2cdd93b1e89028ec619ffa99554c"
+      "bytes": 26465,
+      "sha256": "7b72838f8ac418b2775669f7d572ceddc20a456cc694e6ea2ab5110c9e410c17"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -380,6 +386,18 @@
       "category": "runtime-evidence",
       "bytes": 226308,
       "sha256": "b0bb8ca1c3231701b1fa4722d7715703e2dcf057f19412372e4c39b0ab279bf5"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-29-2026-10-13.md",
+      "category": "runtime-validation",
+      "bytes": 10180,
+      "sha256": "723c9e3000eb838d99cb0c2328efac99e195b0909f2f5c2a45ac97c253441744"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-29-evidence-2026-10-13.json",
+      "category": "validation-evidence",
+      "bytes": 1491591,
+      "sha256": "dc19c9535f1ed050d8756d7e27b2f9432cf4a42589e4e9213373baa7ac2910e3"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",

@@ -270,12 +270,14 @@ class KernelNotices:
         *,
         limits: KernelNoticeLimits | None = None,
         clock: Callable[[], float] = time.time,
+        initialize: bool = True,
     ) -> None:
         self.path, self.clock = path, clock
         self.limits = _validate(KernelNoticeLimits, limits or KernelNoticeLimits())
         with self._db() as db:
-            for statement in _SCHEMA:
-                db.execute(statement)
+            if initialize:
+                for statement in _SCHEMA:
+                    db.execute(statement)
             self._budget(db)
 
     @contextmanager
