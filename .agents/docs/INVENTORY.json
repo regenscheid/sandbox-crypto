@@ -1,8 +1,14 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-13",
-  "status": "planning and source inspection, bounded scripted planning-evaluator calibration, thirty-two OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-two OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
+    {
+      "path": "../../docs/DELEGATION-RECORDS.md",
+      "category": "implementation-boundary",
+      "bytes": 9477,
+      "sha256": "d031c229005fd2772abb832a2772a480fa786acfb21fbf1fe14c07271af890cc"
+    },
     {
       "path": "../../docs/DISPLAY-REPAIR-PROVENANCE.md",
       "category": "implementation-boundary",
@@ -112,6 +118,12 @@
       "sha256": "d05b95d54cf92b3667eb18ba73ec125cb8def3dc564a9c1c8e8f3e6191ec0c4b"
     },
     {
+      "path": "../../docs/RUN-KERNELS.md",
+      "category": "implementation-boundary",
+      "bytes": 10281,
+      "sha256": "27ee73e66f517449152989d94f5ee8dd9d6e8bf6e7c7b7b0219e600f2996baae"
+    },
+    {
       "path": "../../docs/SESSION-PLAN-EDITING.md",
       "category": "implementation-boundary",
       "bytes": 9390,
@@ -156,8 +168,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 29494,
-      "sha256": "1d1187b8b632fe0d6b24e331c7768f797ee46fe0961c29df1efca727e1a10681"
+      "bytes": 30550,
+      "sha256": "d9689d16d4a09be3351fee9c1db66c435ed5c38d8d6a3a7bb68e6ff75c3d291f"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -790,6 +802,18 @@
       "sha256": "1958ef05b66151b26cab51bb8eef0cd153a967e6f02588226c32715ee9bbbf68"
     },
     {
+      "path": "agent-reports/delegation-records-2026-10-13.md",
+      "category": "implementation-validation",
+      "bytes": 11503,
+      "sha256": "abaad8c0cc9325b58d34d065cc6056885ab91be5c87e0c4b9b042a66f477e5c4"
+    },
+    {
+      "path": "agent-reports/delegation-records-evidence-2026-10-13.json",
+      "category": "implementation-validation",
+      "bytes": 671095,
+      "sha256": "d35e5e9edeef74c9fc44a8c47b6a93f6ce2da1882ae23b0e730d923b8d389258"
+    },
+    {
       "path": "agent-reports/display-repair-input-provenance-2026-10-12.md",
       "category": "implementation-validation",
       "bytes": 4626,
@@ -1088,6 +1112,18 @@
       "category": "validation-evidence",
       "bytes": 82222,
       "sha256": "f1e5df3f98e11137ba11faa3cad1b1f2c93ee5ce3192ad71c74d9be653cf60c4"
+    },
+    {
+      "path": "agent-reports/run-kernel-binding-2026-10-13.md",
+      "category": "implementation-validation",
+      "bytes": 6778,
+      "sha256": "d2501bf41e4a67a50174df8dddbb018520e1a5b25c7456d6f0237b47f271610a"
+    },
+    {
+      "path": "agent-reports/run-kernel-binding-evidence-2026-10-13.json",
+      "category": "implementation-validation",
+      "bytes": 566093,
+      "sha256": "f9acea1021d2a82fa2f48104821ebc6df0a8932441377a9050c15e61dc748dbf"
     },
     {
       "path": "agent-reports/session-planning-2026-10-12.md",
