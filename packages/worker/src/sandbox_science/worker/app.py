@@ -65,6 +65,7 @@ from sandbox_science.contracts.documents import (
 )
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
+from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
 from sandbox_science.policy import effective_resources
@@ -272,6 +273,10 @@ def create_app(
             web.get(
                 "/v1/environments/{environment_id}/provisioning/observations/lockfile-diff",
                 observe_lockfile_diff,
+            ),
+            web.get(
+                "/v1/environments/{environment_id}/provisioning/observations/revisions/{revision}/packages",
+                observe_revision_packages,
             ),
             web.post("/v1/provisioning", submit_provision),
             web.get("/v1/provisioning/{provision_id}", get_provision),
@@ -932,6 +937,58 @@ async def observe_lockfile_diff(request: web.Request) -> web.Response:
     )
     return _observation_json(
         LockfileDiffPage.model_validate(
+            {
+                "project_id": scope[0],
+                "environment_id": scope[1],
+                "observed_at": datetime.now(UTC),
+                **result,
+            },
+            strict=True,
+        )
+    )
+
+
+async def observe_revision_packages(request: web.Request) -> web.Response:
+    """One exactly pinned recorded inventory, sharing comparison's actual read owners."""
+    queries = frozenset({"pin", "offset", "limit"})
+    scope = _observation_scope(request, queries)
+    text = request.match_info["revision"]
+    if re.fullmatch(r"0|[1-9][0-9]{0,18}", text) is None or int(text) > 2**62:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid package revision selection")
+    revision = int(text)
+    pin = request.query.get("pin", "")
+    if re.fullmatch(r"[0-9a-f]{64}", pin) is None:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid package revision pin")
+
+    def number(name: str, maximum: int, default: str) -> int:
+        value = request.query.get(name, default)
+        if re.fullmatch(r"0|[1-9][0-9]{0,18}", value) is None or int(value) > maximum:
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid package page selection")
+        return int(value)
+
+    offset, limit = number("offset", 40_000, "0"), number("limit", 8, "8")
+
+    def prepare() -> LockfileSelection:
+        current = _observation_scope(request, queries)
+        if current != scope:
+            raise WorkerError(ErrorKind.CONFLICT, "selected environment changed")
+        project, environment, since = current
+        row = request.app[MANAGER].store.provision_observations.selected_revision(
+            project, environment, since=since, revision=revision, pin=pin
+        )
+        return LockfileSelection(
+            revision=row.revision, record_sha256=row.record_sha256, lockfile=row.lockfile
+        )
+
+    def verify(selection: LockfileSelection) -> None:
+        if prepare() != selection:
+            raise WorkerError(ErrorKind.CONFLICT, "selected lockfile input changed")
+
+    result = await request.app[LOCKFILE_DIFFS].read_packages(
+        scope[1], request.app[MANAGER].revisions.blobs.root, prepare, verify, offset, limit
+    )
+    return _observation_json(
+        RevisionPackagePage.model_validate(
             {
                 "project_id": scope[0],
                 "environment_id": scope[1],
