@@ -91,6 +91,10 @@ wrong lowercase heading expectation; its failure and corrected result are both
 retained. Root's AX summary selector correction and transient wrong-project
 navigation snapshot are recorded separately, with no product source change.
 None of these predecessors is labeled the accepted final gate.
+The archived `user-plan-editing-final-integrity.py` is an unexecuted draft from
+before the current consumer-document hashes were refreshed. The later executed
+root audit separately permits exactly those documented index changes; the archived
+draft is not presented as that completed gate or as the current scratch script.
 
 Native hidden-tab behavior, cross-login reconciliation, explicit unresolved
 predecessor continuation, late ignored abort and failed logout remain focused
