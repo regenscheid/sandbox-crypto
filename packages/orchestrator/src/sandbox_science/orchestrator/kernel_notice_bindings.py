@@ -24,7 +24,7 @@ from pydantic import TypeAdapter
 
 from sandbox_science.contracts import Identifier, new_id
 
-from .documents.delivery_journal import endpoint_fingerprint
+from .documents.delivery_journal import DeliveryError, endpoint_fingerprint
 
 MAX_BINDINGS = 256
 MAX_BYTES = 128 * 1024
@@ -42,17 +42,24 @@ class BindingError(ValueError):
 class WorkerConfiguration:
     """Trusted in-memory client configuration, never a transcript/API value."""
 
-    endpoint: str
+    endpoint: str = field(repr=False)
     authorization: str = field(repr=False)
 
     def encoded(self) -> bytes:
-        endpoint_fingerprint(self.endpoint)
         if (
             type(self.authorization) is not str
-            or not 1 <= len(self.authorization.encode("utf-8", "strict")) <= 16_384
-            or "\0" in self.authorization
+            or not 1 <= len(self.authorization) <= 16_384
+            or type(self.endpoint) is not str
+            or not 1 <= len(self.endpoint) <= 2048
+            or any(character in self.authorization for character in ("\0", "\r", "\n"))
         ):
             raise BindingError("invalid trusted notification configuration")
+        try:
+            endpoint_fingerprint(self.endpoint)
+            if len(self.authorization.encode("utf-8", "strict")) > 16_384:
+                raise BindingError("invalid trusted notification configuration")
+        except (DeliveryError, UnicodeError, TypeError, ValueError):
+            raise BindingError("invalid trusted notification configuration") from None
         return json.dumps(
             {"version": 1, "endpoint": self.endpoint, "authorization": self.authorization},
             sort_keys=True,
@@ -172,10 +179,33 @@ class KernelBindings:
             try:
                 descriptor = self._file(root, _DATABASE)
             except FileNotFoundError:
+                retained_names = (
+                    _KEY,
+                    "kernel-notices.sqlite3",
+                    *(
+                        name + suffix
+                        for name in (_DATABASE, "kernel-notices.sqlite3")
+                        for suffix in ("-wal", "-shm", "-journal")
+                    ),
+                )
+                for retained in retained_names:
+                    try:
+                        os.stat(retained, dir_fd=root, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    raise BindingError(
+                        "notification registry lost retained initialization"
+                    ) from None
                 descriptor = self._file(root, _DATABASE, create=True)
                 created = True
                 os.fsync(root)
             key = self._key(root, existing=not created)
+            for suffix in ("-wal", "-shm", "-journal"):
+                try:
+                    sidecar = self._file(root, _DATABASE + suffix)
+                except FileNotFoundError:
+                    continue
+                os.close(sidecar)
             identity = os.fstat(descriptor)
             db = sqlite3.connect(self.root / _DATABASE, timeout=0, isolation_level=None)
             db.execute("PRAGMA journal_mode=WAL")
@@ -184,7 +214,8 @@ class KernelBindings:
             if created:
                 db.execute(
                     "CREATE TABLE meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
-                    "version INTEGER NOT NULL,key_check TEXT NOT NULL) STRICT"
+                    "version INTEGER NOT NULL,key_check TEXT NOT NULL,"
+                    "inbox_phase TEXT NOT NULL,inbox_device INTEGER,inbox_inode INTEGER) STRICT"
                 )
                 db.execute(
                     "CREATE TABLE bindings(project TEXT NOT NULL,session TEXT NOT NULL,"
@@ -201,16 +232,26 @@ class KernelBindings:
                     "BEGIN SELECT RAISE(ABORT,'notification binding is immutable'); END"
                 )
                 db.execute(
-                    "INSERT INTO meta VALUES(1,1,?)",
+                    "INSERT INTO meta VALUES(1,2,?,'new',NULL,NULL)",
                     (hmac.digest(key, b"kernel-notice-key-v1\0", "sha256").hex(),),
                 )
             saved = db.execute(
                 "SELECT CASE WHEN typeof(version)='integer' THEN version END,"
                 "CASE WHEN typeof(key_check)='text' AND length(CAST(key_check AS BLOB))=64 "
-                "THEN key_check END FROM meta LIMIT 2"
+                "THEN key_check END,CASE WHEN inbox_phase IN('new','initializing') "
+                "AND inbox_device IS NULL AND inbox_inode IS NULL THEN inbox_phase "
+                "WHEN inbox_phase='ready' AND typeof(inbox_device)='integer' "
+                "AND inbox_device>=0 AND typeof(inbox_inode)='integer' AND inbox_inode>0 "
+                "THEN inbox_phase END,"
+                "CASE WHEN typeof(inbox_device)='integer' THEN inbox_device END,"
+                "CASE WHEN typeof(inbox_inode)='integer' THEN inbox_inode END FROM meta LIMIT 2"
             ).fetchall()
             expected = hmac.digest(key, b"kernel-notice-key-v1\0", "sha256").hex()
-            if saved != [(1, expected)]:
+            if (
+                len(saved) != 1
+                or saved[0][:2] != (2, expected)
+                or saved[0][2] not in ("new", "initializing", "ready")
+            ):
                 raise BindingError("notification key or schema unavailable")
             self._budget(db)
             yield db, key
@@ -231,6 +272,68 @@ class KernelBindings:
         finally:
             if db is not None:
                 db.close()
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    @contextlib.contextmanager
+    def inbox(self) -> Generator[tuple[int, bool]]:
+        """Own first initialization or reopen its exact original private file.
+
+        The in-progress phase commits before file/schema creation. Interrupted
+        initialization stays held; it is never inferred from whatever survived.
+        The caller performs first-only schema work while this lock is retained.
+        """
+        descriptor = -1
+        try:
+            with self._locked() as root:
+                with self._db(root) as (db, _):
+                    phase, device, inode = db.execute(
+                        "SELECT inbox_phase,inbox_device,inbox_inode FROM meta"
+                    ).fetchone()
+                    if phase == "initializing":
+                        raise BindingError("notification inbox initialization incomplete")
+                    first = phase == "new"
+                    if first:
+                        for name in (
+                            "kernel-notices.sqlite3",
+                            *(
+                                "kernel-notices.sqlite3" + suffix
+                                for suffix in ("-wal", "-shm", "-journal")
+                            ),
+                        ):
+                            try:
+                                os.stat(name, dir_fd=root, follow_symlinks=False)
+                            except FileNotFoundError:
+                                continue
+                            raise BindingError("notification inbox has unproved retained state")
+                        db.execute("UPDATE meta SET inbox_phase='initializing'")
+                # The first-init state above is now durable before any creation.
+                descriptor = self._file(root, "kernel-notices.sqlite3", create=first)
+                before = os.fstat(descriptor)
+                if not first and (
+                    (before.st_dev, before.st_ino) != (device, inode)
+                    or before.st_size < 100
+                    or os.pread(descriptor, 16, 0) != b"SQLite format 3\x00"
+                ):
+                    raise BindingError("notification original inbox unavailable")
+                yield descriptor, first
+                after = os.stat("kernel-notices.sqlite3", dir_fd=root, follow_symlinks=False)
+                if (
+                    (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                    or os.fstat(descriptor).st_size < 100
+                    or os.pread(descriptor, 16, 0) != b"SQLite format 3\x00"
+                ):
+                    raise BindingError("notification original inbox unavailable")
+                if first:
+                    os.fsync(descriptor)
+                    os.fsync(root)
+                    with self._db(root) as (db, _):
+                        db.execute(
+                            "UPDATE meta SET inbox_phase='ready',inbox_device=?,inbox_inode=? "
+                            "WHERE inbox_phase='initializing'",
+                            (before.st_dev, before.st_ino),
+                        )
+        finally:
             if descriptor >= 0:
                 os.close(descriptor)
 
