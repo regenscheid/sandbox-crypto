@@ -72,8 +72,8 @@
     {
       "path": "../../docs/PROVISIONING-OBSERVATIONS.md",
       "category": "implementation-boundary",
-      "bytes": 6902,
-      "sha256": "6679713e8bd3c8533a0c52d5d6937e376dcf848858855a87cd2b53f22f5657ee"
+      "bytes": 8447,
+      "sha256": "5f4ff0f4bc1e231e899215d99baf6ce8504e3bb642db6bb30cec49d84af28055"
     },
     {
       "path": "../../docs/PROVISIONING-WORKSPACE-VIEW.md",
