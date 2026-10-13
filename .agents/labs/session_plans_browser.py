@@ -152,16 +152,21 @@ def exclusive(path: Path, data: bytes, mode: int) -> tuple[int, int]:
     return identity
 
 
-def remove_owned(path: Path, identity: tuple[int, int] | None) -> bool:
+def remove_owned(
+    path: Path, identity: tuple[int, int] | None, *, missing_ok: bool = True
+) -> bool:
     if identity is None:
         return False
     try:
         current = path.lstat()
     except FileNotFoundError:
-        return True
+        return missing_ok
     if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != identity:
         raise ValueError("Private output was replaced; refusing to unlink it")
-    path.unlink()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return missing_ok
     return True
 
 
@@ -473,7 +478,8 @@ def withhold_saved_receipt(
             response = await handler(request)
             if response.status != 200:
                 return response
-            remove_owned(path, (before.st_dev, before.st_ino))
+            if not remove_owned(path, (before.st_dev, before.st_ino), missing_ok=False):
+                return response
             return web.json_response(
                 {"error": {"kind": "unavailable", "message": "Synthetic saved receipt withheld"}},
                 status=503,
