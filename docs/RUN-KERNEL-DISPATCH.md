@@ -7,9 +7,10 @@ with actual main at signed source-gate union `7619a4b`. Fresh combined gates pas
 required static, locked dependency, license and protocol checks. Existing 803
 web/24 math checks and 76 accepted build files are explicitly reused through exact
 inputs. Original failures and the interrupted predecessor full run remain
-unsuccessful evidence. A separate bounded helper/admission review and real
-OpenShell acceptance remain pending; this source checkpoint is not runtime
-delivery.
+unsuccessful evidence. Root-owned [OpenShell Lab33](../.agents/docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md)
+passed on frozen signed `0961999` / helper `a3fa2086`, with independent runtime
+and complete owned-cleanup clearance. Final delivery review and fresh PR checks
+remain separate.
 
 The dispatcher extends the [original binding prerequisite](RUN-KERNELS.md) for
 [D81](DECISIONS.md). A child uses its canonical session's existing environment
@@ -155,15 +156,21 @@ consumes no pending state-loss notice. It writes no provisional generation or
 birth. Original managed identity is checked after network awaits, including an
 empty kernel list. Closure invalidates affected observation ownership.
 
-Root acceptance must freeze the reviewed combined source and helper, run a
-bounded pilot, and exercise actual interpreter globals/shared files, exact
-cancel/restart/close, same-incarnation reconnect and stopped-VM no-wake behavior.
-Gateway proofs must bracket selected reads, and retained endpoint snapshots
-must preserve actual normal retirement, including `[]`. Component fault probes
-remain distinct from real OpenShell effects. Complete owned teardown and
-independent cleanup precede delivery evidence and fresh PR checks.
+Lab33 exercised a bounded MAIN/A/B pilot followed by 19 cells, three child
+controls and one whole-session close across two canonical sessions and three
+generated children. Globals/shared files, exact cancel/restart/close,
+same-incarnation host reconnect, MAIN/B absence with C preserved, actual idle
+retirement, thirty no-wake reads, ordinary resume/new incarnation and original
+VM deletion passed. Gateway Stopped observations bracket the reads; retained
+SQL/control snapshots remain equal and the actual endpoint is `[]`. The reads
+use the same initialized owner and trace no SQL statements. Finite bracketing
+is not continuous VM-state or scheduling-fairness proof.
 
-Even successful runtime acceptance would not prove an authenticated live
-delegation controller, delegated model/handback workflow, scientific correctness,
-filesystem isolation, monetary accounting, idle wake or successor/replacement
-policy. Those remain separate plan items.
+All owned units/processes/listeners/private state were removed and independently
+checked. The helper receipt-schema correction and unactivated teardown ownership
+finding remain separate preserved source evidence; the whole runtime ran once.
+Component fault probes remain distinct from real OpenShell effects. This
+acceptance proves no authenticated live delegation controller, delegated
+model/handback workflow, scientific correctness, filesystem isolation, monetary
+accounting, idle wake or successor/replacement policy. Those remain separate
+plan items.
