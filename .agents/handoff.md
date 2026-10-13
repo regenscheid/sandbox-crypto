@@ -146,7 +146,7 @@ Nothing here blocks the queued work: each item has a default in place.
   - KaTeX in a Web Worker as a slice of its own.
   - Living documents' question 15 (spec index): stray and renamed files under `documents/`, edits from overlapping calls, and the helper working only during a call.
   - Background jobs' details: 24 hours by default and 7 days at most; 4 at once in a session and 8 in an environment; closing a session cancels its jobs; no background cells.
-- **The four draft specs:** tools and PDF sources are built and running as drafted (recommend approving them as drafted); skills, and plans and delegation, have real choices (seven open questions each), to go through with the user one question at a time when the work reaches them.
+- **The four draft specs:** tools and PDF sources are built and running as drafted (recommend approving them as drafted); skills and remaining plans/delegation policy choices retain draft questions. D86 separately confirms a planning phase and live progress; routine implementation proceeds within that authorization, while unresolved product choices are not silently marked approved.
 - **Older questions:** STATUS.md's *Questions with a recommendation* (images, the MCP proxy, the event-store timer, the GUI's origins, PSF-2.0 and MIT-0 in tier 1, the crypto-analysis-skills copyright holder).
 
 ## Queued work, in the suggested order
@@ -177,7 +177,7 @@ Nothing here blocks the queued work: each item has a default in place.
    - chat in the GUI;
    - approvals in the GUI (D54).
 
-   Skills, and plans and delegation, need the user's review of their specs first.
+   D86 authorizes the requested planning phase and live progress work. Skills and remaining draft plans/delegation policy choices retain their stated status; do not infer approval of every draft detail or add a new blanket execution gate.
 7. **Provisioning slice 3:**
    - restoring a revision after a failed install (CP-13, CP-20);
    - disk limits;
