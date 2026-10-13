@@ -33,6 +33,7 @@ import json
 import os
 import re
 import secrets
+import stat
 import tempfile
 from collections.abc import Generator
 from datetime import UTC, datetime
@@ -59,6 +60,8 @@ _IDENTIFIER: Final = TypeAdapter(Identifier)
 _TAG_BYTES: Final = 6
 _STARTED: Final = "%Y%m%dT%H%M%S%fZ"
 _RUN_NAME: Final = re.compile(r"([0-9]{8}T[0-9]{12}Z)-([A-Za-z0-9][A-Za-z0-9._-]{0,127})")
+MAX_SESSION_RECORD_BYTES: Final = 1024 * 1024
+"""A polling lookup's project JSON cap, independent of ordinary record APIs."""
 
 
 class ProjectError(Exception):
@@ -93,6 +96,54 @@ class ProjectRecord(Contract):
         """Every environment the project uses: the default one and the sessions' own."""
         dedicated = {s.environment_id for s in self.sessions.values() if s.dedicated}
         return [self.default_environment_id, *sorted(dedicated - {self.default_environment_id})]
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+class SessionSnapshot:
+    """A bounded trusted session read, retaining its original inode until closed.
+
+    Supported registry writes replace files. Holding this descriptor prevents inode
+    reuse from hiding a complete close/reopen ABA between two reads. Any project
+    replacement is conservatively a different snapshot, including unrelated edits.
+    This is receipt-time continuity, not a lock over future registry changes.
+    """
+
+    def __init__(
+        self,
+        descriptor: int,
+        root: int,
+        identity: tuple[int, int, int, int, int],
+        digest: bytes,
+        context: ExecutionContext,
+        session: SessionRecord,
+    ) -> None:
+        self.context = context
+        self.session = session
+        self._descriptor = descriptor
+        self._root = root
+        self._identity = identity
+        self._digest = digest
+
+    def matches(self, other: SessionSnapshot) -> bool:
+        """Whether both bounded reads still name the same unchanged open binding."""
+        before, after = os.fstat(self._root), os.fstat(other._root)
+        return (
+            (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
+            and self._identity == other._identity
+            and _file_identity(os.fstat(self._descriptor)) == self._identity
+            and _file_identity(os.fstat(other._descriptor)) == other._identity
+            and self._digest == other._digest
+            and self.context == other.context
+            and self.session == other.session
+        )
+
+    def close(self) -> None:
+        """Release both retained descriptors; the caller owns their actual lifetime."""
+        os.close(self._descriptor)
+        os.close(self._root)
 
 
 FailurePhase = Literal["model", "tool", "harness", "cleanup"]
@@ -204,6 +255,79 @@ class ProjectStore:
             raise ProjectError(
                 ErrorKind.INTERNAL, f"project record {path} is damaged: {str(exc)[:300]}"
             ) from exc
+
+    def session_snapshot(self, project_id: str, session_id: str) -> SessionSnapshot:
+        """Bounded open-session lookup for passive polling; ordinary reads are unchanged.
+
+        Reject special files without blocking on their open, refuse final symlinks,
+        bound bytes before JSON materialization, and retain the file identity. A
+        regular file read can still block in the filesystem; its caller must own
+        this work until it returns, even after its response deadline expires.
+        """
+        if not _is_identifier(project_id):
+            raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid project ID")
+        name = self._path(project_id).name
+        if not _is_identifier(session_id):
+            raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid session ID")
+        root = descriptor = -1
+        try:
+            root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root)
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or not 0 <= before.st_size <= MAX_SESSION_RECORD_BYTES
+            ):
+                raise ProjectError(
+                    ErrorKind.UNAVAILABLE, "project registry is not a bounded record"
+                )
+            data = bytearray()
+            while len(data) <= MAX_SESSION_RECORD_BYTES:
+                chunk = os.read(
+                    descriptor, min(64 * 1024, MAX_SESSION_RECORD_BYTES + 1 - len(data))
+                )
+                if not chunk:
+                    break
+                data.extend(chunk)
+            if (
+                len(data) > MAX_SESSION_RECORD_BYTES
+                or len(data) != before.st_size
+                or _file_identity(os.fstat(descriptor)) != _file_identity(before)
+            ):
+                raise ProjectError(ErrorKind.UNAVAILABLE, "project registry changed during read")
+            record = ProjectRecord.model_validate_json(data, strict=True)
+            found = record.sessions.get(session_id)
+            if record.project_id != project_id or (
+                found is not None and found.session_id != session_id
+            ):
+                raise ProjectError(ErrorKind.UNAVAILABLE, "project registry has inconsistent scope")
+            if found is None or found.closed_at is not None:
+                raise ProjectError(ErrorKind.NOT_FOUND, "no open session in this project")
+            if found.opened_at.tzinfo is None or found.opened_at.utcoffset() is None:
+                raise ProjectError(ErrorKind.UNAVAILABLE, "session registry time is not known")
+            result = SessionSnapshot(
+                descriptor,
+                root,
+                _file_identity(before),
+                hashlib.sha256(data).digest(),
+                ExecutionContext(
+                    project_id=project_id,
+                    session_id=session_id,
+                    environment_id=found.environment_id,
+                ),
+                found,
+            )
+            descriptor = root = -1
+            return result
+        except FileNotFoundError:
+            raise ProjectError(ErrorKind.NOT_FOUND, "no such recorded project") from None
+        except (OSError, ValidationError, ValueError, RecursionError) as exc:
+            raise ProjectError(ErrorKind.UNAVAILABLE, "project registry is unreadable") from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if root >= 0:
+                os.close(root)
 
     def create(self, project_id: str, profile: str, policy: str) -> tuple[ProjectRecord, bool]:
         """Record a new project; return the existing one when it has the same settings."""
