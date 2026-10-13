@@ -115,9 +115,16 @@ transcript output alone is not a live transport.
 Local tests cover bounded registry reads, special files and growth, strict damaged
 records, complete close/reopen ABA, revoked login, actual WorkerClient HTTP
 composition and negative peers, immediate admission, HTTP disconnect behavior,
-response deadlines, repeated cancellation and shutdown ordering. No real OpenShell
-or browser acceptance of this new workspace path has been performed by this
-backend or frontend author. The existing Lab26 validates the worker observer;
-the integrated proxy and polling path still require root-owned end-to-end runtime
-acceptance. The marked Lab27 helpers prepare that acceptance without expanding
-worker permissions or enabling a model or document converter.
+response deadlines, repeated cancellation and shutdown ordering. Combined gates
+on reviewed signed `70f6761` pass 10,032 Python/614 web/24 post-build math checks
+and required static/license/protocol checks and both builds.
+
+Root-owned [browser/OpenShell Lab27](../.agents/docs/agent-reports/babbage-openshell-lab-27-2026-10-12.md)
+passed actual shared-package staleness without another A execution, fresh B and
+isolated C, worker stop/recovery continuity, both real VMs stopping during passive
+reads, thirty unavailable reads without wake, ordinary resume/state loss and
+logout fencing. The accepted 70-file production build and source/helper pins are
+retained. All owned services, VMs, browser tabs and private state were removed and
+independently verified. Native hidden-tab pause was not proved because the browser
+automation surface retained visible document state; focused lifecycle tests cover
+that behavior separately. Fresh exact-head PR CI remains the delivery gate.
