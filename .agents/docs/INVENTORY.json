@@ -36,8 +36,8 @@
     {
       "path": "../../docs/MAIN-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 6978,
-      "sha256": "cbf72710988829f37ed3a3f1b7244f8d2b696e66160b50a04c3c390073cd6912"
+      "bytes": 8217,
+      "sha256": "d1ce9dca503f6ac2227ac4ded92c9073aa0eb2d6c8ff573f72e097e239e9b73a"
     },
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",

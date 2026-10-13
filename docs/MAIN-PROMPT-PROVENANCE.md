@@ -3,8 +3,10 @@
 
 The MAIN harness records bounded content provenance for its actual system message
 and offered tools. This implements one small part of the original
-[prompt proposal](ORCHESTRATOR-PROMPTS.md). Installed instructions, tool schemas,
-tool order, grants, dispatch, planning and closing behavior are unchanged.
+[prompt proposal](ORCHESTRATOR-PROMPTS.md). The provenance layer preserves tool
+schemas/order, grants, dispatch, planning and closing behavior. Later original
+[research framing](STOCK-RESEARCH-PROMPTS.md) is explicitly selected; the separate
+[small-scale trial guidance](PILOT-COMPUTATIONS.md) updates the ordinary MAIN base.
 Watcher, consistency reviewer and display-repair model calls remain separate;
 their prompts and audit stores are not covered by this MAIN field.
 
@@ -16,14 +18,19 @@ starts. The ordinary system remains `SYSTEM_PROMPT` from
 [`loop.py`](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py).
 When the real planning adapter offers all six plan tools, the existing
 `sandbox-main-plan-1` guidance is appended with exactly two newline characters.
+An explicitly selected stock component goes between the base and planning, also
+separated by two newlines. With no selection, only the ordinary base and optional
+planning component are assembled.
 Missing or inconsistent planning tool assembly refuses before any model call.
 There is no new generated capability prose or permission based on a prompt ID.
 
-The base component's `sandbox-main-1` label recognizes exact built-in **content**.
+The current base component's `sandbox-main-2` label recognizes exact built-in **content**.
 An explicitly supplied identical system string has the same label; this does not
 prove who supplied it or convey authority. Other custom strings have a `custom`
 component with no invented catalog version. Matching substrings, object identity,
 quoted instructions and model outputs cannot select components or tools.
+Historical `sandbox-main-1` records keep their exact old text and pins; they are
+never relabeled. Supplying that old text to a new run now counts as custom content.
 
 The bundle owns a bounded encoded projection of precisely each offered tool's
 name, description and parameters. Each model call receives a fresh schema copy;
@@ -42,9 +49,15 @@ records use an explicit discriminated state:
 * `complete`: assembly format `sandbox-main-bundle-1`, role `main`, ordered
   component versions/byte lengths/SHA256, rendered-system pin, ordered tool names,
   canonical schema byte length/hash and a bundle digest.
+  Explicitly selected framing uses complete-only `sandbox-main-bundle-2`, adding
+  the stock ID/version/byte/hash component between MAIN and optional planning.
 * `unavailable`: the same bounded format/role plus fixed reason
   `system_too_large`, `system_not_utf8` or `metadata_too_large`. It contains no
   fabricated component/system/tool pins.
+
+Selected installed input never falls back to unavailable metadata. Existing
+unselected custom and legacy parsing remains supported; a differing custom base
+cannot be combined with stock selection.
 
 Oversized or non-UTF-8 custom system text keeps its exact existing invocation
 behavior with unavailable provenance; it is never clipped or substituted. Invalid
@@ -62,7 +75,8 @@ Text SHA256 covers exact UTF-8 bytes, without whitespace or Unicode normalizatio
 Schema hashing uses compact UTF-8 JSON, sorted object keys, original array/tool
 order and finite JSON values, under domain `main-tool-schemas-v1\0`. The bundle
 digest hashes its versioned complete fields, excluding the digest itself, under
-`main-prompt-bundle-v1\0`. Content pins use ordinary SHA256. Equivalent object-key
+`main-prompt-bundle-v1\0`, or `main-prompt-bundle-v2\0` for selected framing.
+Content pins use ordinary SHA256. Equivalent object-key
 order has the same canonical schema digest while its actual passed insertion
 order is preserved. These are application input pins, not provider-wire hashes.
 
@@ -71,7 +85,8 @@ order is preserved. These are application input pins, not provider-wire hashes.
 The implementation validates finite ceilings before aggregate encoding: 128 tools,
 schema depth 32, 32,768 schema nodes, 4,096 entries per container, 512 KiB schema
 budget, 64 KiB rendered-system UTF-8 and 16 KiB provenance JSON. Component count is
-at most two. String escaping and integer decimal expansion count toward the
+at most two for unselected runs and three for selected runs; stock text is nonempty
+and at most 2 KiB. String escaping and integer decimal expansion count toward the
 schema preflight; nonfinite numbers/non-JSON values refuse. Actual complete
 metadata validates its final encoded size and digest too. These ceilings are
 implementation bounds, not blanket approval of the wider draft prompt catalog.
@@ -102,13 +117,15 @@ malformed/large/deep/cyclic schemas, encoding expansion refused before JSON,
 successful/failed CLI retention, save failure before ACK and cancellation.
 No live model or service is used by these checks.
 
-Local author validation covers 172 affected tests (including 32 new bundle tests),
+The initial MAIN provenance author validation covered 172 affected tests (including 32 new bundle tests),
 whole-orchestrator plus changed-test Pyright with zero errors, Ruff/format and all
 75 installed Python distribution licenses. Root-owned full combined gates remain
-separate from this focused source milestone.
+separate from that historical focused source milestone. Current stock/pilot
+combined validation is recorded in the maintained status and implementation report.
 
 This does not version dynamic platform notices or the whole conversation, retain
-every provider call/model resolution, load external prompts, change stock text,
+every provider call/model resolution, load external prompts,
 add delegation/approval/compaction or evaluate model adherence/research quality.
-Those remain separate proposals in the broader prompt design. Root-owned combined
-gates and delivery remain required after the signed source milestone.
+Those remain separate proposals in the broader prompt design. Input fixtures
+verify that the original stock and pilot guidance reaches the application model
+boundary; they do not prove live instruction adherence or scientific quality.
