@@ -120,8 +120,8 @@
     {
       "path": "../../docs/RUN-KERNEL-DISPATCH.md",
       "category": "implementation-boundary",
-      "bytes": 9958,
-      "sha256": "9a74350403fd71183666c48789614a89fc0257d2ad99f01742c43e4e164f7c4c"
+      "bytes": 10119,
+      "sha256": "304c40effffc0b9dcabb84b44caf2fef6d795601c8ca789454880f620f4fb000"
     },
     {
       "path": "../../docs/RUN-KERNELS.md",
