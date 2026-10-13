@@ -33,7 +33,7 @@ behavior or justify any future reuse; this document imports nothing from it.
 
 This table retains the initial `fe5f4d7` source audit and its gaps. The
 implemented sections below supersede the corrected capability text, absent
-single-MAIN planning tools and missing MAIN input provenance. It is not an
+single-MAIN planning tools and missing MAIN/watcher input provenance. It is not an
 installed prompt library:
 
 | Input | Exact source seam | Current behavior and gap |
@@ -200,9 +200,28 @@ Complete metadata validates against the retained first system message. The schem
 hash is a recorded application input pin, not a copy of historical tool schemas,
 provider-wire attestation or a permission grant. No routing alias, resolved model,
 credentials, task or provider error is added. Ordinary and safely retained failed
-runs preserve existing durable-save-before-ACK behavior. Watcher/reviewer/repair
-call provenance, broader stock-template loading, compaction and live-model quality
+runs preserve existing durable-save-before-ACK behavior. The watcher has its
+separate reservation pins below; reviewer/repair call provenance,
+broader stock-template loading, compaction and live-model quality
 evaluation remain separate.
+
+### Implemented watcher reservation provenance
+
+The [watcher provenance slice](WATCHER-PROMPT-PROVENANCE.md) retains its exact
+short original system text, `sandbox-job-watcher-1` version and empty-tool pins
+on each existing pending call reservation. The pin commits atomically with its
+existing due/budget admission, before a model call. The call verifies the owned
+system input and zero tools; failures, cancellation and usage updates retain it.
+Legacy rows remain NULL/unknown, with no current-source backfill. A narrow internal
+scoped reader checks SQL type/byte length before copying or parsing metadata.
+
+This is intended reserved input, not dispatch proof. Dynamic job data remains
+outside the digest; the prior stored JSON and actual user-message encoding still
+differ. Prompt text, tools, routing, scheduling, budgets, failure/wake/cancel and
+MAIN notice ACK behavior stay unchanged. The envelope bounds overhead per admitted
+call, not total historical storage. No public route, history UI, global retention,
+retry or watcher execution authority is added. Reviewer/repair provenance and the
+broader prompt catalog remain separate.
 
 ## Prompt catalog and assembly proposal
 
@@ -470,7 +489,8 @@ and compare actual model inputs, not merely a prompt file's existence.
 ## Small implementation order
 
 Current progress: capability-text corrections, immutable single-MAIN planning,
-six tools, read-only committed-progress polling and narrow MAIN input provenance
+six tools, read-only committed-progress polling, narrow MAIN input provenance
+and watcher reservation provenance
 are implemented. USER editing/approval, effect lineage/liveness, delegated runs,
 other-role provenance, skill loading and compaction below remain separate work.
 
