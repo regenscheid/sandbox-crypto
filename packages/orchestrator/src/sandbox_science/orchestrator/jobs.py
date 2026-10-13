@@ -27,6 +27,7 @@ from sandbox_science.contracts.worker import TERMINAL_STATES
 
 from .jobstate import JobState
 from .model import ChatModel, ToolSpec
+from .watcher_prompt import assemble_watcher
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
 BACKGROUND = "jobs"
@@ -524,6 +525,7 @@ class JobTools:
                 "memory_bytes",
             )
         }
+        watcher_input = assemble_watcher(WATCHER_PROMPT, dump(payload))
         reservation = await asyncio.to_thread(
             self.state.reserve,
             self.context,
@@ -533,6 +535,7 @@ class JobTools:
             payload,
             self.call_limit,
             due,
+            provenance=watcher_input.provenance,
         )
         if reservation is None:
             return None
@@ -541,13 +544,9 @@ class JobTools:
         output_tokens: int | None = None
         try:
             async with asyncio.timeout(60):
-                reply = await self.watcher.complete(
-                    [
-                        {"role": "system", "content": WATCHER_PROMPT},
-                        {"role": "user", "content": dump(payload)},
-                    ],
-                    (),
-                )
+                messages = watcher_input.messages()
+                watcher_input.verify(messages, ())
+                reply = await self.watcher.complete(messages, ())
             resolved = reply.model
             input_tokens, output_tokens = reply.input_tokens, reply.output_tokens
             if reply.tool_calls or reply.text is None or len(reply.text) > 1200:
