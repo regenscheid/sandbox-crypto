@@ -31,9 +31,10 @@ behavior or justify any future reuse; this document imports nothing from it.
 
 ## Actual prompt inventory
 
-This table retains the initial `fe5f4d7` source audit and its gaps. The two
-implemented sections below supersede the corrected capability text and absent
-single-MAIN planning tools. It is not a proposed installed prompt library:
+This table retains the initial `fe5f4d7` source audit and its gaps. The
+implemented sections below supersede the corrected capability text, absent
+single-MAIN planning tools and missing MAIN input provenance. It is not an
+installed prompt library:
 
 | Input | Exact source seam | Current behavior and gap |
 | --- | --- | --- |
@@ -73,9 +74,9 @@ worker/bridge recovery on original daemon/sandbox continuity and preserves lost
 outcomes without automatic resubmission; the historical `reviews.py` docstring
 points to the implemented reviewer. The inventory above records the earlier audit
 and its findings. No tool schema, whitelist, policy, dispatch, closing or model-call
-behavior changes in that correction slice. Prompt-bundle version/hash provenance
-and delegation capabilities below remain proposals; the later planning integration
-is separate.
+behavior changes in that correction slice. The later planning and narrow MAIN
+input-provenance integrations are separate. The wider catalog and delegation
+capabilities remain proposals.
 
 [Actual-model-input fixtures](../packages/orchestrator/tests/test_prompt_inputs.py)
 exercise control-side document reads with and without job capability. They inspect
@@ -104,7 +105,8 @@ versioned original `sandbox-main-plan-1` guidance is appended to the actual MAIN
 system input only when these tools are offered. It asks substantive work to
 create/resume a short plan and record progress as work happens; small factual
 answers need no ceremonial plan. The stored system message preserves the wording
-actually used. General prompt-bundle hashes/catalog assembly remain unimplemented.
+actually used. The narrow MAIN input-provenance implementation below now pins
+those bytes and actual offered tools; general catalog assembly remains separate.
 
 Draft activation records workflow state under existing task authorization. It is
 neither USER approval nor a permission grant. The wrapper conservatively permits
@@ -176,6 +178,31 @@ Local author validation: 127 core/adapter/failed-run/prompt cases and 117 affect
 review/math/document/job cases pass; whole-orchestrator Pyright and changed-path
 Ruff/format/license checks pass. Combined delivery gates, fresh PR CI and any
 workspace acceptance belong to the root integration and are not claimed here.
+
+### Implemented MAIN input provenance
+
+The [MAIN provenance slice](MAIN-PROMPT-PROVENANCE.md) assembles one bounded
+owned system/tool bundle for the run. It preserves the existing base text and
+conditional two-newline planning join, all offered schema values/order and grants.
+Each model call gets fresh tool parameter copies; immediately before the call,
+the harness checks the actual system and offered tool pins. Dynamic task, tool
+and notice messages stay outside this system/tool bundle.
+
+Optional retained RunRecord metadata records `sandbox-main-bundle-1`, exact
+component versions/bytes/hashes, rendered system and canonical ordered tool pins.
+`sandbox-main-1` recognizes exact built-in content, including identical caller
+text; it does not attest to its author or origin. Other custom text has no invented
+catalog version. Oversized/unrepresentable custom text keeps its invocation
+behavior with explicitly unavailable metadata; invalid installed inputs refuse
+before a model call. Legacy records stay unknown rather than being backfilled.
+
+Complete metadata validates against the retained first system message. The schema
+hash is a recorded application input pin, not a copy of historical tool schemas,
+provider-wire attestation or a permission grant. No routing alias, resolved model,
+credentials, task or provider error is added. Ordinary and safely retained failed
+runs preserve existing durable-save-before-ACK behavior. Watcher/reviewer/repair
+call provenance, broader stock-template loading, compaction and live-model quality
+evaluation remain separate.
 
 ## Prompt catalog and assembly proposal
 
@@ -441,6 +468,11 @@ and compare actual model inputs, not merely a prompt file's existence.
 | Capacity retry | Only configured/user-authorized retry timing and model selection apply; attempt/turn budget and effect reconciliation prevent duplicate work; idle scheduler remains absent. |
 
 ## Small implementation order
+
+Current progress: capability-text corrections, immutable single-MAIN planning,
+six tools, read-only committed-progress polling and narrow MAIN input provenance
+are implemented. USER editing/approval, effect lineage/liveness, delegated runs,
+other-role provenance, skill loading and compaction below remain separate work.
 
 1. **Current-role prompt correctness:** fix only inaccurate live capability claims
    in MAIN/start_job/historical reviewer docstring; keep the existing offered-tool
