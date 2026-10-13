@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-13 — acceptance helper timeout correction before VM creation
+
+Root source inspection found that the helper's environment-create outer180s budget still inherited aiohttp session12s. Preliminary gateway/cache/middleware/worker/workspace setup at `e322e08` was completely removed before any VMcreate/initial request, model or browser. Corrected immutable candidate889 adds only explicit per-request ClientTimeout(total=budget); four actual mocks verify envPOST180 and other12 independently of session defaults. Adopteda29 passes scoped checks; exact corrected independent tie and fresh runtime admission remain. Product/build737inputs and existing full gates stay unchanged. Original setup, helper sources/probes and private metadata-only cleanup are retained. A transient root default-port-bind diagnostic was followed by successful binds/no-listener checks; its exact transient cause was not captured.
+
 ## 2026-10-13 — provisioning acceptance helper adopted
 
 Final immutable helper `630053a3` passes independent source/resource review and 52 guard/SQL/mocked cases. Root adoption removes only a path-inapplicable unused noqa; executable AST is identical, SHA `9be287515dc1482c546c230cb32f5a476ac7e0b0d2b8eadd0c36be15e114bb5f`, and scoped format/style/type/import-help checks pass. Private fsync/fdopen ownership, SQL numeric prefetch and raw error-kind export findings are closed; gateway proof binds original VMs and post-terminal UTC time. Preserve original failed/corrected outputs. Exact signed adoption tie/fresh admission and actual worker/browser acceptance remain required; no runtime is started. Root product/build inputs remain exact the 10,768 Python/746 web/24 math gate. Separate lockfile comparison worker source `248967d` has author48focused/296affected/scoped passes and saved-source independent clearance, pending exact signed tie; no consumer or runtime claim.
