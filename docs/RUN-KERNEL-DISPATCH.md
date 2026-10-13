@@ -75,8 +75,10 @@ truncated or contradictory selected marker never enters the MAIN mapper.
 Migration must distinguish genuinely old stores from lost selected history.
 
 Separate bounded tables retain selections, generations, births, control receipts
-and sticky closures. Reads validate original SQL types and bounded bytes before
-UTF-8/JSON parsing, and compare retained canonical columns with their records.
+and sticky closures. New selected metadata projections validate original SQL
+types and bounded bytes before UTF-8/JSON parsing, and compare retained canonical
+columns with their records. Existing ordinary execution/event reads retain their
+own paths; these metadata bounds are not a global execution/event or RSS bound.
 Embedded NUL or coerced text must not normalize into a known marker, digest or
 incarnation. Count and logical-byte accounting includes variable scalar fields
 and original envelopes before admitting new rows; there is no silent eviction.
