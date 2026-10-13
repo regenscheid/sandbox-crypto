@@ -114,7 +114,11 @@ def checked_control(value: RunControl) -> RunControl:
     if type(data) is not dict or object.__getattribute__(value, "__pydantic_extra__") is not None:
         raise unavailable()
     data = cast(dict[str, object], data)
-    if any(type(key) is not str for key in data) or set(data) != set(RunControl.model_fields):
+    if (
+        len(data) != len(RunControl.model_fields)
+        or any(type(key) is not str for key in data)
+        or set(data) != set(RunControl.model_fields)
+    ):
         raise unavailable()
     for name, cap in (("operation_id", 128), ("action", 7), ("language", 6), ("recorded_at", 40)):
         item = data[name]
@@ -140,7 +144,11 @@ def checked_info(value: KernelInfo) -> KernelInfo:
     if type(data) is not dict or object.__getattribute__(value, "__pydantic_extra__") is not None:
         raise unavailable()
     data = cast(dict[str, object], data)
-    if any(type(key) is not str for key in data) or set(data) != set(KernelInfo.model_fields):
+    if (
+        len(data) != len(KernelInfo.model_fields)
+        or any(type(key) is not str for key in data)
+        or set(data) != set(KernelInfo.model_fields)
+    ):
         raise unavailable()
     for name, cap in (("kernel_id", 128), ("language", 6), ("revision_status", 8)):
         item = data[name]
