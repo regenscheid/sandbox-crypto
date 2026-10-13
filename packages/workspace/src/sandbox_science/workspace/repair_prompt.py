@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Literal, Self, cast
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.model import Message, ToolSpec
@@ -89,6 +89,14 @@ class RepairProvenance(Contract):
     request_format: RequestFormat
     formatter_sha256: Digest
     envelope_sha256: Digest
+
+    @field_validator("format_version", "tool_count", mode="before")
+    @classmethod
+    def _integers(cls, value: object) -> object:
+        # Literal validation otherwise normalizes bool/float before model validators.
+        if type(value) is not int:
+            raise ValueError("repair provenance counters require strict integers")
+        return value
 
     @model_validator(mode="after")
     def _pins(self) -> Self:

@@ -279,6 +279,23 @@ def test_retained_raw_input_is_bounded_before_json(monkeypatch):
         read_provenance("x" * 2_000_000)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("format_version", True),
+        ("format_version", 1.0),
+        ("tool_count", False),
+        ("tool_count", 0.0),
+    ],
+)
+def test_retained_raw_literal_counters_never_coerce_even_with_valid_original_digest(field, value):
+    pin = assemble_repair(SYSTEM, "x", False, "e").provenance
+    payload = provenance_json(pin)
+    payload[field] = value
+    with pytest.raises(ValueError, match="counters require strict integers"):
+        read_provenance(json.dumps(payload))
+
+
 @pytest.mark.parametrize("nested", [False, True])
 def test_declared_subclass_fields_cannot_bypass_prefetch_bounds(monkeypatch, nested):
     pin = assemble_repair(SYSTEM, "x", False, "e").provenance

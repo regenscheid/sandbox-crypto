@@ -42,6 +42,9 @@ aggregate encoding, including the HTTP encoder's ASCII escapes. Copied or
 constructed model instances are revalidated before use/serialization. Exported
 descriptor text is bounded before JSON parsing. Invalid UTF-8, malformed fields
 and oversized or inconsistent metadata cannot create an accepted descriptor.
+Declared subclasses cannot add fields beyond those bounds. Counter types are
+checked before literal validation, so JSON booleans/floats cannot normalize into
+accepted integers even when a previously valid digest would otherwise match.
 
 ## Producing answers and cache semantics
 
@@ -95,8 +98,8 @@ in-process authenticated API tests cover this descriptor. Root owns broader
 gates, integration and fresh CI. No live provider, research computation, worker,
 VM or model-quality evaluation is claimed by author validation.
 
-Author validation passes 28 new cases, 55 combined repair/provenance cases and
-143 affected cases, whole-workspace typing, focused lint/format and installed
-licenses. Independent source probes close the subtype and DEL escape bounds.
+Author validation passes 32 new cases, 59 combined repair/provenance cases and
+147 affected cases, whole-workspace typing, focused lint/format and installed
+licenses. Independent source probes close subtype, DEL escape and literal-scalar bounds.
 Initial old-field expectations and test-only style/type diagnostics remain
 separately recorded; they are not represented as successful final runs.
