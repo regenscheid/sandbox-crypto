@@ -207,9 +207,9 @@ hash is a recorded application input pin, not a copy of historical tool schemas,
 provider-wire attestation or a permission grant. No routing alias, resolved model,
 credentials, task or provider error is added. Ordinary and safely retained failed
 runs preserve existing durable-save-before-ACK behavior. The watcher has its
-separate reservation pins below, as does the reviewer. Repair call provenance,
-broader stock-template loading, compaction and live-model quality
-evaluation remain separate.
+separate reservation pins below, as does the reviewer. Producing-answer repair
+identity is described below; durable repair call/spend records, external prompt
+loading, compaction and live-model quality evaluation remain separate.
 
 ### Implemented optional research framing and general small-scale trials
 
@@ -262,8 +262,8 @@ outside the digest; the prior stored JSON and actual user-message encoding still
 differ. Prompt text, tools, routing, scheduling, budgets, failure/wake/cancel and
 MAIN notice ACK behavior stay unchanged. The envelope bounds overhead per admitted
 call, not total historical storage. No public route, history UI, global retention,
-retry or watcher execution authority is added. Repair provenance and the
-broader prompt catalog remain separate.
+retry or watcher execution authority is added. Durable repair call accounting and
+external prompt loading remain separate.
 
 ### Implemented reviewer reservation provenance
 
@@ -288,6 +288,37 @@ this is not whole-runner ownership. A reservation is intended input, not provide
 dispatch, instruction adherence or scientific verification. Per-call/per-review
 metadata bounds do not impose a global journal retention quota. No public history
 API, new model identity, automatic retry or broader review authority is added.
+
+### Implemented display-repair producing input identity
+
+The [repair descriptor](DISPLAY-REPAIR-PROVENANCE.md) is optional static metadata
+on the existing response and process-local cache answer. It retains exact system
+content/version, empty-tool pins and the actual fixed formatter under a bounded
+canonical envelope. The existing 575-byte permitted MIT-adapted system, user
+message, zero tools and sanitizer stay unchanged; no new upstream wording is used.
+Fresh owned inputs are verified immediately before the application model call.
+
+In-flight/cache consumers keep the first producer's descriptor, including when
+their error differs or current installed content changes. Historical descriptors
+validate retained fields without today's catalog or fabricated authenticity.
+Dynamic expression/error text or hashes, project/context/session/run, URLs,
+credentials and model identity are excluded. The answer's model remains an alias.
+
+Static system and formatter scalars are bounded before encoding; the descriptor
+is at most 4 KiB including conservative HTTP ASCII escaping. Exported text is
+bounded before parsing. Forged subtypes, DEL/control expansion and raw bool/float
+counter normalization are refused before acceptance. Disabled/busy/rate/legacy
+and never-called queued work remain unpinned. Local metadata refusal makes no
+gateway call and keeps existing browser charge/failure-cache behavior.
+
+Success, unusable output, ordinary failure and timeout keep formed static pins.
+Shielded shared-waiter and normal close behavior stay unchanged; no new repeated
+close-cancellation guarantee is claimed. Eviction/restart loses the descriptor.
+This is process/cache-lifetime input consistency, not a dynamic-request hash,
+unique attempt, provider dispatch, spend record or mathematical verification.
+LD-46 durable project records, resolved model/usage/cost and atomic budget
+admission remain separate work. Independent probes and scripted host-input/API
+tests establish these boundaries; live model quality remains unevaluated.
 
 ## Prompt catalog and assembly proposal
 
@@ -559,12 +590,12 @@ and compare actual model inputs, not merely a prompt file's existence.
 ## Small implementation order
 
 Current progress: capability-text corrections, immutable single-MAIN planning,
-six tools, read-only committed-progress polling, narrow MAIN input provenance
-watcher/reviewer reservation provenance, five explicit original research framings
-and general small-scale trial guidance are implemented. USER editing/approval,
-effect lineage/liveness, delegated runs, repair provenance, external prompt loading,
-skill loading and compaction
-below remain separate work.
+six tools, read-only committed-progress polling, narrow MAIN input provenance,
+watcher/reviewer reservation provenance, five explicit original research framings,
+general small-scale trial guidance and producing-answer repair identity are
+implemented. USER body-editing backend is separately in progress. USER editing
+frontend/approval, effect lineage/liveness, delegated runs, durable repair
+call/spend records, external prompt/skill loading and compaction remain separate.
 
 1. **Current-role prompt correctness:** fix only inaccurate live capability claims
    in MAIN/start_job/historical reviewer docstring; keep the existing offered-tool
