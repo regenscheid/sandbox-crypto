@@ -1,5 +1,9 @@
 # Plan changes
 
+## 2026-10-13 — separate lockfile comparison prerequisite in process
+
+Read-only readiness identifies exact two retained raw-revision/ref selections, bounded nofollow/hash-proved lockfile streams, strict duplicate-free entry parsing and deterministic small pages. Implement a separate worker/contracts prerequisite from signed `e9f1a9d`; keep the accepted first-viewer inputs frozen while Lab30 helper review/worker/browser acceptance continue. Missing/skipped/unsupported inputs stay held; declared Conda licenses and unknown pip licenses remain distinct. No source review clearance, proxy/UI comparison, changed retention, operator authority or runtime completion is implied. This implements existing CP-26 requirements; no new user decision or approval gate is introduced.
+
 ## 2026-10-13 — kernel delivery merged; provisioning local gates complete
 
 PR #109 merged at `cef64a0` on independently reviewed signed `778fddd` after all four fresh CI checks passed (run `38390367460`). Primary main is clean/synced, locked dependencies checked and tree-exact the reviewed head. Lab29 report/archive remain immutable at their original runtime/source pins. Mark only the explicit stateful MAIN delivery subtask complete; idle scheduling, automatic replacement reconciliation and broader CP-12 remain open.
