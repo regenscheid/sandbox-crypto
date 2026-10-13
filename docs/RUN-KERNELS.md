@@ -117,10 +117,15 @@ queue, SQL and file ownership through timeout, repeated cancellation and
 shutdown. Cancelling a future is not proof that SQL stopped. No new async
 ownership or cross-request session-lifetime guarantee is implemented here.
 
-## Complete internal dispatcher that remains next
+## Companion internal dispatcher
 
-The next increment must move all run-aware paths together, rather than adding
-only a caller `run_id` or changing the executor dictionary key:
+The [internal child-kernel dispatcher](RUN-KERNEL-DISPATCH.md) has independently
+reviewed source `28008e1`, integrated at `7619a4b`, with fresh 11,133 Python and
+required static/locked/license/protocol gates passed. Its root-owned
+[Lab33 acceptance](../.agents/docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md)
+and complete independent cleanup are clear; final delivery/fresh CI remain
+separate. This enrollment prerequisite alone still performs no dispatch. Its
+companion implements these run-aware paths together:
 
 1. A trusted admitted controller supplies the original child scope and enrollment
    before dispatch; fresh session-open/project/grant checks remain caller-owned.

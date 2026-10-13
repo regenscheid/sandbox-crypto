@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-13",
-  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-two OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-three OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/DELEGATION-RECORDS.md",
@@ -118,10 +118,16 @@
       "sha256": "d05b95d54cf92b3667eb18ba73ec125cb8def3dc564a9c1c8e8f3e6191ec0c4b"
     },
     {
+      "path": "../../docs/RUN-KERNEL-DISPATCH.md",
+      "category": "implementation-boundary",
+      "bytes": 10967,
+      "sha256": "cbbca3050ce1577f7daf5d23b26ec6bb097c04ebca549900104f0fc4371dabff"
+    },
+    {
       "path": "../../docs/RUN-KERNELS.md",
       "category": "implementation-boundary",
-      "bytes": 10281,
-      "sha256": "27ee73e66f517449152989d94f5ee8dd9d6e8bf6e7c7b7b0219e600f2996baae"
+      "bytes": 10647,
+      "sha256": "f89edc201990f39530415f010b552fb3928c5977a1c243acae638ffb53f5f484"
     },
     {
       "path": "../../docs/SESSION-PLAN-EDITING.md",
@@ -168,8 +174,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 30550,
-      "sha256": "d9689d16d4a09be3351fee9c1db66c435ed5c38d8d6a3a7bb68e6ff75c3d291f"
+      "bytes": 31659,
+      "sha256": "48a31b55eee793c01c27a086e0cb68c2e316bab376b7fe2c4e24c2c524f25471"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -656,6 +662,18 @@
       "category": "runtime-validation",
       "bytes": 51164,
       "sha256": "d8d04b0b99672a1bc02a7de350a7b82a3fdd331874df70d03299cd54911e6a18"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-33-2026-10-13.md",
+      "category": "runtime-validation",
+      "bytes": 7144,
+      "sha256": "389cb4cae593eb1cb311a5f72b1db2f9174e8f2b7efbb7e9cb1034b28a640e03"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-33-evidence-2026-10-13.json",
+      "category": "runtime-validation",
+      "bytes": 3904374,
+      "sha256": "6a2af6baa2635af89930ce77d25572498385e63fa637ecc7f5db7ede9d05c6b7"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-4-2026-10-11.md",

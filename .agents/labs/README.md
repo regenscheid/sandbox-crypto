@@ -366,3 +366,34 @@ Root owns any finite-budget model pilot with explicit private configuration;
 none has run. These controls do not establish model compliance or actual
 worker/progress ordering. See
 [the bounded recipe and limits](../../docs/PLANNING-EVALUATION.md).
+
+## Lab33: internal child-kernel dispatcher
+
+[`run_kernel_dispatch.py`](run_kernel_dispatch.py) defaults to a description with
+no production import or runtime effect. Active `prepare`, `run` and read-only
+`inspect` require `--head <exact-signed-clean-runtime-head> --admit`, a fixed
+owned lab and explicit root coordination. Corrected helper-only `91125f4` is integrated at
+`24eac09`, with independent helper/setup/collector source clearance and exact
+original/ready/done producer-to-collector checks. Actual acceptance is pending;
+no Lab33 runtime PASS is claimed.
+
+Root freezes source/helper, starts only the normal gateway/cache/middleware and
+registers the documented endpoint-free profile with a visibly synthetic provider.
+Use fixed private settings with no token files, clients, worker HTTP server or
+automatic suspender. Helper processes themselves require a fresh explicit
+allowlist environment; backend child environment configuration alone does not
+strip inherited model/provider credentials. Actual CLI/app lifecycle assembly
+uses one manager/dispatcher and drains borrowed owners before stores close.
+
+The fixed fixture uses two canonical shared sessions and three actual generated
+child records, at most 20 Python cells, eight child controls, one session close
+and one original managed VM. Root must supply fresh safe gateway proofs through
+the fixed stopped-ready/before/reads-done/after handshake, bound to the exact
+source/helper/run/original VM. Thirty no-wake reads use the same initialized
+owner, actual retired endpoint and unchanged existing stores. Bracketing gateway
+observations prove two observed phases, not continuous VM state. Preserve unknown
+original intents for inspection; never repeat a whole run or reseed lost history.
+Export only bounded public evidence, scan the synthetic literal in memory and
+verify complete owned VM/unit/process/listener/private-state teardown independently.
+This fixture proves no authenticated delegation controller, model launcher, grant,
+inter-kernel filesystem isolation or scientific result.
