@@ -44,7 +44,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal
 
-from pydantic import Field, JsonValue, TypeAdapter, ValidationError, model_validator
+from pydantic import (
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from sandbox_science.contracts import (
     EnvironmentInfo,
@@ -58,6 +65,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.model import Contract
 
+from .kernel_notice_receipts import KernelNoticeDelivery, validate_delivery
 from .prompt_bundle import PromptProvenance, verify_retained
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -165,6 +173,8 @@ class RunRecord(Contract):
     """The run's ID, which starts every operation ID of its tool calls."""
     prompt_provenance: PromptProvenance | None = None
     """Recorded MAIN system/tool input pins; missing legacy provenance stays unknown."""
+    kernel_notice_delivery: KernelNoticeDelivery | None = None
+    """Exact successfully delivered historical input; no future inbox authority."""
     context: ExecutionContext
     task: str
     started_at: datetime
@@ -188,10 +198,38 @@ class RunRecord(Contract):
     tools: list[dict[str, JsonValue]]
     """One record per tool call, in order: its name, arguments and outcome."""
 
+    @field_validator("kernel_notice_delivery", mode="before")
+    @classmethod
+    def _kernel_notice_pin(cls, value: object) -> KernelNoticeDelivery | None:
+        if value is None:
+            return None
+        return validate_delivery(value)
+
     @model_validator(mode="after")
     def _failure_is_not_an_answer(self) -> RunRecord:
         if self.prompt_provenance is not None:
             verify_retained(self.prompt_provenance, self.messages[0] if self.messages else None)
+        if self.kernel_notice_delivery is not None:
+            claim = self.kernel_notice_delivery.claim
+            if claim.run_id != self.run_id or any(
+                (
+                    notice.observation.scope.project_id,
+                    notice.observation.scope.environment_id,
+                    notice.observation.scope.session_id,
+                )
+                != (self.context.project_id, self.context.environment_id, self.context.session_id)
+                for notice in claim.notices
+            ):
+                raise ValueError("kernel delivery does not match the recorded run scope")
+            injected = self.kernel_notice_delivery.text()
+            if (
+                sum(
+                    message.get("role") == "user" and message.get("content") == injected
+                    for message in self.messages
+                )
+                != 1
+            ):
+                raise ValueError("kernel delivery needs exactly one retained historical user input")
         if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
             raise ValueError("a failed run must have error status and no final answer")
         return self
