@@ -4,7 +4,10 @@ Date: 2026-10-12. This backend exposes the bounded current projection from the
 [internal session-plan store](SESSION-PLANS.md). It reads recorded control state;
 it does not create plans, approve work, start research, contact a worker or wake a
 session. GUI polling and MAIN tool integration are independently delivered
-consumers. A USER editor, history pages and approval enforcement remain separate.
+consumers. The authenticated [USER text-editing route](SESSION-PLAN-EDITING.md) and
+[structured editor](SESSION-PLAN-EDITOR.md) are now separately implemented consumers
+with retained drafts and immutable CAS; they do not change this read-only route.
+History pages and approval enforcement remain separate.
 
 ## Authenticated scope and response
 

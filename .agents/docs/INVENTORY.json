@@ -48,8 +48,8 @@
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 48488,
-      "sha256": "e2e0676ff6417b5c5a6b47206f98c046264bd09cbb92c5279a9a47f2086eb588"
+      "bytes": 48874,
+      "sha256": "fc1348b7bebcc65b5b43582904c90a29b8962ff4fc312c9c4930291dcf1290f7"
     },
     {
       "path": "../../docs/PILOT-COMPUTATIONS.md",
@@ -70,10 +70,22 @@
       "sha256": "d05b95d54cf92b3667eb18ba73ec125cb8def3dc564a9c1c8e8f3e6191ec0c4b"
     },
     {
+      "path": "../../docs/SESSION-PLAN-EDITING.md",
+      "category": "implementation-boundary",
+      "bytes": 9390,
+      "sha256": "d3a322b2a516e9aefabe0e95c7f5796f383c6bf8bf3142570a60fcce2b6f5bcf"
+    },
+    {
+      "path": "../../docs/SESSION-PLAN-EDITOR.md",
+      "category": "implementation-boundary",
+      "bytes": 5511,
+      "sha256": "7bcb379424548492f3975295bfd9e533cae9f92a4143eb25792cf27d98b7dc6d"
+    },
+    {
       "path": "../../docs/SESSION-PLAN-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 7757,
-      "sha256": "589fb0e45f0d5bb18032a5c41d05ca4d4f5285efb39ed12ca26d30b8264e2b51"
+      "bytes": 7981,
+      "sha256": "755f23ffc5c18cceebe7c9fc2a6e34a452471c3cad3bc611f914343d198b5cad"
     },
     {
       "path": "../../docs/SESSION-PLANS.md",
@@ -102,8 +114,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 25102,
-      "sha256": "bbb4d53bfad6f7e25d25e772f6f0ea09496945d2dbbe5df9cd81ce7f6a81ba40"
+      "bytes": 25747,
+      "sha256": "a3ed3b1d6518a98165b5a2cc748cbdd1eace2cdd93b1e89028ec619ffa99554c"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -836,6 +848,30 @@
       "category": "runtime-screenshot",
       "bytes": 173956,
       "sha256": "f3252790f974218df44df0cf58e402b9c4b54c0a41daee3c464e6a08b86a5c88"
+    },
+    {
+      "path": "agent-reports/user-plan-editing-2026-10-13.md",
+      "category": "implementation-validation",
+      "bytes": 7804,
+      "sha256": "9c1cf8b16b8b663d5d79b9243c3f69695480b67af0721a12c2c7170bb7256905"
+    },
+    {
+      "path": "agent-reports/user-plan-editing-evidence-2026-10-13.json",
+      "category": "validation-evidence",
+      "bytes": 544946,
+      "sha256": "8ddb6aa70a10eb4e4ccc15c75e6d684f7e71429238d32071436082fe3f5a78ee"
+    },
+    {
+      "path": "agent-reports/user-plan-editing-unknown-2026-10-13.jpg",
+      "category": "browser-evidence",
+      "bytes": 271802,
+      "sha256": "bd69ac45914fa21f897369a8b89791d1285c6c1a466a9c7c9369b856f8a69222"
+    },
+    {
+      "path": "agent-reports/user-plan-editing-user-v2-2026-10-13.jpg",
+      "category": "browser-evidence",
+      "bytes": 153804,
+      "sha256": "2462b46d50d5d9b7f539eb8ecef1e347b9c839519984222a8a415aeca396a02b"
     },
     {
       "path": "agent-reports/watcher-prompt-provenance-2026-10-12.md",
