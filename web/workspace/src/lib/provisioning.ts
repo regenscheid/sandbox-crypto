@@ -69,15 +69,27 @@ export interface LockfileDiffPage extends Observation {
   offset: number; limit: number; next_offset: number | null; differences: LockfileDifference[];
 }
 export type DiffIdentity = Pick<LockfileDiffPage, 'before_header' | 'after_header' | 'header_changes' | 'total' | 'added' | 'removed' | 'changed'>;
+export interface RevisionPackage {
+  ecosystem: 'conda' | 'pip'; name: string; location: 'prefix' | 'user' | null;
+  package: CondaEntry | PipEntry; license: DeclaredLicense;
+}
+export interface RevisionPackagePage extends Observation {
+  selection: LockfilePin; status: 'complete' | 'held'; holds: LockfileDiffPage['holds'][number]['reason'][];
+  header: LockfileHeader | null; total: number | null; offset: number; limit: number;
+  next_offset: number | null; packages: RevisionPackage[];
+}
+export type PackageIdentity = Pick<RevisionPackagePage, 'header' | 'total'>;
 export type Selection = {kind: 'summary'} | {kind: 'operation'; operation: OperationSummary} |
   {kind: 'retained_operation'; provisionId: string} | {kind: 'files'; operation: OperationSummary; offset: number; retained?: true} | {kind: 'history'; after: number; target: number | null} |
   {kind: 'probes'; revision: RevisionSummary; offset: number} |
+  {kind: 'packages'; revision: RevisionSummary; offset: number; expected?: PackageIdentity; previousKey?: string} |
   {kind: 'diff'; before: RevisionSummary; after: RevisionSummary; offset: number; expected?: DiffIdentity; previousKey?: string};
-export type ProvisionData = ProvisionObservation | OperationDetail | FilePage | HistoryPage | ProbePage | LockfileDiffPage;
+export type ProvisionData = ProvisionObservation | OperationDetail | FilePage | HistoryPage | ProbePage | LockfileDiffPage | RevisionPackagePage;
 export class ProvisionReadError extends Error { constructor(readonly status: number) { super('Environment observation unavailable'); } }
 export const PROVISION_MAX_BYTES = 64 * 1024;
 export const PROVISION_DEADLINE_MS = 8000;
 export const DIFF_DEADLINE_MS = 12000;
+export const PACKAGES_DEADLINE_MS = 12000;
 export const PROVISION_INTERVAL_MS = 3000;
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const hash = /^[0-9a-f]{64}$/;
@@ -196,6 +208,22 @@ function diffPage(v: Record<string, unknown>, selection: Extract<Selection, {kin
   if (['added', 'removed', 'changed'].some(k => rows.filter(r => r.change === k).length > (v[k] as number))) return false;
   return selection.expected === undefined || sameIdentity(v as unknown as LockfileDiffPage, selection.expected);
 }
+export function packageKey(v: RevisionPackage): string {return [v.ecosystem, v.location ?? '', v.name].join('\0');}
+export function packageIdentity(v: RevisionPackagePage): PackageIdentity {return {header: v.header, total: v.total};}
+function revisionPackage(v: unknown): v is RevisionPackage {
+  if (!object(v, ['ecosystem', 'name', 'location', 'package', 'license']) || typeof v.name !== 'string' || !packagePattern.test(v.name)) return false;
+  if (v.ecosystem === 'conda') return v.location === null && condaEntry(v.package) && v.package.name === v.name && declared(v.license, v.package.license) && (v.package.license === null || v.license.agpl === /agpl|affero/i.test(v.package.license));
+  return v.ecosystem === 'pip' && pipEntry(v.package) && v.location === v.package.location && v.package.name.replace(/[-_.]+/g, '-').toLowerCase() === v.name && declared(v.license, null);
+}
+function packagePage(v: Record<string, unknown>, selected: Extract<Selection, {kind: 'packages'}>): boolean {
+  if (!revision(selected.revision) || !count(selected.offset, 40_000) || !object(v, [...common, 'selection', 'status', 'holds', 'header', 'total', 'offset', 'limit', 'next_offset', 'packages']) || !pin(v.selection, selected.revision) || !choice(v.status, ['complete', 'held']) || !Array.isArray(v.holds) || v.holds.length > 1 || !v.holds.every(h => choice(h, ['lockfile_unrecorded', 'blob_missing', 'unsupported_format', 'skipped_entries', 'input_limit'])) || !nullable(v.header, h => header(h, selected.revision.lockfile)) || v.offset !== selected.offset || v.limit !== 8 || !Array.isArray(v.packages)) return false;
+  if (v.status === 'held') return v.holds.length === 1 && v.total === null && v.next_offset === null && v.packages.length === 0;
+  if (v.holds.length || v.header === null || (v.header as LockfileHeader).skipped !== 0 || !count(v.total, 40_000) || !v.packages.every(revisionPackage) || !page(v, v.packages, {offset: selected.offset, total: v.total})) return false;
+  const h = v.header as LockfileHeader, rows = v.packages as RevisionPackage[];
+  if (v.total !== h.conda_packages + h.pip_distributions || rows.filter(r => r.ecosystem === 'conda').length > h.conda_packages || rows.filter(r => r.ecosystem === 'pip').length > h.pip_distributions || rows.some((r, i) => (i > 0 && packageKey(rows[i - 1]!) >= packageKey(r)) || (selected.previousKey !== undefined && packageKey(r) <= selected.previousKey))) return false;
+  const expected = selected.expected;
+  return expected === undefined || (expected.total === v.total && expected.header !== null && headerKeys.every(k => h[k as keyof LockfileHeader] === expected.header![k as keyof LockfileHeader]));
+}
 function probe(v: unknown, n: number): v is Probe {
   return object(v, ['capability', 'probe', 'version', 'kind', 'status', 'revision', 'execution_id', 'output', 'duration_seconds', 'operation', 'recorded_at']) && nullable(v.capability, v => text(v, 64) && /^[a-z0-9][a-z0-9_-]*$/.test(v)) && text(v.probe, 128) && /^[a-z0-9][a-z0-9:._-]*$/.test(v.probe) && count(v.version, Number.MAX_SAFE_INTEGER, 1) && choice(v.kind, ['functional', 'import_check']) && choice(v.status, ['passed', 'failed', 'error']) && (v.revision === null || v.revision === n) && nullable(v.execution_id, id) && text(v.output, 2000, true) && typeof v.duration_seconds === 'number' && Number.isFinite(v.duration_seconds) && v.duration_seconds >= 0 && nullable(v.operation, id) && time(v.recorded_at);
 }
@@ -208,6 +236,10 @@ export function provisionData(value: unknown, scope: EnvironmentScope, selection
   if (typeof value !== 'object' || value === null || Array.isArray(value) || !scoped(value as Record<string, unknown>, scope)) throw bad();
   const v = value as Record<string, unknown>;
   switch (selection.kind) {
+    case 'packages': {
+      if (!packagePage(v, selection)) throw bad();
+      return v as unknown as RevisionPackagePage;
+    }
     case 'diff': {
       if (!diffPage(v, selection)) throw bad();
       return v as unknown as LockfileDiffPage;
@@ -269,6 +301,11 @@ export function provisionPath(scope: EnvironmentScope, selected: Selection): str
     query.set('pin', selected.revision.record_sha256); query.set('offset', String(selected.offset)); query.set('limit', '8');
     return base + `/revisions/${selected.revision.revision}/probes?` + query;
   }
+  if (selected.kind === 'packages') {
+    if (!revision(selected.revision) || !count(selected.offset, 40_000)) throw new ProvisionReadError(0);
+    query.set('pin', selected.revision.record_sha256); query.set('offset', String(selected.offset)); query.set('limit', '8');
+    return base + `/revisions/${selected.revision.revision}/packages?` + query;
+  }
   if (!summary(selected.operation)) throw new ProvisionReadError(0);
   query.set('seq', String(selected.operation.seq));
   if (selected.kind === 'files') {
@@ -290,7 +327,7 @@ export async function readProvision(scope: EnvironmentScope, selected: Selection
   const abort = () => {controller.abort(); if (response) void cancel();};
   signal.addEventListener('abort', abort, {once: true});
   const logout = onKernelLogout(abort);
-  const timeout = setTimeout(abort, selected.kind === 'diff' ? DIFF_DEADLINE_MS : PROVISION_DEADLINE_MS);
+  const timeout = setTimeout(abort, selected.kind === 'diff' ? DIFF_DEADLINE_MS : selected.kind === 'packages' ? PACKAGES_DEADLINE_MS : PROVISION_DEADLINE_MS);
   try {
     response = await fetch(path, {headers: {Accept: 'application/json'}, signal: controller.signal, redirect: 'error', cache: 'no-store'});
     if (controller.signal.aborted || !kernelReadsAllowed() || response.redirected || response.type === 'opaqueredirect') throw new ProvisionReadError(0);
