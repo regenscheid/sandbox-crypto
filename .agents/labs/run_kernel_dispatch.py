@@ -1712,18 +1712,17 @@ class Driver:
 
         created = await self.effect("environment", "environment-create", create, original)
         self.original = original(created)
-        write_new(
-            PREFIX + "original.json",
-            {
-                **envelope(self.marker, "original-created"),
-                "stage": "original-created",
-                "original": {
-                    "environment_id": self.original["environment_id"],
-                    "name": self.original["sandbox"],
-                    "id": self.original["sandbox_id"],
-                },
+        original_event = {
+            **envelope(self.marker, "original-created"),
+            "stage": "original-created",
+            "original": {
+                "environment_id": self.original["environment_id"],
+                "name": self.original["sandbox"],
+                "id": self.original["sandbox_id"],
             },
-        )
+        }
+        original_event.pop("phase")
+        write_new(PREFIX + "original.json", original_event)
         prefix = "import os,json\n"
 
         def code(value: str, *, assign: str = "", shared: bool = False, write: bool = False) -> str:
