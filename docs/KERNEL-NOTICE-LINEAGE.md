@@ -93,8 +93,7 @@ The source milestone passed 139 focused Python tests on Python 3.13, affected Ru
 and formatting checks, and repository Pyright with zero errors. Full repository
 tests were intentionally left to the combined delivery owner.
 
-Real OpenShell lineage acceptance and the final combined full gates remain
-root-owned delivery gates. No services, VMs or models were started by this source
+Root-owned [OpenShell Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md) passed on signed `1deb9b7`, with independently verified complete teardown. Signed prompt-integrated union `840b48f` passes 10,155 Python cases/43 opt-in skips/two existing warnings and required static checks; unchanged 614 web/24 math/builds are explicitly reused. Unknown/missing/corrupt/legacy cases remain local-fixture coverage. Fresh exact-head PR CI remains a delivery gate. No services, VMs or models were started by this source
 author. The companion does not wire a durable inbox, MAIN injection, saved-run ACK,
 idle scheduling, cross-session delivery or new GUI behavior. Those consumers must
 independently bind the operator-configured worker and open session lifetime, hold
