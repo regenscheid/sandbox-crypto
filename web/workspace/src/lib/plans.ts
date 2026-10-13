@@ -221,6 +221,10 @@ export class PlanPoller {
       }
     } finally {
       clearTimeout(this.deadline); this.busy = false; if (timedOut) this.failures++;
+      if (this.once && !this.stopped) {
+        this.stop();
+        if (this.state.phase !== 'observed') this.emit('unavailable');
+      }
       if (!this.stopped && this.visible) this.timer = setTimeout(() => void this.refresh(), epoch !== this.epoch ? 0 : Math.min(30_000, PLAN_INTERVAL_MS * 2 ** Math.min(this.failures, 4)));
     }
   }

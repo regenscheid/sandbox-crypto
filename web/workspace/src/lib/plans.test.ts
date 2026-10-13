@@ -146,6 +146,18 @@ describe('plan polling lifecycle', () => {
       reader.setVisible(false); reader.setVisible(true); await vi.advanceTimersByTimeAsync(60_000); expect(read).toHaveBeenCalledOnce();
     }
   });
+  it('does not retry a closed-history failure or an ignored deadline abort', async () => {
+    vi.useFakeTimers();
+    const failed = vi.fn().mockRejectedValue(new PlanReadError(503)), first = poll(failed, true);
+    first.reader.setVisible(true); await vi.advanceTimersByTimeAsync(60_000);
+    expect(failed).toHaveBeenCalledOnce(); expect(first.states.at(-1)?.phase).toBe('unavailable');
+    const pending = deferred<PlanObservation>(), read = vi.fn().mockReturnValue(pending.promise), second = poll(read, true);
+    second.reader.setVisible(true); await vi.advanceTimersByTimeAsync(PLAN_DEADLINE_MS);
+    expect(second.states.at(-1)?.phase).toBe('unavailable'); expect(read).toHaveBeenCalledOnce();
+    pending.resolve(observed()); await vi.advanceTimersByTimeAsync(60_000);
+    expect(second.states.at(-1)?.phase).toBe('unavailable'); expect(read).toHaveBeenCalledOnce();
+    second.reader.setVisible(false); second.reader.setVisible(true); await vi.advanceTimersByTimeAsync(60_000); expect(read).toHaveBeenCalledOnce();
+  });
   it('sign-out stops all future reads and late results even if POST fails', async () => {
     vi.useFakeTimers(); const pending = deferred<PlanObservation>(), {reader, states} = poll(() => pending.promise), off = onPlanLogout(() => reader.logout());
     reader.setVisible(true); vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', {status: 503})));
