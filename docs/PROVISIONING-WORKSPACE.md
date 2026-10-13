@@ -21,7 +21,11 @@ physical fetch/body owner. Deadlines are worker 8s/client 9s/proxy 10s/browser 1
 The worker shares the comparison reader's two global/one environment read lane,
 with 8 MiB lockfiles, 16 KiB entry records, 16 MiB index accounting and 64 KiB
 responses. Reads perform no guest work or keepalive. Component/full gates and
-actual-main source review pass; fresh integrated Lab32 acceptance is pending.
+actual-main source review pass. Root-owned Lab32 passed worker/workspace/native
+inventory paging, all 62 unchanged entries and six GP additions. Separately
+qualified stopped-VM reads preserve actual retired endpoints and unchanged SQL
+between fresh proofs for the original VM. All owned lab state is removed and
+independently audited; final delivery review and fresh CI remain.
 
 The workspace exposes recorded provisioning observations for a project's shared
 environment and retained dedicated environments. This is the read-only API part of

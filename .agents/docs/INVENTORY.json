@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-13",
-  "status": "planning and source inspection, thirty-one OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, bounded scripted planning-evaluator calibration, thirty-one OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/DISPLAY-REPAIR-PROVENANCE.md",
@@ -102,8 +102,8 @@
     {
       "path": "../../docs/PROVISIONING-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 11267,
-      "sha256": "722d8c31d139f047b0d2f4badcac6c41ad852f44a5f39ba29231ae2cdec0df71"
+      "bytes": 11567,
+      "sha256": "03fee4cf6f0c8c7f28026d9f9b6ad9575e56eb1f51c76c3478ca37a102472f10"
     },
     {
       "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
@@ -156,8 +156,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 28267,
-      "sha256": "d0836881cec0edcc953ae1beb4edd467df35a6995d7734097f67ba30c4d972f7"
+      "bytes": 28777,
+      "sha256": "5e174c613647efc1e833d1b4921d23261f45d97ee417b7403966d68ca360eeca"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -950,6 +950,18 @@
       "category": "validation-evidence",
       "bytes": 32395,
       "sha256": "1a24b54c9d47463a531c34eaf40cb76446f144d479806e0020ddee91f47f19b3"
+    },
+    {
+      "path": "agent-reports/planning-evaluation-2026-10-13.md",
+      "category": "local-validation",
+      "bytes": 7257,
+      "sha256": "abb66398cddb5341fa04154d3f9112809df367089c64fa090d124fcc14548e27"
+    },
+    {
+      "path": "agent-reports/planning-evaluation-evidence-2026-10-13.json",
+      "category": "validation-evidence",
+      "bytes": 407883,
+      "sha256": "fea2485c3cb4619fb4013271e130615c0d8bb435c3a386f8e586dae3d87c7614"
     },
     {
       "path": "agent-reports/project-macros-2026-10-12.md",
