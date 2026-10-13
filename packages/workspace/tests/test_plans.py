@@ -103,6 +103,7 @@ async def test_live_compact_read_sees_committed_progress_without_saved_run(
     assert response.status == 200
     assert response.headers["Cache-Control"] == "no-store"
     before = plans.WorkspacePlan.model_validate_json(await response.read(), strict=True)
+    assert before.plan is not None
     assert before.plan.head.ref == first.ref
     assert before.plan.steps[0].latest is None
     assert before.session_closed_at is None
@@ -111,6 +112,8 @@ async def test_live_compact_read_sees_committed_progress_without_saved_run(
     )
     response = await client.get(PATH)
     after = plans.WorkspacePlan.model_validate_json(await response.read(), strict=True)
+    assert after.plan is not None
+    assert after.plan.steps[0].latest is not None
     assert after.plan.event_cursor == 2
     assert after.plan.head.progress_cursor == 1
     assert after.plan.steps[0].latest.status == "in_progress"
@@ -130,6 +133,8 @@ async def test_changed_intent_retains_old_completion_as_nonmatching(
     result = plans.WorkspacePlan.model_validate_json(
         await (await client.get(PATH)).read(), strict=True
     )
+    assert result.plan is not None
+    assert result.plan.steps[0].latest is not None
     assert result.plan.head.ref == changed.ref
     assert result.plan.steps[0].latest.status == "completed"
     assert not result.plan.steps[0].matches_current_step
@@ -161,6 +166,8 @@ async def test_explicit_partial_goal_outcome_is_not_omitted(
     result = plans.WorkspacePlan.model_validate_json(
         await (await client.get(PATH)).read(), strict=True
     )
+    assert result.plan is not None
+    assert result.plan.head.outcome is not None
     assert result.plan.head.status == "completed"
     assert result.plan.head.outcome.status == "partially_achieved"
     assert result.plan.head.outcome.remaining_work == ("Resolve limit",)
@@ -181,6 +188,7 @@ async def test_closed_session_history_is_read_without_waking_or_reopening(
     response = await client.get(PATH.replace("/a/", "/b/"))
     assert response.status == 200
     result = plans.WorkspacePlan.model_validate_json(await response.read(), strict=True)
+    assert result.plan is not None
     assert result.session_closed_at is not None
     assert result.plan.head.ref == first.ref
 
@@ -257,6 +265,7 @@ async def test_absent_history_returns_null_without_creating_or_migrating_sql(
         assert not path.exists()
     else:
         with owner._read() as db:
+            assert db is not None
             assert db.execute(
                 "SELECT count(*) FROM sqlite_master WHERE name LIKE 'session_plan_%'"
             ).fetchone() == (0,)
