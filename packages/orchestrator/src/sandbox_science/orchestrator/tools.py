@@ -48,6 +48,8 @@ from .documents.tool import NAMES as DOCUMENT_TOOLS
 from .documents.tool import DocumentTool, with_notices
 from .jobs import BACKGROUND, JOB_SPECS, JobTools
 from .model import ToolCall, ToolSpec
+from .plan_tools import NAMES as PLAN_TOOLS
+from .plan_tools import PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -284,6 +286,7 @@ class Toolbox:
         reviews: ReviewController | None = None,
         math_checks: MathController | None = None,
         artifacts: ArtifactPublisher | None = None,
+        plans: PlanTools | None = None,
     ) -> None:
         self.client = client
         self.context = context
@@ -294,6 +297,7 @@ class Toolbox:
         self.documents = documents
         self.jobs = jobs if BACKGROUND in features else None
         self.artifacts = artifacts
+        self.plans = plans
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
         if "sage" in self.languages:
             specs.append(SAGE)
@@ -324,6 +328,8 @@ class Toolbox:
             specs.extend(documents.specs)
         if reviews is not None:
             specs.extend(reviews.specs)
+        if plans is not None:
+            specs.extend(plans.specs)
         self.specs = tuple(specs)
 
     async def call(
@@ -343,6 +349,11 @@ class Toolbox:
                 ErrorKind.INTERNAL,
                 f"the {call.name} tool failed unexpectedly ({type(exc).__name__})",
             )
+        if self.plans is not None and call.name in PLAN_TOOLS:
+            # A complete current plan may exceed the ordinary clipped-output
+            # budget. Do not truncate it and then acknowledge a false reread.
+            # Leave unrelated notices unseen for their existing later paths.
+            return outcome
         if self.documents is not None:
             try:
                 notices = await self.documents.notices()
@@ -370,6 +381,16 @@ class Toolbox:
         return outcome
 
     async def _call(self, call: ToolCall, operation: str, model: str | None) -> ToolOutcome:
+        if self.plans is not None:
+            try:
+                if call.name in PLAN_TOOLS:
+                    text, record = await self.plans.call(
+                        call.name, call.arguments, call_id=call.id, model=model
+                    )
+                    return ToolOutcome(text, record)
+                await self.plans.check_dispatch(call.name)
+            except DocumentError as error:
+                return _failure(ErrorKind(error.kind), error.message)
         try:
             arguments: object = json.loads(call.arguments or "{}")
         except (ValueError, RecursionError) as exc:

@@ -66,13 +66,16 @@ from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool,
 from .documents.annotations import Annotations
 from .documents.errors import CONFLICT
 from .documents.mathcontroller import MathController
+from .documents.mathjobs import threaded
 from .documents.tool import view_blocks
 from .jobs import JobTools
 from .jobstate import JobState
 from .loop import Interruption, Transcript, run_task
 from .mathcheck import MathChecker
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
+from .plan_tools import PlanTools
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
+from .session_plans import SessionPlans
 from .tools import Toolbox, ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -251,8 +254,28 @@ async def _run(args: argparse.Namespace) -> int:
                     if documents is not None and inventory is not None
                     else None
                 )
+                plans = None
+                plan_owners: list[PlanTools] = []
+
+                def make_plans() -> PlanTools:
+                    if documents is None:
+                        raise RuntimeError("planning requires its recorded context")
+                    owner = PlanTools(
+                        SessionPlans(documents.store),
+                        ProjectStore(args.state_dir),
+                        context,
+                        run_id=run_id,
+                        alias="scripted" if args.script is not None else args.model,
+                    )
+                    # Publish ownership before cancellation-owned threaded()
+                    # can discard its return value while propagating an interrupt.
+                    plan_owners.append(owner)
+                    return owner
+
                 try:
                     with interruption.protect():
+                        if documents is not None:
+                            plans = await threaded(make_plans)
                         transcript = await run_task(
                             model,
                             Toolbox(
@@ -265,6 +288,7 @@ async def _run(args: argparse.Namespace) -> int:
                                 reviews=reviews,
                                 math_checks=math_checks,
                                 artifacts=artifacts,
+                                plans=plans,
                             ),
                             args.task,
                             run_id=run_id,
@@ -273,33 +297,38 @@ async def _run(args: argparse.Namespace) -> int:
                         )
                 finally:
                     try:
-                        try:
-                            if artifacts is not None:
-                                with interruption.protect():
-                                    await artifacts.aclose()
-                        finally:
-                            if reviews is not None:
-                                with interruption.protect():
-                                    await reviews.close()
+                        if plan_owners:
+                            with interruption.protect():
+                                await threaded(plan_owners[0].close)
                     finally:
                         try:
-                            if isinstance(reviewer, OpenAICompatibleModel):
-                                with interruption.protect():
-                                    await reviewer.close()
+                            try:
+                                if artifacts is not None:
+                                    with interruption.protect():
+                                        await artifacts.aclose()
+                            finally:
+                                if reviews is not None:
+                                    with interruption.protect():
+                                        await reviews.close()
                         finally:
                             try:
-                                if isinstance(watcher, OpenAICompatibleModel):
+                                if isinstance(reviewer, OpenAICompatibleModel):
                                     with interruption.protect():
-                                        await watcher.close()
+                                        await reviewer.close()
                             finally:
                                 try:
-                                    if documents is not None:
+                                    if isinstance(watcher, OpenAICompatibleModel):
                                         with interruption.protect():
-                                            documents.store.close()
+                                            await watcher.close()
                                 finally:
-                                    if isinstance(model, OpenAICompatibleModel):
-                                        with interruption.protect():
-                                            await model.close()
+                                    try:
+                                        if documents is not None:
+                                            with interruption.protect():
+                                                documents.store.close()
+                                    finally:
+                                        if isinstance(model, OpenAICompatibleModel):
+                                            with interruption.protect():
+                                                await model.close()
     except BaseException as error:
         if interruption.error is not None:
             raise interruption.error from None
