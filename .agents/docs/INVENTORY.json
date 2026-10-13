@@ -36,14 +36,20 @@
     {
       "path": "../../docs/MAIN-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 6978,
-      "sha256": "cbf72710988829f37ed3a3f1b7244f8d2b696e66160b50a04c3c390073cd6912"
+      "bytes": 8217,
+      "sha256": "d1ce9dca503f6ac2227ac4ded92c9073aa0eb2d6c8ff573f72e097e239e9b73a"
     },
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 42921,
-      "sha256": "a976c2b0a13db48fbbb8f2af439b0ad426238b29523215afd6baaa0d22ab3fa1"
+      "bytes": 46297,
+      "sha256": "60224cdaec29d5d297789cc4f9c9f507a904a8213f9214889b7848535d729de4"
+    },
+    {
+      "path": "../../docs/PILOT-COMPUTATIONS.md",
+      "category": "implementation-boundary",
+      "bytes": 3569,
+      "sha256": "feaae5a5adbb178a1aad84a42329d8e94084af03b70dba7dd5ada322ecc7988e"
     },
     {
       "path": "../../docs/PROJECT-MACROS.md",
@@ -70,6 +76,12 @@
       "sha256": "a290a8d376fe5038ab63ea679bad85578bc29f590d09232b3d8c618de34f4520"
     },
     {
+      "path": "../../docs/STOCK-RESEARCH-PROMPTS.md",
+      "category": "implementation-boundary",
+      "bytes": 6838,
+      "sha256": "ba7bc15d43c993e9d4c60075913c3c545af1c3d4024fcfee7954d603be31e03a"
+    },
+    {
       "path": "../../docs/WATCHER-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
       "bytes": 6644,
@@ -84,8 +96,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 23990,
-      "sha256": "d0b2c0dbde2c68baffb52eb5854d39d9d3a45265fcf4988afb20652b9697f728"
+      "bytes": 24556,
+      "sha256": "70c58222666ed529001d94b16e7f5e0cc7342a4ef25a3b976cdcf9f0ce57a3ca"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -752,6 +764,18 @@
       "category": "browser-evidence",
       "bytes": 59555,
       "sha256": "85d85837cb82abcf4f43183f0550a57bcb062961bd8f616a9386f8be25afcac6"
+    },
+    {
+      "path": "agent-reports/research-prompt-workflow-2026-10-12.md",
+      "category": "implementation-validation",
+      "bytes": 4562,
+      "sha256": "9bb35a5bbfe9a254ab59599fef7708fdc2c72f34f22801269ce6d75fc2d5671a"
+    },
+    {
+      "path": "agent-reports/research-prompt-workflow-evidence-2026-10-12.json",
+      "category": "validation-evidence",
+      "bytes": 295074,
+      "sha256": "9883132e64a5c92b5f4975e9492ebff912998e647185197e805b62767a82a46a"
     },
     {
       "path": "agent-reports/reviewer-prompt-provenance-2026-10-12.md",

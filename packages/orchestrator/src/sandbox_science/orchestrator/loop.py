@@ -20,6 +20,7 @@ from .plan_tools import GUIDANCE, GUIDANCE_VERSION
 from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase
 from .prompt_bundle import MainPromptBundle, PromptProvenance, assemble_main
+from .stock_prompts import select_template
 from .tools import Toolbox, ToolOutcome, operation_id
 from .worker_client import dump
 
@@ -31,7 +32,17 @@ SYSTEM_PROMPT: Final = (
     "tool name; an explicitly configured development worker can be unisolated. "
     "Use python for computations whose state should persist between calls, shell for "
     "commands, and the file tools to inspect and share files. Publish files that are results. "
-    "Report only what the tools actually returned. Network access follows the project's "
+    "Report only what the tools actually returned. Before a long or large computation, "
+    "reuse applicable current pilot evidence or run a small representative pilot. Check "
+    "correctness against known cases or invariants and check output shape. Resolve failed "
+    "pilot checks before scaling up. Record observed runtime and memory when available; "
+    "state missing measurements or a nonrepresentative trial. Qualify scale estimates "
+    "with their assumptions, including nonlinear time or memory growth; a smoke test "
+    "does not prove the full computation. When plan tools are offered, record the pilot, "
+    "validation evidence and scale-up decision there before the large run. Keep trials "
+    "and larger runs within existing budgets and authorization, and reconcile unknown "
+    "effects before repeating them. Trivial work needs no ceremonial pilot. "
+    "Network access follows the project's "
     "policy: the first connection to a site the project has not used before can fail with "
     "'Permission denied' while the platform admits the site, which takes up to half a minute, "
     "so wait and retry before concluding that a site is blocked; a later tool result's "
@@ -339,6 +350,7 @@ async def run_task(
     run_id: str,
     max_turns: int = 30,
     system: str = SYSTEM_PROMPT,
+    research_template: str | None = None,
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
 ) -> Transcript:
     """Run a task, keeping an active originating-run lease while it waits or computes."""
@@ -367,6 +379,9 @@ async def run_task(
                     toolbox.specs,
                     builtin_content=system == SYSTEM_PROMPT,
                     guidance=(GUIDANCE_VERSION, GUIDANCE) if toolbox.plans is not None else None,
+                    stock=select_template(research_template)
+                    if research_template is not None
+                    else None,
                 )
                 transcript = Transcript(
                     prompt_provenance=bundle.provenance,
