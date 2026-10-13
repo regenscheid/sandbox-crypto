@@ -24,6 +24,10 @@ record rather than replacing one, and it is written once: complete, synced, and 
 over another.
 """
 
+# ProjectStore's durable notification baseline owns the same module's retained
+# SessionSnapshot descriptors; no external caller gains those file capabilities.
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import contextlib
@@ -50,6 +54,7 @@ from sandbox_science.contracts import (
     ExecutionContext,
     Identifier,
     PolicyRevision,
+    new_id,
 )
 from sandbox_science.contracts.model import Contract
 
@@ -82,6 +87,8 @@ class SessionRecord(Contract):
     opened_at: datetime
     closed_at: datetime | None = None
     """When the session was last closed: its kernels were stopped. Running it reopens it."""
+    kernel_notice_lifetime: Identifier | None = None
+    """Opaque control-owned open lifetime; missing legacy state proves no past lifetime."""
 
 
 class ProjectRecord(Contract):
@@ -389,6 +396,7 @@ class ProjectStore:
                     else record.default_environment_id,
                     dedicated=dedicated,
                     opened_at=now,
+                    kernel_notice_lifetime=new_id("kns"),
                 )
             elif session.dedicated != dedicated:
                 where = "its own environment" if session.dedicated else "the project's"
@@ -398,7 +406,13 @@ class ProjectStore:
                     "since its kernels and installed tools live there",
                 )
             elif session.closed_at is not None:
-                session = session.model_copy(update={"closed_at": None, "opened_at": now})
+                session = session.model_copy(
+                    update={
+                        "closed_at": None,
+                        "opened_at": now,
+                        "kernel_notice_lifetime": new_id("kns"),
+                    }
+                )
             else:
                 return session
             self._write(
@@ -407,6 +421,93 @@ class ProjectStore:
                 )
             )
             return session
+
+    def kernel_notice_baseline(self, project_id: str, session_id: str) -> SessionRecord:
+        """Persist a present-time legacy baseline before any dependent snapshot/RPC.
+
+        Only this new path uses the bounded nofollow lock/read and durable write;
+        existing project lifecycle and logical-session plan CAS are unchanged.
+        """
+        _IDENTIFIER.validate_python(project_id, strict=True)
+        _IDENTIFIER.validate_python(session_id, strict=True)
+        root = lock = -1
+        snapshot: SessionSnapshot | None = None
+        partial: str | None = None
+        try:
+            root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            lock = os.open(
+                project_id + ".lock",
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
+                0o600,
+                dir_fd=root,
+            )
+            if not stat.S_ISREG(os.fstat(lock).st_mode) or os.fstat(lock).st_nlink != 1:
+                raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry lock is unsafe")
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            snapshot = self.session_snapshot(project_id, session_id)
+            if (os.fstat(root).st_dev, os.fstat(root).st_ino) != (
+                os.fstat(snapshot._root).st_dev,
+                os.fstat(snapshot._root).st_ino,
+            ):
+                raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry changed")
+            if snapshot.session.kernel_notice_lifetime is not None:
+                os.fsync(snapshot._descriptor)
+                os.fsync(root)
+                return snapshot.session
+            raw = os.pread(snapshot._descriptor, MAX_SESSION_RECORD_BYTES + 1, 0)
+            if (
+                len(raw) > MAX_SESSION_RECORD_BYTES
+                or hashlib.sha256(raw).digest() != snapshot._digest
+                or _file_identity(os.fstat(snapshot._descriptor)) != snapshot._identity
+            ):
+                raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry changed")
+            record = ProjectRecord.model_validate_json(raw, strict=True)
+            current = self.session_snapshot(project_id, session_id)
+            try:
+                if not snapshot.matches(current) or (
+                    os.fstat(lock).st_dev,
+                    os.fstat(lock).st_ino,
+                ) != (
+                    os.stat(project_id + ".lock", dir_fd=root, follow_symlinks=False).st_dev,
+                    os.stat(project_id + ".lock", dir_fd=root, follow_symlinks=False).st_ino,
+                ):
+                    raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry changed")
+            finally:
+                current.close()
+            session = snapshot.session.model_copy(update={"kernel_notice_lifetime": new_id("kns")})
+            updated = record.model_copy(
+                update={
+                    "sessions": {**record.sessions, session_id: session},
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            data = updated.model_dump_json(indent=2).encode("utf-8")
+            if len(data) > MAX_SESSION_RECORD_BYTES:
+                raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry exceeds its bound")
+            partial = "." + project_id + "." + secrets.token_hex(12) + ".notice-partial"
+            descriptor = os.open(
+                partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root
+            )
+            with os.fdopen(descriptor, "wb") as destination:
+                destination.write(data)
+                destination.flush()
+                os.fsync(destination.fileno())
+            os.replace(partial, project_id + ".json", src_dir_fd=root, dst_dir_fd=root)
+            partial = None
+            os.fsync(root)
+            return session
+        except (OSError, ValidationError, ValueError, RecursionError):
+            raise ProjectError(ErrorKind.UNAVAILABLE, "notification baseline unavailable") from None
+        finally:
+            if partial is not None and root >= 0:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(partial, dir_fd=root)
+            if snapshot is not None:
+                snapshot.close()
+            if lock >= 0:
+                os.close(lock)
+            if root >= 0:
+                os.close(root)
 
     def close_session(self, project_id: str, session_id: str) -> SessionRecord:
         with self._locked(project_id):
