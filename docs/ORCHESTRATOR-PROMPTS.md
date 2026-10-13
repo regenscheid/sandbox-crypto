@@ -60,6 +60,25 @@ Trusted operator development of this repository may use ordinary local developer
 tools; that is outside the product's research execution path. It is not a prompt
 exception permitting research code or untrusted payloads to run in the orchestrator.
 
+### Implemented narrow capability corrections
+
+A separate child of the initial design freeze corrects only three existing text
+inputs: MAIN now distinguishes configured-worker research execution from control
+bookkeeping and requires actual location/isolation evidence; `start_job` qualifies
+worker/bridge recovery on original daemon/sandbox continuity and preserves lost
+outcomes without automatic resubmission; the historical `reviews.py` docstring
+points to the implemented reviewer. The inventory above records the earlier audit
+and its findings. No tool schema, whitelist, policy, dispatch, closing or model-call
+behavior changes. Prompt-bundle version/hash provenance and planning/delegation
+capabilities below remain proposals.
+
+[Actual-model-input fixtures](../packages/orchestrator/tests/test_prompt_inputs.py)
+exercise control-side document reads with and without job capability. They inspect
+the system message and offered tool descriptions at both model calls, preserve
+document injection text as tool data, and prove no plan/delegate tools appear.
+Together with affected job/trigger tests, 30 cases pass. These scripted tests check
+host assembly and capability boundaries, not a live model's instruction adherence.
+
 ## Prompt catalog and assembly proposal
 
 Maintain a small first-party catalog with explicit ID/version, applicable role,
