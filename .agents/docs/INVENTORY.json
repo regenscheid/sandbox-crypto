@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-13",
-  "status": "planning and source inspection, bounded scripted planning-evaluator calibration, thirty-one OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, bounded scripted planning-evaluator calibration, thirty-two OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/DISPLAY-REPAIR-PROVENANCE.md",
@@ -102,8 +102,8 @@
     {
       "path": "../../docs/PROVISIONING-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 11567,
-      "sha256": "03fee4cf6f0c8c7f28026d9f9b6ad9575e56eb1f51c76c3478ca37a102472f10"
+      "bytes": 11722,
+      "sha256": "5ce736436279e9bb9637e85091eaa84e0b197dcb5ada19404da315307fa71eba"
     },
     {
       "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
@@ -156,8 +156,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 28777,
-      "sha256": "5e174c613647efc1e833d1b4921d23261f45d97ee417b7403966d68ca360eeca"
+      "bytes": 29494,
+      "sha256": "1d1187b8b632fe0d6b24e331c7768f797ee46fe0961c29df1efca727e1a10681"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -578,6 +578,72 @@
       "category": "runtime-validation",
       "bytes": 186293,
       "sha256": "4eceb111e18c441b3e0ec72d0b3eb4e95bfc99189109781e231260147182a5b6"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-2026-10-13.md",
+      "category": "runtime-validation",
+      "bytes": 11391,
+      "sha256": "969aa080fc481b8f632b428b0b5aea0ffa6736ec396acb5ddddbca96053dfaaf"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-baseline-proof-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 61901,
+      "sha256": "ed23215a54c66af4965577f1209109a229587dc5a63b041058ebd8df29fab918"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-evidence-2026-10-13.json",
+      "category": "runtime-validation",
+      "bytes": 4066993,
+      "sha256": "346f344688c576d3047d8b3e9a671532ffecafc52a6135cea236138970681d5f"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-logout-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 15736,
+      "sha256": "9876c1cc4a53f24b96a96035996bea0991e29f876c1a0f126a73cc6f20574f49"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-r0-first-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 56125,
+      "sha256": "8608c48db2772d35c0a67721d39f3c9b9a97dbe439e74a47728584a5e524559e"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-r0-last-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 55915,
+      "sha256": "7e85f5b4c519d8053491844a6a93b5aaa97f749d32681b2e1153822a8e9a8c1f"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-r1-first-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 56127,
+      "sha256": "ea4059bf850f5e68718e6534bd94f8bfe93a6c7a62f9927e1b03e04220b8b874"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-r1-last-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 56539,
+      "sha256": "251ad92c2ff71c632f360e3969ebc5daebea3049bf0c109f48b78733fbf284b9"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-r1-proof-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 61865,
+      "sha256": "aea5781171d3faa01c7dbe3b71d1c0fb986ddde280e61e3e90596715b56b5939"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-stopped-first-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 62731,
+      "sha256": "fded66f3aa70db344761e25b9777a191601dbf96053e2cd1e9345ee8d98a0a26"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-32-stopped-packages-2026-10-13.jpg",
+      "category": "runtime-validation",
+      "bytes": 51164,
+      "sha256": "d8d04b0b99672a1bc02a7de350a7b82a3fdd331874df70d03299cd54911e6a18"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-4-2026-10-11.md",
