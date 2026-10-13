@@ -50,13 +50,34 @@ export interface Probe {
 export interface ProbePage extends Observation {
   revision: number; record_sha256: string; total: number; offset: number; limit: number; next_offset: number | null; probes: Probe[];
 }
+export type LockfileRef = NonNullable<RevisionSummary['lockfile']>;
+export interface LockfilePin { revision: number; record_sha256: string; lockfile: LockfileRef | null }
+export interface LockfileHeader extends LockfileRef { python: string | null; platform: string | null; skipped: number }
+export interface CondaEntry { name: string; version: string; build: string; channel: string | null; subdir: string | null; file: string | null; sha256: string | null; md5: string | null; license: string | null }
+export interface PipEntry { name: string; version: string; installer: string | null; location: 'prefix' | 'user'; url: string | null; sha256: string | null }
+export interface DeclaredLicense { declared: string | null; agpl: boolean | null }
+export interface LockfileDifference {
+  ecosystem: 'conda' | 'pip'; name: string; location: 'prefix' | 'user' | null; change: 'added' | 'removed' | 'changed';
+  before: CondaEntry | PipEntry | null; after: CondaEntry | PipEntry | null; changed_fields: string[];
+  before_license: DeclaredLicense | null; after_license: DeclaredLicense | null;
+}
+export interface LockfileDiffPage extends Observation {
+  before: LockfilePin; after: LockfilePin; status: 'complete' | 'held';
+  holds: {side: 'before' | 'after'; reason: 'lockfile_unrecorded' | 'blob_missing' | 'unsupported_format' | 'skipped_entries' | 'input_limit'}[];
+  before_header: LockfileHeader | null; after_header: LockfileHeader | null; header_changes: ('python' | 'platform')[];
+  total: number | null; added: number | null; removed: number | null; changed: number | null;
+  offset: number; limit: number; next_offset: number | null; differences: LockfileDifference[];
+}
+export type DiffIdentity = Pick<LockfileDiffPage, 'before_header' | 'after_header' | 'header_changes' | 'total' | 'added' | 'removed' | 'changed'>;
 export type Selection = {kind: 'summary'} | {kind: 'operation'; operation: OperationSummary} |
   {kind: 'retained_operation'; provisionId: string} | {kind: 'files'; operation: OperationSummary; offset: number; retained?: true} | {kind: 'history'; after: number; target: number | null} |
-  {kind: 'probes'; revision: RevisionSummary; offset: number};
-export type ProvisionData = ProvisionObservation | OperationDetail | FilePage | HistoryPage | ProbePage;
+  {kind: 'probes'; revision: RevisionSummary; offset: number} |
+  {kind: 'diff'; before: RevisionSummary; after: RevisionSummary; offset: number; expected?: DiffIdentity; previousKey?: string};
+export type ProvisionData = ProvisionObservation | OperationDetail | FilePage | HistoryPage | ProbePage | LockfileDiffPage;
 export class ProvisionReadError extends Error { constructor(readonly status: number) { super('Environment observation unavailable'); } }
 export const PROVISION_MAX_BYTES = 64 * 1024;
 export const PROVISION_DEADLINE_MS = 8000;
+export const DIFF_DEADLINE_MS = 12000;
 export const PROVISION_INTERVAL_MS = 3000;
 const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const hash = /^[0-9a-f]{64}$/;
@@ -114,7 +135,66 @@ function file(v: unknown): v is ResolvedFile {
 }
 function revision(v: unknown): v is RevisionSummary {
   if (!object(v, ['revision', 'record_sha256', 'fingerprint', 'managed', 'changed_by', 'operation', 'recorded_at', 'lockfile', 'commands_total', 'omitted_commands', 'probes_total']) || !count(v.revision) || !digest(v.record_sha256) || typeof v.fingerprint !== 'string' || !/^[0-9a-f]{32}$/.test(v.fingerprint) || !nullable(v.managed, v => typeof v === 'boolean') || !nullable(v.changed_by, id) || !nullable(v.operation, id) || !time(v.recorded_at) || !count(v.commands_total, 8) || !count(v.omitted_commands) || !count(v.probes_total, 64)) return false;
-  return v.lockfile === null || (object(v.lockfile, ['sha256', 'size', 'conda_packages', 'pip_distributions']) && digest(v.lockfile.sha256) && count(v.lockfile.size, 8 * 1024 * 1024) && count(v.lockfile.conda_packages, 20_000) && count(v.lockfile.pip_distributions, 20_000));
+  return nullable(v.lockfile, lockfileRef);
+}
+const refKeys = ['sha256', 'size', 'conda_packages', 'pip_distributions'];
+const headerKeys = [...refKeys, 'python', 'platform', 'skipped'];
+function lockfileRef(v: unknown): v is LockfileRef {
+  return object(v, refKeys) && digest(v.sha256) && count(v.size, 8 * 1024 * 1024) && count(v.conda_packages, 20_000) && count(v.pip_distributions, 20_000);
+}
+function sameRef(a: LockfileRef | null, b: LockfileRef | null): boolean {return a === null || b === null ? a === b : refKeys.every(k => a[k as keyof LockfileRef] === b[k as keyof LockfileRef]);}
+function pin(v: unknown, selected: RevisionSummary): v is LockfilePin {
+  return object(v, ['revision', 'record_sha256', 'lockfile']) && v.revision === selected.revision && v.record_sha256 === selected.record_sha256 && nullable(v.lockfile, lockfileRef) && sameRef(v.lockfile as LockfileRef | null, selected.lockfile);
+}
+const versionPattern = /^[A-Za-z0-9_.+!-]{1,256}$/;
+const packagePattern = /^[A-Za-z0-9_][A-Za-z0-9._+-]{0,255}$/;
+function header(v: unknown, ref: LockfileRef | null): v is LockfileHeader {
+  return ref !== null && object(v, headerKeys) && refKeys.every(k => v[k] === ref[k as keyof LockfileRef]) && count(v.size, 8 * 1024 * 1024, 1) && nullable(v.python, v => typeof v === 'string' && versionPattern.test(v)) && nullable(v.platform, v => text(v, 128) && /^[a-z0-9]+(?:-[a-z0-9_]+)?$/.test(v)) && count(v.skipped);
+}
+function condaEntry(v: unknown): v is CondaEntry {
+  return object(v, ['name', 'version', 'build', 'channel', 'subdir', 'file', 'sha256', 'md5', 'license']) && typeof v.name === 'string' && packagePattern.test(v.name) && typeof v.version === 'string' && versionPattern.test(v.version) && typeof v.build === 'string' && /^[A-Za-z0-9_.+]{1,256}$/.test(v.build) && nullable(v.channel, v => text(v, 2048) && /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,255}(?:\/label\/[A-Za-z0-9._-]{1,255})?|(?:https?|file):\/\/[!-~]+)$/.test(v)) && nullable(v.subdir, v => text(v, 128) && /^[a-z0-9]+(?:-[a-z0-9_]+)?$/.test(v)) && nullable(v.file, v => typeof v === 'string' && /^[A-Za-z0-9_][A-Za-z0-9._+!-]{0,250}\.(?:conda|tar\.bz2)$/.test(v)) && nullable(v.sha256, digest) && nullable(v.md5, v => typeof v === 'string' && /^[0-9a-f]{32}$/.test(v)) && nullable(v.license, v => typeof v === 'string' && /^[ -~]{1,256}$/.test(v));
+}
+function pipEntry(v: unknown): v is PipEntry {
+  return object(v, ['name', 'version', 'installer', 'location', 'url', 'sha256']) && typeof v.name === 'string' && packagePattern.test(v.name) && typeof v.version === 'string' && versionPattern.test(v.version) && nullable(v.installer, v => typeof v === 'string' && /^[A-Za-z0-9_.+-]{1,64}$/.test(v)) && choice(v.location, ['prefix', 'user']) && nullable(v.url, v => text(v, 2048) && /^(?:https?|file|(?:git|hg|svn|bzr)\+(?:https?|ssh|file)):\/\/[!-~]+$/.test(v)) && nullable(v.sha256, digest);
+}
+function declared(v: unknown, expected: string | null): v is DeclaredLicense {
+  return object(v, ['declared', 'agpl']) && v.declared === expected && (expected === null ? v.agpl === null : typeof v.agpl === 'boolean');
+}
+export function differenceKey(v: LockfileDifference): string {return [v.ecosystem, v.location ?? '', v.name].join('\0');}
+function difference(v: unknown): v is LockfileDifference {
+  if (!object(v, ['ecosystem', 'name', 'location', 'change', 'before', 'after', 'changed_fields', 'before_license', 'after_license']) || !choice(v.ecosystem, ['conda', 'pip']) || typeof v.name !== 'string' || !packagePattern.test(v.name) || !choice(v.change, ['added', 'removed', 'changed']) || (v.ecosystem === 'conda' ? v.location !== null : !choice(v.location, ['prefix', 'user'])) || !Array.isArray(v.changed_fields) || !v.changed_fields.length || v.changed_fields.length > 10) return false;
+  for (const side of ['before', 'after'] as const) {
+    const entry = v[side], license = v[`${side}_license`];
+    if (entry === null) {if (license !== null) return false; continue;}
+    if (v.ecosystem === 'conda') {if (!condaEntry(entry) || entry.name !== v.name || !declared(license, entry.license)) return false;}
+    else if (!pipEntry(entry) || entry.name.replace(/[-_.]+/g, '-').toLowerCase() !== v.name || entry.location !== v.location || !declared(license, null)) return false;
+  }
+  if (v.change === 'added' ? v.before !== null || v.after === null : v.change === 'removed' ? v.before === null || v.after !== null : v.before === null || v.after === null) return false;
+  const a = (v.before ?? {}) as Record<string, unknown>, b = (v.after ?? {}) as Record<string, unknown>;
+  // The retained worker schema treats a missing side's optional field as null.
+  const changed = [...new Set([...Object.keys(a), ...Object.keys(b)])].filter(k => (a[k] ?? null) !== (b[k] ?? null)).sort();
+  const fields = v.changed_fields;
+  return changed.length === fields.length && changed.every((k, i) => k === fields[i]);
+}
+export function diffIdentity(v: LockfileDiffPage): DiffIdentity {return {before_header: v.before_header, after_header: v.after_header, header_changes: [...v.header_changes], total: v.total, added: v.added, removed: v.removed, changed: v.changed};}
+function sameIdentity(v: LockfileDiffPage, expected: DiffIdentity): boolean {
+  return ['total', 'added', 'removed', 'changed'].every(k => v[k as 'total'] === expected[k as 'total']) &&
+    (['before_header', 'after_header'] as const).every(side => {const a = v[side], b = expected[side]; return a === null || b === null ? a === b : headerKeys.every(k => a[k as keyof LockfileHeader] === b[k as keyof LockfileHeader]);}) &&
+    v.header_changes.length === expected.header_changes.length && v.header_changes.every((k, i) => k === expected.header_changes[i]);
+}
+function diffPage(v: Record<string, unknown>, selection: Extract<Selection, {kind: 'diff'}>): boolean {
+  if (!revision(selection.before) || !revision(selection.after) || !count(selection.offset, 80_000)) return false;
+  if (!object(v, [...common, 'before', 'after', 'status', 'holds', 'before_header', 'after_header', 'header_changes', 'total', 'added', 'removed', 'changed', 'offset', 'limit', 'next_offset', 'differences']) || !pin(v.before, selection.before) || !pin(v.after, selection.after) || !choice(v.status, ['complete', 'held']) || !Array.isArray(v.holds) || v.holds.length > 2 || !v.holds.every(h => object(h, ['side', 'reason']) && choice(h.side, ['before', 'after']) && choice(h.reason, ['lockfile_unrecorded', 'blob_missing', 'unsupported_format', 'skipped_entries', 'input_limit'])) || new Set(v.holds.map(h => h.side)).size !== v.holds.length || !nullable(v.before_header, h => header(h, selection.before.lockfile)) || !nullable(v.after_header, h => header(h, selection.after.lockfile)) || !Array.isArray(v.header_changes) || !Array.isArray(v.differences) || v.offset !== selection.offset || v.limit !== 8) return false;
+  if (v.status === 'held') return v.holds.length > 0 && [v.total, v.added, v.removed, v.changed, v.next_offset].every(x => x === null) && !v.header_changes.length && !v.differences.length;
+  if (v.holds.length || v.before_header === null || v.after_header === null || (v.before_header as LockfileHeader).skipped !== 0 || (v.after_header as LockfileHeader).skipped !== 0 || !count(v.total, 80_000) || !count(v.added, 80_000) || !count(v.removed, 80_000) || !count(v.changed, 80_000) || v.total !== v.added + v.removed + v.changed || !v.differences.every(difference) || !page(v, v.differences, {offset: selection.offset, total: v.total})) return false;
+  const rows = v.differences as LockfileDifference[], a = v.before_header as LockfileHeader, b = v.after_header as LockfileHeader;
+  const oldCount = a.conda_packages + a.pip_distributions, newCount = b.conda_packages + b.pip_distributions;
+  if (newCount - oldCount !== v.added - v.removed || v.added > newCount || v.removed > oldCount || v.changed > Math.min(oldCount, newCount)) return false;
+  const changed = (['python', 'platform'] as const).filter(k => a[k] !== b[k]);
+  const headerChanges = v.header_changes;
+  if (changed.length !== headerChanges.length || changed.some((k, i) => k !== headerChanges[i]) || rows.some((r, i) => (i > 0 && differenceKey(rows[i - 1]!) >= differenceKey(r)) || (selection.previousKey !== undefined && differenceKey(r) <= selection.previousKey))) return false;
+  if (['added', 'removed', 'changed'].some(k => rows.filter(r => r.change === k).length > (v[k] as number))) return false;
+  return selection.expected === undefined || sameIdentity(v as unknown as LockfileDiffPage, selection.expected);
 }
 function probe(v: unknown, n: number): v is Probe {
   return object(v, ['capability', 'probe', 'version', 'kind', 'status', 'revision', 'execution_id', 'output', 'duration_seconds', 'operation', 'recorded_at']) && nullable(v.capability, v => text(v, 64) && /^[a-z0-9][a-z0-9_-]*$/.test(v)) && text(v.probe, 128) && /^[a-z0-9][a-z0-9:._-]*$/.test(v.probe) && count(v.version, Number.MAX_SAFE_INTEGER, 1) && choice(v.kind, ['functional', 'import_check']) && choice(v.status, ['passed', 'failed', 'error']) && (v.revision === null || v.revision === n) && nullable(v.execution_id, id) && text(v.output, 2000, true) && typeof v.duration_seconds === 'number' && Number.isFinite(v.duration_seconds) && v.duration_seconds >= 0 && nullable(v.operation, id) && time(v.recorded_at);
@@ -128,6 +208,10 @@ export function provisionData(value: unknown, scope: EnvironmentScope, selection
   if (typeof value !== 'object' || value === null || Array.isArray(value) || !scoped(value as Record<string, unknown>, scope)) throw bad();
   const v = value as Record<string, unknown>;
   switch (selection.kind) {
+    case 'diff': {
+      if (!diffPage(v, selection)) throw bad();
+      return v as unknown as LockfileDiffPage;
+    }
     case 'summary': {
       if (!object(v, [...common, 'gate', 'current_revision', 'queue_total', 'operations']) || !object(v.gate, ['generation', 'mode', 'operation', 'revision', 'recorded']) || !count(v.gate.generation) || !choice(v.gate.mode, ['ready', 'hold', 'needs_recovery']) || !nullable(v.gate.operation, id) || !nullable(v.gate.revision, count) || typeof v.gate.recorded !== 'boolean' || !nullable(v.current_revision, count) || !count(v.queue_total, 32) || !Array.isArray(v.operations) || v.operations.length !== v.queue_total || !v.operations.every(summary) || new Set(v.operations.map(o => o.provision_id)).size !== v.queue_total || v.operations.some(o => o.state === 'finished')) throw bad();
       if ((v.gate.mode === 'ready' && v.gate.operation !== null) || (v.gate.mode === 'needs_recovery' && v.gate.operation === null)) throw bad();
@@ -163,6 +247,13 @@ export function provisionPath(scope: EnvironmentScope, selected: Selection): str
   const base = `/api/v0/projects/${encodeURIComponent(scope.projectId)}/environments/${encodeURIComponent(scope.environmentId)}/provisioning/observations`;
   const query = new URLSearchParams();
   if (selected.kind === 'summary') return base;
+  if (selected.kind === 'diff') {
+    if (!revision(selected.before) || !revision(selected.after) || !count(selected.offset, 80_000)) throw new ProvisionReadError(0);
+    query.set('before', String(selected.before.revision)); query.set('before_pin', selected.before.record_sha256);
+    query.set('after', String(selected.after.revision)); query.set('after_pin', selected.after.record_sha256);
+    query.set('offset', String(selected.offset)); query.set('limit', '8');
+    return base + '/lockfile-diff?' + query;
+  }
   if (selected.kind === 'history') {
     if (!count(selected.after, Number.MAX_SAFE_INTEGER, -1) || !nullable(selected.target, count)) throw new ProvisionReadError(0);
     query.set('after', String(selected.after)); query.set('limit', '8');
@@ -199,7 +290,7 @@ export async function readProvision(scope: EnvironmentScope, selected: Selection
   const abort = () => {controller.abort(); if (response) void cancel();};
   signal.addEventListener('abort', abort, {once: true});
   const logout = onKernelLogout(abort);
-  const timeout = setTimeout(abort, PROVISION_DEADLINE_MS);
+  const timeout = setTimeout(abort, selected.kind === 'diff' ? DIFF_DEADLINE_MS : PROVISION_DEADLINE_MS);
   try {
     response = await fetch(path, {headers: {Accept: 'application/json'}, signal: controller.signal, redirect: 'error', cache: 'no-store'});
     if (controller.signal.aborted || !kernelReadsAllowed() || response.redirected || response.type === 'opaqueredirect') throw new ProvisionReadError(0);
@@ -230,7 +321,7 @@ export class ProvisionReader {
   private visible = false; private known = false; private stopped = false; private epoch = 0; private busy = false; private failures = 0;
   private timer: ReturnType<typeof setTimeout> | undefined; private deadline: ReturnType<typeof setTimeout> | undefined;
   private controller: AbortController | undefined; private state: ReadState = {phase: 'loading', data: null, busy: false};
-  constructor(private readonly read: (signal: AbortSignal) => Promise<ProvisionData>, private readonly publish: (value: ReadState) => void, private readonly poll = true) {}
+  constructor(private readonly read: (signal: AbortSignal) => Promise<ProvisionData>, private readonly publish: (value: ReadState) => void, private readonly poll = true, private readonly deadlineMs = PROVISION_DEADLINE_MS, private readonly settleOnce = false) {}
   private emit(phase: ReadPhase, data = this.state.data): void {this.state = {phase, data, busy: this.busy}; this.publish(this.state);}
   setVisible(visible: boolean): void {
     if (this.stopped || (this.known && this.visible === visible)) return;
@@ -244,7 +335,7 @@ export class ProvisionReader {
     this.busy = true; this.emit(this.state.phase);
     const epoch = this.epoch, controller = new AbortController(); this.controller = controller;
     let expired = false;
-    this.deadline = setTimeout(() => {expired = true; controller.abort(); if (!this.stopped && this.visible && epoch === this.epoch) this.emit('unavailable');}, PROVISION_DEADLINE_MS);
+    this.deadline = setTimeout(() => {expired = true; controller.abort(); if (!this.stopped && this.visible && epoch === this.epoch) this.emit('unavailable');}, this.deadlineMs);
     try {
       const data = await this.read(controller.signal);
       if (!expired && !this.stopped && this.visible && epoch === this.epoch) {this.failures = 0; this.emit('observed', data);}
@@ -259,6 +350,7 @@ export class ProvisionReader {
     } finally {
       clearTimeout(this.deadline); this.busy = false;
       if (!this.stopped && this.visible && epoch === this.epoch) this.emit(this.state.phase);
+      if (this.settleOnce && !this.stopped) {this.emit(this.state.phase === 'loading' ? 'unavailable' : this.state.phase); this.stop();}
       if (!this.stopped && this.visible) {
         if (this.poll || epoch !== this.epoch) this.timer = setTimeout(() => void this.refresh(), epoch !== this.epoch ? 0 : Math.min(30_000, PROVISION_INTERVAL_MS * 2 ** Math.min(this.failures, 4)));
       }

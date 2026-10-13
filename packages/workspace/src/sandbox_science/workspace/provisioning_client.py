@@ -14,11 +14,13 @@ import aiohttp
 from pydantic import BaseModel, ValidationError
 
 from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 MAX_BYTES: Final = 64 * 1024
 MAX_CHUNKS: Final = 256
 CALL_TIMEOUT: Final = 5.0
+DIFF_TIMEOUT: Final = 9.0
 T = TypeVar("T", bound=BaseModel)
 
 
@@ -48,6 +50,13 @@ class ProvisionObserver:
 
     async def get(self, path: str, params: dict[str, str], model: type[T]) -> T:
         """Read one bounded strict DTO; request cancellation closes its HTTP owner."""
+        return await self._get(path, params, model, CALL_TIMEOUT)
+
+    async def get_diff(self, path: str, params: dict[str, str]) -> LockfileDiffPage:
+        """Allow the worker's eight-second comparison budget, with the same byte cap."""
+        return await self._get(path, params, LockfileDiffPage, DIFF_TIMEOUT)
+
+    async def _get(self, path: str, params: dict[str, str], model: type[T], timeout: float) -> T:
         try:
             async with self.binding.session.get(
                 self.binding.base_url + path,
@@ -56,7 +65,7 @@ class ProvisionObserver:
                 allow_redirects=False,
                 auto_decompress=False,
                 read_bufsize=8192,
-                timeout=aiohttp.ClientTimeout(total=CALL_TIMEOUT),
+                timeout=aiohttp.ClientTimeout(total=timeout),
             ) as response:
                 # A claimed length is only an early refusal, never a substitute
                 # for the independent streaming byte and chunk counters.

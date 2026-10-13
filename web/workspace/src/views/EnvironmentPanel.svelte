@@ -4,8 +4,8 @@
   import type { Project } from '../lib/api';
   import { formatTime } from '../lib/format';
   import { onKernelLogout } from '../lib/kernels';
-  import { environmentChoices, ProvisionReader, readProvision, type ReadState, type Selection,
-    type ProvisionObservation, type OperationDetail, type FilePage, type HistoryPage, type ProbePage } from '../lib/provisioning';
+  import { environmentChoices, ProvisionReader, readProvision, diffIdentity, differenceKey, DIFF_DEADLINE_MS, PROVISION_DEADLINE_MS, type ReadState, type Selection,
+    type ProvisionObservation, type OperationDetail, type FilePage, type HistoryPage, type ProbePage, type RevisionSummary, type LockfileDiffPage } from '../lib/provisioning';
 
   let {projectId, project, initialView = {phase: 'loading', data: null, busy: false}, initialSelection = null, initialDetail = {phase: 'loading', data: null, busy: false}}:
     {projectId: string; project: Project; initialView?: ReadState; initialSelection?: Selection | null; initialDetail?: ReadState} = $props();
@@ -15,6 +15,11 @@
   let view = $state<ReadState>(untrack(() => initialView));
   let detail = $state<ReadState>(untrack(() => initialDetail));
   let selection = $state<Selection | null>(untrack(() => initialSelection));
+  let before = $state<RevisionSummary | null>(untrack(() => initialSelection?.kind === 'diff' ? initialSelection.before : null));
+  let after = $state<RevisionSummary | null>(untrack(() => initialSelection?.kind === 'diff' ? initialSelection.after : null));
+  let diffOffsets = $state<number[]>([]);
+  let pairKey = $state(untrack(() => JSON.stringify([projectId, project.default_environment_id])));
+  const pairInScope = $derived(pairKey === JSON.stringify([projectId, selected?.scope.environmentId]));
   let mounted = $state(false), visible = $state(false), blocked = $state(false);
   let overviewOwner = $state<ProvisionReader | null>(null), detailOwner = $state<ProvisionReader | null>(null);
   const overview = $derived(view.data?.project_id === projectId && view.data.environment_id === selected?.scope.environmentId ? view.data as ProvisionObservation : null);
@@ -28,9 +33,29 @@
   const files = $derived(selection?.kind === 'files' ? selectedData as FilePage | null : null);
   const history = $derived(selection?.kind === 'history' ? selectedData as HistoryPage | null : null);
   const probes = $derived(selection?.kind === 'probes' ? selectedData as ProbePage | null : null);
+  const comparison = $derived(selection?.kind === 'diff' ? selectedData as LockfileDiffPage | null : null);
   const busy = $derived(view.busy || detail.busy);
   const signedOut = $derived(blocked || view.phase === 'signed_out' || detail.phase === 'signed_out');
   function select(value: Selection): void { if (!busy && !signedOut) selection = value; }
+  function chooseRevision(side: 'before' | 'after', value: RevisionSummary): void {
+    if (busy || signedOut) return;
+    if (!pairInScope) before = after = null;
+    pairKey = JSON.stringify([projectId, selected?.scope.environmentId]);
+    if (side === 'before') before = value; else after = value;
+    diffOffsets = [];
+  }
+  function compare(): void {if (pairInScope && before && after && !busy && !signedOut) {diffOffsets = []; select({kind: 'diff', before, after, offset: 0});}}
+  function nextComparison(): void {
+    if (busy || signedOut || selection?.kind !== 'diff' || comparison?.status !== 'complete' || comparison.next_offset === null) return;
+    diffOffsets = [...diffOffsets, comparison.offset];
+    select({...selection, offset: comparison.next_offset, expected: diffIdentity(comparison), previousKey: differenceKey(comparison.differences.at(-1)!)});
+  }
+  function previousComparison(): void {
+    if (busy || signedOut || selection?.kind !== 'diff' || comparison?.status !== 'complete' || !diffOffsets.length) return;
+    const offset = diffOffsets.at(-1)!; diffOffsets = diffOffsets.slice(0, -1);
+    select({kind: 'diff', before: selection.before, after: selection.after, offset, expected: diffIdentity(comparison)});
+  }
+  function holdReason(reason: string): string {return {lockfile_unrecorded: 'No lockfile was recorded', blob_missing: 'The recorded lockfile is unavailable or evicted', unsupported_format: 'The retained format is unsupported', skipped_entries: 'The retained lockfile omitted package entries', input_limit: 'The selected input exceeds this reader’s limits'}[reason] ?? 'Unknown input';}
   function environment(value: string): void { if (value !== selected?.scope.environmentId) { selectedId = value; selection = null; } }
   function phaseLabel(phase: ReadState['phase']): string {
     return {loading: 'Reading environment records…', observed: '', paused: 'Observations paused.', unavailable: 'Observation unavailable. Current state is unknown.', unsupported: 'This worker is unconfigured or does not support provisioning observations.', missing: 'This recorded environment or selected record is no longer available.', changed: 'This selection changed. Refresh the overview or history and select it again.', signed_out: 'Observations stopped for sign-out. Reload after signing in.'}[phase];
@@ -44,7 +69,7 @@
   $effect(() => {
     if (!mounted || !selected) return;
     const scope = selected.scope;
-    view = {phase: 'loading', data: null, busy: false}; selection = null;
+    view = {phase: 'loading', data: null, busy: false}; selection = null; before = after = null; diffOffsets = [];
     let disposed = false;
     const owner = new ProvisionReader(signal => readProvision(scope, {kind: 'summary'}, signal), value => {if (!disposed) {view = value; if (value.phase === 'signed_out') blocked = true;}});
     overviewOwner = owner;
@@ -58,7 +83,7 @@
     detailKey = selectionKey;
     detail = {phase: 'loading', data: null, busy: false};
     let disposed = false;
-    const owner = new ProvisionReader(signal => readProvision(scope, requested, signal), value => {if (!disposed) {detail = value; if (value.phase === 'signed_out') blocked = true;}}, false);
+    const owner = new ProvisionReader(signal => readProvision(scope, requested, signal), value => {if (!disposed) {detail = value; if (value.phase === 'signed_out') blocked = true; if (requested.kind === 'diff' && value.phase === 'changed') {before = after = null; diffOffsets = [];}}}, false, requested.kind === 'diff' ? DIFF_DEADLINE_MS : PROVISION_DEADLINE_MS, requested.kind === 'diff');
     detailOwner = owner;
     const off = onKernelLogout(() => owner.logout());
     return () => {disposed = true; owner.stop(); off(); detailOwner = null;};
@@ -110,6 +135,14 @@
         </table></div>
       {/if}
     {/if}
+    <section aria-label="Compare retained lockfiles" class="comparison-picker">
+      <h3>Compare retained lockfiles</h3>
+      <p class="muted">Choose each side from revision history, then compare the exact retained records. The same revision may be selected twice. No guest or install is started.</p>
+      <div class="status-grid"><div><span>Before</span><strong>{pairInScope && before ? `Revision ${before.revision}` : 'Choose from history'}</strong>{#if pairInScope && before}<code class="digest">{before.record_sha256}</code>{/if}</div>
+        <div><span>After</span><strong>{pairInScope && after ? `Revision ${after.revision}` : 'Choose from history'}</strong>{#if pairInScope && after}<code class="digest">{after.record_sha256}</code>{/if}</div></div>
+      <div class="page-controls"><button disabled={busy || signedOut} onclick={() => select({kind: 'history', after: -1, target: null})}>Choose revisions</button>
+        <button disabled={busy || signedOut || !pairInScope || !before || !after} onclick={compare}>Compare selected lockfiles</button></div>
+    </section>
     {#if selection}
       <section aria-label="Selected environment record" class="selected-record">
         <div class="heading"><h3>Selected record</h3><button onclick={() => {selection = null;}}>Close detail</button></div>
@@ -149,16 +182,47 @@
         {:else if history}
           <h4>Revision history</h4>
           <p>Retained records: {history.retained_total}; first retained: {history.first_retained ?? 'none'}; selected window ends at revision {history.target ?? 'none'}.</p>
-          <p class="muted">Retention is limited. Missing lockfiles may have been evicted or never recorded. This view neither restores revisions nor compares lockfile contents.</p>
+          <p class="muted">Retention is limited. Missing lockfiles may have been evicted or never recorded. Select explicit before and after records for a bounded lockfile comparison; revisions are not restored.</p>
           {#if history.revisions.length === 0}<p>No retained revisions in this selected window.</p>{:else}
-            <div class="table-scroll"><table><thead><tr><th>Revision</th><th>Change</th><th>Lockfile</th><th>Probes</th></tr></thead><tbody>
+            <div class="table-scroll"><table><thead><tr><th>Revision</th><th>Change</th><th>Lockfile</th><th>Probes</th><th>Compare</th></tr></thead><tbody>
               {#each history.revisions as item (item.revision)}<tr><td>{item.revision}<br/><small>{formatTime(item.recorded_at)}</small></td><td>{item.managed === null ? 'origin unknown' : item.managed ? 'managed' : 'unmanaged'}<br/><small>{item.operation ?? item.changed_by ?? 'no producing operation recorded'}</small></td>
                 <td>{item.lockfile ? `${item.lockfile.conda_packages} Conda / ${item.lockfile.pip_distributions} pip` : 'unavailable'}{#if item.lockfile}<br/><code class="digest">{item.lockfile.sha256}</code>{/if}</td>
-                <td><button disabled={busy || signedOut} onclick={() => select({kind: 'probes', revision: item, offset: 0})}>{item.probes_total} probe records</button>{#if item.operation}<br/><button disabled={busy || signedOut} onclick={() => {if (item.operation) select({kind: 'retained_operation', provisionId: item.operation});}}>Load current retained operation</button>{/if}</td></tr>{/each}
+                <td><button disabled={busy || signedOut} onclick={() => select({kind: 'probes', revision: item, offset: 0})}>{item.probes_total} probe records</button>{#if item.operation}<br/><button disabled={busy || signedOut} onclick={() => {if (item.operation) select({kind: 'retained_operation', provisionId: item.operation});}}>Load current retained operation</button>{/if}</td>
+                <td><button disabled={busy || signedOut} onclick={() => chooseRevision('before', item)}>Use as before</button><button disabled={busy || signedOut} onclick={() => chooseRevision('after', item)}>Use as after</button></td></tr>{/each}
             </tbody></table></div>
           {/if}
           <div class="page-controls"><button disabled={busy || signedOut} onclick={() => select({kind: 'history', after: -1, target: null})}>Refresh history window</button>
             <button disabled={busy || signedOut || history.next_after === null} onclick={() => {if (history.next_after !== null) select({kind: 'history', after: history.next_after, target: history.target});}}>Next revisions</button></div>
+        {:else if comparison}
+          <h4>Lockfile comparison · revision {comparison.before.revision} → {comparison.after.revision}</h4>
+          <p class="muted">These are dated retained package records. Advancing the environment head does not select newer sources. Raw revision pins and lockfile byte hashes are verified by the backend, rather than independently hashed by this browser.</p>
+          {#each [['Before', comparison.before, comparison.before_header], ['After', comparison.after, comparison.after_header]] as side}
+            <details><summary>{side[0]} source proof</summary><pre>{JSON.stringify({selection: side[1], verified_header: side[2]}, null, 2)}</pre></details>
+          {/each}
+          {#if comparison.status === 'held'}
+            <p class="notice"><strong>Comparison held; package differences are unknown.</strong> An unavailable or incomplete input is not an empty inventory.</p>
+            <ul>{#each comparison.holds as hold}<li>{hold.side === 'before' ? 'Before' : 'After'}: {holdReason(hold.reason)}.</li>{/each}</ul>
+          {:else}
+            <p>{comparison.added} added · {comparison.removed} removed · {comparison.changed} changed · {comparison.total} total differences.</p>
+            {#if comparison.header_changes.length}<p>Recorded header changes: {comparison.header_changes.join(', ')}.</p>{/if}
+            {#if comparison.total === 0}<p>No package-entry differences in these two validated retained lockfiles.</p>{:else}<p>Showing differences {comparison.offset + 1}–{comparison.offset + comparison.differences.length} of {comparison.total}. This page is a subset of the comparison.</p>{/if}
+            {#each comparison.differences as row (differenceKey(row))}
+              <article><h5>{row.name} · {row.change} <small>({row.ecosystem}{row.location ? `, ${row.location}` : ''})</small></h5>
+                <p>Changed fields: {row.changed_fields.join(', ')}.</p>
+                <div class="comparison-sides">{#each [{label: 'Before', entry: row.before, license: row.before_license}, {label: 'After', entry: row.after, license: row.after_license}] as side}
+                  <section aria-label={`${side.label} ${row.name}`}><h6>{side.label}</h6>
+                    {#if side.entry}<p>Declared license: <strong>{side.license?.declared ?? 'unknown'}</strong>; AGPL status: {side.license?.agpl === null ? 'unknown' : side.license?.agpl ? 'flagged' : 'not flagged'}.</p>
+                      <dl class="facts">{#each Object.entries(side.entry) as [field, value]}<dt>{field}</dt><dd class="record-text">{value ?? 'unknown'}</dd>{/each}</dl>
+                    {:else}<p>No recorded entry on this side.</p>{/if}
+                  </section>
+                {/each}</div>
+              </article>
+            {/each}
+            <p class="muted">Conda licenses are declared metadata with the existing AGPL heuristic. Pip licenses remain unknown. Membership and metadata differences do not certify installed files, scientific correctness, licensing or permission.</p>
+            <div class="page-controls"><button disabled={busy || signedOut || detail.phase !== 'observed' || !diffOffsets.length} onclick={previousComparison}>Previous differences</button>
+              <button disabled={busy || signedOut || detail.phase !== 'observed' || comparison.next_offset === null} onclick={nextComparison}>Next differences</button></div>
+          {/if}
+          {#if detail.phase === 'changed'}<p class="notice">Select both revisions again from refreshed history. No newer source was substituted.</p>{/if}
         {:else if probes}
           <h4>Probes at revision {probes.revision}</h4><p>{probes.total === 0 ? 'No probe records retained at this revision.' : `Showing probes ${probes.offset + 1}–${probes.offset + probes.probes.length} of ${probes.total}.`}</p>
           {#each probes.probes as probe, index (`${probes.offset + index}`)}<article><h5>{probe.probe}: {probe.status}</h5><p>{probe.revision === null ? 'Revision attribution unknown. ' : ''}{probe.kind === 'functional' ? 'Functional probe' : 'Import/version check; does not prove functional capability'} · version {probe.version} · {probe.duration_seconds}s.</p><pre>{probe.output || '(no output recorded)'}</pre></article>{/each}
@@ -179,6 +243,9 @@
   .status-grid > div {display: grid; gap: .35rem; padding: .75rem 1rem; border: 1px solid var(--border, #bbb); border-radius: .4rem; min-width: 10rem;}
   .heading {display: flex; align-items: center; justify-content: space-between; gap: 1rem;}
   .selected-record {margin-top: 1rem; padding: 1rem; border: 1px solid var(--border, #bbb); border-radius: .4rem;}
+  .comparison-picker {margin-top: 1rem; padding-top: .5rem; border-top: 1px solid var(--border, #bbb);}
+  .comparison-sides {display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 1rem;}
+  h6 {font-size: 1rem; margin: .5rem 0;}
   .table-scroll {overflow-x: auto;}
   article {padding: .7rem 0; border-bottom: 1px solid var(--border, #bbb);}
   h5 {font-size: 1rem; margin: .4rem 0;}
