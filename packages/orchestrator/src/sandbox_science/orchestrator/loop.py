@@ -16,8 +16,10 @@ from typing import Any, Final, TypeVar
 
 from .documents.mathjobs import threaded
 from .model import ChatModel, Message
-from .plan_tools import GUIDANCE
+from .plan_tools import GUIDANCE, GUIDANCE_VERSION
+from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase
+from .prompt_bundle import MainPromptBundle, PromptProvenance, assemble_main
 from .tools import Toolbox, ToolOutcome, operation_id
 from .worker_client import dump
 
@@ -72,6 +74,7 @@ class Interruption:
 @dataclass
 class Transcript:
     messages: list[Message]
+    prompt_provenance: PromptProvenance | None = None
     tool_records: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     job_notice_ids: list[str] = field(default_factory=list[str])
     work_request_ids: list[str] = field(default_factory=list[str])
@@ -162,6 +165,7 @@ async def _run_task(
     model: ChatModel,
     toolbox: Toolbox,
     transcript: Transcript,
+    bundle: MainPromptBundle,
     *,
     run_id: str,
     max_turns: int = 30,
@@ -188,8 +192,10 @@ async def _run_task(
         if toolbox.math_checks is not None:
             toolbox.math_checks.safe_point()
         transcript.turns = turn + 1
+        passed_specs = bundle.tool_specs()
+        bundle.verify(transcript.messages[0], passed_specs)
         transcript.phase = "model"
-        reply = await model.complete(transcript.messages, toolbox.specs)
+        reply = await model.complete(transcript.messages, passed_specs)
         transcript.phase = "harness"
         if toolbox.plans is not None:
             await toolbox.plans.model_delivered()
@@ -353,20 +359,31 @@ async def run_task(
                     await stack.enter_async_context(
                         interruption.context(toolbox.documents.active_requests())
                     )
+                offered_plans = {spec.name for spec in toolbox.specs} & PLAN_NAMES
+                if offered_plans != (PLAN_NAMES if toolbox.plans is not None else set()):
+                    raise ValueError("MAIN planning capability assembly mismatch")
+                bundle = assemble_main(
+                    system,
+                    toolbox.specs,
+                    builtin_content=system == SYSTEM_PROMPT,
+                    guidance=(GUIDANCE_VERSION, GUIDANCE) if toolbox.plans is not None else None,
+                )
                 transcript = Transcript(
+                    prompt_provenance=bundle.provenance,
                     messages=[
                         {
                             "role": "system",
-                            "content": system + ("\n\n" + GUIDANCE if toolbox.plans else ""),
+                            "content": bundle.system,
                         },
                         {"role": "user", "content": task},
-                    ]
+                    ],
                 )
                 try:
                     await _run_task(
                         model,
                         toolbox,
                         transcript,
+                        bundle,
                         run_id=run_id,
                         max_turns=max_turns,
                         on_tool=on_tool,
