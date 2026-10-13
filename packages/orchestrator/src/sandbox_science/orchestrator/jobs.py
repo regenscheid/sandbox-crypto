@@ -54,8 +54,10 @@ JOB_SPECS = (
     ToolSpec(
         "start_job",
         "Run a long shell computation in the background; returns its ID. "
-        "Give its purpose and what progress to expect. Jobs survive this turn; worker "
-        "restarts currently lose running jobs until the executor daemon is available.",
+        "Give its purpose and what progress to expect. Jobs can outlive this turn. Recovery "
+        "after worker or bridge restart requires the original executor daemon and its "
+        "sandbox to remain available. Confirmed daemon or VM loss reports unknown outcomes "
+        "as lost; the command is never automatically resubmitted.",
         {
             "type": "object",
             "properties": {
