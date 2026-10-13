@@ -15,6 +15,7 @@ from pydantic import BaseModel, ValidationError
 
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage
+from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 MAX_BYTES: Final = 64 * 1024
@@ -55,6 +56,10 @@ class ProvisionObserver:
     async def get_diff(self, path: str, params: dict[str, str]) -> LockfileDiffPage:
         """Allow the worker's eight-second comparison budget, with the same byte cap."""
         return await self._get(path, params, LockfileDiffPage, DIFF_TIMEOUT)
+
+    async def get_packages(self, path: str, params: dict[str, str]) -> RevisionPackagePage:
+        """Use comparison's bounded budget for the same shared worker read lane."""
+        return await self._get(path, params, RevisionPackagePage, DIFF_TIMEOUT)
 
     async def _get(self, path: str, params: dict[str, str], model: type[T], timeout: float) -> T:
         try:
