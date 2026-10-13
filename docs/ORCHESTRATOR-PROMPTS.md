@@ -298,7 +298,9 @@ Stock task framing examples, in original wording:
 
 ## Durable planning and automatic progress
 
-This is the code-backed interpretation of PD-1–10, not a new mandatory ceremony.
+The single-MAIN core and tools above implement versioned plans and durable
+progress. This section also describes follow-on approval, delegation, effect
+lineage and liveness behavior; those parts remain proposals, not installed tools.
 Create or update a plan for substantive research tasks and explicit planning
 requests; simple factual replies and one-step actions need no ceremony. Resume an
 applicable plan by stable IDs after user steering rather than replacing its history.
@@ -314,17 +316,22 @@ version and operation replay; user and agent edits never silently overwrite one
 another. Bound steps/tracks/text/history and return explicit capacity/conflict
 states; no unresolved history eviction or hidden automatic merge.
 
-The runtime should expose narrow `plan_read`, `plan_create`, `plan_revise`,
-`plan_step_start`, `plan_progress` and `plan_set_status` tools; these names are
-proposals. Each response returns authoritative current version/progress sequence.
-The authenticated USER editor uses the same CAS boundary. A delegate receives only
-its track's write grant. No role field supplied by model text grants that authority.
+The installed tools are `plan_read`, `plan_create`, `plan_revise`, `plan_activate`,
+`plan_progress` and `plan_finish`. Progress records include `in_progress`,
+`completed`, `blocked` and `skipped`; no separate `plan_step_start` tool exists.
+Responses retain exact version/progress pins. Future authenticated USER editing
+must use the same CAS boundary; a future delegate must receive only its track's
+write grant. No role field supplied by model text grants that authority.
+
+The trigger table combines implemented bookkeeping with the explicitly named
+follow-on lifecycle work. It does not claim that effect-to-step links, required
+approval mode, delegated runs or disconnected-liveness records are installed.
 
 | Trigger | Durable action and visible meaning |
 | --- | --- |
 | Planning starts | Save a draft goal/feasibility/outputs/steps. Draft text itself executes nothing. |
 | Execution becomes authorized | Activate the exact version under current project settings. Required approval, when configured, is explicit USER approval of that version; without it, preserve read/plan-only grants. The approval default remains the spec's open question/proposed off default. |
-| Agent begins a step | `plan_step_start` persists in_progress before dependent execution. Subsequent tool context carries the validated step/version. The harness associates effects only from that explicit binding; it never infers a step from prose similarity. |
+| Agent begins a step | `plan_progress` persists an attributed in_progress assertion against exact plan/step pins. Future automatic effect-to-step association requires an explicit binding; it must never infer a step from prose similarity. |
 | Agent produces a result | `plan_progress` appends the agent's completed assertion with pinned evidence; the runtime validates refs/authority and records it immediately. Scientific correctness remains independently reviewable. No end-of-session-only status flush. |
 | Job or child changes state | Save its observed execution/delegation event. Prompt MAIN to reconcile the linked step at the next active safe point; do not mark the step completed automatically from exit0/child status. |
 | A real obstacle appears | Append blocked with the actual missing capability/decision/evidence and partial work. Time/turn/cost limits are observed run outcomes, not invented scientific obstructions. |
@@ -345,13 +352,13 @@ statuses. The implemented single-MAIN core and tools above provide version/progr
 and activation under existing authorization. USER approval decisions, automatic
 effect-to-step links and delegated execution remain separate.
 
-Automatic means the agent maintains the plan via these tools during work, and the
-harness records linked lifecycle/liveness events without user bookkeeping. It does
-not mean a model classifier is allowed to rewrite step status from arbitrary text.
-The final-answer boundary should request reconciliation once for stale active
-steps, within the existing bounded turn/closing budget; it must not invent results,
-loop indefinitely, add a second reviewer budget, or prevent a truthful partial
-answer when a model/store is unavailable.
+The implemented automatic behavior asks the agent to maintain its plan through
+these tools during work, with each mutation durably recorded immediately. Linked
+effect/liveness events remain future work. A model classifier cannot rewrite step
+status from arbitrary text. The installed final-answer boundary rechecks current
+plan-read requirements within the ordinary remaining turn budget. A future stale
+active-step reconciliation must also stay bounded, preserve truthful partial
+answers and avoid inventing results or adding reviewer rounds.
 
 GUI progress reads committed plan/progress events with scoped monotonic cursors.
 Mounted-view polling is an acceptable first UI implementation; it need not wait for
