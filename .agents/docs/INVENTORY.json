@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-12",
-  "status": "planning and source inspection, twenty-seven OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, twenty-eight OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-12). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/DOCUMENT-EXPORTS.md",
@@ -14,6 +14,18 @@
       "category": "implementation-boundary",
       "bytes": 7327,
       "sha256": "55126b3baf4eec548b8321689a69c6667de3a34a641c62009ac1f64620b34c9c"
+    },
+    {
+      "path": "../../docs/KERNEL-NOTICE-LINEAGE.md",
+      "category": "implementation-boundary",
+      "bytes": 6765,
+      "sha256": "1971e8b48cb4c5cfa751158f8cc0adf5ff68ed6cfe4c597fd2e45c574b412126"
+    },
+    {
+      "path": "../../docs/KERNEL-NOTICES.md",
+      "category": "implementation-boundary",
+      "bytes": 9356,
+      "sha256": "9956e3b087cc8d5966b9d90ea55b2e40ab5558aa241eb4e605c65cc2c698cf5e"
     },
     {
       "path": "../../docs/KERNEL-REVISIONS.md",
@@ -42,8 +54,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 21422,
-      "sha256": "7741d0a9b445f1d383378b590d6843f2fd50578cff176aceb9b3f841bed2d5ab"
+      "bytes": 21944,
+      "sha256": "71cdb67e49de04814df926c2862ef71e7b23365a599f17bcfeb510918dd878c9"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -296,6 +308,18 @@
       "category": "browser-validation",
       "bytes": 90395,
       "sha256": "abc849ac8184e6a1194cfb01bb39d026b80ed1d9b332548b3f97dfa9b9dd37bf"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-28-2026-10-12.md",
+      "category": "runtime-validation",
+      "bytes": 5513,
+      "sha256": "3cc19741f736024d1d6c26272ed2510cf06401a21c3a95b4927b092bc2361500"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-28-evidence-2026-10-12.json",
+      "category": "runtime-evidence",
+      "bytes": 226308,
+      "sha256": "b0bb8ca1c3231701b1fa4722d7715703e2dcf057f19412372e4c39b0ab279bf5"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-3-2026-10-11.md",
@@ -642,8 +666,8 @@
     {
       "path": "agent-reports/orchestrator-prompts-2026-10-12.md",
       "category": "implementation-validation",
-      "bytes": 2577,
-      "sha256": "71cac54c87b65c00452b289e9eedac62aa5cc82973a7f2d1dc9bacccf57e32f0"
+      "bytes": 2698,
+      "sha256": "c040f88fc892603240f7cc092cd92112c449b9296f47981fb1826c98309a625a"
     },
     {
       "path": "agent-reports/orchestrator-prompts-evidence-2026-10-12.json",
