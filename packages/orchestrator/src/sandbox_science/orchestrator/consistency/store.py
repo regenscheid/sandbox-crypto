@@ -36,6 +36,12 @@ from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from .finding_schema import FINDING_INDEX, FINDING_TABLE
 from .finding_schema import prepare as prepare_findings
 from .models import ReviewConfig, ReviewOutcome, ReviewType, Scope
+from .prompt_bundle import (
+    MAX_PROVENANCE_BYTES,
+    ProvenanceRead,
+    ReviewerProvenance,
+    encode_provenance,
+)
 from .rubric import RUBRIC_VERSION
 
 # Heterogeneous evidence is JSON validated by its producing boundary and bounded here.
@@ -210,6 +216,19 @@ class ReviewStore:
             with documents._write() as db:
                 for statement in SCHEMA:
                     db.execute(statement)
+                if (
+                    db.execute(
+                        "SELECT 1 FROM pragma_table_info('review_calls') "
+                        "WHERE name='prompt_provenance'"
+                    ).fetchone()
+                    is None
+                ):
+                    db.execute("ALTER TABLE review_calls ADD COLUMN prompt_provenance TEXT")
+                db.execute(
+                    "CREATE TRIGGER IF NOT EXISTS review_calls_prompt_immutable "
+                    "BEFORE UPDATE OF prompt_provenance ON review_calls "
+                    "BEGIN SELECT RAISE(ABORT, 'review prompt input is immutable'); END"
+                )
                 prepare_findings(db)
                 from .response_bodies import prepare_schema
 
@@ -1147,14 +1166,27 @@ class ReviewStore:
             )
 
     def reserve_call(
-        self, project: str, session: str, review: str, estimated_tokens: int, *, owner: str
+        self,
+        project: str,
+        session: str,
+        review: str,
+        estimated_tokens: int,
+        *,
+        owner: str,
+        prompt_provenance: ReviewerProvenance | None = None,
     ) -> int | None:
         """Reserve before await, sharing the hourly project and per-review budgets."""
         if type(estimated_tokens) is not int or not 1 <= estimated_tokens <= 1000000000:
             raise DocumentError(INVALID_REQUEST, "invalid reviewer token reservation")
+        pin = encode_provenance(prompt_provenance) if prompt_provenance is not None else None
         with self.documents._write() as db:
             found = self._run(db, project, session, review)
             self.owner(found, owner)
+            if (
+                prompt_provenance is not None
+                and found["rubric"] != prompt_provenance.rubric_version
+            ):
+                raise DocumentError(CONFLICT, "reviewer rubric version changed before reservation")
             config = ReviewConfig.model_validate_json(found["config"])
             count = db.execute(
                 "SELECT count(*) FROM review_calls WHERE project=? AND created>?",
@@ -1172,10 +1204,10 @@ class ReviewStore:
             cursor = db.execute(
                 (
                     "INSERT INTO "
-                    "review_calls(project,review_id,created,estimated_tokens) "
-                    "VALUES(?,?,?,?)"
+                    "review_calls(project,review_id,created,estimated_tokens,prompt_provenance) "
+                    "VALUES(?,?,?,?,?)"
                 ),
-                (project, review, self.clock(), estimated_tokens),
+                (project, review, self.clock(), estimated_tokens, pin),
             )
             db.execute(
                 (
@@ -1186,6 +1218,57 @@ class ReviewStore:
                 (estimated_tokens, review),
             )
             return cursor.lastrowid
+
+    def call_provenance(self, project: str, session: str, review: str, call: int) -> ProvenanceRead:
+        """Read one scoped bounded pin, including readonly pre-migration history."""
+        self.scope(project, session)
+        identifier(review, "rev")
+        if type(call) is not int or not 1 <= call <= 2**63 - 1:
+            raise DocumentError(INVALID_REQUEST, "invalid reviewer reservation ID")
+        with self.documents._read() as db:
+            if (
+                db is None
+                or not self.available(db)
+                or db.execute("SELECT 1 FROM sqlite_master WHERE name='review_calls'").fetchone()
+                is None
+            ):
+                return ProvenanceRead("absent")
+            has_pin = (
+                db.execute(
+                    "SELECT 1 FROM pragma_table_info('review_calls') WHERE name='prompt_provenance'"
+                ).fetchone()
+                is not None
+            )
+            prefix = (
+                "SELECT CASE WHEN c.prompt_provenance IS NULL THEN 0 "
+                "WHEN typeof(c.prompt_provenance)='text' "
+                "AND length(CAST(c.prompt_provenance AS BLOB))<=? THEN 1 ELSE 2 END,"
+                "CASE WHEN typeof(c.prompt_provenance)='text' "
+                "AND length(CAST(c.prompt_provenance AS BLOB))<=? "
+                "THEN CAST(c.prompt_provenance AS BLOB) ELSE NULL END,"
+                if has_pin
+                else "SELECT 0,NULL,"
+            )
+            row = db.execute(
+                prefix + "substr(CAST(r.rubric AS BLOB),1,129) "
+                "FROM review_calls c JOIN review_runs r "
+                "ON c.review_id=r.review_id AND c.project=r.project "
+                "WHERE r.project=? AND r.session=? AND r.review_id=? AND c.seq=? LIMIT 1",
+                ((MAX_PROVENANCE_BYTES, MAX_PROVENANCE_BYTES) if has_pin else ())
+                + (project, session, review, call),
+            ).fetchone()
+        if row is None:
+            return ProvenanceRead("absent")
+        if row[0] == 0:
+            return ProvenanceRead("legacy")
+        if row[0] == 1:
+            try:
+                pin = ReviewerProvenance.model_validate_json(row[1])
+                if pin.rubric_version.encode("ascii") == row[2]:
+                    return ProvenanceRead("complete", pin)
+            except ValueError:
+                pass
+        return ProvenanceRead("corrupt")
 
     def call_usage(
         self,
