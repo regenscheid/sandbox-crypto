@@ -631,8 +631,44 @@ def environment_projection(value: object, environment: str, endpoints: object) -
     return {name: value[name] for name in fields}
 
 
-def sql_snapshot(marker: dict[str, Any]) -> dict[str, Any]:
-    """Bounded mode=ro allowlisted facts; no endpoint/auth/config/policy payloads."""
+def retained_stopped_binding(
+    marker: dict[str, Any], current: object, phase: str, gateway: object = None
+) -> dict[str, str]:
+    """Prove only the original retired binding; never manufacture a current endpoint."""
+    assert phase in ("before", "after")
+    accepted = evidence(marker, "read")
+    assert type(accepted) is dict
+    assert accepted["sql_unchanged"] is True
+    before, after = accepted["before"], accepted["after"]
+    assert type(before) is dict
+    assert type(after) is dict
+    assert before == after
+    originals = before["environments"]
+    assert type(originals) is list
+    assert len(originals) == 1
+    original = originals[0]
+    assert type(original) is dict
+    assert set(original) == {"project_id", "environment_id", "sandbox", "sandbox_id", "state"}
+    assert original["state"] == "ready"
+    endpoints = before["executor_endpoints"]
+    retained = environment_projection(original, marker["environment"], endpoints)
+    actual = environment_projection(current, marker["environment"], endpoints)
+    assert actual["state"] == "stopped"
+    assert all(actual[key] == retained[key] for key in retained if key != "state")
+    sql = {"environments": [actual]}
+    if gateway is None:
+        gateway_proof(marker, phase, sql)
+    else:
+        validate_stopped_gateway(marker, sql, gateway)
+    return actual
+
+
+def sql_snapshot(
+    marker: dict[str, Any], *, stopped_phase: str | None = None, stopped_gateway: object = None
+) -> dict[str, Any]:
+    """Bounded mode=ro facts; retired endpoints require explicit fresh original-VM proof."""
+    assert stopped_phase is None or stopped_phase in ("before", "after")
+    assert stopped_gateway is None or stopped_phase is not None
     environments = (marker["environment"], marker["environment"])
     assert len(environments) == 2
     assert len(set(environments)) == 1
@@ -677,9 +713,15 @@ def sql_snapshot(marker: dict[str, Any]) -> dict[str, Any]:
                             assert 0 < size <= 65536
                             value = decode(raw, 65536)
                             assert env == marker["environment"]
-                            values.append(
-                                environment_projection(value, env, result["executor_endpoints"])
-                            )
+                            if result["executor_endpoints"] == [] and stopped_phase is not None:
+                                projected = retained_stopped_binding(
+                                    marker, value, stopped_phase, stopped_gateway
+                                )
+                            else:
+                                projected = environment_projection(
+                                    value, env, result["executor_endpoints"]
+                                )
+                            values.append(projected)
                         result["environments"] = values
                     else:
                         tables = (
@@ -1172,7 +1214,7 @@ class Checks:
         accepted = evidence(self.marker, "read")
         selected = accepted["selected"][1]
         expected = accepted["inventories"][1]["pages"][0]
-        before = sql_snapshot(self.marker)
+        before = sql_snapshot(self.marker, stopped_phase="before")
         proof = gateway_proof(self.marker, "before", before)
         calls = []
         for _ in range(30):
@@ -1183,7 +1225,7 @@ class Checks:
                 {"observed_at": page["observed_at"], "status": 200, "total": page["total"]}
             )
             await asyncio.sleep(0.1)
-        after = sql_snapshot(self.marker)
+        after = sql_snapshot(self.marker, stopped_phase="before")
         assert before == after
         save(
             self.marker,
@@ -1249,6 +1291,19 @@ def inventory_facts(inventories: list[dict[str, Any]]) -> dict[str, Any]:
 def gateway_proof(marker: dict[str, Any], phase: str, sql: dict[str, Any]) -> dict[str, Any]:
     assert phase in ("before", "after")
     value = decode(bounded("evidence/revision-packages-gateway-" + phase + ".json", 16384), 16384)
+    value = validate_stopped_gateway(marker, sql, value)
+    stage = evidence_row(marker, "read" if phase == "before" else "idle-read")
+    assert datetime.fromisoformat(value["observed_at"]) >= datetime.fromisoformat(
+        stage["observed_at"]
+    )
+    return value
+
+
+def validate_stopped_gateway(
+    marker: dict[str, Any], sql: dict[str, Any], value: object
+) -> dict[str, Any]:
+    """Fresh original-VM identity only; qualified runners prove their own read chronology."""
+    assert type(value) is dict
     assert set(value) == {
         "version",
         "source_head",
@@ -1260,22 +1315,34 @@ def gateway_proof(marker: dict[str, Any], phase: str, sql: dict[str, Any]) -> di
     }
     assert type(value["version"]) is int
     assert value["version"] == 1
+    metadata = {
+        "source_head": (40, r"[0-9a-f]{40}"),
+        "run_id": (32, r"[0-9a-f]{32}"),
+        "helper_sha256": (64, r"[0-9a-f]{64}"),
+        "project_id": (128, r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"),
+    }
+    assert all(type(value[key]) is str for key in metadata)
+    assert all(0 < len(value[key]) <= cap for key, (cap, _) in metadata.items())
+    assert all(re.fullmatch(pattern, value[key]) for key, (_, pattern) in metadata.items())
     assert (value["source_head"], value["run_id"], value["helper_sha256"], value["project_id"]) == (
         marker["source_head"],
         marker["run_id"],
         marker["helper_sha256"],
         PROJECT,
     )
+    assert type(value["observed_at"]) is str
+    assert 0 < len(value["observed_at"]) <= 64
     when = datetime.fromisoformat(value["observed_at"])
     now = datetime.now(UTC)
     assert when.tzinfo is not None
     assert when.utcoffset() == timedelta(0)
     assert now - timedelta(seconds=300) <= when <= now + timedelta(seconds=5)
-    stage = evidence_row(marker, "read" if phase == "before" else "idle-read")
+    stage = evidence_row(marker, "read")
     assert when >= datetime.fromisoformat(stage["observed_at"])
     assert type(value["sandboxes"]) is list
     assert len(value["sandboxes"]) == 1
     row = value["sandboxes"][0]
+    assert type(row) is dict
     assert set(row) == {"environment_id", "name", "id", "phase"}
     assert all(type(x) is str and 0 < len(x) <= 128 for x in row.values())
     original = evidence(marker, "read")["before"]["environments"][0]
@@ -1300,10 +1367,12 @@ def final_stage(head: str, marker: dict[str, Any], stage: str) -> None:
     assert server["inputs"] == source_pins(head)
     if stage == "idle-confirm":
         prior = evidence(marker, "idle-read")
-        current = sql_snapshot(marker)  # JSON-normalized tuples/lists at the producer boundary.
+        current = sql_snapshot(
+            marker, stopped_phase="after"
+        )  # JSON-normalized tuples/lists at the producer boundary.
         assert prior["before"] == prior["after"] == current
         proof = gateway_proof(marker, "after", current)
-        assert sql_snapshot(marker) == current
+        assert sql_snapshot(marker, stopped_phase="after") == current
         save(
             marker,
             "idle-confirm",
@@ -1324,7 +1393,7 @@ def final_stage(head: str, marker: dict[str, Any], stage: str) -> None:
             {
                 "source_pins": server["inputs"],
                 "assets": server["assets"],
-                "sql": sql_snapshot(marker),
+                "sql": sql_snapshot(marker, stopped_phase="after"),
                 "actual_catalog_operations": 1,
                 "inventory_stage": "passed",
                 "idle_stage": "passed",
