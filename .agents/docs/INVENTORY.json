@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "captured_date": "2026-10-13",
-  "status": "planning and source inspection, thirty-one OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "status": "planning and source inspection, bounded scripted planning-evaluator calibration, thirty-one OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
       "path": "../../docs/DISPLAY-REPAIR-PROVENANCE.md",
@@ -156,8 +156,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 28225,
-      "sha256": "c90aa76fa96f96ae4939020b5c3b14a357093e791a14dbd36cc375054d5fe023"
+      "bytes": 28777,
+      "sha256": "5e174c613647efc1e833d1b4921d23261f45d97ee417b7403966d68ca360eeca"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -950,6 +950,18 @@
       "category": "validation-evidence",
       "bytes": 32395,
       "sha256": "1a24b54c9d47463a531c34eaf40cb76446f144d479806e0020ddee91f47f19b3"
+    },
+    {
+      "path": "agent-reports/planning-evaluation-2026-10-13.md",
+      "category": "local-validation",
+      "bytes": 7257,
+      "sha256": "abb66398cddb5341fa04154d3f9112809df367089c64fa090d124fcc14548e27"
+    },
+    {
+      "path": "agent-reports/planning-evaluation-evidence-2026-10-13.json",
+      "category": "validation-evidence",
+      "bytes": 407883,
+      "sha256": "fea2485c3cb4619fb4013271e130615c0d8bb435c3a386f8e586dae3d87c7614"
     },
     {
       "path": "agent-reports/project-macros-2026-10-12.md",
