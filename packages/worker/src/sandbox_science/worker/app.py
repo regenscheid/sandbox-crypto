@@ -16,10 +16,11 @@ import asyncio
 import contextlib
 import hmac
 import logging
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Final, cast
 
 from aiohttp import web
@@ -62,6 +63,7 @@ from sandbox_science.contracts.documents import (
     CatalogSnapshotPage,
     CatalogStatus,
 )
+from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileSelection
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
@@ -71,6 +73,7 @@ from sandbox_science.policy.model import Resources
 from .documents_catalog import DocumentsCatalog
 from .environments import Environments
 from .errors import WorkerError
+from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
 from .settings import ClientSettings, token_digest
@@ -85,6 +88,7 @@ CATALOG_WORK: Final = web.AppKey("catalog_work", set[asyncio.Task[CatalogStatus]
 CATALOG_EXECUTOR: Final = web.AppKey("catalog_executor", ThreadPoolExecutor)
 CREATING: Final = web.AppKey("creating", dict[str, set[str]])
 """The environments each limited client is creating right now, which its limit counts too."""
+LOCKFILE_DIFFS: Final = web.AppKey("lockfile_diffs", LockfileDiffs)
 MAX_BODY: Final = 16 * 1024 * 1024
 _REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
 _EVENT = TypeAdapter[Event](Event)
@@ -187,6 +191,8 @@ def create_app(
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app[MANAGER] = manager
     app[CREATING] = {}
+    app[LOCKFILE_DIFFS] = LockfileDiffs()
+    app.on_cleanup.append(_drain_lockfile_diffs)
     if document_catalog is not None:
         app[DOCUMENT_CATALOG] = document_catalog
         app[CATALOG_WORK] = set()
@@ -263,6 +269,10 @@ def create_app(
                 "/v1/environments/{environment_id}/provisioning/observations/revisions/{revision}/probes",
                 observe_revision_probes,
             ),
+            web.get(
+                "/v1/environments/{environment_id}/provisioning/observations/lockfile-diff",
+                observe_lockfile_diff,
+            ),
             web.post("/v1/provisioning", submit_provision),
             web.get("/v1/provisioning/{provision_id}", get_provision),
             web.post("/v1/provisioning/{provision_id}/cancel", cancel_provision),
@@ -287,6 +297,10 @@ def create_app(
         ]
     )
     return app
+
+
+async def _drain_lockfile_diffs(app: web.Application) -> None:
+    await app[LOCKFILE_DIFFS].close()
 
 
 def _catalog(request: web.Request) -> tuple[DocumentsCatalog, str]:
@@ -871,6 +885,60 @@ async def observe_revision_probes(request: web.Request) -> web.Response:
             pin=request.query.get("pin", ""),
             offset=_number(request, "offset", 0, 0, 64),
             limit=_number(request, "limit", 8, 1, 8),
+        )
+    )
+
+
+async def observe_lockfile_diff(request: web.Request) -> web.Response:
+    """Two explicitly pinned retained blobs, with no active environment operation."""
+    queries = frozenset({"before", "before_pin", "after", "after_pin", "offset", "limit"})
+    scope = _observation_scope(request, queries)
+
+    def number(name: str, maximum: int, default: str | None = None) -> int:
+        text = request.query.get(name, default)
+        if text is None or re.fullmatch(r"0|[1-9][0-9]{0,18}", text) is None or int(text) > maximum:
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid diff selection")
+        return int(text)
+
+    before = (number("before", 2**62), request.query.get("before_pin", ""))
+    after = (number("after", 2**62), request.query.get("after_pin", ""))
+    for _, pin in (before, after):
+        if re.fullmatch(r"[0-9a-f]{64}", pin) is None:
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid diff revision pin")
+    offset, limit = number("offset", 80_000, "0"), number("limit", 8, "8")
+
+    def prepare() -> Pair:
+        current = _observation_scope(request, queries)
+        if current != scope:
+            raise WorkerError(ErrorKind.CONFLICT, "selected environment changed")
+        p, e, since = current
+        rows = request.app[MANAGER].store.provision_observations.selected_pair(
+            p, e, since=since, before=before, after=after
+        )
+        selections = tuple(
+            LockfileSelection(
+                revision=row.revision, record_sha256=row.record_sha256, lockfile=row.lockfile
+            )
+            for row in rows
+        )
+        return selections[0], selections[1]
+
+    def verify(pair: Pair) -> None:
+        if prepare() != pair:
+            raise WorkerError(ErrorKind.CONFLICT, "selected lockfile inputs changed")
+
+    result = await request.app[LOCKFILE_DIFFS].read(
+        scope[1], request.app[MANAGER].revisions.blobs.root, prepare, verify, offset, limit
+    )
+    return _observation_json(
+        LockfileDiffPage.model_validate(
+            {
+                "project_id": scope[0],
+                "environment_id": scope[1],
+                "observed_at": datetime.now(UTC),
+                **result,
+            },
+            strict=True,
         )
     )
 

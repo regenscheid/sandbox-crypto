@@ -10,6 +10,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 - [OpenShell Lab30: read-only provisioning observations, 2026-10-13](agent-reports/babbage-openshell-lab-30-2026-10-13.md): corrected ready-gate overview, exact shared/dedicated package records, separate four/five-file approvals, native browser coverage, offline503 and120no-wake reads with unchangedSQL. [Exact archive](agent-reports/babbage-openshell-lab-30-evidence-2026-10-13.json) preserves393records/tenimages and both failed/corrected attempts; all owned state independently removed. Fresh corrected10,778Python and explicit unchanged746web/24math evidence; comparison and GUI operator answers remain separate.
 
+- [OpenShell Lab31: retained lockfile comparison, 2026-10-13](agent-reports/babbage-openshell-lab-31-2026-10-13.md): actual GP/Flint source pins/blobs, native nine-difference pages in both directions, original-VM stopped reads and complete teardown. [Exact archive](agent-reports/babbage-openshell-lab-31-evidence-2026-10-13.json) retains244records/nineimages, first workspace interruption and root-qualified tuple/list confirmation; independently clear post-teardown helper correction and preserved original failures. Fresh10,878Python/775web/24math product gates are reused only through exact inputs/builds; final CI delivery and unchanged/base license inventory remain separate.
+
 ## Individual agent investigations
 
 - [Claude Science](agent-reports/claude-science.md): research behavior, skills, review triggers, documents, kernels and execution seams, as evidence for the reimplementation (D03, D11).
@@ -115,3 +117,5 @@ Earlier plan snapshots are preserved as git tags rather than copied directories:
 Retrieve a file from a snapshot with `git show <tag>:<path>`, for example `git show plan-03-pre-review:docs/ARCHITECTURE.md`.
 
 [INVENTORY.json](INVENTORY.json) records the preserved report paths, sizes and SHA-256 hashes; it excludes itself.
+
+The next separate CP-26 slice is [bounded worker lockfile comparison](../../docs/LOCKFILE-DIFFERENCES.md), its [authenticated proxy](../../docs/LOCKFILE-DIFF-WORKSPACE.md) and [GUI](../../docs/LOCKFILE-DIFFERENCES-VIEW.md). Source union `dd5718f` passes 10,878Python/775web/24math and independent source review; root helper adoption and actual comparison acceptance remain separate. The initial viewer PR #110 is delivered; its Lab30 evidence is immutable.
