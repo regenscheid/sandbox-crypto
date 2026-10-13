@@ -167,8 +167,9 @@ exercise actual offered-tool/model inputs, live second-connection progress, USER
 CAS/reread and closing races, same-batch dispatch, bounded event gaps, compact
 large-note reads, immutable replay/model provenance, complete response delivery,
 save/failure/cancellation and actual thread/descriptor cleanup. These deterministic
-tests establish host/tool enforcement, not live-model planning quality. Workspace
-view/edit integrations, approval decisions, delegation, automatic resumed work,
+tests establish host/tool enforcement, not live-model planning quality. The read-only workspace
+view/API are separate consumers in root integration. USER editing, approval
+decisions, delegation, automatic resumed work,
 idle wake, effect-to-step lineage and broader prompt evaluation remain separate.
 
 Local author validation: 127 core/adapter/failed-run/prompt cases and 117 affected
@@ -340,8 +341,9 @@ requires every current step to be completed; blocked/skipped require reasons and
 can only support a qualified outcome. Even `achieved` is the author's assertion,
 not independently verified scientific truth. An abandoned plan records why work
 stopped and partial results without forcing its unfinished steps to terminal
-statuses. The internal plan-store prerequisite being developed separately must
-not imply activation/approval, live progress delivery or execution wiring exists.
+statuses. The implemented single-MAIN core and tools above provide version/progress accounting
+and activation under existing authorization. USER approval decisions, automatic
+effect-to-step links and delegated execution remain separate.
 
 Automatic means the agent maintains the plan via these tools during work, and the
 harness records linked lifecycle/liveness events without user bookkeeping. It does
@@ -356,7 +358,10 @@ Mounted-view polling is an acceptable first UI implementation; it need not wait 
 a live-chat transport. Show authoritative version, current step, activity age,
 blocked/skipped counts and disconnected/pending updates. A delayed browser reply
 cannot replace a newer scope/version or erase an unsaved USER draft. Browser closure
-stops polling, not research. None of this GUI or plan storage is implemented today.
+stops polling, not research. The first read-only live viewer and scoped API are now
+in root integration with the implemented plan core/tools; USER editing, history
+pages and effect-to-step lineage remain separate. Final combined/browser delivery
+gates are recorded in central status rather than inferred from this proposal.
 
 ## Authority and lifecycle checks that prompts cannot supply
 
