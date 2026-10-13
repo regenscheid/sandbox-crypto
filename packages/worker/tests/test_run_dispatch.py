@@ -1084,8 +1084,9 @@ def test_copied_control_or_kernel_field_count_refuses_before_key_iteration_or_se
 
     monkeypatch.setattr(run_kernel_state, "set", forbidden, raising=False)
     monkeypatch.setattr(run_kernel_state, "any", forbidden, raising=False)
-    with pytest.raises(WorkerError):
-        if kind == "control":
+    if kind == "control":
+        with pytest.raises(WorkerError):
             run_kernel_state.checked_control(cast(run_kernel_state.RunControl, value))
-        else:
+    else:
+        with pytest.raises(WorkerError):
             run_kernel_state.checked_info(cast(KernelInfo, value))
