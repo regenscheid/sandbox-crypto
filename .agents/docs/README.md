@@ -8,7 +8,7 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 - [OpenShell Lab29: explicit MAIN kernel notice delivery, 2026-10-13](agent-reports/babbage-openshell-lab-29-2026-10-13.md): authenticated lifetime/configuration mapping, actual historical input and durable save-before-fresh-proof-ACK; twelve worker/component cases, graceful restart, lifetime refusal, actual idle stop/thirty no-wake reads and ordinary resume. [Exact evidence](agent-reports/babbage-openshell-lab-29-evidence-2026-10-13.json) retains 252 original/corrected source/helper/gate/runtime/cleanup records. All owned lab state is removed; full CLI/provider semantics and immutable-VM-ID replacement runtime proof are outside this lab.
 
-The current read-only CP-26 source boundaries are [worker projections](../../docs/PROVISIONING-OBSERVATIONS.md), [authenticated workspace proxy](../../docs/PROVISIONING-WORKSPACE.md) and [environment viewer](../../docs/PROVISIONING-WORKSPACE-VIEW.md). Their independently reviewed union is under combined gates; no Lab30 runtime acceptance is claimed yet. Lockfile differences and operator answers remain separate.
+The current read-only CP-26 source boundaries are [worker projections](../../docs/PROVISIONING-OBSERVATIONS.md), [authenticated workspace proxy](../../docs/PROVISIONING-WORKSPACE.md) and [environment viewer](../../docs/PROVISIONING-WORKSPACE-VIEW.md). Their independently reviewed union passes 10,768 Python/746 web/24 math and required checks/builds; Lab30 helper review and actual worker/browser acceptance remain in process. Lockfile differences and operator answers remain separate.
 
 ## Individual agent investigations
 
