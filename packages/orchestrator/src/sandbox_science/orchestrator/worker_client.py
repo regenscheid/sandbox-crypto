@@ -40,6 +40,7 @@ from sandbox_science.contracts import (
     JobRequest,
     JobStatus,
     KernelInfo,
+    KernelLineageObservation,
     KernelListing,
     KernelObservation,
     KernelRestartRequest,
@@ -509,6 +510,25 @@ class WorkerClient:
             allow_redirects=False,
         )
         if (result.environment_id, result.session_id) != (
+            context.environment_id,
+            context.session_id,
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned another kernel scope")
+        return result
+
+    async def observe_kernel_lineage(self, context: ExecutionContext) -> KernelLineageObservation:
+        """Read exact original birth evidence; unknown lineage grants no notice authority."""
+        result, _ = await self._request(
+            "POST",
+            "/v1/kernels/lineage",
+            KernelLineageObservation,
+            KernelStatusRequest(context=context),
+            max_bytes=MAX_KERNEL_OBSERVATION_BYTES,
+            total_timeout=KERNEL_OBSERVATION_TIMEOUT,
+            allow_redirects=False,
+        )
+        if (result.project_id, result.environment_id, result.session_id) != (
+            context.project_id,
             context.environment_id,
             context.session_id,
         ):

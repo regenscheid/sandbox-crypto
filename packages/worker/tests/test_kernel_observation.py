@@ -91,8 +91,12 @@ async def test_live_kernel_pins_and_recovery_hold_remain_readonly(observer: Work
 
 
 @pytest.mark.parametrize("reply", [[], [{"kernel_id": "k", "language": "python", "generation": 1}]])
+@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
 async def test_idle_release_wins_while_an_observer_rpc_is_blocked(
-    observer: Worker, monkeypatch: pytest.MonkeyPatch, reply: list[dict[str, object]]
+    observer: Worker,
+    monkeypatch: pytest.MonkeyPatch,
+    reply: list[dict[str, object]],
+    observe_method: str,
 ) -> None:
     await observer.run("observe-open", kind="shell", script="true")
     manager = observer.manager
@@ -107,7 +111,7 @@ async def test_idle_release_wins_while_an_observer_rpc_is_blocked(
         return await request(channel, op, **fields)
 
     monkeypatch.setattr(ExecutorChannel, "request", delayed)
-    pending = asyncio.create_task(manager.observe_kernels(REQUEST))
+    pending = asyncio.create_task(getattr(manager, observe_method)(REQUEST))
     try:
         await started.wait()
         assert manager._environments["env1"].requests == 0
@@ -124,8 +128,9 @@ async def test_idle_release_wins_while_an_observer_rpc_is_blocked(
 
 
 @pytest.mark.parametrize("change", ["object", "channel", "incarnation", "detaching", "fence"])
+@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
 async def test_delayed_empty_reply_cannot_pass_a_changed_connection(
-    observer: Worker, monkeypatch: pytest.MonkeyPatch, change: str
+    observer: Worker, monkeypatch: pytest.MonkeyPatch, change: str, observe_method: str
 ) -> None:
     await observer.run("observe-open", kind="shell", script="true")
     manager = observer.manager
@@ -153,7 +158,7 @@ async def test_delayed_empty_reply_cannot_pass_a_changed_connection(
     monkeypatch.setattr(ExecutorChannel, "request", changed)
     try:
         with pytest.raises(WorkerError) as error:
-            await manager.observe_kernels(REQUEST)
+            await getattr(manager, observe_method)(REQUEST)
         assert error.value.kind == "unavailable"
         assert manager._kernel_observations == {}
     finally:
@@ -165,7 +170,10 @@ async def test_delayed_empty_reply_cannot_pass_a_changed_connection(
         manager._quarantined.discard("env1")
 
 
-async def test_waiting_lifecycle_and_observer_limits_do_not_queue(observer: Worker) -> None:
+@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
+async def test_waiting_lifecycle_and_observer_limits_do_not_queue(
+    observer: Worker, observe_method: str
+) -> None:
     await observer.run("observe-open", kind="shell", script="true")
     manager = observer.manager
     environment = manager._environments["env1"]
@@ -177,7 +185,7 @@ async def test_waiting_lifecycle_and_observer_limits_do_not_queue(observer: Work
         await asyncio.sleep(0)
         for _ in range(10):
             with pytest.raises(WorkerError):
-                await manager.observe_kernels(REQUEST)
+                await getattr(manager, observe_method)(REQUEST)
         assert manager._kernel_observations == {}
         assert environment.requests == 0
     finally:
@@ -186,8 +194,9 @@ async def test_waiting_lifecycle_and_observer_limits_do_not_queue(observer: Work
     assert "env1" not in manager._environments
 
 
+@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
 async def test_global_and_per_environment_admission_owned_until_cancellation(
-    observer: Worker, monkeypatch: pytest.MonkeyPatch
+    observer: Worker, monkeypatch: pytest.MonkeyPatch, observe_method: str
 ) -> None:
     await observer.run("observe-open", kind="shell", script="true")
     manager = observer.manager
@@ -213,12 +222,14 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
             manager._environments[name] = type(environment)(channel=environment.channel)
             context = REQUEST.context.model_copy(update={"environment_id": name})
             tasks.append(
-                asyncio.create_task(manager.observe_kernels(KernelStatusRequest(context=context)))
+                asyncio.create_task(
+                    getattr(manager, observe_method)(KernelStatusRequest(context=context))
+                )
             )
         await asyncio.wait_for(started.wait(), 1)
         for name in ("env-0", "env1"):
             with pytest.raises(WorkerError, match="capacity"):
-                await manager.observe_kernels(
+                await getattr(manager, observe_method)(
                     KernelStatusRequest(
                         context=REQUEST.context.model_copy(update={"environment_id": name})
                     )
@@ -235,8 +246,9 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
         manager._environments.pop(f"env-{index}")
 
 
+@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
 async def test_whole_deadline_includes_actual_channel_write_lock(
-    observer: Worker, monkeypatch: pytest.MonkeyPatch
+    observer: Worker, monkeypatch: pytest.MonkeyPatch, observe_method: str
 ) -> None:
     await observer.run("observe-open", kind="shell", script="true")
     manager = observer.manager
@@ -248,7 +260,7 @@ async def test_whole_deadline_includes_actual_channel_write_lock(
     await channel._write_lock.acquire()
     try:
         with pytest.raises(WorkerError) as error:
-            await asyncio.wait_for(manager.observe_kernels(REQUEST), 0.5)
+            await asyncio.wait_for(getattr(manager, observe_method)(REQUEST), 0.5)
         assert error.value.kind == "unavailable"
         assert channel._pending == {}
         assert not channel.closed
@@ -256,7 +268,7 @@ async def test_whole_deadline_includes_actual_channel_write_lock(
         channel._write_lock.release()
     assert environment.last_used == before
     assert manager._kernel_observations == {}
-    assert (await manager.observe_kernels(REQUEST)).kernels == ()
+    assert (await getattr(manager, observe_method)(REQUEST)).kernels == ()
 
 
 @pytest.mark.parametrize(
@@ -292,8 +304,9 @@ async def test_unauthenticated_observation_never_reaches_manager(observer: Worke
     assert observer.manager._environments == {}
 
 
+@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
 async def test_unhealthy_existing_connections_refuse_before_rpc(
-    observer: Worker, monkeypatch: pytest.MonkeyPatch
+    observer: Worker, monkeypatch: pytest.MonkeyPatch, observe_method: str
 ) -> None:
     await observer.run("observe-open", kind="shell", script="true")
     manager = observer.manager
@@ -343,7 +356,7 @@ async def test_unhealthy_existing_connections_refuse_before_rpc(
             else:
                 patch.setitem(channel.hello, "kernel_revision_protocol", True)
             with pytest.raises(WorkerError) as error:
-                await manager.observe_kernels(REQUEST)
+                await getattr(manager, observe_method)(REQUEST)
             assert error.value.kind == ("unsupported" if condition == "legacy" else "unavailable")
             assert manager._kernel_observations == {}
         assert environment.requests == 0
@@ -354,8 +367,12 @@ async def test_unhealthy_existing_connections_refuse_before_rpc(
 @pytest.mark.parametrize(
     "old_reply", [[], [{"kernel_id": "k", "language": "python", "generation": 1}]]
 )
+@pytest.mark.parametrize("observe_method", ["observe_kernels", "observe_kernel_lineage"])
 async def test_completed_session_close_invalidates_only_its_active_observer(
-    observer: Worker, monkeypatch: pytest.MonkeyPatch, old_reply: list[dict[str, object]]
+    observer: Worker,
+    monkeypatch: pytest.MonkeyPatch,
+    old_reply: list[dict[str, object]],
+    observe_method: str,
 ) -> None:
     from sandbox_science.contracts import SessionCloseRequest
 
@@ -374,7 +391,7 @@ async def test_completed_session_close_invalidates_only_its_active_observer(
 
     with monkeypatch.context() as patch:
         patch.setattr(ExecutorChannel, "request", delayed)
-        pending = asyncio.create_task(manager.observe_kernels(REQUEST))
+        pending = asyncio.create_task(getattr(manager, observe_method)(REQUEST))
         try:
             await started.wait()
             # Closing another session must not invalidate this scoped token.
@@ -396,4 +413,4 @@ async def test_completed_session_close_invalidates_only_its_active_observer(
             release.set()
             await asyncio.gather(pending, return_exceptions=True)
     assert manager._kernel_observations == {}
-    assert (await manager.observe_kernels(REQUEST)).kernels == ()
+    assert (await getattr(manager, observe_method)(REQUEST)).kernels == ()
