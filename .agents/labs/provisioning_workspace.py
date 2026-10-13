@@ -908,6 +908,12 @@ class Checks:
             environment, provision
         )  # Explicit current retained-history selection.
         assert current.summary.seq == done.summary.seq
+        overview = await self.pair(ProvisionObservation, environment)
+        assert overview.gate.recorded
+        assert overview.gate.mode == "ready"
+        assert overview.gate.operation is None
+        assert overview.queue_total == 0
+        assert overview.current_revision == done.summary.revision_after
         save(
             self.marker,
             "install",
@@ -916,6 +922,7 @@ class Checks:
                 "files": files,
                 "history": history,
                 "selected_current_detail": current.model_dump(mode="json"),
+                "overview": overview.model_dump(mode="json"),
                 "stale_pin_statuses": statuses,
                 "foreign_operation_statuses": foreign_statuses,
                 "sql": retained_sql,
@@ -1006,6 +1013,10 @@ class Checks:
         )
         queue = await self.pair(ProvisionObservation, environment)
         assert queue.queue_total == 0
+        assert queue.gate.recorded
+        assert queue.gate.mode == "ready"
+        assert queue.gate.operation is None
+        assert queue.current_revision == history["target"]
         save(
             self.marker,
             "permission-finish",
