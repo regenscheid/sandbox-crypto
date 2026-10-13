@@ -324,3 +324,11 @@ directory must be current-user owned; the exclusive private info file holds the
 synthetic login URL and must never be archived. Public startup pins source,
 helper, assets and synthetic scopes. SIGTERM drains the app, removes only owned
 state/private info and records cleanup. See [acceptance](../docs/agent-reports/session-planning-2026-10-12.md).
+
+## Lab29: explicit MAIN kernel notice delivery
+
+[`kernel_main.py`](kernel_main.py) is the owned, source-pinned component/adapter helper for [Lab29](../docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md). Its fixed stages are `init`, `before`, `flows`, `restarted`, `reopen`, `idle-resume` and `inspect`; each is invoked as `uv run python .agents/labs/kernel_main.py <stage> --head <exact-signed-clean-runtime-head>`. A new run requires independent source/helper clearance and the standard fresh marked lab/provider/profile/worker setup. The canonical control store creates the environment and sessions; no arbitrary project/VM/command selector is accepted.
+
+The root operator owns graceful worker restarts and the separate bounded safe gateway projection. `idle-resume` waits for that exact dated stopped-VM proof, rechecks bounded SQL, then admits one fixed harmless resume cell. Scripted models retain actual call inputs; production stores/controller/loop and CLI `_keep` are exercised, not a full interactive CLI or external model. Snapshot SQLite connections are explicitly closed. Cancellation after admitted save drains actual work and can leave a saved unACKed audit.
+
+Export only the helper's bounded public evidence and exact durable run files, with byte hashes and live worker-credential literal exclusion. Never export or hash provider raw registration, worker token/config, binding key/check/config pins or raw gateway annotations. Independently verify the all-workspace inventory is the exact owned VM before the standard scoped teardown; remove the new private registration only by its exact metadata identity. Root and independent cleanup must prove owned units, original PID/start identities, ports, sockets and marked state are gone. Historical or unrelated private files are outside the run. Preserve failed and corrected records separately; the report defines what actual runtime, focused source coverage and reused gates establish.

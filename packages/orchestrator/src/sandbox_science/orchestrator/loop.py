@@ -12,9 +12,10 @@ from contextlib import (
     contextmanager,
 )
 from dataclasses import dataclass, field
-from typing import Any, Final, TypeVar
+from typing import Any, Final, TypeVar, cast
 
 from .documents.mathjobs import threaded
+from .kernel_notice_receipts import KernelNoticeDelivery
 from .model import ChatModel, Message
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION
 from .plan_tools import NAMES as PLAN_NAMES
@@ -86,6 +87,7 @@ class Interruption:
 class Transcript:
     messages: list[Message]
     prompt_provenance: PromptProvenance | None = None
+    kernel_notice_delivery: KernelNoticeDelivery | None = None
     tool_records: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     job_notice_ids: list[str] = field(default_factory=list[str])
     work_request_ids: list[str] = field(default_factory=list[str])
@@ -205,9 +207,16 @@ async def _run_task(
         transcript.turns = turn + 1
         passed_specs = bundle.tool_specs()
         bundle.verify(transcript.messages[0], passed_specs)
+        if toolbox.kernel_notices is not None:
+            notice = await toolbox.kernel_notices.before_model()
+            if notice is not None:
+                transcript.messages.append({"role": "user", "content": notice.text()})
         transcript.phase = "model"
         reply = await model.complete(transcript.messages, passed_specs)
         transcript.phase = "harness"
+        if toolbox.kernel_notices is not None:
+            toolbox.kernel_notices.model_delivered()
+            transcript.kernel_notice_delivery = toolbox.kernel_notices.delivered
         if toolbox.plans is not None:
             await toolbox.plans.model_delivered()
         if toolbox.jobs is not None:
@@ -255,8 +264,8 @@ async def _run_task(
             review_response = False
             math_response = False
             if toolbox.reviews is not None:
-                transcript.review_summary = await toolbox.reviews.terminal(
-                    transcript.messages, reply.text
+                transcript.review_summary = cast(
+                    dict[str, Any], await toolbox.reviews.terminal(transcript.messages, reply.text)
                 )
                 if "user_message" in transcript.review_summary:
                     transcript.stopped = "user_message"
