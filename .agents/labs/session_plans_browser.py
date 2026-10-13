@@ -152,9 +152,7 @@ def exclusive(path: Path, data: bytes, mode: int) -> tuple[int, int]:
     return identity
 
 
-def remove_owned(
-    path: Path, identity: tuple[int, int] | None, *, missing_ok: bool = True
-) -> bool:
+def remove_owned(path: Path, identity: tuple[int, int] | None, *, missing_ok: bool = True) -> bool:
     if identity is None:
         return False
     try:
