@@ -602,6 +602,8 @@ exact reconciliation after a committed response is lost. USER approval, effect
 lineage/liveness, delegated runs, durable repair call/spend records, external
 prompt/skill loading and compaction remain separate.
 
+The [explicit stateful MAIN kernel consumer](KERNEL-NOTICE-DELIVERY.md) adds at most one bounded, dated version-1 historical USER prefix, with an exact transcript-bound receipt in saved runs. Successful host return establishes delivery; real fsync then fresh original proof precede ACK. [Lab29](../.agents/docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md) passes actual worker/component acceptance, including failure/cancellation, lifetime refusal and idle stop/no-wake/ordinary resume; independent cleanup is complete. Final archive/PR CI delivery remains pending. It changes no system/base/stock/pilot/planning text, tool schema/grant or closing budget and adds no scheduler or idle wake. The opening inventory remains the dated preimplementation baseline.
+
 1. **Current-role prompt correctness:** fix only inaccurate live capability claims
    in MAIN/start_job/historical reviewer docstring; keep the existing offered-tool
    whitelist. Add focused actual-input/description assertions, injection cases and

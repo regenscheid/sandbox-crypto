@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Passive kernel lineage for notices
 
-The worker has a separate, bounded observation route for a future internal CP-12
+The worker has a separate, bounded observation route for the internal CP-12
 notice consumer. It reports an existing kernel with its exact retained original
 birth, or explicitly unknown lineage. It does not enqueue or deliver notices,
 inject agent messages, wake idle sessions, restart kernels or complete CP-12.
@@ -79,7 +79,11 @@ route, an 8 KiB success/error cap, five-second total HTTP deadline and no redire
 or lifecycle-active status fallback. It verifies exact returned scope and typed
 birth/kernel/current-revision coherence.
 
-## Validation and remaining work
+## Current MAIN consumer
+
+The independently reviewed [explicit stateful MAIN consumer](KERNEL-NOTICE-DELIVERY.md) now implements authenticated control lifetime/configuration mapping, bounded owned passive reads, historical version-1 USER input and typed receipt/RunRecord evidence. Successful host return marks delivery; a real fsynced run and fresh original proof precede ACK. Failed first calls, failed saves and cancellation retain the qualified replay/audit boundary. Changed bindings, incomplete lineage or initialized inbox loss refuse rather than re-enroll. [OpenShell Lab29](../.agents/docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md) passes actual worker/package/idle-resume acceptance and independent complete cleanup; final archive/PR CI delivery remains pending. No idle scheduler, automatic replacement reconciliation, delegate routing or full-history guarantee is added. The prerequisite evidence below remains at its original source pins.
+
+## Historical prerequisite validation
 
 Focused local tests use disposable existing executor backends, including real
 Jupyter kernels and authenticated HTTP composition. They cover retained globals
@@ -94,7 +98,4 @@ and formatting checks, and repository Pyright with zero errors. Full repository
 tests were intentionally left to the combined delivery owner.
 
 Root-owned [OpenShell Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md) passed on signed `1deb9b7`, with independently verified complete teardown. Signed prompt-integrated union `840b48f` passes 10,155 Python cases/43 opt-in skips/two existing warnings and required static checks; unchanged 614 web/24 math/builds are explicitly reused. Unknown/missing/corrupt/legacy cases remain local-fixture coverage. Fresh exact-head PR CI remains a delivery gate. No services, VMs or models were started by this source
-author. The companion does not wire a durable inbox, MAIN injection, saved-run ACK,
-idle scheduling, cross-session delivery or new GUI behavior. Those consumers must
-independently bind the operator-configured worker and open session lifetime, hold
-unknown comparison/provenance, and preserve ordinary save/ACK authority.
+author. At that historical source the companion did not wire a consumer. The later MAIN integration above independently binds the configured worker/session lifetime and preserves unknown holds and ordinary save/ACK authority; idle scheduling and automatic replacement reconciliation remain open.
