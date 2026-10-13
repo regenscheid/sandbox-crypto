@@ -324,10 +324,13 @@ class ProvisionObservations:
                 self._operation(project, environment, row[0].decode("ascii"), since)[1]
                 for row in rows
             ]
+            # SQLite substr of an empty BLOB yields NULL on supported versions.
+            # Preserve the producer's ready TEXT '' without admitting real NULL/BLOBs.
             gate_row = self.db.execute(
                 "SELECT CASE WHEN typeof(generation)='integer' THEN generation "
-                "END,substr(CAST(mode AS BLOB),1,17),substr(CAST(operation AS "
-                "BLOB),1,129),CASE WHEN typeof(revision)='integer' THEN revision "
+                "END,substr(CAST(mode AS BLOB),1,17),CASE WHEN typeof(operation)='text' "
+                "THEN coalesce(substr(CAST(operation AS BLOB),1,129),X'') END,"
+                "CASE WHEN typeof(revision)='integer' THEN revision "
                 "END,typeof(revision) FROM package_execution_gates WHERE environment_id=?",
                 (environment,),
             ).fetchone()
