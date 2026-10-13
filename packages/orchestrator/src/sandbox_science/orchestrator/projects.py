@@ -53,6 +53,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.model import Contract
 
+from .prompt_bundle import PromptProvenance, verify_retained
 from .worker_client import WorkerAPIError, WorkerClient
 
 _MAX_ID: Final = 128
@@ -155,6 +156,8 @@ class RunRecord(Contract):
 
     run_id: str
     """The run's ID, which starts every operation ID of its tool calls."""
+    prompt_provenance: PromptProvenance | None = None
+    """Recorded MAIN system/tool input pins; missing legacy provenance stays unknown."""
     context: ExecutionContext
     task: str
     started_at: datetime
@@ -180,6 +183,8 @@ class RunRecord(Contract):
 
     @model_validator(mode="after")
     def _failure_is_not_an_answer(self) -> RunRecord:
+        if self.prompt_provenance is not None:
+            verify_retained(self.prompt_provenance, self.messages[0] if self.messages else None)
         if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
             raise ValueError("a failed run must have error status and no final answer")
         return self
