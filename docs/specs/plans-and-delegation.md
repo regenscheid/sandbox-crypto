@@ -2,7 +2,7 @@
 
 Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specification; conventions in the [index](README.md).
 
-The user explicitly requested a planning phase and live plan progress on 2026-10-12 ([D86](../DECISIONS.md), [original prompt design](../ORCHESTRATOR-PROMPTS.md)). That confirms those product requirements, not every detail or open question in this draft. Plan/progress tools and the runtime planning phase remain unimplemented; the original design introduces no execution approval gate. Its explicit terminal goal-outcome proposal clarifies PD-10 without silently claiming that blocked/skipped work achieved the goal.
+The user explicitly requested a planning phase and live plan progress on 2026-10-12 ([D86](../DECISIONS.md), [original prompt design](../ORCHESTRATOR-PROMPTS.md)). That confirms those product requirements, not every detail or open question in this draft. The first [internal plan/progress core](../SESSION-PLANS.md) and [single-MAIN tools/phase guidance](../ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools) and read-only live viewer/API are implemented, independently reviewed and pass [combined/browser acceptance](../../.agents/docs/agent-reports/session-planning-2026-10-12.md); USER editing/approval routes and delegated-run lifecycle remain separate. The original design introduces no execution approval gate. Its explicit terminal goal-outcome proposal clarifies PD-10 without silently claiming that blocked/skipped work achieved the goal.
 
 ## Scope
 

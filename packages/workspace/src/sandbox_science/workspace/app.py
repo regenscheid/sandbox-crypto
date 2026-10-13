@@ -47,7 +47,7 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from . import api, documents, jobs, kernels, project_settings, reviews
+from . import api, documents, jobs, kernels, plans, project_settings, reviews
 from .mathrepair import (
     MathRepairService,
     RepairRequestError,
@@ -252,6 +252,8 @@ def create_app(
 
     async def secure(request: web.Request, response: web.StreamResponse) -> None:
         response.headers.update(SECURITY_HEADERS)
+        if request.match_info.route.name == plans.ROUTE_NAME:
+            response.headers[hdrs.CACHE_CONTROL] = "no-store"
 
     async def login(request: web.Request) -> web.StreamResponse:
         session = sessions.login(request.query.get("token", ""))
@@ -309,10 +311,13 @@ def create_app(
 
     async def close_job_worker(app: web.Application) -> None:
         try:
-            await app[kernels.PROXY].close()
+            await app[plans.READER].close()
         finally:
-            if job_worker is not None:
-                await job_worker.close()
+            try:
+                await app[kernels.PROXY].close()
+            finally:
+                if job_worker is not None:
+                    await job_worker.close()
 
     async def close_documents(app: web.Application) -> None:
         app[documents.DOCUMENTS].close()
@@ -336,6 +341,13 @@ def create_app(
         app,
         store,
         job_worker,
+        lambda request: _digest(request.cookies.get(cookie_name(request), "")).hex(),
+        lambda request: sessions.valid(request.cookies.get(cookie_name(request))),
+    )
+    plans.add_routes(
+        app,
+        store,
+        document_store,
         lambda request: _digest(request.cookies.get(cookie_name(request), "")).hex(),
         lambda request: sessions.valid(request.cookies.get(cookie_name(request))),
     )
