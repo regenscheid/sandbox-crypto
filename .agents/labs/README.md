@@ -1,5 +1,13 @@
 # babbage labs
 
+Lab32's `provisioning_revision_packages.py` reads the exact recorded package/license
+inventory of a fresh canonical project. Root must separately admit a clean signed
+head after final adopted-helper review. Root owns the harmless baseline cell, one
+GP operation, original VM, services, browser, idle proofs and teardown. The helper
+owns scoped initialization, the temporary workspace and bounded GET/SQL/blob
+proofs. Preserve the preliminary untyped-export failure and corrected-source
+review. Runtime acceptance remains pending.
+
 Scripts for running the platform against a real OpenShell gateway on babbage, as labs 9 to 20 did. Each lab's report is in [`../docs/agent-reports/`](../docs/agent-reports/). These scripts are agents' tooling, not product code: they assume babbage's setup and are kept here so that the next lab does not start from nothing.
 
 ## Prerequisites
