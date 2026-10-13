@@ -93,6 +93,15 @@ def _parameters(*values: tuple[object, int, int]) -> None:
         raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid observation selection")
 
 
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _unavailable()
+        result[key] = value
+    return result
+
+
 class ProvisionObservations:
     """Borrow a Store connection for synchronous bounded read snapshots; own no resources."""
 
@@ -154,7 +163,7 @@ class ProvisionObservations:
         ).fetchone()
         if raw is None or type(raw[0]) is not bytes or len(raw[0]) > cap:
             raise _unavailable()
-        parsed: object = json.loads(raw[0])
+        parsed: object = json.loads(raw[0], object_pairs_hook=_unique_object)
         if type(parsed) is not dict:
             raise _unavailable()
         return cast(dict[str, object], parsed)
@@ -381,6 +390,18 @@ class ProvisionObservations:
             _parameters((seq, 0, 2**62))
         with self._read(project, environment) as scope:
             row_id, summary = self._operation(project, environment, provision_id, since, seq)
+            self._types("provisions", row_id, {"error": (None, "null", "object")})
+            # Do not materialize an error body. Its selected kind must have one unambiguous
+            # original text key; json_extract alone would silently choose the first one.
+            error = self.db.execute(
+                "SELECT json_type(record,'$.error'),(SELECT count(*) FROM json_each("
+                "record,'$.error') WHERE key='kind'),(SELECT count(*) FROM json_each("
+                "record,'$.error') WHERE key='kind' AND type='text') FROM provisions "
+                "WHERE rowid=?",
+                (row_id,),
+            ).fetchone()
+            if error is None or (error[0] == "object" and error[1:] != (1, 1)):
+                raise _unavailable()
             fields = _fields(("request", "policy", "catalog", "next_step"))
             fields.update(
                 error_present=(
@@ -399,15 +420,24 @@ class ProvisionObservations:
         self, table: str, row_id: int, section: str, offset: int, limit: int, model: type[Model]
     ) -> list[Model]:
         rows = self.db.execute(
-            f"SELECT key,substr(CAST(value AS BLOB),1,16385) FROM json_each((SELECT record "
+            f"SELECT key,type,substr(CAST(value AS BLOB),1,16385) FROM json_each((SELECT record "
             f"FROM {table} WHERE rowid=?),'$.{section}') WHERE key>=? ORDER BY key LIMIT ?",
             (row_id, offset, limit),
         ).fetchall()
         result: list[Model] = []
         budget = 4096
-        for index, (key, raw) in enumerate(rows, offset):
-            if type(key) is not int or key != index or type(raw) is not bytes or len(raw) > 16384:
+        for index, (key, kind, raw) in enumerate(rows, offset):
+            if (
+                type(key) is not int
+                or key != index
+                or kind != "object"
+                or type(raw) is not bytes
+                or len(raw) > 16384
+            ):
                 raise _unavailable()
+            # The original element type and clipped bytes are checked before parsing.
+            # Reject duplicates recursively, then retain strict JSON date/enum validation.
+            json.loads(raw, object_pairs_hook=_unique_object)
             item = model.model_validate_json(raw, strict=True)
             encoded = item.model_dump_json().encode("utf-8")
             if budget + len(encoded) + 1 > MAX_OBSERVATION_BYTES:
