@@ -5,6 +5,7 @@ import type { Project } from './api';
 import EnvironmentPanel from '../views/EnvironmentPanel.svelte';
 import { environmentChoices, provisionData, provisionPath, readProvision, ProvisionReadError, ProvisionReader,
   PROVISION_DEADLINE_MS, type ProvisionObservation, type OperationSummary, type OperationDetail,
+  DIFF_DEADLINE_MS, diffIdentity, differenceKey, type LockfileDiffPage, type CondaEntry, type LockfileDifference, type Selection,
   type FilePage, type HistoryPage, type ProbePage, type ProvisionData, type ReadState } from './provisioning';
 const scope = {projectId: 'p', environmentId: 'e'}, time = '2026-10-13T06:00:00Z';
 const common = {project_id: 'p', environment_id: 'e', observed_at: time};
@@ -158,5 +159,104 @@ describe('recorded permission references', () => {
     const data = {...overview(), operations: [{...op(), state: 'installing' as const, stage: 'link', outcome: null}]};
     const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'observed', data, busy: false}}}).body;
     expect(html).toContain('recorded reference, current decision not shown'); expect(html).not.toContain('waiting for an operator answer');
+  });
+});
+
+function diffSelection(): Extract<Selection, {kind: 'diff'}> {
+  const row = history().revisions[0]!;
+  return {kind: 'diff', offset: 0, before: {...row, revision: 0, record_sha256: 'a'.repeat(64), lockfile: {sha256: 'd'.repeat(64), size: 128, conda_packages: 1, pip_distributions: 0}}, after: {...row, lockfile: {sha256: 'e'.repeat(64), size: 129, conda_packages: 1, pip_distributions: 0}}};
+}
+function diffEntry(): CondaEntry {return {name: 'package', version: '1', build: '0', channel: 'conda-forge', subdir: 'linux-64', file: 'package-1.conda', sha256: '1'.repeat(64), md5: '2'.repeat(32), license: 'MIT'};}
+function diffRow(): LockfileDifference {return {ecosystem: 'conda', name: 'package', location: null, change: 'changed', before: diffEntry(), after: {...diffEntry(), build: '1', license: 'AGPL-3.0'}, changed_fields: ['build', 'license'], before_license: {declared: 'MIT', agpl: false}, after_license: {declared: 'AGPL-3.0', agpl: true}};}
+function comparison(): LockfileDiffPage {
+  const {before: a, after: b} = diffSelection();
+  return {...common, before: {revision: a.revision, record_sha256: a.record_sha256, lockfile: a.lockfile}, after: {revision: b.revision, record_sha256: b.record_sha256, lockfile: b.lockfile}, status: 'complete', holds: [], before_header: {...a.lockfile!, python: null, platform: 'linux-64', skipped: 0}, after_header: {...b.lockfile!, python: '3.13', platform: 'linux-64', skipped: 0}, header_changes: ['python'], total: 1, added: 0, removed: 0, changed: 1, offset: 0, limit: 8, next_offset: null, differences: [diffRow()]};
+}
+describe('explicit pinned lockfile comparisons', () => {
+  it('selects only exact two retained pins and allows same revision twice', () => {
+    const s = diffSelection(); expect(provisionData(comparison(), scope, s)).toEqual(comparison());
+    expect(provisionPath(scope, s)).toBe(`/api/v0/projects/p/environments/e/provisioning/observations/lockfile-diff?before=0&before_pin=${'a'.repeat(64)}&after=1&after_pin=${'b'.repeat(64)}&offset=0&limit=8`);
+    expect(provisionPath(scope, {...s, after: s.before})).toContain('after=0');
+    for (const offset of [-1,80001,true,2**53]) expect(() => provisionPath(scope, {...s, offset: offset as number})).toThrow();
+  });
+  it.each([
+    ['scope',(v: LockfileDiffPage) => {v.environment_id='foreign';}],
+    ['safe integer',(v: LockfileDiffPage) => {v.before.revision=2**53;}],
+    ['raw pin',(v: LockfileDiffPage) => {v.before.record_sha256='f'.repeat(64);}],
+    ['ref',(v: LockfileDiffPage) => {v.before.lockfile!.size++;}],
+    ['header hash',(v: LockfileDiffPage) => {v.before_header!.sha256='f'.repeat(64);}],
+    ['header count',(v: LockfileDiffPage) => {v.before_header!.conda_packages++;}],
+    ['skipped',(v: LockfileDiffPage) => {v.before_header!.skipped=1;}],
+    ['headers',(v: LockfileDiffPage) => {v.header_changes=[];}],
+    ['offset',(v: LockfileDiffPage) => {v.offset=1;}],
+    ['totals',(v: LockfileDiffPage) => {v.total=2;}],
+    ['kind totals',(v: LockfileDiffPage) => {v.changed=0;v.added=1;}],
+    ['bool',(v: LockfileDiffPage) => {v.total=true as unknown as number;}],
+    ['continuation',(v: LockfileDiffPage) => {v.next_offset=1;}],
+    ['missing rows',(v: LockfileDiffPage) => {v.differences=[];}],
+    ['extra key',(v: LockfileDiffPage) => {Object.assign(v,{authority:'user'});}],
+    ['changed fields',(v: LockfileDiffPage) => {v.differences[0]!.changed_fields.reverse();}],
+    ['name',(v: LockfileDiffPage) => {v.differences[0]!.name='other';}],
+    ['license',(v: LockfileDiffPage) => {v.differences[0]!.after_license!.declared='MIT';}],
+    ['missing side',(v: LockfileDiffPage) => {v.differences[0]!.after=null;}],
+  ])('refuses incoherent %s',(_name, change) => {const v=comparison();change(v);expect(() => provisionData(v,scope,diffSelection())).toThrow(ProvisionReadError);});
+  it('keeps held inputs unknown and still binds available headers', () => {
+    const held: LockfileDiffPage={...comparison(),status:'held',holds:[{side:'after',reason:'blob_missing'}],after_header:null,header_changes:[],total:null,added:null,removed:null,changed:null,next_offset:null,differences:[]};
+    expect(provisionData(held,scope,diffSelection())).toEqual(held);
+    for (const v of [{...held,total:0},{...held,holds:[]},{...held,before_header:{...held.before_header!,sha256:'f'.repeat(64)}},{...held,holds:[held.holds[0]!,held.holds[0]!]}]) expect(() => provisionData(v,scope,diffSelection())).toThrow();
+    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:diffSelection(),initialDetail:{phase:'observed',data:held,busy:false}}}).body;
+    expect(html).toContain('package differences are unknown');expect(html).toContain('unavailable or evicted');expect(html).not.toContain('0 total differences');
+  });
+  it('distinguishes true identical/empty differences from unavailable inventory', () => {
+    const s=diffSelection();s.after=s.before;const v={...comparison(),after:comparison().before,after_header:comparison().before_header,header_changes:[],total:0,changed:0,differences:[]};
+    expect(provisionData(v,scope,s)).toEqual(v);
+    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:s,initialDetail:{phase:'observed',data:v,busy:false}}}).body;expect(html).toContain('No package-entry differences');expect(html).toContain('do not certify installed files');
+  });
+  it('keeps pip normalized-name/location and licenses unknown; escapes source text', () => {
+    const row: LockfileDifference={ecosystem:'pip',name:'some-pkg',location:'user',change:'added',before:null,after:{name:'Some_Pkg',version:'1',installer:'uv',location:'user',url:'https://example.invalid/<script>',sha256:null},changed_fields:['installer','location','name','url','version'],before_license:null,after_license:{declared:null,agpl:null}};
+    const selected=diffSelection();selected.after.lockfile!.pip_distributions=1;const base=comparison();base.after.lockfile!.pip_distributions=1;base.after_header!.pip_distributions=1;const v={...base,total:2,added:1,differences:[diffRow(),row]};expect(provisionData(v,scope,selected)).toEqual(v);
+    expect(() => provisionData({...v,differences:[diffRow(),{...row,after_license:{declared:'MIT',agpl:false}}]},scope,selected)).toThrow();
+    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:diffSelection(),initialDetail:{phase:'observed',data:v,busy:false}}}).body;
+    expect(html).toContain('AGPL status: flagged');expect(html).toContain('AGPL status: unknown');expect(html).toContain('md5');expect(html).toContain('&lt;script>');expect(html).not.toContain('<script>');expect(html).not.toContain('href="https://example');
+  });
+  it('follows actual short-page cursor; checks row order and pinned cross-page facts', () => {
+    const a=diffRow(),b={...diffRow(),name:'second',before:{...diffEntry(),name:'second'},after:{...diffEntry(),name:'second',build:'1',license:'AGPL-3.0'}};
+    const selected=diffSelection();selected.before.lockfile!.conda_packages=selected.after.lockfile!.conda_packages=3;const base=comparison();base.before.lockfile!.conda_packages=base.after.lockfile!.conda_packages=base.before_header!.conda_packages=base.after_header!.conda_packages=3;const first={...base,total:3,changed:3,next_offset:2,differences:[a,b]};expect(provisionData(first,scope,selected)).toMatchObject({next_offset:2});
+    for (const rows of [[b,a],[a,a]]) expect(() => provisionData({...first,differences:rows},scope,selected)).toThrow();
+    const c={...b,name:'third',before:{...b.before,name:'third'},after:{...b.after,name:'third'}};
+    const last={...first,offset:2,next_offset:null,differences:[c]},s={...selected,offset:2,expected:diffIdentity(first),previousKey:differenceKey(b)};
+    expect(provisionData(last,scope,s)).toEqual(last);expect(() => provisionData({...last,total:4,changed:4,next_offset:3},scope,s)).toThrow();expect(() => provisionData({...last,differences:[a]},scope,s)).toThrow();
+  });
+  it('labels dated records/backend proof without enabling actions or foreign data', () => {
+    const props={projectId:'p',project:project(),initialSelection:diffSelection(),initialDetail:{phase:'unavailable' as const,data:comparison(),busy:false}};
+    const html=render(EnvironmentPanel,{props}).body;expect(html).toContain('Previous selected record');expect(html).toContain('does not select newer sources');expect(html).toContain('verified by the backend');expect(html).not.toMatch(/<button[^>]*>\s*(Install|Approve|Cancel|Rebuild)/);
+    expect(render(EnvironmentPanel,{props:{...props,initialDetail:{...props.initialDetail,data:{...comparison(),environment_id:'foreign'}}}}).body).not.toContain('AGPL status: flagged');
+  });
+});
+describe('comparison transport and one-shot ownership', () => {
+  it('uses12s only for diff while sharing actual owner across ignored header abort', async () => {
+    vi.useFakeTimers();const pending=deferred<Response>(),fetch=vi.fn().mockReturnValue(pending.promise);vi.stubGlobal('fetch',fetch);
+    const first=readProvision(scope,diffSelection(),new AbortController().signal).catch(e=>e);
+    await vi.advanceTimersByTimeAsync(PROVISION_DEADLINE_MS);expect(fetch.mock.calls[0]![1].signal.aborted).toBe(false);
+    await expect(readProvision(scope,{kind:'summary'},new AbortController().signal)).rejects.toBeInstanceOf(ProvisionReadError);
+    await vi.advanceTimersByTimeAsync(DIFF_DEADLINE_MS-PROVISION_DEADLINE_MS);expect(fetch.mock.calls[0]![1].signal.aborted).toBe(true);
+    pending.resolve(new Response(JSON.stringify(comparison())));expect(await first).toBeInstanceOf(ProvisionReadError);expect(fetch).toHaveBeenCalledOnce();
+    fetch.mockResolvedValue(new Response(JSON.stringify(overview())));expect(await readProvision(scope,{kind:'summary'},new AbortController().signal)).toEqual(overview());
+  });
+  it('keeps body-cancel lease until actual drain then permits history', async () => {
+    vi.useFakeTimers();const drained=deferred<void>(),cancel=vi.fn().mockReturnValue(drained.promise),fetch=vi.fn().mockResolvedValueOnce(new Response(new ReadableStream({cancel}))).mockResolvedValue(new Response(JSON.stringify(history())));vi.stubGlobal('fetch',fetch);
+    const first=readProvision(scope,diffSelection(),new AbortController().signal).catch(e=>e);await vi.advanceTimersByTimeAsync(DIFF_DEADLINE_MS);expect(cancel).toHaveBeenCalledOnce();
+    await expect(readProvision(scope,{kind:'history',after:-1,target:null},new AbortController().signal)).rejects.toBeInstanceOf(ProvisionReadError);expect(fetch).toHaveBeenCalledOnce();
+    drained.resolve();expect(await first).toBeInstanceOf(ProvisionReadError);expect(await readProvision(scope,{kind:'history',after:-1,target:null},new AbortController().signal)).toEqual(history());
+  });
+  it('settles one-shot after ignored timeout/hide; never repolls or publishes late data', async () => {
+    vi.useFakeTimers();const pending=deferred<ProvisionData>(),states:ReadState[]=[],read=vi.fn().mockReturnValue(pending.promise),owner=new ProvisionReader(read,v=>states.push(v),false,DIFF_DEADLINE_MS,true);owners.push(owner);
+    owner.setVisible(true);await vi.advanceTimersByTimeAsync(DIFF_DEADLINE_MS);expect(states.at(-1)).toMatchObject({phase:'unavailable',busy:true});owner.setVisible(false);owner.setVisible(true);pending.resolve(comparison());await vi.advanceTimersByTimeAsync(30000);
+    expect(read).toHaveBeenCalledOnce();expect(states.at(-1)).toMatchObject({phase:'unavailable',busy:false});owner.setVisible(false);owner.setVisible(true);await vi.advanceTimersByTimeAsync(30000);expect(read).toHaveBeenCalledOnce();
+  });
+  it('never falls back after409 and bounds invalid UTF8/oversize comparison bodies', async () => {
+    const fetch=vi.fn().mockResolvedValueOnce(new Response('arbitrary error',{status:409})).mockResolvedValueOnce(new Response(new Uint8Array([0xff]))).mockResolvedValueOnce(new Response(' '.repeat(65537)));vi.stubGlobal('fetch',fetch);
+    await expect(readProvision(scope,diffSelection(),new AbortController().signal)).rejects.toMatchObject({status:409});expect(fetch).toHaveBeenCalledOnce();
+    await expect(readProvision(scope,diffSelection(),new AbortController().signal)).rejects.toMatchObject({status:0});await expect(readProvision(scope,diffSelection(),new AbortController().signal)).rejects.toMatchObject({status:0});
   });
 });

@@ -3,8 +3,10 @@
 
 The worker implements a read-only prerequisite for the remaining
 [CP-26](specs/conda-provisioning.md) package comparison display. The first
-[provisioning viewer](PROVISIONING-OBSERVATIONS.md) remains separate. No workspace
-proxy or GUI consumes this comparison yet. It neither changes packages nor
+[provisioning viewer](PROVISIONING-OBSERVATIONS.md) remains separate. The future
+comparison source union includes an explicit [workspace proxy](LOCKFILE-DIFF-WORKSPACE.md)
+and [selected GUI pages](LOCKFILE-DIFFERENCES-VIEW.md); this assembled source still
+awaits its own integrated runtime acceptance and delivery. It neither changes packages nor
 answers permissions, restores an environment, extends retention or wakes a guest.
 
 `GET /v1/environments/{environment_id}/provisioning/observations/lockfile-diff`
