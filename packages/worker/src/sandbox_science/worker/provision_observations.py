@@ -636,6 +636,18 @@ class ProvisionObservations:
                 },
             )
 
+    def selected_revision(
+        self,
+        project: str,
+        environment: str,
+        *,
+        since: float,
+        revision: int,
+        pin: str,
+    ) -> RevisionSummary:
+        """Pin one bounded canonical header in one read snapshot, without reading its blob."""
+        return self._selected_revisions(project, environment, since, ((revision, pin),))[0]
+
     def selected_pair(
         self,
         project: str,
@@ -646,17 +658,26 @@ class ProvisionObservations:
         after: tuple[int, str],
     ) -> tuple[RevisionSummary, RevisionSummary]:
         """Pin exactly two caller-selected retained headers in one bounded read snapshot."""
-        for revision, pin in (before, after):
+        selected = self._selected_revisions(project, environment, since, (before, after))
+        return selected[0], selected[1]
+
+    def _selected_revisions(
+        self,
+        project: str,
+        environment: str,
+        since: float,
+        selections: tuple[tuple[int, str], ...],
+    ) -> tuple[RevisionSummary, ...]:
+        for revision, pin in selections:
             _parameters((revision, 0, 2**62))
             if type(pin) is not str or re.fullmatch(r"[0-9a-f]{64}", pin) is None:
                 raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid selected revision pin")
         with self._read(project, environment):
             selected = tuple(
-                self._revision(environment, revision, since)[1] for revision, _ in (before, after)
+                self._revision(environment, revision, since)[1] for revision, _ in selections
             )
             if any(
-                row.record_sha256 != pin
-                for row, (_, pin) in zip(selected, (before, after), strict=True)
+                row.record_sha256 != pin for row, (_, pin) in zip(selected, selections, strict=True)
             ):
                 raise WorkerError(ErrorKind.CONFLICT, "selected revision record changed")
-            return selected[0], selected[1]
+            return selected
