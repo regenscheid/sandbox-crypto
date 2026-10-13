@@ -96,6 +96,7 @@ function body(value: unknown): value is PlanBody {
   }
   return steps.size <= 128 && new TextEncoder().encode(JSON.stringify(value)).length <= 65_536;
 }
+export { body as validPlanBody };
 function outcome(value: unknown, scope: PlanScope): value is PlanOutcome {
   if (!object(value) || typeof value.status !== 'string' || !['achieved', 'partially_achieved', 'not_achieved'].includes(value.status) || !text(value.summary) ||
     !Array.isArray(value.remaining_work) || value.remaining_work.length > 16 || value.remaining_work.some((v: unknown) => !text(v)) || !Array.isArray(value.evidence) || value.evidence.length > 8 ||

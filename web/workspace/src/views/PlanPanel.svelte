@@ -3,17 +3,22 @@
   import { onMount, untrack } from 'svelte';
   import { formatTime } from '../lib/format';
   import { PlanPoller, readSessionPlan, onPlanLogout, currentStepStatus, planCounts, authorLabel, type PlanPollState } from '../lib/plans';
+  import PlanEditor from './PlanEditor.svelte';
   let { projectId, sessionId, closed = false, initialState = {phase: 'loading', data: null} }:
     {projectId: string; sessionId: string; closed?: boolean; initialState?: PlanPollState} = $props();
   let viewState = $state<PlanPollState>(untrack(() => initialState));
   let mounted = $state(false);
-  const plan = $derived(viewState.data?.plan);
+  let refreshTick = $state(0);
+  const data = $derived(viewState.data?.project_id === projectId && viewState.data.session_id === sessionId ? viewState.data : null);
+  const plan = $derived(data?.plan);
   const counts = $derived(plan ? planCounts(plan) : null);
   onMount(() => { mounted = true; });
   $effect(() => {
     if (!mounted) return;
+    refreshTick;
     const scope = {projectId, sessionId};
-    viewState = {phase: 'loading', data: null};
+    const previous = untrack(() => viewState.data);
+    viewState = {phase: 'loading', data: previous?.project_id === projectId && previous.session_id === sessionId ? previous : null};
     const poller = new PlanPoller(signal => readSessionPlan(scope, signal), value => {viewState = value;}, closed);
     const visibility = () => poller.setVisible(document.visibilityState === 'visible');
     const offLogout = onPlanLogout(() => poller.logout());
@@ -29,10 +34,10 @@
   {:else if viewState.phase === 'signed_out'}<p role="status">Plan updates stopped for sign-out. Reload after signing in.</p>
   {:else if viewState.phase === 'missing'}<p role="status">This session is unavailable. Plan updates stopped.</p>
   {:else if viewState.phase === 'unavailable'}<p role="status">Plan updates unavailable. The current plan state is unknown.</p>{/if}
-  {#if viewState.data}
+  {#if data}
     {#if viewState.phase !== 'observed'}<p><strong>Previous observation; current plan state is unknown.</strong></p>{/if}
-    <p class="muted">Read at <time datetime={viewState.data.observed_at}>{formatTime(viewState.data.observed_at)}</time>.
-      {#if viewState.data.session_closed_at !== null}Session closed; showing its recorded plan.{/if}</p>
+    <p class="muted">Read at <time datetime={data.observed_at}>{formatTime(data.observed_at)}</time>.
+      {#if data.session_closed_at !== null}Session closed; showing its recorded plan.{/if}</p>
     {#if plan && counts}
       <div class="plan-heading">
         <span class="plan-status">{plan.head.status.replaceAll('_', ' ')}</span>
@@ -40,6 +45,7 @@
       </div>
       <p class="goal">{plan.version.body.goal}</p>
       <p class="muted">Plan by {authorLabel(plan.version.author)} · {formatTime(plan.version.recorded_at)}</p>
+      <p class="muted prose">Reason for this version: {plan.version.reason}</p>
       <p class="progress-summary">{counts.completed} of {plan.steps.length} steps completed · {counts.in_progress} in progress · {counts.blocked} blocked · {counts.skipped} skipped</p>
       <progress max={plan.steps.length} value={counts.completed} aria-label="Completed plan steps"></progress>
       <details><summary>Feasibility and expected outputs</summary>
@@ -73,6 +79,9 @@
         </div>
       {/if}
       <p class="muted">Progress records attributed updates; “in progress” does not prove a job is running. This compact view omits progress notes and reference details.</p>
+      {#key `${projectId}:${sessionId}:${plan.head.ref.plan_id}`}
+        <PlanEditor {projectId} {sessionId} observation={data} observed={viewState.phase === 'observed' && !closed} refresh={() => {refreshTick += 1;}} />
+      {/key}
     {:else}
       <p>{viewState.phase === 'observed' ? 'No plan has been recorded for this session.' : 'No plan was present in the previous observation.'}</p>
     {/if}
