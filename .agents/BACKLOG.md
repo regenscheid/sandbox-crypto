@@ -147,6 +147,7 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
   - [x] Planning/execution tools and original phase prompts for substantive tasks, active-safe-point user-edit reread and scoped live progress; independently cleared signed `f31ef29` and 244 affected cases; root combined gates pass 10,312 Python/43 skips/two existing warnings and corrected 127 core/API cases; fresh PR CI pending; no new mandatory approval gate
   - [x] Read-only live GUI plan/progress view: independently cleared signed `736b1ca`, 42 focused cases and final 656 web/24 math/build gates; API `7b774f6` independently cleared; combined/static gates and actual [browser acceptance](docs/agent-reports/session-planning-2026-10-12.md) pass; fresh PR CI pending
   - [ ] USER plan editing and exact approval routes; keep attributed versions and safe-point reread behavior
+  - [ ] MAIN prompt provenance: exact immutable system/tool assembly, bounded version/hash metadata and legacy/custom input truthfulness; active separate implementation with independent review, installed wording/grants unchanged
   - [ ] Scoped delegated tracks, structured outcomes, role limits and original handback prompts; lifecycle/question/compaction routing remains separate
 
 - [x] GUI stack (D80, confirmed by the user): Svelte 5 with TypeScript built by Vite (`web/workspace`), an aiohttp server (`packages/workspace`), markdown-it and KaTeX in the browser
