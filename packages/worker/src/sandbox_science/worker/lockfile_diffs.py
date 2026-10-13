@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.lockfile_diffs import (
@@ -25,6 +25,7 @@ from sandbox_science.contracts.lockfile_diffs import (
     LockfileHold,
     LockfileSelection,
 )
+from sandbox_science.contracts.revision_packages import RevisionPackage
 from sandbox_science.contracts.revisions import CondaPackage, LockfileRef, PipDistribution
 
 from .errors import WorkerError
@@ -39,6 +40,7 @@ DEADLINE = 8.0
 Key = tuple[str, str, str]
 Package = CondaPackage | PipDistribution
 Pair = tuple[LockfileSelection, LockfileSelection]
+Selection = TypeVar("Selection", Pair, LockfileSelection)
 
 
 def _unavailable() -> WorkerError:
@@ -426,6 +428,100 @@ def _license(package: Package | None) -> LicenseObservation | None:
     return LicenseObservation(declared=text, agpl=is_agpl(text) if text is not None else None)
 
 
+def _source(
+    root: Path,
+    selection: LockfileSelection,
+    stack: contextlib.ExitStack,
+    budget: _Budget,
+) -> tuple[_Blob | None, LockfileHeader | None, dict[Key, _Entry], HoldReason | None]:
+    """The same bounded proof for one inventory input or either comparison input."""
+    blob = header = None
+    index: dict[Key, _Entry] = {}
+    try:
+        if selection.lockfile is None:
+            raise _HeldError("lockfile_unrecorded")
+        blob = _Blob(root, selection.lockfile, stack)
+        header, index = _scan(blob, selection.lockfile, budget)
+        if header.skipped:
+            raise _HeldError("skipped_entries")
+    except FileNotFoundError:
+        return blob, header, index, "blob_missing"
+    except _HeldError as held:
+        return blob, header, index, held.reason
+    return blob, header, index, None
+
+
+def revision_packages(
+    root: Path, selection: LockfileSelection, offset: int, limit: int
+) -> dict[str, object]:
+    """Scan one exact blob once; materialize only a bounded page of recorded entries."""
+    _page_parameters(offset, limit)
+    if offset > 40_000:
+        raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid package page selection")
+    try:
+        with contextlib.ExitStack() as stack:
+            blob, header, index, hold = _source(root, selection, stack, _Budget())
+            frame: dict[str, object] = {
+                "selection": selection,
+                "offset": offset,
+                "limit": limit,
+                "header": header,
+            }
+            if hold is not None:
+                return {
+                    **frame,
+                    "status": "held",
+                    "holds": (hold,),
+                    "total": None,
+                    "next_offset": None,
+                    "packages": (),
+                }
+            if blob is None or header is None:
+                raise _unavailable()
+            total = len(index)
+            if total != header.conda_packages + header.pip_distributions:
+                raise _unavailable()
+            if offset > total:
+                raise WorkerError(
+                    ErrorKind.INVALID_REQUEST, "package offset exceeds selected total"
+                )
+            rows: list[RevisionPackage] = []
+            output_bytes = 8192  # Reserve the bounded selection/header/scope envelope.
+            for key in sorted(index)[offset : offset + limit]:
+                package = _selected(blob, index[key], key[0])
+                license_info = _license(package)
+                if package is None or license_info is None:
+                    raise _unavailable()
+                row = RevisionPackage(
+                    ecosystem=cast(Literal["conda", "pip"], key[0]),
+                    name=key[2],
+                    location=cast(Literal["prefix", "user"], key[1]) if key[1] else None,
+                    package=package,
+                    license=license_info,
+                )
+                size = len(row.model_dump_json().encode("utf-8")) + 1
+                if output_bytes + size > 64 * 1024:
+                    break
+                rows.append(row)
+                output_bytes += size
+            if offset < total and not rows:
+                raise _unavailable()
+            blob.check()
+            end = offset + len(rows)
+            return {
+                **frame,
+                "status": "complete",
+                "holds": (),
+                "total": total,
+                "next_offset": end if end < total else None,
+                "packages": tuple(rows),
+            }
+    except WorkerError:
+        raise
+    except (OSError, ValueError, TypeError, RecursionError):
+        raise _unavailable() from None
+
+
 def compare(root: Path, pair: Pair, offset: int, limit: int) -> dict[str, object]:
     """Read at most two selected regular blobs; return no full lockfile or full diff."""
     _page_parameters(offset, limit)
@@ -437,19 +533,9 @@ def compare(root: Path, pair: Pair, offset: int, limit: int) -> dict[str, object
             holds: list[LockfileHold] = []
             budget = _Budget()
             for side, selection in zip(("before", "after"), pair, strict=True):
-                blob = header = None
-                index: dict[Key, _Entry] = {}
-                try:
-                    if selection.lockfile is None:
-                        raise _HeldError("lockfile_unrecorded")
-                    blob = _Blob(root, selection.lockfile, stack)
-                    header, index = _scan(blob, selection.lockfile, budget)
-                    if header.skipped:
-                        raise _HeldError("skipped_entries")
-                except FileNotFoundError:
-                    holds.append(LockfileHold(side=side, reason="blob_missing"))
-                except _HeldError as held:
-                    holds.append(LockfileHold(side=side, reason=held.reason))
+                blob, header, index, hold = _source(root, selection, stack, budget)
+                if hold is not None:
+                    holds.append(LockfileHold(side=side, reason=hold))
                 blobs.append(blob)
                 headers.append(header)
                 indexes.append(index)
@@ -541,7 +627,7 @@ def compare(root: Path, pair: Pair, offset: int, limit: int) -> dict[str, object
 
 
 class LockfileDiffs:
-    """Global two/per-environment one admission; cancellation never abandons actual work."""
+    """Shared package/diff readers: global two/per-environment one actual work owners."""
 
     def __init__(self) -> None:
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="lockfile-diff")
@@ -561,17 +647,48 @@ class LockfileDiffs:
     ) -> dict[str, object]:
         """Admit before SQL selection; preserve lane/descriptor ownership until settled."""
         _page_parameters(offset, limit)
+        return await self._read(
+            environment, prepare, verify, lambda pair: compare(root, pair, offset, limit)
+        )
+
+    async def read_packages(
+        self,
+        environment: str,
+        root: Path,
+        prepare: Callable[[], LockfileSelection],
+        verify: Callable[[LockfileSelection], None],
+        offset: int,
+        limit: int,
+    ) -> dict[str, object]:
+        """One selected blob, using the exact same physical owners as comparisons."""
+        _page_parameters(offset, limit)
+        if offset > 40_000:
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid package page selection")
+        return await self._read(
+            environment,
+            prepare,
+            verify,
+            lambda selection: revision_packages(root, selection, offset, limit),
+        )
+
+    async def _read(
+        self,
+        environment: str,
+        prepare: Callable[[], Selection],
+        verify: Callable[[Selection], None],
+        read: Callable[[Selection], dict[str, object]],
+    ) -> dict[str, object]:
         if self.closed or len(self.tasks) >= 2 or environment in self.environments:
             raise _unavailable()
         self.environments.add(environment)
 
         async def run() -> dict[str, object]:
             try:
-                pair = prepare()
+                selection = prepare()
                 result = await asyncio.get_running_loop().run_in_executor(
-                    self.pool, compare, root, pair, offset, limit
+                    self.pool, read, selection
                 )
-                verify(pair)
+                verify(selection)
                 return result
             finally:
                 self.environments.discard(environment)

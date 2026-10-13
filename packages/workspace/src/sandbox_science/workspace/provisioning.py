@@ -28,6 +28,7 @@ from sandbox_science.contracts.provision_observations import (
     RevisionProbePage,
     RevisionSummaryPage,
 )
+from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.orchestrator.projects import (
     MAX_SESSION_RECORD_BYTES,
     ProjectError,
@@ -48,7 +49,9 @@ ENVIRONMENTS_PATH: Final = "/api/v0/projects/{project}/provisioning/environments
 ROUTE_PREFIX: Final = "provisioning-observation-"
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
 T = TypeVar("T")
-Kind = Literal["environments", "summary", "detail", "files", "revisions", "probes", "lockfile-diff"]
+Kind = Literal[
+    "environments", "summary", "detail", "files", "revisions", "probes", "lockfile-diff", "packages"
+]
 
 
 class LoginEndedError(Exception):
@@ -245,6 +248,7 @@ class Selection:
             "revisions",
             "probes",
             "lockfile-diff",
+            "packages",
         }:
             raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid observation selection")
         if self.kind in {"detail", "files"}:
@@ -258,7 +262,7 @@ class Selection:
                 self.seq is not None and (type(self.seq) is not int or not 0 <= self.seq <= 2**62)
             ) or (self.kind == "files" and self.seq is None):
                 raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid operation sequence")
-        if self.kind == "probes" and (
+        if self.kind in {"probes", "packages"} and (
             type(self.revision) is not int
             or not 0 <= self.revision <= 2**62
             or type(self.pin) is not str
@@ -278,6 +282,8 @@ class Selection:
             or not 1 <= self.limit <= 8
         ):
             raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid observation page selection")
+        if self.kind == "packages" and self.offset > 40_000:
+            raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid recorded package offset")
         if self.kind == "lockfile-diff" and (
             type(self.before) is not int
             or not 0 <= self.before <= 2**62
@@ -310,6 +316,7 @@ def _selection(request: web.Request, kind: Kind) -> Selection:
         "files": {"seq", "offset", "limit"},
         "revisions": {"after", "limit", "target"},
         "probes": {"pin", "offset", "limit"},
+        "packages": {"pin", "offset", "limit"},
         "lockfile-diff": {"before", "before_pin", "after", "after_pin", "offset", "limit"},
     }[kind]
     query = request.query
@@ -330,7 +337,9 @@ def _selection(request: web.Request, kind: Kind) -> Selection:
             ErrorKind.INVALID_REQUEST, "comparison requires both exact revision pins"
         )
     pin = query.get("pin")
-    if kind == "probes" and (pin is None or re.fullmatch(r"[0-9a-f]{64}", pin) is None):
+    if kind in {"probes", "packages"} and (
+        pin is None or re.fullmatch(r"[0-9a-f]{64}", pin) is None
+    ):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "revision selection requires its exact pin")
     return Selection(
         kind,
@@ -342,7 +351,11 @@ def _selection(request: web.Request, kind: Kind) -> Selection:
         pin=pin,
         after=_number(query.get("after", "-1"), 0 if kind == "lockfile-diff" else -1),
         target=_number(query["target"], 0) if "target" in query else None,
-        offset=_number(query.get("offset", "0"), 0, 80_000 if kind == "lockfile-diff" else 2**62),
+        offset=_number(
+            query.get("offset", "0"),
+            0,
+            80_000 if kind == "lockfile-diff" else 40_000 if kind == "packages" else 2**62,
+        ),
         limit=_number(query.get("limit", "8"), 1, 8),
         before=_number(query["before"], 0) if "before" in query else None,
         before_pin=query.get("before_pin"),
@@ -424,6 +437,26 @@ async def _fetch(
                 wanted.limit,
             ):
                 raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker returned another probe page")
+        case "packages":
+            packages: RevisionPackagePage = await observer.get_packages(
+                f"{path}/revisions/{wanted.revision}/packages",
+                {
+                    **params,
+                    "pin": str(wanted.pin),
+                    "offset": str(wanted.offset),
+                    "limit": str(wanted.limit),
+                },
+            )
+            if (
+                packages.selection.revision,
+                packages.selection.record_sha256,
+                packages.offset,
+                packages.limit,
+            ) != (wanted.revision, wanted.pin, wanted.offset, wanted.limit):
+                raise WorkerAPIError(
+                    ErrorKind.UNAVAILABLE, "worker returned another recorded package page"
+                )
+            result = packages
         case "lockfile-diff":
             result = await observer.get_diff(
                 f"{path}/lockfile-diff",
@@ -611,7 +644,7 @@ class ProvisionProxy:
         task.add_done_callback(finished)
         try:
             async with asyncio.timeout(
-                DIFF_TIMEOUT if wanted.kind == "lockfile-diff" else CALL_TIMEOUT
+                DIFF_TIMEOUT if wanted.kind in {"lockfile-diff", "packages"} else CALL_TIMEOUT
             ):
                 return await asyncio.shield(task)
         except TimeoutError as error:
@@ -718,6 +751,7 @@ def add_routes(
         ("files", PATH + "/operations/{operation}/files"),
         ("revisions", PATH + "/revisions"),
         ("probes", PATH + "/revisions/{revision}/probes"),
+        ("packages", PATH + "/revisions/{revision}/packages"),
         ("lockfile-diff", PATH + "/lockfile-diff"),
     )
     for kind, path in routes:

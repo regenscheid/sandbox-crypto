@@ -18,6 +18,10 @@ No real model pilot has run. That separate pilot remains blocked on
 root-provided existing model configuration and an explicitly selected finite
 budget. The helper adds no approval gate or provider configuration discovery.
 
+The helper and calibration archive were delivered as [PR #112](https://github.com/regenscheid/sandbox-crypto/pull/112)
+at `0bc82b3` after independent review and all four fresh CI checks. The accepted
+report/archive retain their original calibration source pins and qualifications.
+
 ## Default and active modes
 
 With no arguments, the helper prints a fixed description and exits. This path
