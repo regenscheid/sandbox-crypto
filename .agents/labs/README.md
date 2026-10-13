@@ -9,7 +9,7 @@ empty current endpoints and unchanged SQL between original-VM Stopped proofs.
 All owned runtime/private state is removed and independently audited. Corrected
 helper `5c830a3a` was adopted only after teardown, with scoped checks and eleven
 retained-row AST replays; no second corrected-helper runtime is claimed. Root
-owns final report/archive, independent delivery review and fresh CI.
+has recorded the [Lab32 report and exact archive](../docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md); final independent delivery review and fresh CI remain.
 
 Scripts for running the platform against a real OpenShell gateway on babbage, as labs 9 to 20 did. Each lab's report is in [`../docs/agent-reports/`](../docs/agent-reports/). These scripts are agents' tooling, not product code: they assume babbage's setup and are kept here so that the next lab does not start from nothing.
 

@@ -25,7 +25,9 @@ actual-main source review pass. Root-owned Lab32 passed worker/workspace/native
 inventory paging, all 62 unchanged entries and six GP additions. Separately
 qualified stopped-VM reads preserve actual retired endpoints and unchanged SQL
 between fresh proofs for the original VM. All owned lab state is removed and
-independently audited; final delivery review and fresh CI remain.
+independently audited. The [Lab32 report/archive](../.agents/docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md)
+retains the original helper failure and qualified result; final delivery review
+and fresh CI remain.
 
 The workspace exposes recorded provisioning observations for a project's shared
 environment and retained dedicated environments. This is the read-only API part of
