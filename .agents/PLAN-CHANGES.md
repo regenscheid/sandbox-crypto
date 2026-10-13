@@ -1,5 +1,14 @@
 # Plan changes
 
+## 2026-10-13 — preserve OpenShell CLI timeout and cancellation after exit
+
+An environment lifecycle CLI can exit while its communication is being cancelled.
+Cleanup now tolerates only that `ProcessLookupError` race and retains the actual
+process wait through repeated cancellation, preserving the original interruption.
+Deterministic regressions and the unchanged recycle deadline assertion cover the
+fix. This changes no policy, grant, deadline or retry rule; gateway effects can
+still be unknown after interruption. Combined gates and CI remain root-owned.
+
 ## 2026-10-13 — internal child-kernel OpenShell acceptance and cleanup passed
 
 Root-owned [Lab33](docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md) passed once on frozen signed `0961999` / helper `a3fa2086`: 19 cells, three controls, one session close, same-incarnation reconnect, thirty stopped no-wake reads with actual endpoint `[]`/unchanged SQL, same original VM resume and explicit original deletion. Independent runtime and complete owned-cleanup checks are clear. The 653-record/3,904,374-byte archive preserves original failures, preeffect receipt correction, interrupted predecessor full run and source/gate/runtime/cleanup proofs. Unactivated v3 teardown ownership risk was corrected with held-FD export adoption and original-root retirement before actual cleanup; no runtime or export repeat. All lab/private state is gone. Fresh 11,133 Python and required gates remain exact across 753 product inputs; unchanged web/math/build evidence is explicitly reused. Final delivery review/fresh CI remain; no controller/model/launcher/grant or draft defaults are enabled.
