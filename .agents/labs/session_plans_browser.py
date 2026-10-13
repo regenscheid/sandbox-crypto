@@ -22,7 +22,7 @@ import socket
 import stat
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,7 +43,8 @@ from sandbox_science.workspace.app import create_app
 REPO = Path(__file__).resolve().parents[2]
 PREFIX = "session-plans-browser-"
 MARKER = ".session-plans-fixture"
-VERSION = "synthetic-session-plans-browser-v1"
+VERSION = "synthetic-session-plans-browser-v2"
+RECEIPT_FAULT = ".next-plan-save-unavailable"
 A, B = "plan-project-a", "plan-project-b"
 SCOPES = {"active": (A, "a"), "other": (B, "b"), "closed": (A, "closed")}
 STEPS = ("inspect", "qualify", "report")
@@ -56,10 +57,15 @@ SOURCES = (
     "packages/orchestrator/src/sandbox_science/orchestrator/tools.py",
     "packages/workspace/src/sandbox_science/workspace/plans.py",
     "packages/workspace/src/sandbox_science/workspace/app.py",
+    "packages/workspace/src/sandbox_science/workspace/plan_edits.py",
+    "packages/workspace/tests/test_plan_edits.py",
     "web/workspace/src/lib/plans.ts",
     "web/workspace/src/lib/plans.test.ts",
     "web/workspace/src/views/PlanPanel.svelte",
     "web/workspace/src/views/SessionView.svelte",
+    "web/workspace/src/lib/planEdits.ts",
+    "web/workspace/src/lib/planEdits.test.ts",
+    "web/workspace/src/views/PlanEditor.svelte",
 )
 
 
@@ -146,16 +152,19 @@ def exclusive(path: Path, data: bytes, mode: int) -> tuple[int, int]:
     return identity
 
 
-def remove_owned(path: Path, identity: tuple[int, int] | None) -> bool:
+def remove_owned(path: Path, identity: tuple[int, int] | None, *, missing_ok: bool = True) -> bool:
     if identity is None:
         return False
     try:
         current = path.lstat()
     except FileNotFoundError:
-        return True
+        return missing_ok
     if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != identity:
         raise ValueError("Private output was replaced; refusing to unlink it")
-    path.unlink()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return missing_ok
     return True
 
 
@@ -274,6 +283,7 @@ def seed(root: Path, pins: dict) -> dict:
         projects.create(project, "minimal", "sha256:" + "a" * 64)
     for project, session in SCOPES.values():
         projects.open_session(project, session, dedicated=False)
+    projects.open_session(A, "empty", dedicated=False)
     documents = DocumentStore(store_path(root), producer="synthetic-plan-fixture")
     try:
         plans = SessionPlans(documents)
@@ -305,6 +315,7 @@ def seed(root: Path, pins: dict) -> dict:
         "owner_id": owner,
         "scopes": SCOPES,
         "original_refs": refs,
+        "no_plan_scope": [A, "empty"],
         "run_ids": {key: authority(key).run_id for key in SCOPES},
         "activity": "synthetic control-store assertions; no research execution",
         "created_at": datetime.now(UTC).isoformat(),
@@ -360,20 +371,22 @@ def action(root: Path, name: str) -> dict:
                     expected_status_revision=current.head.status_revision,
                 )
             elif name == "revise":
-                if current.head.ref.version != 1:
-                    raise ValueError("Fixed USER revision requires original fixture version")
+                if not 1 <= current.head.ref.version <= 8:
+                    raise ValueError("Fixed USER revision exceeds its fixture version budget")
                 body = current.version.body.model_dump(mode="json")
-                body["phases"][0]["steps"][1]["description"] = CHANGED
+                body["phases"][0]["steps"][1]["description"] = (
+                    CHANGED + f" Competing fixture revision {current.head.ref.version}."
+                )
                 plans.revise(
                     authority("active", user=True),
-                    "fixture-user-revise",
+                    f"fixture-user-revise-{current.head.ref.version}",
                     current.head.ref,
                     PlanBody.model_validate_json(json.dumps(body)),
                     "Synthetic USER intent change; stable IDs retained",
                 )
             elif name == "finish":
-                if current.head.ref.version != 2:
-                    raise ValueError("Qualified finish requires the explicit USER revision")
+                if not 2 <= current.head.ref.version <= 9:
+                    raise ValueError("Qualified finish requires a bounded USER revision")
                 for step, status_ in zip(STEPS, ("completed", "blocked", "skipped"), strict=True):
                     fresh = plans.compact_current(actor)
                     projection = next(item for item in fresh.steps if item.step_id == step)
@@ -403,6 +416,16 @@ def action(root: Path, name: str) -> dict:
                         remaining_work=("Perform and verify actual research separately",),
                     ),
                 )
+            elif name == "lose-save-response":
+                descriptor = os.open(
+                    anchored / RECEIPT_FAULT,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                )
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(encoded({"owner_id": manifest["owner_id"]}))
+                    stream.flush()
+                    os.fsync(stream.fileno())
             elif name != "inspect":
                 raise ValueError("Unsupported fixed fixture action")
             return {
@@ -413,6 +436,57 @@ def action(root: Path, name: str) -> dict:
             }
         finally:
             documents.close()
+
+
+def withhold_saved_receipt(
+    root: Path, owner: str
+) -> Callable[
+    [web.Request, Callable[[web.Request], Awaitable[web.StreamResponse]]],
+    Awaitable[web.StreamResponse],
+]:
+    """One owned fixture fault: hide a successful save's response after commit."""
+
+    @web.middleware
+    async def middleware(
+        request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
+    ) -> web.StreamResponse:
+        if (
+            request.method != "POST"
+            or request.path != f"/api/v0/projects/{A}/sessions/a/plan/changes"
+        ):
+            return await handler(request)
+        path = root / RECEIPT_FAULT
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return await handler(request)
+        try:
+            before = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or before.st_uid != os.getuid()
+                or before.st_nlink != 1
+                or stat.S_IMODE(before.st_mode) != 0o600
+                or not 0 < before.st_size <= 1024
+            ):
+                raise ValueError("Invalid owned receipt-fault marker")
+            raw = os.read(descriptor, 1025)
+            if len(raw) != before.st_size or json.loads(raw) != {"owner_id": owner}:
+                raise ValueError("Receipt-fault owner mismatch")
+            response = await handler(request)
+            if response.status != 200:
+                return response
+            if not remove_owned(path, (before.st_dev, before.st_ino), missing_ok=False):
+                return response
+            return web.json_response(
+                {"error": {"kind": "unavailable", "message": "Synthetic saved receipt withheld"}},
+                status=503,
+                headers={"Cache-Control": "no-store"},
+            )
+        finally:
+            os.close(descriptor)
+
+    return middleware
 
 
 async def serve(args: argparse.Namespace) -> None:
@@ -431,9 +505,9 @@ async def serve(args: argparse.Namespace) -> None:
         os.chmod(root, 0o700)
         manifest = seed(root, pins)
         token = secrets.token_urlsafe(32)
-        runner = web.AppRunner(
-            create_app(ProjectStore(root), args.static, login_token=token), access_log=None
-        )
+        app = create_app(ProjectStore(root), args.static, login_token=token)
+        app.middlewares.append(withhold_saved_receipt(root, manifest["owner_id"]))
+        runner = web.AppRunner(app, access_log=None)
         await runner.setup()
         await web.TCPSite(runner, "127.0.0.1", args.port).start()
         port = int(runner.addresses[0][1])
@@ -507,7 +581,7 @@ def main() -> None:
     server.add_argument("--info", type=Path, required=True)
     server.add_argument("--cleanup", type=Path, required=True)
     server.add_argument("--port", type=int, default=0, choices=range(65536))
-    for name in ("in-progress", "revise", "finish", "inspect"):
+    for name in ("in-progress", "revise", "finish", "inspect", "lose-save-response"):
         commands.add_parser(name).add_argument("--fixture", type=Path, required=True)
     args = parser.parse_args()
     if args.action == "serve":
