@@ -132,6 +132,8 @@ insert/delete faults, quota holds and actual-byte reservations, positive MAIN
 scope, malformed/corrupt large retained rows and finite clocks. Synthetic trusted
 pins prove store behavior only; they do not prove worker lineage authentication.
 
+Root combined local gates on signed `840b48f` pass 10,155 Python cases/43 opt-in skips/two existing warnings and required static checks; unchanged PR #99 web/math/build evidence is explicitly reused. [Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md) validates the separate passive worker lineage, not this inbox's MAIN delivery. Fresh delivery CI remains separate.
+
 Before active MAIN safe-point delivery can be claimed, separately review the
 passive trusted-lineage transport; current control/session/binding authentication;
 bounded owned controller work; transcript fields and platform prose; successful
