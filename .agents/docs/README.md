@@ -16,6 +16,8 @@ This folder keeps the agent source investigations behind the Sandbox Science pla
 
 ## Local implementation validation
 
+- [Watcher prompt reservation provenance, 2026-10-12](agent-reports/watcher-prompt-provenance-2026-10-12.md): atomic intended-input pins, exact historical system and zero tools, nullable legacy migration and bounded scoped corruption reads; 10,385 Python/656 web/24 math and all required local gates. [Exact archive](agent-reports/watcher-prompt-provenance-evidence-2026-10-12.json) distinguishes original source/probe/gate records from the reconstructed initial fixture-failure note. No provider dispatch, global-retention or model-quality claim.
+
 - [MAIN prompt input provenance, 2026-10-12](agent-reports/main-prompt-provenance-2026-10-12.md): exact unchanged system/planning/tool pins, complete/unavailable/custom/legacy boundaries and retained ordinary/failed runs; 10,344 Python/656 web/24 math and all required local gates. [Exact evidence](agent-reports/main-prompt-provenance-evidence-2026-10-12.json) preserves independent source/union review and allocation-bound corrections. Other roles and provider/model quality remain separate; no runtime model/service was used.
 
 - [Original MAIN planning and live progress, 2026-10-12](agent-reports/session-planning-2026-10-12.md): independently authored single-MAIN core/tools and read-only workspace; 10,312 Python/656 web/24 math gates, actual synthetic browser progress/revision/qualified-outcome/isolation/history/error/logout acceptance and owned cleanup. USER editing, approval decisions and live-model planning quality remain separate.
