@@ -30,6 +30,12 @@ flowchart LR
   - **`openshell`** copies the executor and its helpers into a configured sandbox with `openshell sandbox upload`, and runs it with `openshell sandbox exec --no-tty --no-login-shell`. Its required `isolation_tier` setting declares the tier the gateway's driver gives: 3 for the VM driver on babbage (D43).
   - **`local`** runs the executor as a plain subprocess of the worker. It has **no isolation**: it declares tier 0, and its probe shows why. It exists for development and tests, and the harness refuses it unless told otherwise (`--allow-unisolated`).
 
+Environment lifecycle commands run through `OpenShellCli`. On timeout or caller
+cancellation, cleanup tolerates a CLI process that has already exited and retains
+its actual wait through repeated cancellation. The original caller interruption
+is preserved; a CLI timeout remains `unavailable`. Reaping the CLI does not prove
+that a gateway mutation had no effect, and does not authorize an automatic retry.
+
 ## Worker API
 
 Every route needs `Authorization: Bearer <token>`: the pool's own token, which acts for every project, or a client's, which acts only for the projects its settings list ([clients](#clients-limited-to-projects)). Bodies are the JSON forms of the `sandbox_science.contracts` models. Errors return a `WorkerErrorResponse` carrying an error kind from the spec, with status 400, 403, 404, 409, 422, 500, 503 or 504 as the kind implies. The routes that name an execution, an artifact or a provisioning operation take an optional `project_id` query parameter; when it is given, one of another project is `not_found`.
