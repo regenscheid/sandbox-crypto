@@ -70,6 +70,24 @@
       "sha256": "b86fa8d38f48d690da3f1465853371747e1e11fd193036e5fc815de86f84e0f9"
     },
     {
+      "path": "../../docs/PROVISIONING-OBSERVATIONS.md",
+      "category": "implementation-boundary",
+      "bytes": 6902,
+      "sha256": "6679713e8bd3c8533a0c52d5d6937e376dcf848858855a87cd2b53f22f5657ee"
+    },
+    {
+      "path": "../../docs/PROVISIONING-WORKSPACE-VIEW.md",
+      "category": "implementation-boundary",
+      "bytes": 6301,
+      "sha256": "db87e4222f5bc177b86b885ad7e2898c1f43df5a4bcc27e12ca284635e11ed17"
+    },
+    {
+      "path": "../../docs/PROVISIONING-WORKSPACE.md",
+      "category": "implementation-boundary",
+      "bytes": 8294,
+      "sha256": "43ddc772405b8bc829a7b419c65e7a26a78aa239268c28289ce8f8bee49e4b3f"
+    },
+    {
       "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
       "bytes": 7696,
@@ -120,8 +138,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 26465,
-      "sha256": "7b72838f8ac418b2775669f7d572ceddc20a456cc694e6ea2ab5110c9e410c17"
+      "bytes": 26881,
+      "sha256": "01edf38dc0fdea7966e5cf176a77f1b54d3d987fe4ea24f5e0d192ef65a8180e"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
