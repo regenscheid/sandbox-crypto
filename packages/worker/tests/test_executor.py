@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import platform
+import shlex
 import socket
 import subprocess
 import sys
@@ -749,6 +750,87 @@ async def test_kernels_started_together_each_get_their_own_unix_socket_names(
         assert len(addresses) == len(sessions)
     finally:
         await stdio.close()
+
+
+DOUBLE_FORK = (
+    "import os, time\n"
+    "if os.fork():\n"
+    "    os._exit(0)\n"
+    "os.setsid()\n"
+    "if os.fork():\n"
+    "    os._exit(0)\n"
+    "time.sleep(300)\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_forks_away_leaves_no_zombies_behind(tmp_path: Path) -> None:
+    # The processes between a call and what it left running exit once their parent has,
+    # and the executor, their reaper, adopts them: none may stay a zombie until it exits.
+    stdio = await Stdio.start(tmp_path)
+    executor_pid = stdio.process.pid
+    script = (
+        "exec </dev/null >/dev/null 2>&1\n"
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(DOUBLE_FORK)} &\n"
+        "( sleep 301 & )\n"
+        "sleep 0.3\n"
+    )
+
+    def zombies() -> list[int]:
+        return [
+            info.pid
+            for info in sandbox_processes.process_table().values()
+            if info.ppid == executor_pid and info.zombie
+        ]
+
+    try:
+        for number in range(3):
+            stdio.send(
+                {
+                    "id": number,
+                    "op": "shell",
+                    "execution": f"exe-{number}",
+                    "session": "s1",
+                    "script": script,
+                    "timeout": 30,
+                    "limit": 4096,
+                }
+            )
+            end = await stdio.until(_end(f"exe-{number}"), timeout=30)
+            assert end["state"] == "succeeded", end
+            await eventually(lambda: zombies() == [], timeout=5)
+        left = [
+            info.pid
+            for info in sandbox_processes.process_table().values()
+            if info.ppid == executor_pid and not info.zombie
+        ]
+        assert left == []  # what the calls left running was ended too
+    finally:
+        await stdio.close()
+
+
+def test_a_child_the_executor_is_starting_or_waits_for_is_never_collected() -> None:
+    # Its status belongs to asyncio or jupyter_client: taken from them, a command that
+    # succeeded would look as if it failed.
+    child = subprocess.Popen(["true"])  # its zombie stands for a just-started child
+    try:
+        while (info := sandbox_processes.process_info(child.pid)) is None or not info.zombie:
+            time.sleep(0.01)
+        sandbox_processes.spawned.add(child.pid)
+        try:
+            assert sandbox_processes.collect_adopted([child.pid]) == 0
+        finally:
+            sandbox_processes.spawned.discard(child.pid)
+        with sandbox_processes.starting_children():
+            assert sandbox_processes.collect_adopted([child.pid]) == 0
+        info = sandbox_processes.process_info(child.pid)
+        assert info is not None
+        assert info.zombie
+        # Neither: an adopted zombie, which nothing else would collect.
+        assert sandbox_processes.collect_adopted([child.pid]) == 1
+        assert sandbox_processes.process_info(child.pid) is None
+    finally:
+        child.wait(timeout=10)
 
 
 def test_capture_keeps_head_and_tail() -> None:

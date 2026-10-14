@@ -274,13 +274,13 @@ async def test_cancelling_a_shell_call_stops_its_processes(worker: Target) -> No
     cancelled = await worker.finish(execution["execution_id"])
     assert cancelled["state"] == "cancelled"
     assert cancelled["result"]["error"]["kind"] == "cancelled"
-    # The background process is gone too: no such process, or a zombie awaiting its reaper.
+    # The background process is gone too, and collected: never left a zombie.
     check = await worker.run(
         kind="shell",
         script=(
             "pid=$(cat bg.pid); for i in $(seq 50); do "
             "state=$(sed -n 's/.*) \\(.\\).*/\\1/p' /proc/$pid/stat 2>/dev/null); "
-            'if [ -z "$state" ] || [ "$state" = Z ]; then echo gone; exit 0; fi; '
+            'if [ -z "$state" ]; then echo gone; exit 0; fi; '
             "sleep 0.1; done; echo alive"
         ),
     )

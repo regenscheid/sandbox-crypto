@@ -393,16 +393,17 @@ class Kernel:
 
             async def spawn() -> None:
                 nonlocal leader, client
-                await manager.start_kernel(
-                    cwd=str(self.cwd), env={**self.env, sandbox_processes.OWNER: owner}
-                )
-                pid = getattr(manager.provisioner, "pid", None)
-                if (
-                    isinstance(pid, int)
-                    and (info := sandbox_processes.process_info(pid)) is not None
-                ):
-                    sandbox_processes.spawned.add(pid)
-                    leader = (pid, info.start)
+                with sandbox_processes.starting_children():
+                    await manager.start_kernel(
+                        cwd=str(self.cwd), env={**self.env, sandbox_processes.OWNER: owner}
+                    )
+                    pid = getattr(manager.provisioner, "pid", None)
+                    if (
+                        isinstance(pid, int)
+                        and (info := sandbox_processes.process_info(pid)) is not None
+                    ):
+                        sandbox_processes.spawned.add(pid)
+                        leader = (pid, info.start)
                 client = manager.client()
                 client.start_channels()
                 await client.wait_for_ready(timeout=KERNEL_START_TIMEOUT)
@@ -418,7 +419,7 @@ class Kernel:
             async def cleanup() -> None:
                 with contextlib.suppress(Exception):
                     await manager.shutdown_kernel(now=True)
-                await asyncio.to_thread(sandbox_processes.end_owned, owner, leader)
+                await end_and_collect(owner, leader)
 
             await _owned(cleanup())
             if leader is not None:
@@ -443,9 +444,18 @@ class Kernel:
             with contextlib.suppress(Exception):
                 await manager.shutdown_kernel(now=True)
         if owner:
-            await asyncio.to_thread(sandbox_processes.end_owned, owner, leader)
+            await end_and_collect(owner, leader)
         if leader is not None:
             sandbox_processes.spawned.discard(leader[0])
+
+
+async def end_and_collect(owner: str, leader: sandbox_processes.Leader | None) -> int:
+    """End what ``owner`` left running, then collect the zombies this executor adopted
+    that nothing else waits for; return how many processes it ended."""
+    ended = await asyncio.to_thread(sandbox_processes.end_owned, owner, leader)
+    zombies = await asyncio.to_thread(sandbox_processes.zombie_children)
+    sandbox_processes.collect_adopted(zombies)
+    return ended
 
 
 def kernel_address() -> str:
@@ -1262,26 +1272,28 @@ class Executor:
             if running.kind == "job":
                 logs = await asyncio.to_thread(self.job_logs, session, execution)
             self.own(running.owner, execution)
-            try:
-                async with self.launch(running, timeout):
-                    process = await self.own_launch(
-                        running,
-                        asyncio.create_subprocess_exec(
-                            *argv,
-                            cwd=cwd,
-                            env={**env, sandbox_processes.OWNER: running.owner},
-                            stdin=asyncio.subprocess.DEVNULL,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
-                            start_new_session=True,
-                        ),
-                    )
-                    running.process = process
-                    running.started = True
-            except OSError as exc:
-                error = {"kind": "invalid_request", "message": f"cannot run {argv[0]!r}: {exc}"}
-                return
-            sandbox_processes.spawned.add(process.pid)
+            # The process is the executor's child before its pid is in spawned.
+            with sandbox_processes.starting_children():
+                try:
+                    async with self.launch(running, timeout):
+                        process = await self.own_launch(
+                            running,
+                            asyncio.create_subprocess_exec(
+                                *argv,
+                                cwd=cwd,
+                                env={**env, sandbox_processes.OWNER: running.owner},
+                                stdin=asyncio.subprocess.DEVNULL,
+                                stdout=asyncio.subprocess.PIPE,
+                                stderr=asyncio.subprocess.PIPE,
+                                start_new_session=True,
+                            ),
+                        )
+                        running.process = process
+                        running.started = True
+                except OSError as exc:
+                    error = {"kind": "invalid_request", "message": f"cannot run {argv[0]!r}: {exc}"}
+                    return
+                sandbox_processes.spawned.add(process.pid)
             info = sandbox_processes.process_info(process.pid)
             running.leader = (process.pid, info.start) if info is not None else None
             running.process = process
@@ -1306,7 +1318,7 @@ class Executor:
                 timed_out = True
                 await self.terminate(running)
             # What the command left running may not outlive it, and would hold its pipes.
-            await asyncio.to_thread(sandbox_processes.end_owned, running.owner, running.leader)
+            await end_and_collect(running.owner, running.leader)
             _, pending = await asyncio.wait(readers, timeout=5)
             for reader in pending:
                 reader.cancel()
@@ -1341,7 +1353,7 @@ class Executor:
             }
             if running.process is not None:
                 await self.terminate(running)
-                await asyncio.to_thread(sandbox_processes.end_owned, running.owner, running.leader)
+                await end_and_collect(running.owner, running.leader)
         finally:
             for reader in readers:
                 if not reader.done():
@@ -1481,7 +1493,7 @@ class Executor:
                 break
             await asyncio.sleep(0.1)
         if left or process.returncode is None:
-            await asyncio.to_thread(sandbox_processes.end_owned, owner, leader)
+            await end_and_collect(owner, leader)
         await process.wait()
 
     def leftovers(
@@ -1965,9 +1977,10 @@ class Executor:
             "hash": request.get("hash"),
         }
         try:
-            result = await self.captures.read(
-                request.get("capture_id"), data, request.get("timeout")
-            )
+            with sandbox_processes.starting_children():
+                result = await self.captures.read(
+                    request.get("capture_id"), data, request.get("timeout")
+                )
         except asyncio.CancelledError:
             await self.reply(
                 request,

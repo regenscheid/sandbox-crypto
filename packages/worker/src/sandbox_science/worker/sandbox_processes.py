@@ -18,7 +18,7 @@ import secrets
 import signal
 import socket
 import time
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
 from dataclasses import dataclass
 
 KILL_ROUNDS = 5
@@ -29,6 +29,10 @@ PR_SET_DUMPABLE = 4
 PR_SET_CHILD_SUBREAPER = 36
 spawned: set[int] = set()
 """Processes asyncio or jupyter_client started, and will reap: never reaped here."""
+starting = 0
+"""Children this process is starting whose pids are not in ``spawned`` yet, and helpers
+it runs and reaps itself: while any are, no zombie child is collected, since one may be
+theirs. Changed and read only on the event loop's thread."""
 
 
 Leader = tuple[int, int]
@@ -245,6 +249,52 @@ def _reap(pids: Iterable[int]) -> None:
                 still.append(pid)
         waiting = still
         time.sleep(0.01)
+
+
+@contextlib.contextmanager
+def starting_children() -> Generator[None]:
+    """Hold off collecting zombie children while this process starts children of its own
+    or runs a helper it reaps itself. Only on the event loop's thread."""
+    global starting
+    starting += 1
+    try:
+        yield
+    finally:
+        starting -= 1
+
+
+def zombie_children() -> list[int]:
+    """This process's zombie children that asyncio and jupyter_client do not wait for.
+    Blocking: it reads /proc."""
+    me = os.getpid()
+    return [
+        info.pid
+        for info in process_table().values()
+        if info.ppid == me and info.zombie and info.pid not in spawned
+    ]
+
+
+def collect_adopted(pids: Iterable[int]) -> int:
+    """Collect those of ``pids`` that are still zombie children of this process, which
+    adopted them (a subreaper) after their parent ended: a process that forks and exits
+    once its parent has gone, as a double fork does, would otherwise stay a zombie until
+    the executor exits. Return how many it collected.
+
+    Only on the event loop's thread, with no await since ``starting`` is checked: none
+    of these can then be a child this process is starting, whose status is not ours.
+    """
+    if starting:
+        return 0
+    me = os.getpid()
+    collected = 0
+    for pid in pids:
+        info = process_info(pid)
+        if info is None or not info.zombie or info.ppid != me or pid in spawned:
+            continue
+        with contextlib.suppress(ChildProcessError):
+            done, _ = os.waitpid(pid, os.WNOHANG)
+            collected += done == pid
+    return collected
 
 
 def _sockets_work() -> bool:
