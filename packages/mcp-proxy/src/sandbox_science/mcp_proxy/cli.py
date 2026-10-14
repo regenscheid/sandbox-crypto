@@ -83,7 +83,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     compile_policy.add_argument(
         "--admit-escalated",
         action="store_true",
-        help="admit escalated tools at the fence, so that approvals take effect",
+        help="admit the tools the policy escalates by name at the fence, so that approvals "
+        "take effect; the proxy still holds each call for approval",
     )
     pending = commands.add_parser("pending", help="list permission requests nobody answered")
     pending.add_argument("--settings", type=Path, required=True)
@@ -154,10 +155,12 @@ def _compile_policy(
     policy: Path, ceiling: Path, targets: Path, out: Path, admit_escalated: bool
 ) -> int:
     """Write the proxy sandbox's OpenShell policy, and print what the compiler found."""
-    target = load_targets(targets).mcp_proxy
-    if admit_escalated:
-        target = target.model_copy(update={"admit_escalated": True})
-    compiled = compile_mcp_proxy(load_policy(policy), target, ceiling=load_ceiling(ceiling))
+    compiled = compile_mcp_proxy(
+        load_policy(policy),
+        load_targets(targets).mcp_proxy,
+        ceiling=load_ceiling(ceiling),
+        admit_escalated=admit_escalated,
+    )
     for finding in compiled.findings:
         print(f"{finding.severity.value}: {finding.subject}: {finding.message}")
     out.write_text(compiled.policy.to_yaml())

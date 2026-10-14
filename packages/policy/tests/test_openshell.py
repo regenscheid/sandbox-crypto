@@ -144,8 +144,9 @@ def mcp_policy(tools: str, *, prefix: str = "", default: str = "escalate") -> Lo
 
 
 def compile_mcp(policy: LoadedPolicy, *, admit_escalated: bool = False) -> Compiled:
-    target = TARGETS.mcp_proxy.model_copy(update={"admit_escalated": admit_escalated})
-    return compile_mcp_proxy(policy, target, ceiling=OPEN)
+    return compile_mcp_proxy(
+        policy, TARGETS.mcp_proxy, ceiling=OPEN, admit_escalated=admit_escalated
+    )
 
 
 def openshell_glob(pattern: str, name: str) -> bool:
@@ -893,9 +894,11 @@ def test_the_example_fence_matches_the_library_for_every_known_tool() -> None:
 def test_compiled_tool_rules_are_never_looser_than_the_library(
     tools: str, prefix: str, default: str, admit_escalated: bool
 ) -> None:
-    """Admitting escalated tools admits nothing but them beyond what is allowed."""
+    """Admitting escalated tools admits nothing but them beyond what is allowed, and
+    denies nothing the fence admits without it."""
     policy = mcp_policy(tools, prefix=prefix, default=default)
     compiled = compile_mcp(policy, admit_escalated=admit_escalated)
+    held = compile_mcp(policy)
     admitted = library_allows_or_escalates_by_name if admit_escalated else library_allows
     rng = random.Random(f"{tools}{prefix}{default}")  # noqa: S311 - test data, not secrets
     alphabet = [
@@ -922,6 +925,8 @@ def test_compiled_tool_rules_are_never_looser_than_the_library(
             continue
         if openshell_admits(compiled.policy, "srv", tool):
             assert admitted(policy, "srv", tool), tool
+        if openshell_admits(held.policy, "srv", tool):
+            assert openshell_admits(compiled.policy, "srv", tool), tool
 
 
 def test_escalated_tools_are_admitted_at_the_fence_only_on_request() -> None:
@@ -938,7 +943,28 @@ def test_escalated_tools_are_admitted_at_the_fence_only_on_request() -> None:
     ):
         assert openshell_admits(held.policy, "srv", tool) is before, tool
         assert openshell_admits(admitting.policy, "srv", tool) is after, tool
-    assert any("escalated tools are admitted" in f.message for f in admitting.findings)
+    assert any("escalates by name are admitted" in f.message for f in admitting.findings)
+
+
+def test_admitting_escalated_tools_never_denies_a_tool_allowed_by_name() -> None:
+    policy = mcp_policy(
+        "{allow: [portal_list, paper_search], escalate: [crawl, '*_feedback'], deny: ['portal_*']}"
+    )
+    held = compile_mcp(policy)
+    admitting = compile_mcp(policy, admit_escalated=True)
+    for tool, before, after in (
+        ("portal_list", True, True),  # admitting '*_feedback' would deny it with 'portal_*'
+        ("paper_search", True, True),
+        ("crawl", False, True),
+        ("paper_feedback", False, False),  # so the escalated pattern stays held
+        ("portal_feedback", False, False),
+        ("portal_reset", False, False),
+    ):
+        assert openshell_admits(held.policy, "srv", tool) is before, tool
+        assert openshell_admits(admitting.policy, "srv", tool) is after, tool
+    (warning,) = [f for f in admitting.findings if "are not admitted" in f.message]
+    assert "*_feedback" in warning.message
+    assert "portal_list" in warning.message
 
 
 def test_deny_entries_are_compiled_only_with_allow_patterns() -> None:
