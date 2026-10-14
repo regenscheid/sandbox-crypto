@@ -25,17 +25,6 @@ class KernelStarts:
 
     def __init__(self, db: sqlite3.Connection) -> None:
         self.db = db
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS kernel_start_revisions ("
-            " environment_id TEXT NOT NULL, session_id TEXT NOT NULL, language TEXT NOT NULL,"
-            " record TEXT NOT NULL, PRIMARY KEY(environment_id,session_id,language))"
-        )
-
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS kernel_package_epochs (environment_id TEXT PRIMARY KEY,"
-            " incarnation TEXT NOT NULL, epoch INTEGER NOT NULL, revision INTEGER NOT NULL,"
-            " fingerprint TEXT NOT NULL)"
-        )
 
     def current(self, environment_id: str) -> tuple[int, str] | None:
         """Bounded current-revision projection; damaged metadata means unknown."""

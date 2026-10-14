@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import secrets
 import sqlite3
 from datetime import UTC, datetime
 from typing import cast
@@ -38,28 +37,6 @@ MAX_DETAILS = 4096
 MAX_DETAIL_BYTES = 32 * 1024 * 1024
 MAX_PROJECT_BYTES = 8 * 1024 * 1024
 MAX_EVICTIONS = 64
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS output_observation_meta (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation BLOB NOT NULL, baseline BLOB NOT NULL
-);
-CREATE TABLE IF NOT EXISTS output_observation_scopes (
- project TEXT NOT NULL, session TEXT NOT NULL, environment TEXT NOT NULL,
- head INTEGER NOT NULL, evicted_through INTEGER NOT NULL, unavailable INTEGER NOT NULL,
- PRIMARY KEY(project,session,environment)
-);
-CREATE TABLE IF NOT EXISTS output_observation_attempts (
- execution TEXT PRIMARY KEY, project TEXT NOT NULL, session TEXT NOT NULL,
- environment TEXT NOT NULL,
- binding BLOB NOT NULL, seq INTEGER, marker BLOB NOT NULL DEFAULT X'',
- UNIQUE(project,session,environment,seq)
-);
-CREATE TABLE IF NOT EXISTS output_observation_details (
- execution TEXT PRIMARY KEY, payload BLOB NOT NULL, size INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS output_observation_scope
- ON output_observation_attempts(project,session,environment,seq);
-"""
 
 
 def normalize(raw: object) -> tuple[OutputReport | None, Gap | None]:
@@ -141,11 +118,6 @@ class ObservationJournal:
 
     def __init__(self, db: sqlite3.Connection) -> None:
         self.db = db
-        db.executescript(_SCHEMA)
-        db.execute(
-            "INSERT OR IGNORE INTO output_observation_meta VALUES(1,?,?)",
-            (secrets.token_hex(32).encode(), datetime.now(UTC).isoformat().encode()),
-        )
 
     def accept(self, execution: Execution, digest: str) -> None:
         binding = accepted(execution, digest)

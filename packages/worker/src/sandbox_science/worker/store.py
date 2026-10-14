@@ -37,119 +37,10 @@ from .kernel_revisions import KernelStarts
 from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
 from .provision_observations import ProvisionObservations
+from .schema import prepare
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS executions (
-    execution_id TEXT PRIMARY KEY,
-    operation_id TEXT NOT NULL UNIQUE,
-    request_digest TEXT NOT NULL,
-    environment_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    terminal INTEGER NOT NULL,
-    record TEXT NOT NULL,
-    kernel_scope TEXT NOT NULL DEFAULT 'legacy'
-);
-CREATE INDEX IF NOT EXISTS executions_session ON executions (environment_id, session_id);
-CREATE TABLE IF NOT EXISTS events (
-    execution_id TEXT NOT NULL,
-    seq INTEGER NOT NULL,
-    event TEXT NOT NULL,
-    PRIMARY KEY (execution_id, seq)
-);
-CREATE TABLE IF NOT EXISTS kernels (
-    environment_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    language TEXT NOT NULL,
-    incarnation TEXT NOT NULL,
-    base INTEGER NOT NULL,
-    last INTEGER NOT NULL,
-    PRIMARY KEY (environment_id, session_id, language)
-);
-CREATE TABLE IF NOT EXISTS environment_revisions (
-    environment_id TEXT PRIMARY KEY,
-    revision INTEGER NOT NULL,
-    fingerprint TEXT NOT NULL,
-    changed_by TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS revision_entries (
-    environment_id TEXT NOT NULL,
-    revision INTEGER NOT NULL,
-    recorded REAL NOT NULL,
-    lockfile TEXT,
-    lockfile_size INTEGER NOT NULL,
-    record TEXT NOT NULL,
-    PRIMARY KEY (environment_id, revision)
-);
-CREATE INDEX IF NOT EXISTS revision_entries_lockfile ON revision_entries (lockfile);
-CREATE TABLE IF NOT EXISTS artifacts (
-    artifact_id TEXT PRIMARY KEY,
-    record TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS artifact_capture_leases (
-    publication_id TEXT PRIMARY KEY,
-    environment_id TEXT NOT NULL,
-    incarnation TEXT NOT NULL,
-    capture_id TEXT NOT NULL,
-    phase TEXT NOT NULL,
-    guest_clean INTEGER NOT NULL,
-    sandbox TEXT NOT NULL,
-    sandbox_id TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS artifact_capture_helper
-ON artifact_capture_leases(capture_id) WHERE capture_id != '';
-CREATE TABLE IF NOT EXISTS provisions (
-    provision_id TEXT PRIMARY KEY,
-    operation_key TEXT NOT NULL UNIQUE,
-    request_digest TEXT NOT NULL,
-    environment_id TEXT NOT NULL,
-    finished INTEGER NOT NULL,
-    submitted REAL NOT NULL,
-    record TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS provisions_environment ON provisions (environment_id, finished);
-CREATE TABLE IF NOT EXISTS executor_endpoints (
-    environment_id TEXT PRIMARY KEY,
-    incarnation TEXT NOT NULL,
-    sandbox TEXT NOT NULL DEFAULT '',
-    sandbox_id TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS executor_recycles (
-    environment_id TEXT PRIMARY KEY,
-    incarnation TEXT NOT NULL,
-    sandbox TEXT NOT NULL DEFAULT '',
-    sandbox_id TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS execution_recovery (
-    execution_id TEXT PRIMARY KEY,
-    request TEXT NOT NULL,
-    incarnation TEXT NOT NULL DEFAULT '',
-    source_seq INTEGER NOT NULL DEFAULT 0,
-    cancelled INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE IF NOT EXISTS package_status (
-    environment_id TEXT PRIMARY KEY,
-    status TEXT NOT NULL,
-    provision_id TEXT NOT NULL,
-    revision INTEGER
-);
-CREATE TABLE IF NOT EXISTS package_execution_gates (
-    environment_id TEXT PRIMARY KEY,
-    generation INTEGER NOT NULL,
-    mode TEXT NOT NULL,
-    operation TEXT NOT NULL,
-    revision INTEGER,
-    binding TEXT NOT NULL DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS provision_steps (
-    provision_id TEXT NOT NULL,
-    operation_id TEXT NOT NULL,
-    request_digest TEXT NOT NULL,
-    PRIMARY KEY(provision_id, operation_id)
-);
-"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,39 +88,31 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
         self._db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-        self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA synchronous=FULL")
-        self._db.executescript(_SCHEMA)
-        with self._transaction():
-            execution_columns = {
-                row[1] for row in self._db.execute("PRAGMA table_info(executions)")
-            }
-            if "kernel_scope" not in execution_columns:
-                self._db.execute(
-                    "ALTER TABLE executions ADD COLUMN kernel_scope TEXT NOT NULL DEFAULT 'legacy'"
-                )
-            # Delegated runs were removed; their old tables stay untouched.
-            if self._db.execute(
-                "SELECT 1 FROM executions WHERE kernel_scope IS NOT 'legacy' LIMIT 1"
-            ).fetchone():
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE,
-                    "this state directory holds delegated-run executions from a removed"
-                    " feature; discard it",
-                )
+        try:
+            # Before anything else changes the file: a refused store stays as it was.
+            prepare(self._db)
+        except BaseException:
+            self._db.close()
+            raise
+        self._db.execute("PRAGMA journal_mode=WAL")
+        # Delegated runs were removed; their old tables stay untouched.
+        if self._db.execute(
+            "SELECT 1 FROM executions WHERE kernel_scope IS NOT 'legacy' LIMIT 1"
+        ).fetchone():
+            self._db.close()
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE,
+                "this state directory holds delegated-run executions from a removed"
+                " feature; discard it",
+            )
         self.provision_observations = ProvisionObservations(self._db)
         self.observations = ObservationJournal(self._db)
         self.kernel_starts = KernelStarts(self._db)
-        for table in ("executor_endpoints", "executor_recycles"):
-            columns = {str(row[1]) for row in self._db.execute(f"PRAGMA table_info({table})")}
-            for name in ("sandbox", "sandbox_id"):
-                if name not in columns:
-                    self._db.execute(
-                        f"ALTER TABLE {table} ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
-                    )
-        # Old writers did not publish admission state. Any unfinished operation is
-        # conservatively closed until startup classifies it; never infer readiness
-        # from the absence of the new row.
+        # Each start closes the gate of every environment with an unfinished operation
+        # until the provisioner classifies it, and holds one marked for recovery:
+        # never infer readiness from the absence of a gate row. A store from before
+        # versioning may hold operations whose writer published no gate at all.
         with self._transaction():
             self._db.execute(
                 "INSERT OR IGNORE INTO package_execution_gates"

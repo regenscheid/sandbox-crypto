@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from sandbox_science.contracts import KernelInfo, KernelListing
 from sandbox_science.worker.kernel_revisions import KernelBirth, KernelStarts
+from sandbox_science.worker.schema import prepare
 
 
 def birth(**fields: object) -> KernelBirth:
@@ -38,11 +39,13 @@ def info(generation: int = 1) -> KernelInfo:
 def test_birth_pin_survives_restart_and_cannot_be_rebased(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite"
     db = sqlite3.connect(path)
+    prepare(db)  # the store makes its tables
     starts = KernelStarts(db)
     assert starts.observe(birth(), info(), 0).revision_status == "current"
     db.commit()
     db.close()
     db = sqlite3.connect(path)
+    prepare(db)  # the store makes its tables
     starts = KernelStarts(db)
     stale = starts.observe(birth(start_revision=5), info(), 5)
     assert (stale.start_revision, stale.current_revision, stale.revision_status) == (
@@ -58,6 +61,7 @@ def test_colliding_scope_or_birth_cannot_inherit_or_replace_a_pin(
     change: dict[str, object],
 ) -> None:
     db = sqlite3.connect(":memory:")
+    prepare(db)  # the store makes its tables
     starts = KernelStarts(db)
     starts.observe(birth(), info(), 0)
     assert starts.observe(birth(**change), info(), 0).start_revision is None
@@ -67,6 +71,7 @@ def test_colliding_scope_or_birth_cannot_inherit_or_replace_a_pin(
 
 def test_first_reattached_observation_is_permanently_unknown_until_new_birth() -> None:
     db = sqlite3.connect(":memory:")
+    prepare(db)  # the store makes its tables
     starts = KernelStarts(db)
     assert starts.observe(birth(start_revision=None), info(), 7).revision_status == "unknown"
     assert starts.observe(birth(start_revision=7), info(), 7).start_revision is None
@@ -79,6 +84,7 @@ def test_first_reattached_observation_is_permanently_unknown_until_new_birth() -
 
 def test_status_observation_does_not_freeze_a_provisional_unknown_birth() -> None:
     db = sqlite3.connect(":memory:")
+    prepare(db)  # the store makes its tables
     starts = KernelStarts(db)
     assert (
         starts.observe(birth(start_revision=None), info(), 0, remember=False).start_revision is None
@@ -126,6 +132,7 @@ def test_corrupt_legacy_generation_is_bounded_and_never_becomes_absent(
 
 def test_corrupt_large_birth_record_is_bounded_and_unknown() -> None:
     db = sqlite3.connect(":memory:")
+    prepare(db)  # the store makes its tables
     starts = KernelStarts(db)
     db.execute(
         "INSERT INTO kernel_start_revisions VALUES('e1','s1','python',?)", ("x" * 20_000_000,)
