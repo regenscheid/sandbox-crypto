@@ -209,6 +209,7 @@ export interface MessageAnswer {
 export interface MessageListing {
   messages: ChatMessage[];
   run: RunLease | null;
+  service: boolean;
 }
 
 /** A Python distribution that pip or uv installed beside the Conda packages. */
@@ -449,6 +450,12 @@ export interface ProvisionSummary {
   probes_total: number;
   executions_total: number;
   notes_total: number;
+}
+
+/** A resume or a cancel, written for the run service. */
+export interface Requested {
+  requested: boolean;
+  resumed: number;
 }
 
 /** One package file the dry run resolved, and the policy's decision on its download (CP-7). Channels are named as lockfiles name them, never by the package cache's address (CP-18). ``action`` is what the policy middleware will decide for the file's download, found with the same policy library (CP-6). */

@@ -637,6 +637,34 @@ BEGIN SELECT RAISE(ABORT, 'run events are written once'); END""",
         schema.execute(statement)
 
 
+def _run_service_control(schema: Schema) -> None:
+    """Version 9: what the run service reads besides messages: the user's cancels, its
+    own heartbeat, and each project's model budget (run-service spec RS-3, RS-6a, RS-11)."""
+    for statement in (
+        """CREATE TABLE run_cancels (
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    run TEXT NOT NULL CHECK (length(CAST(run AS BLOB)) BETWEEN 1 AND 256),
+    requested_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, session_id, run),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        """CREATE TABLE service_heartbeat (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    holder TEXT NOT NULL CHECK (length(CAST(holder AS BLOB)) BETWEEN 1 AND 128),
+    renewed_at REAL NOT NULL
+) STRICT""",
+        """CREATE TABLE project_budgets (
+    project_id TEXT PRIMARY KEY REFERENCES projects (project_id),
+    main_tokens INTEGER NOT NULL CHECK (main_tokens BETWEEN 0 AND 1000000000000),
+    updated_at TEXT NOT NULL
+) STRICT""",
+        # What a project's runs spent: their assistant events, by run name (RS-6a).
+        "CREATE INDEX run_events_by_kind ON run_events (project_id, kind, run)",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -645,6 +673,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _math_checks,
     _evidence_checks,
     _run_service,
+    _run_service_control,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

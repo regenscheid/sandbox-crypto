@@ -13,6 +13,7 @@ In the code, `sandbox_science.orchestrator.control` owns the connection. `Contro
 | `projects`, `sessions` | Each project's profile, policy revision and default environment, and its sessions: each one's environment, whether it is its own, when it was opened and closed, and its kernel notice lifetime ([projects and sessions](PROJECTS-AND-SESSIONS.md)) |
 | `runs` | Each run a session keeps: its name, run ID, start and record, written once |
 | `session_messages`, `run_leases`, `run_events` | The user's chat messages to a session and their state, the session's run lease (one run at a time), and each run's events as it went, written once ([run service](specs/run-service.md)) |
+| `run_cancels`, `service_heartbeat`, `project_budgets` | The user's requests to cancel a run, the run service's heartbeat, and each project's MAIN token budget ([run service](specs/run-service.md)) |
 | `documents` | Each document's ID (`doc-…`), project, scope (the project, or one session's workbook), name, title, creator and the session it came from, whether agent patches wait as suggestions, its current revision, whether it is deleted, and the counters its block and span IDs come from |
 | `revisions` | Every revision, append-only: its number, author, the user who accepted it if it was a suggestion, session, base and parent revisions, reason, operations, the patch it came from, its text and SHA-256, whether it is a tombstone, what was normalized, its warnings, its block map, and the profile and parser versions that made the map |
 | `patches` | Every patch an agent submitted: applied, unchanged, conflicted (a rejected patch, LD-19), refused, suggested, accepted or declined, with its base, operations, author and the user's decision |
@@ -50,6 +51,8 @@ Triggers refuse updates and deletions of revisions, events, annotation threads, 
 3. With the new version, import each file: `sandbox-science-harness document import --state-dir state --project p1 [--session s1] --name name --title "…" name.md`, with the title the list showed (without `--title`, the name is the title). The first command creates a fresh store.
 
 The documents come back as their current text, in a first revision. Their history, comments, reviews and findings, math checks, macros, session plans, artifacts and job records stay in the old file. The projects' and runs' JSON records are not in the store and are kept.
+
+**A store made by an unmerged head of the run service.** A development or lab store that ran an earlier head of the run service's pull requests (#206, #209) may be at version 8 or 9 without the `offered` column of `session_messages`, which the merged steps have; such a store cannot be told from a current one by its version. Export its documents as above and make a fresh store.
 
 **A store a migration refuses.** A row an earlier version accepted and a new check refuses stops the migration: the writer leaves the store at its version and refuses to open it, naming the table and the check, so the workspace and the harness stop with that reason. A migration step that would break a foreign key is refused the same way. The documents are kept as for a store from before version 2, above: export them with the harness version that made the store, move the store aside, and import them into a fresh one.
 

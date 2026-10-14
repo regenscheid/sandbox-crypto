@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
 from contextlib import (
@@ -294,9 +295,13 @@ async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) 
     if reply is None:
         return None
     transcript.pending = None
+    answered = len(reply.text or "") + sum(len(call.arguments) for call in reply.tool_calls)
     transcript.usage.append(
         ModelUsage(
-            model=reply.model, input_tokens=reply.input_tokens, output_tokens=reply.output_tokens
+            model=reply.model,
+            input_tokens=reply.input_tokens,
+            output_tokens=reply.output_tokens,
+            characters=size + answered,
         )
     )
     return reply
@@ -388,12 +393,24 @@ def _sections(system: str, toolbox: Toolbox, template: str | None) -> list[Secti
     return sections
 
 
+def user_cancelled(error: BaseException, stop: asyncio.Event | None) -> bool:
+    """Whether ``error`` is the user's cancel, while ``stop`` is set; if so, it is taken
+    back from the current task, which goes on."""
+    if not isinstance(error, asyncio.CancelledError) or stop is None or not stop.is_set():
+        return False
+    if (current := asyncio.current_task()) is not None:
+        current.uncancel()
+    return True
+
+
 async def run_task(
     model: ChatModel,
     toolbox: Toolbox,
-    task: str,
+    task: str | None,
     *,
     run_id: str,
+    history: Sequence[Message] = (),
+    stop: asyncio.Event | None = None,
     max_turns: int = 30,
     max_input_chars: int = MAX_INPUT_CHARS,
     system: str = SYSTEM_PROMPT,
@@ -406,6 +423,11 @@ async def run_task(
     ``hooks`` defaults to the toolbox's; a caller that acknowledges the saved run's
     deliveries passes the hooks it will acknowledge with. A failure is logged with its
     cause; the transcript keeps only the phase it happened in.
+
+    ``history`` follows the system message: the session's earlier conversation. Without
+    a ``task``, the run's first input is what its hooks offer before the first model
+    call, such as the user's queued messages. A cancellation while ``stop`` is set is
+    the user's: the run ends ``cancelled``, with what it observed, instead of raising.
     """
     if max_input_chars < 1:
         raise ValueError("max_input_chars must be at least 1")
@@ -434,7 +456,8 @@ async def run_task(
                     prompt_provenance=pins,
                     messages=[
                         {"role": "system", "content": text},
-                        {"role": "user", "content": task},
+                        *history,
+                        *([{"role": "user", "content": task}] if task is not None else []),
                     ],
                 )
                 try:
@@ -451,10 +474,16 @@ async def run_task(
                     # until the caller durably saves this partial record, then ACKs them.
                     _log.exception("run %s failed during %s", run_id, transcript.phase)
                     transcript.fail(transcript.phase)
+                except asyncio.CancelledError as error:
+                    if not user_cancelled(error, stop):
+                        raise
+                    transcript.stopped, transcript.final_text = "cancelled", None
                 for hook in hooks:
                     if (summary := hook.summary()) is not None:
                         transcript.summaries[hook.name] = summary
     except BaseException as error:
+        if transcript is not None and user_cancelled(error, stop):
+            return transcript  # it came as the run closed: the run's own outcome stands
         if interruption.error is not None:
             raise interruption.error from None
         if not isinstance(error, Exception):

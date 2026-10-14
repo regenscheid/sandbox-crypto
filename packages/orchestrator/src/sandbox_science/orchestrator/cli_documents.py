@@ -44,6 +44,14 @@ async def _project_action(args: argparse.Namespace, store: ProjectStore) -> int:
             print(f"{'created' if created else 'exists'}: {record.model_dump_json(indent=2)}")
         case "show":
             print(store.get(args.project).model_dump_json(indent=2))
+        case "budget":
+            from .runstate import RunState
+
+            store.get(args.project)
+            runs = RunState(store.control)
+            if args.main_tokens is not None:
+                runs.set_budget(args.project, args.main_tokens)
+            print(f"project {args.project}: {runs.budget(args.project)} MAIN tokens a day")
         case "macros":
             from .documents import USER, DocumentStore, store_path
             from .documents.project_macros import ProjectMacros
@@ -219,7 +227,7 @@ def document(args: argparse.Namespace) -> int:
 
 def add_parsers(commands: Any) -> None:
     projects = commands.add_parser("project", help="create, show or revise a project")
-    projects.add_argument("action", choices=("create", "show", "revise", "macros"))
+    projects.add_argument("action", choices=("create", "show", "revise", "macros", "budget"))
     projects.add_argument("--state-dir", type=Path, required=True)
     projects.add_argument("--project", required=True)
     projects.add_argument("--profile", help="create: the base profile, such as minimal")
@@ -231,6 +239,12 @@ def add_parsers(commands: Any) -> None:
     )
     projects.add_argument("--expected", type=int, help="macros: exact current settings revision")
     projects.add_argument("--operation-id", help="macros: stable retry identity")
+    projects.add_argument(
+        "--main-tokens",
+        type=int,
+        help="budget: the MAIN tokens the run service may spend over a rolling 24 hours; "
+        "omitted to read",
+    )
     sessions = commands.add_parser("session", help="close a session: stop its kernels")
     sessions.add_argument("action", choices=("close",))
     sessions.add_argument("--state-dir", type=Path, required=True)

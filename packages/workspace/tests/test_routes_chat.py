@@ -121,3 +121,29 @@ async def test_the_events_of_an_unknown_run_are_not_found(
 ) -> None:
     client = await workspace(aiohttp_client, state_dir, static_dir)
     await error_of(await client.get(SESSION + "/runs/no-such-run/events"), 404, "not_found")
+
+
+async def test_resume_and_cancel_are_written_for_the_service(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    state = runs(state_dir)
+    state.post("p1", "a", "m-1", "Held.", author="user")
+    state.hold("p1", "a", ["m-1"])
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    listed = await (await client.get(SESSION + "/messages")).json()
+    assert listed["service"] is False
+    state.beat("a-service")
+    assert (await (await client.get(SESSION + "/messages")).json())["service"] is True
+    resumed = await client.post(SESSION + "/resume", json={}, headers=origin(client))
+    assert await resumed.json() == {"requested": True, "resumed": 1}
+    assert [m.state for m in state.messages("p1", "a")] == ["queued"]
+    cancel = SESSION + "/runs/run-x/cancel"
+    answered = await client.post(cancel, json={}, headers=origin(client))
+    assert await answered.json() == {"requested": True, "resumed": 0}
+    assert state.cancelled("p1", "a", "run-x")
+    await error_of(
+        await client.post(cancel, json={"now": True}, headers=origin(client)),
+        400,
+        "invalid_request",
+    )
+    assert (await client.post(cancel, json={})).status == 403  # not from the page
