@@ -412,3 +412,23 @@ describe('recorded declaration flag consistency', () => {
     for (const side of ['before_license','after_license'] as const) {const copied = structuredClone(v);copied.differences[0]![side]!.agpl = !agpl;expect(() => provisionData(copied,scope,diffSelection())).toThrow();}
   });
 });
+
+
+describe('explicit Conda upgrade request observations', () => {
+  it('accepts legacy install detail and explicit named Conda upgrade', () => {
+    const old = detail();
+    expect(provisionData(old, scope, {kind: 'operation', operation: op()})).toEqual(old);
+    const upgrade = {...old, request: {...old.request, action: 'upgrade'}};
+    expect(provisionData(upgrade, scope, {kind: 'operation', operation: op()})).toEqual(upgrade);
+  });
+  it.each([null, true, 1, 'remove', 'restore', 'upgrade-all'])('refuses unsupported action %s', action => {
+    const old = detail();
+    expect(() => provisionData({...old, request: {...old.request, action}}, scope, {kind: 'operation', operation: op()})).toThrow();
+  });
+  it('refuses upgrade on pip, capability or mixed system input', () => {
+    const old = detail();
+    for (const fields of [{conda: [], pip: ['example'], pip_reason: 'synthetic'}, {conda: [], capability: 'gp'}, {system: ['libgmp-dev']}]) {
+      expect(() => provisionData({...old, request: {...old.request, action: 'upgrade', ...fields}}, scope, {kind: 'operation', operation: op()})).toThrow();
+    }
+  });
+});
