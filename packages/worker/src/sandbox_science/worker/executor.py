@@ -1273,10 +1273,10 @@ def _reap(pids: Iterable[int]) -> None:
 
 
 def _sockets_work() -> bool:
-    """Whether this process may bind a loopback socket, as a kernel's client must."""
+    """Whether this process may bind a Unix socket, as a kernel's client must."""
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", 0))
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.bind("\0ss-probe-" + secrets.token_hex(16))
     except OSError:
         return False
     return True
@@ -1405,7 +1405,9 @@ class Kernel:
         except ImportError as exc:
             raise ToolError("unsupported", "jupyter_client is not installed here") from exc
         owner = self.env.get("SANDBOX_SCIENCE_DAEMON_MARK", "") + f"kernel-{secrets.token_hex(8)}"
-        manager: Any = AsyncKernelManager(kernel_name=KERNEL_NAMES[self.language])
+        manager: Any = AsyncKernelManager(
+            kernel_name=KERNEL_NAMES[self.language], transport="ipc", ip=kernel_address()
+        )
         client: Any = None
         leader: Leader | None = None
         try:
@@ -1460,6 +1462,17 @@ class Kernel:
             await asyncio.to_thread(end_owned, owner, leader)
         if leader is not None:
             _spawned.discard(leader[0])
+
+
+def kernel_address() -> str:
+    """A new kernel's channel address: a random Linux abstract Unix socket name.
+
+    Over TCP, Jupyter picks free ports and the kernel binds them only later, so another
+    kernel, a kernel's client or research code can take one meanwhile: the kernel then
+    dies or never answers. An abstract name is never reused and takes no port. ZeroMQ
+    reads the leading ``@`` as the abstract namespace.
+    """
+    return "@ss-kernel-" + secrets.token_hex(16)
 
 
 async def _alive(manager: Any) -> bool:
