@@ -78,6 +78,7 @@ from .catalog import CapabilitySpec, Catalog, ProbeSpec
 from .errors import WorkerError
 from .manager import ExecutionManager
 from .permissions import Permissions, PermissionStoreError
+from .provision_events import ProvisionEvents
 from .resolution import Decided, Resolved, ResolveError
 from .revisions import read_lockfile
 
@@ -215,6 +216,7 @@ class Provisioner:
         self.installer_logs = installer_records.InstallerArtifacts(
             self.store, manager.blobs, manager.max_artifact_size
         )
+        self.events = ProvisionEvents(permissions)
         self._ops: dict[str, _Op] = {}
         self._queues: dict[str, list[str]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -245,10 +247,11 @@ class Provisioner:
                 )
             except PermissionStoreError as exc:
                 _log.warning("could not withdraw the permission requests left open: %s", exc)
-        for record in unfinished:
+        for index, record in enumerate(unfinished):
             stop = self._cut_short(record, "restarted")
             finished = _validated(record, **self._fields(record, stop), seq=record.seq + 1)
             self.store.update_provision(finished)
+            unfinished[index] = finished
         # No ready ACK between classifications: a later unfinished install may
         # establish recovery even when the first queued operation never started.
         for environment in {record.request.context.environment_id for record in unfinished}:
@@ -259,6 +262,8 @@ class Provisioner:
                     "environment %s remains admission-closed after startup classification",
                     environment,
                 )
+        for finished in unfinished:
+            await self._observe(finished, "provision.finished", startup=True)
 
     async def submit(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
         """The operation for ``request.operation_id``, created and queued if it is new."""
@@ -423,6 +428,7 @@ class Provisioner:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await self.installer_logs.close()
+        await self.events.close()
 
     # Bookkeeping.
 
@@ -473,9 +479,21 @@ class Provisioner:
 
     # The operation.
 
+    async def _observe(
+        self, record: ProvisionOperation, kind: str, *, startup: bool = False
+    ) -> None:
+        delivery, interrupted = await self.events.emit(record, kind, startup=startup)
+        if delivery.status in ("unknown", "unavailable"):
+            # Fixed text only: original EventStore errors can contain private paths.
+            _log.warning("provision observation unavailable; no append retry is scheduled")
+        if interrupted is not None:
+            raise interrupted
+
     async def _run(self, op: _Op) -> None:
+        interrupted: asyncio.CancelledError | None = None
         try:
             try:
+                await self._observe(op.record, "provision.requested")
                 if not await self._take_turn(op):
                     raise _Stop(
                         ProvisionOutcome.FAILED,
@@ -489,9 +507,9 @@ class Provisioner:
                 await self._operate(op)
             except _Stop as stop:
                 await self._end(op, stop)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as error:
+            interrupted = error
             self._stopped(op)
-            raise
         except Exception:
             # Whatever failed, recording the end included, the operation must end.
             _log.exception("provisioning operation %s failed", op.record.provision_id)
@@ -515,7 +533,15 @@ class Provisioner:
                     op.record.provision_id, op.record.permission_request, "its operation failed"
                 )
         finally:
-            self._release(op)
+            try:
+                if op.record.state is ProvisionState.FINISHED:
+                    await self._observe(op.record, "provision.finished")
+            except asyncio.CancelledError as error:
+                interrupted = interrupted or error
+            finally:
+                self._release(op)
+        if interrupted is not None:
+            raise interrupted
 
     async def _take_turn(self, op: _Op) -> bool:
         """Wait for the environment's turn; False if the operation was cancelled first."""
@@ -1105,7 +1131,9 @@ class Provisioner:
             f"{minutes} minutes.",
         )
         _log.info("provisioning %s waits for permission request %d", op.record.provision_id, seq)
-        await self._await_answer(op, seq, self.permissions, self.clock() + timeout, timeout)
+        deadline = self.clock() + timeout
+        await self._observe(op.record, "provision.awaiting_permission")
+        await self._await_answer(op, seq, self.permissions, deadline, timeout)
 
     async def _await_answer(
         self,
