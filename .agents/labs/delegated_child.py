@@ -17,6 +17,7 @@ import fcntl
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import select
@@ -155,6 +156,12 @@ def encoded(value: object, cap: int = MAX_BYTES) -> bytes:
             if not -(2**63) <= item < 2**63:
                 raise RefusalError("public integer exceeds cap")
             remaining -= 22
+        elif type(item) is float:
+            if not math.isfinite(item):
+                raise RefusalError("public float is not finite")
+            # JSON's finite binary64 spelling fits within 32 ASCII bytes,
+            # including sign, decimal point and exponent; indentation is charged above.
+            remaining -= 32
         elif kind is str:
             if len(item) > cap:
                 raise RefusalError("public string exceeds cap")
@@ -192,7 +199,9 @@ def encoded(value: object, cap: int = MAX_BYTES) -> bytes:
             raise RefusalError("public aggregate exceeds cap")
 
     charge(value)
-    raw = (json.dumps(value, sort_keys=True, ensure_ascii=True, indent=2) + "\n").encode("ascii")
+    raw = (
+        json.dumps(value, sort_keys=True, ensure_ascii=True, indent=2, allow_nan=False) + "\n"
+    ).encode("ascii")
     if len(raw) > cap:
         raise RefusalError("public aggregate exceeds cap")
     return raw
