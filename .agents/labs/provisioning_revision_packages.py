@@ -274,10 +274,11 @@ def settings_guard() -> None:
 
 def record(project: str = PROJECT) -> ProjectRecord:
     assert project in (PROJECT, OTHER)
-    return ProjectRecord.model_validate_json(
-        bounded(f"orch/revision-packages/projects/{project}.json", 1024 * 1024),
-        strict=True,
-    )
+    store = ProjectStore(CONTROL, readonly=True)
+    try:
+        return store.get(project)
+    finally:
+        store.close()
 
 
 def save(marker: dict[str, Any], name: str, payload: object) -> None:

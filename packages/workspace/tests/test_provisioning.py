@@ -246,7 +246,7 @@ async def test_all_read_routes_forward_exact_scoped_pinned_pages(
     client, _, environment = await create(
         aiohttp_client, aiohttp_server, state_dir, static_dir, peer
     )
-    original = (state_dir / "projects" / "p1.json").read_bytes()
+    original = ProjectStore(state_dir).get("p1")
     listing = await client.get(provisioning.ENVIRONMENTS_PATH.replace("{project}", "p1"))
     assert listing.status == 200
     assert environment in (await listing.json())["environment_ids"]
@@ -284,7 +284,7 @@ async def test_all_read_routes_forward_exact_scoped_pinned_pages(
     assert all(entry["license"] is None for entry in answers[2]["files"])
     assert answers[4]["revisions"][0]["lockfile"] is None
     assert answers[5]["probes"][0]["kind"] == "functional"
-    assert (state_dir / "projects" / "p1.json").read_bytes() == original
+    assert ProjectStore(state_dir).get("p1") == original
 
 
 @pytest.mark.asyncio
@@ -318,11 +318,11 @@ async def test_closed_recorded_dedicated_environment_is_history_only(
     client, _, _ = await create(aiohttp_client, aiohttp_server, state_dir, static_dir, peer)
     store = ProjectStore(state_dir)
     store.close_session("p1", "c")
-    original = (store.root / "p1.json").read_bytes()
+    original = store.get("p1")
     response = await client.get(url(store.get("p1").sessions["c"].environment_id))
     assert response.status == 200
     assert len(peer.calls) == 1
-    assert (store.root / "p1.json").read_bytes() == original
+    assert store.get("p1") == original
     assert store.get("p1").sessions["c"].closed_at is not None
 
 

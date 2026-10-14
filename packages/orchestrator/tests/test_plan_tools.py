@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -695,6 +694,13 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
     def factory(*args, **kwargs):
         owner = original(*args, **kwargs)
         owners.append(owner)
+        close = owner.close
+
+        def closing() -> None:
+            closed.append("owner")
+            close()
+
+        owner.close = closing
         entered.set()
         assert release.wait(5)
         return owner
@@ -756,7 +762,6 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
     monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused")
     task = asyncio.create_task(cli._run(args))
     assert await asyncio.to_thread(entered.wait, 5)
-    descriptor = owners[0].snapshot.descriptor
     task.cancel()
     task.cancel()
     await asyncio.sleep(0.01)
@@ -764,9 +769,8 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
     release.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    with pytest.raises(OSError, match="Bad file descriptor"):
-        os.fstat(descriptor)
-    assert closed == ["client"]
+    assert len(owners) == 1
+    assert closed == ["owner", "client"]
     assert projects.runs("p", "s") == []
 
 

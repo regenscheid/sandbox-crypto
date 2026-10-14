@@ -247,12 +247,9 @@ async def test_absent_history_returns_null_without_creating_or_migrating_sql(
     response = await client.get(PATH)
     assert response.status == 200
     assert (await response.json())["plan"] is None
-    if not existing:
-        assert not path.exists()
-    else:
-        with owner.control.read() as tx:
-            db = tx.sql
-            assert db.execute("SELECT count(*) FROM session_plan_records").fetchone() == (0,)
+    with owner.control.read() as tx:
+        db = tx.sql
+        assert db.execute("SELECT count(*) FROM session_plan_records").fetchone() == (0,)
     owner.close()
 
 

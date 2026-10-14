@@ -30,7 +30,7 @@ models and the stores. The harness runs the task; the CLI prints its progress an
 With ``--state-dir``, the session runs in its project's default environment, or in
 an environment of its own with ``--dedicated`` (W3, projects.py). The harness has
 the worker create or revise it first, and keeps the run's record, the same that
-``--transcript`` writes, beside the project's (W4). The run ID then names that
+``--transcript`` writes, with the project's in the control store (W4). The run ID names that
 record, so it must be an identifier. The agent also gets the document tools, over the
 living documents in the state directory's control store (documents/store.py). The
 harness refuses a worker whose isolation tier in effect is below the minimum, so a

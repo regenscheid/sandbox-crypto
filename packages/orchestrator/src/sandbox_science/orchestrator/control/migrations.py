@@ -70,7 +70,46 @@ def _baseline(schema: Schema) -> None:
         raise ControlError(INTERNAL, "the control store's baseline schema is incomplete")
 
 
-MIGRATIONS: Final[tuple[Migration, ...]] = (_baseline,)
+def _projects(schema: Schema) -> None:
+    """Version 3: projects, their sessions, and the sessions' runs (projects.py)."""
+    for statement in (
+        """CREATE TABLE projects (
+    project_id TEXT PRIMARY KEY,
+    profile TEXT NOT NULL,
+    policy TEXT NOT NULL,
+    default_environment_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT""",
+        """CREATE TABLE sessions (
+    project_id TEXT NOT NULL REFERENCES projects (project_id),
+    session_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    dedicated INTEGER NOT NULL CHECK (dedicated IN (0, 1)),
+    opened_at TEXT NOT NULL,
+    closed_at TEXT,
+    kernel_notice_lifetime TEXT,
+    PRIMARY KEY (project_id, session_id)
+) STRICT""",
+        """CREATE TABLE runs (
+    project_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    record TEXT NOT NULL,
+    PRIMARY KEY (project_id, session_id, name),
+    FOREIGN KEY (project_id, session_id) REFERENCES sessions (project_id, session_id)
+) STRICT""",
+        """CREATE TRIGGER runs_no_update BEFORE UPDATE ON runs
+BEGIN SELECT RAISE(ABORT, 'run records are written once'); END""",
+        """CREATE TRIGGER runs_no_delete BEFORE DELETE ON runs
+BEGIN SELECT RAISE(ABORT, 'run records are written once'); END""",
+    ):
+        schema.execute(statement)
+
+
+MIGRATIONS: Final[tuple[Migration, ...]] = (_baseline, _projects)
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
 

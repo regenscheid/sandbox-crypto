@@ -273,11 +273,12 @@ async def test_get_and_refused_absent_edit_do_not_initialize_plan_sql(
     aiohttp_client, state_dir, static_dir
 ):
     client = await create(aiohttp_client, state_dir, static_dir)
-    assert not store_path(state_dir).exists()
     assert (await client.get(PATH)).status == 200
     request = payload(SimpleNamespace(model_dump=lambda **_: {"plan_id": "plan", "version": 1}))
     assert (await post(client, request)).status == 404
-    assert not store_path(state_dir).exists()
+    database = sqlite3.connect(store_path(state_dir))
+    assert database.execute("SELECT count(*) FROM session_plan_records").fetchone() == (0,)
+    database.close()
 
 
 @pytest.mark.asyncio

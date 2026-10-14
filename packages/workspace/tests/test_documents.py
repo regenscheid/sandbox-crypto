@@ -228,11 +228,9 @@ async def test_the_workspace_never_writes_the_store(
     assert found["text"] == "Notes, again.\n"
 
 
-async def test_no_documents_yet(client: TestClient[Any, Any], state_dir: Path) -> None:
-    assert not store_path(state_dir).exists()
+async def test_no_documents_yet(client: TestClient[Any, Any]) -> None:
     assert (await get(client, "/api/v0/projects/p1/documents"))["documents"] == []
     await get(client, "/api/v0/projects/p1/documents/ff", 404)
-    assert not store_path(state_dir).exists()
 
 
 async def test_a_store_this_version_cannot_use_is_503_with_the_reason(
@@ -240,7 +238,9 @@ async def test_a_store_this_version_cannot_use_is_503_with_the_reason(
 ) -> None:
     import sqlite3
 
-    # A development store from before the schema baseline.
+    # A development store from before the schema baseline, in place of the new one.
+    for found in state_dir.glob("control.sqlite3*"):
+        found.unlink()
     database = sqlite3.connect(store_path(state_dir))
     database.execute("CREATE TABLE documents (document_id TEXT PRIMARY KEY)")
     database.execute("PRAGMA user_version = 1")

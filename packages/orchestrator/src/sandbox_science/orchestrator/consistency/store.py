@@ -102,6 +102,7 @@ class ReviewStore:
         artifacts: ArtifactInventory | None = None,
     ) -> None:
         self.documents, self.clock, self.artifacts = documents, clock, artifacts
+        self._projects = ProjectStore(documents.path.parent, readonly=True)
         if artifacts is None and not documents.control.missing:
             self.artifacts = ArtifactInventory(documents)
         if artifacts is not None and artifacts.documents is not documents:
@@ -113,7 +114,7 @@ class ReviewStore:
         except ValidationError:
             raise DocumentError(INVALID_REQUEST, "invalid review scope") from None
         try:
-            found = ProjectStore(self.documents.path.parent).get(project)
+            found = self._projects.get(project)
         except ProjectError:
             raise DocumentError(NOT_FOUND, "no such review project") from None
         if session not in found.sessions:

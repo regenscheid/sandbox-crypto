@@ -17,6 +17,9 @@ import pytest
 from sandbox_science.orchestrator.control import ControlError, ControlStore, migrations
 from sandbox_science.orchestrator.documents import DocumentError
 
+CURRENT = migrations.VERSION
+"""The version this code writes, before a test appends a step."""
+
 
 def _store(path: Path, *, readonly: bool = False) -> ControlStore:
     return ControlStore(path, readonly=readonly)
@@ -280,25 +283,25 @@ def test_a_writer_runs_the_pending_steps_all_or_nothing(
         schema.execute("SELECT no_such_function()")
 
     monkeypatch.setattr(migrations, "MIGRATIONS", (*baseline, add_notes, fail))
-    monkeypatch.setattr(migrations, "VERSION", migrations.BASELINE + 2)
+    monkeypatch.setattr(migrations, "VERSION", CURRENT + 2)
     with pytest.raises(sqlite3.OperationalError, match="no_such_function"):
         _store(path).initialize()
     reader = _store(path, readonly=True)
     with pytest.raises(ControlError, match="open it with the harness"), reader.read():
         pass
     db = sqlite3.connect(path)
-    assert db.execute("PRAGMA user_version").fetchone() == (migrations.BASELINE,)
+    assert db.execute("PRAGMA user_version").fetchone() == (CURRENT,)
     assert db.execute("SELECT 1 FROM sqlite_master WHERE name='notes'").fetchone() is None
     db.close()
 
     monkeypatch.setattr(migrations, "MIGRATIONS", (*baseline, add_notes))
-    monkeypatch.setattr(migrations, "VERSION", migrations.BASELINE + 1)
+    monkeypatch.setattr(migrations, "VERSION", CURRENT + 1)
     writer = _store(path)
     with writer.write() as tx:
         tx.sql.execute("INSERT INTO notes VALUES ('migrated')")
     writer.close()
     with reader.read() as tx:
-        assert tx.sql.execute("PRAGMA user_version").fetchone() == (migrations.BASELINE + 1,)
+        assert tx.sql.execute("PRAGMA user_version").fetchone() == (CURRENT + 1,)
         assert tx.sql.execute("SELECT text FROM notes").fetchall() == [("migrated",)]
     reader.close()
 
@@ -315,11 +318,11 @@ def test_a_step_cannot_end_the_writers_transaction(
         schema.execute(statement)
 
     monkeypatch.setattr(migrations, "MIGRATIONS", (*migrations.MIGRATIONS, ending))
-    monkeypatch.setattr(migrations, "VERSION", migrations.BASELINE + 1)
+    monkeypatch.setattr(migrations, "VERSION", CURRENT + 1)
     with pytest.raises(ControlError, match="inside the writer's transaction"):
         _store(path).initialize()
     db = sqlite3.connect(path)
-    assert db.execute("PRAGMA user_version").fetchone() == (migrations.BASELINE,)
+    assert db.execute("PRAGMA user_version").fetchone() == (CURRENT,)
     assert db.execute("SELECT 1 FROM sqlite_master WHERE name='notes'").fetchone() is None
     db.close()
 

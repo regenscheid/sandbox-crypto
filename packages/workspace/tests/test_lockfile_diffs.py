@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.api import Timeouts
 
 from .test_provisioning import ClientFactory, Peer, ServerFactory, create, url
@@ -115,7 +116,7 @@ async def test_exact_empty_or_held_pair_is_forwarded_without_inventing_packages(
         aiohttp_client, aiohttp_server, state_dir, static_dir, peer
     )
     peer.payload = selected(environment, held=held)
-    original = (state_dir / "projects/p1.json").read_bytes()
+    original = ProjectStore(state_dir).get("p1")
     response = await client.get(url(environment) + "/lockfile-diff", params=query())
     assert response.status == 200
     assert response.headers["Cache-Control"] == "no-store"
@@ -128,7 +129,7 @@ async def test_exact_empty_or_held_pair_is_forwarded_without_inventing_packages(
             {"project_id": "p1", **query()},
         )
     ]
-    assert (state_dir / "projects/p1.json").read_bytes() == original
+    assert ProjectStore(state_dir).get("p1") == original
     if held:
         assert (await response.json())["total"] is None
     else:

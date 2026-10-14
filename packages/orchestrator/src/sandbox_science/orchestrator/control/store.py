@@ -25,6 +25,7 @@ from typing import Final
 from . import migrations
 from .errors import BUSY, INTERNAL, NOT_FOUND, ControlError
 
+FILE_NAME: Final = "control.sqlite3"
 DEFAULT_TIMEOUT: Final = 10.0
 """Seconds a change waits for another process's write to finish."""
 
@@ -222,3 +223,8 @@ class ControlStore:
         finally:
             if db.in_transaction:
                 db.execute("ROLLBACK")
+
+
+def store_path(state_dir: Path) -> Path:
+    """The control store's database in a harness state directory."""
+    return state_dir / FILE_NAME

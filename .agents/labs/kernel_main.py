@@ -175,9 +175,11 @@ def inputs() -> dict[str, object]:
 
 
 def project_record() -> ProjectRecord:
-    return ProjectRecord.model_validate_json(
-        bounded("orch/kernel-main/projects/lab29.json", 1024 * 1024), strict=True
-    )
+    store = ProjectStore(CONTROL, readonly=True)
+    try:
+        return store.get("lab29")
+    finally:
+        store.close()
 
 
 def guard(head: str) -> dict[str, Any]:

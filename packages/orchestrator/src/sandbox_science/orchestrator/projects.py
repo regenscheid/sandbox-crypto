@@ -8,20 +8,22 @@ which starts from the same base profile ([projects and sessions](../../../../doc
 PROJECTS-AND-SESSIONS.md)). The worker creates the environments (D73); the
 orchestrator asks for them by ID and keeps this record of which session uses which.
 
-Records are JSON files under the orchestrator's state directory, one per project.
-Each change rewrites its file atomically under a lock, so concurrent harness
-processes cannot lose one another's sessions.
+The records are in the control store, ``<state-dir>/control.sqlite3`` (control/), in
+the ``projects``, ``sessions`` and ``runs`` tables. Each change is one transaction.
+A change also holds the project's lock file, ``<state-dir>/projects/<project>.lock``,
+which a caller that checks a session and then changes something else of it (a plan
+edit) holds too, so that a close cannot land in between.
 
 Environment IDs end with a random tag, kept in the record. A worker shared with other
 projects' orchestrators keeps each ID for the project that first creates it (D78), so
 an ID another orchestrator could predict, such as ``p1-default``, could be taken first.
 
-Each run of a session is kept too, as the record ``run --transcript`` writes, in
-``runs/<project>/<session>/`` beside ``projects/`` (W4). A tree of its own keeps a
-project's runs clear of other projects' files, whose names may contain dots. A run's
-record is named by when the run started and its run ID, so a run ID used again adds a
-record rather than replacing one, and it is written once: complete, synced, and never
-over another.
+Each run of a session is kept too, as the record ``run --transcript`` writes (W4). A
+run's record is named by when the run started and its run ID, so a run ID used again
+adds a record rather than replacing one, and it is written once.
+
+Project records were JSON files, ``projects/<project>.json``, before they moved into
+the control store; such a file is not read, and a lookup of its project says so.
 """
 
 from __future__ import annotations
@@ -30,12 +32,11 @@ import contextlib
 import fcntl
 import hashlib
 import json
-import os
 import re
 import secrets
-import stat
-import tempfile
+import sqlite3
 from collections.abc import Generator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -61,6 +62,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.model import Contract
 
+from .control import ControlStore, store_path
 from .prompt_bundle import PromptProvenance, verify_retained
 from .worker_client import WorkerAPIError, WorkerClient, WorkerProtocolError
 
@@ -69,8 +71,28 @@ _IDENTIFIER: Final = TypeAdapter(Identifier)
 _TAG_BYTES: Final = 6
 _STARTED: Final = "%Y%m%dT%H%M%S%fZ"
 _RUN_NAME: Final = re.compile(r"([0-9]{8}T[0-9]{12}Z)-([A-Za-z0-9][A-Za-z0-9._-]{0,127})")
-MAX_SESSION_RECORD_BYTES: Final = 1024 * 1024
-"""A polling lookup's project JSON cap, independent of ordinary record APIs."""
+_TIME: Final = TypeAdapter(datetime)
+_PROJECT_COLUMNS: Final = (
+    "project_id",
+    "profile",
+    "policy",
+    "default_environment_id",
+    "created_at",
+    "updated_at",
+)
+_SESSION_COLUMNS: Final = (
+    "session_id",
+    "environment_id",
+    "dedicated",
+    "opened_at",
+    "closed_at",
+    "kernel_notice_lifetime",
+)
+
+
+def _time(value: datetime) -> str:
+    """A time as the records keep it: the same JSON text pydantic writes."""
+    return cast(str, _TIME.dump_python(value, mode="json"))
 
 
 class ProjectError(Exception):
@@ -109,72 +131,14 @@ class ProjectRecord(Contract):
         return [self.default_environment_id, *sorted(dedicated - {self.default_environment_id})]
 
 
-def _file_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
-    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
-
-
+@dataclass(frozen=True)
 class SessionSnapshot:
-    """A bounded trusted session read, retaining its original inode until closed.
+    """An open session as the registry recorded it when it was read. Two snapshots are
+    equal when they name the same open session: a close and reopen gives the session a
+    new record (``opened_at`` and ``kernel_notice_lifetime``)."""
 
-    Supported registry writes replace files. Holding this descriptor prevents inode
-    reuse from hiding a complete close/reopen ABA between two reads. Any project
-    replacement is conservatively a different snapshot, including unrelated edits.
-    This is receipt-time continuity, not a lock over future registry changes.
-    """
-
-    def __init__(
-        self,
-        descriptor: int,
-        root: int,
-        identity: tuple[int, int, int, int, int],
-        digest: bytes,
-        context: ExecutionContext,
-        session: SessionRecord,
-    ) -> None:
-        self.context = context
-        self.session = session
-        self._descriptor = descriptor
-        self._root = root
-        self._identity = identity
-        self._digest = digest
-
-    @property
-    def descriptor(self) -> int:
-        """The retained descriptor of the session's project record."""
-        return self._descriptor
-
-    @property
-    def root(self) -> int:
-        """The retained descriptor of the projects directory."""
-        return self._root
-
-    @property
-    def identity(self) -> tuple[int, int, int, int, int]:
-        """The project record's file identity when it was read."""
-        return self._identity
-
-    @property
-    def digest(self) -> bytes:
-        """The SHA-256 of the project record as read."""
-        return self._digest
-
-    def matches(self, other: SessionSnapshot) -> bool:
-        """Whether both bounded reads still name the same unchanged open binding."""
-        before, after = os.fstat(self.root), os.fstat(other.root)
-        return (
-            (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino)
-            and self.identity == other.identity
-            and _file_identity(os.fstat(self.descriptor)) == self.identity
-            and _file_identity(os.fstat(other.descriptor)) == other.identity
-            and self.digest == other.digest
-            and self.context == other.context
-            and self.session == other.session
-        )
-
-    def close(self) -> None:
-        """Release both retained descriptors; the caller owns their actual lifetime."""
-        os.close(self.descriptor)
-        os.close(self.root)
+    context: ExecutionContext
+    session: SessionRecord
 
 
 FailurePhase = Literal["model", "tool", "harness", "cleanup"]
@@ -319,108 +283,54 @@ def _run_entry(name: str) -> RunEntry | None:
 
 
 class ProjectStore:
-    """The orchestrator's project records, in ``<state_dir>/projects``, and the runs of
-    their sessions, in ``<state_dir>/runs``."""
+    """The orchestrator's projects, their sessions and the sessions' runs, in the control
+    store of ``state_dir``.
 
-    def __init__(self, state_dir: Path) -> None:
+    A ``readonly`` store only reads, and never waits for a writer, so a repository can
+    look a session up while its own connection holds a write transaction.
+    """
+
+    def __init__(self, state_dir: Path, *, readonly: bool = False) -> None:
         self.root = state_dir / "projects"
-        self.runs_root = state_dir / "runs"
-        self.root.mkdir(parents=True, exist_ok=True)
+        """Where the projects' lock files are."""
+        self.control = ControlStore(store_path(state_dir), readonly=readonly)
+
+    def close(self) -> None:
+        self.control.close()
 
     def get(self, project_id: str) -> ProjectRecord:
-        path = self._path(project_id)
-        try:
-            return ProjectRecord.model_validate_json(path.read_bytes())
-        except FileNotFoundError:
-            raise ProjectError(ErrorKind.NOT_FOUND, f"no project {project_id!r}") from None
-        except ValidationError as exc:
-            raise ProjectError(
-                ErrorKind.INTERNAL, f"project record {path} is damaged: {str(exc)[:300]}"
-            ) from exc
+        self._checked(project_id)
+        if self.control.missing:
+            raise self._absent(project_id)
+        with self.control.read() as tx:
+            return self._project(tx.sql, project_id)
 
     def session_snapshot(self, project_id: str, session_id: str) -> SessionSnapshot:
-        """Bounded open-session lookup for passive polling; ordinary reads are unchanged.
-
-        Reject special files without blocking on their open, refuse final symlinks,
-        bound bytes before JSON materialization, and retain the file identity. A
-        regular file read can still block in the filesystem; its caller must own
-        this work until it returns, even after its response deadline expires.
-        """
+        """An open session's record and context, for a caller that checks later that the
+        session is still the same open one."""
         if not _is_identifier(project_id):
             raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid project ID")
-        name = self._path(project_id).name
         if not _is_identifier(session_id):
             raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid session ID")
-        root = descriptor = -1
-        try:
-            root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root)
-            before = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(before.st_mode)
-                or not 0 <= before.st_size <= MAX_SESSION_RECORD_BYTES
-            ):
-                raise ProjectError(
-                    ErrorKind.UNAVAILABLE, "project registry is not a bounded record"
-                )
-            data = bytearray()
-            while len(data) <= MAX_SESSION_RECORD_BYTES:
-                chunk = os.read(
-                    descriptor, min(64 * 1024, MAX_SESSION_RECORD_BYTES + 1 - len(data))
-                )
-                if not chunk:
-                    break
-                data.extend(chunk)
-            if (
-                len(data) > MAX_SESSION_RECORD_BYTES
-                or len(data) != before.st_size
-                or _file_identity(os.fstat(descriptor)) != _file_identity(before)
-            ):
-                raise ProjectError(ErrorKind.UNAVAILABLE, "project registry changed during read")
-            record = ProjectRecord.model_validate_json(data, strict=True)
-            found = record.sessions.get(session_id)
-            if record.project_id != project_id or (
-                found is not None and found.session_id != session_id
-            ):
-                raise ProjectError(ErrorKind.UNAVAILABLE, "project registry has inconsistent scope")
-            if found is None or found.closed_at is not None:
-                raise ProjectError(ErrorKind.NOT_FOUND, "no open session in this project")
-            if found.opened_at.tzinfo is None or found.opened_at.utcoffset() is None:
-                raise ProjectError(ErrorKind.UNAVAILABLE, "session registry time is not known")
-            result = SessionSnapshot(
-                descriptor,
-                root,
-                _file_identity(before),
-                hashlib.sha256(data).digest(),
-                ExecutionContext(
-                    project_id=project_id,
-                    session_id=session_id,
-                    environment_id=found.environment_id,
-                ),
-                found,
-            )
-            descriptor = root = -1
-            return result
-        except FileNotFoundError:
-            raise ProjectError(ErrorKind.NOT_FOUND, "no such recorded project") from None
-        except (OSError, ValidationError, ValueError, RecursionError) as exc:
-            raise ProjectError(ErrorKind.UNAVAILABLE, "project registry is unreadable") from exc
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if root >= 0:
-                os.close(root)
+        record = self.get(project_id)
+        found = record.sessions.get(session_id)
+        if found is None or found.closed_at is not None:
+            raise ProjectError(ErrorKind.NOT_FOUND, "no open session in this project")
+        return SessionSnapshot(
+            ExecutionContext(
+                project_id=project_id, session_id=session_id, environment_id=found.environment_id
+            ),
+            found,
+        )
 
     def create(self, project_id: str, profile: str, policy: str) -> tuple[ProjectRecord, bool]:
         """Record a new project; return the existing one when it has the same settings."""
-        with self.locked(project_id):
-            try:
-                existing: ProjectRecord | None = self.get(project_id)
-            except ProjectError as error:
-                if error.kind is not ErrorKind.NOT_FOUND:
-                    raise
-                existing = None
-            if existing is not None:
+        with self.locked(project_id), self.control.write() as tx:
+            row = tx.sql.execute(
+                "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
+            ).fetchone()
+            if row is not None:
+                existing = self._project(tx.sql, project_id)
                 if (existing.profile, existing.policy) == (profile, policy):
                     return existing, False
                 raise ProjectError(
@@ -437,25 +347,33 @@ class ProjectStore:
                 created_at=now,
                 updated_at=now,
             )
-            self._write(record)
+            saved = record.model_dump(mode="json")
+            tx.sql.execute(
+                "INSERT INTO projects (project_id, profile, policy, default_environment_id, "
+                "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                tuple(saved[name] for name in _PROJECT_COLUMNS),
+            )
             return record, True
 
     def set_policy(self, project_id: str, policy: str) -> ProjectRecord:
         """Move the project to another policy revision; its environments follow on next use."""
-        with self.locked(project_id):
-            record = self.get(project_id)
+        with self.locked(project_id), self.control.write() as tx:
+            record = self._project(tx.sql, project_id)
             if record.policy == policy:
                 return record
             updated = self._validated(
                 **{**record.model_dump(), "policy": policy, "updated_at": datetime.now(UTC)}
             )
-            self._write(updated)
+            tx.sql.execute(
+                "UPDATE projects SET policy = ?, updated_at = ? WHERE project_id = ?",
+                (updated.policy, _time(updated.updated_at), project_id),
+            )
             return updated
 
     def open_session(self, project_id: str, session_id: str, *, dedicated: bool) -> SessionRecord:
         """The session's record, created on first use; a closed session opens again."""
-        with self.locked(project_id):
-            record = self.get(project_id)
+        with self.locked(project_id), self.control.write() as tx:
+            record = self._project(tx.sql, project_id)
             session = record.sessions.get(session_id)
             now = datetime.now(UTC)
             if session is None:
@@ -485,46 +403,32 @@ class ProjectStore:
                 )
             else:
                 return session
-            self._write(
-                record.model_copy(
-                    update={"sessions": {**record.sessions, session_id: session}, "updated_at": now}
-                )
-            )
+            self._put_session(tx.sql, project_id, session, now)
             return session
 
     def close_session(self, project_id: str, session_id: str) -> SessionRecord:
-        with self.locked(project_id):
-            record = self.get(project_id)
-            session = record.sessions.get(session_id)
+        with self.locked(project_id), self.control.write() as tx:
+            session = self._project(tx.sql, project_id).sessions.get(session_id)
             if session is None:
                 raise ProjectError(
                     ErrorKind.NOT_FOUND, f"project {project_id!r} has no session {session_id!r}"
                 )
             now = datetime.now(UTC)
             closed = session.model_copy(update={"closed_at": now})
-            self._write(
-                record.model_copy(
-                    update={"sessions": {**record.sessions, session_id: closed}, "updated_at": now}
-                )
-            )
+            self._put_session(tx.sql, project_id, closed, now)
             return closed
 
     def project_ids(self) -> list[str]:
         """The IDs of the projects recorded here, sorted."""
-        found = (path.name.removesuffix(".json") for path in self.root.glob("*.json"))
-        return sorted(
-            project_id
-            for project_id in found
-            if _is_identifier(project_id) and self._path(project_id).is_file()
-        )
+        if self.control.missing:
+            return []
+        with self.control.read() as tx:
+            rows = tx.sql.execute("SELECT project_id FROM projects ORDER BY project_id")
+            return [project_id for (project_id,) in rows]
 
     def save_run(self, record: RunRecord) -> RunEntry:
         """Keep a run of one of the project's sessions; the record is written once."""
         project_id, session_id = record.context.project_id, record.context.session_id
-        if session_id not in self.get(project_id).sessions:
-            raise ProjectError(
-                ErrorKind.NOT_FOUND, f"project {project_id!r} has no session {session_id!r}"
-            )
         started = record.started_at.astimezone(UTC).strftime(_STARTED)
         entry = _run_entry(f"{started}-{record.run_id}")
         if entry is None:
@@ -533,92 +437,153 @@ class ProjectStore:
                 f"run ID {record.run_id!r} cannot name a record: use letters, digits, '.', "
                 "'_' and '-', starting with a letter or digit",
             )
-        directory = self._runs(project_id, session_id)
-        directory.mkdir(parents=True, exist_ok=True)
-        # A partial file of its own, synced, then linked to its name, which fails rather
-        # than replace a record that has the name already.
-        descriptor, partial = tempfile.mkstemp(dir=directory, prefix=".", suffix=".partial")
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(record.to_json())
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.link(partial, directory / f"{entry.name}.json")
-            # A completion notice may be acknowledged after this returns. Sync the
-            # directory entry too, so a power loss cannot keep the ack and lose the run.
-            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+        text = record.to_json()
+        with self.control.write() as tx:
+            if session_id not in self._project(tx.sql, project_id).sessions:
+                raise ProjectError(
+                    ErrorKind.NOT_FOUND, f"project {project_id!r} has no session {session_id!r}"
+                )
             try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
-        except FileExistsError:
-            raise ProjectError(
-                ErrorKind.CONFLICT, f"session {session_id!r} has a run {entry.name!r} already"
-            ) from None
-        finally:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(partial)
+                tx.sql.execute(
+                    "INSERT INTO runs (project_id, session_id, name, run_id, started_at, record) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        project_id,
+                        session_id,
+                        entry.name,
+                        entry.run_id,
+                        _time(entry.started_at),
+                        text,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                raise ProjectError(
+                    ErrorKind.CONFLICT, f"session {session_id!r} has a run {entry.name!r} already"
+                ) from None
         return entry
 
     def runs(self, project_id: str, session_id: str) -> list[RunEntry]:
         """The runs a session keeps, oldest first."""
-        directory = self._runs(project_id, session_id)
-        entries = (_run_entry(path.name.removesuffix(".json")) for path in directory.glob("*.json"))
-        return sorted((entry for entry in entries if entry is not None), key=lambda e: e.name)
+        self._checked(project_id, session_id)
+        if self.control.missing:
+            return []
+        with self.control.read() as tx:
+            rows = tx.sql.execute(
+                "SELECT name, run_id, started_at FROM runs WHERE project_id = ? AND "
+                "session_id = ? ORDER BY name",
+                (project_id, session_id),
+            ).fetchall()
+        return [RunEntry(name=name, run_id=run, started_at=started) for name, run, started in rows]
 
     def run(
         self, project_id: str, session_id: str, name: str, *, max_bytes: int | None = None
     ) -> RunRecord:
         """A run the session keeps, by its name; larger than ``max_bytes`` is refused."""
+        self._checked(project_id, session_id)
         if _run_entry(name) is None:
             raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid run name {name!r}")
-        path = self._runs(project_id, session_id) / f"{name}.json"
+        missing = ProjectError(
+            ErrorKind.NOT_FOUND, f"session {session_id!r} of {project_id!r} has no run {name!r}"
+        )
+        if self.control.missing:
+            raise missing
+        with self.control.read() as tx:
+            key = (project_id, session_id, name)
+            row = tx.sql.execute(
+                "SELECT length(CAST(record AS BLOB)) FROM runs WHERE project_id = ? AND "
+                "session_id = ? AND name = ?",
+                key,
+            ).fetchone()
+            if row is None:
+                raise missing
+            if max_bytes is not None and row[0] > max_bytes:
+                raise ProjectError(
+                    ErrorKind.UNSUPPORTED,
+                    f"run {name!r} has a record larger than {max_bytes} bytes",
+                )
+            (text,) = tx.sql.execute(
+                "SELECT record FROM runs WHERE project_id = ? AND session_id = ? AND name = ?",
+                key,
+            ).fetchone()
         try:
-            with path.open("rb") as handle:
-                data = handle.read() if max_bytes is None else handle.read(max_bytes + 1)
-        except FileNotFoundError:
-            raise ProjectError(
-                ErrorKind.NOT_FOUND, f"session {session_id!r} of {project_id!r} has no run {name!r}"
-            ) from None
-        if max_bytes is not None and len(data) > max_bytes:
-            raise ProjectError(
-                ErrorKind.UNSUPPORTED, f"run {name!r} has a record larger than {max_bytes} bytes"
-            )
-        try:
-            return RunRecord.model_validate(json.loads(data))
+            return RunRecord.model_validate(json.loads(text))
         except (ValueError, RecursionError) as exc:  # ValidationError is a ValueError
             raise ProjectError(
-                ErrorKind.INTERNAL, f"run record {path} is damaged: {str(exc)[:300]}"
+                ErrorKind.INTERNAL, f"run record {name} is damaged: {str(exc)[:300]}"
             ) from exc
-
-    def _runs(self, project_id: str, session_id: str) -> Path:
-        """Where a session's runs are kept; both IDs are checked, so it is a safe path."""
-        self._path(project_id)
-        if not _is_identifier(session_id):
-            raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid session ID {session_id!r}")
-        return self.runs_root / project_id / session_id
-
-    def _path(self, project_id: str) -> Path:
-        # An identifier is a safe file name.
-        if not _is_identifier(project_id):
-            raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid project ID {project_id!r}")
-        return self.root / f"{project_id}.json"
 
     @contextlib.contextmanager
     def locked(self, project_id: str) -> Generator[None]:
-        lock = self._path(project_id).with_suffix(".lock")
-        with lock.open("a") as handle:
+        """Hold the project's lock file, across processes, around a check and a change."""
+        self._checked(project_id)
+        self.root.mkdir(parents=True, exist_ok=True)
+        with (self.root / f"{project_id}.lock").open("a") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             try:
                 yield
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
-    def _write(self, record: ProjectRecord) -> None:
-        path = self._path(record.project_id)
-        partial = path.with_suffix(".json.partial")
-        partial.write_text(record.model_dump_json(indent=2))
-        os.replace(partial, path)
+    def _project(self, db: sqlite3.Connection, project_id: str) -> ProjectRecord:
+        row = db.execute(
+            "SELECT project_id, profile, policy, default_environment_id, created_at, updated_at "
+            "FROM projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            raise self._absent(project_id)
+        sessions = {
+            found[0]: dict(zip(_SESSION_COLUMNS, found, strict=True))
+            for found in db.execute(
+                "SELECT session_id, environment_id, dedicated, opened_at, closed_at, "
+                "kernel_notice_lifetime FROM sessions WHERE project_id = ? ORDER BY rowid",
+                (project_id,),
+            )
+        }
+        try:
+            return ProjectRecord.model_validate(
+                {**dict(zip(_PROJECT_COLUMNS, row, strict=True)), "sessions": sessions}
+            )
+        except ValidationError as exc:
+            raise ProjectError(
+                ErrorKind.INTERNAL, f"project record {project_id} is damaged: {str(exc)[:300]}"
+            ) from exc
+
+    @staticmethod
+    def _put_session(
+        db: sqlite3.Connection, project_id: str, session: SessionRecord, now: datetime
+    ) -> None:
+        saved = session.model_dump(mode="json")
+        db.execute(
+            "INSERT INTO sessions (project_id, session_id, environment_id, dedicated, opened_at, "
+            "closed_at, kernel_notice_lifetime) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (project_id, session_id) DO UPDATE SET "
+            "environment_id = excluded.environment_id, dedicated = excluded.dedicated, "
+            "opened_at = excluded.opened_at, closed_at = excluded.closed_at, "
+            "kernel_notice_lifetime = excluded.kernel_notice_lifetime",
+            (project_id, *(saved[name] for name in _SESSION_COLUMNS)),
+        )
+        db.execute(
+            "UPDATE projects SET updated_at = ? WHERE project_id = ?",
+            (_time(now), project_id),
+        )
+
+    def _absent(self, project_id: str) -> ProjectError:
+        if (self.root / f"{project_id}.json").is_file():
+            return ProjectError(
+                ErrorKind.UNAVAILABLE,
+                f"project {project_id!r} is recorded only in projects/{project_id}.json, from "
+                "before projects moved into the control store, and is not read: create the "
+                "project again (project create), with its profile and policy",
+            )
+        return ProjectError(ErrorKind.NOT_FOUND, f"no project {project_id!r}")
+
+    @staticmethod
+    def _checked(project_id: str, session_id: str | None = None) -> None:
+        if not _is_identifier(project_id):
+            raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid project ID {project_id!r}")
+        if session_id is not None and not _is_identifier(session_id):
+            raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid session ID {session_id!r}")
 
     @staticmethod
     def _validated(**fields: object) -> ProjectRecord:
@@ -633,6 +598,16 @@ class ProjectStore:
             return SessionRecord.model_validate(fields)
         except ValidationError as exc:
             raise ProjectError(ErrorKind.INVALID_REQUEST, str(exc)[:500]) from exc
+
+
+def recorded(state_dir: Path, project_id: str) -> ProjectRecord:
+    """A project's record, read through a read-only connection of its own, which a
+    repository can use while its own connection holds a write transaction."""
+    store = ProjectStore(state_dir, readonly=True)
+    try:
+        return store.get(project_id)
+    finally:
+        store.close()
 
 
 async def ensure_environment(

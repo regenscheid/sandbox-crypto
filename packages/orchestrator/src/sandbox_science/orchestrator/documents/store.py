@@ -78,7 +78,6 @@ from .normalize import Normalized, normalize
 from .operations import MAX_OPERATIONS, Operation, touches
 from .parser import parser_versions
 
-FILE_NAME: Final = "control.sqlite3"
 CACHED: Final = 16
 """Parsed revisions kept, by document, revision and content hash."""
 
@@ -1767,8 +1766,3 @@ def _accepted(suggestion: PatchInfo, user: Author) -> _Submission:
 
 def _fingerprint(request: Json) -> str:
     return hashlib.sha256(_dumps(request).encode()).hexdigest()
-
-
-def store_path(state_dir: Path) -> Path:
-    """The control store's database in a harness state directory."""
-    return state_dir / FILE_NAME

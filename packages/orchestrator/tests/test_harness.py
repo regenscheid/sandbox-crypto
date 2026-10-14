@@ -919,7 +919,9 @@ async def test_a_control_store_the_run_cannot_use_is_an_error_message(
          "--profile", "minimal", "--policy", "sha256:" + "c" * 64],
     )  # fmt: skip
     assert created == 0
-    # A development store from before the schema baseline.
+    # A development store from before the schema baseline, in place of the new one.
+    for found in state.glob("control.sqlite3*"):
+        found.unlink()
     database = sqlite3.connect(state / "control.sqlite3")
     database.execute("CREATE TABLE documents (document_id TEXT PRIMARY KEY)")
     database.execute("PRAGMA user_version = 1")

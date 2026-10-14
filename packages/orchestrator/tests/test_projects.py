@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -285,11 +286,6 @@ def test_a_sessions_runs_are_kept_in_order(session_store: ProjectStore) -> None:
     assert session_store.runs("p1", "a") == [first, again]
     assert session_store.run("p1", "a", first.name) == run_record()
     assert session_store.runs("p1", "b") == []
-    directory = session_store.runs_root / "p1" / "a"
-    assert sorted(path.name for path in directory.iterdir()) == [
-        f"{first.name}.json",
-        f"{again.name}.json",
-    ]
 
 
 def test_a_record_is_never_replaced(session_store: ProjectStore) -> None:
@@ -298,9 +294,7 @@ def test_a_record_is_never_replaced(session_store: ProjectStore) -> None:
         session_store.save_run(run_record(text="second"))
     assert refused.value.kind is ErrorKind.CONFLICT
     assert session_store.run("p1", "a", first.name).final_text == "first"
-    assert [path.name for path in (session_store.runs_root / "p1" / "a").iterdir()] == [
-        f"{first.name}.json"
-    ]
+    assert session_store.runs("p1", "a") == [first]
 
 
 def test_runs_stay_clear_of_other_projects_files(session_store: ProjectStore) -> None:
@@ -358,8 +352,11 @@ def test_missing_damaged_and_oversized_runs_are_refused(session_store: ProjectSt
     with pytest.raises(ProjectError) as large:
         session_store.run("p1", "a", entry.name, max_bytes=100)
     assert large.value.kind is ErrorKind.UNSUPPORTED
-    path = session_store.runs_root / "p1" / "a" / f"{entry.name}.json"
-    path.write_text('{"run_id": "run-1"}')
+    database = sqlite3.connect(session_store.control.path)
+    database.execute("DROP TRIGGER runs_no_update")
+    database.execute("UPDATE runs SET record = ?", ('{"run_id": "run-1"}',))
+    database.commit()
+    database.close()
     with pytest.raises(ProjectError) as damaged:
         session_store.run("p1", "a", entry.name)
     assert damaged.value.kind is ErrorKind.INTERNAL
@@ -377,7 +374,20 @@ def test_a_run_needs_its_session_and_a_run_id_that_can_name_it(
     with pytest.raises(ProjectError) as bad_session:
         session_store.runs("p1", "../a")
     assert bad_session.value.kind is ErrorKind.INVALID_REQUEST
-    assert not session_store.runs_root.exists()
+    assert session_store.runs("p1", "a") == []
+
+
+def test_a_project_recorded_only_in_a_json_file_says_so(store: ProjectStore) -> None:
+    # Before projects moved into the control store, each was a file of its own.
+    store.root.mkdir(parents=True, exist_ok=True)
+    (store.root / "old.json").write_text("{}")
+    with pytest.raises(ProjectError) as refused:
+        store.get("old")
+    assert refused.value.kind is ErrorKind.UNAVAILABLE
+    assert "create the project again" in refused.value.message
+    with pytest.raises(ProjectError) as missing:
+        store.get("other")
+    assert missing.value.kind is ErrorKind.NOT_FOUND
 
 
 def test_project_ids_name_only_project_records(session_store: ProjectStore) -> None:
@@ -387,3 +397,19 @@ def test_project_ids_name_only_project_records(session_store: ProjectStore) -> N
     (session_store.root / "bad name.json").write_text("{}")
     (session_store.root / "x.json").mkdir()
     assert session_store.project_ids() == ["p1", "p2"]
+
+
+def test_a_read_only_store_reads_without_making_the_database(tmp_path: Path) -> None:
+    reader = ProjectStore(tmp_path, readonly=True)
+    assert reader.project_ids() == []
+    with pytest.raises(ProjectError) as missing:
+        reader.get("p1")
+    assert missing.value.kind is ErrorKind.NOT_FOUND
+    assert not (tmp_path / "control.sqlite3").exists()
+    writer = ProjectStore(tmp_path)
+    writer.create("p1", "minimal", POLICY)
+    writer.open_session("p1", "a", dedicated=False)
+    assert reader.get("p1") == writer.get("p1")
+    assert reader.runs("p1", "a") == []
+    reader.close()
+    writer.close()
