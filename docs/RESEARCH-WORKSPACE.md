@@ -1,6 +1,6 @@
 # Research workspace: documents, ledger, mathematics, and sources
 
-Date: 2026-10-10. These are initial requirements and proposed contracts, not implemented features.
+Date: 2026-10-10. These are the initial requirements and proposed contracts. Some are built since: [living documents](LIVING-DOCUMENTS.md) with comments and math rendering in the [workspace](WORKSPACE.md), native Sage kernels and the worker's [PDF tools](WORKER.md#pdfs) ([PDF sources spec](specs/pdf-sources.md)). The ledger and board and the GUI's PDF viewer are not built ([ledger spec](specs/ledger.md)).
 
 ## Project-wide research state
 
@@ -68,7 +68,7 @@ Automatic Conda provisioning still supplies additional tools. Test Sage startup 
 
 ## PDF parsing and navigation as a native source workflow
 
-Keep the original PDF and its version/hash. The primary extraction library candidate is pdf_oxide (MIT OR Apache-2.0, D59), with pypdfium2 as fallback; PyMuPDF is excluded as AGPL. Its character-level positions, bookmarks and annotations are the basis for page/region anchors, and its optional rendering produces crops for checking equations. It parses untrusted input, so it runs in workers like any other parser. Its MCP server, if used, also runs in a worker sandbox, not beside the orchestrator. Derive reusable page text, outline/section structure, page renders/crops, tables/figures, and optional OCR/layout results in workers. Cache by document hash and parser configuration/version. Support page/section lookup, search or ranked page discovery, and exhaustive extraction as distinct operations.
+Keep the original PDF and its version/hash. The primary extraction library is pdf_oxide (MIT OR Apache-2.0, D59, confirmed), with pypdfium2 as the planned fallback; PyMuPDF is excluded as AGPL. Its character-level positions, bookmarks and annotations are the basis for page/region anchors, and its optional rendering produces crops for checking equations. It parses untrusted input, so it runs in workers like any other parser. Its MCP server, if used, also runs in a worker sandbox, not beside the orchestrator. Derive reusable page text, outline/section structure, page renders/crops, tables/figures, and optional OCR/layout results in workers. Cache by document hash and parser configuration/version. Support page/section lookup, search or ranked page discovery, and exhaustive extraction as distinct operations.
 
 The GUI needs an integrated PDF viewer with page labels, thumbnails/outline, search, selection/highlights, and direct navigation from citations, comments, ledger entries, and review findings. A source reference identifies document revision, physical page index, displayed page label, and region/text anchor when available. Preserve both page numbering forms so printed page numbers do not silently point at the wrong PDF page.
 

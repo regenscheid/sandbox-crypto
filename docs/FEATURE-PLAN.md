@@ -1,6 +1,6 @@
 # Research features to incorporate
 
-Date: 2026-10-10. Synthesis of three parallel source investigations: Claude Science, Claude Code/Desktop, and OpenScience Desktop. These are proposed features, not implemented capabilities. Evidence and source boundaries are in [source study](SOURCE-STUDY.md).
+Date: 2026-10-10. Synthesis of three parallel source investigations: Claude Science, Claude Code/Desktop, and OpenScience Desktop. This is the feature plan as proposed then, not a description of what is built; several features now exist (native Sage, PDF tools, living documents, consistency review, provisioning), described in the as-built pages listed in [.agents/STATUS.md](../.agents/STATUS.md). Evidence and source boundaries are in [source study](SOURCE-STUDY.md).
 
 ## Product direction
 

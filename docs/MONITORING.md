@@ -1,6 +1,6 @@
 # Trusted monitoring and automatic provisioning
 
-Date: 2026-10-10. Automatic tool installation and behavioral monitoring are user requirements. Policy-based blocking, permission escalation, and alerting while continuing are confirmed. Implementation details remain proposed; no runtime tests have been performed.
+Date: 2026-10-10. Automatic tool installation and behavioral monitoring are user requirements. Policy-based blocking, permission escalation, and alerting while continuing are confirmed. This page is the design as proposed then. Parts are built and checked on babbage: the [policy middleware](POLICY-MIDDLEWARE.md), the [package cache](PACKAGE-CACHE.md), the [event store](EVENT-STORE.md) and the worker's provisioning operations (D84, [Conda provisioning](specs/conda-provisioning.md)). The behavior monitor (layer 3 below) and runtime telemetry are not built.
 
 The inspected Claude Science runtime already has an action-level security classifier in approval processing, distinct from its scientific consistency reviewer. Preserve useful task-context checks alongside the trusted external monitor. That classifier does not establish packet/content inspection, and scientific review does not establish authorization. Exact source anchors are in [source study](SOURCE-STUDY.md).
 
@@ -17,7 +17,7 @@ Proposed by the plan review (D44; [threat model](THREAT-MODEL.md) T1/T7). Conten
 | Path | Policy | Notes |
 | --- | --- | --- |
 | Direct internet from research sandboxes | Denied | Sandboxes resolve no external DNS; the proxy resolves names |
-| Package installation | Only through a trusted pull-through mirror restricted to allowlisted channels (conda-forge, PyPI); read-only; cache misses logged and rate-limited | Preserves automatic Conda provisioning (D16): the solver and hooks still run in the sandbox. Permissive candidates: devpi (MIT), quetz (BSD-3), caching Envoy/nginx. Package-name lookups are a residual covert channel; log them |
+| Package installation | Only through a trusted pull-through cache restricted to allowlisted channels (conda-forge, PyPI); read-only; cache misses logged and rate-limited | Preserves automatic Conda provisioning (D16): the solver and hooks still run in the sandbox. Built as the project's own [package cache](PACKAGE-CACHE.md) (D71). Package-name lookups are a residual covert channel; log them |
 | Downloading code and papers | Read-only fetch path: GET/HEAD allowed broadly under the shipped permissive policy (D62), with a URL length limit; git smart-HTTP `git-upload-pack` allowed, `git-receive-pack` escalates | The git rule must be keyed on the service path, because fetch also uses POST. Deny API writes, gists and paste sites by default. Bound URL length and request rate |
 | Granted research endpoints, mostly MCP | Explicit per-project grants; credentials as OpenShell providers bound to the endpoint; MCP tool allowlists | Inline inspection applies here; see Credentials and MCP access |
 | Anything else (writes, unknown side effects) | As the project policy file decides; the shipped default escalates | Escalation timeout falls back to deny (configurable); see [policy](POLICY.md) |
@@ -75,7 +75,7 @@ Keep monitoring code/configuration, event storage, and enforcement credentials o
 
 ## Event store
 
-Monitor evidence is kept in the [event store](EVENT-STORE.md) (D74, proposed), an append-only SQLite database whose records form a SHA-256 hash chain. Verification finds a record that was changed, removed, inserted or moved, unless whoever did it also recomputed every later hash. Checkpoints of the head, kept where the store's writers cannot change them, also catch that, and records removed from the end. The policy middleware records its escalations, alerts and monitor findings there; the behavior monitor, the worker service and the orchestrator are to follow.
+Monitor evidence is kept in the [event store](EVENT-STORE.md) (D74), an append-only SQLite database whose records form a SHA-256 hash chain. Verification finds a record that was changed, removed, inserted or moved, unless whoever did it also recomputed every later hash. Checkpoints of the head, kept where the store's writers cannot change them, also catch that, and records removed from the end. The policy middleware records its escalations, alerts and monitor findings there, the worker its package permission requests and provisioning events, and the MCP proxy its records. The behavior monitor and the orchestrator's own requests are not connected.
 
 ## OpenShell fit: verified documentation and source
 
@@ -89,13 +89,13 @@ Explicitly use enforcing request rules where blocking is required: the documente
 
 A middleware denial still blocks even when the endpoint is in audit mode. Implement alert-and-continue by explicitly allowing the operation and recording/notifying the finding. Middleware `on_error` selects fail-open/fail-closed behavior for middleware failure; it is not the matched policy action. Test these independently. [Middleware configuration](https://docs.nvidia.com/openshell/latest/extensibility/supervisor-middleware/configure)
 
-These are documented/source capabilities, not a verified deployment. Confirm them on both local and Kubernetes drivers before adopting the design.
+These were documented/source capabilities when written. The middleware path is now built and checked on babbage's VM driver ([policy middleware](POLICY-MIDDLEWARE.md#checked-on-babbage)); Kubernetes drivers are not tested.
 
 ## Conda workflow to preserve
 
 1. The agent requests a needed capability or package in its project environment.
 2. The environment manager checks existing capabilities and project install/network grants.
-3. Conda resolves/downloads/installs inside a worker with scoped writable prefixes and resources, fetching only through the package mirror. Hooks and subprocesses receive the same restrictions. GPL research tools are either part of the privately built `crypto-base` profile image or installed this way at runtime; neither is published by the project (D46, [licensing](LICENSING.md)). Record each package's license.
+3. Conda resolves/downloads/installs inside a worker with scoped writable prefixes and resources, fetching only through the package cache. Hooks and subprocesses receive the same restrictions. GPL research tools are either part of the privately built `crypto-base` profile image or installed this way at runtime; neither is published by the project (D46, [licensing](LICENSING.md)). Record each package's license.
 4. Record requested packages/tool purpose, channels and resolved versions/builds/digests, environment revision before/after, install logs/errors, and any fallback to another package manager.
 5. Probe the actual installed tool under the same worker policy, then let research continue.
 6. Capture an environment specification or derived image for reviewer reproduction and relocation.

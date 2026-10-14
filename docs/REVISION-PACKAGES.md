@@ -1,12 +1,13 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Selected revision packages and declared licenses
 
-The worker provides a bounded read-only prerequisite for the independent license
-facet of [CP-26](specs/conda-provisioning.md). Unlike
-[lockfile differences](LOCKFILE-DIFFERENCES.md), this page includes unchanged
-packages and recorded packages of base/unmanaged revisions with no producing
-operation. It is source/component work; a workspace proxy, GUI and root-owned
-runtime acceptance remain separate. It does not install, approve, restore, wake
+The worker provides a bounded, read-only view of one revision's packages and
+their declared licenses, for the license part of
+[CP-26](specs/conda-provisioning.md). Unlike
+[lockfile differences](LOCKFILE-DIFFERENCES.md), it includes unchanged
+packages and the recorded packages of base or unmanaged revisions with no producing
+operation. The workspace passes it on ([workspace](REVISION-PACKAGES-WORKSPACE.md)),
+and its environment panel shows it. It does not install, approve, restore, wake
 an environment, change retention or certify its installed files or licenses.
 
 ## Explicit source and response
@@ -62,7 +63,7 @@ selection. The snapshot closes before file work. The final exact scope/source
 recheck precedes response construction. It does not fetch a full revision or
 call a provisioner/executor/backend.
 
-The new page intentionally shares comparison's source scanner, nofollow regular
+The page shares the comparison's source scanner, nofollow regular
 blob descriptors, streamed raw-byte SHA/ref/header/count proof, canonical path
 and held-file pre/post checks, and bounded entry materialization. One blob is
 scanned once; there is no fabricated empty comparison source, full Lockfile
@@ -90,10 +91,3 @@ hold/refuse a page. Shared worker source proof is an observed boundary, not a
 continuous atomic database/filesystem snapshot. The legacy raw lockfile route
 is unchanged and is not a stronger source proof.
 
-Local tests use isolated retained SQLite/blob fixtures and in-process HTTP. They
-cover unchanged AGPL/base/unmanaged packages, unknown pip/Conda license,
-stateless ordering/pages/counts, one scan, source/ref/scope/type/hash failures,
-bounded hostile input, and shared actual reader cancellation/deadline/drain.
-Full integration, workspace/GUI, actual worker/browser no-wake acceptance,
-delivery CI and remaining operator/recovery controls are not completed by this
-prerequisite.

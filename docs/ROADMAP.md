@@ -1,8 +1,8 @@
 # Implementation roadmap
 
-Updated: 2026-10-12. M1 passed its babbage exit run ([lab 9](../.agents/docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)). M0's behavior specifications and decisions still await the user's review; M2's complete local research workflow remains open. The worker boundary, native math/PDF tools, persistent project records, background jobs, executor recovery and substantial document/review GUI behavior are implemented, with their validation recorded in the [detailed plan](IMPLEMENTATION-PLAN.md). Hosted, multi-architecture, independent-placement and representative cryptography workflow gates remain open. These gates combine reimplemented CScience behavior (D03, D11), the requested deployment split, and first-class math/source/document workflows.
+Written 2026-10-10 and updated 2026-10-12: the milestone plan. M1 passed its babbage exit run ([lab 9](../.agents/docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)); M2's complete local research workflow is open. Current state is in [.agents/STATUS.md](../.agents/STATUS.md), and work now follows the [revision and refactoring plan](../.agents/refactor-plan/PLAN.md) of 2026-10-14, whose Phase 4 is the M2 exit path. Of M0's behavior specifications, five are approved and four are drafts ([specifications](specs/README.md)). These gates combine reimplemented CScience behavior (D03, D11), the requested deployment split, and first-class math/source/document workflows.
 
-The [detailed implementation plan](IMPLEMENTATION-PLAN.md) defines shared contracts, component ownership and work packages beneath these milestones. The [consistency review](CONSISTENCY-REVIEW.md) records resolved ambiguities and reusable components. Current implementation focuses on W4's research workspace and remaining M2 integration, alongside unfinished infrastructure work; [.agents/STATUS.md](../.agents/STATUS.md) and the [backlog](../.agents/BACKLOG.md) distinguish accepted slices from open work.
+The [detailed implementation plan](IMPLEMENTATION-PLAN.md) defines shared contracts, component ownership and work packages beneath these milestones. The [planning consistency review](../.agents/planning-consistency-review-2026-10-10.md) (historical) records resolved ambiguities and reusable components. The [backlog](../.agents/BACKLOG.md) lists open work.
 
 ## M0 — Specify behavior and choose harness components
 
@@ -10,7 +10,7 @@ Use the [source study](SOURCE-STUDY.md) and [feature plan](FEATURE-PLAN.md) as e
 
 Define the [external skill integration contract](EXTERNAL-SKILLS.md): discovery/body loading, raw structured outcomes, plans/approvals, lineage, project identity, board/knowledge storage and binary transfer. The pack stays external and can update its host bindings; reproduce useful semantics rather than require exact legacy APIs.
 
-Confirm the [threat model](THREAT-MODEL.md) and [licensing policy](LICENSING.md). Start the infrastructure track (implementation plan, track P) in parallel.
+Confirm the [threat model](THREAT-MODEL.md) and [licensing policy](LICENSING.md); both are now confirmed (D43, D45). Start the infrastructure track (implementation plan, track P) in parallel.
 
 **Exit:** behavior specs with fixtures, and a harness-component decision with licenses recorded.
 

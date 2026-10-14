@@ -2,6 +2,8 @@
 
 Assessed: 2026-10-10. Recommendation: evaluate OpenShell as the first execution backend behind a replaceable workbench adapter. Adoption remains conditional on a measured feasibility spike.
 
+This is the planning assessment of 2026-10-10, kept as written. Since then OpenShell v0.1.3 with the MicroVM driver on babbage has been the only backend in phase 1 (D52, D63), exercised in the babbage labs ([lab reports](../.agents/docs/agent-reports/)). What is built is described in [worker](WORKER.md) and [policy middleware](POLICY-MIDDLEWARE.md); no Kubernetes driver has been tested.
+
 ## Verified source baseline
 
 GitHub's release API reported **v0.1.3**, published **2026-10-09T15:22:35Z**. The documentation read during this assessment labels its current version v0.1.3. Pin SDK, CLI, gateway, trusted runtime/supervisor, and image references to one tested release set; record resolved digests before installation. No OpenShell runtime was installed or exercised in this planning pass. [Release](https://github.com/NVIDIA/OpenShell/releases/tag/v0.1.3)
@@ -84,6 +86,6 @@ See [monitoring and provisioning](MONITORING.md) for verified middleware hooks, 
 - Which controls and resource measurements are actually supported per selected driver?
 - How much application-level reconciliation is required after gateway restarts or worker leases expire?
 - Which endpoint-bound credential behavior is safe for the intended model gateways and MCP services?
-- Does the environment need a VM isolation boundary, or is a dedicated container host sufficient for the initial trusted-user deployment? Proposed answer in the [threat model](THREAT-MODEL.md): yes for hosted (tier 3) and for running studied exploit code. Locally, use gVisor or a separate worker VM (tier 2), with tier 1 only by explicit acceptance.
-- Does the MicroVM driver support persistent project environments, Sage's memory footprint and the read-only-rootfs volume layout (D48)?
+- Does the environment need a VM isolation boundary, or is a dedicated container host sufficient for the initial trusted-user deployment? Answer in the [threat model](THREAT-MODEL.md), confirmed as D43: babbage runs tier 3 with the MicroVM driver; hosted workers use tier 2 (gVisor), tier 3 where nodes support it; tier 1 only by explicit acceptance.
+- Does the MicroVM driver support persistent project environments, Sage's memory footprint and the read-only-rootfs volume layout (D48)? The read-only root is deferred (D48); idle environments keep their whole VM disk ([worker](WORKER.md)).
 

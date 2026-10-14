@@ -18,14 +18,14 @@
     {
       "path": "../../docs/PROVISION-EVENTS.md",
       "category": "implementation-boundary",
-      "bytes": 5748,
-      "sha256": "0bfb422287a8952fca5fe42cd30bc0349aa71a325aaeb628019a81a5ed331251"
+      "bytes": 4767,
+      "sha256": "f9ff54f7df57e6f8514a5c1a290ac019321af3c35a0cdb1c53b7474a784955bf"
     },
     {
       "path": "../../docs/INSTALLER-ARTIFACTS.md",
       "category": "implementation-boundary",
-      "bytes": 5556,
-      "sha256": "7065fcfce1ad1c728ced83eb2cb91518dc0aa0b841f0c2af76079d1490b03721"
+      "bytes": 4464,
+      "sha256": "276bb9d3e5160ef51b4fc12bcde0dba976ad4648cba38d03f6e3f5398cf64f30"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-34-2026-10-13.md",
@@ -36,8 +36,8 @@
     {
       "path": "../../docs/PIP-LOCKFILE-LICENSES.md",
       "category": "implementation-boundary",
-      "bytes": 3882,
-      "sha256": "7867930003074fd012e602a5ce5497f1e76f159e74881db622383d256d035c40"
+      "bytes": 3107,
+      "sha256": "eee0a945cdd6827156268516d9e8995bb0ce25a628a8c0350c0b4f224bbad6ef"
     },
     {
       "path": "archive/CHILD-ATTEMPTS.md",
@@ -114,8 +114,8 @@
     {
       "path": "../../docs/LOCKFILE-DIFFERENCES.md",
       "category": "implementation-boundary",
-      "bytes": 8367,
-      "sha256": "66d3ca374b09c2da2c72601dbf17bb0e5c2852330a35a91c72f5eec614dc3d51"
+      "bytes": 7410,
+      "sha256": "b32014bdec7ec19e794c43817187b13672b0b499bfc7c5f323371408bf2372a8"
     },
     {
       "path": "../../docs/MAIN-PROMPT-PROVENANCE.md",
@@ -144,8 +144,8 @@
     {
       "path": "../../docs/PROVISIONING-OBSERVATIONS.md",
       "category": "implementation-boundary",
-      "bytes": 9936,
-      "sha256": "fcfd1848b3869717938f2c321e66e5e0d15eca817df33b006094e58f60ff21c4"
+      "bytes": 7268,
+      "sha256": "1f756591782fb3fb2258cd16c04a2c746a9ddc9673c90116f75e187f5a7636ba"
     },
     {
       "path": "../../docs/PROVISIONING-WORKSPACE-VIEW.md",
@@ -222,8 +222,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 34047,
-      "sha256": "e28554326db2a8f97e0b771962487db911da6f1f0787fbf78bebf0cf3f7d84d2"
+      "bytes": 34550,
+      "sha256": "a6405bf001a2c71db4ced7a1f53fc17d2546d27ba18735be2dae59df0a4023c4"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -624,8 +624,8 @@
     {
       "path": "../../docs/PROVISIONING-UPGRADES.md",
       "category": "implementation-boundary",
-      "bytes": 5020,
-      "sha256": "20f13fbddb8bedb1fd0622b3ee061c6168a0bd4f770008f7312a9075e728e8cc"
+      "bytes": 3881,
+      "sha256": "1e2fbadd15bfdff01c78a92b8c6073642c58b247970f6dc667f86530a7dd3beb"
     }
   ]
 }

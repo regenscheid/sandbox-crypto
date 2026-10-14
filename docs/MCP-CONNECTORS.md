@@ -1,13 +1,13 @@
 # MCP connectors and authentication
 
-Date: 2026-10-10. Proposed (D64, D66, D67). The user's requirements:
+Confirmed: D64, and D66 and D67 with the design this page proposes. The MCP proxy is built ([as built](#the-mcp-proxy-as-built)); the connector auth service is not. The user's requirements:
 
 - crypto-research-mcp is the phase 1 connector; others are added later.
 - MCP services authenticate mainly with OAuth.
 - `Authorization` and custom-header authentication should also be supported.
 - A secrets manager should keep raw credentials away from agents.
 
-Sources: the [MCP authorization specification, 2025-11-25](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/basic/authorization.mdx) and the OpenShell v0.1.3 [providers](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx) and [profiles](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/profiles.mdx) documentation. Lab 2 checked the MCP proxy's compiled policy on babbage, and the [MCP proxy's first version](#the-mcp-proxy-as-built) is tested against a fake server; nothing else here has been tested.
+Sources: the [MCP authorization specification, 2025-11-25](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/basic/authorization.mdx) and the OpenShell v0.1.3 [providers](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx) and [profiles](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/profiles.mdx) documentation. The MCP proxy is tested against a fake server, and it and its compiled policy were run under OpenShell on babbage (labs 2, 13, 15 and 17). The connector auth service, the OAuth flow and the checks for the spike below are not built or tested.
 
 ## Goals
 
@@ -55,7 +55,7 @@ The per-caller proxy credential still matters: it stops other sandboxes and proj
 - Uniform handling of `403 insufficient_scope` (escalation, not automatic re-consent).
 - One audit stream of requests and responses for the contextual monitor.
 
-**Implementation.** A thin proxy in Python, since the policy and attribution semantics are project-specific: `packages/mcp-proxy`, with its own small JSON-RPC layer on aiohttp rather than the MCP Python SDK (D75, proposed; [as built](#the-mcp-proxy-as-built)). Existing permissively licensed proxies remain references: sparfenyuk/mcp-proxy (MIT), IBM mcp-context-forge (Apache-2.0) and docker/mcp-gateway (MIT). None was reviewed in depth for the first version.
+**Implementation.** A thin proxy in Python, since the policy and attribution semantics are project-specific: `packages/mcp-proxy`, with its own small JSON-RPC layer on aiohttp rather than the MCP Python SDK (D75; [as built](#the-mcp-proxy-as-built)). Existing permissively licensed proxies remain references: sparfenyuk/mcp-proxy (MIT), IBM mcp-context-forge (Apache-2.0) and docker/mcp-gateway (MIT). None was reviewed in depth.
 
 **Placement.** One proxy per deployment, policy-scoped per project, is enough for phase 1 on babbage. On the cluster it runs as a separate sandboxed deployment near the workers.
 
@@ -63,9 +63,9 @@ The alternative of running the orchestrator itself as an OpenShell sandbox (D47)
 
 ## The MCP proxy as built
 
-Date: 2026-10-11. The first version is in `packages/mcp-proxy` (`sandbox_science.mcp_proxy`, command `sandbox-science-mcp-proxy`; D75, proposed). Its tests run it against a fake server. [Lab 13](../.agents/docs/agent-reports/babbage-openshell-lab-13-2026-10-11.md) ran it in its own OpenShell VM sandbox, against DeepWiki's public server and a fake one on the host. There, OpenShell substituted the provider's token in its headers, its version header and its replies to server requests passed the fence, and callers reached it from the host and from an orchestrator sandbox.
+The proxy is in `packages/mcp-proxy` (`sandbox_science.mcp_proxy`, command `sandbox-science-mcp-proxy`; D75). Its tests run it against a fake server. In its own OpenShell VM sandbox, OpenShell substitutes the provider's token in its headers, its version header and its replies to server requests pass the fence, and callers reach it from the host and from an orchestrator sandbox ([lab 13](../.agents/docs/agent-reports/babbage-openshell-lab-13-2026-10-11.md), against DeepWiki's public server and a fake one).
 
-Checked by hand on 2026-10-11 with the MCP Python SDK 2.2.0 on both sides, its client calling the proxy and its server behind it: the client's `server/discover` probe (MCP 2026-07-28) is refused, the client falls back to `initialize`, and listing tools, an allowed call and an escalated one behave as below, over the server's event streams.
+With the MCP Python SDK 2.2.0 as the caller and as the server behind the proxy, the client's `server/discover` probe (MCP 2026-07-28) is refused, the client falls back to `initialize`, and listing tools, an allowed call and an escalated one behave as below, over the server's event streams.
 
 **Endpoints.** Each declared server has a Streamable HTTP endpoint, `POST /mcp/<server>`, where `<server>` is its name under `mcp.servers`. The proxy speaks MCP 2025-03-26, 2025-06-18 and 2025-11-25, to callers and to servers, and answers every request with `application/json`. `GET` answers 405, since the proxy passes no server-initiated messages on, and `DELETE` ends the caller's session.
 
@@ -75,7 +75,7 @@ Checked by hand on 2026-10-11 with the MCP Python SDK 2.2.0 on both sides, its c
 - It completes the handshake with `notifications/initialized`. Every later request carries `MCP-Protocol-Version`, and the server's `Mcp-Session-Id` if it issued one.
 - The caller gets the server's result without the `tasks` capability, since the policy denies the task methods. Its session id is the proxy's own, valid only with the same token and server.
 
-A caller holds at most `max_sessions_per_caller` sessions; its next one ends its least recently used, so that no caller can take every place. A session ends after `session_idle` without use, on `DELETE`, when the server ends it (404), or when a new policy revision changes the server's URL or pinned revision. The caller then gets 404 and initializes again. The proxy never sends `DELETE` upstream, because OpenShell's MCP inspection refuses it.
+A caller holds at most `max_sessions_per_caller` sessions; its next one ends its least recently used, so that no caller can take every place. When the proxy holds `max_sessions` sessions and the caller holds none of them, its `initialize` is refused with 503 `proxy_busy`, and it should retry later. A session ends after `session_idle` without use, on `DELETE`, when the server ends it (404), or when a new policy revision changes the server's URL or pinned revision. The caller then gets 404 and initializes again. The proxy never sends `DELETE` upstream, because OpenShell's MCP inspection refuses it.
 
 **How a call is decided.** In this order, for every message:
 
@@ -188,13 +188,11 @@ openshell forward service --target-port 8080 --local 127.0.0.1:8080 mcp-proxy
 
 - Commands in the sandbox take full paths, since OpenShell's VM driver does not apply the image's `PATH`. `pending`, `approve` and `deny` run the same way, with `--settings /sandbox/mcp-proxy/proxy.toml`, and `/opt/sandbox-science/bin/sandbox-science-events export /sandbox/mcp-proxy/state/events.db` copies the records out.
 - Until a project is bound, its calls get 503 `project_unbound`. A binding, or a new revision bound later, applies from the next call, without a restart.
-- The state directory, with the policy store and the event store, is on the sandbox's disk, which survives `sandbox stop` and `start` (lab 13). [Lab 15](../.agents/docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md) showed the rest:
-  - The providers' placeholders reach the sandbox's command.
-  - The launcher and the proxy come back a few seconds after the sandbox is `Ready` again.
-  - The launcher restarts a proxy that exits.
-  - The forward ends when the sandbox stops, so whatever runs `openshell forward service` must start it again afterwards.
+- The state directory, with the policy store and the event store, is on the sandbox's disk, which survives `sandbox stop` and `start`.
+- The providers' placeholders reach the sandbox's command. The launcher restarts a proxy that exits, and the launcher and the proxy come back a few seconds after the sandbox is `Ready` again ([lab 15](../.agents/docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md)).
+- The forward ends when the sandbox stops, so whatever runs `openshell forward service` must start it again afterwards.
 
-To keep the forward up, run it from the systemd user unit in [`examples/systemd`](../examples/systemd), whose instance is the proxy's sandbox. It starts the forward again every two seconds until the sandbox is back. The proxy itself comes back a few seconds after the sandbox is `Ready`, so a caller should retry a refused connection briefly. Lab 17 ran the unit's settings on babbage: while the sandbox was stopped, systemd tried every 2 s without reaching a start limit; the forward was running again when the sandbox was `Ready`, 6 s after `sandbox start`, and a call succeeded 9 s after it, on its second try.
+To keep the forward up, run it from the systemd user unit in [`examples/systemd`](../examples/systemd), whose instance is the proxy's sandbox. It starts the forward again every two seconds until the sandbox is back, without reaching systemd's start limit. The proxy itself comes back a few seconds after the sandbox is `Ready`, so a caller should retry a refused connection briefly: on babbage a call succeeded about 9 s after `sandbox start`, on its second try ([lab 17](../.agents/docs/agent-reports/babbage-openshell-lab-17-2026-10-11.md)).
 
 ```bash
 cp examples/systemd/sandbox-science-mcp-proxy-forward@.service ~/.config/systemd/user/
@@ -205,6 +203,8 @@ systemctl --user enable --now sandbox-science-mcp-proxy-forward@mcp-proxy.servic
 
 ### Not built yet
 
+- A harness MCP client. The orchestrator does not call the proxy, so agents cannot use connectors; only code in research sandboxes can, where the policy grants `worker_access`. Nothing issues proxy tokens to callers either: an operator writes them into the settings.
+- A product command for the proxy's sandbox. `compile_mcp_proxy()` is a library function that only the example renderer and the lab scripts call, and the operator steps above are manual.
 - Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
 - The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand.
 - Binary results as artifact references; they are withheld for now.

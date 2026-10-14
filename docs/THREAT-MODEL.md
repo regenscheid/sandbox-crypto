@@ -1,6 +1,6 @@
 # Threat model and isolation tiers
 
-Date: 2026-10-10. Proposed by the plan review ([critical review](../.agents/critical-review.md), finding C1), revised the same day with the user's priorities. This draft is for confirmation, not a validated design. It states what the isolation, secrets and monitoring controls in [architecture](ARCHITECTURE.md) and [monitoring](MONITORING.md) protect, and from whom.
+Date: 2026-10-10. Proposed by the plan review ([critical review](../.agents/critical-review.md), finding C1), revised the same day with the user's priorities. Confirmed on 2026-10-14 as D43, adopted under the owner's instruction to proceed with the refactoring plan's recommendations. It is the design the controls follow, not a list of what is built; the built controls are described in [worker](WORKER.md), [policy middleware](POLICY-MIDDLEWARE.md), [package cache](PACKAGE-CACHE.md), [MCP connectors](MCP-CONNECTORS.md) and [workspace](WORKSPACE.md). It states what the isolation, secrets and monitoring controls in [architecture](ARCHITECTURE.md) and [monitoring](MONITORING.md) protect, and from whom.
 
 ## Primary concern: agentic workers overreaching
 
@@ -48,7 +48,7 @@ Prompt injection from consumed papers is a lesser concern. It remains one way an
 | Zone | Components | Trust | Rule |
 | --- | --- | --- | --- |
 | Z0 Host / cluster control | Node OS, container engine, Kubernetes control plane | Fully trusted | Never shares a kernel with Z3 at tier ≥ 2 |
-| Z1 Policy infrastructure | Worker service, OpenShell gateway/supervisor, secrets store, connector auth service, egress proxies, package mirror, monitor, event store | Trusted | Holds enforcement and credential material; not agent-writable; reachable from Z3 only via its proxy/API ports |
+| Z1 Policy infrastructure | Worker service, OpenShell gateway/supervisor, secrets store, connector auth service, egress proxies, package cache, monitor, event store | Trusted | Holds enforcement and credential material; not agent-writable; reachable from Z3 only via its proxy/API ports |
 | Z2 Control application | Orchestrator/harness, project store, model gateway | **Semi-trusted**: trusted state, agent-selected actions | Egress only to the model gateway and MCP endpoints under policy; holds placeholders or gateway-mediated credentials rather than raw keys where possible; no engine/cluster credentials |
 | Z3 Research sandboxes | Project/session/batch/review containers, kernels, Conda | Untrusted | No direct internet; egress via Z1 proxies; credentials only as placeholders |
 | Z4 Browser | GUI and artifact previews | User-trusted UI, untrusted content | Untrusted artifacts on a separate origin; routine approvals within the session, re-authentication for high-risk actions (D54) |
@@ -72,10 +72,10 @@ Performance-sensitive work (timing and side-channel measurements, `perf_event_op
 | Threat | Primary controls | Detection |
 | --- | --- | --- |
 | A1 | All MCP traffic through the MCP proxy (D67) with per-project tool allowlists, re-enforced by `protocol: mcp`; least-privilege, read-only tokens; L7 method/path rules; revision-checked mutations on shared documents/ledger with attribution | MCP and L7 events per tool call; ledger/document history |
-| A2 | Default-deny egress via proxies; credentials only as endpoint-bound placeholders (fail-closed); read-only rootfs and declared volumes; Landlock/filesystem policy; monitor and policy outside the sandbox | `credential_endpoint_mismatch` findings; denied-connection events; Tetragon/Falco process/file events |
+| A2 | Default-deny egress via proxies; credentials only as endpoint-bound placeholders (fail-closed); read-only rootfs and declared volumes (deferred, D48); Landlock/filesystem policy; monitor and policy outside the sandbox | `credential_endpoint_mismatch` findings; denied-connection events; Tetragon/Falco process/file events |
 | A3 | Agent text never authorizes anything; policy advisor with auto-approval off; prover flags new credentialed reach (at v0.1.3 it cannot check policies that use middleware or MCP endpoints, so for those the compiler and orchestrator check); approval prompts built from observed facts; re-authentication for policy widening and credential changes (D54); local policy ceiling per pool | Pending-decision log; prover findings |
 | A4 | CPU/memory/PID/disk/wall-time limits from the policy file; per-project quotas; LiteLLM virtual-key spend limits (D61); escalation for credit-spending MCP tools | Quota and spend alerts |
-| T1 | Mirror-only package egress; lockfiles; rebuild-from-lockfile | Mirror logs; install-phase correlation |
+| T1 | Package egress only through the package cache (D71); lockfiles; rebuild-from-lockfile | Package cache logs; install-phase correlation |
 | T4 | Tier 3 isolation; no Z1/Z2 credentials in the sandbox; everything an executor reports is checked, including for the shared-data sync (D79): its digests are never paths, content is kept only if it hashes to its digest, each project has its own blob store, an environment is synced for one project only, and each step has time and byte budgets ([worker](WORKER.md#shared-data-across-environments)) | Runtime security events |
 | T5 | Per-pool local policy ceiling; local enrollment needs local user action | Local audit log of remote commands |
 | T2 | Same as A1–A3; source content is data, not instructions | Content guard flags instruction-like text |
