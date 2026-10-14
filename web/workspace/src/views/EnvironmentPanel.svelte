@@ -221,7 +221,7 @@
                 <dl class="facts">{#each Object.entries(row.package) as [field, value]}<dt>{field}</dt><dd class="record-text">{value ?? 'unknown'}</dd>{/each}</dl>
               </article>
             {/each}
-            <p class="muted">Conda licenses are declared metadata with the existing AGPL heuristic. Pip licenses remain unknown. Recorded packages do not certify installed files, complete guest inventory, scientific correctness, licensing or permission.</p>
+            <p class="muted">Conda and pip licenses are declared metadata with the existing AGPL heuristic. Missing declarations remain unknown. Recorded packages do not certify installed files, complete guest inventory, scientific correctness, licensing or permission.</p>
             <div class="page-controls"><button disabled={busy || signedOut || detail.phase !== 'observed' || !packageOffsets.length} onclick={previousPackages}>Previous packages</button>
               <button disabled={busy || signedOut || detail.phase !== 'observed' || packages.next_offset === null} onclick={nextPackages}>Next packages</button></div>
           {/if}
@@ -252,7 +252,7 @@
                 {/each}</div>
               </article>
             {/each}
-            <p class="muted">Conda licenses are declared metadata with the existing AGPL heuristic. Pip licenses remain unknown. Membership and metadata differences do not certify installed files, scientific correctness, licensing or permission.</p>
+            <p class="muted">Conda and pip licenses are declared metadata with the existing AGPL heuristic. Missing declarations remain unknown. Membership and metadata differences do not certify installed files, scientific correctness, licensing or permission.</p>
             <div class="page-controls"><button disabled={busy || signedOut || detail.phase !== 'observed' || !diffOffsets.length} onclick={previousComparison}>Previous differences</button>
               <button disabled={busy || signedOut || detail.phase !== 'observed' || comparison.next_offset === null} onclick={nextComparison}>Next differences</button></div>
           {/if}
