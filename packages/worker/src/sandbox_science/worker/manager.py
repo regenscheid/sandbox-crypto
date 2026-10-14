@@ -99,6 +99,7 @@ from .artifacts import Blobs, BlobWriter
 from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import ExecutorRefusalError, WorkerError
+from .identity import execution_digest, same_execution
 from .isolation import probe
 from .kernel_revisions import KernelBirth
 from .output_observations import normalize as normalize_observation
@@ -150,6 +151,13 @@ _EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
 class _DaemonIncarnationError(WorkerError):
     def __init__(self) -> None:
         super().__init__(ErrorKind.UNAVAILABLE, "the sandbox executor incarnation was lost")
+
+
+def _time_limit(request: ExecutionRequest) -> float:
+    """The request's time limit; a job's comes from the policy at submission when unset."""
+    if request.timeout_seconds is None:
+        raise WorkerError(ErrorKind.INTERNAL, "the job's time limit was never resolved")
+    return request.timeout_seconds
 
 
 def _integer(value: object, low: int = -(2**31), high: int = 2**31 - 1) -> int | None:
@@ -380,8 +388,7 @@ class ExecutionManager:
             or saved is None
             or saved[0] != request.context
             or saved[1] is ProvisionState.FINISHED
-            or self.store.provision_step(origin, request.operation_id)
-            != hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+            or not same_execution(self.store.provision_step(origin, request.operation_id), request)
             or not request.operation_id.startswith(origin + ".")
             or re.fullmatch(r"[a-z][a-z0-9-]{0,95}", request.operation_id[len(origin) + 1 :])
             is None
@@ -570,7 +577,7 @@ class ExecutionManager:
                     self.clock.now() - (live.execution.started_at or live.execution.submitted_at)
                 ).total_seconds(),
             )
-            live.watchdog = self._spawn(self._watch(live, request.timeout_seconds - elapsed))
+            live.watchdog = self._spawn(self._watch(live, _time_limit(request) - elapsed))
 
     async def _recover_once(self, environment_id: str, *, startup: bool) -> bool:
         """One recovery attempt; whether it reached the daemon or found the sandbox gone."""
@@ -1388,16 +1395,11 @@ class ExecutionManager:
         """
         if self._closing:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the worker is closing")
-        encoded = request.model_dump_json()
-        if isinstance(request, JobRequest):
-            # Omitting a timeout selects policy defaults; explicitly requesting 24h does
-            # not. Keep the original semantic request stable across policy changes.
-            encoded += ":explicit_timeout=" + str("timeout_seconds" in request.model_fields_set)
-        digest = hashlib.sha256(encoded.encode()).hexdigest()
+        digest = execution_digest(request)
         found = self.store.find_operation(request.context.project_id, request.operation_id)
         if found is not None:
             execution_id, existing = found
-            if existing != digest:
+            if not same_execution(existing, request):
                 raise WorkerError(
                     ErrorKind.CONFLICT,
                     f"operation {request.operation_id} was submitted with a different request",
@@ -1440,11 +1442,7 @@ class ExecutionManager:
                 if resources.job_wall_time_default
                 else 86400.0,
             )
-            timeout = (
-                request.timeout_seconds
-                if "timeout_seconds" in request.model_fields_set
-                else default
-            )
+            timeout = request.timeout_seconds if request.timeout_seconds is not None else default
             if timeout > maximum:
                 raise WorkerError(
                     ErrorKind.POLICY_DENIED,
@@ -1562,7 +1560,7 @@ class ExecutionManager:
         fields: dict[str, Any] = {
             "execution": execution_id,
             "session": request.context.session_id,
-            "timeout": request.timeout_seconds,
+            "timeout": _time_limit(request),
             "limit": request.output_limit_bytes,
         }
         if isinstance(request, ShellRequest | JobRequest):
@@ -1624,7 +1622,7 @@ class ExecutionManager:
         self.store.observation_dispatch(
             live.execution, channel.incarnation, identity, daemon=channel.daemon_token is not None
         )
-        live.watchdog = self._spawn(self._watch(live, request.timeout_seconds))
+        live.watchdog = self._spawn(self._watch(live, _time_limit(request)))
         await channel.request(request.kind, **fields)
         if channel.daemon_token is not None:
             self._poll(request.context.environment_id, channel)

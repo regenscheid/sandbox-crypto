@@ -16,10 +16,10 @@ copied unknown action values before request encoding or replay. Pip upgrades,
 uninstalls and revision restoration are not built. Download approvals are never
 used as authority to delete.
 
-Legacy requests still mean install. Their canonical JSON and request digest stay
-byte-for-byte unchanged: the `install` action is omitted when serialized, including
-when explicitly supplied. An explicit upgrade action is serialized and belongs to
-the original operation digest. Reusing an operation ID with another action conflicts;
+A request without an action means install. An explicit `install` is the same request,
+with the same [request digest](COMPATIBILITY.md#request-identity), since the digest leaves
+out fields at their defaults. An upgrade action belongs to the operation's digest.
+Reusing an operation ID with another action conflicts;
 an exact terminal replay returns the original record without another installer.
 Unknown/null actions at the provisioning request API never silently default to install.
 

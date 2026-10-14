@@ -35,6 +35,7 @@ from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import fake_worker_app
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
@@ -448,7 +449,7 @@ async def test_hostile_http_transfer_boundaries(case: str) -> None:
     async def destination(request: web.Request):
         raise AssertionError("redirect must not be followed")
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_get("/v1/artifacts/{id}/content", content)
     app.router.add_get("/destination", destination)
     app.router.add_post("/v1/artifacts", publish)
@@ -482,7 +483,7 @@ async def test_transfer_total_deadline_and_size_refusal_before_network() -> None
             await response.write(b"b")
         return response
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_get("/v1/artifacts/{id}/content", content)
     async with (
         TestServer(app) as server,

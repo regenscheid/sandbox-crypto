@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelObservation
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace import kernels
 from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
@@ -200,7 +201,7 @@ async def test_real_worker_client_http_composition(
         redirected.append(True)
         return web.json_response({})
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_post("/v1/kernels/observe", peer)
     app.router.add_post("/stolen", stolen)
     server = await aiohttp_server(app)

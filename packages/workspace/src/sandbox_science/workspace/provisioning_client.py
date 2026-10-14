@@ -16,7 +16,12 @@ from pydantic import BaseModel, ValidationError
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
-from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.orchestrator.worker_client import (
+    PROTOCOL,
+    WorkerAPIError,
+    WorkerClient,
+    check_protocol,
+)
 
 from .api import TIMEOUTS, Timeouts
 
@@ -63,12 +68,13 @@ class ProvisionObserver:
             async with self.binding.session.get(
                 self.binding.base_url + path,
                 params=params,
-                headers=dict(self.binding.headers),
+                headers={**dict(self.binding.headers), **PROTOCOL},
                 allow_redirects=False,
                 auto_decompress=False,
                 read_bufsize=8192,
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as response:
+                check_protocol(response)
                 # A claimed length is only an early refusal, never a substitute
                 # for the independent streaming byte and chunk counters.
                 if response.content_length is not None and response.content_length > MAX_BYTES:

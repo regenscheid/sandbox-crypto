@@ -30,6 +30,7 @@ from sandbox_science.orchestrator.model import ToolCall
 from sandbox_science.orchestrator.provision import PROVISION, ProvisionTools
 from sandbox_science.orchestrator.tools import Toolbox, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import fake_worker_app
 
 pytestmark = pytest.mark.asyncio
 
@@ -155,8 +156,8 @@ async def test_main_provision_offers_and_forwards_only_explicit_upgrade(action: 
         assert json.loads(outcome.text)["action"] == "upgrade"
         assert json.loads(outcome.text)["asked_for"] == "upgrade fpylll"
     else:
-        # Literal historical encoder bytes; optional action must not change install replay.
-        assert request.model_dump_json() == (
+        # An install is the same request as one written before the action existed.
+        assert request == ProvisionRequest.model_validate_json(
             '{"operation_id":"upgrade-tool-test","context":{"project_id":"p1",'
             '"session_id":"s1","environment_id":"env1","policy_revision":null,'
             '"actor":"agent"},"purpose":"synthetic","capability":null,'
@@ -407,7 +408,7 @@ async def worker() -> AsyncIterator[tuple[TestServer, list[tuple[str, str, dict[
             content_type="application/json",
         )
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_route("*", "/{tail:.*}", answer)
     server = TestServer(app)
     await server.start_server()

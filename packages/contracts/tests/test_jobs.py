@@ -23,8 +23,11 @@ def test_job_request_discriminator_and_defaults() -> None:
         }
     )
     assert isinstance(request, JobRequest)
-    assert request.timeout_seconds == 86400
+    assert request.timeout_seconds is None  # the policy's default, chosen by the worker
     assert not request.wake_session
+    # The policy default survives a round trip; it never turns into an explicit limit.
+    assert JobRequest.model_validate(request.model_dump()).timeout_seconds is None
+    assert JobRequest.model_validate_json(request.model_dump_json()).timeout_seconds is None
 
 
 @pytest.mark.parametrize(

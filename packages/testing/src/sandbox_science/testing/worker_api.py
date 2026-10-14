@@ -10,12 +10,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Iterable, Mapping
 from typing import Any
 
 import aiohttp
+from aiohttp import web
+from aiohttp.typedefs import Middleware
 
-from sandbox_science.contracts.worker import MAX_EVENT_BYTES
+from sandbox_science.contracts.worker import MAX_EVENT_BYTES, PROTOCOL_HEADER, PROTOCOL_VERSION
 
 from .waiting import eventually
 
@@ -25,6 +27,18 @@ Json = dict[str, Any]
 def _expect(status: int, allowed: tuple[int, ...], body: object) -> None:
     if status not in allowed:
         raise AssertionError(f"HTTP {status}: {body}")
+
+
+def fake_worker_app(*, middlewares: Iterable[Middleware] = ()) -> web.Application:
+    """An empty application for a test's fake worker: its responses name the protocol
+    version, as a real worker's do, so the clients' version check passes."""
+
+    async def speak(request: web.Request, response: web.StreamResponse) -> None:
+        response.headers[PROTOCOL_HEADER] = str(PROTOCOL_VERSION)
+
+    app = web.Application(middlewares=middlewares)
+    app.on_response_prepare.append(speak)
+    return app
 
 
 class WorkerApi:
@@ -40,7 +54,7 @@ class WorkerApi:
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"}
+        return {"Authorization": f"Bearer {self.token}", PROTOCOL_HEADER: str(PROTOCOL_VERSION)}
 
     async def post(self, path: str, body: Mapping[str, Any]) -> tuple[int, Json]:
         async with self.http.post(self.url + path, json=body, headers=self.headers) as response:

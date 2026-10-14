@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.model import Message, ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import fake_worker_app
 
 AGENT = Author(kind="agent", session_id="a", run_id="run-a", role="main", model="scripted")
 TEXT = (
@@ -566,7 +567,7 @@ async def test_ld_f8_user_request_scripted_reply_and_worker_policy_boundary(
             status=403,
         )
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_post("/v1/executions", submit)
     async with (
         TestServer(app) as server,

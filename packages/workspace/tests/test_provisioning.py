@@ -14,8 +14,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts.provision_observations import ProvisionObservation
+from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace import provisioning, provisioning_client
 from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
@@ -237,7 +241,7 @@ async def create(
     login: bool = True,
     timeouts: Timeouts = TIMEOUTS,
 ) -> tuple[TestClient[Any, Any], WorkerClient, str]:
-    application = web.Application()
+    application = fake_worker_app()
     application.router.add_get("/v1/{tail:.*}", peer.handle)
     server = await aiohttp_server(application)
     worker = WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-provisioning-peer")
@@ -502,3 +506,32 @@ async def test_raw_duplicate_scope_and_policy_action_refuse_before_normalization
     assert response.headers["Cache-Control"] == "no-store"
     assert "files" not in await response.json()
     assert len(peer.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_observer_refuses_a_worker_of_another_protocol_version(
+    aiohttp_server: ServerFactory,
+) -> None:
+    seen: list[str | None] = []
+
+    async def answer(request: web.Request) -> web.Response:
+        seen.append(request.headers.get(PROTOCOL_HEADER))
+        return web.json_response({}, headers={PROTOCOL_HEADER: str(PROTOCOL_VERSION + 1)})
+
+    application = web.Application()
+    application.router.add_get("/v1/{tail:.*}", answer)
+    server = await aiohttp_server(application)
+    worker = WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-protocol-peer")
+    try:
+        observer = provisioning_client.ProvisionObserver(worker)
+        with pytest.raises(WorkerAPIError) as error:
+            await observer.get(
+                "/v1/environments/env1/provisioning/observations",
+                {"project_id": "p1"},
+                ProvisionObservation,
+            )
+        assert error.value.kind is ErrorKind.UNSUPPORTED
+        assert "version mismatch" in error.value.message
+        assert seen == [str(PROTOCOL_VERSION)]
+    finally:
+        await worker.close()
