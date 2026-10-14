@@ -1,11 +1,14 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { untrack } from 'svelte';
-  import { api, type CommentThread, type CommentEntry, type Session } from '../lib/api';
+  import { api, type CommentEntry, type CommentThread, type Session } from '../lib/api';
   import { describeAuthor } from '../lib/authors';
+  import { afterPost, EarlierEntries, threadChange, threadEntries } from '../lib/commentThreads';
   import { replyDrafts } from '../lib/drafts';
   import { guardedWrite } from '../lib/mutation';
   import type { MacroSet } from '../lib/macros';
+  import { emptyList } from '../lib/pagedList';
+  import { idle, submit } from '../lib/submit';
   import Markdown from '../lib/Markdown.svelte';
   import { documentHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
@@ -27,81 +30,64 @@
   } = $props();
   const initial = untrack(() => thread);
   const draftScope = untrack(() => `${projectId}:${documentId}:${initial.thread_id}`);
-  const draft = replyDrafts.load(draftScope).draft;
-  let body = $state(draft?.body ?? '');
-  let expected = $state(draft?.expected ?? initial.revision);
-  let session = $state(draft?.session ?? '');
-  let mode = $state<'reply' | 'edit'>(draft?.mode ?? 'reply');
-  let busy = $state(false);
-  let error = $state<unknown>(null);
+  let draft = $state(
+    replyDrafts.load(draftScope).draft ?? {
+      expected: initial.revision,
+      body: '',
+      mode: 'reply' as const,
+      session: '',
+    },
+  );
+  const posting = $state(idle());
+  const read = $state(emptyList<CommentEntry[], number>());
+  const earlier = new EarlierEntries(
+    read,
+    () => thread,
+    (before) => api.commentThread(projectId, documentId, thread.thread_id, before),
+  );
   let persisted = $state(true);
-  let older = $state<CommentEntry[]>([]);
-  let before = $state(initial.entries_before);
-  let historyRevision = $state(initial.revision);
+  let historyRevision = initial.revision;
+  const busy = $derived(posting.busy || read.loading);
+  const error = $derived(posting.error ?? read.error);
   $effect(() => {
+    // A new thread revision starts the earlier entries again.
     if (thread.revision !== historyRevision) {
-      older = [];
-      before = thread.entries_before;
+      earlier.reset();
       historyRevision = thread.revision;
     }
   });
   $effect(() => {
-    if (body) persisted = replyDrafts.save(draftScope, { expected, body, mode, session });
+    if (draft.body) persisted = replyDrafts.save(draftScope, $state.snapshot(draft));
     else {
       replyDrafts.clear(draftScope);
-      expected = thread.revision;
+      draft.expected = thread.revision;
     }
   });
   async function mutate(action: string) {
-    busy = true;
-    error = null;
-    try {
-      const writing = action === 'reply' || action === 'edit';
-      const change = {
-        action,
-        thread: thread.thread_id,
-        expected: writing ? expected : thread.revision,
-        ...(writing ? { body, ...(session ? { addressed_to: session } : {}) } : {}),
-      };
-      const result = await guardedWrite('comment', `${projectId}:${documentId}`, change, (sent) =>
-        api.changeComment(projectId, documentId, sent),
+    await submit(posting, async () => {
+      const result = await guardedWrite(
+        'comment',
+        `${projectId}:${documentId}`,
+        threadChange(action, thread, draft),
+        (sent) => api.changeComment(projectId, documentId, sent),
       );
-      if (writing) {
-        body = '';
-        expected = result.revision;
+      if (action === 'reply' || action === 'edit') {
+        draft = afterPost(draft, result);
         replyDrafts.clear(draftScope);
       }
       await changed();
-    } catch (caught) {
-      error = caught;
-    } finally {
-      busy = false;
-    }
-  }
-  async function history() {
-    busy = true;
-    try {
-      const head = thread.revision;
-      const result = await api.commentThread(projectId, documentId, thread.thread_id, before);
-      if (head !== thread.revision) return;
-      older = [...result.entries, ...older];
-      before = result.entries_before;
-    } catch (caught) {
-      error = caught;
-    } finally {
-      busy = false;
-    }
+    });
   }
   function discard() {
-    body = '';
-    expected = thread.revision;
+    draft.body = '';
+    draft.expected = thread.revision;
     replyDrafts.clear(draftScope);
   }
 </script>
 
 <svelte:window
   onbeforeunload={(event) => {
-    if (body && !persisted) event.preventDefault();
+    if (draft.body && !persisted) event.preventDefault();
   }}
 />
 <article class="thread">
@@ -128,8 +114,10 @@
     {#if thread.attachment.status === 'stale'}<h4>Current text (bounded excerpt)</h4>
       <pre>{thread.attachment.current}</pre>{/if}
   </details>
-  {#if before}<button disabled={busy} onclick={history}>Load earlier thread entries</button>{/if}
-  {#each [...older, ...thread.entries].filter((entry, index, all) => all.findIndex((item) => item.entry_id === entry.entry_id) === index) as entry (entry.entry_id)}
+  {#if earlier.available(thread)}<button disabled={busy} onclick={() => earlier.read()}
+      >Load earlier thread entries</button
+    >{/if}
+  {#each threadEntries(earlier.entries(), thread.entries) as entry (entry.entry_id)}
     <div class="entry">
       <p class="muted">
         {entry.number} · {entry.kind} · {describeAuthor(entry.author)} · {new Date(
@@ -194,35 +182,35 @@
     <summary>Reply{thread.opener.kind === 'user' ? ' or edit your opening comment' : ''}</summary>
     <fieldset disabled={busy}>
       <label
-        >Action <select bind:value={mode}
+        >Action <select bind:value={draft.mode}
           ><option value="reply">Reply</option>{#if thread.opener.kind === 'user'}<option
               value="edit">Append an edit to your opening comment</option
             >{/if}</select
         ></label
       >
       <p>
-        Based on thread revision {expected}. {#if expected !== thread.revision}<button
-            onclick={() => (expected = thread.revision)}>Use current thread revision</button
+        Based on thread revision {draft.expected}. {#if draft.expected !== thread.revision}<button
+            onclick={() => (draft.expected = thread.revision)}>Use current thread revision</button
           > Your draft is retained.{/if}
       </p>
       <label
         >Reply Markdown<textarea
           aria-label={`Reply ${thread.thread_id}`}
-          bind:value={body}
+          bind:value={draft.body}
           maxlength="8192"
           rows="4"></textarea></label
       >
       <label
-        >Address to main agent <select bind:value={session}
+        >Address to main agent <select bind:value={draft.session}
           ><option value="">No work request</option
           >{#each sessions as item (item.session_id)}<option value={item.session_id}
               >{item.session_id}</option
             >{/each}</select
         ></label
       >
-      <button disabled={!body.trim()} onclick={() => mutate(mode)}>Post {mode}</button><button
-        onclick={discard}>Discard reply draft</button
-      >
+      <button disabled={!draft.body.trim()} onclick={() => mutate(draft.mode)}
+        >Post {draft.mode}</button
+      ><button onclick={discard}>Discard reply draft</button>
     </fieldset>
   </details>
   {#if !persisted}<p role="alert">
