@@ -4,6 +4,12 @@
   "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-three OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
+      "path": "agent-reports/pip-lockfile-licenses-evidence-2026-10-13.json",
+      "category": "local-validation-evidence",
+      "bytes": 69545,
+      "sha256": "b770106a62c6af0a6dbf88992382db5a9afcbb231d99c358eee019221fb6fc04"
+    },
+    {
       "path": "../../docs/PIP-LOCKFILE-LICENSES.md",
       "category": "implementation-boundary",
       "bytes": 3882,
@@ -192,8 +198,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 32976,
-      "sha256": "0f1bfc2782ebb353094049859764e42c409ee6ac8262b5c0dfd4eb040defcb82"
+      "bytes": 33227,
+      "sha256": "689787b8d82c1e492e5b063fdbd01bd949d124631baac95fd3b2807b62837796"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
