@@ -519,7 +519,7 @@ The worker sends one JSON object per line; each carries an `id` and an `op`. The
 - **Packages:** `lockfile` (the packages' fingerprint and lockfile at that moment, after waiting up to 30 s for a package command).
 - **Shared files' sync:** `shared`, `remove` and `move`.
 
-The [sandbox daemon](#sandbox-daemon-and-recovery) adds `replay`, `active` and `daemon_shutdown`, passes every other operation to its executor, and adds its `daemon_incarnation` to the `hello` reply. An unknown operation is `invalid_request`.
+The [sandbox daemon](#sandbox-daemon-and-recovery) adds `replay`, `latest`, `active` and `daemon_shutdown`, passes every other operation to its executor, and adds its `daemon_incarnation` and `daemon_push` (it pushes events) to the `hello` reply. An unknown operation is `invalid_request`.
 
 - **Lines.** UTF-8 JSON, one object per line. The executor's lines stay under 16 MiB (`MAX_LINE`, the worker's limit too); it reads requests of up to 64 MiB.
 - **Replies.** Each request gets exactly one reply: `{"type": "reply", "id": …, "ok": true, …}`, or `ok: false` with `{"error": {"kind", "message"}}`. The `hello` reply says whether the executor became a subreaper (`subreaper`). A `read` with `"hash": false` leaves out the whole file's SHA-256, for publication's later ranges.
@@ -546,8 +546,21 @@ A lost bridge starts a live recovery of its environment. Each attempt reattaches
 unfinished execution of the environment that no open bridge carries, including one
 whose bridge was lost while the recovery ran. A failed attempt, such as a transient
 gateway failure, is repeated after 0.2 s, doubling up to 30 s, until none is left.
-Events reach the worker only by polling: every 0.1 s, it asks each bridge to `replay`
-the events of the executions it carries after their saved cursors. An unexpected failure
+The daemon pushes each execution's events to the active bridge as they come, marked
+`pushed`, once that bridge has every earlier one, so it never sends an event ahead of a
+gap. A new bridge gets pushes for an execution once a `replay` (up to 32 events a page,
+which the worker asks for again while the daemon says there are `more`, up to 64 pages)
+has brought it to the latest, or from the start for an execution it started itself.
+A push never waits for the bridge: past 1 MiB unsent, the daemon stops pushing and a
+replay brings the rest, so a bridge that stops reading cannot hold up job output or
+deadlines. Every 2 s, the worker asks each bridge for its executions' `latest` event
+numbers, one request for all, and replays those it is behind on; that catches an event
+a push left out, such as one too large for its line or trimmed from the daemon's
+history, which arrives with its gap marked. A pushed event ahead of what the worker
+stored, after one the worker failed to store, starts that pass at once (at most every
+0.1 s); a replayed one ahead loses its execution, since only a broken daemon sends it.
+A daemon from before pushing says nothing of `daemon_push` in its `hello`, and the
+worker replays its executions every 0.1 s, as it did then. An unexpected failure
 while polling or recovering, such as one of the worker's database, is logged, and polling
 or recovery goes on; the poller then waits longer, doubling up to 10 s, while it lasts. Startup tries five times, then refuses readiness
 until remembered live daemons can be reconciled and unknown installers quiesced.

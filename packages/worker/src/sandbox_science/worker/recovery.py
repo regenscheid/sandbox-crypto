@@ -14,6 +14,7 @@ of the manager through ``RecoveryHooks``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import itertools
 import logging
 import re
@@ -37,6 +38,10 @@ _log = logging.getLogger(__name__)
 
 STARTUP_RECOVERY_ATTEMPTS = 5
 """Recovery attempts at startup before the worker refuses to start."""
+REPLAY_PAGES = 64
+"""Pages one replay asks for before it leaves the rest to the next pass."""
+LATEST_BATCH = 256
+"""Executions one ``latest`` request asks about."""
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,8 @@ class DaemonRecovery:
         self.lifecycle = lifecycle
         """Proof of a sandbox's loss, and its recycle, where the worker manages it."""
         self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}
+        self._wakes: dict[ExecutorChannel, asyncio.Event] = {}
+        """Each polled bridge's request for a replay pass now."""
 
     def bridge_lost(self, environment_id: str, channel: ExecutorChannel) -> None:
         """A daemon bridge closed: stop its poller and, unless the worker is closing,
@@ -281,41 +288,97 @@ class DaemonRecovery:
             self.hooks.spawn(self._poll_daemon(environment_id, channel)),
         )
 
+    def replay_now(self, channel: ExecutorChannel) -> None:
+        """Have the bridge's poller replay its executions now rather than after its
+        interval: a pushed event came ahead of one the worker has not stored."""
+        wake = self._wakes.get(channel)
+        if wake is not None:
+            wake.set()
+
+    async def _behind(self, lives: list[Live], channel: ExecutorChannel) -> list[Live]:
+        """Those of ``lives`` whose latest event the worker has not stored, or that the
+        daemon no longer has, asking the daemon about many at once."""
+        behind: list[Live] = []
+        for start in range(0, len(lives), LATEST_BATCH):
+            batch = lives[start : start + LATEST_BATCH]
+            reply = await channel.request(
+                "latest",
+                executions=[live.execution.execution_id for live in batch],
+                reply_timeout=30,
+            )
+            latest = reply.get("latest")
+            latest = cast(dict[str, object], latest) if isinstance(latest, dict) else {}
+            for live in batch:
+                sequence = latest.get(live.execution.execution_id)
+                saved = self.store.recovery(live.execution.execution_id)
+                if type(sequence) is not int or sequence > (saved[2] if saved else 0):
+                    behind.append(live)
+        return behind
+
     async def _replay(self, live: Live, channel: ExecutorChannel) -> None:
-        saved = self.store.recovery(live.execution.execution_id)
-        reply = await channel.request(
-            "replay",
-            execution=live.execution.execution_id,
-            after=saved[2] if saved else 0,
-            reply_timeout=30,
-        )
-        if reply.get("found") is not True and live.execution.state not in TERMINAL_STATES:
-            self.hooks.lose(live, "the executor with no retained execution record")
+        """Replay the execution's events the worker has not stored, a page at a time, until
+        the daemon has none left; from then on it pushes them as they come."""
+        for _ in range(REPLAY_PAGES):
+            saved = self.store.recovery(live.execution.execution_id)
+            reply = await channel.request(
+                "replay",
+                execution=live.execution.execution_id,
+                after=saved[2] if saved else 0,
+                reply_timeout=30,
+            )
+            if reply.get("found") is not True:
+                if live.execution.state not in TERMINAL_STATES:
+                    self.hooks.lose(live, "the executor with no retained execution record")
+                return
+            if reply.get("more") is not True or live.execution.state in TERMINAL_STATES:
+                return
 
     async def _poll_daemon(self, environment_id: str, channel: ExecutorChannel) -> None:
-        """Replay the bridge's executions until it closes.
+        """Replay the bridge's executions now and then, until it closes.
+
+        A daemon that pushes each event as it comes, once the bridge has every earlier
+        one, says so in its ``hello``. This slow pass then catches an event a push left
+        for a replay, such as one past the bridge's high-water mark, and replays only
+        the executions the daemon has more of; ``replay_now`` runs it at once. An older
+        daemon never pushes, and is replayed every ``min_poll_interval``.
 
         A failed bridge is closed, which starts a recovery. Any other failure, such as
         one of the store, is logged and the poller goes on, waiting longer while it lasts.
         """
-        delay = self.timeouts.poll_interval
-        while not self.usability.closing and not channel.closed:
-            try:
-                for live in list(self.hooks.lives()):
-                    if (
-                        live.channel is channel
+        pushes = channel.hello.get("daemon_push") == 1
+        interval = self.timeouts.poll_interval if pushes else self.timeouts.min_poll_interval
+        wake = self._wakes[channel] = asyncio.Event()
+        delay = interval
+        try:
+            while not self.usability.closing and not channel.closed:
+                wake.clear()
+                try:
+                    lives = [
+                        live
+                        for live in self.hooks.lives()
+                        if live.channel is channel
                         and live.execution.state not in TERMINAL_STATES
                         and live.final is None
-                    ):
-                        await self._replay(live, channel)
-                delay = self.timeouts.poll_interval
-            except WorkerError:
-                await channel.close()
-                return
-            except Exception:
-                _log.exception("polling the executor of %s failed", environment_id)
-                delay = min(2 * delay, self.timeouts.poll_retry_max)
-            await asyncio.sleep(delay)
+                    ]
+                    if pushes and lives:
+                        lives = await self._behind(lives, channel)
+                    for live in lives:
+                        if live.execution.state not in TERMINAL_STATES and live.final is None:
+                            await self._replay(live, channel)
+                    delay = interval
+                except WorkerError:
+                    await channel.close()
+                    return
+                except Exception:
+                    _log.exception("polling the executor of %s failed", environment_id)
+                    delay = min(2 * delay, self.timeouts.poll_retry_max)
+                await asyncio.sleep(self.timeouts.min_poll_interval)
+                if delay > self.timeouts.min_poll_interval:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(wake.wait(), delay - self.timeouts.min_poll_interval)
+        finally:
+            if self._wakes.get(channel) is wake:
+                del self._wakes[channel]
 
     async def recycle(self, environment_id: str) -> None:
         """Fence the whole VM, outside the execution lock, before publishing a replacement.

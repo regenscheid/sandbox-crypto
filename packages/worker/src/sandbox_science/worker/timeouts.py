@@ -41,8 +41,12 @@ class ManagerTimeouts:
     """For the executor to send an environment's lockfile."""
     shared: float = 120.0
     """For syncing the project's shared files before or after an execution (D79)."""
-    poll_interval: float = 0.1
-    """Between replays of a daemon's running executions."""
+    poll_interval: float = 2.0
+    """Between replays of a daemon's running executions, which catch an event a push
+    left for a replay; the daemon pushes the others as they come."""
+    min_poll_interval: float = 0.1
+    """The least time between those replays, when one is wanted at once; and the time
+    between them for a daemon that does not push events, one older than this worker."""
     poll_retry_max: float = 10.0
     """The longest wait between replays while they keep failing."""
     recovery_retry: float = 0.2

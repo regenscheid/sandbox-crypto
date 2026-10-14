@@ -422,6 +422,10 @@ class Dispatcher:
                 or isinstance(source_from, bool)
                 or source_from != previous + 1
             ):
+                if message.get("pushed") is True:
+                    # An event before it failed here: a replay brings both again.
+                    self.recovery.replay_now(live.channel)
+                    return
                 self.lose(live, "the executor with an invalid replay range")
                 return
         token = SOURCE_EVENT.set(

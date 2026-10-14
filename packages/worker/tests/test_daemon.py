@@ -9,13 +9,14 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import signal
 import sqlite3
 import sys
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -32,10 +33,11 @@ from sandbox_science.contracts import (
     ShellRequest,
 )
 from sandbox_science.testing import eventually
-from sandbox_science.worker import daemon, executor, sandbox_processes
+from sandbox_science.worker import backends, daemon, executor, sandbox_processes
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, daemon_token
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel
 from sandbox_science.worker.store import Store
+from sandbox_science.worker.timeouts import ManagerTimeouts
 
 from .harness import Harness, running
 
@@ -143,6 +145,177 @@ async def test_bridge_failure_recovers_without_losing_or_restarting_job(worker: 
     assert result.result.stdout.text == "beforeafter"
     recovered_channel = worker.view.channel("env1")
     assert recovered_channel.incarnation == channel.incarnation
+
+
+@pytest.mark.asyncio
+async def test_daemon_pushes_events_before_and_after_a_reconnect(tmp_path: Path) -> None:
+    # The replay pass is a minute away: only the daemon's pushes bring the events in time.
+    timeouts = ManagerTimeouts(poll_interval=60)
+    async with await Harness.start(tmp_path, daemon=True, timeouts=timeouts) as worker:
+        job, _ = await worker.manager.submit(
+            request("pushed", "printf before; " + gated("printf after"))
+        )
+        await running(worker.manager, job.execution_id)
+        await eventually(lambda: worker.store.event_usage(job.execution_id)[1] > 0, timeout=5)
+        open_gate(worker)
+        result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 5)
+        assert result.state is ExecutionState.SUCCEEDED
+        assert result.result is not None
+        assert result.result.stdout is not None
+        assert result.result.stdout.text == "beforeafter"
+
+        # A new bridge replays what it missed, then is pushed the rest.
+        job, _ = await worker.manager.submit(
+            request("replayed", "printf before; " + gated("printf after", "again"))
+        )
+        await running(worker.manager, job.execution_id)
+        # The worker has every event so far, so the new bridge's replay finds none.
+        await eventually(lambda: worker.store.event_usage(job.execution_id)[1] > 0, timeout=5)
+        channel = worker.view.live_channel(job.execution_id)
+        assert channel._process is not None
+        channel._process.kill()
+        await eventually(
+            lambda: worker.view.live(job.execution_id).channel not in (None, channel), timeout=10
+        )
+        open_gate(worker, "again")
+        result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 5)
+        assert result.state is ExecutionState.SUCCEEDED
+        assert result.result is not None
+        assert result.result.stdout is not None
+        assert result.result.stdout.text == "beforeafter"
+
+
+@pytest.mark.asyncio
+async def test_a_daemon_that_does_not_push_is_replayed_as_often_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A daemon from before C-02 still running beside an upgraded worker: it never pushes,
+    # says nothing of ``daemon_push`` and passes ``latest`` on to its executor.
+    old = tmp_path / "old-daemon"
+    old.mkdir()
+    for path in backends.SANDBOX_FILES:
+        shutil.copy(path, old / path.name)
+    source = (old / "daemon.py").read_text()
+    for line, replacement in (
+        (
+            '                reply["daemon_push"] = 1  # it pushes events and answers ``latest``\n',
+            "",
+        ),
+        ("            self.push(execution, history.sequence, data)\n", "            pass\n"),
+    ):
+        assert source.count(line) == 1
+        source = source.replace(line, replacement)
+    (old / "daemon.py").write_text(source)
+    monkeypatch.setattr(backends, "DAEMON_SOURCE", old / "daemon.py")
+    # The replay pass for a daemon that pushes is a minute away.
+    timeouts = ManagerTimeouts(poll_interval=60)
+    async with await Harness.start(tmp_path / "worker", daemon=True, timeouts=timeouts) as worker:
+        channel = None
+        for number in range(3):
+            call, _ = await worker.manager.submit(
+                ShellRequest(operation_id=f"old-{number}", context=CONTEXT, script="printf ok")
+            )
+            result = await asyncio.wait_for(worker.manager.wait(call.execution_id), 10)
+            assert result.state is ExecutionState.SUCCEEDED
+            assert "daemon_push" not in worker.view.channel("env1").hello
+            channel = channel or worker.view.channel("env1")
+        assert worker.view.channel("env1") is channel  # it never sent ``latest``
+
+
+@pytest.mark.asyncio
+async def test_an_event_that_failed_here_is_replayed_rather_than_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timeouts = ManagerTimeouts(poll_interval=60)  # only an immediate replay is in time
+    async with await Harness.start(tmp_path, daemon=True, timeouts=timeouts) as worker:
+        failed: list[object] = []
+
+        def flaky(original: Any, live: Any, environment_id: str, message: Any) -> None:
+            if message.get("event") == "stream" and not failed:
+                failed.append(message.get("source_seq"))
+                raise RuntimeError("a transient store failure")
+            original(live, environment_id, message)
+
+        worker.view.wrap_apply(monkeypatch, flaky)
+        job, _ = await worker.manager.submit(
+            request("flaky", "printf one; " + gated("printf two; sleep 0.2; printf three"))
+        )
+        await running(worker.manager, job.execution_id)
+        await eventually(lambda: failed, timeout=5)
+        # The next pushed event is ahead of what the worker stored: it replays both.
+        open_gate(worker)
+        result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
+        assert result.state is ExecutionState.SUCCEEDED
+        streamed = [
+            event.text
+            for event in worker.store.events_after(job.execution_id, 0)
+            if event.type == "stream"
+        ]
+        assert "".join(streamed) == "onetwothree"
+
+
+@pytest.mark.parametrize("pushed", [True, False])
+@pytest.mark.asyncio
+async def test_an_event_ahead_is_replayed_if_pushed_and_loses_if_replayed(
+    worker: Harness, pushed: bool
+) -> None:
+    job, _ = await worker.manager.submit(request("ahead", gated("printf done")))
+    await running(worker.manager, job.execution_id)
+    channel = worker.view.live_channel(job.execution_id)
+    await worker.view.deliver(
+        "env1",
+        {
+            "type": "event",
+            "execution": job.execution_id,
+            "event": "stream",
+            "name": "stdout",
+            "text": "ahead",
+            "source_seq": 1000,
+            "_bridge": channel.bridge_id,
+            **({"pushed": True} if pushed else {}),
+        },
+    )
+    open_gate(worker)
+    result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
+    if not pushed:
+        assert result.state is ExecutionState.LOST
+        return
+    assert result.state is ExecutionState.SUCCEEDED
+    assert all(
+        event.text != "ahead"
+        for event in worker.store.events_after(job.execution_id, 0)
+        if event.type == "stream"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_replay_pass_asks_only_for_executions_the_worker_is_behind_on(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timeouts = ManagerTimeouts(poll_interval=0.05, min_poll_interval=0.01)
+    async with await Harness.start(tmp_path, daemon=True, timeouts=timeouts) as worker:
+        jobs = [
+            (await worker.manager.submit(request(f"quiet-{number}", gated("printf done"))))[0]
+            for number in range(3)
+        ]
+        for job in jobs:
+            await running(worker.manager, job.execution_id)
+        channel = worker.view.live_channel(jobs[0].execution_id)
+        original = channel.request
+        ops: list[str] = []
+
+        async def counted(op: str, **fields: Any) -> dict[str, Any]:
+            ops.append(op)
+            return await original(op, **fields)
+
+        monkeypatch.setattr(channel, "request", counted)
+        # Every event was pushed: each pass is one ``latest`` and no replay.
+        await eventually(lambda: ops.count("latest") >= 5, timeout=10)
+        assert "replay" not in ops
+        open_gate(worker)
+        for job in jobs:
+            result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
+            assert result.state is ExecutionState.SUCCEEDED
 
 
 @pytest.mark.asyncio
@@ -254,8 +427,14 @@ async def test_daemon_incarnation_loss_reaps_escaped_children(worker: Harness) -
         request("incarnation", "setsid sleep 60 </dev/null >/dev/null 2>&1 & echo $! > child; wait")
     )
     await running(worker.manager, job.execution_id)
-    data = await worker.manager.read_file(ReadFileRequest(context=CONTEXT, path="child"))
-    child = int(base64.b64decode(data.content_b64))
+    # Changed by C-02: the job is running at once now, maybe before it wrote ``child``.
+    marker = worker.workspace / "child"
+
+    def child_pid() -> int | None:
+        text = marker.read_text() if marker.is_file() else ""
+        return int(text) if text.endswith("\n") else None
+
+    child = await eventually(child_pid, timeout=10)
     channel = worker.view.live_channel(job.execution_id)
     os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
@@ -519,6 +698,15 @@ async def raw_request(writer: asyncio.StreamWriter, number: int, **fields: Any) 
     await writer.drain()
 
 
+async def next_reply(reader: asyncio.StreamReader) -> dict[str, Any]:
+    """The next line that is not an event: the daemon pushes each execution's events to
+    the bridge that started it as they come (C-02), between its replies."""
+    while True:
+        message = json.loads(await asyncio.wait_for(reader.readline(), 3))
+        if message.get("type") != "event":
+            return message
+
+
 @pytest.mark.asyncio
 async def test_synchronous_admission_caps_buffered_burst(
     server: daemon.Daemon, monkeypatch: pytest.MonkeyPatch
@@ -535,7 +723,8 @@ async def test_synchronous_admission_caps_buffered_burst(
             script="sleep 60",
             timeout=100,
         )
-    replies = [json.loads(await asyncio.wait_for(reader.readline(), 3)) for _ in range(6)]
+    # Changed by C-02: pushed events come between the replies.
+    replies = [await next_reply(reader) for _ in range(6)]
     assert sum(reply.get("ok") is True for reply in replies) == 2
     assert sum(not item.ended for item in server.history.values()) == 2
     writer.close()
@@ -558,7 +747,8 @@ async def test_rejected_admissions_are_bounded_and_replay_terminal_outcome(
             cwd="missing",
             script="true",
         )
-    replies = [json.loads(await asyncio.wait_for(reader.readline(), 3)) for _ in range(6)]
+    # Changed by C-02: pushed events come between the replies.
+    replies = [await next_reply(reader) for _ in range(6)]
     assert all(reply.get("ok") is False for reply in replies)
     assert len(server.history) <= 4
     assert all(item.ended for item in server.history.values())
@@ -590,6 +780,64 @@ async def test_rejected_reply_lost_at_detach_still_has_terminal_record(
     assert json.loads(await reader.readline())["ended"] is True
     writer.close()
     await writer.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_ends_by_its_reply_and_keeps_its_end_for_a_replay(
+    server: daemon.Daemon,
+) -> None:
+    reader, writer = await daemon.connect(server.token, server.root)
+    execution = "exe-" + "d" * 24
+    try:
+        await raw_request(
+            writer, 1, op="shell", execution=execution, session="s1", cwd="missing", script="true"
+        )
+        # The reply ends it: no end event is pushed ahead of it.
+        reply = json.loads(await asyncio.wait_for(reader.readline(), 3))
+        assert reply["type"] == "reply"
+        assert reply["ok"] is False
+        await raw_request(writer, 2, op="replay", execution=execution, after=0)
+        end = json.loads(await asyncio.wait_for(reader.readline(), 3))
+        assert end["event"] == "end"
+        assert "pushed" not in end
+        assert json.loads(await reader.readline())["ended"] is True
+    finally:
+        writer.transport.abort()
+
+
+@pytest.mark.asyncio
+async def test_a_push_never_waits_for_a_bridge_that_stops_reading(server: daemon.Daemon) -> None:
+    reader, writer = await daemon.connect(server.token, server.root)
+    execution = "exe-" + "c" * 24
+    try:
+        await raw_request(
+            writer, 1, op="shell", execution=execution, session="s1", script="sleep 30", timeout=60
+        )
+        assert (await next_reply(reader))["ok"] is True
+        transport = cast(asyncio.Transport, writer.transport)
+        transport.pause_reading()  # a bridge that stops reading
+        for _ in range(200):
+            # The executor's output and deadlines go on whatever the bridge does.
+            await asyncio.wait_for(
+                server.send(
+                    {
+                        "type": "event",
+                        "execution": execution,
+                        "event": "stream",
+                        "name": "stdout",
+                        "text": "x" * 60000,
+                    }
+                ),
+                1,
+            )
+        # Past the high-water mark it stopped pushing; a replay brings the rest.
+        assert server.delivered[execution] < server.history[execution].sequence
+        transport.resume_reading()
+        await raw_request(writer, 2, op="latest", executions=[execution, "exe-" + "e" * 24])
+        latest = await next_reply(reader)
+        assert latest["latest"] == {execution: server.history[execution].sequence}
+    finally:
+        writer.transport.abort()
 
 
 @pytest.mark.asyncio
@@ -658,7 +906,8 @@ async def test_rollover_pins_same_attempt_and_reports_explicit_omission(
         if message.get("type") == "reply":
             break
     assert messages[0]["source_seq"] == 1
-    assert any("omitted while disconnected" in message.get("text", "") for message in messages)
+    # Changed by C-02: a gap is not only from a disconnect now.
+    assert any("output chunks omitted" in message.get("text", "") for message in messages)
     assert any(message.get("event") == "end" for message in messages)
     assert messages[-1]["found"] is True
     assert messages[-1]["ended"] is True
@@ -777,7 +1026,8 @@ async def test_offline_rollover_preserves_full_log_and_same_attempt(worker: Harn
     )
     assert base64.b64decode(log.content_b64) == b"z" * 3_000_000
     assert any(
-        event.type == "stream" and "omitted while disconnected" in event.text
+        # Changed by C-02: a gap is not only from a disconnect now.
+        event.type == "stream" and "output chunks omitted" in event.text
         for event in worker.store.events_after(job.execution_id, 0)
     )
 
