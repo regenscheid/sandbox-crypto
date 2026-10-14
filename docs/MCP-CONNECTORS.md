@@ -7,7 +7,7 @@ Confirmed: D64, and D66 and D67 with the design this page proposes. The MCP prox
 - `Authorization` and custom-header authentication should also be supported.
 - A secrets manager should keep raw credentials away from agents.
 
-**crypto-research-mcp uses a Cloudflare Access service token, not OAuth** (agreed by the owner, 2026-10-14). It is a `headers` server: its two header values reference two credentials of one OpenShell provider, which the owner creates. No secret passes through an agent, the harness or this repository ([below](#crypto-research-mcp-a-cloudflare-access-service-token)). The connector auth service and the OAuth flow stay the design for later OAuth servers, off M2's path.
+**crypto-research-mcp uses a Cloudflare Access service token, not OAuth** (agreed by the owner, 2026-10-14). It is a `headers` server: its two header values reference two credentials of one OpenShell provider, which the owner creates. No secret passes through an agent, the harness or this repository ([below](#crypto-research-mcp-a-cloudflare-access-service-token)). The connector auth service and the OAuth flow stay the design for later OAuth servers, off M2's path, unless the server also needs its own OAuth bearer behind Access ([question 6](#the-harness-mcp-client-decisions-d-08)).
 
 Sources: the [MCP authorization specification, 2025-11-25](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/basic/authorization.mdx) and the OpenShell v0.1.3 [providers](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx) and [profiles](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/profiles.mdx) documentation. The MCP proxy is tested against a fake server, and it and its compiled policy were run under OpenShell on babbage (labs 2, 13, 15 and 17). The connector auth service, the OAuth flow and the checks for the spike below are not built or tested, and nothing has called crypto-research-mcp with the service token yet.
 
@@ -279,16 +279,16 @@ The policy compiler binds the server's endpoint to that one provider (`credentia
 
 **Checked on babbage, 2026-10-14:** the `openshell provider create`, `update` and `profile` commands and flags above, from the installed 0.1.3's `--help`; no provider, profile or sandbox was created. The profile's fields follow OpenShell 0.1.3's profile documentation (`auth_style: header` with `header_name`); its `lint` needs the gateway and has not run. Not checked: a request through Access with a service token, which needs the owner's token.
 
-### What the harness MCP client still needs decided (D-08)
+### The harness MCP client: decisions (D-08)
 
-The proxy side is built; the orchestrator calls no MCP server. Before the harness's client is built:
+The proxy side is built; the orchestrator calls no MCP server yet. Decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, except question 6:
 
-1. **How agents see connector tools.** *Recommended:* the proxy's tools of each server the project's policy allows, listed at a run's start, offered to MAIN under their prefixed names, with their effect class `effect` unless the policy marks them read-only, so the plan fence applies.
-2. **The orchestrator's proxy token.** Today an operator writes caller tokens into the proxy's settings. *Recommended:* the orchestrator's token goes in a file only the harness reads, like the worker token, until callers are identified by the platform (backlog).
-3. **Escalated tools.** An escalated call returns `approval_required` and waits for `sandbox-science-mcp-proxy approve`; approved tools are not compiled into the proxy's fence yet, so an approval cannot take effect (above). *Recommended:* compile approved tools into the fence before agents use escalated tools, or deny escalated tools to agents until then.
-4. **Results.** Binary results are withheld; large text results are bounded. *Recommended:* text results bounded as tool results are now; binary results as artifact references once that is built.
-5. **A product command for the proxy's sandbox**, replacing the lab script and the manual steps above (D-08, step 3).
-6. **Whether the origin accepts Access alone.** If crypto-research-mcp also checks its own OAuth bearer behind Access, the service token is not enough; the owner confirms the origin trusts Access (for instance by its `Cf-Access-Jwt-Assertion`) before the first call.
+1. **How agents see connector tools.** *Decided, as recommended:* the proxy's tools of each server the project's policy allows, listed at a run's start, offered to MAIN under their prefixed names, with the effect class `effect` unless the policy marks them read-only, so the plan fence applies.
+2. **The orchestrator's proxy token.** *Decided, as recommended:* the orchestrator's token goes in a file only the harness reads, like the worker token, until callers are identified by the platform (backlog).
+3. **Escalated tools.** *Decided:* through the proxy's existing escalation path. An escalated call is refused with `approval_required` and recorded as a permission request; the operator answers with `sandbox-science-mcp-proxy pending` and `approve` or `deny` (owner decision 1: approvals through the CLI for M2), and the agent sees the refusal until then, as for any other escalation, and calls again. For an approval to take effect, the proxy sandbox's fence has to admit escalated tools until approved tools are compiled into it (above, backlog).
+4. **Results.** *Decided, as recommended:* text results bounded as tool results are now; binary results as artifact references once that is built.
+5. **A product command for the proxy's sandbox**, replacing the lab script and the manual steps above (D-08, step 3). *Decided, as recommended.*
+6. **Open (asked of the owner, 2026-10-14): whether crypto-research-mcp accepts Access alone.** If its origin trusts Cloudflare Access (for instance by the `Cf-Access-Jwt-Assertion` header Access adds), the service token is all it needs. If it also checks its own OAuth bearer behind Access, the service token covers Access only: the server entry then needs both the Access headers and an OAuth token, and the connector auth service, with the OAuth flow below, comes back onto M2's path.
 
 ## OAuth flow (MCP 2025-11-25)
 
