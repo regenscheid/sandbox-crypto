@@ -6,7 +6,9 @@ outside it and named in the reports by SHA-256 (.agents/CONVENTIONS.md). This ch
 when a tracked file is raw evidence under `.agents/docs`, or larger than MAX_BYTES.
 
 It also fails when a relative link in a tracked Markdown file names a file or a heading
-that does not exist, and when a page in `docs/` is missing from the index, docs/README.md.
+that does not exist, when a page in `docs/` is missing from the index, docs/README.md,
+and when product code turns off pyright's private-usage check for a whole file or
+ignores it on a line without saying why.
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ LINK: Final = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING: Final = re.compile(r"#{1,6}\s+(.*?)\s*#*\s*$")
 SCHEME: Final = re.compile(r"[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 DOCS_INDEX: Final = "docs/README.md"
+FILE_PRAGMA: Final = re.compile(r"#\s*pyright:\s*[^\n]*reportPrivateUsage\s*=\s*false")
+LINE_IGNORE: Final = re.compile(r"#\s*pyright:\s*ignore\[[^\]]*reportPrivateUsage[^\]]*\](.*)")
 
 
 def problems(listing: list[tuple[str, int]]) -> list[str]:
@@ -125,6 +129,22 @@ def docs_problems(listing: list[tuple[str, int]]) -> list[str]:
     return link_problems(pages, exists) + index_problems(pages)
 
 
+def pragma_problems(sources: dict[str, str]) -> list[str]:
+    """Product code (``packages/*/src``) that turns off the private-usage check for a
+    whole file, or ignores it on a line without a reason after the comment."""
+    found: list[str] = []
+    for path, text in sources.items():
+        parts = PurePosixPath(path).parts
+        if len(parts) < 3 or parts[0] != "packages" or parts[2] != "src":
+            continue
+        for number, line in enumerate(text.splitlines(), 1):
+            if FILE_PRAGMA.search(line):
+                found.append(f"{path}:{number}: private usage is checked in every file")
+            elif (ignored := LINE_IGNORE.search(line)) and not ignored.group(1).strip(" -—:"):
+                found.append(f"{path}:{number}: say why this line uses a private name")
+    return found
+
+
 def tracked() -> list[tuple[str, int]]:
     """Every tracked file with its size in the index."""
     git = shutil.which("git")
@@ -145,7 +165,12 @@ def tracked() -> list[tuple[str, int]]:
 
 def main() -> int:
     listing = tracked()
-    found = problems(listing) + docs_problems(listing)
+    sources = {
+        path: Path(path).read_text(encoding="utf-8")
+        for path, _ in listing
+        if path.endswith(".py") and Path(path).is_file()
+    }
+    found = problems(listing) + docs_problems(listing) + pragma_problems(sources)
     for line in found:
         print(line, file=sys.stderr)
     return 1 if found else 0
