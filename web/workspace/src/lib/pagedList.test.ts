@@ -95,4 +95,29 @@ describe('a list read a page at a time', () => {
     expect(asked).toEqual([null]);
     expect(touched).toEqual([]);
   });
+
+  it('applies what a page brings only when the page is shown', async () => {
+    const { pending, read } = pages();
+    const state = emptyList<string, number>();
+    const list = new PagedList(state, read);
+    const brought: string[] = [];
+    const late = list.reload();
+    const current = list.reload();
+    pending[1]!.resolve({ items: ['new'], next: null, shown: () => brought.push('new') });
+    await current;
+    pending[0]!.resolve({ items: ['old'], next: null, shown: () => brought.push('old') });
+    await late;
+    expect(brought).toEqual(['new']);
+  });
+
+  it('clears, dropping a page on its way', async () => {
+    const { pending, read } = pages();
+    const state = emptyList<string, number>();
+    const list = new PagedList(state, read);
+    const reload = list.reload();
+    list.clear();
+    pending[0]!.resolve({ items: ['a'], next: 3 });
+    await reload;
+    expect(state).toEqual(emptyList());
+  });
 });
