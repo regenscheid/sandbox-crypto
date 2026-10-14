@@ -12,10 +12,12 @@ and a request with it gets exactly what one without it gets.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -31,10 +33,14 @@ from sandbox_science.contracts.artifact_inventory import ArtifactLink
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore
 
+from .context import own_hosts
+
 CAPABILITY_SECONDS: Final = 600
 """How long a capability opens its PDF (PV-3)."""
 MAX_PDF_BYTES: Final = 64 * 1024 * 1024
 """The largest PDF the viewer is given (PV-3)."""
+CONCURRENT_READS: Final = 4
+"""PDFs read from the store at once; more wait, so no frame can tie up every thread."""
 PDF: Final = "application/pdf"
 VIEWER_TYPES: Final = {
     ".html": "text/html; charset=utf-8",
@@ -49,8 +55,12 @@ VIEWER_TYPES: Final = {
 """The only types the viewer's bundle is served as."""
 
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
+_CAPABILITY: Final = re.compile(r"[A-Za-z0-9_-]{1,2048}\.[A-Za-z0-9_-]{43}")
+"""A capability's one spelling: unpadded base64url payload, then a 32-byte MAC."""
 _SHA256: Final = frozenset("0123456789abcdef")
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
+SANDBOXED: Final = web.ResponseKey("sandboxed", bool)
+"""Marks a response whose CSP also says ``sandbox``: the PDF bytes."""
 
 
 class CapabilityError(Exception):
@@ -79,7 +89,9 @@ def _decode(text: str) -> bytes:
 class Capabilities:
     """Mints and checks capabilities under a key that lives only in this process."""
 
-    def __init__(self, clock: Callable[[], float] = time.time) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        # The key lives as long as the process, so expiry needs only a clock that never
+        # steps back, not the time of day.
         self._key = secrets.token_bytes(32)
         self._clock = clock
 
@@ -96,11 +108,15 @@ class Capabilities:
 
     def check(self, text: str) -> Capability:
         """The capability ``text`` names; ``CapabilityError`` unless genuine and current."""
+        if not _CAPABILITY.fullmatch(text):
+            raise CapabilityError("malformed")
+        encoded, mac = text.split(".")
         try:
-            encoded, mac = text.split(".")
             payload, given = _decode(encoded), _decode(mac)
         except (ValueError, UnicodeError):
             raise CapabilityError("malformed") from None
+        if _encode(payload) != encoded or _encode(given) != mac:
+            raise CapabilityError("not canonical")  # unused trailing bits set
         if not hmac.compare_digest(given, self._mac(payload)):
             raise CapabilityError("forged")
         project, artifact, revision, sha256, expires = json.loads(payload)
@@ -129,7 +145,7 @@ def preview_policy(workspace_origin: str) -> str:
             "script-src 'self'",
             "worker-src 'self'",
             "style-src 'self'",
-            "font-src 'self' data: blob:",
+            "font-src 'self'",
             "img-src 'self' data: blob:",
             "connect-src 'self'",
             "base-uri 'none'",
@@ -137,6 +153,15 @@ def preview_policy(workspace_origin: str) -> str:
             f"frame-ancestors {workspace_origin}",
         )
     )
+
+
+def own_host(request: web.Request) -> bool:
+    """Whether a request names this server by its own address; false when that cannot be
+    told, so a host check fails closed."""
+    try:
+        return request.headers.get(hdrs.HOST, "").lower() in own_hosts(request)
+    except AttributeError:
+        return False
 
 
 def _segments(path: str) -> list[str] | None:
@@ -154,12 +179,14 @@ def create_preview_app(
     *,
     workspace_origin: Callable[[], str],
     viewer_dir: Path | None = None,
-    check_host: Callable[[web.Request], bool] = lambda request: True,
+    check_host: Callable[[web.Request], bool] = own_host,
 ) -> web.Application:
     """The preview origin's application. ``workspace_origin`` names the origin allowed to
     frame it, read when each response is prepared (it is known once the workspace listens).
-    ``check_host`` refuses a request whose ``Host`` names another server."""
+    ``check_host`` refuses a request whose ``Host`` names another server; only a listener
+    off loopback, whose names are not known, accepts every ``Host``."""
     inventory = ArtifactInventory(documents)
+    reads = asyncio.Semaphore(CONCURRENT_READS)
     viewer = viewer_dir.resolve() if viewer_dir is not None and viewer_dir.is_dir() else None
 
     @web.middleware
@@ -171,9 +198,12 @@ def create_preview_app(
         return await handler(request)
 
     async def secure(request: web.Request, response: web.StreamResponse) -> None:
+        policy = preview_policy(workspace_origin())
+        if SANDBOXED in response:
+            policy += "; sandbox"
         response.headers.update(
             {
-                "Content-Security-Policy": preview_policy(workspace_origin()),
+                "Content-Security-Policy": policy,
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
                 "Cross-Origin-Resource-Policy": "same-origin",
@@ -190,7 +220,8 @@ def create_preview_app(
                 raise CapabilityError("malformed hash")
         except (CapabilityError, ValidationError, TypeError, ValueError):
             return web.Response(status=403, text="This link is not valid, or has expired.")
-        try:
+
+        def read() -> web.Response:
             revision = inventory.resolve(
                 found.project,
                 ArtifactLink(
@@ -208,15 +239,21 @@ def create_preview_app(
                 return web.Response(status=413, text="This PDF is larger than the viewer takes.")
             bound = min(MAX_PDF_BYTES, inventory.limits.artifact_bytes)
             data = inventory.content(found.project, reference, max_bytes=bound)
+            # PDF.js fetches the bytes; nothing navigates to them. Opened directly, they
+            # download, and a browser that renders them anyway does so in a sandbox.
+            return web.Response(
+                body=data,
+                headers={hdrs.CONTENT_TYPE: PDF, hdrs.CONTENT_DISPOSITION: "attachment"},
+            )
+
+        # The store is read, and the bytes hashed, off the event loop the workspace shares.
+        try:
+            async with reads:
+                answer = await asyncio.to_thread(read)
         except DocumentError:
             return web.Response(status=404, text="This PDF is not available.")
-        return web.Response(
-            body=data,
-            headers={
-                hdrs.CONTENT_TYPE: PDF,
-                hdrs.CONTENT_DISPOSITION: "inline",
-            },
-        )
+        answer[SANDBOXED] = True
+        return answer
 
     async def viewer_file(request: web.Request) -> web.StreamResponse:
         segments = _segments(request.match_info["path"])
@@ -234,6 +271,6 @@ def create_preview_app(
 
     app = web.Application(middlewares=[guard])
     app.on_response_prepare.append(secure)
-    app.router.add_get("/pdf/{capability}", pdf)
+    app.router.add_get("/pdf/{capability:.+}", pdf)  # any spelling gets the same refusal
     app.router.add_get("/viewer/{path:.*}", viewer_file)
     return app

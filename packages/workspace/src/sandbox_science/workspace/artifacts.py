@@ -15,7 +15,7 @@ Both read through the orchestrator's ``ArtifactInventory``; neither writes.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Final
 
 from aiohttp import web
@@ -28,7 +28,7 @@ from sandbox_science.orchestrator.projects import ProjectError
 
 from . import api
 from .context import CONTEXT, identifier, json_answer
-from .preview import PDF, Preview
+from .preview import CAPABILITY_SECONDS, PDF, Preview
 
 PREVIEW: Final = web.AppKey("preview", Preview)
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
@@ -102,7 +102,9 @@ async def viewer(request: web.Request) -> web.Response:
     project = identifier(request, "project")
     artifact = identifier(request, "artifact")
     raw_revision, sha256 = request.match_info["revision"], request.query.get("sha256", "")
-    if not raw_revision.isdigit() or not 1 <= int(raw_revision) <= 999999999:
+    if not (raw_revision.isascii() and raw_revision.isdigit()) or not (
+        1 <= int(raw_revision) <= 999999999
+    ):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid artifact revision")
     if len(sha256) != 64 or not set(sha256) <= set("0123456789abcdef"):
         raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid sha256")
@@ -124,8 +126,10 @@ async def viewer(request: web.Request) -> web.Response:
         found = ArtifactInventory(context.documents).resolve(project, link)
         if found.reference.media_type != PDF:
             raise ProjectError(ErrorKind.UNSUPPORTED, "the viewer opens PDFs only")
+        # The capability counts its ten minutes on a monotonic clock; the time of day is
+        # read first, so the time shown is never later than the real expiry.
+        expires = datetime.now(UTC) + timedelta(seconds=CAPABILITY_SECONDS)
         capability = preview.capabilities.mint(project, artifact, revision, sha256)
-        expires = datetime.fromtimestamp(preview.capabilities.check(capability).expires, UTC)
         answer = ViewerLink(url=f"{preview.origin}/viewer/#{capability}", expires_at=expires)
         return api.dumps(answer.model_dump(mode="json"))
 

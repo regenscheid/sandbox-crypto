@@ -7,10 +7,14 @@ publishes them; the preview origin is the second application, served beside the 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import inspect
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -28,6 +32,7 @@ from sandbox_science.workspace.preview import (
     Capabilities,
     Preview,
     create_preview_app,
+    own_host,
     preview_policy,
 )
 
@@ -202,19 +207,113 @@ async def test_the_workspace_cookie_buys_nothing_on_the_preview_origin(origins, 
 async def test_the_preview_origin_sends_its_policy_and_takes_only_reads(origins, published) -> None:
     workspace, viewer, preview, _ = origins
     link = await (await viewer_url(workspace, published["pdf"])).json()
+    opened = await viewer.get(f"/pdf/{capability_of(link['url'])}")
     for response in (
-        await viewer.get(f"/pdf/{capability_of(link['url'])}"),
+        opened,
         await viewer.get("/pdf/nonsense"),
         await viewer.get("/viewer/../secrets"),
         await viewer.post("/pdf/anything"),
     ):
-        policy = response.headers["Content-Security-Policy"]
+        policy = response.headers["Content-Security-Policy"].removesuffix("; sandbox")
         assert policy == preview_policy(preview.workspace_origin)
         assert f"frame-ancestors {preview.workspace_origin}" in policy
         assert "connect-src 'self'" in policy
+        assert "font-src 'self';" in policy  # PV-2: fonts from the preview origin only
         assert response.headers["X-Content-Type-Options"] == "nosniff"
         assert response.headers["Cache-Control"] == "no-store"
     assert (await viewer.post("/pdf/anything")).status == 405
+    # The PDF bytes are fetched by PDF.js, never navigated to: opened directly, they
+    # download, and a browser that renders them anyway does so in a sandbox.
+    assert opened.headers["Content-Disposition"] == "attachment"
+    assert opened.headers["Content-Security-Policy"].endswith("; sandbox")
+
+
+async def test_the_pdf_is_read_off_the_event_loop_the_workspace_shares(
+    origins, published, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace, viewer, _, _ = origins
+    link = await (await viewer_url(workspace, published["pdf"])).json()
+    capability = capability_of(link["url"])
+    loop_thread = threading.current_thread()
+    threads: list[threading.Thread] = []
+    original = ArtifactInventory.content
+
+    def slow(self: ArtifactInventory, *args: Any, **kwargs: Any) -> bytes:
+        threads.append(threading.current_thread())
+        time.sleep(0.3)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(ArtifactInventory, "content", slow)
+    gaps: list[float] = []
+    done = asyncio.Event()
+
+    async def ticker() -> None:
+        last = time.perf_counter()
+        while not done.is_set():
+            await asyncio.sleep(0.01)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+
+    ticking = asyncio.create_task(ticker())
+    assert (await viewer.get(f"/pdf/{capability}")).status == 200
+    done.set()
+    await ticking
+    assert threads
+    assert all(thread is not loop_thread for thread in threads)
+    assert max(gaps) < 0.15, f"the event loop stalled for {max(gaps):.3f}s"
+
+
+async def test_a_capability_has_one_spelling(origins, published) -> None:
+    workspace, viewer, _, _ = origins
+    good = capability_of((await (await viewer_url(workspace, published["pdf"])).json())["url"])
+    payload, mac = good.split(".")
+    last = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".index(mac[-1])
+    unused_bits = (
+        mac[:-1] + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"[last ^ 1]
+    )
+    for variant in (
+        good.replace("-", "+").replace("_", "/"),
+        f"{payload}.{mac}=",
+        f"{payload}=.{mac}",
+        f"{payload[:4]}!{payload[4:]}.{mac}",
+        f"{payload}.{mac[:5]}~{mac[5:]}",
+        unused_bits,  # the same MAC bytes, with a padding bit set
+        f"{'A' * 2049}.{mac}",
+    ):
+        if variant != good:
+            assert (await viewer.get(f"/pdf/{variant}")).status == 403, variant
+    assert (await viewer.get(f"/pdf/{good}")).status == 200
+
+
+async def test_the_workspace_refuses_a_revision_of_other_digits(origins, published) -> None:
+    pdf = published["pdf"]
+    response = await origins[0].get(
+        f"/api/v0/projects/p1/artifacts/{pdf.artifact_id}/revisions/%C2%B2/viewer",
+        params={"sha256": pdf.sha256},
+    )
+    await error_of(response, 400, "invalid_request")
+
+
+async def test_the_workspace_origin_never_serves_the_viewer(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    (static_dir / "viewer").mkdir()
+    (static_dir / "viewer" / "index.html").write_text("<title>viewer</title>")
+    (static_dir / "viewer" / "viewer.mjs").write_text("export {}")
+    workspace = await aiohttp_client(
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
+    )
+    for path in ("/viewer/viewer.mjs", "/viewer/index.html", "/viewer/", "/viewer"):
+        response = await workspace.get(path)
+        assert response.status == 404, path
+        assert "viewer" not in await response.text(), path
+
+
+def test_the_preview_origins_host_check_fails_closed() -> None:
+    default = inspect.signature(create_preview_app).parameters["check_host"].default
+    assert default is own_host
+    assert own_host(cast(Any, object())) is False
 
 
 async def test_the_workspace_may_frame_the_preview_origin_and_no_other(
@@ -238,6 +337,7 @@ async def test_the_workspace_may_frame_the_preview_origin_and_no_other(
     [
         ["--listen", "127.0.0.1:8300", "--preview-listen", "127.0.0.1:8300"],  # no own origin
         ["--preview-listen", "0.0.0.0:8301"],  # not loopback, without --allow-remote
+        ["--listen", "127.0.0.1:65535"],  # no next port for the viewer's default
     ],
 )
 def test_the_viewer_needs_its_own_loopback_origin(

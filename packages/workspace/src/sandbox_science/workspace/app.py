@@ -37,7 +37,7 @@ import secrets
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Final, cast
+from typing import Final
 
 from aiohttp import hdrs, web
 
@@ -62,7 +62,7 @@ from . import (
     provisioning,
     reviews,
 )
-from .context import CONTEXT, WorkspaceContext, json_body
+from .context import CONTEXT, WorkspaceContext, json_body, listener, own_hosts
 from .errors import json_error
 from .mathrepair import (
     MathRepairService,
@@ -79,7 +79,6 @@ SESSION_COOKIE: Final = "sandbox_science_workspace"
 MAX_SESSIONS: Final = 64
 """Sessions kept at once; logging in beyond it ends the oldest."""
 MAX_TOKEN: Final = 256
-LOOPBACK_NAMES: Final = ("localhost", "127.0.0.1", "[::1]")
 SAFE_METHODS: Final = frozenset({hdrs.METH_GET, hdrs.METH_HEAD})
 
 CONTENT_SECURITY_POLICY: Final = "; ".join(
@@ -176,35 +175,10 @@ def is_api(path: str) -> bool:
     return path == "/api" or path.startswith("/api/")
 
 
-def _listener(request: web.Request) -> tuple[str, int] | None:
-    """The address and port the request came in on."""
-    transport = request.transport
-    sockname: object = transport.get_extra_info("sockname") if transport is not None else None
-    if not isinstance(sockname, tuple):
-        return None
-    address = cast(tuple[object, ...], sockname)
-    if len(address) < 2 or not isinstance(address[0], str) or not isinstance(address[1], int):
-        return None
-    return address[0], address[1]
-
-
 def cookie_name(request: web.Request) -> str:
     """The session cookie's name, which carries the server's port."""
-    listener = _listener(request)
-    return SESSION_COOKIE if listener is None else f"{SESSION_COOKIE}-{listener[1]}"
-
-
-def own_hosts(request: web.Request) -> frozenset[str]:
-    """The ``Host`` values that name this server: its loopback names and its address."""
-    listener = _listener(request)
-    if listener is None:
-        return frozenset()
-    ip, port = listener
-    names = {*LOOPBACK_NAMES, f"[{ip}]" if ":" in ip else ip}
-    hosts = {f"{name}:{port}" for name in names}
-    if port == 80:
-        hosts.update(names)
-    return frozenset(hosts)
+    address = listener(request)
+    return SESSION_COOKIE if address is None else f"{SESSION_COOKIE}-{address[1]}"
 
 
 def create_app(
@@ -385,7 +359,9 @@ class StaticFiles:
 
     async def handle(self, request: web.Request) -> web.StreamResponse:
         segments = _segments(request.match_info["path"])
-        if segments is None or segments[:1] == ["api"]:
+        # The PDF viewer's bundle sits in the build's viewer/ directory, but only the
+        # preview origin serves it: the renderer never runs on the workspace's origin.
+        if segments is None or segments[:1] in (["api"], ["viewer"]):
             raise web.HTTPNotFound()
         if not segments:
             return self._file(self.index)

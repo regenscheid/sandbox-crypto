@@ -42,11 +42,11 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .app import create_app, own_hosts
+from .app import create_app
 from .context import CONTEXT
 from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
-from .preview import Capabilities, Preview, create_preview_app
+from .preview import Capabilities, Preview, create_preview_app, own_host
 
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
@@ -150,11 +150,6 @@ async def serve(
         await runner.cleanup()
 
 
-def _preview_host(request: web.Request) -> bool:
-    """Whether a request to the preview origin names it by its own loopback address."""
-    return request.headers.get("Host", "").lower() in own_hosts(request)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """Entry point of ``sandbox-science-workspace``."""
     parser = argparse.ArgumentParser(prog="sandbox-science-workspace", allow_abbrev=False)
@@ -173,7 +168,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     command.add_argument(
         "--preview-listen",
-        help="host:port of the PDF viewer's own origin (default: the same host, the next port)",
+        help="host:port of the PDF viewer's own origin (default: the same host, the next "
+        "port; another loopback address, such as 127.0.0.2 on Linux, makes it another site)",
     )
     command.add_argument(
         "--allow-remote",
@@ -220,6 +216,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
+    if preview_port > 65535:
+        parser.error(
+            f"--listen port {port} leaves no next port for the viewer: give --preview-listen"
+        )
     loopback = is_loopback(host)
     if not is_loopback(preview_host) and not args.allow_remote:
         parser.error(f"{preview_host} is not a loopback address; see --allow-remote")
@@ -291,7 +291,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         preview.capabilities,
         workspace_origin=lambda: preview.workspace_origin,
         viewer_dir=args.static / "viewer",
-        check_host=_preview_host if is_loopback(preview_host) else lambda request: True,
+        check_host=own_host if is_loopback(preview_host) else lambda request: True,
     )
     try:
         asyncio.run(
