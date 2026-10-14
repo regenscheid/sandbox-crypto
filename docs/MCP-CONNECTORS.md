@@ -208,19 +208,20 @@ systemctl --user enable --now sandbox-science-mcp-proxy-forward@mcp-proxy.servic
 
 ### The harness's client
 
-Agents use connectors through the harness, a caller of kind `orchestrator` (`orchestrator/connectors.py`, D-08). `run` and `serve` take the proxy's address, a file holding the harness's caller token, and the servers whose tools runs get:
+Agents use connectors through the harness, a caller of kind `orchestrator` (`orchestrator/connectors.py`, D-08). `run` and `serve` take the proxy's address, a file holding the harness's caller token, the project that token is for at the proxy, and the servers whose tools runs get:
 
 ```bash
-sandbox-science-harness run ... --mcp-proxy http://127.0.0.1:8080 \
-  --mcp-token-file mcp-proxy.token --mcp-server crypto-research-mcp "task"
+sandbox-science-harness run ... --mcp-proxy http://127.0.0.1:8080 --mcp-token-file mcp-proxy.token \
+  --mcp-project crypto --mcp-server crypto-research-mcp "task"
 ```
 
-- At a run's start, the harness lists each server's tools through the proxy and offers them to MAIN under the names the server lists; a portal's names carry its prefix. A name a model cannot call (letters, digits, `_` and `-`, at most 64), or one another tool already has, is left out and logged. A server that cannot be listed offers nothing, and the run goes on.
-- Every connector tool has the effect class `effect`, since the policy marks none read-only, so the plan fence applies to it.
-- A server's description of a tool is untrusted: it is bounded and framed as the server's, and an input schema larger than 16 KiB, or not an object, is replaced by an empty object schema.
-- Each call names the run's session in `Sandbox-Science-Session`, which the proxy records with the call. The harness keeps one MCP session per server and starts it again once if the proxy no longer knows it.
-- A refusal is the tool's error, with the proxy's reason. A call held for approval comes back as `approval_required`, naming the permission request; the operator answers it with `pending` and `approve` (owner decision 1), and the agent calls again. Approved tools are not compiled into the proxy sandbox's fence yet, so its fence has to admit escalated tools for an approval to take effect (above).
-- Results are the text the server returned, bounded as any tool result; the proxy withholds binary content.
+- **One project.** The proxy knows a token as one project's caller, and applies that project's policy and approvals to every call, so only runs of `--mcp-project` get the servers' tools. The address is `https`, or `http` on loopback only; the token is one line of visible ASCII, and a token file others can read draws a warning.
+- **Listing.** At a run's start, the harness lists each server's tools through the proxy, within 15 s a server, and offers them to MAIN under the names the server lists; a portal's names carry its prefix. A name a run's records cannot hold (a letter or digit, then letters, digits, `_` and `-`, at most 64), one another server's tool has, or one the harness gives a tool of its own, whether the run has it or not (`python`, `admit_hosts`, `document_reply`, `plan_read`, …), is left out and logged. A server offers at most 128 tools, and a run at most 256, with at most 512 KiB of descriptions and schemas. A server that cannot be listed in time offers nothing, and the run goes on.
+- **Effects.** Every connector tool has the effect class `effect`, since the policy marks none read-only, so the plan fence applies to it.
+- **Untrusted text.** A tool's description loses control, invisible and private-use characters (but line breaks and tabs), is bounded to 2,000 characters and is framed as the server's. Its input schema is rebuilt from JSON Schema's structural keywords only (`type`, `properties`, `required`, `items`, `additionalProperties` as a boolean, `anyOf`/`oneOf`/`allOf`, `enum`/`const` with bounded and cleaned values, and numeric and length limits); titles, descriptions, defaults, examples, patterns and references are dropped. A schema that is larger than 16 KiB, malformed, or not an object becomes an empty object schema, so a model API never refuses it.
+- **Calls.** Each call names the run's session in `Sandbox-Science-Session`, which the proxy records with the call. The harness keeps one MCP session per server, started once for concurrent callers, and starts it again once if the proxy no longer knows it. It sends every message with its keys sorted, so a call made again after its approval matches the request the operator approved. A call has 330 s, longer than the proxy's `upstream_timeout`.
+- **Refusals.** A refusal is the tool's error, with the proxy's reason. A call held for approval comes back as `approval_required`, naming the permission request; the operator answers it with `pending` and `approve` (owner decision 1), and the agent calls again with the same arguments. An error a server answered is framed as the server's. A call whose answer is lost or unreadable is `no_usable_answer`: the server may have done the work, and the agent is told to check before calling again.
+- **Results** are the text the server returned, read whole up to 8 MiB and bounded as any tool result; the proxy withholds binary content.
 
 Tested against the proxy and its fake server in one process (`packages/orchestrator/tests/test_connectors.py`), with synthetic tokens.
 

@@ -187,6 +187,8 @@ class FakeServer:
         """The Mcp-Session-Id the next initialize answers with, instead of a fresh one."""
         self.initialize_extra: dict[str, object] = {}
         """Fields added to the initialize result."""
+        self.listing: Callable[[Mapping[str, object]], dict[str, object]] | None = None
+        """Answers tools/list instead of the pages of ``tools``, when set."""
         self.last_cursor: str | None = None
         """A nextCursor to send on the last page of tools/list."""
 
@@ -259,7 +261,11 @@ class FakeServer:
         params = cast("dict[str, Any]", message.get("params") or {})
         if method == "tools/list":
             return web.json_response(
-                {"jsonrpc": "2.0", "id": request_id, "result": self._listing(params)}
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": (self.listing or self._listing)(params),
+                }
             )
         if method == "tools/call":
             if self.gate is not None:

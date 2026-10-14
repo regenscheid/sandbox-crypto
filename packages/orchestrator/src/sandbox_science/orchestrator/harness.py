@@ -145,10 +145,15 @@ class RunRequest:
 
 @dataclass(frozen=True)
 class McpAccess:
-    """The MCP proxy the harness calls, and the servers whose tools a run gets (D-08)."""
+    """The MCP proxy the harness calls, and the servers whose tools a run gets (D-08).
+
+    The proxy knows the harness's token as one project's caller, and applies that
+    project's policy and approvals to every call, so only runs of ``project`` get the
+    servers' tools."""
 
     client: ProxyClient
     servers: tuple[str, ...]
+    project: str
 
 
 class RunSink(Protocol):
@@ -312,9 +317,9 @@ class Harness:
         self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
         self.settings = settings or Settings()
         self.clock = clock
+        """The time the run's messages and leases are read in."""
         self.mcp = mcp
         """The MCP proxy and the servers behind it whose tools runs are offered."""
-        """The time the run's messages and leases are read in."""
 
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
         """Admit the run (``admit``), then run it (``start``)."""
@@ -428,7 +433,7 @@ class Harness:
             on_wait=chat.waiting if chat is not None else None,
         )
         connectors = None
-        if self.mcp is not None:
+        if self.mcp is not None and self.mcp.project == context.project_id:
             # Listed at the run's start: a server added later is offered to the next run.
             connectors = Connectors(self.mcp.client, self.mcp.servers, session=context.session_id)
             await connectors.load()

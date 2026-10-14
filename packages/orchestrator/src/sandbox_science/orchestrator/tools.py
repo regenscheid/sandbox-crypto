@@ -43,13 +43,16 @@ from sandbox_science.contracts.worker import Language
 from .artifact_publisher import ArtifactPublisher
 from .connectors import Connectors
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
+from .documents import annotation_tools
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
+from .documents.tool import SPECS as DOCUMENT_SPECS
 from .hooks import Effect, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, JobNotices, JobTools
 from .kernel_check import KernelCheck
 from .mathchecks.controller import MathChecks, MathController
 from .model import ToolCall, ToolSpec
+from .plan_tools import SPECS as PLAN_SPECS
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .worker_client import WorkerAPIError, WorkerClient, dump
@@ -322,6 +325,28 @@ def operation_id(prefix: str, call: ToolCall) -> str:
     return f"{readable}-{digest}" if readable else f"op-{digest}"
 
 
+def _harness_tool_names() -> frozenset[str]:
+    from .consistency.controller import AUTHOR_SPECS
+
+    specs = (
+        *SPECS,
+        SAGE,
+        *PDF_SPECS,
+        ADMIT_HOSTS,
+        *PROVISION_SPECS,
+        *JOB_SPECS,
+        *DOCUMENT_SPECS,
+        *annotation_tools.SPECS,
+        *AUTHOR_SPECS,
+        *PLAN_SPECS,
+    )
+    return frozenset(spec.name for spec in specs)
+
+
+HARNESS_TOOL_NAMES: Final = _harness_tool_names()
+"""Every name the harness gives a tool of its own, which no connector tool may take."""
+
+
 class Toolbox:
     """The tools of one run. ``documents``, when given, adds the document tools, whose
     calls go to the control store rather than the worker."""
@@ -435,8 +460,10 @@ class Toolbox:
                 whole=True,
             )
         if connectors is not None:
-            # A connector tool whose name a tool of the harness has is not offered.
-            names = {entry.spec.name for entry in entries}
+            # A connector tool is never offered under a name the harness gives a tool of
+            # its own, whether this run has that tool or not: the system prompt names
+            # some of them.
+            names = {entry.spec.name for entry in entries} | HARNESS_TOOL_NAMES
             for entry in _group(
                 connectors.specs,
                 lambda name, call: connectors.call(name, call.args),
