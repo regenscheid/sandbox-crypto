@@ -5,6 +5,7 @@
   import { onSignOut } from '../lib/session';
   import { formatTime } from '../lib/format';
   import { initialPoll, Poller, type PollState } from '../lib/poller';
+  import { holdReason, pageBack, pageForward, phaseLabel } from '../lib/provisionView';
   import {
     environmentChoices,
     readProvision,
@@ -136,38 +137,13 @@
       select({ kind: 'diff', before, after, offset: 0 });
     }
   }
-  function nextComparison(): void {
-    if (
-      busy ||
-      signedOut ||
-      selection?.kind !== 'diff' ||
-      comparison?.status !== 'complete' ||
-      comparison.next_offset === null
-    )
+  function stepComparison(forward: boolean): void {
+    if (busy || signedOut || selection?.kind !== 'diff' || comparison?.status !== 'complete')
       return;
-    diffOffsets = [...diffOffsets, comparison.offset];
-    select({
-      ...selection,
-      offset: comparison.next_offset,
-    });
-  }
-  function previousComparison(): void {
-    if (
-      busy ||
-      signedOut ||
-      selection?.kind !== 'diff' ||
-      comparison?.status !== 'complete' ||
-      !diffOffsets.length
-    )
-      return;
-    const offset = diffOffsets.at(-1)!;
-    diffOffsets = diffOffsets.slice(0, -1);
-    select({
-      kind: 'diff',
-      before: selection.before,
-      after: selection.after,
-      offset,
-    });
+    const step = forward ? pageForward(diffOffsets, comparison) : pageBack(diffOffsets);
+    if (!step) return;
+    diffOffsets = step.trail;
+    select({ kind: 'diff', before: selection.before, after: selection.after, offset: step.offset });
   }
   function loadPackages(revision: RevisionSummary): void {
     if (!busy && !signedOut) {
@@ -175,66 +151,19 @@
       select({ kind: 'packages', revision, offset: 0 });
     }
   }
-  function nextPackages(): void {
-    if (
-      busy ||
-      signedOut ||
-      selection?.kind !== 'packages' ||
-      packages?.status !== 'complete' ||
-      packages.next_offset === null
-    )
+  function stepPackages(forward: boolean): void {
+    if (busy || signedOut || selection?.kind !== 'packages' || packages?.status !== 'complete')
       return;
-    packageOffsets = [...packageOffsets, packages.offset];
-    select({
-      ...selection,
-      offset: packages.next_offset,
-    });
-  }
-  function previousPackages(): void {
-    if (
-      busy ||
-      signedOut ||
-      selection?.kind !== 'packages' ||
-      packages?.status !== 'complete' ||
-      !packageOffsets.length
-    )
-      return;
-    const offset = packageOffsets.at(-1)!;
-    packageOffsets = packageOffsets.slice(0, -1);
-    select({
-      kind: 'packages',
-      revision: selection.revision,
-      offset,
-    });
-  }
-  function holdReason(reason: string): string {
-    return (
-      {
-        lockfile_unrecorded: 'No lockfile was recorded',
-        blob_missing: 'The recorded lockfile is unavailable or evicted',
-        unsupported_format: 'The retained format is unsupported',
-        skipped_entries: 'The retained lockfile omitted package entries',
-        input_limit: 'The selected input exceeds this reader’s limits',
-      }[reason] ?? 'Unknown input'
-    );
+    const step = forward ? pageForward(packageOffsets, packages) : pageBack(packageOffsets);
+    if (!step) return;
+    packageOffsets = step.trail;
+    select({ kind: 'packages', revision: selection.revision, offset: step.offset });
   }
   function environment(value: string): void {
     if (value !== selected?.scope.environmentId) {
       selectedId = value;
       selection = null;
     }
-  }
-  function phaseLabel(phase: PollState<ProvisionData>['phase']): string {
-    return {
-      loading: 'Reading environment records…',
-      observed: '',
-      paused: 'Observations paused.',
-      unavailable: 'Observation unavailable. Current state is unknown.',
-      unsupported: 'This worker is unconfigured or does not support provisioning observations.',
-      missing: 'This recorded environment or selected record is no longer available.',
-      changed: 'This selection changed. Refresh the overview or history and select it again.',
-      signed_out: 'Observations stopped for sign-out. Reload after signing in.',
-    }[phase];
   }
   onMount(() => {
     mounted = true;
@@ -790,14 +719,14 @@
                   signedOut ||
                   detail.phase !== 'observed' ||
                   !packageOffsets.length}
-                onclick={previousPackages}>Previous packages</button
+                onclick={() => stepPackages(false)}>Previous packages</button
               >
               <button
                 disabled={busy ||
                   signedOut ||
                   detail.phase !== 'observed' ||
                   packages.next_offset === null}
-                onclick={nextPackages}>Next packages</button
+                onclick={() => stepPackages(true)}>Next packages</button
               >
             </div>
           {/if}
@@ -887,14 +816,14 @@
             <div class="page-controls">
               <button
                 disabled={busy || signedOut || detail.phase !== 'observed' || !diffOffsets.length}
-                onclick={previousComparison}>Previous differences</button
+                onclick={() => stepComparison(false)}>Previous differences</button
               >
               <button
                 disabled={busy ||
                   signedOut ||
                   detail.phase !== 'observed' ||
                   comparison.next_offset === null}
-                onclick={nextComparison}>Next differences</button
+                onclick={() => stepComparison(true)}>Next differences</button
               >
             </div>
           {/if}
