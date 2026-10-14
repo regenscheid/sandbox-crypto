@@ -215,8 +215,8 @@ class PlanTools:
         alias: str,
     ) -> None:
         self.plans, self.projects, self.context = plans, projects, context
-        # Registry snapshots bind project/session/environment; policy revision is
-        # a separate execution pin and is covered by registry-byte continuity.
+        # The fence binds this run's own session record. Other sessions and the
+        # project's policy revision may change: the worker enforces the current policy.
         self.registry_context = ExecutionContext(
             project_id=context.project_id,
             session_id=context.session_id,
@@ -247,20 +247,25 @@ class PlanTools:
 
     def _owned(self, action: Callable[[], _T]) -> _T:
         if self.invalid:
-            raise DocumentError(POLICY_DENIED, "planning session registry changed; start a new run")
+            raise DocumentError(
+                POLICY_DENIED, "planning session was closed or reopened; start a new run"
+            )
         try:
             with self.projects._locked(self.context.project_id):
                 current = self.projects.session_snapshot(
                     self.context.project_id, self.context.session_id
                 )
                 try:
+                    # A close and reopen gives the session a new record (opened_at
+                    # and kernel_notice_lifetime), so it still ends this run's effects.
                     if (
-                        not self.snapshot.matches(current)
+                        current.session != self.snapshot.session
                         or current.context != self.registry_context
                     ):
                         self.invalid = True
                         raise DocumentError(
-                            POLICY_DENIED, "planning session registry changed; start a new run"
+                            POLICY_DENIED,
+                            "planning session was closed or reopened; start a new run",
                         )
                     return action()
                 finally:
