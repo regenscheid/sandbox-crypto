@@ -1,19 +1,31 @@
 {
   "format_version": 1,
-  "captured_date": "2026-10-13",
-  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-four OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
+  "captured_date": "2026-10-14",
+  "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-five OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
+    {
+      "path": "agent-reports/babbage-openshell-lab-35-evidence-2026-10-13.json",
+      "category": "runtime-evidence",
+      "bytes": 257492,
+      "sha256": "37ce6358a2528de8ccc439e9b625a66441818c03e0ca72673af0e1c221410a97"
+    },
+    {
+      "path": "agent-reports/babbage-openshell-lab-35-2026-10-13.md",
+      "category": "runtime-validation",
+      "bytes": 6713,
+      "sha256": "9ba4ad6f1aeccb067c86f7560c5c46cae5e259ca3038d953227ec04bc33bd5aa"
+    },
     {
       "path": "../../docs/PROVISION-EVENTS.md",
       "category": "implementation-boundary",
-      "bytes": 5008,
-      "sha256": "bf25323e2a017d9a1c421e8ac1b576a43a2d1ee7fe821669845ac26832f4f5b5"
+      "bytes": 5525,
+      "sha256": "200d411172ddc12042533834de6dd0014efd10a37784cd0b78d0f3c09e8b7419"
     },
     {
       "path": "../../docs/INSTALLER-ARTIFACTS.md",
       "category": "implementation-boundary",
-      "bytes": 4816,
-      "sha256": "a5a016a24a66dd451fe32bd262eb2f5bf933339ee69842cebd7357d8adf172a1"
+      "bytes": 5333,
+      "sha256": "94b90e7b178b1f00b58435b688b39e3519ff3219138a21ac9e556e4bde095ca3"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-34-evidence-2026-10-13.json",
