@@ -694,3 +694,11 @@ async def test_an_oversized_blocked_reason_is_refused_when_written(stores):
             "UPDATE comment_math_sources SET blocked=? WHERE entry_id=?",
             ("x" * 5000, source["entry_id"]),
         )
+
+
+def test_a_comment_at_its_byte_limit_is_kept(stores) -> None:
+    docs, _, _ = stores
+    doc = create(docs)
+    body = "\u00e9" * 8192  # 8192 characters, 16384 bytes: the model's and the table's limits
+    made = comment(docs, doc, body=body)
+    assert Annotations(docs).body("p", doc, made["entry_id"])["body"] == body

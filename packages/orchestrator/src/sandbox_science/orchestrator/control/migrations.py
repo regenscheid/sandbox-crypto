@@ -18,6 +18,8 @@ shipped, or ``baseline.sql``: databases made with them keep them. A step gets a
 the step runs inside the writer's transaction. The steps run with foreign keys off, so
 that a step can rebuild a table (create the new one, copy the rows, drop the old one,
 rename: ``rebuild``); ``migrate`` checks every foreign key before the change commits.
+A row the new schema refuses leaves the store at its version, with a ``ControlError``
+(``unavailable``) that names the table and the check.
 """
 
 from __future__ import annotations
@@ -55,6 +57,26 @@ class Schema:
 
 
 type Migration = Callable[[Schema], None]
+
+
+class RefusedRowError(Exception):
+    """A row of the store that a migration step's new definition refuses."""
+
+
+_KEEP: Final = (
+    "To keep its documents, export them with the harness version that made the store and "
+    'import them into a fresh store (docs/LIVING-DOCUMENTS.md, "A store a migration '
+    'refuses").'
+)
+
+
+def _broken_key(db: sqlite3.Connection | Schema, table: str | None = None) -> str | None:
+    """The first row that names no row of the table its foreign key points to, among the
+    rows of ``table`` and of the rows that point to it, or anywhere when ``table`` is None."""
+    for child, rowid, parent, _ in db.execute("PRAGMA foreign_key_check").fetchall():
+        if table is None or table in (child, parent):
+            return f"row {rowid} of {child} names no row of {parent}"
+    return None
 
 
 def _baseline(schema: Schema) -> None:
@@ -110,8 +132,9 @@ BEGIN SELECT RAISE(ABORT, 'run records are written once'); END""",
 
 def rebuild(schema: Schema, table: str, create: str) -> None:
     """Make ``table`` again as ``create`` (``CREATE TABLE <table> (...)``) defines it, with
-    its rows and rowids, its indexes and triggers, and the store's views: SQLite cannot
-    add a constraint to a table. A row the new definition refuses fails the step."""
+    its rows and rowids, its indexes and triggers, the other tables' triggers that name it,
+    and the store's views: SQLite cannot add a constraint to a table. A row the new
+    definition refuses fails the step with ``RefusedRowError``."""
     if not create.startswith(f"CREATE TABLE {table} ("):
         raise ControlError(INTERNAL, f"a rebuild of {table} needs its CREATE TABLE")
     attached = schema.execute(
@@ -119,27 +142,45 @@ def rebuild(schema: Schema, table: str, create: str) -> None:
         "AND sql IS NOT NULL ORDER BY rowid",
         (table,),
     ).fetchall()
+    named = re.compile(rf"\b{re.escape(table)}\b")
+    others = [
+        (name, sql)
+        for name, sql in schema.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name<>? "
+            "ORDER BY rowid",
+            (table,),
+        ).fetchall()
+        if named.search(sql)
+    ]
     views = schema.execute(
         "SELECT name, sql FROM sqlite_master WHERE type='view' ORDER BY rowid"
     ).fetchall()
     for name, _ in views:
         schema.execute(f'DROP VIEW "{name}"')
+    for name, _ in others:
+        schema.execute(f'DROP TRIGGER "{name}"')
     columns = ", ".join(
         f'"{row[1]}"' for row in schema.execute(f'PRAGMA table_info("{table}")').fetchall()
     )
     schema.execute(create.replace(f"CREATE TABLE {table} (", f"CREATE TABLE {table}__new (", 1))
-    schema.execute(
-        f"INSERT INTO {table}__new (rowid, {columns}) "  # noqa: S608 - the store's own names
-        f"SELECT rowid, {columns} FROM {table} ORDER BY rowid"
-    )
+    try:
+        schema.execute(
+            f"INSERT INTO {table}__new (rowid, {columns}) "  # noqa: S608 - the store's own names
+            f"SELECT rowid, {columns} FROM {table} ORDER BY rowid"
+        )
+    except sqlite3.IntegrityError as error:  # a row the new definition refuses
+        raise RefusedRowError(f"a row of {table} fails its check ({error})") from None
     schema.execute(f"DROP TABLE {table}")
     schema.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
     for (sql,) in attached:
         schema.execute(sql)
+    for _, sql in others:
+        schema.execute(sql)
     for _, sql in views:
         schema.execute(sql)
-    if schema.execute("PRAGMA foreign_key_check").fetchone() is not None:
-        raise ControlError(INTERNAL, f"the rebuild of {table} broke a foreign key")
+    # The rows keep their keys, so only a new foreign key or a new key can break one.
+    if (broken := _broken_key(schema, table)) is not None:
+        raise RefusedRowError(f"the new definition of {table} breaks a foreign key: {broken}")
 
 
 def _comment_checks(schema: Schema) -> None:
@@ -293,11 +334,19 @@ def migrate(db: sqlite3.Connection, path: Path) -> None:
     version = check(path, db, readonly=False)
     pending = MIGRATIONS if version == 0 else MIGRATIONS[version - BASELINE + 1 :]
     schema = Schema(db)
+    stays = f"{path.name} stays at version {version}"
     for step in pending:
-        step(schema)
+        try:
+            step(schema)
+        except RefusedRowError as refused:
+            raise ControlError(
+                UNAVAILABLE, f"{stays}: version {VERSION} refuses it, as {refused}. {_KEEP}"
+            ) from None
         if not db.in_transaction:
             raise ControlError(INTERNAL, "a migration step ended the writer's transaction")
     if pending:
-        if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
-            raise ControlError(INTERNAL, "a migration step broke a foreign key")
+        if (broken := _broken_key(db)) is not None:
+            raise ControlError(
+                UNAVAILABLE, f"{stays}: version {VERSION} refuses it, as {broken}. {_KEEP}"
+            )
         db.execute(f"PRAGMA user_version = {VERSION}")
