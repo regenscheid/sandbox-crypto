@@ -16,9 +16,12 @@ covered by the integrity hashes, the packages' are. It needs only the standard l
 
 One exception to "from the registry": a stub kept in the app's own ``stubs/`` directory,
 which an npm override puts in place of a package the app must not install (a native
-binary it never runs). Its lockfile entry is a link to that directory; the directory's
-own entry must declare an allowed license and have no dependencies or install script.
-Its code is in the repository, so it is reviewed like the rest.
+binary it never runs). The app's ``package.json`` must name the package in
+``overrides`` and depend on it as ``file:stubs/<name>``; its lockfile entry is exactly a
+link to that directory, whose own entry gives only a name, a version and an allowed
+license. With ``--installed``, the directory, reached through no symbolic link, holds
+nothing but a ``package.json`` with those fields and a description: no dependencies,
+scripts, executables or entry points.
 """
 
 from __future__ import annotations
@@ -172,22 +175,52 @@ def is_allowed(expression: str) -> bool:
 
 
 NPM_REGISTRY = "https://registry.npmjs.org/"
-STUBS = "stubs/"
+_STUB_PATH = re.compile(r"stubs/[a-z0-9][a-z0-9._-]*")
+_STUB_ENTRY = frozenset({"name", "version", "license"})
+_STUB_MANIFEST = frozenset({"name", "version", "license", "description", "private"})
 
 
-def _stub(path: str, entry: dict[str, Any]) -> bool:
-    """Whether a lockfile entry is the app's own stub package, under ``stubs/``."""
-    parts = path.split("/")
-    return (
-        path.startswith(STUBS)
-        and len(parts) == 2
-        and parts[1] not in ("", ".", "..")
-        and not any(key in entry for key in ("dependencies", "optionalDependencies"))
-    )
+def _stubs(packages: dict[str, dict[str, Any]], app: dict[str, Any] | None) -> dict[str, str]:
+    """The stubs the app overrides packages with: each link's path to its stub's path.
+    A link qualifies only when the app's ``package.json`` (``app``) overrides that package
+    and depends on it as the stub, and both lockfile entries have exactly a stub's fields."""
+    found: dict[str, str] = {}
+    if app is None:
+        return found
+    overrides = app.get("overrides")
+    dependencies = app.get("dependencies")
+    if not isinstance(overrides, dict) or not isinstance(dependencies, dict):
+        return found
+    for path, entry in packages.items():
+        name = path.removeprefix("node_modules/")
+        stub = entry.get("resolved")
+        if (
+            not path.startswith("node_modules/")
+            or "node_modules/" in name
+            or set(entry) != {"resolved", "link"}
+            or entry.get("link") is not True
+            or not isinstance(stub, str)
+            or not _STUB_PATH.fullmatch(stub)
+        ):
+            continue
+        target = packages.get(stub)
+        if (
+            target is None
+            or not set(target) <= _STUB_ENTRY
+            or target.get("name") != name
+            or dependencies.get(name) != f"file:{stub}"
+            or overrides.get(name) not in (f"${name}", f"file:{stub}")
+        ):
+            continue
+        found[path] = stub
+    return found
 
 
-def npm_problems(lockfile: dict[str, Any]) -> tuple[int, list[str]]:
-    """The packages an npm lockfile (version 3) installs, and what is wrong with them."""
+def npm_problems(
+    lockfile: dict[str, Any], app: dict[str, Any] | None = None
+) -> tuple[int, list[str]]:
+    """The packages an npm lockfile (version 3) installs, and what is wrong with them.
+    ``app`` is the app's own ``package.json``; without it, no stub is admitted."""
     if lockfile.get("lockfileVersion") != 3:
         return 0, ["the lockfile is not version 3; regenerate it with npm 9 or later"]
     if "dependencies" in lockfile:
@@ -195,21 +228,20 @@ def npm_problems(lockfile: dict[str, Any]) -> tuple[int, list[str]]:
     packages = lockfile.get("packages")
     if not isinstance(packages, dict) or "" not in packages:
         return 0, ["the lockfile has no `packages` section with the app itself"]
+    entries = cast(dict[str, dict[str, Any]], packages)
+    links = _stubs(entries, app)
+    stubs = set(links.values())
     problems: list[str] = []
     count = 0
-    for path, entry in sorted(cast(dict[str, dict[str, Any]], packages).items()):
+    for path, entry in sorted(entries.items()):
         if not path:
             continue  # the web app itself
         count += 1
         label = _label(path, entry)
         resolved = entry.get("resolved")
-        if entry.get("link"):
-            # Only a link to one of the app's own stubs; the stub's entry is checked itself.
-            target = packages.get(str(resolved))
-            if target is None or not _stub(str(resolved), target):
-                problems.append(f"{label}: comes from {resolved}, not the npm registry")
-            continue
-        stub = _stub(path, entry)
+        if path in links:
+            continue  # a link to one of the app's stubs, whose entry is checked itself
+        stub = path in stubs
         if not stub and not str(resolved).startswith(NPM_REGISTRY):
             problems.append(f"{label}: comes from {resolved}, not the npm registry")
         if not stub and not str(entry.get("integrity", "")).startswith("sha512-"):
@@ -236,6 +268,8 @@ def installed_problems(lockfile: dict[str, Any], root: Path) -> tuple[int, list[
             if path and (root / path).resolve() != (root / str(entry.get("resolved"))).resolve():
                 problems.append(f"{_label(path, entry)}: is not linked to {entry.get('resolved')}")
             continue
+        if _STUB_PATH.fullmatch(path):
+            problems += _stub_problems(root, path, entry)
         manifest = root / path / "package.json"
         if not path or not manifest.is_file():
             if path and not entry.get("optional"):
@@ -253,6 +287,31 @@ def installed_problems(lockfile: dict[str, Any], root: Path) -> tuple[int, list[
                     f"lockfile {entry.get(name)!r}"
                 )
     return count, problems
+
+
+def _stub_problems(root: Path, path: str, entry: dict[str, Any]) -> list[str]:
+    """What is wrong with an installed stub: it must be a real directory in the app, with
+    nothing but a ``package.json`` that names the package and declares nothing to run."""
+    label = _label(path, entry)
+    directory = root / path
+    if any(part.is_symlink() for part in (root / "stubs", directory, directory / "package.json")):
+        return [f"{label}: is reached through a symbolic link"]
+    if not directory.is_dir() or directory.resolve() != root.resolve() / path:
+        return [f"{label}: is not a directory in the app"]
+    contents = sorted(child.name for child in directory.iterdir())
+    if contents != ["package.json"]:
+        return [f"{label}: holds {contents}, not only a package.json"]
+    found = json.loads((directory / "package.json").read_text(encoding="utf-8"))
+    if not isinstance(found, dict):
+        return [f"{label}: its package.json is not an object"]
+    fields = cast(dict[str, Any], found)
+    problems: list[str] = []
+    extra = sorted(set(fields) - _STUB_MANIFEST)
+    if extra:
+        problems.append(f"{label}: its package.json declares {extra}, which a stub may not")
+    if fields.get("name") != entry.get("name"):
+        problems.append(f"{label}: its package.json names {fields.get('name')!r}")
+    return problems
 
 
 def _label(path: str, entry: dict[str, Any]) -> str:
@@ -291,7 +350,9 @@ def main(argv: list[str] | None = None) -> int:
         checked = f"all {count} installed distributions have"
     else:
         lockfile = json.loads(args.npm.read_text(encoding="utf-8"))
-        count, problems = npm_problems(lockfile)
+        manifest = args.npm.parent / "package.json"
+        app = json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else None
+        count, problems = npm_problems(lockfile, app)
         checked = f"all {count} packages in {args.npm} come from the registry and have"
         if args.installed and not problems:
             installed, mismatches = installed_problems(lockfile, args.npm.parent)

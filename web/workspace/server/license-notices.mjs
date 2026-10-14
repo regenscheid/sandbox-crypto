@@ -17,7 +17,7 @@ const virtualPackages = new Map([
 const PDFJS = 'node_modules/pdfjs-dist/';
 const PDFJS_SHIPPED = [/^cmaps\/[^/]+\.bcmap$/, /^standard_fonts\/Foxit[^/]+\.pfb$/,
   /^wasm\/[a-z0-9]+_nowasm_fallback\.js$/, /^build\/pdf\.worker\.min\.mjs$/];
-const PDFJS_EXCLUDED = /LiberationSans|quickjs|pdf\.sandbox|\.wasm$/;
+const PDFJS_EXCLUDED = /LiberationSans|quickjs|pdf\.sandbox|pdf_viewer|^legacy\/|\.wasm$/;
 
 // Where the viewer's build reads and writes: its page below the GUI's sources, its output
 // in the GUI's dist/viewer, which the preview origin serves under /viewer/.
@@ -96,8 +96,19 @@ export function collectNotices(root, bundle, distribution = 'gui', sourceRoot = 
     }
     if (id.includes('\0')) throw new Error(`Uncovered virtual license origin: ${id}`);
     const name = inside(root, realpathSync(resolve(sourceRoot, id.split('?')[0])));
-    if (name.startsWith(PDFJS) && distribution !== 'viewer') {
-      throw new Error(`PDF.js belongs to the viewer's bundle only: ${name}`);
+    if (name.startsWith(PDFJS)) {
+      if (distribution !== 'viewer') throw new Error(`PDF.js belongs to the viewer's bundle only: ${name}`);
+      // Bundled code is PDF.js's core API, byte for byte, and the worker's URL (the worker
+      // itself is a copied asset): never its scripting sandbox, viewer components or
+      // legacy build.
+      const file = name.slice(PDFJS.length);
+      const query = id.includes('?') ? id.slice(id.indexOf('?')) : '';
+      const pinned = query === '' ? manifest.pdfjsRuntime[file] : undefined;
+      const workerUrl = query === '?url' && file === 'build/pdf.worker.min.mjs';
+      if (PDFJS_EXCLUDED.test(file) || !(pinned || workerUrl)) {
+        throw new Error(`Uncovered PDF.js module: ${file}${query}`);
+      }
+      if (pinned) checkedBytes(resolve(root, name), pinned);
     }
     if (name.startsWith('node_modules/')) {
       const match = /^node_modules\/((?:@[^/]+\/)?[^/]+)\//.exec(name);

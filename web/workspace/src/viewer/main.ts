@@ -17,7 +17,9 @@ import {
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
   anchorMessage,
+  canvasRatio,
   capabilitySha,
+  framedBy,
   pageByLabel,
   pageLabel,
   pdfBox,
@@ -67,7 +69,8 @@ async function show(index: number): Promise<void> {
   container.style.width = `${viewport.width}px`;
   container.style.height = `${viewport.height}px`;
   const canvas = document.createElement('canvas');
-  const ratio = window.devicePixelRatio || 1;
+  // A page drawn larger than the canvas cap is drawn at a lower resolution, same size.
+  const ratio = canvasRatio(viewport.width, viewport.height, window.devicePixelRatio || 1);
   canvas.width = Math.floor(viewport.width * ratio);
   canvas.height = Math.floor(viewport.height * ratio);
   canvas.style.width = `${viewport.width}px`;
@@ -96,6 +99,13 @@ async function show(index: number): Promise<void> {
   smaller.disabled = scaleIndex === 0;
   larger.disabled = scaleIndex === SCALES.length - 1;
   status.textContent = '';
+}
+
+/** Show a page, saying so when it cannot be drawn rather than failing silently. */
+function go(index: number): void {
+  show(index).catch(() => {
+    status.textContent = `Page ${index} could not be drawn.`;
+  });
 }
 
 /** Post the anchor of the selection on the page shown; say why when there is none. */
@@ -137,6 +147,11 @@ async function open(): Promise<void> {
     status.textContent = 'This viewer opens a PDF only from a link the workspace made.';
     return;
   }
+  // Where the browser says who frames the viewer, it must be the workspace the link names.
+  if (!framedBy(params.workspace, location.ancestorOrigins)) {
+    status.textContent = 'This viewer opens only inside the workspace that made its link.';
+    return;
+  }
   try {
     pdf = await getDocument({
       url: `/pdf/${params.capability}`,
@@ -155,24 +170,24 @@ async function open(): Promise<void> {
   labels = await pdf.getPageLabels().catch(() => null);
   for (const control of [pageInput, labelInput]) control.disabled = false;
   anchorButton.disabled = false;
-  previous.addEventListener('click', () => void show(current - 1));
-  next.addEventListener('click', () => void show(current + 1));
+  previous.addEventListener('click', () => go(current - 1));
+  next.addEventListener('click', () => go(current + 1));
   smaller.addEventListener('click', () => {
     scaleIndex = Math.max(0, scaleIndex - 1);
-    void show(current);
+    go(current);
   });
   larger.addEventListener('click', () => {
     scaleIndex = Math.min(SCALES.length - 1, scaleIndex + 1);
-    void show(current);
+    go(current);
   });
-  pageInput.addEventListener('change', () => void show(Number(pageInput.value) || 1));
+  pageInput.addEventListener('change', () => go(Number(pageInput.value) || 1));
   labelInput.addEventListener('change', () => {
     const found = pageByLabel(labels, labelInput.value, pdf?.numPages ?? 0);
-    if (found) void show(found);
+    if (found) go(found);
     else status.textContent = `No page is labelled ${labelInput.value}.`;
   });
   anchorButton.addEventListener('click', () => copyAnchor(sha256, params.workspace));
-  await show(1);
+  go(1);
 }
 
 void open();

@@ -307,7 +307,8 @@ async def test_the_workspace_origin_never_serves_the_viewer(
     workspace = await aiohttp_client(
         create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     )
-    for path in ("/viewer/viewer.mjs", "/viewer/index.html", "/viewer/", "/viewer"):
+    # In any case, for a filesystem that ignores it.
+    for path in ("/viewer/viewer.mjs", "/viewer/index.html", "/viewer/", "/viewer", "/VIEWER/x"):
         response = await workspace.get(path)
         assert response.status == 404, path
         assert "viewer" not in await response.text(), path

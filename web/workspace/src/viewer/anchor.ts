@@ -29,6 +29,28 @@ export function viewerParams(hash: string): ViewerParams | null {
   return { capability, workspace };
 }
 
+/**
+ * Whether the viewer may open for this workspace: where the browser lists the origins
+ * that frame the page (`location.ancestorOrigins`), the nearest must be the workspace.
+ * Browsers without the list rely on the CSP's `frame-ancestors`.
+ */
+export function framedBy(workspace: string, ancestors: ArrayLike<string> | undefined): boolean {
+  return ancestors === undefined || ancestors.length === 0 || ancestors[0] === workspace;
+}
+
+/** The most pixels a page's canvas gets, as PDF.js's own viewer caps it. */
+export const MAX_CANVAS_PIXELS = 2 ** 25;
+
+/**
+ * The canvas pixels per CSS pixel for a page shown `width` by `height`: the screen's
+ * ratio, lowered when the canvas would pass the cap.
+ */
+export function canvasRatio(width: number, height: number, device: number): number {
+  const area = width * height;
+  if (!(area > 0)) return device;
+  return Math.min(device, Math.sqrt(MAX_CANVAS_PIXELS / area));
+}
+
 /** The SHA-256 a capability names: its payload is readable, its MAC is the server's. */
 export function capabilitySha(capability: string): string | null {
   try {

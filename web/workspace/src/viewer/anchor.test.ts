@@ -2,7 +2,10 @@
 import { describe, expect, test } from 'vitest';
 import {
   anchorMessage,
+  canvasRatio,
   capabilitySha,
+  framedBy,
+  MAX_CANVAS_PIXELS,
   MAX_QUOTE,
   pageByLabel,
   pageLabel,
@@ -101,5 +104,42 @@ describe('the anchor of a selection', () => {
     expect(
       anchorMessage(SHA, 1, '1', [0, 0, 1, 1], 'x'.repeat(MAX_QUOTE + 5)).anchor.quote,
     ).toHaveLength(MAX_QUOTE);
+  });
+});
+
+describe('where the viewer runs', () => {
+  const workspace = 'http://127.0.0.1:8200';
+
+  test('inside the workspace the link names, or where the browser does not say', () => {
+    expect(framedBy(workspace, [workspace])).toBe(true);
+    expect(framedBy(workspace, [workspace, 'http://elsewhere'])).toBe(true);
+    expect(framedBy(workspace, [])).toBe(true); // opened directly: anchors go nowhere
+    expect(framedBy(workspace, undefined)).toBe(true); // a browser without the list
+  });
+
+  test('never inside another page', () => {
+    expect(framedBy(workspace, ['http://evil.example'])).toBe(false);
+    expect(framedBy(workspace, ['http://127.0.0.1:8201', workspace])).toBe(false);
+  });
+});
+
+describe('the canvas of a page', () => {
+  test("follows the screen's ratio while the canvas stays under the cap", () => {
+    expect(canvasRatio(612, 792, 2)).toBe(2);
+    expect(canvasRatio(612, 792, 1)).toBe(1);
+  });
+
+  test('is drawn at a lower resolution, not a smaller size, past the cap', () => {
+    // A 200-inch-wide page at 300%: its CSS size is kept, its pixels are capped.
+    const [width, height] = [43200, 2376];
+    const ratio = canvasRatio(width, height, 2);
+    expect(ratio).toBeLessThan(1);
+    expect(Math.floor(width * ratio) * Math.floor(height * ratio)).toBeLessThanOrEqual(
+      MAX_CANVAS_PIXELS,
+    );
+  });
+
+  test('keeps the screen ratio for an empty page', () => {
+    expect(canvasRatio(0, 792, 2)).toBe(2);
   });
 });

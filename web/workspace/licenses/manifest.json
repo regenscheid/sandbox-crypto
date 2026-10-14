@@ -373,5 +373,8 @@
     "standard_fonts/FoxitSymbol.pfb": "47967d055530e7357088a08403115425643ec2cdfd6201ba8af0fbd7116c1539",
     "wasm/jbig2_nowasm_fallback.js": "04c795a6657a4553a64b781ea3e85256203d913c3b71b72b85fa3ce00622f458",
     "wasm/openjpeg_nowasm_fallback.js": "0f998419819da4491d8302222aa9e2ff2494685641aa2a6c21c3760c29f3e319"
+  },
+  "pdfjsRuntime": {
+    "build/pdf.mjs": "495588717f62303a839e91a5343deebf1b41f52e2f9f6361e73dee6ea6a4355e"
   }
 }

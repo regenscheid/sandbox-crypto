@@ -60,7 +60,10 @@ SHA-256, every PDF.js file that may ship: the packed character maps, the Foxit
 fonts, the two image decoders' JavaScript fallbacks and the worker. The build
 fails when one is missing or modified, or when any other PDF.js file appears; the
 Liberation fonts (GPL-2.0 with exceptions), QuickJS, the scripting sandbox and
-WebAssembly are refused by name. The GUI's own build refuses PDF.js entirely.
+WebAssembly are refused by name. Bundled PDF.js code is only `build/pdf.mjs`, its
+core API, pinned by SHA-256 in `pdfjsRuntime`, and the worker's `?url` import: an
+import of the scripting sandbox, the viewer components or the legacy build fails
+the build. The GUI's own build refuses PDF.js entirely.
 
 When updating npm packages, review their primary notice files and any bundled
 components before updating these pins. Review any new stylesheet, copied asset,

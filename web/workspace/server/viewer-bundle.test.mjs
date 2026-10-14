@@ -14,11 +14,12 @@ const pinned = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).d
 const PDFJS = 'node_modules/pdfjs-dist/';
 const EXCLUDED = /LiberationSans|quickjs|pdf\.sandbox|\.wasm$|\.icc$/;
 
-async function viewerBuild() {
+async function viewerBuild(plugins = []) {
   const result = await build({
     logLevel: 'silent',
     configFile: resolve(root, 'vite.viewer.config.ts'),
     build: { write: false },
+    plugins,
   });
   return Array.isArray(result) ? result.flatMap((r) => r.output) : result.output;
 }
@@ -87,4 +88,43 @@ test('the notices refuse an excluded PDF.js file, an unlisted one, or a listed o
     .toThrow('The PDF.js files shipped differ');
   expect(() => collectNotices(root, bundleWith(listed), 'gui'))
     .toThrow("PDF.js belongs to the viewer's bundle only");
+});
+
+// Dynamic code: what a scripting sandbox needs, and what the viewer must never ship.
+const DYNAMIC = /new\s+Function\b|(?<![\w$.])eval\s*\(|\.eval\b|quickjs|QuickJS|pdfjsSandbox/;
+
+test('nothing the viewer ships evaluates code or carries the scripting sandbox', async () => {
+  const output = await viewerBuild();
+  const scripts = output.filter((item) => /\.m?js$/.test(item.fileName));
+  expect(scripts.map((item) => item.fileName)).toContain('wasm/openjpeg_nowasm_fallback.js');
+  for (const item of scripts) {
+    const text = item.type === 'chunk' ? item.code : Buffer.from(item.source).toString('utf8');
+    expect(DYNAMIC.exec(text)?.[0], item.fileName).toBeUndefined();
+  }
+}, 60000);
+
+test.each(['pdfjs-dist/build/pdf.sandbox.mjs', 'pdfjs-dist/web/pdf_viewer.mjs',
+  'pdfjs-dist/legacy/build/pdf.mjs'])('a build that imports %s fails', async (module) => {
+  const inject = {
+    name: 'inject-import',
+    transform(code, id) {
+      return id.endsWith('/src/viewer/main.ts') ? `import '${module}';\n${code}` : null;
+    },
+  };
+  await expect(viewerBuild([inject])).rejects.toThrow('Uncovered PDF.js module');
+}, 60000);
+
+test('the notices refuse PDF.js modules other than its pinned core API', () => {
+  const listed = Object.keys(manifest.pdfjsAssets);
+  for (const module of ['build/pdf.sandbox.mjs', 'web/pdf_viewer.mjs', 'legacy/build/pdf.mjs',
+    'build/pdf.min.mjs', 'build/pdf.worker.mjs']) {
+    const bundle = bundleWith(listed);
+    bundle['assets/index.js'].moduleIds.push(resolve(root, PDFJS, module));
+    expect(() => collectNotices(root, bundle, 'viewer')).toThrow(`Uncovered PDF.js module: ${module}`);
+  }
+  const bundle = bundleWith(listed);
+  bundle['assets/index.js'].moduleIds.push(`${resolve(root, PDFJS, 'build/pdf.worker.min.mjs')}?url`);
+  expect(() => collectNotices(root, bundle, 'viewer')).not.toThrow();
+  bundle['assets/index.js'].moduleIds.push(`${resolve(root, PDFJS, 'build/pdf.sandbox.mjs')}?url`);
+  expect(() => collectNotices(root, bundle, 'viewer')).toThrow('Uncovered PDF.js module');
 });

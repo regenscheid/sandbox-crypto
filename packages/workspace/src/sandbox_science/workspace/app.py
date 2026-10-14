@@ -360,8 +360,9 @@ class StaticFiles:
     async def handle(self, request: web.Request) -> web.StreamResponse:
         segments = _segments(request.match_info["path"])
         # The PDF viewer's bundle sits in the build's viewer/ directory, but only the
-        # preview origin serves it: the renderer never runs on the workspace's origin.
-        if segments is None or segments[:1] in (["api"], ["viewer"]):
+        # preview origin serves it: the renderer never runs on the workspace's origin. The
+        # first name is casefolded, for a filesystem that ignores case.
+        if segments is None or [part.casefold() for part in segments[:1]] in (["api"], ["viewer"]):
             raise web.HTTPNotFound()
         if not segments:
             return self._file(self.index)
