@@ -19,7 +19,8 @@ from aiohttp import web
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
-from sandbox_science.workspace import provisioning, provisioning_client
+from sandbox_science.workspace import provisioning
+from sandbox_science.workspace.api import Timeouts
 
 from .test_provisioning import ClientFactory, Peer, ServerFactory, create, url
 
@@ -365,16 +366,19 @@ async def test_shared_extended_budget_does_not_change_ordinary_read_timeout(
 ) -> None:
     peer = PackagePeer()
     peer.blocked = True
-    monkeypatch.setattr(provisioning_client, "CALL_TIMEOUT", 0.01)
-    monkeypatch.setattr(provisioning_client, "DIFF_TIMEOUT", 1.0)
     client, _, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
+        aiohttp_client,
+        aiohttp_server,
+        state_dir,
+        static_dir,
+        peer,
+        timeouts=Timeouts(worker_call=0.01, worker_comparison=5.0),
     )
     call = asyncio.create_task(
         client.get(url(environment) + "/revisions/1/packages", params=query())
     )
     await peer.entered.wait()
-    await asyncio.sleep(0.03)
+    await asyncio.sleep(0.03)  # three ordinary deadlines pass; the package read keeps waiting
     assert not call.done()
     peer.release.set()
     assert (await call).status == 200
@@ -401,13 +405,13 @@ async def test_package_deadline_retains_same_physical_lane_and_file_descriptors(
         return result
 
     monkeypatch.setattr(provisioning, "project_snapshot", blocked)
-    monkeypatch.setattr(provisioning, "DIFF_TIMEOUT", 0.02)
-    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None)
+    proxy = provisioning.ProvisionProxy(
+        ProjectStore(state_dir), None, timeouts=Timeouts(comparison=0.02)
+    )
     environment = ProjectStore(state_dir).get("p1").default_environment_id
     wanted = provisioning.Selection("packages", revision=1, pin=PIN)
     call = asyncio.create_task(proxy.read("p1", environment, wanted, "login", lambda: True))
-    while not entered.is_set():
-        await asyncio.sleep(0)
+    assert await asyncio.to_thread(entered.wait, 5)
     try:
         with pytest.raises(ProjectError, match="timed out"):
             await call

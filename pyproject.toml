@@ -29,6 +29,9 @@ dev = [
     "types-pyyaml>=6.0",
     "pytest-asyncio>=1.4",
     "pytest-timeout>=2.4",
+    "pytest-repeat>=0.9",
+    "pytest-xdist>=3.6",
+    "sandbox-science-testing",
 ]
 
 [tool.uv]
@@ -46,6 +49,7 @@ sandbox-science-policy = { workspace = true }
 sandbox-science-policy-middleware = { workspace = true }
 sandbox-science-package-cache = { workspace = true }
 sandbox-science-worker = { workspace = true }
+sandbox-science-testing = { workspace = true }
 sandbox-science-workspace = { workspace = true }
 
 [tool.ruff]

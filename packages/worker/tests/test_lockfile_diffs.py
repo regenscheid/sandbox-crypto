@@ -609,6 +609,7 @@ async def test_authenticated_actual_http_no_active_calls_and_exact_pages(fixture
             guard_package_deletion=lambda _: None,
             forget_package_gate=lambda _: None,
             guard_package_reuse=lambda _: None,
+            end_streams=lambda: None,
         ),
     )
     secret = "test-secret-lockfile-diff-project-not-a-credential"

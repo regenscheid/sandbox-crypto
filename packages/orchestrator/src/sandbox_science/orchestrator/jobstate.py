@@ -11,14 +11,13 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import time
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
 
 from .documents import DocumentStore, store_path
 from .watcher_prompt import (
@@ -32,10 +31,18 @@ LEASE_SECONDS = 30
 
 
 class JobState:
-    """Control-plane state shared by harness processes and the workspace server."""
+    """Control-plane state shared by harness processes and the workspace server.
 
-    def __init__(self, state_dir: Path) -> None:
+    A run's delivery lease lasts ``lease_seconds`` after its last heartbeat. Times
+    are wall-clock seconds from ``clock``, since several processes compare them.
+    """
+
+    def __init__(
+        self, state_dir: Path, *, clock: Clock = SYSTEM_CLOCK, lease_seconds: float = LEASE_SECONDS
+    ) -> None:
         self.path = store_path(state_dir)
+        self.clock = clock
+        self.lease_seconds = lease_seconds
         documents = DocumentStore(self.path, producer="job-state")
         try:
             documents.initialize()
@@ -82,11 +89,14 @@ class JobState:
         finally:
             db.close()
 
+    def _now(self) -> float:
+        return self.clock.now().timestamp()
+
     def heartbeat(self, context: ExecutionContext, run: str) -> None:
         with self._db() as db:
             db.execute(
                 "INSERT OR REPLACE INTO job_runs VALUES (?, ?, ?, ?)",
-                (context.project_id, context.session_id, run, time.time()),
+                (context.project_id, context.session_id, run, self._now()),
             )
 
     def end_run(self, context: ExecutionContext, run: str) -> None:
@@ -122,7 +132,7 @@ class JobState:
                 row[0]
                 for row in db.execute(
                     "SELECT run FROM job_runs WHERE project=? AND session=? AND heartbeat>?",
-                    (*key, time.time() - LEASE_SECONDS),
+                    (*key, self._now() - self.lease_seconds),
                 )
             }
         return [
@@ -153,6 +163,7 @@ class JobState:
                 )
 
     def waits(self, context: ExecutionContext) -> list[dict[str, object]]:
+        now = self._now()
         with self._db() as db:
             rows = db.execute(
                 """SELECT w.payload, r.heartbeat FROM job_waits w LEFT JOIN job_runs r
@@ -163,7 +174,7 @@ class JobState:
             return [
                 {
                     **cast(dict[str, object], json.loads(row[0])),
-                    "connected": row[1] is not None and row[1] > time.time() - LEASE_SECONDS,
+                    "connected": row[1] is not None and row[1] > now - self.lease_seconds,
                 }
                 for row in rows
             ]
@@ -184,7 +195,7 @@ class JobState:
         pin = encode_provenance(provenance) if provenance is not None else None
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
-            now = time.time()
+            now = self._now()
             latest = db.execute(
                 "SELECT max(requested_at) FROM job_watcher_calls WHERE project=? AND job=?",
                 (context.project_id, job),

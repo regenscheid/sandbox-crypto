@@ -33,11 +33,12 @@ from sandbox_science.orchestrator.session_plans import (
     SessionPlans,
 )
 
+from .api import TIMEOUTS, Timeouts
+
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/plan"
 ROUTE_NAME: Final = "workspace_session_plan"
 MAX_CALLS: Final = 8
 MAX_LOGIN_CALLS: Final = 2
-CALL_TIMEOUT: Final = 6.0
 MAX_RESPONSE_BYTES: Final = 256 * 1024
 _IDENTIFIER: Final = TypeAdapter(Identifier)
 T = TypeVar("T")
@@ -189,8 +190,11 @@ class LoginEndedError(Exception):
 class PlanReader:
     """Bounded private read owner; no writable store or worker authority is retained."""
 
-    def __init__(self, projects: ProjectStore, canonical: DocumentStore) -> None:
+    def __init__(
+        self, projects: ProjectStore, canonical: DocumentStore, *, timeout: float = TIMEOUTS.call
+    ) -> None:
         self.projects = projects
+        self.timeout = timeout
         # Even injected writable app stores are never used to initialize plan SQL.
         self.documents = DocumentStore(canonical.path, producer="workspace-plans", readonly=True)
         self._files = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plan-view")
@@ -340,7 +344,7 @@ class PlanReader:
 
         task.add_done_callback(finished)
         try:
-            async with asyncio.timeout(CALL_TIMEOUT):
+            async with asyncio.timeout(self.timeout):
                 return await asyncio.shield(task)
         except TimeoutError:
             task.cancel()
@@ -386,9 +390,10 @@ def add_routes(
     canonical: DocumentStore,
     principal: Callable[[web.Request], str],
     authorized: Callable[[web.Request], bool],
+    timeouts: Timeouts = TIMEOUTS,
 ) -> None:
     """Register an authenticated read only; no plans schema initialization or writer."""
-    reader = PlanReader(projects, canonical)
+    reader = PlanReader(projects, canonical, timeout=timeouts.call)
     app[READER] = reader
 
     async def read(request: web.Request) -> web.Response:

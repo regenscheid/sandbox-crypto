@@ -15,6 +15,7 @@ from pydantic import ValidationError
 
 from sandbox_science.orchestrator import mathcheck
 from sandbox_science.orchestrator.mathcheck import ENGINE, OPTIONS, Formula, MathChecker
+from sandbox_science.testing import eventually
 
 
 def fixture_checker(tmp_path: Path, body: str, *, timeout: float = 1.0) -> MathChecker:
@@ -128,10 +129,9 @@ async def test_reap_drains_paused_subprocess_pipes() -> None:
     )
     assert process.stdout is not None
     try:
-        async with asyncio.timeout(2):
-            # Exercise a genuinely paused transport, rather than relying on scheduling.
-            while not getattr(process.stdout, "_paused", False):
-                await asyncio.sleep(0.001)
+        # Exercise a genuinely paused transport, rather than relying on scheduling.
+        stdout = process.stdout
+        await eventually(lambda: getattr(stdout, "_paused", False), timeout=2)
         await asyncio.wait_for(mathcheck._reap(process), 1)
         assert process.returncode is not None
         with pytest.raises(ProcessLookupError):
@@ -158,9 +158,7 @@ async def test_deadline_and_cancellation_reap_children(tmp_path: Path) -> None:
         os.kill(int(pidfile.read_text()), 0)
     pidfile.unlink()
     task = asyncio.create_task(checker.check(Formula(id="m1", tex="x")))
-    async with asyncio.timeout(2):
-        while not pidfile.exists():
-            await asyncio.sleep(0.01)
+    await eventually(pidfile.exists, timeout=2, describe="the checker started")
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task

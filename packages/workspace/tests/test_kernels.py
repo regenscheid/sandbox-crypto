@@ -19,7 +19,9 @@ from aiohttp.test_utils import TestClient, TestServer
 from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelObservation
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import eventually
 from sandbox_science.workspace import kernels
+from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
 
 TOKEN = "test-secret-kernel-workspace-login-0123456789"
@@ -83,6 +85,7 @@ async def create(
     worker: Worker | WorkerClient | None,
     *,
     login: bool = True,
+    timeouts: Timeouts = TIMEOUTS,
 ) -> TestClient[Any, Any]:
     client = await aiohttp_client(
         create_app(
@@ -90,6 +93,7 @@ async def create(
             static_dir,
             login_token=TOKEN,
             job_worker=cast(WorkerClient, worker),
+            timeouts=timeouts,
         )
     )
     if login:
@@ -267,10 +271,7 @@ async def test_http_disconnect_is_not_remote_cleanup_proof(
         assert len(proxy._tasks) == 1
         assert not worker.cancelled
         worker.release.set()
-        for _ in range(100):
-            if not proxy._tasks:
-                break
-            await asyncio.sleep(0.001)
+        await eventually(lambda: not proxy._tasks, describe="the admitted read finished")
         assert not proxy._tasks
         assert (await client.get(PATH)).status == 200
     finally:
@@ -308,6 +309,7 @@ async def test_real_worker_client_http_composition(
 ) -> None:
     calls: list[str] = []
     redirected: list[bool] = []
+    never = asyncio.Event()
 
     async def peer(request: web.Request) -> web.Response:
         calls.append(request.path)
@@ -326,7 +328,7 @@ async def test_real_worker_client_http_composition(
         if mode == "redirect":
             raise web.HTTPTemporaryRedirect("/stolen")
         if mode == "slow":
-            await asyncio.sleep(0.1)
+            await never.wait()  # so the workspace's deadline is the only way out
         return web.json_response(result)
 
     async def stolen(request: web.Request) -> web.Response:
@@ -338,9 +340,9 @@ async def test_real_worker_client_http_composition(
     app.router.add_post("/stolen", stolen)
     server = await aiohttp_server(app)
     worker = WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-observer-worker")
-    if mode == "slow":
-        monkeypatch.setattr(kernels, "CALL_TIMEOUT", 0.03)
-    client = await create(aiohttp_client, state_dir, static_dir, worker)
+    # The deadline covers the registry read and the connection too; leave room for them.
+    timeouts = Timeouts(call=0.5) if mode == "slow" else TIMEOUTS
+    client = await create(aiohttp_client, state_dir, static_dir, worker, timeouts=timeouts)
     response = await client.get(PATH)
     assert response.status == (200 if mode == "valid" else 503)
     assert response.headers["Cache-Control"] == "no-store"
@@ -402,9 +404,8 @@ async def test_thread_work_retains_admission_through_timeout_or_repeated_cancel_
         return original(project, session)
 
     monkeypatch.setattr(store, "session_snapshot", blocked)
-    monkeypatch.setattr(kernels, "CALL_TIMEOUT", 0.05)
     worker = Worker()
-    proxy = kernels.KernelProxy(store, cast(WorkerClient, worker))
+    proxy = kernels.KernelProxy(store, cast(WorkerClient, worker), timeout=0.05)
     call = asyncio.create_task(proxy.observe("p1", "a", "login", lambda: True))
     closing: asyncio.Task[None] | None = None
     try:

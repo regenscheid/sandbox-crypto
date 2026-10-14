@@ -239,3 +239,5 @@ Working checklist by work package ([implementation plan](../docs/IMPLEMENTATION-
 - [x] Plan snapshot tags
 - [x] Fix doc drift: IMPLEMENTATION-PLAN's harness default contradicts D61; ROADMAP M3 says hosted targets were established in M1 (PR #4)
 - [ ] Delete the paused `impl/p-policy-engine` branch and the merged `impl/p-policy` and `docs/plan-drift` branches (user's call)
+- [x] Refactoring plan Phase 1, the clock seam for the orchestrator and the workspace (F-04 steps 1–2, F-06 in part): a `Clock` protocol in `contracts`, `FakeClock` and `eventually()` in the development-only `packages/testing`, timeouts as constructor parameters, and the orchestrator and workspace tests that patched timeout constants or polled converted
+- [ ] Refactoring plan Phase 1, the clock seam for the worker (F-04 steps 1–3), the shared worker test client (F-06, C-13) and the CI tiers (F-03)

@@ -151,7 +151,7 @@ commits remain owned. These tests establish the catalog boundary, not sandbox pu
   - Results are checked and bounded by the attempt's output limit (stream texts, outputs, errors, `written_files`), and must survive a round trip through JSON in one event line, or they are shrunk. Malformed replies to file operations are `internal` errors.
   - Each execution may store stream text and rich output up to four times its output limit, and 100,000 events. Past the event count, further events are dropped; past the byte budget, which an honest executor never reaches, the attempt is also cancelled.
   - Whatever happens, an execution ends: an unexpected failure while dispatching it fails it as `internal`, and the watchdog ends one whose executor goes quiet. When reading from an executor ends, for any reason, the worker stops the executor (closing its stdin, then killing it after 15 seconds), as it does every executor when it closes.
-- **Event streams.** A stream that fails once it has started is dropped, so the client reconnects; a client leaving a stream is not an error. The harness's client accepts event lines up to `MAX_EVENT_BYTES`, counts a stream with nothing, not even an empty line, for 60 seconds as dropped, and gives up on an execution 300 seconds after its own limit.
+- **Event streams.** A stream that fails once it has started is dropped, so the client reconnects; a client leaving a stream is not an error. A stopping worker ends its open streams without a result, rather than waiting for their clients, and the clients ask again with `after`. The harness's client accepts event lines up to `MAX_EVENT_BYTES`, counts a stream with nothing, not even an empty line, for 60 seconds as dropped, and gives up on an execution 300 seconds after its own limit.
 - **Output.** A stream event carries at most 65,536 characters. A cell returns at most 10,000 rich outputs, within its output limit; one note stands for those left out. An executor keeps each line under 16 MiB: an end event too large for one line keeps less of its output, marked as truncated.
 - **Environment revisions** (W3). An environment's installed packages have a revision: `0` when the worker first sees them, one more for each change.
   - Before and after every attempt the executor takes a fingerprint of the packages installed for its interpreter: Conda's `conda-meta` records and pip's `dist-info` and `egg-info` directories, in the prefix's and the user's site-packages. `conda-meta`'s `history` and `pinned` record requests, not packages, and do not count: an install that links nothing makes no revision.
@@ -567,7 +567,13 @@ variables or across the Unix socket. Only one bridge may be active; a second is 
 Worker event callbacks are fenced to their current bridge. Keep this state directory
 with the worker's database when moving or restarting that worker. Confirmed deleted,
 stopped or replaced sandboxes become `lost` and their stale endpoints are forgotten.
-A transient gateway failure retries during live recovery; startup refuses readiness
+A lost bridge starts a live recovery of its environment. Each attempt reattaches every
+unfinished execution of the environment that no open bridge carries, including one
+whose bridge was lost while the recovery ran. A failed attempt, such as a transient
+gateway failure, is repeated after 0.2 s, doubling up to 30 s, until none is left.
+The worker polls each bridge for its executions' events. An unexpected failure while
+polling or recovering, such as one of the worker's database, is logged, and polling or
+recovery goes on. Startup tries five times, then refuses readiness
 until remembered live daemons can be reconciled and unknown installers quiesced.
 One unreachable live environment therefore delays availability for the pool, rather
 than exposing an API while its control-created tasks may still be running.

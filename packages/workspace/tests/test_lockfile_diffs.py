@@ -18,7 +18,8 @@ from aiohttp import web
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
-from sandbox_science.workspace import provisioning, provisioning_client
+from sandbox_science.workspace import provisioning
+from sandbox_science.workspace.api import Timeouts
 
 from .test_provisioning import ClientFactory, Peer, ServerFactory, create, url
 
@@ -352,14 +353,17 @@ async def test_comparison_only_budget_preserves_ordinary_transport_timeout(
 ) -> None:
     peer = DiffPeer()
     peer.blocked = True
-    monkeypatch.setattr(provisioning_client, "CALL_TIMEOUT", 0.01)
-    monkeypatch.setattr(provisioning_client, "DIFF_TIMEOUT", 1.0)
     client, _, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
+        aiohttp_client,
+        aiohttp_server,
+        state_dir,
+        static_dir,
+        peer,
+        timeouts=Timeouts(worker_call=0.01, worker_comparison=5.0),
     )
     call = asyncio.create_task(client.get(url(environment) + "/lockfile-diff", params=query()))
     await peer.entered.wait()
-    await asyncio.sleep(0.03)
+    await asyncio.sleep(0.03)  # three ordinary deadlines pass; the comparison keeps waiting
     assert not call.done()
     peer.release.set()
     assert (await call).status == 200
@@ -386,15 +390,15 @@ async def test_comparison_file_deadline_retains_actual_slot_and_descriptors(
         return result
 
     monkeypatch.setattr(provisioning, "project_snapshot", blocked)
-    monkeypatch.setattr(provisioning, "DIFF_TIMEOUT", 0.02)
-    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None)
+    proxy = provisioning.ProvisionProxy(
+        ProjectStore(state_dir), None, timeouts=Timeouts(comparison=0.02)
+    )
     environment = ProjectStore(state_dir).get("p1").default_environment_id
     wanted = provisioning.Selection(
         "lockfile-diff", before=1, before_pin=BEFORE, after=2, after_pin=AFTER
     )
     read = asyncio.create_task(proxy.read("p1", environment, wanted, "login", lambda: True))
-    while not entered.is_set():
-        await asyncio.sleep(0)
+    assert await asyncio.to_thread(entered.wait, 5)
     try:
         with pytest.raises(ProjectError, match="timed out"):
             await read
@@ -457,9 +461,13 @@ async def test_comparison_shares_ordinary_environment_lane_and_transport_timeout
 ) -> None:
     peer = DiffPeer()
     peer.blocked = True
-    monkeypatch.setattr(provisioning_client, "DIFF_TIMEOUT", 0.04)
     client, _, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
+        aiohttp_client,
+        aiohttp_server,
+        state_dir,
+        static_dir,
+        peer,
+        timeouts=Timeouts(worker_comparison=0.04),
     )
     call = asyncio.create_task(client.get(url(environment) + "/lockfile-diff", params=query()))
     await peer.entered.wait()

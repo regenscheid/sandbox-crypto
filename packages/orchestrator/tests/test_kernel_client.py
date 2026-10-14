@@ -182,16 +182,13 @@ async def test_kernel_observation_does_not_follow_redirect_or_fallback_to_status
 @pytest.mark.parametrize("headers_sent", [False, True])
 @pytest.mark.parametrize("lineage", [False, True])
 async def test_kernel_observation_whole_http_deadline_covers_headers_and_body(
-    monkeypatch: pytest.MonkeyPatch, headers_sent: bool, lineage: bool
+    headers_sent: bool, lineage: bool
 ) -> None:
     import asyncio
-
-    from sandbox_science.orchestrator import worker_client
 
     path = "/v1/kernels/lineage" if lineage else "/v1/kernels/observe"
     context = ExecutionContext(project_id="p", environment_id="e", session_id="s")
     release = asyncio.Event()
-    monkeypatch.setattr(worker_client, "KERNEL_OBSERVATION_TIMEOUT", 0.05)
 
     async def delayed(request: web.Request) -> web.StreamResponse:
         response = web.StreamResponse()
@@ -202,9 +199,12 @@ async def test_kernel_observation_whole_http_deadline_covers_headers_and_body(
 
     app = web.Application()
     app.router.add_post(path, delayed)
+    # The handler waits until released, so the client's deadline is the only way out.
     async with (
         TestServer(app) as server,
-        WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
+        WorkerClient(
+            str(server.make_url("")), "test-secret-kernel-client", observation_timeout=0.05
+        ) as client,
     ):
         try:
             with pytest.raises(WorkerAPIError) as error:
