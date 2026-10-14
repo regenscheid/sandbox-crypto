@@ -11,7 +11,6 @@ import {
   recoveredHtml,
   recoverMath,
   repairKey,
-  texToUnicode,
   type MathRenderer,
   type Recovery,
   type ShownRecovery,
@@ -19,6 +18,7 @@ import {
 import { MAX_MODEL_TEX, ModelRepairs } from './modelRepairs';
 import { definesMacros, safeRepair } from './texDefinitions';
 import { repairTex } from './texRepairs';
+import { texToUnicode } from './texUnicode';
 
 interface Call {
   tex: string;
