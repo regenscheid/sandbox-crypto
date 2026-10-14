@@ -5,6 +5,11 @@ The models describe data only; they do no I/O. The ``Clock`` protocol (clock.py)
 the one shared seam for time. docs/specs/tools.md defines the
 behavior behind the worker API types, and docs/IMPLEMENTATION-PLAN.md the
 shared contracts ("Shared contracts to establish first").
+
+Every model refuses unknown fields in both directions, so the components that share
+these contracts are released in lockstep, and the worker API checks its
+``PROTOCOL_VERSION`` on every request and response. A request's identity is the digest
+of its non-default fields (canonical.py). docs/COMPATIBILITY.md states the policy.
 """
 
 from .artifacts import ArtifactRef

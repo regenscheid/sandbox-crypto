@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import re
 from collections.abc import Sequence
@@ -78,6 +77,7 @@ from sandbox_science.policy.ceiling import effective_resources
 from . import installer_records, resolution
 from .catalog import CapabilitySpec, Catalog, ProbeSpec
 from .errors import WorkerError
+from .identity import execution_digest, provision_digest, same_execution, same_provision
 from .manager import ExecutionManager
 from .permissions import Permissions, PermissionStoreError
 from .provision_events import ProvisionEvents
@@ -285,11 +285,10 @@ class Provisioner:
                 f"the catalog has no capability {request.capability!r}; it has {names}. "
                 "Ask for packages by their conda-forge names instead",
             )
-        digest = hashlib.sha256(request.model_dump_json().encode()).hexdigest()
         found = self.store.find_provision(request.context.project_id, request.operation_id)
         if found is not None:
             provision_id, existing = found
-            if existing != digest:
+            if not same_provision(existing, request):
                 raise WorkerError(
                     ErrorKind.CONFLICT,
                     f"operation {request.operation_id} was submitted with a different request",
@@ -318,7 +317,7 @@ class Provisioner:
             submitted_at=self.clock.now(),
             installer_steps=(),
         )
-        self.store.insert_provision(record, digest)
+        self.store.insert_provision(record, provision_digest(request))
         op = _Op(record, asyncio.get_running_loop().create_future())
         self._ops[record.provision_id] = op
         queue = self._queues.setdefault(environment_id, [])
@@ -711,11 +710,7 @@ class Provisioner:
             timeout_seconds=min(timeout, float(MAX_TIMEOUT_SECONDS)),
             output_limit_bytes=limit,
         )
-        self.store.authorize_provision_step(
-            op.record.provision_id,
-            request.operation_id,
-            hashlib.sha256(request.model_dump_json().encode()).hexdigest(),
-        )
+        self._authorize(op, request)
         execution, _ = await self.manager.submit(request, origin=op.record.provision_id)
         updates: dict[str, Any] = {"executions": (*op.record.executions, execution.execution_id)}
         if label in installer_records.LABELS:
@@ -1373,6 +1368,16 @@ class Provisioner:
             await self._failed_install(op, error, cancelled, before, after, uncertain)
         return before, after
 
+    def _authorize(self, op: _Op, request: ShellRequest) -> None:
+        """Let the manager run ``request`` as a step of ``op``; once is enough."""
+        provision_id = op.record.provision_id
+        if not same_execution(
+            self.store.provision_step(provision_id, request.operation_id), request
+        ):
+            self.store.authorize_provision_step(
+                provision_id, request.operation_id, execution_digest(request)
+            )
+
     async def _look(self, op: _Op, label: str) -> int | None:
         """The environment's revision now, from a step that does nothing: an execution's
         start reports the packages' fingerprint. None if it could not start."""
@@ -1383,11 +1388,7 @@ class Provisioner:
             timeout_seconds=LOOK_TIMEOUT,
             output_limit_bytes=1024,
         )
-        self.store.authorize_provision_step(
-            op.record.provision_id,
-            request.operation_id,
-            hashlib.sha256(request.model_dump_json().encode()).hexdigest(),
-        )
+        self._authorize(op, request)
         try:
             execution, _ = await self.manager.submit(request, origin=op.record.provision_id)
             self._update(op, executions=(*op.record.executions, execution.execution_id))

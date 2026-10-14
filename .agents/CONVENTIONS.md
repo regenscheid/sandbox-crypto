@@ -107,6 +107,7 @@ CI runs the same commands.
 - Errors: raise specific exception types defined in the member; never swallow exceptions silently.
 - Comments explain *why*, not *what*. Docstrings on public classes and functions.
 - Keep modules focused; split a module when it holds unrelated concepts.
+- Contracts follow the [compatibility policy](../docs/COMPATIBILITY.md). Until M3 the orchestrator, the workspace and the worker are released in lockstep: any change to what crosses the worker API raises `PROTOCOL_VERSION`, and each side refuses another version. A new request field gets a default that keeps the old behavior, since an operation's identity is the digest of its non-default fields (`contracts/canonical.py`); a change to a default's meaning or a field's JSON form keeps accepting the old digest for one release.
 
 ## Testing
 

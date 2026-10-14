@@ -33,6 +33,7 @@ from sandbox_science.contracts import (
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import fake_worker_app
 from sandbox_science.workspace.app import create_app
 
 TOKEN = "test-secret-route-characterization-login-0123456789"
@@ -132,7 +133,7 @@ class FakeWorker:
         self.cancelled: list[str] = []
 
     def application(self) -> web.Application:
-        app = web.Application(middlewares=[self._record])
+        app = fake_worker_app(middlewares=[self._record])
         app.router.add_post("/v1/kernels/observe", self._observe)
         app.router.add_get("/v1/jobs", self._jobs)
         app.router.add_get("/v1/jobs/{job}", self._job)

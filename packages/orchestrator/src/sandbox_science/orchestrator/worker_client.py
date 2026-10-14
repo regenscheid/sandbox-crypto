@@ -39,7 +39,6 @@ from sandbox_science.contracts import (
     FileListing,
     HostPort,
     JobListing,
-    JobRequest,
     JobStatus,
     KernelInfo,
     KernelLineageObservation,
@@ -69,7 +68,13 @@ from sandbox_science.contracts.revisions import (
     MAX_REVISION_PAGE,
     MAX_REVISION_PAGE_BYTES,
 )
-from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MAX_EVENT_BYTES, Language
+from sandbox_science.contracts.worker import (
+    EVENT_HEARTBEAT_SECONDS,
+    MAX_EVENT_BYTES,
+    PROTOCOL_HEADER,
+    PROTOCOL_VERSION,
+    Language,
+)
 
 _log = logging.getLogger(__name__)
 _EVENT: Final = TypeAdapter[Event](Event)
@@ -86,6 +91,8 @@ TRANSFER_TIMEOUT: Final = 10.0
 RESULT_GRACE: Final = 300.0
 """Seconds past an execution's own limit that ``run`` waits for its result. The worker's
 watchdog ends an overdue execution within 90 seconds of its limit."""
+PROTOCOL: Final = {PROTOCOL_HEADER: str(PROTOCOL_VERSION)}
+"""Sent with every request, so that a worker of another protocol version refuses it."""
 _Model = TypeVar("_Model", bound=BaseModel)
 
 
@@ -97,6 +104,11 @@ class WorkerAPIError(Exception):
         self.kind = kind
         self.message = message
         self.status = status
+
+
+class WorkerProtocolError(WorkerAPIError):
+    """The worker speaks another protocol version (``unsupported``). Releases are lockstep,
+    so no caller may read it as a missing feature, fall back, or retry."""
 
 
 @dataclass(frozen=True)
@@ -225,23 +237,20 @@ class WorkerClient:
         allow_redirects: bool = True,
     ) -> tuple[_Model, int]:
         """The response as ``model``, and its status; a body over ``max_bytes`` is an error."""
-        if isinstance(body, JobRequest):
-            # Keep the union discriminator while omitting an unspecified time limit,
-            # so the worker can choose the policy's configured default.
-            body = body.model_copy(update={"kind": "job"})
-        data = body.model_dump_json(exclude_unset=isinstance(body, JobRequest)) if body else None
+        data = body.model_dump_json() if body else None
         try:
             async with self._http().request(
                 method,
                 self.base_url + path,
                 data=data,
                 params=params,
-                headers={**self._headers, "Content-Type": "application/json"},
+                headers={**self._headers, **PROTOCOL, "Content-Type": "application/json"},
                 timeout=aiohttp.ClientTimeout(
                     total=total_timeout, sock_connect=10, sock_read=CALL_TIMEOUT
                 ),
                 allow_redirects=allow_redirects,
             ) as response:
+                await check_protocol(response)
                 if max_bytes is None:
                     payload = await response.read()
                 else:
@@ -394,11 +403,12 @@ class WorkerClient:
                 async with self._http().get(
                     f"{self.base_url}/v1/executions/{execution_id}/events",
                     params={"after": str(after), **_project(project_id)},
-                    headers=self._headers,
+                    headers={**self._headers, **PROTOCOL},
                     timeout=aiohttp.ClientTimeout(
                         total=None, sock_connect=10, sock_read=self.stream_timeout
                     ),
                 ) as response:
+                    await check_protocol(response)
                     if response.status >= 400:
                         raise _error(await response.read(), response.status)
                     async for line in _lines(response.content, MAX_EVENT_BYTES):
@@ -453,8 +463,12 @@ class WorkerClient:
             on_submitted(execution, created)
         project_id = request.context.project_id
         events = self.events(execution.execution_id, project_id=project_id)
+        limit = request.timeout_seconds
+        if limit is None:
+            # A job without a limit of its own has the policy's default, which the worker set.
+            limit = execution.job.timeout_seconds if execution.job is not None else 0.0
         try:
-            async with asyncio.timeout(request.timeout_seconds + self.result_grace):
+            async with asyncio.timeout(limit + self.result_grace):
                 async with contextlib.aclosing(events):
                     async for event in events:
                         if on_event is not None:
@@ -583,10 +597,11 @@ class WorkerClient:
             async with self._http().post(
                 f"{self.base_url}/v1/artifacts",
                 data=body,
-                headers={**self._headers, "Content-Type": "application/json"},
+                headers={**self._headers, **PROTOCOL, "Content-Type": "application/json"},
                 timeout=aiohttp.ClientTimeout(total=self.transfer_timeout),
                 allow_redirects=False,
             ) as response:
+                await check_protocol(response)
                 payload = await _bounded_body(
                     response.content, 16 * 1024 if response.status == 201 else 8192
                 )
@@ -629,11 +644,12 @@ class WorkerClient:
             async with self._http().get(
                 f"{self.base_url}/v1/artifacts/{snapshot.artifact_id}/content",
                 params={"project_id": snapshot.project_id},
-                headers=self._headers,
+                headers={**self._headers, **PROTOCOL},
                 timeout=aiohttp.ClientTimeout(total=self.transfer_timeout),
                 allow_redirects=False,
                 auto_decompress=False,
             ) as response:
+                await check_protocol(response)
                 if response.status >= 400:
                     raise _error(await _bounded_body(response.content, 8192), response.status)
                 if response.status != 200:
@@ -665,9 +681,10 @@ class WorkerClient:
             async with self._http().get(
                 f"{self.base_url}/v1/artifacts/{artifact_id}/content",
                 params=_project(project_id),
-                headers=self._headers,
+                headers={**self._headers, **PROTOCOL},
                 timeout=aiohttp.ClientTimeout(sock_connect=10, sock_read=CALL_TIMEOUT),
             ) as response:
+                await check_protocol(response)
                 if response.status >= 400:
                     raise _error(await response.read(), response.status)
                 return await response.read()
@@ -708,6 +725,30 @@ async def _lines(content: aiohttp.StreamReader, limit: int) -> AsyncIterator[byt
             )
     if buffer:
         yield bytes(buffer)
+
+
+async def check_protocol(response: aiohttp.ClientResponse) -> None:
+    """Refuse a response from a worker of another protocol version (docs/COMPATIBILITY.md).
+
+    Releases are lockstep, so there is nothing to negotiate: the orchestrator, the
+    workspace and the worker are upgraded together. An error without the header did not
+    come from the worker's application (a proxy or TLS terminator in front of it, or the
+    HTTP parser), so it is reported as that error, not as a version mismatch.
+    """
+    spoken = response.headers.get(PROTOCOL_HEADER)
+    if spoken == str(PROTOCOL_VERSION):
+        return
+    if spoken is None and response.status >= 400:
+        text = (await response.content.read(200)).decode("utf-8", "replace")
+        kind = ErrorKind.UNAVAILABLE if response.status in (502, 503, 504) else ErrorKind.INTERNAL
+        raise WorkerAPIError(kind, f"worker returned {response.status}: {text}", response.status)
+    found = "no protocol version" if spoken is None else f"protocol {spoken[:16]!r}"
+    raise WorkerProtocolError(
+        ErrorKind.UNSUPPORTED,
+        f"version mismatch: the worker reports {found}, this client speaks protocol "
+        f"{PROTOCOL_VERSION}; upgrade the orchestrator, workspace and worker together",
+        response.status,
+    )
 
 
 def _project(project_id: str | None) -> dict[str, str]:

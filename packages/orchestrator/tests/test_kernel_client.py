@@ -9,6 +9,7 @@ from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import fake_worker_app
 
 
 @pytest.mark.asyncio
@@ -34,7 +35,7 @@ async def test_kernel_status_refuses_foreign_or_incoherent_http_response(
         assert await request.json() == {"context": context.model_dump(mode="json")}
         return web.json_response({"environment_id": "e", "session_id": "s", **change})
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_post("/v1/kernels/status", status)
     async with (
         TestServer(app) as server,
@@ -80,7 +81,7 @@ async def test_kernel_observation_refuses_foreign_or_incoherent_http_response(
             }
         )
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_post(path, observe)
     async with (
         TestServer(app) as server,
@@ -110,7 +111,7 @@ async def test_kernel_observation_bounds_chunked_success_and_error_bodies(
         await response.write(b"x")
         return response
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_post(path, oversized)
     async with (
         TestServer(app) as server,
@@ -137,10 +138,10 @@ async def test_kernel_observation_does_not_follow_redirect_or_fallback_to_status
         targets.append(request.path)
         raise AssertionError("observer followed redirect or opened the explicit status path")
 
-    redirected = web.Application()
+    redirected = fake_worker_app()
     redirected.router.add_route("*", "/target", target)
     async with TestServer(redirected) as destination:
-        app = web.Application()
+        app = fake_worker_app()
 
         async def redirect(request: web.Request) -> web.Response:
             return web.Response(
@@ -162,7 +163,7 @@ async def test_kernel_observation_does_not_follow_redirect_or_fallback_to_status
             assert error.value.status == 307
     assert targets == []
 
-    legacy = web.Application()
+    legacy = fake_worker_app()
     legacy.router.add_post("/v1/kernels/status", target)
     async with (
         TestServer(legacy) as server,
@@ -197,7 +198,7 @@ async def test_kernel_observation_whole_http_deadline_covers_headers_and_body(
         await release.wait()
         return response
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_post(path, delayed)
     # The handler waits until released, so the client's deadline is the only way out.
     async with (

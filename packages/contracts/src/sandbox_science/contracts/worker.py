@@ -18,7 +18,11 @@ from .artifacts import Sha256
 from .context import ExecutionContext
 from .model import Contract, Identifier
 
-PROTOCOL_VERSION: Final = 1
+PROTOCOL_VERSION: Final = 2
+"""The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
+any change to what the worker or its clients send, and each side refuses another version."""
+PROTOCOL_HEADER: Final = "X-Worker-Protocol"
+"""The header carrying ``PROTOCOL_VERSION`` on every worker request and response."""
 MAX_TIMEOUT_SECONDS: Final = 24 * 3600
 DEFAULT_TIMEOUT_SECONDS: Final = 120.0
 DEFAULT_OUTPUT_LIMIT: Final = 1024 * 1024
@@ -113,7 +117,10 @@ class JobRequest(Contract):
     expected_progress: Annotated[str, StringConstraints(min_length=1, max_length=4096)]
     wake_session: bool = False
     cwd: RelativePath = "."
-    timeout_seconds: Annotated[float, Field(gt=0, le=7 * 24 * 3600, allow_inf_nan=False)] = 86400.0
+    timeout_seconds: Annotated[float, Field(gt=0, le=7 * 24 * 3600, allow_inf_nan=False)] | None = (
+        None
+    )
+    """The job's time limit; None, the default, takes the policy's default when submitted."""
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
 
     @model_validator(mode="after")

@@ -34,6 +34,7 @@ from sandbox_science.worker import installer_records as logs
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.catalog import Catalog
 from sandbox_science.worker.errors import WorkerError
+from sandbox_science.worker.identity import execution_digest
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.provisioner import Provisioner, _Op, _Stop
 from sandbox_science.worker.store import Store
@@ -293,9 +294,8 @@ class ScriptedManager:
 
     async def submit(self, request: ShellRequest, *, origin: str):
         assert origin == PROVISION
-        assert (
-            self.store.provision_step(PROVISION, request.operation_id)
-            == hashlib.sha256(request.model_dump_json().encode()).hexdigest()
+        assert self.store.provision_step(PROVISION, request.operation_id) == execution_digest(
+            request
         )
         self.requests.append(request)
         n = len(self.requests)

@@ -16,6 +16,7 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Decisions](DECISIONS.md) | The decision register, the source of truth for each decision's status |
 | [Threat model](THREAT-MODEL.md) | Assets, threat sources, trust zones and isolation tiers (D43) |
 | [Licensing](LICENSING.md) | License tiers for dependencies, and the license checks |
+| [Compatibility](COMPATIBILITY.md) | Lockstep releases, the protocol-version check, and how requests keep their identity |
 | **Worker** | |
 | [Worker](WORKER.md) | The worker service: API, executor, sandboxes, provisioning, PDFs, shared data, daemon and recovery |
 | [Background jobs](BACKGROUND-JOBS.md) | Job tools, waits, watcher check-ins, notices and limits |

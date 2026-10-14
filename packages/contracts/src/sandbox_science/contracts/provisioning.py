@@ -127,11 +127,9 @@ class ProvisionRequest(Contract):
     pip_reason: Text | None = None
     """Why pip: what conda-forge lacks. Recorded as the fallback's reason (CP-15)."""
     system: tuple[SystemPackage, ...] = Field(default=(), max_length=MAX_SPECS)
-    action: Literal["install", "upgrade"] = Field(
-        default="install", exclude_if=lambda value: type(value) is str and value == "install"
-    )
-    """Explicit named Conda upgrade (CP-20); legacy installs keep their original JSON.
-    This slice supports neither uninstall/restore nor pip/capability upgrades."""
+    action: Literal["install", "upgrade"] = "install"
+    """Explicit named Conda upgrade (CP-20). This slice supports neither uninstall/restore
+    nor pip/capability upgrades."""
 
     @model_validator(mode="after")
     def _one_kind(self) -> Self:

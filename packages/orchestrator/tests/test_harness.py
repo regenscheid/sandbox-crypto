@@ -67,7 +67,7 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
-from sandbox_science.testing import eventually
+from sandbox_science.testing import eventually, fake_worker_app
 
 pytestmark = pytest.mark.asyncio
 
@@ -207,7 +207,7 @@ async def test_the_client_pages_revisions_and_bounds_what_it_reads() -> None:
         await response.write_eof()
         return response
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_get("/v1/environments/env1/revisions", page)
     app.router.add_get("/v1/environments/env2/revisions", huge)
     app.router.add_get("/v1/environments/env1/revisions/3/lockfile", huge)
@@ -546,7 +546,7 @@ async def test_h1_the_client_reads_every_event_line_the_worker_may_send(
         await response.write_eof()
         return response
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_get("/v1/executions/exe-1/events", events)
     async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
         received = [item async for item in client.events("exe-1")]
@@ -582,7 +582,7 @@ async def test_h2_heartbeats_keep_a_quiet_stream_open_and_silence_ends_it() -> N
         await asyncio.sleep(60)
         return response
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_get("/v1/executions/exe-1/events", quiet)
     app.router.add_get("/v1/executions/exe-2/events", silent)
     async with (
@@ -612,7 +612,7 @@ async def test_h2_run_gives_up_when_no_result_comes() -> None:
             await response.write(b"\n")
             await asyncio.sleep(0.1)
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_post("/v1/executions", submit)
     app.router.add_get("/v1/executions/exe-1/events", forever)
     request = ShellRequest(operation_id="op-1", context=CONTEXT, script="true", timeout_seconds=0.5)
@@ -655,7 +655,7 @@ async def test_m5_inputs_that_crashed_the_harness_are_tool_errors() -> None:
         body = {"path": "x", "sha256": "0" * 64, "size": 1, "offset": 0, "eof": True}
         return web.json_response({**body, "content_b64": "a"})
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_post("/v1/files/read", read)
     async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
         toolbox = Toolbox(client, CONTEXT)
@@ -838,7 +838,7 @@ async def test_the_client_resumes_a_dropped_event_stream() -> None:
         await response.write_eof()
         return response
 
-    app = web.Application()
+    app = fake_worker_app()
     app.router.add_get("/v1/executions/exe-1/events", events)
     async with TestServer(app) as server, WorkerClient(str(server.make_url("")), TOKEN) as client:
         received = [item async for item in client.events("exe-1")]

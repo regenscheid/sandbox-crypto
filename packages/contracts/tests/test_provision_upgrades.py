@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: MIT
-"""Explicit upgrade intent with historical install-byte compatibility."""
+"""Explicit upgrade intent; an omitted action is an install, with the same identity."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 
 import pytest
 from pydantic import ValidationError
 
 from sandbox_science.contracts import ExecutionContext, ProvisionRequest
+from sandbox_science.contracts.canonical import request_digest
 
-# Captured from the original 8675 request encoder; this is not built from the new model.
+# A request as the original 8675 encoder wrote it, before the action field existed.
 LEGACY = (
     '{"operation_id":"upgrade-test","context":{"project_id":"p","session_id":"s",'
     '"environment_id":"e","policy_revision":null,"actor":"agent"},"purpose":"synthetic",'
@@ -23,21 +23,19 @@ def request(**fields: object) -> ProvisionRequest:
     return ProvisionRequest.model_validate({**json.loads(LEGACY), **fields})
 
 
-def test_legacy_install_bytes_and_digest_remain_exact() -> None:
-    for value in (request(), request(action="install")):
-        assert value.model_dump_json() == LEGACY
-        assert (
-            hashlib.sha256(value.model_dump_json().encode()).digest()
-            == hashlib.sha256(LEGACY.encode()).digest()
-        )
+def test_an_omitted_action_is_an_install_with_the_same_identity() -> None:
+    digests = {
+        request_digest(value, "provision") for value in (request(), request(action="install"))
+    }
+    assert len(digests) == 1
     assert ProvisionRequest.model_validate_json(LEGACY).action == "install"
 
 
-def test_upgrade_is_explicit_and_changes_original_request_digest() -> None:
+def test_upgrade_is_explicit_and_changes_the_request_digest() -> None:
     value = request(action="upgrade")
     assert value.action == "upgrade"
     assert json.loads(value.model_dump_json())["action"] == "upgrade"
-    assert value.model_dump_json() != LEGACY
+    assert request_digest(value, "provision") != request_digest(request(), "provision")
     assert ProvisionRequest.model_validate_json(value.model_dump_json()) == value
 
 
@@ -64,13 +62,11 @@ def test_upgrade_is_named_conda_only(fields: dict[str, object]) -> None:
         request(action="upgrade", **fields)
 
 
-def test_regular_python_constructor_keeps_same_legacy_bytes() -> None:
-    assert (
-        ProvisionRequest(
-            operation_id="upgrade-test",
-            context=ExecutionContext(project_id="p", session_id="s", environment_id="e"),
-            purpose="synthetic",
-            conda=("pari",),
-        ).model_dump_json()
-        == LEGACY
+def test_regular_python_constructor_has_the_same_identity() -> None:
+    value = ProvisionRequest(
+        operation_id="upgrade-test",
+        context=ExecutionContext(project_id="p", session_id="s", environment_id="e"),
+        purpose="synthetic",
+        conda=("pari",),
     )
+    assert request_digest(value, "provision") == request_digest(request(), "provision")

@@ -67,7 +67,12 @@ from sandbox_science.contracts.lockfile_diffs import LockfileDiffPage, LockfileS
 from sandbox_science.contracts.provision_observations import MAX_OBSERVATION_BYTES
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE
-from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MediaType
+from sandbox_science.contracts.worker import (
+    EVENT_HEARTBEAT_SECONDS,
+    PROTOCOL_HEADER,
+    PROTOCOL_VERSION,
+    MediaType,
+)
 from sandbox_science.policy import effective_resources
 from sandbox_science.policy.model import Resources
 
@@ -129,6 +134,22 @@ def _json(model: BaseModel, status: int = 200) -> web.Response:
     return web.json_response(text=model.model_dump_json(), status=status)
 
 
+async def _speak_protocol(request: web.Request, response: web.StreamResponse) -> None:
+    """Every response names the worker's protocol version (docs/COMPATIBILITY.md)."""
+    response.headers[PROTOCOL_HEADER] = str(PROTOCOL_VERSION)
+
+
+def _check_protocol(request: web.Request) -> None:
+    """Refuse a client that names another protocol version; releases are lockstep."""
+    spoken = request.headers.get(PROTOCOL_HEADER)
+    if spoken is not None and spoken != str(PROTOCOL_VERSION):
+        raise WorkerError(
+            ErrorKind.UNSUPPORTED,
+            f"version mismatch: the client speaks worker protocol {spoken[:16]!r}, this "
+            f"worker {PROTOCOL_VERSION}; upgrade the orchestrator, workspace and worker together",
+        )
+
+
 def create_app(
     manager: ExecutionManager,
     token: str,
@@ -183,6 +204,7 @@ def create_app(
             return response
         request[_CLIENT] = client
         try:
+            _check_protocol(request)
             response = await handler(request)
         except WorkerError as error:
             response = _error(error.kind, error.message, error.status)
@@ -200,6 +222,7 @@ def create_app(
         return response
 
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
+    app.on_response_prepare.append(_speak_protocol)
     app[MANAGER] = manager
     app[HEARTBEAT] = heartbeat
     app[CREATING] = {}
