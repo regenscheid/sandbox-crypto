@@ -42,9 +42,11 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
-from .app import create_app
+from .app import create_app, own_hosts
+from .context import CONTEXT
 from .documents import WRITER
 from .mathrepair import MathRepairService, gateway_service, reviewer_alias
+from .preview import Capabilities, Preview, create_preview_app
 
 _log = logging.getLogger("sandbox_science.workspace")
 DEFAULT_LISTEN: Final = "127.0.0.1:8200"
@@ -106,18 +108,34 @@ def base_url(host: str, port: int) -> str:
     return f"http://[{host}]:{port}" if ":" in host else f"http://{host}:{port}"
 
 
-async def serve(app: web.Application, host: str, port: int, login_token: str) -> None:
-    """Serve until SIGTERM or SIGINT, after printing the login URL once."""
+async def serve(
+    app: web.Application,
+    host: str,
+    port: int,
+    login_token: str,
+    preview: tuple[web.Application, Preview, str, int] | None = None,
+) -> None:
+    """Serve until SIGTERM or SIGINT, after printing the login URL once. With ``preview``
+    (its application, its state, host and port), the PDF viewer's origin is served too."""
     stopping = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(signum, stopping.set)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
+    viewer = web.AppRunner(preview[0], access_log=None) if preview else None
     try:
         await web.TCPSite(runner, host, port).start()
         bound = runner.addresses[0][1] if port == 0 else port
         url = base_url(host, bound)
+        if preview is not None and viewer is not None:
+            _, state, preview_host, preview_port = preview
+            await viewer.setup()
+            await web.TCPSite(viewer, preview_host, preview_port).start()
+            shown = viewer.addresses[0][1] if preview_port == 0 else preview_port
+            state.origin = base_url(preview_host, shown)
+            print(f"PDF viewer origin on {state.origin}/", flush=True)
+            state.workspace_origin = url
         print(f"Sandbox Science workspace on {url}/", flush=True)
         print(
             "Log in by opening this URL; it works until the server stops:\n"
@@ -127,7 +145,14 @@ async def serve(app: web.Application, host: str, port: int, login_token: str) ->
         await stopping.wait()
         _log.info("stopping")
     finally:
+        if viewer is not None:
+            await viewer.cleanup()
         await runner.cleanup()
+
+
+def _preview_host(request: web.Request) -> bool:
+    """Whether a request to the preview origin names it by its own loopback address."""
+    return request.headers.get("Host", "").lower() in own_hosts(request)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -145,6 +170,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     command.add_argument(
         "--listen", default=DEFAULT_LISTEN, help=f"host:port (default {DEFAULT_LISTEN})"
+    )
+    command.add_argument(
+        "--preview-listen",
+        help="host:port of the PDF viewer's own origin (default: the same host, the next port)",
     )
     command.add_argument(
         "--allow-remote",
@@ -183,7 +212,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         repair = math_repairs(args.model_url, args.reviewer_model, args.api_key_file)
     except ValueError as exc:
         parser.error(str(exc))
+    try:
+        preview_host, preview_port = (
+            parse_listen(args.preview_listen)
+            if args.preview_listen
+            else (host, port + 1 if port else 0)
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     loopback = is_loopback(host)
+    if not is_loopback(preview_host) and not args.allow_remote:
+        parser.error(f"{preview_host} is not a loopback address; see --allow-remote")
+    if (preview_host, preview_port) == (host, port) and port:
+        parser.error("--preview-listen must differ from --listen: the viewer needs its own origin")
     if not loopback and not args.allow_remote:
         parser.error(
             f"{host} is not a loopback address; --allow-remote accepts connections from "
@@ -211,6 +252,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"error: {exc.message}", file=sys.stderr)
             return 1
     login_token = secrets.token_urlsafe(32)
+    preview = Preview(Capabilities())
     try:
         app = create_app(
             ProjectStore(args.state_dir, readonly=True),
@@ -220,6 +262,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             math_repair=repair,
             job_worker=job_worker,
             job_state=job_state,
+            preview=preview,
         )
     except OSError as exc:
         print(f"error: {exc} (build the web app: npm run build)", file=sys.stderr)
@@ -243,8 +286,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             "unencrypted, and any Host name is accepted",
             host,
         )
+    viewer_app = create_preview_app(
+        app[CONTEXT].documents,
+        preview.capabilities,
+        workspace_origin=lambda: preview.workspace_origin,
+        viewer_dir=args.static / "viewer",
+        check_host=_preview_host if is_loopback(preview_host) else lambda request: True,
+    )
     try:
-        asyncio.run(serve(app, host, port, login_token))
+        asyncio.run(
+            serve(app, host, port, login_token, (viewer_app, preview, preview_host, preview_port))
+        )
     except KeyboardInterrupt:  # before the signal handlers are in place
         return 0
     except OSError as exc:

@@ -50,6 +50,7 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from . import (
     api,
+    artifacts,
     chat,
     documents,
     errors,
@@ -69,6 +70,7 @@ from .mathrepair import (
     SessionLimitError,
     parse_request,
 )
+from .preview import Preview
 
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
@@ -94,6 +96,16 @@ CONTENT_SECURITY_POLICY: Final = "; ".join(
         "frame-ancestors 'none'",
     )
 )
+
+
+def content_security_policy(preview_origin: str) -> str:
+    """The workspace's CSP; with the PDF viewer on, it may frame that origin and no
+    other (docs/specs/pdf-viewer.md, PV-2)."""
+    if not preview_origin:
+        return CONTENT_SECURITY_POLICY
+    return f"{CONTENT_SECURITY_POLICY}; frame-src {preview_origin}"
+
+
 SECURITY_HEADERS: Final = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,
     "X-Content-Type-Options": "nosniff",
@@ -182,7 +194,7 @@ def cookie_name(request: web.Request) -> str:
     return SESSION_COOKIE if listener is None else f"{SESSION_COOKIE}-{listener[1]}"
 
 
-def _own_hosts(request: web.Request) -> frozenset[str]:
+def own_hosts(request: web.Request) -> frozenset[str]:
     """The ``Host`` values that name this server: its loopback names and its address."""
     listener = _listener(request)
     if listener is None:
@@ -207,6 +219,7 @@ def create_app(
     job_worker: WorkerClient | None = None,
     job_state: JobState | None = None,
     timeouts: api.Timeouts = api.TIMEOUTS,
+    preview: Preview | None = None,
 ) -> web.Application:
     """The workspace's application. ``check_host`` is off only for a listener that is not
     on loopback, where the names that reach it are not known. Without ``math_repair``,
@@ -215,7 +228,8 @@ def create_app(
     directory of ``store``, with a read-only connection for views and a separate lazy
     writer for explicit user changes. ``store`` and a ``document_store`` given must be
     read-only (``ValueError`` otherwise), since every view reads through them. The
-    application closes ``job_worker``."""
+    application closes ``job_worker``. With ``preview``, it lists published artifacts with
+    links that open a PDF in the viewer on the preview origin, and may frame that origin."""
     if not store.readonly:
         raise ValueError("the workspace's project store must be read-only")
     if document_store is not None and not document_store.readonly:
@@ -235,7 +249,7 @@ def create_app(
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
         host = request.headers.get(hdrs.HOST, "").lower()
-        if check_host and host not in _own_hosts(request):
+        if check_host and host not in own_hosts(request):
             return _refusal("This server answers only to its own address.")
         if request.method not in SAFE_METHODS:
             origin = request.headers.get(hdrs.ORIGIN, "").lower()
@@ -258,6 +272,8 @@ def create_app(
 
     async def secure(request: web.Request, response: web.StreamResponse) -> None:
         response.headers.update(SECURITY_HEADERS)
+        if preview is not None:
+            response.headers["Content-Security-Policy"] = content_security_policy(preview.origin)
 
     async def login(request: web.Request) -> web.StreamResponse:
         session = sessions.login(request.query.get("token", ""))
@@ -327,10 +343,13 @@ def create_app(
         job_state=job_state,
         timeouts=timeouts,
     )
+    if preview is not None:
+        app[artifacts.PREVIEW] = preview
     app.on_response_prepare.append(secure)
     app.on_cleanup.append(close)
     for feature in (
         api,
+        artifacts,
         documents,
         project_settings,
         reviews,

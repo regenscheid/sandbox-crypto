@@ -35,6 +35,7 @@ Open it in a browser on the same machine. The settings of `serve`:
 | `--static` | Required. The web app's build, `web/workspace/dist` |
 | `--listen` | `host:port`, default `127.0.0.1:8200`; port 0 picks a free port |
 | `--allow-remote` | Accept a listening address that is not loopback (see below) |
+| `--preview-listen` | `host:port` of the PDF viewer's own origin; default the same host and the next port ([the PDF viewer's origin](#the-pdf-viewers-origin)) |
 | `--log-level` | `DEBUG`, `INFO` (default), `WARNING` or `ERROR` |
 | `--worker`, `--worker-token-file` | The worker's URL and a file with the workspace's worker token, for job views and cancellation, kernel observations and provisioning observations |
 | `--model-url`, `--reviewer-model`, `--api-key-file` | The model gateway for math repairs ([math repairs](#math-repairs)) |
@@ -85,6 +86,8 @@ All routes need the session and answer JSON. Every route that is a GET also answ
 | --- | --- | --- |
 | GET | `/api/v0/projects` | `projects`: each project's ID, base profile, policy revision, default environment, times and number of sessions. A damaged record is listed with its `error` |
 | GET | `/api/v0/projects/{project}` | `project`: the same facts, its `sessions` (each with its environment, whether it is dedicated, when it was opened and closed, and how many runs it keeps), and its `environments`, the default first, each with the sessions in it |
+| GET | `/api/v0/projects/{project}/artifacts` | The project's published artifacts at their latest revisions, ten at a time (`?after=` an artifact ID), and whether the PDF viewer is on |
+| GET | `/api/v0/projects/{project}/artifacts/{artifact}/revisions/{revision}/viewer` | With `?sha256=`, the viewer's URL for that PDF revision on the preview origin, open for 10 minutes ([the PDF viewer's origin](#the-pdf-viewers-origin)) |
 | GET | `/api/v0/projects/{project}/macros` | The project's current versioned macro setting ([project macros](PROJECT-MACROS.md#changing-the-setting)) |
 | POST | `/api/v0/projects/{project}/macros` | Changes the setting: exact `expected` revision, bounded `macros` and `operation_id`, attributed to the USER on the server |
 | GET | `/api/v0/projects/{project}/sessions/{session}` | The `session` and its `runs`, oldest first: each run's `name`, `run_id` and `started_at` |
@@ -286,7 +289,15 @@ Everything the views show was written by an agent, a user, a paper or a program,
 - **Tool calls** show their arguments and results as plain text. A result's rich outputs (HTML, SVG, images) are not rendered.
 - **Code**, in tool calls and in Markdown, shows bidirectional control characters as their code points, such as `⟦U+202E⟧`, so that code cannot read differently from what ran.
 
-D54 puts previews of untrusted artifacts (HTML, SVG, notebook output, PDFs, and agent-written Markdown) on a separate origin, in sandboxed frames. The workspace shows only text, in the app's own origin, under the rules above and the policy that admits no inline script. Rich artifacts wait for the separate origin.
+D54 puts previews of untrusted artifacts (HTML, SVG, notebook output, PDFs, and agent-written Markdown) on a separate origin, in sandboxed frames. The workspace shows only text, in the app's own origin, under the rules above and the policy that admits no inline script. PDFs open on a separate origin ([below](#the-pdf-viewers-origin)); other rich artifacts wait for theirs.
+
+### The PDF viewer's origin
+
+PDFs are untrusted content, so the viewer has an origin of its own ([PDF viewer](specs/pdf-viewer.md), PV-1 to PV-3; [threat model](THREAT-MODEL.md), T6). The same process listens on a second port, `--preview-listen` (by default the next port on the same host; loopback unless `--allow-remote`), with a second application (`preview.py`) that serves only the viewer's bundle (`/viewer/`, from the build's `viewer/` directory) and PDF bytes for a capability (`/pdf/<capability>`). It has no API and no login, takes only GET and HEAD, and never reads a cookie: a request carrying the workspace's cookie, which the browser sends to every port on the host, gets exactly what one without it gets.
+
+The workspace mints a capability when the logged-in user asks to view a published PDF: an HMAC-SHA-256 over the project, the artifact, the revision, its SHA-256 and an expiry 10 minutes ahead, under a key made at random when the process starts and kept only in memory, so a restart ends every capability. The preview origin compares MACs in constant time, refuses a malformed, forged or expired capability (403), reads the bytes through the artifact inventory, which checks their size and SHA-256 (another revision's hash is not found, 404), refuses an artifact that is not `application/pdf` (415) or larger than 64 MiB (413), and answers `inline` with `nosniff`.
+
+Every preview response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'self'; font-src 'self' data: blob:; img-src 'self' data: blob:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors <the workspace's origin>`, so only the workspace may frame it and a compromised frame cannot even send a request to the workspace's port, and `Cache-Control: no-store`. The workspace's own policy then adds `frame-src <the preview origin>`, and only that. Both origins are the addresses the server prints (`127.0.0.1` by default), so open the workspace at the printed address: under another name for the same host, such as `localhost`, the viewer refuses to be framed.
 
 ### Where math begins and ends
 
@@ -398,7 +409,7 @@ npm install --ignore-scripts --before=2026-10-07T00:00:00Z some-package@1.2.3
 - Chat with an agent from the GUI, and a live transcript of a run in progress; detailed plan progress history and plan approval.
 - Rich-text editing, automatic merging of source conflicts, declining suggestions in the GUI, and restoring deleted documents; artifact and PDF anchors and annotation export; and the ledger and board ([research workspace](RESEARCH-WORKSPACE.md)).
 - Approvals in the GUI, with re-authentication for high-risk ones (D54), and policy revisions from the GUI. Provisioning operations and permission requests are shown but cannot be answered or changed from the GUI.
-- Previews of rich artifacts on a separate origin (D54), and the PDF viewer.
+- Previews of rich artifacts other than PDFs on a separate origin (D54); the PDF viewer's page itself (its origin is built).
 - Saving Markdown with its math in the dollar form beyond living documents: ledger entries, and direct edits of document files (LD-41, LD-42, LD-50).
 - Math checks for ledger entries and for reviewer, USER and platform prose; automatic compaction of check history; and idle dispatch of checks (the rest of LD-53 to LD-55, D82). Durable records of math-repair model calls and their budget (LD-46).
 - KaTeX in a Web Worker, with a time limit that ends a formula's render ([the backlog](../.agents/BACKLOG.md) says why it waits).
