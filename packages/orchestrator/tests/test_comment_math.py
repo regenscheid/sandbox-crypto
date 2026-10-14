@@ -576,8 +576,8 @@ def test_atomic_revision_scheduling_and_append_only_history(stores):
     with docs.control.write() as tx:
         db = tx.sql
         for sql in (
-            "UPDATE annotation_body_revisions SET body='changed'",
-            "DELETE FROM annotation_body_revisions",
+            "UPDATE text_revisions SET body='changed'",
+            "DELETE FROM text_revisions",
         ):
             with pytest.raises(sqlite3.IntegrityError, match="immutable"):
                 db.execute(sql)

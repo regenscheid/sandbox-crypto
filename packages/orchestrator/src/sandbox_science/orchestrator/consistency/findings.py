@@ -100,7 +100,8 @@ class Findings:
         result: Json = dict(zip(FIELDS, row, strict=True))
         result["anchors"] = json.loads(result["anchors"])
         result["response_generation"] = db.execute(
-            "SELECT coalesce(max(rowid),0) FROM review_response_bodies WHERE finding_id=?",
+            "SELECT coalesce(max(rowid),0) FROM text_revisions WHERE subject_type='response' "
+            "AND parent=?",
             (finding,),
         ).fetchone()[0]
         result["source"] = (

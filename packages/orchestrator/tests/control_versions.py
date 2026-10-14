@@ -34,6 +34,9 @@ EVENT_LOG = migrations.BASELINE + 11
 FEED_CURSORS = migrations.BASELINE + 12
 """The version that moved the reviewer's feed cursors into ``feed_cursors``."""
 
+TEXT_REVISIONS = migrations.BASELINE + 13
+"""The version that moved comment and explanation bodies into ``text_revisions``."""
+
 EMPTY_SHA = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 """The SHA-256 of ``{}``, the empty macro setting."""
 
@@ -50,7 +53,7 @@ _PINS = (
     "INSERT INTO math_macro_contexts SELECT check_id,'{}','[]',macro_held,"
     "lower(hex(zeroblob(32))) FROM src.math_jobs WHERE macro_held IS NOT NULL",
     "INSERT INTO response_macro_revisions SELECT source,revision,macro_revision "
-    "FROM src.review_response_bodies WHERE macro_revision IS NOT NULL",
+    "FROM old_response_bodies WHERE macro_revision IS NOT NULL",
     "INSERT INTO review_macro_pins SELECT p.review_id,p.finding_id,p.macro_revision,"
     "coalesce((SELECT r.sha256 FROM src.project_macro_revisions r JOIN src.review_findings f "
     "ON f.project=r.project WHERE f.finding_id=p.finding_id AND r.revision=p.macro_revision),"
@@ -88,6 +91,17 @@ _CURSORS = (
     "AND c.session=review_windows.session),0)",
 )
 
+_TEXTS = (
+    # The body tables version 15 dropped, from text_revisions, as views to copy from.
+    "CREATE TEMP VIEW old_response_bodies AS SELECT rowid AS rowid,subject_id AS source,"
+    "parent AS finding_id,parent_revision AS decision_revision,revision,body,sha256,block_map,"
+    "author,owners,next_block,next_span,identity_floor,held,macro_revision "
+    "FROM src.text_revisions WHERE subject_type='response'",
+    "CREATE TEMP VIEW old_comment_bodies AS SELECT rowid AS rowid,subject_id AS entry_id,"
+    "revision,origin AS history_entry,body,sha256,block_map,author,owners,next_block,next_span "
+    "FROM src.text_revisions WHERE subject_type='comment'",
+)
+
 
 @contextmanager
 def at_version(version: int) -> Iterator[None]:
@@ -122,6 +136,11 @@ def older_store(source: Path, target: Path, version: int) -> None:
         ]
         for table in tables:
             _copy(db, table)
+        if version < TEXT_REVISIONS:
+            for statement in _TEXTS:
+                db.execute(statement)
+            _copy(db, "review_response_bodies", "old_response_bodies")
+            _copy(db, "annotation_body_revisions", "old_comment_bodies")
         if version < MACRO_REVISIONS:
             # An explanation's anchors as main pinned them at its first save, which is
             # what the current code derives for it; a legacy writer pinned none.
@@ -130,9 +149,8 @@ def older_store(source: Path, target: Path, version: int) -> None:
             reader = sqlite3.connect(source)
             try:
                 for (key,) in reader.execute(
-                    "SELECT b.source FROM review_response_bodies b WHERE b.revision=(SELECT "
-                    "min(revision) FROM review_response_bodies c WHERE c.source=b.source) "
-                    "AND b.macro_revision IS NOT NULL ORDER BY b.rowid"
+                    "SELECT b.subject_id FROM text_revisions b WHERE b.subject_type='response' "
+                    "AND b.revision=1 AND b.macro_revision IS NOT NULL ORDER BY b.rowid"
                 ).fetchall():
                     db.execute(
                         "INSERT INTO response_macro_anchors VALUES(?,?)",
@@ -156,9 +174,13 @@ def older_store(source: Path, target: Path, version: int) -> None:
         db.close()
 
 
-def _copy(db: sqlite3.Connection, table: str) -> None:
+def _copy(db: sqlite3.Connection, table: str, source: str | None = None) -> None:
+    """Copy the rows of ``source`` (``src``'s table of the same name, or a temporary view)
+    into ``table``, in the columns both have."""
+    origin = f'src."{table}"' if source is None else f'temp."{source}"'
+    info = f'src.table_info("{table}")' if source is None else f'temp.table_info("{source}")'
     mine = db.execute(f'PRAGMA main.table_info("{table}")').fetchall()
-    theirs = {row[1] for row in db.execute(f'PRAGMA src.table_info("{table}")')}
+    theirs = {row[1] for row in db.execute(f"PRAGMA {info}")}
     if not theirs:
         return
     columns = [row[1] for row in mine if row[1] in theirs]
@@ -169,7 +191,7 @@ def _copy(db: sqlite3.Connection, table: str) -> None:
     rowid = "" if alias else "rowid,"
     db.execute(
         f'INSERT INTO main."{table}" ({rowid}{names}) '
-        f'SELECT {rowid}{names} FROM src."{table}" ORDER BY rowid'
+        f"SELECT {rowid}{names} FROM {origin} ORDER BY rowid"
     )
 
 
@@ -218,8 +240,8 @@ def macro_answers(docs: Any, reviews: Any, effective: Callable[[Any, Json], Any]
             for d, n in revisions
         }
         bodies = db.execute(
-            "SELECT source,revision,finding_id,decision_revision FROM review_response_bodies "
-            "ORDER BY rowid"
+            "SELECT subject_id,revision,parent,parent_revision FROM text_revisions "
+            "WHERE subject_type='response' ORDER BY rowid"
         ).fetchall()
         out["responses"] = {
             f"{source}#{revision}": {

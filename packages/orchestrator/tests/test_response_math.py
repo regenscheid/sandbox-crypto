@@ -245,7 +245,7 @@ def test_body_queue_receipt_atomicity_and_immutable_rows(stores):
         pytest.raises(sqlite3.IntegrityError, match="immutable"),
         reviews.documents.control.write() as tx,
     ):
-        tx.sql.execute("UPDATE review_response_bodies SET body='rewrite'")
+        tx.sql.execute("UPDATE text_revisions SET body='rewrite'")
 
 
 @pytest.mark.asyncio
@@ -273,9 +273,9 @@ def test_an_oversized_body_is_refused_when_written(stores):
     refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
     with refused, reviews.documents.control.write() as tx:
         tx.sql.execute(
-            "INSERT INTO review_response_bodies SELECT source,finding_id,decision_revision,"
-            "revision+1,?,sha256,block_map,author,owners,next_block,next_span,"
-            "identity_floor,held,macro_revision FROM review_response_bodies",
+            "INSERT INTO text_revisions SELECT subject_type,subject_id,revision+1,parent,"
+            "parent_revision,origin,?,sha256,block_map,author,owners,next_block,next_span,"
+            "identity_floor,held,macro_revision FROM text_revisions",
             ("x" * 40000,),
         )
 
@@ -368,7 +368,7 @@ def test_initial_body_queue_failure_rolls_back_scientific_response(stores):
     assert Findings(reviews).get("p", "s", found["finding_id"])["revision"] == 1
     with docs.control.read() as tx:
         db = tx.sql
-        assert db.execute("SELECT count(*) FROM review_response_bodies").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM text_revisions").fetchone() == (0,)
         assert db.execute(
             "SELECT count(*) FROM operation_receipts WHERE operation_id=?", ("atomic-response",)
         ).fetchone() == (0,)

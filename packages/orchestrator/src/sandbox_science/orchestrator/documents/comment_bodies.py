@@ -12,7 +12,9 @@ import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
+
+from sandbox_science.orchestrator.control.texts import NewRevision, TextRevisions
 
 from .blocks import parse
 from .engine import attach, block_map
@@ -22,6 +24,8 @@ from .models import Author
 
 Json = dict[str, Any]
 MAP_BYTES = 16 * 1024 * 1024
+TEXTS: Final = TextRevisions("comment")
+"""The revisions of comment bodies, each under its original entry."""
 
 
 def dump(value: object) -> str:
@@ -60,26 +64,26 @@ def parent(
 
 def read(db: sqlite3.Connection, entry: str, revision: int | None = None) -> Json:
     """A body revision as it was written (the table checks its values then)."""
-    row = db.execute(
-        "SELECT revision,body,sha256,block_map,author,owners,next_block,next_span,"
-        "history_entry FROM annotation_body_revisions WHERE entry_id=? "
-        "AND (? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
-        (entry, revision, revision),
-    ).fetchone()
-    if row is None:
+    found = TEXTS.read(db, entry, revision)
+    if found is None:
         raise DocumentError(NOT_FOUND, "no such immutable comment body revision")
     return {
         "entry_id": entry,
-        "revision": row[0],
-        "body": row[1],
-        "sha256": row[2],
-        "block_map": json.loads(row[3]),
-        "author": json.loads(row[4]),
-        "owners": json.loads(row[5]),
-        "next_block": row[6],
-        "next_span": row[7],
-        "history_entry": row[8],
+        **{k: found[k] for k in _FIELDS},
+        "history_entry": found["origin"],
     }
+
+
+_FIELDS: Final = (
+    "revision",
+    "body",
+    "sha256",
+    "block_map",
+    "author",
+    "owners",
+    "next_block",
+    "next_span",
+)
 
 
 def current(
@@ -110,31 +114,21 @@ def current(
     ).fetchone()
     assert latest is not None  # noqa: S101 - original is in its own lineage
     latest_entry, body = latest
-    saved = db.execute(
-        "SELECT 1 FROM annotation_body_revisions WHERE entry_id=? LIMIT 1", (entry,)
-    ).fetchone()
-    if saved:
+    header = TEXTS.read(db, entry, full=False)
+    if header is not None:
         if full:
             result = read(db, entry)
         else:
-            header = db.execute(
-                "SELECT revision,sha256,author,history_entry,CASE WHEN "
-                "json_type(block_map,'$.held')='text' THEN json_extract(block_map,'$.held') "
-                "ELSE NULL END FROM annotation_body_revisions "
-                "WHERE entry_id=? ORDER BY revision DESC LIMIT 1",
-                (entry,),
-            ).fetchone()
-            assert header is not None  # noqa: S101 - saved above
             result: Json = {
                 "entry_id": entry,
-                "revision": header[0],
-                "sha256": header[1],
-                "author": json.loads(header[2]),
-                "history_entry": header[3],
+                "revision": header["revision"],
+                "sha256": header["sha256"],
+                "author": header["author"],
+                "history_entry": header["origin"],
                 "body": body,
             }
-            if header[4] is not None:
-                result["held"] = header[4]
+            if header["held"] is not None:
+                result["held"] = header["held"]
         if full and result["block_map"].get("held"):
             result["held"] = result["block_map"]["held"]
         if result["history_entry"] != latest_entry or result["sha256"] != sha(body):
@@ -219,6 +213,34 @@ class PreparedBody:
     base_sha256: str | None
     held: str | None = None
     identity_floor: int = 1
+
+    def revision(
+        self,
+        revision: int,
+        actor: Author,
+        *,
+        origin: str | None = None,
+        parent: str | None = None,
+        parent_revision: int | None = None,
+        macro_revision: int | None = None,
+    ) -> NewRevision:
+        """This body as text revision ``revision``, written by ``actor``."""
+        return NewRevision(
+            revision=revision,
+            body=self.body,
+            sha256=self.sha256,
+            block_map=self.stored,
+            author=actor.model_dump_json(),
+            owners=self.owners,
+            next_block=self.next_block,
+            next_span=self.next_span,
+            identity_floor=self.identity_floor,
+            held=self.held,
+            macro_revision=macro_revision,
+            origin=origin,
+            parent=parent,
+            parent_revision=parent_revision,
+        )
 
 
 def prepare(body: str, actor: Author, parent: Json | None = None) -> PreparedBody:
@@ -306,29 +328,12 @@ def commit(
     actor: Author,
     prepared: PreparedBody,
 ) -> None:
-    row = db.execute(
-        "SELECT revision,sha256 FROM annotation_body_revisions WHERE entry_id=? "
-        "ORDER BY revision DESC LIMIT 1",
-        (entry,),
-    ).fetchone()
-    if row != ((prepared.base, prepared.base_sha256) if prepared.base else None):
+    if TEXTS.latest(db, entry) != (
+        (prepared.base, prepared.base_sha256) if prepared.base else None
+    ):
         raise DocumentError(CONFLICT, "the comment body changed during preparation")
     revision = prepared.base + 1
-    db.execute(
-        "INSERT INTO annotation_body_revisions VALUES(?,?,?,?,?,?,?,?,?,?)",
-        (
-            entry,
-            revision,
-            history,
-            prepared.body,
-            prepared.sha256,
-            prepared.stored,
-            actor.model_dump_json(),
-            prepared.owners,
-            prepared.next_block,
-            prepared.next_span,
-        ),
-    )
+    TEXTS.append(db, entry, prepared.revision(revision, actor, origin=history))
     db.execute(
         "INSERT INTO comment_math_sources(entry_id,document,project,target,blocked) "
         "VALUES(?,?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET "

@@ -27,13 +27,11 @@ Json = dict[str, Any]
 
 def metadata(db: sqlite3.Connection, check: str) -> Json | None:
     row = db.execute(
-        "SELECT c.entry_id,c.macro_revision,c.macro_sha256,CASE WHEN "
-        "json_type(b.block_map,'$.identity_floor')='integer' THEN "
-        "json_extract(b.block_map,'$.identity_floor') ELSE NULL END,j.revision,"
+        "SELECT c.entry_id,c.macro_revision,c.macro_sha256,b.identity_floor,j.revision,"
         "t.document_id=j.document AND original.kind IN ('create','reply') "
         "FROM math_comment_jobs c JOIN math_jobs j USING(check_id) LEFT JOIN "
-        "annotation_body_revisions b "
-        "ON b.entry_id=c.entry_id AND b.revision=j.revision LEFT JOIN annotation_entries "
+        "text_revisions b ON b.subject_type='comment' "
+        "AND b.subject_id=c.entry_id AND b.revision=j.revision LEFT JOIN annotation_entries "
         "original ON original.entry_id=c.entry_id LEFT JOIN annotation_threads t "
         "ON t.thread_id=original.thread_id WHERE c.check_id=?",
         (check,),
@@ -81,10 +79,9 @@ class CommentMath:
             )
             return None
         hashes = db.execute(
-            "SELECT b.sha256,r.sha256,CASE WHEN json_type(b.block_map,'$.held')='text' "
-            "THEN json_extract(b.block_map,'$.held') ELSE NULL END "
-            "FROM annotation_body_revisions b JOIN revisions r ON r.document_id=? "
-            "AND r.number=? WHERE b.entry_id=? AND b.revision=?",
+            "SELECT b.sha256,r.sha256,b.held FROM text_revisions b JOIN revisions r "
+            "ON r.document_id=? AND r.number=? WHERE b.subject_type='comment' "
+            "AND b.subject_id=? AND b.revision=?",
             (document, macro_revision, entry, revision),
         ).fetchone()
         if hashes is None:
@@ -125,7 +122,8 @@ class CommentMath:
         row = db.execute(
             "SELECT j.document,j.revision,j.cursor "
             "FROM math_jobs j JOIN math_comment_jobs c USING(check_id) "
-            "JOIN annotation_body_revisions b ON b.entry_id=c.entry_id AND b.revision=j.revision "
+            "JOIN text_revisions b ON b.subject_type='comment' AND b.subject_id=c.entry_id "
+            "AND b.revision=j.revision "
             "JOIN comment_math_sources s ON s.entry_id=c.entry_id "
             "JOIN annotation_entries original ON original.entry_id=c.entry_id "
             "JOIN annotation_threads t ON t.thread_id=original.thread_id "
@@ -229,9 +227,10 @@ def reconcile(db: sqlite3.Connection, project: str) -> None:
     db.execute(
         "UPDATE comment_math_sources AS s SET blocked='Legacy writer changed the canonical "
         "body; automatic checks are held' WHERE s.project=? AND s.target>0 AND EXISTS("
-        "SELECT 1 FROM annotation_body_revisions b JOIN annotation_entries original "
-        "ON original.entry_id=s.entry_id WHERE b.entry_id=s.entry_id AND b.revision=s.target "
-        "AND b.history_entry!=(SELECT e.entry_id FROM annotation_entries e "
+        "SELECT 1 FROM text_revisions b JOIN annotation_entries original "
+        "ON original.entry_id=s.entry_id WHERE b.subject_type='comment' "
+        "AND b.subject_id=s.entry_id AND b.revision=s.target "
+        "AND b.origin!=(SELECT e.entry_id FROM annotation_entries e "
         "WHERE e.thread_id=original.thread_id AND (e.entry_id=original.entry_id OR "
         "(e.kind='edit' AND original.number=1) OR (e.kind='edit_body' "
         "AND json_extract(e.payload,'$.entry')=original.entry_id)) ORDER BY "

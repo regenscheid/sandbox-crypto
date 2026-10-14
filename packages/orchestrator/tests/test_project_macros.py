@@ -470,7 +470,8 @@ def macro_reads(docs, reviews, doc: str, finding: str, decision: int) -> tuple[A
             for sql in (
                 "SELECT document_id,number,macro_revision FROM revisions ORDER BY rowid",
                 "SELECT check_id,macro_revision,macro_held FROM math_jobs ORDER BY rowid",
-                "SELECT source,revision,macro_revision FROM review_response_bodies ORDER BY rowid",
+                "SELECT subject_id,revision,macro_revision FROM text_revisions "
+                "WHERE subject_type='response' ORDER BY rowid",
                 "SELECT review_id,finding_id,macro_revision FROM review_response_pins",
             )
         ]

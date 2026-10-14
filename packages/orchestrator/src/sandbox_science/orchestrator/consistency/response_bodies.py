@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from pydantic import Field, ValidationError
 
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.control.texts import TextRevisions
 from sandbox_science.orchestrator.documents.comment_bodies import PreparedBody, prepare
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
 
 Json = dict[str, Any]
 BODY_BYTES = 32768
+TEXTS: Final = TextRevisions("response")
+"""The revisions of finding explanations, each under its source key."""
 MAP_BYTES = 16 * 1024 * 1024
 
 
@@ -121,30 +124,17 @@ def read(
 ) -> Json:
     """A response body revision as it was written (the table checks its values then)."""
     parent = original(db, finding, revision, project=project, session=session)
-    if not full:
-        header = db.execute(
-            "SELECT revision,body,sha256,author,identity_floor,held FROM review_response_bodies "
-            "WHERE source=? AND finding_id=? AND decision_revision=? "
-            "AND (? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
-            (parent["source"], finding, revision, body_revision, body_revision),
-        ).fetchone()
-        if header is not None:
-            return {
-                **parent,
-                "revision": header[0],
-                "body": header[1],
-                "sha256": header[2],
-                "author": json.loads(header[3]),
-                "identity_floor": header[4],
-                "held": header[5] or None,
-            }
-    row = db.execute(
-        "SELECT revision,body,sha256,block_map,author,owners,next_block,next_span,"
-        "identity_floor,held FROM review_response_bodies WHERE source=? AND finding_id=? "
-        "AND decision_revision=? AND (? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
-        (parent["source"], finding, revision, body_revision, body_revision),
-    ).fetchone()
-    if row is None:
+    # The source names its finding and decision revision; the table keeps both too.
+    found = TEXTS.read(db, parent["source"], body_revision, full=full)
+    if found is not None and (found["parent"], found["parent_revision"]) != (finding, revision):
+        found = None
+    if not full and found is not None:
+        return {
+            **parent,
+            **{k: found[k] for k in ("revision", "body", "sha256", "author", "identity_floor")},
+            "held": found["held"] or None,
+        }
+    if found is None:
         if body_revision not in (None, 0):
             raise DocumentError(NOT_FOUND, "no such response body revision")
         return {
@@ -160,16 +150,21 @@ def read(
         }
     return {
         **parent,
-        "revision": row[0],
-        "body": row[1],
-        "sha256": row[2],
-        "block_map": json.loads(row[3]),
-        "owners": json.loads(row[5]),
-        "author": json.loads(row[4]),
-        "next_block": row[6],
-        "next_span": row[7],
-        "identity_floor": row[8],
-        "held": row[9] or None,
+        **{
+            k: found[k]
+            for k in (
+                "revision",
+                "body",
+                "sha256",
+                "block_map",
+                "owners",
+                "author",
+                "next_block",
+                "next_span",
+                "identity_floor",
+            )
+        },
+        "held": found["held"] or None,
     }
 
 
@@ -221,24 +216,16 @@ def commit(
         prepared.base_sha256 or digest(current["body"]),
     ):
         raise DocumentError(CONFLICT, "response body changed during preparation")
-    db.execute(
-        "INSERT INTO review_response_bodies VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (
-            parent["source"],
-            parent["finding"],
-            parent["response_revision"],
+    TEXTS.append(
+        db,
+        parent["source"],
+        prepared.revision(
             prepared.base + 1,
-            prepared.body,
-            prepared.sha256,
-            prepared.stored,
-            actor.model_dump_json(),
-            prepared.owners,
-            prepared.next_block,
-            prepared.next_span,
-            prepared.identity_floor,
-            prepared.held,
+            actor,
+            parent=parent["finding"],
+            parent_revision=parent["response_revision"],
             # The project macros it was saved with; unknown for a legacy writer's body.
-            None if legacy else macro_head(db, parent["project"]),
+            macro_revision=None if legacy else macro_head(db, parent["project"]),
         ),
     )
     db.execute(

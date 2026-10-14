@@ -26,9 +26,9 @@ def metadata(db: sqlite3.Connection, check: str) -> Json | None:
         "SELECT r.source,s.finding_id,s.decision_revision,s.project,s.session,j.revision,"
         "j.document IS NULL,b.identity_floor "
         "FROM math_response_jobs r JOIN math_jobs j USING(check_id) JOIN response_math_sources s "
-        "ON s.source=r.source JOIN review_response_bodies b ON b.source=s.source "
-        "AND b.revision=j.revision AND b.finding_id=s.finding_id "
-        "AND b.decision_revision=s.decision_revision WHERE r.check_id=?",
+        "ON s.source=r.source JOIN text_revisions b ON b.subject_type='response' "
+        "AND b.subject_id=s.source AND b.revision=j.revision AND b.parent=s.finding_id "
+        "AND b.parent_revision=s.decision_revision WHERE r.check_id=?",
         (check,),
     ).fetchone()
     if row is None:
@@ -113,8 +113,8 @@ class ResponseMath:
     def fence(self, db: sqlite3.Connection, check: str, owner: str, meta: Json) -> tuple[Any, ...]:
         row = db.execute(
             "SELECT j.revision,j.cursor FROM math_jobs j JOIN math_response_jobs r "
-            "USING(check_id) JOIN review_response_bodies b ON b.source=r.source AND "
-            "b.revision=j.revision "
+            "USING(check_id) JOIN text_revisions b ON b.subject_type='response' "
+            "AND b.subject_id=r.source AND b.revision=j.revision "
             "WHERE j.check_id=? AND j.state='running' AND j.owner=? AND j.lease_until>? "
             "AND j.document IS NULL AND j.source_sha256=b.sha256",
             (check, owner, self.store.clock()),

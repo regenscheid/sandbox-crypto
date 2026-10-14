@@ -243,14 +243,21 @@ def response_anchors(db: sqlite3.Connection, source: str) -> list[Json]:
     revision came from a writer that recorded no macros. A later reflag of the finding
     does not change them."""
     row = db.execute(
-        "SELECT f.project,f.finding_id,b.decision_revision,b.macro_revision "
-        "FROM review_response_bodies b JOIN review_findings f USING(finding_id) "
-        "WHERE b.source=? ORDER BY b.revision LIMIT 1",
+        "SELECT f.project,f.finding_id,b.parent_revision,b.macro_revision "
+        "FROM text_revisions b JOIN review_findings f ON f.finding_id=b.parent "
+        "WHERE b.subject_type='response' AND b.subject_id=? ORDER BY b.revision LIMIT 1",
         (source,),
     ).fetchone()
-    if row is None or row[3] is None:
+    return explanation_anchors(db, *row) if row else [{"unknown": True}]
+
+
+def explanation_anchors(
+    db: sqlite3.Connection, project: str, finding: str, decision: int, macros: int | None
+) -> list[Json]:
+    """The macro anchors of an explanation of ``finding`` given at its revision
+    ``decision``, whose first body revision recorded the macro revision ``macros``."""
+    if macros is None:
         return [{"unknown": True}]
-    project, finding, decision = row[0], row[1], row[2]
     anchors = header_anchors(db, finding, decision)
     if anchors is None:
         return finding_anchors(db, project, finding)
@@ -422,7 +429,8 @@ def response_view(
         anchors = response_anchors(db, source)
         saved = (
             db.execute(
-                "SELECT macro_revision FROM review_response_bodies WHERE source=? AND revision=?",
+                "SELECT macro_revision FROM text_revisions WHERE subject_type='response' "
+                "AND subject_id=? AND revision=?",
                 (source, body_revision),
             ).fetchone()
             if body_revision is not None
