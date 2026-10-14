@@ -581,6 +581,14 @@ async def test_cp_f1_a_capability_installs_in_its_turn_records_and_probes(
     }
     assert all(fetch.allowed for fetch in world.cache.fetched)
     del resolve
+    owner = world.provisioner._ops[done.provision_id].task
+    assert owner is not None
+    await owner
+    observations = [r for r in world.records() if r.kind.startswith("provision.")]
+    assert [r.kind for r in observations] == ["provision.requested", "provision.finished"]
+    assert observations[-1].data()["outcome"] == "completed"
+    await world.provision("op-gp", capability="gp", expected=200)
+    assert len([r for r in world.records() if r.kind.startswith("provision.")]) == 2
 
 
 @pytest.mark.asyncio
