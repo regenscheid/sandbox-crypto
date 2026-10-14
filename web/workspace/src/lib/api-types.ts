@@ -515,7 +515,7 @@ export interface SessionDetail {
   runs: RunEntry[];
 }
 
-/** A session as the page sees it; the store's own lifetime marker is left out, so the store may rename it. */
+/** A session as the page sees it. Only these fields are copied from the store's record, so its lifetime marker, and any field the store adds or renames, stay out. */
 export interface SessionView {
   session_id: string;
   environment_id: string;

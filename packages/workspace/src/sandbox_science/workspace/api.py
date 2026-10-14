@@ -64,8 +64,8 @@ Json = dict[str, object]
 
 
 class SessionView(Contract):
-    """A session as the page sees it; the store's own lifetime marker is left out, so the
-    store may rename it."""
+    """A session as the page sees it. Only these fields are copied from the store's
+    record, so its lifetime marker, and any field the store adds or renames, stay out."""
 
     session_id: Identifier
     environment_id: Identifier
@@ -75,10 +75,12 @@ class SessionView(Contract):
 
     @classmethod
     def of(cls, found: SessionRecord) -> Self:
-        return cls.model_validate(found.model_dump(exclude={"kernel_notice_lifetime"}))
+        return cls.model_validate(found.model_dump(include=set(cls.model_fields)))
 
 
 class ProjectFacts(Contract):
+    """A project's own facts, copied field by field from the store's record."""
+
     project_id: Identifier
     profile: Identifier
     policy: PolicyRevision
@@ -88,7 +90,7 @@ class ProjectFacts(Contract):
 
     @classmethod
     def of(cls, record: ProjectRecord) -> Self:
-        return cls.model_validate(record.model_dump(exclude={"sessions"}))
+        return cls.model_validate(record.model_dump(include=set(cls.model_fields)))
 
 
 class ProjectSummary(ProjectFacts):
