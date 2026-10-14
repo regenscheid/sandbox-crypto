@@ -34,7 +34,7 @@ from pydantic import ValidationError
 from sandbox_science.contracts import IsolationEvidence, ProbeFacts
 from sandbox_science.contracts.worker import KernelSharing, SentinelState
 
-from . import executor
+from . import sandbox_setup
 from .channel import ExecutorChannel
 from .errors import WorkerError
 
@@ -52,7 +52,7 @@ class Assessment:
 
 def host_facts() -> ProbeFacts:
     """The worker host's facts, read the way the executor reads the sandbox's."""
-    return ProbeFacts.model_validate(executor.probe_facts())
+    return ProbeFacts.model_validate(sandbox_setup.probe_facts())
 
 
 def assess(

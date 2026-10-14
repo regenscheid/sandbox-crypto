@@ -23,7 +23,7 @@ import pytest
 
 from sandbox_science.contracts import ProbeFacts
 from sandbox_science.testing import FakeClock, eventually
-from sandbox_science.worker import executor, sandbox_files, sandbox_processes
+from sandbox_science.worker import executor, sandbox_files, sandbox_processes, sandbox_setup
 
 pytestmark = pytest.mark.slow
 
@@ -782,7 +782,7 @@ def test_a_plain_interpreter_gets_no_conda_prefix(tmp_path: Path) -> None:
 
 
 def test_probe_facts_describe_this_process() -> None:
-    facts = ProbeFacts.model_validate(executor.probe_facts())
+    facts = ProbeFacts.model_validate(sandbox_setup.probe_facts())
     assert facts.uid == os.getuid()
     assert facts.hostname == socket.gethostname()
     assert facts.kernel_release == platform.release()
@@ -795,10 +795,10 @@ def test_probe_facts_describe_this_process() -> None:
 def test_sentinel_states(tmp_path: Path) -> None:
     present = tmp_path / "present"
     present.write_text("x")
-    assert executor.sentinel_state(str(present)) == "present"
-    assert executor.sentinel_state(str(tmp_path / "absent")) == "absent"
-    assert executor.sentinel_state(str(present / "below-a-file")) == "absent"
-    assert executor.sentinel_state("relative/path") == "unknown"
+    assert sandbox_setup.sentinel_state(str(present)) == "present"
+    assert sandbox_setup.sentinel_state(str(tmp_path / "absent")) == "absent"
+    assert sandbox_setup.sentinel_state(str(present / "below-a-file")) == "absent"
+    assert sandbox_setup.sentinel_state("relative/path") == "unknown"
 
 
 def test_a_sentinel_behind_a_closed_directory_is_unknown(tmp_path: Path) -> None:
@@ -809,7 +809,7 @@ def test_a_sentinel_behind_a_closed_directory_is_unknown(tmp_path: Path) -> None
     (closed / "file").write_text("x")
     closed.chmod(0)
     try:
-        assert executor.sentinel_state(str(closed / "file")) == "unknown"
+        assert sandbox_setup.sentinel_state(str(closed / "file")) == "unknown"
     finally:
         closed.chmod(0o700)
 
