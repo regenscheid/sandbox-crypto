@@ -47,7 +47,7 @@ model invocation; a selected run always records the template's pin.
 The [MAIN plan tools](ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools)
 keep the plan and its progress when they are offered. Selection introduces no
 mandatory planning ceremony or approval gate. Existing authorization remains
-effective; `awaiting_approval` cannot be self-activated. USER approval, delegation,
+effective. USER approval, delegation,
 effect-to-step lineage, compaction and offline wake are not built, and a template
 cannot supply any of them through wording.
 

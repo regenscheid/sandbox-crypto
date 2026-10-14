@@ -92,9 +92,8 @@ happens; small factual answers need no plan.
 
 **Activation and approval.** Activating a draft records workflow state under
 existing task authorization; it is neither USER approval nor a permission grant.
-The tools allow reading and revising an `awaiting_approval` plan but refuse its
-activation, progress, abandonment or replacement, since no USER approval path
-exists. Progress requires an active plan and exact plan, step and status CAS.
+There is no approval state: plan approval (PD-6) is undecided, and the unused
+`awaiting_approval` state was removed until it is (decision 10). Progress requires an active plan and exact plan, step and status CAS.
 Finishing requires the core's explicit goal outcome (`achieved`,
 `partially_achieved` or `not_achieved`) and terminal assertions for all current
 steps; blocked or skipped steps cannot produce `achieved`. Plan text and evidence
@@ -199,8 +198,8 @@ prompt and controller, is kept on the tag `archive/delegation-2026-10`
 ([archived pages](../.agents/docs/archive/README.md)), and delegation will be rebuilt
 as a role of the one loop ([refactoring plan](../.agents/refactor-plan/PLAN.md),
 Phase 4 item 7). [D86](DECISIONS.md) (amended 2026-10-14) records that the unused
-`awaiting_approval` state and the display-repair descriptor are to be removed; the
-descriptor is gone, and the state is still in the code.
+`awaiting_approval` state and the display-repair descriptor are to be removed; both
+are gone.
 
 ## Authority and lifecycle checks that prompts cannot supply
 

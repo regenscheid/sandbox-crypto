@@ -316,15 +316,15 @@ describe('structured drafts', () => {
     expect(storage.get(k)).toBe('{broken');
     s.editor.stop();
   });
-  it('allows wording changes while awaiting approval without granting activation', async () => {
+  it('allows wording changes to a draft without granting activation', async () => {
     const v = observed();
-    v.plan!.head.status = 'awaiting_approval';
+    v.plan!.head.status = 'draft';
     const transport = vi.fn<Transport>(async (_s, r) => ack(r)),
       s = session(v, transport);
     s.editor.edit('goal', 'Qualified wording');
     await s.editor.save();
     expect(transport).toHaveBeenCalledOnce();
-    expect(s.view().current.plan!.head.status).toBe('awaiting_approval');
+    expect(s.view().current.plan!.head.status).toBe('draft');
     expect(Object.keys(transport.mock.calls[0]![1])).toEqual([
       'operation_id',
       'base',

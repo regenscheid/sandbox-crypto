@@ -250,8 +250,8 @@ def test_copied_authority_cannot_bypass_positive_validation(plans, fields):
     assert plans.current(actor()) is None
 
 
-@pytest.mark.parametrize("held_status", ["awaiting_approval", "draft"])
-def test_progress_status_revision_race_and_step_cas(plans, held_status):
+def test_progress_status_revision_race_and_step_cas(plans):
+    held_status = "draft"
     first = made(plans)
     status(plans, first.ref, "active", operation="active")
     status(plans, first.ref, held_status, operation="hold")
@@ -344,9 +344,8 @@ def test_outcome_remaining_work_is_not_optional_success_inference(status_tag, re
         GoalOutcome(status=status_tag, summary="Assessment", evidence=(), remaining_work=remaining)
 
 
-def test_awaiting_and_active_only_store_bookkeeping(plans):
+def test_active_only_stores_bookkeeping(plans):
     first = made(plans)
-    status(plans, first.ref, "awaiting_approval", operation="request")
     status(plans, first.ref, "active", operation="record")
     assert plans.summary(actor()).status == "active"
     assert not hasattr(plans, "execution_allowed")

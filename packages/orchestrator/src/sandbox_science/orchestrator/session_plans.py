@@ -45,7 +45,7 @@ Positive = Annotated[int, Field(strict=True, ge=1, le=MAX_COUNTER)]
 Text = Annotated[str, Field(min_length=1, max_length=4096)]
 Title = Annotated[str, Field(min_length=1, max_length=128)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-PlanStatus = Literal["draft", "awaiting_approval", "active", "completed", "abandoned"]
+PlanStatus = Literal["draft", "active", "completed", "abandoned"]
 StepStatus = Literal["pending", "in_progress", "completed", "blocked", "skipped"]
 Action = Literal["publish", "revise", "progress", "status"]
 
@@ -1051,7 +1051,7 @@ class SessionPlans:
         *,
         outcome: GoalOutcome | None = None,
     ) -> PlanReceipt:
-        """Record workflow status; neither active nor awaiting_approval grants execution."""
+        """Record workflow status; an active plan grants no execution."""
         authority = _checked(PlanAuthority, authority)
         self._main(authority)
         base = _checked(PlanRef, base)

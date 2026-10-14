@@ -119,7 +119,7 @@ DESCRIPTIONS = {
     "plan_revise": "Append a current-base plan version with stable IDs and an attributed reason. "
     "Reread USER changes; never overwrite a stale version.",
     "plan_activate": "Record a draft as active under existing task authorization. This is not "
-    "USER approval or a permission grant; awaiting_approval cannot be self-activated.",
+    "USER approval or a permission grant.",
     "plan_progress": "Immediately record a current active step assertion with exact step/status "
     "CAS and evidence. Completed is an assertion, not scientific verification.",
     "plan_finish": "Finish terminal steps with an explicit goal outcome, or abandon an open "
@@ -287,7 +287,7 @@ class PlanTools:
             raise DocumentError(
                 CONFLICT, "plan_reread_required: read the current plan before new effects"
             )
-        if summary is not None and summary.status in {"draft", "awaiting_approval"}:
+        if summary is not None and summary.status == "draft":
             raise DocumentError(
                 POLICY_DENIED, "plan is not active; activation is not USER approval"
             )
@@ -321,14 +321,6 @@ class PlanTools:
             if self.requires_read or self.held:
                 raise DocumentError(
                     CONFLICT, "plan_reread_required: read the current plan before changing it"
-                )
-            if (
-                summary is not None
-                and summary.status == "awaiting_approval"
-                and not isinstance(request, Revise)
-            ):
-                raise DocumentError(
-                    POLICY_DENIED, "awaiting approval needs a real USER decision path"
                 )
             # The actual answering model is known only at this tool boundary.
             # It is part of immutable attribution and exact-operation identity;
