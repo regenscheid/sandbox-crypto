@@ -908,3 +908,59 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
     assert (
         annotations.pending("p", "a", "next", seen=set())[0]["request_id"] == second["request_id"]
     )
+
+
+def test_comment_times_come_from_the_injected_clock(store: DocumentStore) -> None:
+    annotations = Annotations(store, clock=lambda: 1234.5)
+    made = annotations.change(
+        "p",
+        "ff",
+        {
+            "action": "create",
+            "anchor": {"revision": 1, "block": "b2"},
+            "body": "Explain $a$.",
+            "operation_id": "clocked",
+        },
+        USER,
+    )
+    thread = annotations.read_thread("p", "ff", made["thread_id"])
+    assert thread["created_at"] == 1234.5
+    assert [entry["created_at"] for entry in thread["entries"]] == [1234.5]
+
+
+@pytest.mark.parametrize(
+    ("action", "extra", "author", "match"),
+    [
+        ("resolve", {}, "agent", "only threads they opened"),
+        ("edit", {"body": "Changed."}, "agent", "cannot revise that original comment body"),
+        ("edit", {"body": "Changed."}, "user", "cannot revise that original comment body"),
+    ],
+)
+def test_each_change_kind_keeps_its_authority_rule(
+    store: DocumentStore, action: str, extra: dict[str, Any], author: str, match: str
+) -> None:
+    """Characterization of the opener rules the change pipeline applies in its write."""
+    opened = Annotations(store).change(
+        "p",
+        "ff",
+        {
+            "action": "create",
+            "anchor": {"revision": 1, "block": "b2"},
+            "body": "Explain $a$.",
+            "operation_id": "opened",
+        },
+        AGENT if author == "user" else USER,
+    )
+    with pytest.raises(DocumentError, match=match):
+        Annotations(store).change(
+            "p",
+            "ff",
+            {
+                "action": action,
+                "thread": opened["thread_id"],
+                "expected": 1,
+                "operation_id": f"{action}-{author}",
+                **extra,
+            },
+            USER if author == "user" else AGENT,
+        )

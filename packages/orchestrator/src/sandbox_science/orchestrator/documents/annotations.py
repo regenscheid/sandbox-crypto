@@ -8,6 +8,8 @@ import json
 import re
 import sqlite3
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Annotated, Any, Final, Literal
 
 from pydantic import Field, TypeAdapter, ValidationError
@@ -20,7 +22,7 @@ from . import comment_bodies
 from .blocks import check_text
 from .errors import CONFLICT, INVALID_REQUEST, NOT_FOUND, POLICY_DENIED, DocumentError
 from .identity import Mapped, compare, increasing
-from .models import Author
+from .models import Author, DocumentInfo
 from .operations import unlay
 from .store import DocumentStore
 
@@ -80,6 +82,11 @@ CHANGE: Final = TypeAdapter(
         CreateComment | ReplyComment | ResolveComment | EditBody, Field(discriminator="action")
     ]
 )
+
+
+def _body(value: object) -> str:
+    """A change's comment text: empty for a resolve or reopen."""
+    return value.body if isinstance(value, (CreateComment, ReplyComment, EditBody)) else ""
 
 
 def _thread_id(value: object, label: str) -> None:
@@ -293,11 +300,33 @@ def scope_report(before: Mapped | None, after: Mapped, saved: Json, revision: in
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _Prepared:
+    """What a comment change works out before it takes the write lock."""
+
+    document: str
+    fingerprint: str
+    body: str
+    addressed: str | None
+    anchor: Json | None = None
+    """A new thread's anchor."""
+    body_entry: str | None = None
+    """The comment whose body an edit changes."""
+    body_parent: Json | None = None
+    """That body as the edit read it."""
+    body_change: comment_bodies.PreparedBody | None = None
+    report: Json | None = None
+    """A reply's scope report on the revision it names."""
+
+
+Change = CreateComment | ReplyComment | ResolveComment | EditBody
+
+
 class Annotations:
     """Logical annotation store sharing DocumentStore's connection and transactions."""
 
-    def __init__(self, store: DocumentStore) -> None:
-        self.store = store
+    def __init__(self, store: DocumentStore, *, clock: Callable[[], float] = time.time) -> None:
+        self.store, self.clock = store, clock
 
     @staticmethod
     def _replay(
@@ -527,6 +556,22 @@ class Annotations:
         return value
 
     def change(self, project: str, reference: str, raw: object, author: Author) -> Json:
+        """Create, reply to, edit, resolve or reopen a comment, in four steps: check the
+        request, work out the change outside the write lock, then (unless the operation
+        ID was used already) apply it and record its event and receipt in one change."""
+        value = self._parse(raw, author)
+        prepared = self._prepare(project, reference, value, author)
+        if isinstance(prepared, dict):
+            return prepared  # the operation ID was used already
+        with self.store.control.write() as tx:
+            db = tx.sql
+            replay = self._replay(db, project, author, value.operation_id, prepared.fingerprint)
+            if replay is not None:
+                return replay
+            return self._apply(db, project, value, author, prepared)
+
+    def _parse(self, raw: object, author: Author) -> Change:
+        """The change, with its author and body checked."""
         try:
             value = CHANGE.validate_python(raw)
         except ValidationError:
@@ -535,7 +580,7 @@ class Annotations:
             raise DocumentError(POLICY_DENIED, "only users and agent runs comment")
         if len(author.model_dump_json().encode()) > 8192:
             raise DocumentError(INVALID_REQUEST, "comment author provenance exceeds its bound")
-        body = value.body if isinstance(value, (CreateComment, ReplyComment, EditBody)) else ""
+        body = _body(value)
         check_text(body)
         if any(ord(char) < 32 and char not in "\n\r\t" for char in body):
             raise DocumentError(
@@ -543,6 +588,14 @@ class Annotations:
             )
         if len(body.encode()) > 16384:
             raise DocumentError(INVALID_REQUEST, "a comment holds at most 16 KiB of UTF-8")
+        return value
+
+    def _prepare(
+        self, project: str, reference: str, value: Change, author: Author
+    ) -> _Prepared | Json:
+        """Work out the change outside the write lock: the addressed session, a new
+        thread's anchor, an edited body's parent and new revision, and a reply's scope
+        report. A change already made under its operation ID returns its receipt."""
         addressed = value.addressed_to if isinstance(value, (CreateComment, ReplyComment)) else None
         if addressed is not None:
             try:
@@ -551,221 +604,264 @@ class Annotations:
                 raise DocumentError(NOT_FOUND, "no such addressed project session") from None
             if addressed not in sessions:
                 raise DocumentError(NOT_FOUND, "no such addressed project session")
-        prepared: Json | None = None
-        if isinstance(value, CreateComment):
-            prepared = anchor(
-                self.store.mapped(project, reference, value.anchor.revision), value.anchor
-            )
+        anchored = (
+            anchor(self.store.mapped(project, reference, value.anchor.revision), value.anchor)
+            if isinstance(value, CreateComment)
+            else None
+        )
         info = self.store.document(project, reference)
         fingerprint = digest(dump([info.document_id, value.model_dump(mode="json")]))
         with self.store.control.read() as tx:
-            db = tx.sql
-            replay = self._replay(db, project, author, value.operation_id, fingerprint)
+            replay = self._replay(tx.sql, project, author, value.operation_id, fingerprint)
             if replay is not None:
                 return replay
-        body_parent: Json | None = None
-        body_entry: str | None = None
-        if isinstance(value, EditBody) or (
-            isinstance(value, ReplyComment) and value.action == "edit"
-        ):
-            with self.store.control.read() as tx:
-                db = tx.sql
-                if (
-                    db.execute(
-                        "SELECT 1 FROM annotation_threads WHERE document_id=? AND thread_id=?",
-                        (info.document_id, value.thread),
-                    ).fetchone()
-                    is None
-                ):
-                    raise DocumentError(NOT_FOUND, "no such scoped comment thread")
-                if isinstance(value, EditBody):
-                    body_entry = value.entry
-                else:
-                    original = db.execute(
-                        "SELECT entry_id FROM annotation_entries WHERE thread_id=? AND number=1",
-                        (value.thread,),
-                    ).fetchone()
-                    if original is None:
-                        raise DocumentError(NOT_FOUND, "no such original comment body")
-                    body_entry = original[0]
-                body_parent = comment_bodies.current(db, body_entry or "", allow_legacy=True)
-            if body_parent["thread"] != value.thread:
-                raise DocumentError(NOT_FOUND, "the body belongs to another thread")
-            if isinstance(value, EditBody) and (value.base, value.sha256) != (
-                body_parent["revision"],
-                body_parent["sha256"],
-            ):
-                raise DocumentError(
-                    CONFLICT, "the comment body changed; retain and review your draft"
-                )
-            comment_bodies.authority(
-                Author.model_validate(body_parent["original_author"]), body_parent, author
-            )
-        body_prepared = (
-            comment_bodies.prepare(body, author, body_parent)
+        body_entry, body_parent = (
+            self._body_parent(info.document_id, value, author)
+            if isinstance(value, EditBody)
+            or (isinstance(value, ReplyComment) and value.action == "edit")
+            else (None, None)
+        )
+        body = _body(value)
+        return _Prepared(
+            document=info.document_id,
+            fingerprint=fingerprint,
+            body=body,
+            addressed=addressed,
+            anchor=anchored,
+            body_entry=body_entry,
+            body_parent=body_parent,
+            body_change=comment_bodies.prepare(body, author, body_parent)
             if isinstance(value, (CreateComment, EditBody, ReplyComment))
+            else None,
+            report=self._scope_report(project, info.document_id, value, author)
+            if isinstance(value, ReplyComment) and value.revision is not None
+            else None,
+        )
+
+    def _body_parent(
+        self, document: str, value: ReplyComment | EditBody, author: Author
+    ) -> tuple[str, Json]:
+        """The comment whose body an edit changes, and that body, which the edit's
+        base must match and its author may edit."""
+        with self.store.control.read() as tx:
+            db = tx.sql
+            if (
+                db.execute(
+                    "SELECT 1 FROM annotation_threads WHERE document_id=? AND thread_id=?",
+                    (document, value.thread),
+                ).fetchone()
+                is None
+            ):
+                raise DocumentError(NOT_FOUND, "no such scoped comment thread")
+            if isinstance(value, EditBody):
+                entry = value.entry
+            else:
+                original = db.execute(
+                    "SELECT entry_id FROM annotation_entries WHERE thread_id=? AND number=1",
+                    (value.thread,),
+                ).fetchone()
+                if original is None:
+                    raise DocumentError(NOT_FOUND, "no such original comment body")
+                entry = original[0]
+            parent = comment_bodies.current(db, entry, allow_legacy=True)
+        if parent["thread"] != value.thread:
+            raise DocumentError(NOT_FOUND, "the body belongs to another thread")
+        if isinstance(value, EditBody) and (value.base, value.sha256) != (
+            parent["revision"],
+            parent["sha256"],
+        ):
+            raise DocumentError(CONFLICT, "the comment body changed; retain and review your draft")
+        comment_bodies.authority(Author.model_validate(parent["original_author"]), parent, author)
+        return entry, parent
+
+    def _scope_report(
+        self, project: str, document: str, value: ReplyComment, author: Author
+    ) -> Json:
+        """How the revision a reply names changed the thread's anchor; an agent names
+        only a revision its own run made."""
+        assert value.revision is not None  # noqa: S101 - the caller checked
+        revised = self.store.revision(project, document, value.revision)
+        if author.kind == "agent" and (
+            revised.info.author.kind != "agent"
+            or revised.info.author.run_id != author.run_id
+            or revised.info.author.session_id != author.session_id
+            or revised.info.author.role != author.role
+        ):
+            raise DocumentError(POLICY_DENIED, "name a revision this run made")
+        thread = self.read_thread(project, document, value.thread)
+        after = self.store.mapped(project, document, value.revision)
+        before = (
+            self.store.mapped(project, document, revised.info.parent)
+            if revised.info.parent
             else None
         )
-        report: Json = {}
-        if isinstance(value, ReplyComment) and value.revision is not None:
-            revised = self.store.revision(project, info.document_id, value.revision)
-            if author.kind == "agent" and (
-                revised.info.author.kind != "agent"
-                or revised.info.author.run_id != author.run_id
-                or revised.info.author.session_id != author.session_id
-                or revised.info.author.role != author.role
-            ):
-                raise DocumentError(POLICY_DENIED, "name a revision this run made")
-            thread = self.read_thread(project, info.document_id, value.thread)
-            after = self.store.mapped(project, info.document_id, value.revision)
-            before = (
-                self.store.mapped(project, info.document_id, revised.info.parent)
-                if revised.info.parent
-                else None
-            )
-            report = scope_report(before, after, thread["anchor"], value.revision)
-        with self.store.control.write() as tx:
-            db = tx.sql
-            replay = self._replay(db, project, author, value.operation_id, fingerprint)
-            if replay is not None:
-                return replay
-            found = self.store.find(db, project, info.document_id)
-            thread_id = new_id("ann") if isinstance(value, CreateComment) else value.thread
-            payload: Json = {}
-            if isinstance(value, CreateComment):
-                assert prepared is not None  # noqa: S101
-                db.execute(
-                    "INSERT INTO annotation_threads VALUES(?,?,?,?,?)",
-                    (
-                        thread_id,
-                        info.document_id,
-                        dump(prepared),
-                        author.model_dump_json(),
-                        time.time(),
-                    ),
-                )
-                number, kind = 1, "create"
-            else:
-                thread = self._thread(db, info.document_id, thread_id)
-                if value.expected != thread["revision"]:
-                    raise DocumentError(
-                        CONFLICT,
-                        "the thread changed; read it before replying",
-                        {"current": thread["revision"]},
-                    )
-                if isinstance(value, ResolveComment) or value.action == "edit":
-                    opener = Author.model_validate(thread["opener"])
-                    if author.kind != "user" and (
-                        opener.actor != author.actor or opener.role != author.role
-                    ):
-                        raise DocumentError(
-                            POLICY_DENIED, "agents resolve or edit only threads they opened"
-                        )
-                    if value.action == "edit" and (
-                        opener.actor != author.actor or opener.role != author.role
-                    ):
-                        raise DocumentError(POLICY_DENIED, "edit only your own opening comment")
-                number, kind = thread["revision"] + 1, value.action
-                payload.update(report)
-                if isinstance(value, EditBody):
-                    payload.update(
-                        entry=value.entry,
-                        base=value.base,
-                        sha256=value.sha256,
-                        body_revision=value.base + 1,
-                    )
-            if addressed is not None:
-                payload["addressed_to"] = addressed
-            entry_id = new_id("cmt")
-            if isinstance(value, ReplyComment) and value.request_id is not None:
-                request = db.execute(
-                    (
-                        "SELECT session_id,thread_id FROM annotation_requests WHERE "
-                        "project_id=? AND request_id=?"
-                    ),
-                    (project, value.request_id),
-                ).fetchone()
-                if (
-                    author.kind != "agent"
-                    or author.role != "main"
-                    or request != (author.session_id, thread_id)
-                ):
-                    raise DocumentError(
-                        POLICY_DENIED,
-                        "only the addressed session's main agent answers this request",
-                    )
-                payload["request_id"] = value.request_id
-            if body_parent is not None:
-                latest = comment_bodies.current(db, body_entry or "", full=False, allow_legacy=True)
-                if (latest["revision"], latest["sha256"]) != (
-                    body_parent["revision"],
-                    body_parent["sha256"],
-                ):
-                    raise DocumentError(CONFLICT, "the comment body changed during preparation")
+        return scope_report(before, after, thread["anchor"], value.revision)
+
+    def _apply(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        value: Change,
+        author: Author,
+        prepared: _Prepared,
+    ) -> Json:
+        """The change in the open write: the thread, the entry, the body revision and
+        the request, then its event and receipt."""
+        found = self.store.find(db, project, prepared.document)
+        payload: Json = {}
+        if isinstance(value, CreateComment):
+            thread_id = new_id("ann")
+            assert prepared.anchor is not None  # noqa: S101 - prepared for a new thread
             db.execute(
-                "INSERT INTO annotation_entries VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO annotation_threads VALUES(?,?,?,?,?)",
                 (
-                    entry_id,
                     thread_id,
-                    number,
-                    kind,
+                    prepared.document,
+                    dump(prepared.anchor),
                     author.model_dump_json(),
-                    body,
-                    dump(payload),
-                    time.time(),
+                    self.clock(),
                 ),
             )
-            if body_prepared is not None:
-                comment_bodies.commit(
-                    db,
-                    body_entry or entry_id,
-                    entry_id,
-                    info.document_id,
-                    project,
-                    author,
-                    body_prepared,
+            number, kind = 1, "create"
+        else:
+            thread_id = value.thread
+            number, kind = self._continue(db, prepared.document, value, author)
+            payload.update(prepared.report or {})
+            if isinstance(value, EditBody):
+                payload.update(
+                    entry=value.entry,
+                    base=value.base,
+                    sha256=value.sha256,
+                    body_revision=value.base + 1,
                 )
-            request_id = None
-            addressed = (
-                value.addressed_to if isinstance(value, (CreateComment, ReplyComment)) else None
+        if prepared.addressed is not None:
+            payload["addressed_to"] = prepared.addressed
+        entry_id = new_id("cmt")
+        answered = value.request_id if isinstance(value, ReplyComment) else None
+        if answered is not None:
+            self._check_answer(db, project, answered, thread_id, author)
+            payload["request_id"] = answered
+        if prepared.body_parent is not None:
+            latest = comment_bodies.current(
+                db, prepared.body_entry or "", full=False, allow_legacy=True
             )
-            if addressed is not None and author.kind == "user":
-                request_id = new_id("req")
-                db.execute(
-                    (
-                        "INSERT INTO "
-                        "annotation_requests(request_id,project_id,session_id,thread_id,en"
-                        "try_id,state) VALUES(?,?,?,?,?,'queued')"
-                    ),
-                    (request_id, project, addressed, thread_id, entry_id),
-                )
-            if isinstance(value, ReplyComment) and value.request_id is not None:
-                db.execute(
-                    (
-                        "UPDATE annotation_requests SET "
-                        "state='responded',responded_entry=? WHERE request_id=?"
-                    ),
-                    (entry_id, value.request_id),
-                )
-            result = {
-                "thread_id": thread_id,
-                "entry_id": entry_id,
-                "revision": number,
-                "request_id": request_id,
-                "outcome": kind,
-            }
-            self.store.record_event(
+            if (latest["revision"], latest["sha256"]) != (
+                prepared.body_parent["revision"],
+                prepared.body_parent["sha256"],
+            ):
+                raise DocumentError(CONFLICT, "the comment body changed during preparation")
+        db.execute(
+            "INSERT INTO annotation_entries VALUES(?,?,?,?,?,?,?,?)",
+            (
+                entry_id,
+                thread_id,
+                number,
+                kind,
+                author.model_dump_json(),
+                prepared.body,
+                dump(payload),
+                self.clock(),
+            ),
+        )
+        if prepared.body_change is not None:
+            comment_bodies.commit(
                 db,
-                "annotation.created" if number == 1 else "annotation.changed",
-                found,
+                prepared.body_entry or entry_id,
+                entry_id,
+                prepared.document,
+                project,
                 author,
-                {**result, "author": author.model_dump(mode="json"), "action": kind},
+                prepared.body_change,
             )
+        request_id = None
+        if prepared.addressed is not None and author.kind == "user":
+            request_id = new_id("req")
             db.execute(
-                "INSERT INTO annotation_operations VALUES(?,?,?,?,?)",
-                (project, author.actor, value.operation_id, fingerprint, dump(result)),
+                "INSERT INTO annotation_requests(request_id,project_id,session_id,thread_id,"
+                "entry_id,state) VALUES(?,?,?,?,?,'queued')",
+                (request_id, project, prepared.addressed, thread_id, entry_id),
             )
-            return result
+        if answered is not None:
+            db.execute(
+                "UPDATE annotation_requests SET state='responded',responded_entry=? "
+                "WHERE request_id=?",
+                (entry_id, answered),
+            )
+        result = {
+            "thread_id": thread_id,
+            "entry_id": entry_id,
+            "revision": number,
+            "request_id": request_id,
+            "outcome": kind,
+        }
+        self._record(db, project, found, author, value.operation_id, prepared.fingerprint, result)
+        return result
+
+    def _continue(
+        self,
+        db: sqlite3.Connection,
+        document: str,
+        value: ReplyComment | ResolveComment | EditBody,
+        author: Author,
+    ) -> tuple[int, str]:
+        """The next entry's number and kind in an existing thread, whose revision the
+        change must name; only its opener (or the user) resolves it, and only its
+        opener edits the opening comment."""
+        thread = self._thread(db, document, value.thread)
+        if value.expected != thread["revision"]:
+            raise DocumentError(
+                CONFLICT,
+                "the thread changed; read it before replying",
+                {"current": thread["revision"]},
+            )
+        if isinstance(value, ResolveComment) or value.action == "edit":
+            opener = Author.model_validate(thread["opener"])
+            own = opener.actor == author.actor and opener.role == author.role
+            if author.kind != "user" and not own:
+                raise DocumentError(
+                    POLICY_DENIED, "agents resolve or edit only threads they opened"
+                )
+            if value.action == "edit" and not own:
+                raise DocumentError(POLICY_DENIED, "edit only your own opening comment")
+        return thread["revision"] + 1, value.action
+
+    @staticmethod
+    def _check_answer(
+        db: sqlite3.Connection, project: str, request: str, thread: str, author: Author
+    ) -> None:
+        """Only the addressed session's main agent answers a request, in its thread."""
+        found = db.execute(
+            "SELECT session_id,thread_id FROM annotation_requests WHERE "
+            "project_id=? AND request_id=?",
+            (project, request),
+        ).fetchone()
+        if author.kind != "agent" or author.role != "main" or found != (author.session_id, thread):
+            raise DocumentError(
+                POLICY_DENIED, "only the addressed session's main agent answers this request"
+            )
+
+    def _record(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        found: DocumentInfo,
+        author: Author,
+        operation: str,
+        fingerprint: str,
+        result: Json,
+    ) -> None:
+        """The change's event and the receipt its operation ID replays."""
+        self.store.record_event(
+            db,
+            "annotation.created" if result["revision"] == 1 else "annotation.changed",
+            found,
+            author,
+            {**result, "author": author.model_dump(mode="json"), "action": result["outcome"]},
+        )
+        db.execute(
+            "INSERT INTO annotation_operations VALUES(?,?,?,?,?)",
+            (project, author.actor, operation, fingerprint, dump(result)),
+        )
 
     def pending(
         self, project: str, session: str, run: str, *, seen: set[str], max_chars: int = 20000
@@ -784,7 +880,14 @@ class Annotations:
                 "AND state!='responded' AND (claimed_run IS NULL OR claim_until<? "
                 "OR claimed_run=?) AND request_id NOT IN (SELECT value FROM json_each(?)) "
                 "ORDER BY r.rowid LIMIT ?",
-                (project, session, time.time(), run, dump(sorted(seen)), min(100, 128 - len(seen))),
+                (
+                    project,
+                    session,
+                    self.clock(),
+                    run,
+                    dump(sorted(seen)),
+                    min(100, 128 - len(seen)),
+                ),
             ).fetchall()
             values: list[Json] = []
             for request_id, thread_id, document, body, saved, head in rows:
@@ -812,7 +915,7 @@ class Annotations:
             for notice in values:
                 db.execute(
                     "UPDATE annotation_requests SET claimed_run=?,claim_until=? WHERE request_id=?",
-                    (run, time.time() + 120, notice["request_id"]),
+                    (run, self.clock() + 120, notice["request_id"]),
                 )
             return values
 
@@ -824,7 +927,7 @@ class Annotations:
                     "UPDATE annotation_requests SET claim_until=? WHERE project_id=? "
                     "AND session_id=? AND claimed_run=? AND delivered_run IS NULL"
                 ),
-                (time.time() + 120, project, session, run),
+                (self.clock() + 120, project, session, run),
             )
 
     def release(
@@ -852,5 +955,5 @@ class Annotations:
                         "ULL WHERE project_id=? AND session_id=? AND request_id=? AND "
                         "delivered_run IS NULL AND claimed_run=?"
                     ),
-                    (run, time.time(), project, session, request, run),
+                    (run, self.clock(), project, session, request, run),
                 )
