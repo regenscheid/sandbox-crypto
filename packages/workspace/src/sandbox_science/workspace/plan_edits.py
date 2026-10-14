@@ -34,7 +34,7 @@ from sandbox_science.orchestrator.session_plans import (
 
 from . import errors
 from .context import CONTEXT, USER_ID, identifier, json_answer, read_body, session_record
-from .plans import PATH, has_records
+from .plans import PATH
 
 MAX_REQUEST_BYTES: Final = 128 * 1024
 
@@ -77,19 +77,24 @@ async def change(request: web.Request) -> web.Response:
     )
 
     def write() -> str:
-        session_record(context.projects, project, session)  # a missing project makes no lock
-        # The project lock keeps a close from landing between the check and the edit.
-        with context.projects.locked(project):
-            if session_record(context.projects, project, session).closed_at is not None:
-                raise ProjectError(ErrorKind.CONFLICT, "a closed session cannot be edited")
-            # An edit never creates the plans' tables or a plan.
-            if SessionPlans(context.documents).summary(authority) is None:
-                if has_records(context.documents, authority.scope):
-                    raise ProjectError(ErrorKind.UNAVAILABLE, "session plan is damaged")
-                raise ProjectError(ErrorKind.NOT_FOUND, "this session has no plan to edit")
+        if session_record(context.projects, project, session).closed_at is not None:
+            raise ProjectError(ErrorKind.CONFLICT, "a closed session cannot be edited")
+        # An edit never creates a plan.
+        plans = SessionPlans(context.documents)
+        if plans.summary(authority) is None:
+            if plans.has_records(authority.scope):
+                raise ProjectError(ErrorKind.UNAVAILABLE, "session plan is damaged")
+            raise ProjectError(ErrorKind.NOT_FOUND, "this session has no plan to edit")
+        try:
+            # The edit checks the session again in its own transaction, so a close
+            # cannot land in between.
             receipt = SessionPlans(context.writer).revise(
                 authority, wanted.operation_id, wanted.base, wanted.body, wanted.reason
             )
+        except DocumentError as error:
+            if error.details.get("session") != "closed":
+                raise
+            raise ProjectError(ErrorKind.CONFLICT, "a closed session cannot be edited") from None
         return EditReceipt(
             project_id=project, session_id=session, receipt=receipt
         ).model_dump_json()

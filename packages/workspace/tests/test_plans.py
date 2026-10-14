@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import tracemalloc
+from pathlib import Path
 
 import pytest
 
@@ -66,6 +67,18 @@ def inventory(state_dir):
 
 def seed(inventory, *, project="p1", session="a"):
     return inventory.publish(authority(project, session), "create", body(), "Initial plan")
+
+
+def while_open(state_dir: Path, session: str, make):
+    """``make()`` while the closed session is open again: a plan change needs it open."""
+    projects = ProjectStore(state_dir)
+    try:
+        projects.open_session("p1", session, dedicated=False)
+        made = make()
+        projects.close_session("p1", session)
+        return made
+    finally:
+        projects.close()
 
 
 async def create(aiohttp_client, state_dir, static_dir, *, login=True, **kwargs):
@@ -168,7 +181,7 @@ async def test_explicit_partial_goal_outcome_is_not_omitted(
 async def test_closed_session_history_is_read_without_waking_or_reopening(
     aiohttp_client, state_dir, static_dir, inventory, monkeypatch
 ):
-    first = seed(inventory, session="b")
+    first = while_open(state_dir, "b", lambda: seed(inventory, session="b"))
 
     def forbidden(*args, **kwargs):
         pytest.fail("plan read must not reopen the session")

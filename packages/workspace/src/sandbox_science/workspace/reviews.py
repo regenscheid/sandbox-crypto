@@ -152,32 +152,15 @@ async def finding(request: web.Request) -> web.Response:
 
 
 def contexts(store: ReviewStore, project: str, finding: Json) -> Json:
-    from sandbox_science.orchestrator.documents.project_macros import (
-        finding_anchors,
-        response_view,
-        view,
-    )
-
-    # The finding was read from the store, so it exists.
-    with store.documents.control.read() as tx:
-        anchors = finding_anchors(tx.sql, project, finding["finding_id"])
-    if finding["origin"] == "math":
-        job = MathJobs(store).job(finding["math_check_id"])
-        if job["project"] != project:
-            raise DocumentError("internal", "finding check is outside its project")
-        pinned = job.get("effective_macro_context")
-        context = (
-            {**pinned, "macros": pinned["effective"]}
-            if pinned
-            else view(store.documents, project, historical=True)
-        )
-    else:
-        context = view(store.documents, project, anchors=anchors)
-    finding["macro_context"] = context
+    """The finding with the macro contexts it is shown with."""
+    found = Findings(store).macro_contexts(project, finding)
+    finding["macro_context"] = found.finding.model_dump(mode="json", exclude_none=True)
     for entry in finding.get("history", []):
-        entry["macro_context"] = view(store.documents, project, historical=True)
+        entry["macro_context"] = found.history.model_dump(mode="json", exclude_none=True)
         if body := entry.get("response_body"):
-            body["macro_context"] = response_view(store.documents, project, body["source"])
+            body["macro_context"] = found.responses[body["source"]].model_dump(
+                mode="json", exclude_none=True
+            )
     return finding
 
 

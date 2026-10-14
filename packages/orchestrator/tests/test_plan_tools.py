@@ -396,7 +396,7 @@ async def test_exact_replay_is_history_not_current_phase_and_preserves_model_aut
 async def test_a_status_race_refuses_progress_and_a_draft_holds_effects(fixture, monkeypatch):
     f = fixture
     ref, revision = await active(f)
-    original = f.core.progress
+    original = f.adapter.plans.progress
 
     def raced(*args, **kwargs):
         assert kwargs["expected_status_revision"] == revision
@@ -412,7 +412,7 @@ async def test_a_status_race_refuses_progress_and_a_draft_holds_effects(fixture,
         )
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(f.core, "progress", raced)
+    monkeypatch.setattr(f.adapter.plans, "progress", raced)
     with pytest.raises(DocumentError, match="status"):
         await call(
             f,
@@ -646,14 +646,14 @@ async def test_cancelled_mutation_drains_actual_thread_before_store_lifetime_end
 ):
     f = fixture
     entered, release = threading.Event(), threading.Event()
-    original = f.core.publish
+    original = f.adapter.plans.publish
 
     def blocked(*args, **kwargs):
         entered.set()
         assert release.wait(5)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(f.core, "publish", blocked)
+    monkeypatch.setattr(f.adapter.plans, "publish", blocked)
     task = asyncio.create_task(made(f))
     await asyncio.to_thread(entered.wait, 5)
     task.cancel()

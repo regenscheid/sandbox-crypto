@@ -100,9 +100,10 @@ steps; blocked or skipped steps cannot produce `achieved`. Plan text and evidenc
 are attributed assertions, with no scientific verification, permission expansion
 or automatic link from effects to steps.
 
-**Session fence.** Each operation rereads the run's session record under a short
-project lock and compares it with the record read at run start. The lock precedes
-control SQL; neither is held across a worker await. Closing the session, or closing
+**Session fence.** Each operation rereads the run's session record and compares
+it with the record read at run start, and each plan change checks, in its own
+transaction, that the session is still open with the `opened_at` read at run start
+(`SessionPlans.pinned`). Nothing is held across a worker await. Closing the session, or closing
 and reopening it (a reopen records a new `opened_at` and `kernel_notice_lifetime`),
 ends the old run's plan effects. Other sessions opening or closing do not, nor does
 a policy revision: the worker enforces the project's current policy on each effect.

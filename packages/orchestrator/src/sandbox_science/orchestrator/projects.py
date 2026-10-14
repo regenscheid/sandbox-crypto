@@ -10,9 +10,8 @@ orchestrator asks for them by ID and keeps this record of which session uses whi
 
 The records are in the control store, ``<state-dir>/control.sqlite3`` (control/), in
 the ``projects``, ``sessions`` and ``runs`` tables. Each change is one transaction.
-A change also holds the project's lock file, ``<state-dir>/projects/<project>.lock``,
-which a caller that checks a session and then changes something else of it (a plan
-edit) holds too, so that a close cannot land in between.
+A change elsewhere that needs its session open, such as a plan change, checks the
+session in its own transaction (session_plans.py), so a close cannot land in between.
 
 Environment IDs end with a random tag, kept in the record. A worker shared with other
 projects' orchestrators keeps each ID for the project that first creates it (D78), so
@@ -28,14 +27,11 @@ the control store; such a file is not read, and a lookup of its project says so.
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
 import hashlib
 import json
 import re
 import secrets
 import sqlite3
-from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -293,7 +289,7 @@ class ProjectStore:
 
     def __init__(self, state_dir: Path, *, readonly: bool = False) -> None:
         self.root = state_dir / "projects"
-        """Where the projects' lock files are."""
+        """Where projects were JSON files before they moved into the control store."""
         self.readonly = readonly
         self.control = ControlStore(store_path(state_dir), readonly=readonly)
 
@@ -327,7 +323,8 @@ class ProjectStore:
 
     def create(self, project_id: str, profile: str, policy: str) -> tuple[ProjectRecord, bool]:
         """Record a new project; return the existing one when it has the same settings."""
-        with self.locked(project_id), self.control.write() as tx:
+        self._checked(project_id)
+        with self.control.write() as tx:
             row = tx.sql.execute(
                 "SELECT 1 FROM projects WHERE project_id = ?", (project_id,)
             ).fetchone()
@@ -359,7 +356,8 @@ class ProjectStore:
 
     def set_policy(self, project_id: str, policy: str) -> ProjectRecord:
         """Move the project to another policy revision; its environments follow on next use."""
-        with self.locked(project_id), self.control.write() as tx:
+        self._checked(project_id)
+        with self.control.write() as tx:
             record = self._project(tx.sql, project_id)
             if record.policy == policy:
                 return record
@@ -374,7 +372,8 @@ class ProjectStore:
 
     def open_session(self, project_id: str, session_id: str, *, dedicated: bool) -> SessionRecord:
         """The session's record, created on first use; a closed session opens again."""
-        with self.locked(project_id), self.control.write() as tx:
+        self._checked(project_id)
+        with self.control.write() as tx:
             record = self._project(tx.sql, project_id)
             session = record.sessions.get(session_id)
             now = datetime.now(UTC)
@@ -409,7 +408,8 @@ class ProjectStore:
             return session
 
     def close_session(self, project_id: str, session_id: str) -> SessionRecord:
-        with self.locked(project_id), self.control.write() as tx:
+        self._checked(project_id)
+        with self.control.write() as tx:
             session = self._project(tx.sql, project_id).sessions.get(session_id)
             if session is None:
                 raise ProjectError(
@@ -524,18 +524,6 @@ class ProjectStore:
             raise ProjectError(
                 ErrorKind.INTERNAL, f"run record {name} is damaged: {str(exc)[:300]}"
             ) from exc
-
-    @contextlib.contextmanager
-    def locked(self, project_id: str) -> Generator[None]:
-        """Hold the project's lock file, across processes, around a check and a change."""
-        self._checked(project_id)
-        self.root.mkdir(parents=True, exist_ok=True)
-        with (self.root / f"{project_id}.lock").open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def _unmade(self) -> bool:
         """Whether there is no control store to read yet: a read never makes one."""
