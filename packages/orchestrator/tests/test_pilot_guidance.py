@@ -271,10 +271,10 @@ async def test_failed_run_retains_new_base_pin_without_answer_or_extra_delivery(
     assert record.final_text is None
     assert HOSTILE not in record.to_json()
     assert (
-        record.job_notice_ids
-        == record.work_request_ids
-        == record.review_notice_ids
-        == record.math_notice_ids
+        record.delivered.get("jobs", [])
+        == record.delivered.get("requests", [])
+        == record.delivered.get("reviews", [])
+        == record.delivered.get("math", [])
         == []
     )
     assert isinstance(

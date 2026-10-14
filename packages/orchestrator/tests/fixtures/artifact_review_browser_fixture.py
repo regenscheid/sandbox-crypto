@@ -204,7 +204,9 @@ def create(path: Path) -> None:
                 final_text="Synthetic count16.",
                 messages=[{"role": "assistant", "content": "Synthetic count16."}],
                 tools=[],
-                review_summary={"outcome": "findings", "reviews": [review, availability_review]},
+                summaries={
+                    "reviews": {"outcome": "findings", "reviews": [review, availability_review]}
+                },
             )
         )
         marker = {

@@ -177,10 +177,12 @@ def create(path: Path) -> None:
                     {"role": "assistant", "content": "The scripted report says 16."},
                 ],
                 tools=[],
-                review_summary={
-                    "outcome": "findings",
-                    "reviews": [review],
-                    "counts": {"fail:open": 1, "warn:open": 1, "note:inconclusive": 1},
+                summaries={
+                    "reviews": {
+                        "outcome": "findings",
+                        "reviews": [review],
+                        "counts": {"fail:open": 1, "warn:open": 1, "note:inconclusive": 1},
+                    }
                 },
             )
         )

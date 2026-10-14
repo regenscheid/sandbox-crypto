@@ -1009,7 +1009,7 @@ async def test_warn_checkpoint_delivers_counts_without_statement(store) -> None:
     sent = json.dumps(model.requests[0])
     assert "warn:open" in sent
     assert "Private warning body" not in sent
-    assert transcript.review_notice_ids == []
+    assert sorted(transcript.delivered_ids("reviews")) == []
 
 
 @pytest.mark.asyncio
@@ -1041,7 +1041,7 @@ async def test_late_final_turn_notice_remains_pending_for_next_run(store) -> Non
             run_id="late",
             max_turns=1,
         )
-    assert transcript.review_notice_ids == []
+    assert sorted(transcript.delivered_ids("reviews")) == []
     assert FindingNotices(reviews).pending("p", "s", "next", set())
 
 
@@ -1095,7 +1095,7 @@ async def test_persistent_owner_keeps_review_running_when_new_input_arrives(stor
         queue.put_nowait("Start the next user turn now.")
         transcript = await asyncio.wait_for(task, 2)
         assert transcript.stopped == "user_message"
-        assert transcript.review_summary["user_message"] == "Start the next user turn now."
+        assert transcript.summaries["reviews"]["user_message"] == "Start the next user turn now."
         assert controller.task is not None
         assert not controller.task.done()
         assert reviews.run("p", "s", controller.review_ids[-1])["state"] == "running"
@@ -1137,7 +1137,7 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
             run_id="saved",
             max_turns=1,
         )
-    assert transcript.review_notice_ids
+    assert sorted(transcript.delivered_ids("reviews"))
     now = datetime.now(UTC)
     fields = {
         "run_id": "saved",
@@ -1149,8 +1149,8 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
         "final_text": transcript.final_text,
         "messages": transcript.messages,
         "tools": transcript.tool_records,
-        "review_notice_ids": transcript.review_notice_ids,
-        "review_summary": transcript.review_summary,
+        "review_notice_ids": sorted(transcript.delivered_ids("reviews")),
+        "review_summary": transcript.summaries["reviews"],
     }
     args = argparse.Namespace(state_dir=documents.path.parent, transcript=None)
     original = ProjectStore.save_run
@@ -1165,12 +1165,9 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
         assert db.execute("SELECT delivered_run FROM review_notices").fetchone()[0] is None
     monkeypatch.setattr(ProjectStore, "save_run", original)
     assert cli._keep(args, fields, 0) == 0
-    assert (
-        ProjectStore(documents.path.parent)
-        .run("p", "s", ProjectStore(documents.path.parent).runs("p", "s")[0].name)
-        .review_notice_ids
-        == transcript.review_notice_ids
-    )
+    assert ProjectStore(documents.path.parent).run(
+        "p", "s", ProjectStore(documents.path.parent).runs("p", "s")[0].name
+    ).delivered["reviews"] == sorted(transcript.delivered_ids("reviews"))
     assert FindingNotices(reviews).pending("p", "s", "next", set()) == []
 
 

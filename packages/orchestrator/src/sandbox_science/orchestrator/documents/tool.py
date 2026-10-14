@@ -624,8 +624,9 @@ class WorkRequests(TurnHook):
         return Closing("continue", found) if found else Closing()
 
     async def acknowledge(self, record: RunRecord) -> None:
-        if record.work_request_ids:
-            await asyncio.to_thread(self._acknowledge, record)
+        ids = record.delivered.get(self.name)
+        if ids:
+            await asyncio.to_thread(self._acknowledge, record, ids)
 
     async def _pending(self) -> tuple[Notice, ...]:
         found = await self.tool.request_notices()
@@ -635,14 +636,11 @@ class WorkRequests(TurnHook):
         self.tool.request_seen.update(ids)
         return (Notice(self.name, ids, REQUEST_FRAMING, found),)
 
-    def _acknowledge(self, record: RunRecord) -> None:
+    def _acknowledge(self, record: RunRecord, ids: list[str]) -> None:
         store = DocumentStore(self.tool.store.path, producer=self.tool.store.producer)
         try:
             Annotations(store).acknowledge(
-                record.context.project_id,
-                record.context.session_id,
-                record.run_id,
-                record.work_request_ids,
+                record.context.project_id, record.context.session_id, record.run_id, ids
             )
         finally:
             store.close()

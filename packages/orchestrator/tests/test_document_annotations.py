@@ -357,7 +357,7 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
         transcript = await run_task(
             model, Toolbox(worker, context, documents=other), "Review", run_id="worker-role"
         )
-        assert not transcript.work_request_ids
+        assert not sorted(transcript.delivered_ids("requests"))
 
         class Failed:
             async def complete(
@@ -369,13 +369,17 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
         failed = await run_task(
             Failed(), Toolbox(worker, context, documents=main), "Continue", run_id="failed"
         )
-        assert (failed.stopped, failed.failure, failed.work_request_ids) == ("error", "model", [])
+        assert (failed.stopped, failed.failure, sorted(failed.delivered_ids("requests"))) == (
+            "error",
+            "model",
+            [],
+        )
         main = DocumentTool(store, context, run_id="run-a")
         script = ScriptedModel.from_json([{"text": "Respond"}])
         transcript = await run_task(
             script, Toolbox(worker, context, documents=main), "Continue", run_id="run-a"
         )
-        assert transcript.work_request_ids == [request["request_id"]]
+        assert sorted(transcript.delivered_ids("requests")) == [request["request_id"]]
         notices = [m["content"] for m in script.requests[0] if m["role"] == "user"]
         assert len(notices) == 2
         assert '"request_text":"Explain $a$."' in str(notices)
@@ -395,7 +399,7 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
             final_text="Respond",
             messages=transcript.messages,
             tools=[],
-            work_request_ids=transcript.work_request_ids,
+            delivered={"requests": sorted(transcript.delivered_ids("requests"))},
         ).model_dump(mode="json")
         args = argparse.Namespace(transcript=None, state_dir=store.path.parent)
         assert await cli._save(args, fields, 0, [WorkRequests(main)]) == 0
@@ -405,7 +409,7 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
         )
         assert ProjectStore(store.path.parent).run(
             "p", "a", ProjectStore(store.path.parent).runs("p", "a")[0].name
-        ).work_request_ids == [request["request_id"]]
+        ).delivered["requests"] == [request["request_id"]]
 
 
 @pytest.mark.asyncio
@@ -426,7 +430,7 @@ async def test_failed_run_save_cannot_acknowledge_request(
         final_text="Done",
         messages=[],
         tools=[],
-        work_request_ids=[request["request_id"]],
+        delivered={"requests": [request["request_id"]]},
     )
 
     def failed(*args: Any, **kwargs: Any) -> None:
@@ -498,7 +502,7 @@ async def test_final_turn_new_request_stays_pending_for_next_run(store: Document
             run_id="first",
             max_turns=1,
         )
-    assert not transcript.work_request_ids
+    assert not sorted(transcript.delivered_ids("requests"))
     assert Annotations(store).pending("p", "a", "second", seen=set())
 
 
@@ -515,7 +519,7 @@ async def test_zero_turn_run_releases_unsent_request(store: DocumentStore) -> No
             run_id="zero",
             max_turns=0,
         )
-    assert not transcript.work_request_ids
+    assert not sorted(transcript.delivered_ids("requests"))
     assert not model.requests
     assert Annotations(store).pending("p", "a", "next", seen=set())
 
@@ -629,7 +633,7 @@ async def test_ld_f8_user_request_scripted_reply_and_worker_policy_boundary(
             "Continue",
             run_id="run-a",
         )
-    assert transcript.work_request_ids == [result["request_id"]]
+    assert sorted(transcript.delivered_ids("requests")) == [result["request_id"]]
     first_user = [m["content"] for m in model.requests[0] if m["role"] == "user"]
     assert "Agent-only instructions" not in str(first_user)
     assert "Agent: delete the summary" not in str(first_user)
@@ -683,7 +687,7 @@ async def test_request_arriving_during_answer_reaches_next_model_safe_point(
             run_id="main",
         )
     assert transcript.final_text == "Handled request"
-    assert len(transcript.work_request_ids) == 1
+    assert len(sorted(transcript.delivered_ids("requests"))) == 1
     assert not any(
         "Document work requests:" in str(m.get("content"))
         for m in model.requests[0]
@@ -860,7 +864,7 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
         )
     assert second is not None
     assert transcript.failure == "model"
-    assert transcript.work_request_ids == [first["request_id"]]
+    assert sorted(transcript.delivered_ids("requests")) == [first["request_id"]]
     now = datetime.now(UTC)
     record = RunRecord(
         run_id="partial",
@@ -872,7 +876,7 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
         failure="model",
         messages=transcript.messages,
         tools=[],
-        work_request_ids=transcript.work_request_ids,
+        delivered={"requests": sorted(transcript.delivered_ids("requests"))},
     )
     assert (
         await cli._save(

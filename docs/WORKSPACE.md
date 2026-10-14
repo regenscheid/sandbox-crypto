@@ -238,8 +238,8 @@ Runs have a tree of their own because project IDs may contain dots: a project's 
 | `stopped` | `answered`, `turn_limit`, `user_message`, or `error` |
 | `failure` | Optional fixed phase: `model`, `tool`, `harness` or `cleanup`; older records omit it |
 | `final_text` | The answer, or null for a failed run |
-| `job_notice_ids` | Completion IDs represented by this run; acknowledged after the run is saved |
-| `work_request_ids` | User document requests the model received in this run; acknowledged after the run is saved |
+| `delivered` | For each notice source (`requests`, `jobs`, `reviews`, `math`), the IDs a successful model call saw; acknowledged after the run is saved. Older records' `job_notice_ids`, `work_request_ids`, `review_notice_ids` and `math_notice_ids` read as these |
+| `summaries` | What a source reported at the run's end: the consistency review (`reviews`) and the document math checks (`math`). The record also shows them as `review_summary` and `math_summary` |
 | `messages` | The conversation in the OpenAI chat format the harness uses, system prompt first |
 | `tools` | One record per tool call, in order: its name, its arguments as the model wrote them, and its outcome (the worker's execution record, or an artifact, an error kind, …) |
 
