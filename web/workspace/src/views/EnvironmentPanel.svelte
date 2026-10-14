@@ -172,8 +172,15 @@
             <dt>Policy</dt><dd><code>{operation.policy ?? 'not recorded'}</code></dd><dt>Error</dt><dd>{operation.error_present ? operation.error_kind ?? 'recorded; kind unknown' : 'none recorded'}</dd></dl>
           <p class="muted">Submitted {formatTime(operation.summary.submitted_at)}; started {operation.summary.started_at ? formatTime(operation.summary.started_at) : 'not recorded'}; ended {operation.summary.ended_at ? formatTime(operation.summary.ended_at) : 'not recorded'}.</p>
           <button disabled={busy || signedOut || selectionAdvanced} onclick={() => select({kind: 'files', operation: operation.summary, offset: 0, ...(selection?.kind === 'retained_operation' ? {retained: true as const} : {})})}>{operation.summary.files_total} resolved files at sequence {operation.summary.seq}</button>
-          {#if operation.request.pip_reason}<p class="record-text">pip fallback reason: {operation.request.pip_reason}</p>{/if}
-          {#if operation.next_step}<p class="record-text">Recorded next step: {operation.next_step}</p>{/if}
+          <!-- .record-text is pre-wrap: these paragraphs stay short enough that the
+               formatter adds no whitespace inside them. -->
+
+          {#if operation.request.pip_reason}
+            <p class="record-text">pip fallback reason: {operation.request.pip_reason}</p>
+          {/if}
+          {#if operation.next_step}
+            <p class="record-text">Recorded next step: {operation.next_step}</p>
+          {/if}
           <p class="muted">Request text and next steps are recorded data. This viewer does not execute them or answer permissions. Notes, raw errors and execution details are outside this view.</p>
         {:else if files}
           <h4>Resolved files</h4>

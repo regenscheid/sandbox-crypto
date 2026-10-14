@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+// Rendered HTML is compared with each whitespace run as one space, so that line breaks in
+// the components' source do not matter.
 import { render } from 'svelte/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from './api';
@@ -55,9 +57,9 @@ describe('mounted visible sequential observation lifecycle', () => {
 });
 
 describe('escaped read-only view', () => {
-  it('shows project-wide queue, independent VM/package state and dated previous view', () => {const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'unavailable', data: overview(), busy: false}}}).body; expect(html).toContain('Previous observation'); expect(html).toContain('VM state'); expect(html).toContain('not observed'); expect(html).toContain('Permission request 7'); expect(html).toContain('whole project environment'); expect(html).not.toMatch(/<button[^>]*>\s*(Approve|Deny|Install|Cancel|Rebuild)/);});
-  it('shows exact file count, unknown declared licenses and AGPL without HTML activation', () => {const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'observed', data: overview(), busy: false}, initialSelection: {kind: 'files', operation: op(), offset: 0}, initialDetail: {phase: 'observed', data: files(), busy: false}}}).body; expect(html).toContain('Showing files 1–2 of 2'); expect(html).toContain('unknown'); expect(html).toContain('AGPL flagged'); expect(html).not.toContain('<script>'); expect(html).toContain('&lt;script>');});
-  it('keeps probe attribution and import-check limitations literal', () => {const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialSelection: {kind: 'probes', revision: history().revisions[0]!, offset: 0}, initialDetail: {phase: 'observed', data: probes(), busy: false}}}).body; expect(html).toContain('Revision attribution unknown'); expect(html).toContain('does not prove functional capability'); expect(html).toContain('&lt;script>'); expect(html).not.toContain('<script>');});
+  it('shows project-wide queue, independent VM/package state and dated previous view', () => {const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'unavailable', data: overview(), busy: false}}}).body.replace(/\s+/g, ' '); expect(html).toContain('Previous observation'); expect(html).toContain('VM state'); expect(html).toContain('not observed'); expect(html).toContain('Permission request 7'); expect(html).toContain('whole project environment'); expect(html).not.toMatch(/<button[^>]*>\s*(Approve|Deny|Install|Cancel|Rebuild)/);});
+  it('shows exact file count, unknown declared licenses and AGPL without HTML activation', () => {const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'observed', data: overview(), busy: false}, initialSelection: {kind: 'files', operation: op(), offset: 0}, initialDetail: {phase: 'observed', data: files(), busy: false}}}).body.replace(/\s+/g, ' '); expect(html).toContain('Showing files 1–2 of 2'); expect(html).toContain('unknown'); expect(html).toContain('AGPL flagged'); expect(html).not.toContain('<script>'); expect(html).toContain('&lt;script>');});
+  it('keeps probe attribution and import-check limitations literal', () => {const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialSelection: {kind: 'probes', revision: history().revisions[0]!, offset: 0}, initialDetail: {phase: 'observed', data: probes(), busy: false}}}).body.replace(/\s+/g, ' '); expect(html).toContain('Revision attribution unknown'); expect(html).toContain('does not prove functional capability'); expect(html).toContain('&lt;script>'); expect(html).not.toContain('<script>');});
 });
 
 describe('complete pagination and lifecycle boundaries', () => {
@@ -68,7 +70,7 @@ describe('complete pagination and lifecycle boundaries', () => {
     expect(provisionData(first, scope, {kind: 'files', operation, offset: 0})).toEqual(first);
     expect(provisionData(last, scope, {kind: 'files', operation, offset: 8})).toEqual(last);
     expect(() => provisionData({...first, next_offset: null}, scope, {kind: 'files', operation, offset: 0})).toThrow();
-    const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'observed', data: {...overview(), operations: [operation]}, busy: false}, initialSelection: {kind: 'files', operation, offset: 0}, initialDetail: {phase: 'observed', data: first, busy: false}}}).body;
+    const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'observed', data: {...overview(), operations: [operation]}, busy: false}, initialSelection: {kind: 'files', operation, offset: 0}, initialDetail: {phase: 'observed', data: first, busy: false}}}).body.replace(/\s+/g, ' ');
     expect(html).toContain('Showing files 1–8 of 9'); expect(html).toContain('This is a page of the file set');
     expect(html).not.toContain('package8');
   });
@@ -107,8 +109,8 @@ describe('complete pagination and lifecycle boundaries', () => {
   });
   it('marks a selected departed operation historical and hides foreign selected facts', () => {
     const props = {projectId: 'p', project: project(), initialView: {phase: 'observed' as const, data: {...overview(), queue_total: 0, operations: []}, busy: false}, initialSelection: {kind: 'operation' as const, operation: op()}, initialDetail: {phase: 'observed' as const, data: detail(), busy: false}};
-    expect(render(EnvironmentPanel, {props}).body).toContain('This selected record is historical');
-    expect(render(EnvironmentPanel, {props: {...props, initialDetail: {...props.initialDetail, data: {...detail(), environment_id: 'foreign'}}}}).body).not.toContain('Ask the operator');
+    expect(render(EnvironmentPanel, {props}).body.replace(/\s+/g, ' ')).toContain('This selected record is historical');
+    expect(render(EnvironmentPanel, {props: {...props, initialDetail: {...props.initialDetail, data: {...detail(), environment_id: 'foreign'}}}}).body.replace(/\s+/g, ' ')).not.toContain('Ask the operator');
   });
   it('initiation of logout blocks new or late transport owners', async () => {
     vi.resetModules(); const transport = await import('./provisioning'), auth = await import('./kernels');
@@ -144,12 +146,12 @@ describe('explicit current retained operations', () => {
   it('labels retained operation state and leaves its file pagination available outside the queue', () => {
     const empty = {...overview(), queue_total: 0, operations: []};
     const props = {projectId: 'p', project: project(), initialView: {phase: 'observed' as const, data: empty, busy: false}, initialSelection: {kind: 'retained_operation' as const, provisionId: 'prv-one'}, initialDetail: {phase: 'observed' as const, data: detail(), busy: false}};
-    const html = render(EnvironmentPanel, {props}).body;
+    const html = render(EnvironmentPanel, {props}).body.replace(/\s+/g, ' ');
     expect(html).toContain('Current retained operation state'); expect(html).toContain('does not reproduce its state at that revision');
     expect(html).not.toContain('This selected record is historical');
-    const fileHtml = render(EnvironmentPanel, {props: {...props, initialSelection: {kind: 'files', operation: op(), offset: 0, retained: true}, initialDetail: {...props.initialDetail, data: files()}}}).body;
+    const fileHtml = render(EnvironmentPanel, {props: {...props, initialSelection: {kind: 'files', operation: op(), offset: 0, retained: true}, initialDetail: {...props.initialDetail, data: files()}}}).body.replace(/\s+/g, ' ');
     expect(fileHtml).toContain('explicitly loaded current retained operation'); expect(fileHtml).not.toContain('This selected record is historical');
-    const historyHtml = render(EnvironmentPanel, {props: {...props, initialSelection: {kind: 'history', after: -1, target: null}, initialDetail: {...props.initialDetail, data: {...history(), revisions: [{...history().revisions[0]!, operation: 'prv-one'}]}}}}).body;
+    const historyHtml = render(EnvironmentPanel, {props: {...props, initialSelection: {kind: 'history', after: -1, target: null}, initialDetail: {...props.initialDetail, data: {...history(), revisions: [{...history().revisions[0]!, operation: 'prv-one'}]}}}}).body.replace(/\s+/g, ' ');
     expect(historyHtml).toContain('Load current retained operation');
   });
 });
@@ -157,7 +159,7 @@ describe('explicit current retained operations', () => {
 describe('recorded permission references', () => {
   it('does not infer an unanswered permission from a retained reference during installation', () => {
     const data = {...overview(), operations: [{...op(), state: 'installing' as const, stage: 'link', outcome: null}]};
-    const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'observed', data, busy: false}}}).body;
+    const html = render(EnvironmentPanel, {props: {projectId: 'p', project: project(), initialView: {phase: 'observed', data, busy: false}}}).body.replace(/\s+/g, ' ');
     expect(html).toContain('recorded reference, current decision not shown'); expect(html).not.toContain('waiting for an operator answer');
   });
 });
@@ -204,19 +206,19 @@ describe('explicit pinned lockfile comparisons', () => {
     const held: LockfileDiffPage={...comparison(),status:'held',holds:[{side:'after',reason:'blob_missing'}],after_header:null,header_changes:[],total:null,added:null,removed:null,changed:null,next_offset:null,differences:[]};
     expect(provisionData(held,scope,diffSelection())).toEqual(held);
     for (const v of [{...held,total:0},{...held,holds:[]},{...held,before_header:{...held.before_header!,sha256:'f'.repeat(64)}},{...held,holds:[held.holds[0]!,held.holds[0]!]}]) expect(() => provisionData(v,scope,diffSelection())).toThrow();
-    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:diffSelection(),initialDetail:{phase:'observed',data:held,busy:false}}}).body;
+    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:diffSelection(),initialDetail:{phase:'observed',data:held,busy:false}}}).body.replace(/\s+/g, ' ');
     expect(html).toContain('package differences are unknown');expect(html).toContain('unavailable or evicted');expect(html).not.toContain('0 total differences');
   });
   it('distinguishes true identical/empty differences from unavailable inventory', () => {
     const s=diffSelection();s.after=s.before;const v={...comparison(),after:comparison().before,after_header:comparison().before_header,header_changes:[],total:0,changed:0,differences:[]};
     expect(provisionData(v,scope,s)).toEqual(v);
-    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:s,initialDetail:{phase:'observed',data:v,busy:false}}}).body;expect(html).toContain('No package-entry differences');expect(html).toContain('do not certify installed files');
+    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:s,initialDetail:{phase:'observed',data:v,busy:false}}}).body.replace(/\s+/g, ' ');expect(html).toContain('No package-entry differences');expect(html).toContain('do not certify installed files');
   });
   it('keeps pip normalized-name/location and licenses unknown; escapes source text', () => {
     const row: LockfileDifference={ecosystem:'pip',name:'some-pkg',location:'user',change:'added',before:null,after:{name:'Some_Pkg',version:'1',installer:'uv',location:'user',url:'https://example.invalid/<script>',sha256:null},changed_fields:['installer','location','name','url','version'],before_license:null,after_license:{declared:null,agpl:null}};
     const selected=diffSelection();selected.after.lockfile!.pip_distributions=1;const base=comparison();base.after.lockfile!.pip_distributions=1;base.after_header!.pip_distributions=1;const v={...base,total:2,added:1,differences:[diffRow(),row]};expect(provisionData(v,scope,selected)).toEqual(v);
     expect(() => provisionData({...v,differences:[diffRow(),{...row,after_license:{declared:'MIT',agpl:false}}]},scope,selected)).toThrow();
-    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:diffSelection(),initialDetail:{phase:'observed',data:v,busy:false}}}).body;
+    const html=render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:diffSelection(),initialDetail:{phase:'observed',data:v,busy:false}}}).body.replace(/\s+/g, ' ');
     expect(html).toContain('AGPL status: flagged');expect(html).toContain('AGPL status: unknown');expect(html).toContain('md5');expect(html).toContain('&lt;script>');expect(html).not.toContain('<script>');expect(html).not.toContain('href="https://example');
   });
   it('follows actual short-page cursor; checks row order and pinned cross-page facts', () => {
@@ -229,8 +231,8 @@ describe('explicit pinned lockfile comparisons', () => {
   });
   it('labels dated records/backend proof without enabling actions or foreign data', () => {
     const props={projectId:'p',project:project(),initialSelection:diffSelection(),initialDetail:{phase:'unavailable' as const,data:comparison(),busy:false}};
-    const html=render(EnvironmentPanel,{props}).body;expect(html).toContain('Previous selected record');expect(html).toContain('does not select newer sources');expect(html).toContain('verified by the backend');expect(html).not.toMatch(/<button[^>]*>\s*(Install|Approve|Cancel|Rebuild)/);
-    expect(render(EnvironmentPanel,{props:{...props,initialDetail:{...props.initialDetail,data:{...comparison(),environment_id:'foreign'}}}}).body).not.toContain('AGPL status: flagged');
+    const html=render(EnvironmentPanel,{props}).body.replace(/\s+/g, ' ');expect(html).toContain('Previous selected record');expect(html).toContain('does not select newer sources');expect(html).toContain('verified by the backend');expect(html).not.toMatch(/<button[^>]*>\s*(Install|Approve|Cancel|Rebuild)/);
+    expect(render(EnvironmentPanel,{props:{...props,initialDetail:{...props.initialDetail,data:{...comparison(),environment_id:'foreign'}}}}).body.replace(/\s+/g, ' ')).not.toContain('AGPL status: flagged');
   });
 });
 describe('comparison transport and one-shot ownership', () => {
@@ -321,19 +323,19 @@ describe('explicit selected revision recorded packages', () => {
     const empty = {...v, selection: {...v.selection, lockfile: s.revision.lockfile}, header: {...s.revision.lockfile!, python: null, platform: null, skipped: 0}, total: 0, packages: []};
     expect(provisionData(empty, scope, s)).toEqual(empty);
     const props = {projectId:'p', project:project(), initialSelection:packageSelection(), initialDetail:{phase:'observed' as const,data:held,busy:false}};
-    expect(render(EnvironmentPanel,{props}).body).toContain('packages and licenses are unknown');
-    expect(render(EnvironmentPanel,{props}).body).not.toContain('No package entries');
-    expect(render(EnvironmentPanel,{props:{...props,initialSelection:s,initialDetail:{...props.initialDetail,data:empty}}}).body).toContain('No package entries in this validated retained lockfile');
+    expect(render(EnvironmentPanel,{props}).body.replace(/\s+/g, ' ')).toContain('packages and licenses are unknown');
+    expect(render(EnvironmentPanel,{props}).body.replace(/\s+/g, ' ')).not.toContain('No package entries');
+    expect(render(EnvironmentPanel,{props:{...props,initialSelection:s,initialDetail:{...props.initialDetail,data:empty}}}).body.replace(/\s+/g, ' ')).toContain('No package entries in this validated retained lockfile');
   });
   it('shows unchanged/base/unmanaged metadata, declared AGPL and unknown pip without activated URLs', () => {
     const s = packageSelection(), data = packageInventory();s.revision.revision = data.selection.revision = 0;
     const props = {projectId:'p',project:project(),initialSelection:s,initialDetail:{phase:'unavailable' as const,data,busy:false}};
-    const html = render(EnvironmentPanel,{props}).body;
+    const html = render(EnvironmentPanel,{props}).body.replace(/\s+/g, ' ');
     expect(html).toContain('revision 0');expect(html).toContain('including unchanged packages');expect(html).toContain('AGPL flagged');expect(html).toContain('AGPL status: unknown');
     expect(html).toContain('Showing recorded packages 1–3 of 3');expect(html).toContain('Previous selected record');expect(html).toContain('do not certify installed files');
     expect(html).toContain('&lt;script>');expect(html).not.toContain('<script>');expect(html).not.toContain('href="https://example');expect(html).not.toMatch(/<button[^>]*>\s*(Install|Approve|Cancel|Rebuild)/);
-    expect(render(EnvironmentPanel,{props:{...props,initialDetail:{...props.initialDetail,data:{...data,project_id:'foreign'}}}}).body).not.toContain('AGPL flagged');
-    const historyHtml = render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:{kind:'history',after:-1,target:null},initialDetail:{phase:'observed',data:history(),busy:false}}}).body;
+    expect(render(EnvironmentPanel,{props:{...props,initialDetail:{...props.initialDetail,data:{...data,project_id:'foreign'}}}}).body.replace(/\s+/g, ' ')).not.toContain('AGPL flagged');
+    const historyHtml = render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:{kind:'history',after:-1,target:null},initialDetail:{phase:'observed',data:history(),busy:false}}}).body.replace(/\s+/g, ' ');
     expect(historyHtml).toContain('Recorded packages and licenses');
   });
 });
@@ -381,7 +383,7 @@ describe('additive recorded pip license declarations', () => {
   });
   it('renders declared pip metadata without the stale always-unknown caption', () => {
     const data = packageInventory(), row = data.packages[2]!;row.package = {...row.package,license:'AGPL-3.0-only'};row.license = {declared:'AGPL-3.0-only',agpl:true};
-    const html = render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:packageSelection(),initialDetail:{phase:'observed',data,busy:false}}}).body;
+    const html = render(EnvironmentPanel,{props:{projectId:'p',project:project(),initialSelection:packageSelection(),initialDetail:{phase:'observed',data,busy:false}}}).body.replace(/\s+/g, ' ');
     expect(html).toContain('AGPL-3.0-only');expect(html).toContain('Missing declarations remain unknown');expect(html).not.toContain('Pip licenses remain unknown');
   });
   it('retains absent legacy license as unknown without accepting unrelated extra fields', () => {

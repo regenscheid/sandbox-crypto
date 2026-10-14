@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
+// Rendered HTML is compared with each whitespace run as one space, so that line breaks in
+// the components' source do not matter.
 import { render } from 'svelte/server';
 import FindingCard from '../views/FindingCard.svelte';
 import { reviews, type Finding } from './reviews';
@@ -17,7 +19,7 @@ it('renders mechanical authority, exact evidence and retained stale USER respons
   saveDraft('p', 'review:s:finding-mechanical', { base: 3, text: 'Unsaved user explanation <script>',
     reason: 'rebut', retained: 'doc-old:1', block: null });
   const html = render(FindingCard, { props: { projectId: 'p', sessionId: 's', finding,
-    changed: async () => {}, read: async () => {} } }).body;
+    changed: async () => {}, read: async () => {} } }).body.replace(/\s+/g, ' ');
   expect(html).toContain('Mechanical math check');
   expect(html).toContain('No reviewer model was used.');
   expect(html).toContain('Read mechanical evidence');

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
+// Rendered HTML is compared with each whitespace run as one space, so that line breaks in
+// the components' source do not matter.
 import { render } from 'svelte/server';
 import CommentBodyEditor from '../views/CommentBodyEditor.svelte';
 import AnnotationThread from '../views/AnnotationThread.svelte';
@@ -18,7 +20,7 @@ it('retains a separate original-body draft with stale thread and exact body CAS'
     retained:JSON.stringify({base:2,sha256:'b'.repeat(64)}),block:null});
   saveDraft('p','doc:reply:thread',{text:'Independent reply draft',base:5,reason:'reply',retained:'',block:null});
   const html=render(CommentBodyEditor,{props:{projectId:'p',documentId:'doc',threadId:'thread',
-    expected:6,source,changed:async()=>{}}}).body;
+    expected:6,source,changed:async()=>{}}}).body.replace(/\s+/g, ' ');
   expect(html).toContain('body revision 2, thread revision 4');
   expect(html).toContain('Use current body and thread revisions');
   expect(html).toContain('Unsaved &lt;script> body');
@@ -38,7 +40,7 @@ it('renders immutable original and correcting actor while exposing USER-own body
         body:'Delegated original',payload:{},created_at:2,body_source:{...source,entry_id:'cmt-agent',author:{kind:'agent',session_id:'s',run_id:'main',role:'main'}}},
       {entry_id:'cmt-correction',number:3,kind:'edit_body',author:{kind:'agent',session_id:'s',run_id:'main',role:'main'},
         body:'Corrected reply',payload:{entry:'cmt-agent',body_revision:3},created_at:3}]};
-  const html=render(AnnotationThread,{props:{projectId:'p',documentId:'doc',thread,sessions:[],macros:NO_MACROS,changed:async()=>{}}}).body;
+  const html=render(AnnotationThread,{props:{projectId:'p',documentId:'doc',thread,sessions:[],macros:NO_MACROS,changed:async()=>{}}}).body.replace(/\s+/g, ' ');
   expect(html).toContain('Original body');expect(html).toContain('Delegated original');
   expect(html).toContain('Correction of original entry');expect(html).toContain('Current body revision 3');
   expect(html.match(/Edit this comment body/g)).toHaveLength(1);
