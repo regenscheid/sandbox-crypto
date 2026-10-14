@@ -3,9 +3,10 @@
 
 The worker has a separate, bounded observation route for CP-12 kernel notices. It
 reports an existing kernel with its exact retained original birth, or explicitly
-unknown lineage. Its consumer is the harness's
-[MAIN kernel-notice delivery](KERNEL-NOTICE-DELIVERY.md), which turns proved
-entries into [inbox](KERNEL-NOTICES.md) notices. The route itself only reads: it
+unknown lineage. Nothing in the harness reads it any more: MAIN runs learn of
+kernels that predate a package change from the
+[kernel check before each turn](KERNEL-REVISIONS.md#kernel-check-before-each-turn),
+which uses the ordinary observation route. The route itself only reads: it
 does not enqueue or deliver notices, wake idle sessions or restart kernels. The GUI
 uses the separate [observation route](KERNEL-REVISIONS.md#existing-connection-observations)
 and its flattened workspace response.

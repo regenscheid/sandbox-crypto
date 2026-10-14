@@ -69,7 +69,6 @@ from .documents.tool import view_blocks
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
-from .kernel_delivery import KernelDeliveryController
 from .loop import Interruption, Transcript, run_task
 from .mathcheck import MathChecker
 from .model import ChatModel, ModelError, OpenAICompatibleModel, ScriptedModel
@@ -131,30 +130,7 @@ async def _context(args: argparse.Namespace, client: WorkerClient) -> ExecutionC
 
 
 async def _run(args: argparse.Namespace) -> int:
-    """Keep passive delivery ownership through existing cleanup, durable save and ACK."""
-    owners: list[KernelDeliveryController] = []
-    interruption = Interruption()
-    try:
-        try:
-            with interruption.protect():
-                return await _run_main(args, owners)
-        finally:
-            for owner in owners:
-                try:
-                    with interruption.protect():
-                        await owner.close()
-                except Exception:
-                    print(
-                        "kernel notices: cleanup unavailable; delivery may remain unresolved",
-                        file=sys.stderr,
-                    )
-    except BaseException:
-        if interruption.error is not None:
-            raise interruption.error from None
-        raise
-
-
-async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDeliveryController]) -> int:
+    """Run one task against the worker, then save its record and acknowledge its notices."""
     model: ChatModel
     if args.script is not None:
         model = ScriptedModel.from_json(json.loads(args.script.read_text()))
@@ -281,15 +257,6 @@ async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDelivery
                     else None
                 )
                 plans = None
-                kernel_notices = None
-                if documents is not None and args.state_dir is not None:
-                    kernel_notices = KernelDeliveryController(
-                        ProjectStore(args.state_dir), context, run_id, client
-                    )
-                    # Publish ownership before initialization can persist a baseline
-                    # or cancellation can discard any threaded return value.
-                    notice_owners.append(kernel_notices)
-                    await kernel_notices.initialize()
                 plan_owners: list[PlanTools] = []
 
                 def make_plans() -> PlanTools:
@@ -322,7 +289,7 @@ async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDelivery
                             math_checks=math_checks,
                             artifacts=artifacts,
                             plans=plans,
-                            kernel_notices=kernel_notices,
+                            check_kernels=documents is not None,
                         )
                         hooks = toolbox.turn_hooks()
                         transcript = await run_task(
@@ -397,15 +364,12 @@ async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDelivery
             if transcript.prompt_provenance is not None
             else None
         ),
-        # Keep the original model until the bounded exact-type validator sees it;
-        # dumping first could hide undeclared fields on copied host metadata.
-        "kernel_notice_delivery": transcript.kernel_notice_delivery,
         "tools": transcript.tool_records,
         "delivered": {source: sorted(ids) for source, ids in transcript.delivered.items() if ids},
         "summaries": transcript.summaries,
     }
     status = 1 if transcript.failure is not None else 0 if transcript.stopped == "answered" else 3
-    return await _save(args, fields, status, hooks, notice_owners[0] if notice_owners else None)
+    return await _save(args, fields, status, hooks)
 
 
 async def _save(
@@ -413,7 +377,6 @@ async def _save(
     fields: dict[str, object],
     status: int,
     hooks: Sequence[TurnHook],
-    owner: KernelDeliveryController | None = None,
 ) -> int:
     """Keep the run's record, then let each hook acknowledge what the saved record names.
 
@@ -421,10 +384,7 @@ async def _save(
     that fails to acknowledge is reported; the others still acknowledge theirs.
     """
     saved: list[RunRecord] = []
-    if owner is None:
-        status = _keep(args, fields, status, saved=saved.append)
-    else:
-        status = await owner.save(lambda: _keep(args, fields, status, saved=saved.append))
+    status = _keep(args, fields, status, saved=saved.append)
     if not saved:
         return status
     for hook in hooks:
@@ -433,13 +393,6 @@ async def _save(
         except Exception as exc:
             print(f"error: the run's {hook.name} could not be acknowledged: {exc}", file=sys.stderr)
             status = 1
-    if owner is not None and saved[0].kernel_notice_delivery is not None:
-        try:
-            acknowledged = await owner.acknowledge_saved()
-        except Exception:
-            acknowledged = False
-        if not acknowledged:
-            print("kernel notices: saved delivery remains unresolved", file=sys.stderr)
     return status
 
 

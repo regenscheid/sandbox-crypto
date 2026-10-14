@@ -47,7 +47,7 @@ from .documents.mathcontroller import MathChecks, MathController
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
 from .hooks import Effect, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, JobNotices, JobTools
-from .kernel_delivery import KernelDeliveryController
+from .kernel_check import KernelCheck
 from .model import ToolCall, ToolSpec
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
@@ -339,7 +339,7 @@ class Toolbox:
         math_checks: MathController | None = None,
         artifacts: ArtifactPublisher | None = None,
         plans: PlanTools | None = None,
-        kernel_notices: KernelDeliveryController | None = None,
+        check_kernels: bool = False,
     ) -> None:
         self.client = client
         self.context = context
@@ -351,7 +351,7 @@ class Toolbox:
         self.jobs = jobs if BACKGROUND in features else None
         self.artifacts = artifacts
         self.plans = plans
-        self.kernel_notices = kernel_notices
+        self.check_kernels = check_kernels
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         worker: dict[str, tuple[Effect, Handler]] = {
             "shell": ("effect", _plain(self._shell)),
@@ -491,6 +491,8 @@ class Toolbox:
             hooks.append(Reviews(self.reviews))
         if self.math_checks is not None:
             hooks.append(MathChecks(self.math_checks))
+        if self.check_kernels:
+            hooks.append(KernelCheck(self.client, self.context))
         return tuple(hooks)
 
     async def _call(

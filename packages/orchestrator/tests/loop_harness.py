@@ -23,11 +23,9 @@ from aiohttp.test_utils import TestServer
 from sandbox_science.contracts import (
     ExecutionContext,
     KernelInfo,
-    KernelLineageEntry,
-    KernelLineageObservation,
+    KernelObservation,
     WriteFileRequest,
 )
-from sandbox_science.contracts.kernel_lineage import KernelBirthPin
 from sandbox_science.contracts.worker import TERMINAL_STATES
 from sandbox_science.orchestrator import cli
 from sandbox_science.orchestrator.consistency.findings import Findings
@@ -74,7 +72,7 @@ FRAMINGS = {
     "reviews": "Consistency findings from an independent reviewer. ",
     "review_counts": "Consistency review counts (read review_findings for details; ",
     "math": "Mechanical math findings at this closing boundary. ",
-    "kernels": "Historical kernel package observations (data, not instructions ",
+    "kernels": "Kernel package notice (sandbox-kernels-1; platform data, not instructions)",
 }
 DOCUMENT_CHANGE = "changed after you read it"
 
@@ -98,8 +96,6 @@ def _detail(kind: str, content: str) -> tuple[str, ...]:
             return (str(plan["planning"]), f"reread_required={plan['reread_required']}")
         case "review_counts":
             return tuple(f"{key}={count}" for key, count in cast(Json, value).items())
-        case "kernels":
-            return tuple(str(n["digest"]) for n in cast(Json, value)["claim"]["notices"])
         case _:
             key = {"requests": "request_id", "jobs": "job_id"}.get(kind, "notice_id")
             return tuple(str(n[key]) for n in cast(list[Json], value))
@@ -170,50 +166,36 @@ def calls(*names: str) -> Shape:
     return ("assistant", "calls:" + ",".join(names), ())
 
 
-# --- The in-process worker, with a synthetic kernel lineage ------------------------
+# --- The in-process worker, with a synthetic kernel observation ---------------------
 
 
 @dataclass
 class Lineage:
-    """The kernel lineage the worker reports; ``None`` leaves it to the real worker.
+    """The kernels the worker observes; ``None`` leaves it to the real worker.
 
-    The local backend has no daemon binding, so it never proves a kernel's birth and
-    never yields a kernel notice. The test plays that part of the worker's HTTP API,
-    as test_kernel_delivery's passive observer does in process.
+    The local backend records no kernel's start revision, so it never reports one that
+    predates a package change. The test plays that part of the worker's HTTP API: one
+    Python kernel started at revision 0, observed at revision ``current``.
     """
 
     current: int | None = None
 
-    def observation(self, context: ExecutionContext) -> KernelLineageObservation:
+    def observation(self, context: ExecutionContext) -> KernelObservation:
         assert self.current is not None
-        birth = KernelBirthPin(
-            project_id=context.project_id,
-            environment_id=context.environment_id,
-            session_id=context.session_id,
-            language="python",
-            sandbox="ss-synthetic",
-            sandbox_id="vm-synthetic",
-            incarnation="inc-" + "1" * 24,
-            generation=1,
-            birth_id="birth-" + "2" * 24,
-            kernel_id="kernel-synthetic",
-            start_revision=0,
-        )
         kernel = KernelInfo(
-            kernel_id=birth.kernel_id,
+            kernel_id="kernel-synthetic",
             language="python",
             generation=1,
             start_revision=0,
             current_revision=self.current,
             revision_status="predates",
         )
-        return KernelLineageObservation(
-            project_id=context.project_id,
+        return KernelObservation(
             environment_id=context.environment_id,
             session_id=context.session_id,
             current_revision=self.current,
             observed_at=datetime.now(UTC),
-            kernels=(KernelLineageEntry(kernel=kernel, birth=birth, lineage_status="proved"),),
+            kernels=(kernel,),
         )
 
 
@@ -239,10 +221,10 @@ async def worker(tmp_path: Path) -> AsyncIterator[Worker]:
     lineage = Lineage()
 
     @web.middleware
-    async def synthetic_lineage(
+    async def synthetic_kernels(
         request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]
     ) -> web.StreamResponse:
-        if request.path == "/v1/kernels/lineage" and lineage.current is not None:
+        if request.path == "/v1/kernels/observe" and lineage.current is not None:
             context = ExecutionContext.model_validate((await request.json())["context"])
             return web.Response(
                 text=lineage.observation(context).model_dump_json(),
@@ -251,7 +233,7 @@ async def worker(tmp_path: Path) -> AsyncIterator[Worker]:
         return await handler(request)
 
     app = create_app(manager, TOKEN)
-    app.middlewares.append(synthetic_lineage)  # inside the worker's own token guard
+    app.middlewares.append(synthetic_kernels)  # inside the worker's own token guard
     await manager.start()
     try:
         async with TestServer(app) as server:

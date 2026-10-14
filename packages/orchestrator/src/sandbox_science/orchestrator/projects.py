@@ -46,7 +46,6 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
     computed_field,
-    field_validator,
     model_validator,
 )
 
@@ -62,7 +61,6 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.contracts.model import Contract
 
-from .kernel_notice_receipts import KernelNoticeDelivery, validate_delivery
 from .prompt_bundle import PromptProvenance, verify_retained
 from .worker_client import WorkerAPIError, WorkerClient
 
@@ -202,8 +200,9 @@ class RunRecord(Contract):
     """The run's ID, which starts every operation ID of its tool calls."""
     prompt_provenance: PromptProvenance | None = None
     """Recorded MAIN system/tool input pins; missing legacy provenance stays unknown."""
-    kernel_notice_delivery: KernelNoticeDelivery | None = None
-    """Exact successfully delivered historical input; no future inbox authority."""
+    kernel_notice_delivery: dict[str, JsonValue] | None = None
+    """Older runs' receipt from the kernel-notice inbox, kept as read; new runs have
+    none, and their kernel notices are in ``delivered["kernels"]``."""
     context: ExecutionContext
     task: str
     started_at: datetime
@@ -259,38 +258,10 @@ class RunRecord(Contract):
         """The document math checks' summary, which the workspace shows."""
         return _summary(self.summaries.get("math"))
 
-    @field_validator("kernel_notice_delivery", mode="before")
-    @classmethod
-    def _kernel_notice_pin(cls, value: object) -> KernelNoticeDelivery | None:
-        if value is None:
-            return None
-        return validate_delivery(value)
-
     @model_validator(mode="after")
     def _failure_is_not_an_answer(self) -> RunRecord:
         if self.prompt_provenance is not None:
             verify_retained(self.prompt_provenance, self.messages[0] if self.messages else None)
-        if self.kernel_notice_delivery is not None:
-            claim = self.kernel_notice_delivery.claim
-            if claim.run_id != self.run_id or any(
-                (
-                    notice.observation.scope.project_id,
-                    notice.observation.scope.environment_id,
-                    notice.observation.scope.session_id,
-                )
-                != (self.context.project_id, self.context.environment_id, self.context.session_id)
-                for notice in claim.notices
-            ):
-                raise ValueError("kernel delivery does not match the recorded run scope")
-            injected = self.kernel_notice_delivery.text()
-            if (
-                sum(
-                    message.get("role") == "user" and message.get("content") == injected
-                    for message in self.messages
-                )
-                != 1
-            ):
-                raise ValueError("kernel delivery needs exactly one retained historical user input")
         if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
             raise ValueError("a failed run must have error status and no final answer")
         return self
@@ -520,93 +491,6 @@ class ProjectStore:
                 )
             )
             return session
-
-    def kernel_notice_baseline(self, project_id: str, session_id: str) -> SessionRecord:
-        """Persist a present-time legacy baseline before any dependent snapshot/RPC.
-
-        Only this new path uses the bounded nofollow lock/read and durable write;
-        existing project lifecycle and logical-session plan CAS are unchanged.
-        """
-        _IDENTIFIER.validate_python(project_id, strict=True)
-        _IDENTIFIER.validate_python(session_id, strict=True)
-        root = lock = -1
-        snapshot: SessionSnapshot | None = None
-        partial: str | None = None
-        try:
-            root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            lock = os.open(
-                project_id + ".lock",
-                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-                0o600,
-                dir_fd=root,
-            )
-            if not stat.S_ISREG(os.fstat(lock).st_mode) or os.fstat(lock).st_nlink != 1:
-                raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry lock is unsafe")
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            snapshot = self.session_snapshot(project_id, session_id)
-            if (os.fstat(root).st_dev, os.fstat(root).st_ino) != (
-                os.fstat(snapshot.root).st_dev,
-                os.fstat(snapshot.root).st_ino,
-            ):
-                raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry changed")
-            if snapshot.session.kernel_notice_lifetime is not None:
-                os.fsync(snapshot.descriptor)
-                os.fsync(root)
-                return snapshot.session
-            raw = os.pread(snapshot.descriptor, MAX_SESSION_RECORD_BYTES + 1, 0)
-            if (
-                len(raw) > MAX_SESSION_RECORD_BYTES
-                or hashlib.sha256(raw).digest() != snapshot.digest
-                or _file_identity(os.fstat(snapshot.descriptor)) != snapshot.identity
-            ):
-                raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry changed")
-            record = ProjectRecord.model_validate_json(raw, strict=True)
-            current = self.session_snapshot(project_id, session_id)
-            try:
-                if not snapshot.matches(current) or (
-                    os.fstat(lock).st_dev,
-                    os.fstat(lock).st_ino,
-                ) != (
-                    os.stat(project_id + ".lock", dir_fd=root, follow_symlinks=False).st_dev,
-                    os.stat(project_id + ".lock", dir_fd=root, follow_symlinks=False).st_ino,
-                ):
-                    raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry changed")
-            finally:
-                current.close()
-            session = snapshot.session.model_copy(update={"kernel_notice_lifetime": new_id("kns")})
-            updated = record.model_copy(
-                update={
-                    "sessions": {**record.sessions, session_id: session},
-                    "updated_at": datetime.now(UTC),
-                }
-            )
-            data = updated.model_dump_json(indent=2).encode("utf-8")
-            if len(data) > MAX_SESSION_RECORD_BYTES:
-                raise ProjectError(ErrorKind.UNAVAILABLE, "notification registry exceeds its bound")
-            partial = "." + project_id + "." + secrets.token_hex(12) + ".notice-partial"
-            descriptor = os.open(
-                partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=root
-            )
-            with os.fdopen(descriptor, "wb") as destination:
-                destination.write(data)
-                destination.flush()
-                os.fsync(destination.fileno())
-            os.replace(partial, project_id + ".json", src_dir_fd=root, dst_dir_fd=root)
-            partial = None
-            os.fsync(root)
-            return session
-        except (OSError, ValidationError, ValueError, RecursionError):
-            raise ProjectError(ErrorKind.UNAVAILABLE, "notification baseline unavailable") from None
-        finally:
-            if partial is not None and root >= 0:
-                with contextlib.suppress(FileNotFoundError):
-                    os.unlink(partial, dir_fd=root)
-            if snapshot is not None:
-                snapshot.close()
-            if lock >= 0:
-                os.close(lock)
-            if root >= 0:
-                os.close(root)
 
     def close_session(self, project_id: str, session_id: str) -> SessionRecord:
         with self.locked(project_id):

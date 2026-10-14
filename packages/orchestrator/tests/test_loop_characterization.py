@@ -56,13 +56,10 @@ SOURCES = ("requests", "jobs", "reviews", "math", "kernels")
 def delivered(record: RunRecord, source: str) -> list[str]:
     """The notice IDs a saved run reports as delivered for one source."""
     match source:
-        case "requests" | "jobs" | "reviews" | "math":
+        case "requests" | "jobs" | "reviews" | "math" | "kernels":
+            # A-04 changed this: kernel notices are a stateless pre-turn check, and
+            # the record names them with the other sources.
             return list(record.delivered.get(source, []))
-        case "kernels":
-            # A-04 changes this: kernel notices become a stateless pre-turn check
-            # and the record keeps no inbox claim.
-            delivery = record.kernel_notice_delivery
-            return [] if delivery is None else [n.digest for n in delivery.claim.notices]
         case _:
             raise ValueError(source)
 
@@ -119,7 +116,8 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
             Reply("Answer B."),
         ],
     )
-    (kernel,) = delivered(record, "kernels")
+    first, second, third = harness.gateway.main
+    kernel, newer = shape(first)[-1][2][0], shape(third)[-1][2][0]
     start = [
         SYSTEM,
         TASK_MESSAGE,
@@ -128,16 +126,16 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
         plans("draft", True),
         notice("reviews", sources.finding),
         counts(fail_open=1),
-        # A-04 changes this: one kernel prefix per run, even after the revision moved.
         notice("kernels", kernel),
     ]
-    first, second, third = harness.gateway.main
     assert shape(first) == start
     assert shape(second) == [*start, calls("plan_read"), RESULT]
     # Closing: the plan read was delivered (a new plan state), then the math response
-    # round; the job, request and review sources had nothing new.
+    # round; the job, request and review sources had nothing new. A-04 changed this:
+    # the kernel check before the response round tells of the revision-3 observation.
     assert shape(third) == [
-        *shape(second), ANSWER, plans("draft", False), notice("math", sources.math)
+        *shape(second), ANSWER, plans("draft", False), notice("math", sources.math),
+        notice("kernels", newer),
     ]  # fmt: skip
     assert shape(record.messages) == [*shape(third), ANSWER]
     assert (record.stopped, record.final_text) == ("answered", "Answer B.")
@@ -146,7 +144,7 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
         "jobs": [sources.job],
         "reviews": [sources.finding],
         "math": [sources.math],
-        "kernels": [kernel],
+        "kernels": sorted([kernel, newer]),
     }
     reviews = summary(record, "reviews")
     # Delivered open findings are bounded at the end of the closing.
@@ -166,7 +164,7 @@ async def test_all_six_sources_in_todays_order_then_acknowledged_after_save(
     assert harness.findings() == {"review": "unaddressed", "math": "unaddressed"}
     again = await harness.run("run-2", [Reply(calls=[call("plan_read")]), Reply("Answer C.")])
     first, _ = harness.gateway.main
-    (newer,) = delivered(again, "kernels")
+    assert delivered(again, "kernels") == [newer]
     assert newer != kernel
     assert shape(first) == [
         SYSTEM,
@@ -239,9 +237,13 @@ async def test_a_failed_response_round_keeps_only_what_earlier_calls_delivered(
         "run-2", [Reply(calls=[call("plan_read")]), Reply("Answer B."), Reply("Answer C.")]
     )
     first, _, third = harness.gateway.main
-    assert shape(first) == [SYSTEM, TASK_MESSAGE, plans("draft", True), counts(fail_open=1)]
+    # A-04 changed this: each run is told again while a kernel predates the packages.
+    (kernel,) = delivered(failed, "kernels")
+    assert shape(first) == [
+        SYSTEM, TASK_MESSAGE, plans("draft", True), counts(fail_open=1), notice("kernels", kernel)
+    ]  # fmt: skip
     assert shape(third)[-1] == notice("math", sources.math)
-    assert all_delivered(record) == {**NOTHING, "math": [sources.math]}
+    assert all_delivered(record) == {**NOTHING, "math": [sources.math], "kernels": [kernel]}
 
 
 async def test_closing_sources_take_turns_in_todays_order(harness: Harness) -> None:
