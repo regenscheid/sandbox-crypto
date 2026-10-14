@@ -405,5 +405,6 @@ def gateway_service(base_url: str, reviewer: str, api_key: str) -> MathRepairSer
         timeout=TIMEOUT,
         max_tokens=MAX_OUTPUT_TOKENS,
         max_response_bytes=MAX_ANSWER_BYTES,
+        retries=0,  # Someone is waiting, and can ask again.
     )
     return MathRepairService(model, reviewer=alias, secrets=(api_key,), close=model.close)

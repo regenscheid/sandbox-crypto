@@ -38,7 +38,7 @@ from .documents.mathjobs import Checker
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
-from .loop import Interruption, Transcript, run_task
+from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task
 from .model import ChatModel
 from .plan_tools import PlanTools
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
@@ -94,6 +94,8 @@ class Settings:
     min_isolation_tier: int | None = 3
     """``None`` accepts a worker with any isolation, for development."""
     max_turns: int = 30
+    max_input_chars: int = MAX_INPUT_CHARS
+    """The longest conversation MAIN is sent; a longer one stops the run."""
     watcher_calls_per_hour: int = 60
     watcher_first_check: float = 300
     watcher_interval: float = 1800
@@ -248,6 +250,7 @@ class Finished:
             ),
             "tools": transcript.tool_records,
             "delivered": {s: sorted(ids) for s, ids in transcript.delivered.items() if ids},
+            "usage": [usage.model_dump(mode="json") for usage in transcript.usage],
             "summaries": transcript.summaries,
         }
 
@@ -308,6 +311,7 @@ class Harness:
                         admitted.request.task,
                         run_id=admitted.run_id,
                         max_turns=self.settings.max_turns,
+                        max_input_chars=self.settings.max_input_chars,
                         on_tool=sink.tool,
                         research_template=admitted.request.research_template,
                         hooks=hooks,

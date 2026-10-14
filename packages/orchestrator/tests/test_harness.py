@@ -756,7 +756,7 @@ async def test_the_openai_adapter_limits_answers_and_reports_the_gateways_status
     app.router.add_post("/v1/chat/completions", completions)
     async with TestServer(app) as server:
         model = OpenAICompatibleModel(
-            str(server.make_url("/v1")), "reviewer", "virtual-key", max_tokens=512
+            str(server.make_url("/v1")), "reviewer", "virtual-key", max_tokens=512, retries=0
         )
         turn = await model.complete([{"role": "user", "content": "fix x^"}], [])
         with pytest.raises(ModelError) as failed:

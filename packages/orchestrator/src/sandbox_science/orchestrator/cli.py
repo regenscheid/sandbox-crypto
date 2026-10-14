@@ -69,7 +69,7 @@ from .harness import (
     save,
 )
 from .jobstate import JobState
-from .loop import Interruption
+from .loop import MAX_INPUT_CHARS, Interruption
 from .mathcheck import MathChecker
 from .model import (
     MAX_RESPONSE_BYTES,
@@ -213,6 +213,7 @@ async def _run_with(args: argparse.Namespace, projects: ProjectStore | None) -> 
                     settings=Settings(
                         min_isolation_tier=minimum,
                         max_turns=args.max_turns,
+                        max_input_chars=args.max_input_chars,
                         watcher_calls_per_hour=args.watcher_calls_per_hour,
                         watcher_first_check=args.watcher_first_check,
                         watcher_interval=args.watcher_interval,
@@ -271,6 +272,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--min-isolation-tier", type=int, default=3)
     run.add_argument("--allow-unisolated", action="store_true")
     run.add_argument("--max-turns", type=int, default=30)
+    run.add_argument(
+        "--max-input-chars",
+        type=int,
+        default=MAX_INPUT_CHARS,
+        help="stop the run cleanly (context_limit) before MAIN is sent a longer conversation "
+        f"(default {MAX_INPUT_CHARS:,})",
+    )
     run.add_argument(
         "--research-template",
         choices=TEMPLATE_IDS,
@@ -351,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--reviewer-script needs --reviewer-model")
             if args.model_url is not None and args.api_key_file is None:
                 parser.error("--model-url needs --api-key-file")
+            if args.max_input_chars < 1:
+                parser.error("--max-input-chars must be at least 1")
             if args.dedicated and args.state_dir is None:
                 parser.error("--dedicated needs --state-dir")
             if args.state_dir is not None and args.run_id is not None:

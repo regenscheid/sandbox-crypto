@@ -149,6 +149,15 @@ _LEGACY_DELIVERED: Final = {
 _LEGACY_SUMMARIES: Final = {"review_summary": "reviews", "math_summary": "math"}
 
 
+class ModelUsage(Contract):
+    """One model call's usage, as the gateway reported it; a count it left out is null."""
+
+    model: str | None = None
+    """The model that answered, as the gateway names it."""
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+
+
 def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], value) if isinstance(value, dict) else {}
 
@@ -171,7 +180,7 @@ class RunRecord(Contract):
     started_at: datetime
     ended_at: datetime
     stopped: str
-    """``answered``, ``turn_limit``, ``user_message``, or ``error``."""
+    """``answered``, ``turn_limit``, ``context_limit``, ``user_message``, or ``error``."""
     failure: FailurePhase | None = None
     """Failed phase; old records omit it. Partial messages are observations, not an answer."""
     delivered: dict[Identifier, list[Identifier]] = Field(
@@ -179,6 +188,8 @@ class RunRecord(Contract):
     )
     """Each notice source's IDs that a successful model call saw, such as ``jobs`` or
     ``requests``. The source's hook acknowledges them only after this record is saved."""
+    usage: list[ModelUsage] = Field(default_factory=list[ModelUsage])
+    """Each answered model call's usage, in order; older records have none."""
     summaries: dict[Identifier, JsonValue] = Field(default_factory=dict[Identifier, JsonValue])
     """What a source reported at the run's end, such as the consistency review's outcome."""
     final_text: str | None = None

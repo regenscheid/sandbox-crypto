@@ -15,15 +15,18 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypeVar
 
 from .hooks import RESPONSE_ROUNDS, Notice, Point, TurnHook
-from .model import ChatModel, Message
+from .model import ChatModel, ContextLimitError, Message, ModelTurn
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
-from .projects import FailurePhase
-from .prompts import PromptPins, Section, assemble
+from .projects import FailurePhase, ModelUsage
+from .prompts import PromptPins, Section, assemble, schema_json
 from .stock_prompts import select_template
 from .tools import Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
 
+MAX_INPUT_CHARS: Final = 400_000
+"""The longest conversation, with its tool schemas, sent to MAIN by default: about
+100,000 tokens of English or JSON, inside common context windows."""
 MAIN_VERSION: Final = "sandbox-main-2"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
@@ -98,6 +101,15 @@ class Transcript:
     final_text: str | None = None
     turns: int = 0
     max_turns: int = 30
+    max_input_chars: int = MAX_INPUT_CHARS
+    tools_chars: int = 0
+    """The size of the tool schemas, which every model call sends with the messages."""
+    usage: list[ModelUsage] = field(default_factory=list[ModelUsage])
+    """Each answered model call's usage, in order."""
+    pending: str | None = field(default=None, repr=False)
+    """The answer a closing round was taken for, until the next reply."""
+    room: bool = field(default=True, repr=False)
+    """False once a model call was refused for the conversation's length."""
     response_rounds: int = 0
     stopped: str = "answered"
     failure: FailurePhase | None = None
@@ -111,7 +123,19 @@ class Transcript:
 
     @property
     def can_respond(self) -> bool:
-        return self.turns_left > 0 and self.response_rounds < RESPONSE_ROUNDS
+        return self.turns_left > 0 and self.room and self.response_rounds < RESPONSE_ROUNDS
+
+    @property
+    def size(self) -> int:
+        """What the next model call would send, in characters."""
+        return len(dump(self.messages)) + self.tools_chars
+
+    def has_room(self, notices: Sequence[Notice] = ()) -> bool:
+        """Whether another model call can be made, with these notices added."""
+        if self.turns_left <= 0 or not self.room:
+            return False
+        added = len(dump([_message(notice) for notice in notices])) if notices else 0
+        return self.size + added <= self.max_input_chars
 
     def delivered_ids(self, source: str) -> frozenset[str]:
         return frozenset(self.delivered.get(source, ()))
@@ -123,12 +147,14 @@ class Transcript:
         self.final_text = None
 
 
+def _message(notice: Notice) -> Message:
+    return {"role": "user", "content": notice.framing + dump(notice.payload)}
+
+
 def _offer(transcript: Transcript, notices: Sequence[Notice]) -> None:
     """Notices as user messages; their IDs count as delivered once a model call sees them."""
     for notice in notices:
-        transcript.messages.append(
-            {"role": "user", "content": notice.framing + dump(notice.payload)}
-        )
+        transcript.messages.append(_message(notice))
         transcript.offered.setdefault(notice.source, set()).update(notice.ids)
 
 
@@ -177,21 +203,24 @@ async def _ask(hook: TurnHook, transcript: Transcript, answer: str | None) -> De
     """One hook's closing, as the loop grants it, with its notices added.
 
     A continue or a response round that brings no notices, or that the run has no room
-    for, is an accept, and its notices are not added: no model would see them.
+    for, in turns or in the conversation's length, is an accept, and its notices are not
+    added: no model would see them. A retry the run has no room for stops it.
     """
     closing = await hook.closing(transcript, answer)
     match closing.action:
         case "stop":
             transcript.stopped = closing.stopped
             decision: Decision = "stop"
-        case "retry" if transcript.turns_left <= 0:
+        case "retry" if not transcript.has_room(closing.notices):
             transcript.stopped = closing.stopped
             decision = "stop"
         case "retry":
             decision = "turn"
-        case "continue" if closing.notices and transcript.turns_left > 0:
+        case "continue" if closing.notices and transcript.has_room(closing.notices):
             decision = "turn"
-        case "respond" if closing.notices and transcript.can_respond:
+        case "respond" if (
+            closing.notices and transcript.can_respond and transcript.has_room(closing.notices)
+        ):
             decision = "respond"
         case "accept":
             decision = "accept"
@@ -242,6 +271,47 @@ async def _attach(
     outcome.record.update(extra)
 
 
+async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -> ModelTurn | None:
+    """The model's reply, or ``None`` when the conversation is too long for the model:
+    longer than the run's budget, or than the model's context as the gateway says. No
+    model call saw the notices offered since the last one.
+    """
+    size = transcript.size
+    if size > transcript.max_input_chars:
+        _log.warning("the conversation, %d characters, exceeds the run's budget", size)
+        return None
+    transcript.phase = "model"
+    try:
+        reply = await model.complete(transcript.messages, toolbox.specs)
+    except ContextLimitError as error:
+        _log.warning("the conversation, %d characters, exceeds the model's: %s", size, error)
+        reply = None
+    transcript.phase = "harness"
+    if reply is None:
+        return None
+    transcript.pending = None
+    transcript.usage.append(
+        ModelUsage(
+            model=reply.model, input_tokens=reply.input_tokens, output_tokens=reply.output_tokens
+        )
+    )
+    return reply
+
+
+async def _out_of_room(hooks: Sequence[TurnHook], transcript: Transcript) -> None:
+    """The conversation has no room for another model call.
+
+    An answer a closing round was taken for stands, closed again as at the turn limit,
+    where no hook may take another turn. Without one, the run stops with
+    ``context_limit``.
+    """
+    transcript.room = False
+    if transcript.pending is None:
+        transcript.stopped = "context_limit"
+    else:
+        await _closing(hooks, transcript, transcript.pending)
+
+
 async def _run_task(
     model: ChatModel,
     toolbox: Toolbox,
@@ -256,9 +326,9 @@ async def _run_task(
     for turn in range(transcript.max_turns):
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
-        transcript.phase = "model"
-        reply = await model.complete(transcript.messages, toolbox.specs)
-        transcript.phase = "harness"
+        if (reply := await _complete(model, toolbox, transcript)) is None:
+            await _out_of_room(hooks, transcript)
+            return transcript
         await _model_returned(hooks, transcript)
         assistant: Message = {"role": "assistant", "content": reply.text}
         if reply.tool_calls:
@@ -273,6 +343,7 @@ async def _run_task(
         transcript.messages.append(assistant)
         if not reply.tool_calls:
             if await _closing(hooks, transcript, reply.text):
+                transcript.pending = reply.text
                 continue
             return transcript
         for call in reply.tool_calls:
@@ -320,6 +391,7 @@ async def run_task(
     *,
     run_id: str,
     max_turns: int = 30,
+    max_input_chars: int = MAX_INPUT_CHARS,
     system: str = SYSTEM_PROMPT,
     research_template: str | None = None,
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
@@ -328,8 +400,11 @@ async def run_task(
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
     ``hooks`` defaults to the toolbox's; a caller that acknowledges the saved run's
-    deliveries passes the hooks it will acknowledge with.
+    deliveries passes the hooks it will acknowledge with. A failure is logged with its
+    cause; the transcript keeps only the phase it happened in.
     """
+    if max_input_chars < 1:
+        raise ValueError("max_input_chars must be at least 1")
     transcript: Transcript | None = None
     interruption = Interruption()
     try:
@@ -350,6 +425,8 @@ async def run_task(
                 )
                 transcript = Transcript(
                     max_turns=max_turns,
+                    max_input_chars=max_input_chars,
+                    tools_chars=len(schema_json(toolbox.specs)),
                     prompt_provenance=pins,
                     messages=[
                         {"role": "system", "content": text},
@@ -368,6 +445,7 @@ async def run_task(
                 except Exception:
                     # Catch inside the leases: retain only successfully delivered claims
                     # until the caller durably saves this partial record, then ACKs them.
+                    _log.exception("run %s failed during %s", run_id, transcript.phase)
                     transcript.fail(transcript.phase)
                 for hook in hooks:
                     if (summary := hook.summary()) is not None:
@@ -379,5 +457,6 @@ async def run_task(
             raise
         if transcript is None:
             raise  # Setup did not start a run; there is no observed transcript.
+        _log.exception("run %s failed during cleanup", run_id)
         transcript.fail("cleanup")
     return transcript

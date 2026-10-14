@@ -369,6 +369,7 @@ async def test_cli_closes_borrowed_store_and_models_after_publisher_drain_cancel
         watcher_interval=1,
         task="test",
         max_turns=1,
+        max_input_chars=400_000,
     )
     projects = ProjectStore(args.state_dir)
     projects.create("p1", "minimal", "sha256:" + "a" * 64)

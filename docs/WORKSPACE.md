@@ -237,10 +237,11 @@ With `--state-dir`, the harness keeps every run that reaches the tool loop, incl
 | `context` | Project, session, environment and policy revision |
 | `task` | The task as given |
 | `started_at`, `ended_at` | When the run started and ended, in UTC |
-| `stopped` | `answered`, `turn_limit`, `user_message`, or `error` |
+| `stopped` | `answered`, `turn_limit`, `context_limit` (the conversation grew past the run's budget, or the gateway said it exceeds the model's context), `user_message`, or `error` |
 | `failure` | Optional fixed phase: `model`, `tool`, `harness` or `cleanup`; older records omit it |
 | `final_text` | The answer, or null for a failed run |
 | `delivered` | For each notice source (`requests`, `jobs`, `reviews`, `math`), the IDs a successful model call saw; acknowledged after the run is saved. Older records' `job_notice_ids`, `work_request_ids`, `review_notice_ids` and `math_notice_ids` read as these |
+| `usage` | One entry per answered model call, in order: the model the gateway names and its input and output tokens, null where the gateway did not report them. Older records have none |
 | `summaries` | What a source reported at the run's end: the consistency review (`reviews`) and the document math checks (`math`). The record also shows them as `review_summary` and `math_summary` |
 | `messages` | The conversation in the OpenAI chat format the harness uses, system prompt first |
 | `tools` | One record per tool call, in order: its name, its arguments as the model wrote them, and its outcome (the worker's execution record, or an artifact, an error kind, …) |
@@ -320,7 +321,7 @@ Copying uses the renderer's original formula body before trimming, repair or mac
 | `--reviewer-model` | The reviewer model's alias at the gateway; `off`, `none`, `false`, `0` or `disabled` turn model repairs off |
 | `--api-key-file` | A file holding the workspace's key for the gateway |
 
-Without the three, or with `--reviewer-model off`, model repairs are off and the server never connects to the gateway. The key is a secret: the server sends it only in the gateway's `Authorization` header, and never returns it. Its log lines about failed repairs hold only the gateway's status or the kind of failure, never the gateway's text, which can quote the key; any other line that would hold the key holds `[the gateway key]` instead. The key file must hold one line of visible ASCII characters, or the server does not start, and it warns when others can read the file. Give the workspace a LiteLLM virtual key of its own, with its own spending limit. The server follows no redirect from the gateway, which would carry the formula elsewhere, takes any answer but a 2xx as an error, and reads at most 1 MiB of an answer. These are rules of the orchestrator's model client, so they hold for the harness's own calls too: a `--model-url` that the gateway redirects, such as an `http://` address it sends on to `https://`, fails both the workspace's repairs and `run`, which then needs the address the redirect names.
+Without the three, or with `--reviewer-model off`, model repairs are off and the server never connects to the gateway. The key is a secret: the server sends it only in the gateway's `Authorization` header, and never returns it. Its log lines about failed repairs hold only the gateway's status or the kind of failure, never the gateway's text, which can quote the key; any other line that would hold the key holds `[the gateway key]` instead. The key file must hold one line of visible ASCII characters, or the server does not start, and it warns when others can read the file. Give the workspace a LiteLLM virtual key of its own, with its own spending limit. The server follows no redirect from the gateway, which would carry the formula elsewhere, takes any answer but a 2xx as an error, and reads at most 1 MiB of an answer. Unlike the harness's calls, a repair is not tried again after a rate limit or an unavailable upstream: someone is waiting, and can ask again. The rest are rules of the orchestrator's model client, so they hold for the harness's own calls too: a `--model-url` that the gateway redirects, such as an `http://` address it sends on to `https://`, fails both the workspace's repairs and `run`, which then needs the address the redirect names.
 
 **Limits** (`packages/workspace`, `mathrepair.py`):
 

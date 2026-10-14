@@ -250,6 +250,7 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
         watcher_interval=1,
         task="Continue",
         max_turns=1,
+        max_input_chars=400_000,
         transcript=tmp_path / "transcript.json",
     )
     projects = ProjectStore(tmp_path)
