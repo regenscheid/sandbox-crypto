@@ -6,6 +6,7 @@
   import { findingDrafts } from '../lib/drafts';
   import { Earlier } from '../lib/earlier';
   import { afterResponse, findingHistory, findingResponse, startResponse } from '../lib/findings';
+  import { anchorView, decisions, resolved, statusText, transitionText } from '../lib/findingView';
   import { guardedWrite } from '../lib/mutation';
   import { emptyList } from '../lib/pagedList';
   import { idle, submit } from '../lib/submit';
@@ -36,6 +37,12 @@
   const key = untrack(() => `${projectId}:${sessionId}:${initial.finding_id}`);
   let draft = $state(startResponse(initial, findingDrafts.load(key).draft));
   let persisted = $state(true);
+  const allowed = $derived(decisions(finding.status));
+  const anchors = $derived(finding.anchors.map((anchor) => anchorView(projectId, anchor)));
+  // A kept draft whose decision this status no longer allows starts on the first that it does.
+  $effect(() => {
+    if (!allowed.some((item) => item.action === draft.action)) draft.action = allowed[0]!.action;
+  });
   const responding = $state(idle());
   const pages = $state(emptyList<Transition[], number>());
   const history = new Earlier(
@@ -96,8 +103,9 @@
     if (draft.explanation && !persisted) event.preventDefault();
   }}
 />
-<article class="finding">
-  <h3>{finding.severity} · {finding.category} · {finding.status}</h3>
+<article class="finding" class:resolved={resolved(finding.status)}>
+  <h3>{finding.severity} · {finding.category.replaceAll('_', ' ')} · {finding.status}</h3>
+  <p>{statusText(finding.status)}</p>
   <p class="muted">
     <code>{finding.finding_id}</code> · revision {finding.revision} · {finding.reflags} reflags
   </p>
@@ -112,16 +120,22 @@
     </p>{/each}
   <Markdown source={finding.statement} {macros} />{#if finding.remedy}<p>Suggested remedy:</p>
     <Markdown source={finding.remedy} {macros} />{/if}
+  <h4>Where</h4>
+  <ul class="anchors">
+    {#each anchors as anchor, index (index)}<li>
+        {#if anchor.href}<a href={anchor.href}>{anchor.text}</a>{:else}{anchor.text}{/if}
+        {#if anchor.check}<button
+            onclick={() => mathEvidence(anchor.check!.check, anchor.check!.math)}
+            >Read mechanical evidence</button
+          >{:else if anchor.evidence}<button
+            onclick={() => read(anchor.evidence!.review, anchor.evidence!.evidence)}
+            >Read pinned evidence</button
+          >{/if}
+      </li>{/each}
+  </ul>
   <details>
-    <summary>Pinned evidence anchors</summary
-    >{#each finding.anchors as anchor, index (index)}{#if anchor.check}<button
-          onclick={() => mathEvidence(anchor.check!, anchor.math)}
-          >Read mechanical evidence {index + 1}</button
-        >{:else if anchor.review && anchor.evidence}<button
-          onclick={() => pinned.read(anchor.review!, anchor.evidence!)}
-          >Read evidence {index + 1}</button
-        >{/if}
-      <pre>{JSON.stringify(anchor, null, 2)}</pre>{/each}
+    <summary>Anchors as recorded</summary>
+    <pre>{JSON.stringify(finding.anchors, null, 2)}</pre>
   </details>
   <!-- Each failure shows beside its own control, so a newer one is never hidden. -->
   {#if evidence.value}<pre aria-label="Mechanical math evidence">{evidence.value}</pre>{/if}
@@ -137,7 +151,7 @@
   >
   {#if pages.error}<ErrorMessage error={pages.error} />{/if}
   {#each history.entries() as entry (entry.revision)}<div class="transition">
-      <p>{entry.revision} · {entry.status} · {entry.actor}</p>
+      <p>{transitionText(entry)}</p>
       {#each entry.macro_context?.problems ?? [] as problem}<p role="status">
           {problem}
         </p>{/each}<Markdown
@@ -173,11 +187,8 @@
       </p>
       <label
         >Decision <select bind:value={draft.action}
-          ><option value="rebut">Rebut with explanation</option><option value="fix"
-            >Claim fixed</option
-          ><option value="confirm">Confirm fixed as user</option><option value="dismiss"
-            >Dismiss as user</option
-          ><option value="reopen">Reopen</option></select
+          >{#each allowed as item (item.action)}<option value={item.action}>{item.label}</option
+            >{/each}</select
         ></label
       >
       <label
@@ -227,6 +238,12 @@
   }
   .transition {
     border-top: 1px solid var(--border, #9996);
+  }
+  .resolved {
+    opacity: 0.85;
+  }
+  .anchors {
+    padding-left: 1rem;
   }
   label {
     display: block;

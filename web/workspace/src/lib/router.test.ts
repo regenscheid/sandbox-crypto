@@ -18,12 +18,19 @@ describe('routes', () => {
     ['#/elsewhere', { view: 'missing' }],
     [
       '#/projects/p1/documents/doc-1',
-      { view: 'document', project: 'p1', document: 'doc-1', revision: null },
+      { view: 'document', project: 'p1', document: 'doc-1', revision: null, block: null },
     ],
     [
       '#/projects/p1/documents/doc-1/revisions/3',
-      { view: 'document', project: 'p1', document: 'doc-1', revision: 3 },
+      { view: 'document', project: 'p1', document: 'doc-1', revision: 3, block: null },
     ],
+    [
+      '#/projects/p1/documents/doc-1/revisions/3/blocks/b12',
+      { view: 'document', project: 'p1', document: 'doc-1', revision: 3, block: 'b12' },
+    ],
+    ['#/projects/p1/documents/doc-1/revisions/3/blocks/x', { view: 'missing' }],
+    ['#/projects/p1/documents/doc-1/revisions/3/blocks', { view: 'missing' }],
+    ['#/projects/p1/documents/doc-1/revisions/3/other/b1', { view: 'missing' }],
     [
       '#/projects/p1/documents/doc-1/history',
       { view: 'history', project: 'p1', document: 'doc-1' },
@@ -49,6 +56,11 @@ describe('routes', () => {
       project: 'p1',
       document: 'notes.md',
       revision: 2,
+      block: null,
+    });
+    expect(parseRoute(documentHref('p1', 'doc-1', 4, 'b3'))).toMatchObject({
+      revision: 4,
+      block: 'b3',
     });
     expect(parseRoute(historyHref('p 1', 'doc-1'))).toEqual({
       view: 'history',
