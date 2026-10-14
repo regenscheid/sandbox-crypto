@@ -28,6 +28,7 @@ from sandbox_science.orchestrator.session_plans import (
     SessionPlans,
 )
 from sandbox_science.workspace import plans
+from sandbox_science.workspace.api import Timeouts
 from sandbox_science.workspace.app import create_app
 
 TOKEN = "test-secret-session-plan-login-0123456789"
@@ -553,7 +554,7 @@ async def test_timeout_cancel_and_shutdown_retain_actual_thread_ownership(
 ):
     seed(inventory)
     entered, release = threading.Event(), threading.Event()
-    reader = plans.PlanReader(ProjectStore(state_dir), inventory.documents)
+    reader = plans.PlanReader(ProjectStore(state_dir), inventory.documents, timeout=0.03)
     original = reader._plan
 
     def blocked(scope, login):
@@ -562,7 +563,6 @@ async def test_timeout_cancel_and_shutdown_retain_actual_thread_ownership(
         return original(scope, login)
 
     monkeypatch.setattr(reader, "_plan", blocked)
-    monkeypatch.setattr(plans, "CALL_TIMEOUT", 0.03)
     call = asyncio.create_task(reader.read("p1", "a", "login", lambda: True))
     closing = None
     try:
@@ -645,8 +645,7 @@ async def test_actual_http_disconnect_does_not_release_blocked_sql_ownership(
         return original(self, scope, login)
 
     monkeypatch.setattr(plans.PlanReader, "_plan", blocked)
-    monkeypatch.setattr(plans, "CALL_TIMEOUT", 0.03)
-    client = await create(aiohttp_client, state_dir, static_dir)
+    client = await create(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(call=0.03))
     reader = client.app[plans.READER]
     call = asyncio.create_task(client.get(PATH))
     try:
@@ -654,7 +653,7 @@ async def test_actual_http_disconnect_does_not_release_blocked_sql_ownership(
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await call
-        await asyncio.sleep(0.06)
+        await asyncio.sleep(0.06)  # past the deadline, the blocked owner is still held
         assert len(reader._tasks) == 1
         assert reader._scopes == {("p1", "a")}
         with pytest.raises(ProjectError, match="capacity"):

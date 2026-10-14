@@ -511,8 +511,7 @@ async def test_consumer_cancellation_owns_actual_sql_and_close_drain(state, monk
     monkeypatch.setattr(consumer_module, "ingest_artifacts", blocked)
     consumer = ArtifactConsumer(reviews, "p", "s")
     first = asyncio.create_task(consumer.ingest())
-    while not entered.is_set():
-        await asyncio.sleep(0.001)
+    assert await asyncio.to_thread(entered.wait, 10)
     first.cancel()
     with pytest.raises(asyncio.CancelledError):
         await first
@@ -862,8 +861,7 @@ async def test_cancelled_caller_later_failure_is_retrieved_and_admission_bounded
     consumer = ArtifactConsumer(reviews, "p", "s")
     callers = [asyncio.create_task(consumer.ingest()) for _ in range(8)]
     try:
-        while not entered.is_set():
-            await asyncio.sleep(0.001)
+        assert await asyncio.to_thread(entered.wait, 10)
         assert (await consumer.ingest())["held"] == "consumer admission bound"
         for task in callers:
             task.cancel()

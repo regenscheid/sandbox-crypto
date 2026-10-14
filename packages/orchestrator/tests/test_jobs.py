@@ -40,6 +40,7 @@ from sandbox_science.orchestrator.model import (
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.watcher_prompt import assemble_watcher
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import FakeClock, eventually
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
 
@@ -102,21 +103,35 @@ class FakeWorker:
         return self.records[job]
 
 
-def tools(fake: FakeWorker, tmp_path: Path, **kwargs: Any) -> JobTools:
+POLL = 1.0
+
+
+def tools(
+    fake: FakeWorker, tmp_path: Path, clock: FakeClock | None = None, **kwargs: Any
+) -> JobTools:
+    """Job tools whose polls, heartbeats and watcher schedule follow ``clock``."""
+    clock = clock or FakeClock(datetime.now(UTC))
     return JobTools(
         cast(WorkerClient, fake),
         CONTEXT,
         run_id="run-1",
-        state=JobState(tmp_path),
-        poll_seconds=0.01,
+        state=JobState(tmp_path, clock=clock),
+        poll_seconds=POLL,
+        clock=clock,
         **kwargs,
     )
+
+
+def waits(jobs: JobTools) -> list[dict[str, object]]:
+    assert jobs.state is not None
+    return jobs.state.waits(CONTEXT)
 
 
 @pytest.mark.asyncio
 async def test_wait_calls_no_main_model_until_job_ends(tmp_path: Path) -> None:
     worker = FakeWorker()
-    jobs = tools(worker, tmp_path)
+    clock = FakeClock(datetime.now(UTC))
+    jobs = tools(worker, tmp_path, clock)
     model = ScriptedModel.from_json(
         [
             {"tool_calls": [{"name": "wait_jobs", "arguments": {"job_ids": ["exe-1"]}}]},
@@ -131,18 +146,19 @@ async def test_wait_calls_no_main_model_until_job_ends(tmp_path: Path) -> None:
             run_id="run-1",
         )
     )
-    await asyncio.sleep(0.08)
+    # The run's heartbeat and the wait's poll both sleep on the clock.
+    waiting = await eventually(lambda: waits(jobs) if clock.sleepers == 2 else None)
     assert not task.done()
     assert len(model.requests) == 1
-    waiting = jobs.state.waits(CONTEXT)  # type: ignore[union-attr]
     assert waiting[0]["state"] == "waiting"
     assert waiting[0]["watcher"] is None
     worker.records["exe-1"] = execution(state=ExecutionState.SUCCEEDED)
-    transcript = await asyncio.wait_for(task, 1)
+    clock.advance(POLL)
+    transcript = await asyncio.wait_for(task, 5)
     assert transcript.final_text == "done"
     assert len(model.requests) == 2
     assert transcript.job_notice_ids == ["exe-1"]
-    assert jobs.state.waits(CONTEXT) == []  # type: ignore[union-attr]
+    assert waits(jobs) == []
     assert worker.cancelled == []
 
 
@@ -182,15 +198,25 @@ async def test_watcher_fine_then_attention_resumes_same_turn(tmp_path: Path) -> 
             ModelTurn('{"state":"needs_attention","note":"Output stopped"}', model="small"),
         ]
     )
+    clock = FakeClock(datetime.now(UTC))
     jobs = tools(
         worker,
         tmp_path,
+        clock,
         watcher=watcher,
         watcher_alias="watcher",
-        first_check_seconds=0.01,
-        check_interval_seconds=0.01,
+        first_check_seconds=5,
+        check_interval_seconds=60,
     )
-    text, record = await asyncio.wait_for(jobs.wait({"job_ids": ["exe-1"]}, "op"), 1)
+    # The job started 10 s ago, so the first check is due at once; the next one is
+    # due a minute after it, and the wait polls until then.
+    waiting = asyncio.create_task(jobs.wait({"job_ids": ["exe-1"]}, "op"))
+    await eventually(lambda: len(watcher.requests) == 1 and clock.sleepers == 1)
+    clock.advance(POLL)
+    await eventually(lambda: clock.elapsed == POLL and clock.sleepers == 1)
+    assert len(watcher.requests) == 1
+    clock.advance(60)
+    text, record = await asyncio.wait_for(waiting, 5)
     assert json.loads(text)["reason"] == "needs_attention"
     assert len(watcher.requests) == 2
     assert len(watcher.requests[0][1]["content"]) < 16000
@@ -212,11 +238,12 @@ async def test_watcher_fine_then_attention_resumes_same_turn(tmp_path: Path) -> 
 async def test_user_message_interrupts_wait_without_cancelling_job(tmp_path: Path) -> None:
     worker = FakeWorker()
     messages: asyncio.Queue[str] = asyncio.Queue()
-    jobs = tools(worker, tmp_path, messages=messages)
+    clock = FakeClock(datetime.now(UTC))
+    jobs = tools(worker, tmp_path, clock, messages=messages)
     waiting = asyncio.create_task(jobs.wait({"job_ids": ["exe-1"]}, "op"))
-    await asyncio.sleep(0.03)
+    await eventually(lambda: clock.sleepers == 1 and waits(jobs))
     messages.put_nowait("What has it printed?")
-    text, _ = await asyncio.wait_for(waiting, 1)
+    text, _ = await asyncio.wait_for(waiting, 5)
     assert json.loads(text) == {
         "reason": "user_message",
         "message": "What has it printed?",
@@ -230,14 +257,16 @@ async def test_first_and_all_wait_modes(tmp_path: Path) -> None:
     worker = FakeWorker()
     worker.records["exe-1"] = execution(state=ExecutionState.SUCCEEDED)
     worker.records["exe-2"] = execution("exe-2")
-    jobs = tools(worker, tmp_path)
+    clock = FakeClock(datetime.now(UTC))
+    jobs = tools(worker, tmp_path, clock)
     text, _ = await jobs.wait({"job_ids": ["exe-1", "exe-2"], "mode": "first"}, "op")
     assert json.loads(text)["reason"] == "ended"
     waiting = asyncio.create_task(jobs.wait({"job_ids": ["exe-1", "exe-2"]}, "op2"))
-    await asyncio.sleep(0.03)
+    await eventually(lambda: clock.sleepers == 1)
     assert not waiting.done()
     worker.records["exe-2"] = execution("exe-2", ExecutionState.SUCCEEDED)
-    await asyncio.wait_for(waiting, 1)
+    clock.advance(POLL)
+    await asyncio.wait_for(waiting, 5)
 
 
 @pytest.mark.asyncio
@@ -290,6 +319,37 @@ def test_live_origin_receives_notice_then_session_successor(tmp_path: Path) -> N
     assert state.pending(CONTEXT, "new-run", ["exe-1"]) == []
     assert state.pending(CONTEXT, "old-run", ["exe-1"]) == ["exe-1"]
     state.end_run(CONTEXT, "old-run")
+    assert state.pending(CONTEXT, "new-run", ["exe-1"]) == ["exe-1"]
+
+
+def test_an_origin_whose_heartbeat_lapses_hands_its_notices_on(tmp_path: Path) -> None:
+    clock = FakeClock(datetime.now(UTC))
+    state = JobState(tmp_path, clock=clock, lease_seconds=30)
+    state.origin(CONTEXT, "exe-1", "old-run")
+    state.heartbeat(CONTEXT, "old-run")
+    state.waiting(CONTEXT, "old-run", {"state": "waiting"})
+    clock.advance(29)
+    assert state.pending(CONTEXT, "new-run", ["exe-1"]) == []
+    assert state.waits(CONTEXT) == [{"state": "waiting", "connected": True}]
+    clock.advance(2)
+    assert state.pending(CONTEXT, "new-run", ["exe-1"]) == ["exe-1"]
+    assert state.waits(CONTEXT) == [{"state": "waiting", "connected": False}]
+
+
+@pytest.mark.asyncio
+async def test_an_active_run_renews_its_lease_until_it_ends(tmp_path: Path) -> None:
+    worker = FakeWorker()
+    clock = FakeClock(datetime.now(UTC))
+    jobs = tools(worker, tmp_path, clock, heartbeat_seconds=5)
+    state = JobState(tmp_path, clock=clock)
+    state.origin(CONTEXT, "exe-1", "run-1")
+    async with jobs.active():
+        for _ in range(12):  # a minute, twice the lease
+            await eventually(lambda: clock.sleepers == 1, describe="the heartbeat waiting")
+            clock.advance(5)
+        await eventually(lambda: clock.sleepers == 1, describe="the heartbeat renewed")
+        assert state.pending(CONTEXT, "new-run", ["exe-1"]) == []
+    assert clock.sleepers == 0
     assert state.pending(CONTEXT, "new-run", ["exe-1"]) == ["exe-1"]
 
 
@@ -370,10 +430,8 @@ async def test_invalid_watcher_output_wakes_without_authority(
 ) -> None:
     worker = FakeWorker()
     watcher = ScriptedModel([reply])
-    jobs = tools(
-        worker, tmp_path, watcher=watcher, watcher_alias="watcher", first_check_seconds=0.01
-    )
-    text, _ = await asyncio.wait_for(jobs.wait({"job_ids": ["exe-1"]}, "op"), 1)
+    jobs = tools(worker, tmp_path, watcher=watcher, watcher_alias="watcher", first_check_seconds=5)
+    text, _ = await asyncio.wait_for(jobs.wait({"job_ids": ["exe-1"]}, "op"), 5)
     assert json.loads(text)["reason"] == "needs_attention"
     assert worker.cancelled == []
     state = JobState(tmp_path)
@@ -389,7 +447,7 @@ async def test_invalid_watcher_output_wakes_without_authority(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["model", "timeout", "cancel"])
 async def test_watcher_failure_and_cancellation_preserve_reserved_input(
-    tmp_path: Path, monkeypatch, failure: str
+    tmp_path: Path, failure: str
 ) -> None:
     entered = asyncio.Event()
 
@@ -403,23 +461,26 @@ async def test_watcher_failure_and_cancellation_preserve_reserved_input(
             await asyncio.Event().wait()
             raise AssertionError("unreachable")
 
-    if failure == "timeout":
-        actual_timeout = asyncio.timeout
-        monkeypatch.setattr(asyncio, "timeout", lambda _: actual_timeout(0.01))
     worker = FakeWorker()
+    # The model never answers, so with a short limit a timeout is the only outcome.
     jobs = tools(
-        worker, tmp_path, watcher=Model(), watcher_alias="watcher", first_check_seconds=0.01
+        worker,
+        tmp_path,
+        watcher=Model(),
+        watcher_alias="watcher",
+        first_check_seconds=5,
+        watcher_timeout=0.01 if failure == "timeout" else 60,
     )
     status = await worker.job_status("exe-1", project_id="p")
     task = asyncio.create_task(jobs._check(status))
-    await asyncio.wait_for(entered.wait(), 1)
+    await asyncio.wait_for(entered.wait(), 5)
     if failure == "cancel":
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert jobs.checkins == []
     else:
-        result = await asyncio.wait_for(task, 1)
+        result = await asyncio.wait_for(task, 5)
         assert result is not None
         assert result["note"] == "The watcher check failed."
     state = JobState(tmp_path)
@@ -445,9 +506,7 @@ async def test_watcher_failure_and_cancellation_preserve_reserved_input(
 async def test_failed_atomic_reservation_never_invokes_watcher(tmp_path: Path) -> None:
     worker = FakeWorker()
     watcher = ScriptedModel([ModelTurn('{"state":"fine","note":"unused"}')])
-    jobs = tools(
-        worker, tmp_path, watcher=watcher, watcher_alias="watcher", first_check_seconds=0.01
-    )
+    jobs = tools(worker, tmp_path, watcher=watcher, watcher_alias="watcher", first_check_seconds=5)
     with sqlite3.connect(store_path(tmp_path)) as db:
         db.execute(
             "CREATE TRIGGER refuse_call BEFORE INSERT ON job_watcher_calls "

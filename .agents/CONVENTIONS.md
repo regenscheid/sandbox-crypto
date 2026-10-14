@@ -42,6 +42,7 @@ Planned members (created when work starts on them):
 | `event-store` | `sandbox_science.event_store` | Library: append-only event store with a hash chain (D74, shared) |
 | `connector-auth` | `sandbox_science.connector_auth` | Connector auth service (OAuth for MCP) |
 | `workspace` | `sandbox_science.workspace` | The research workspace's web server: the GUI's files and its API (D80) |
+| `testing` | `sandbox_science.testing` | Development only: support for this repository's tests (`FakeClock`, `eventually()`). A dev dependency; no production member imports it |
 
 The browser front end itself is not a member: it lives in `web/workspace/`, with Node's toolchain (D60, D80).
 
@@ -115,6 +116,8 @@ CI runs the same commands.
 - Integration tests that need OpenShell, KVM, a cluster or the public registries are marked `@pytest.mark.integration`. The root `conftest.py` skips them unless `SS_INTEGRATION=1`. They run on babbage, not in CI.
 - Async tests and fixtures run under pytest-asyncio's auto mode, so they need no `asyncio` mark.
 - Every test has a 300 s limit (pytest-timeout), so a hang fails instead of stalling CI. `--timeout=0` turns it off for long manual runs.
+- A component with a deadline, a lease or a polling interval reads time through the `Clock` protocol in `contracts` and takes its timeouts and intervals as constructor parameters, defaulting to `SYSTEM_CLOCK` and the production values. Code that predates this rule is converted as the refactoring plan reaches it. Tests pass `sandbox_science.testing.FakeClock` and short timeouts instead of patching module constants, and wait for a condition with `eventually()` instead of sleeping. A timeout test uses a peer that never answers, so the timeout is the only possible outcome.
+- `pytest-repeat` (`--count 50`) and `pytest-xdist` (`-n 4`) check a test for flakiness.
 - pyright reports unnecessary `# type: ignore` and `# pyright: ignore` comments as errors, and ruff reports unused `noqa` comments. Tests may run subprocesses, build SQL and use synthetic secrets and temporary paths without inline suppressions.
 
 ## Git and pull requests
