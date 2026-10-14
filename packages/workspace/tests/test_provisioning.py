@@ -19,7 +19,9 @@ from aiohttp.test_utils import TestClient, TestServer
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.testing import eventually
 from sandbox_science.workspace import provisioning, provisioning_client
+from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
 
 TOKEN = "test-secret-provisioning-workspace-login-0123456789"
@@ -251,13 +253,20 @@ async def create(
     peer: Peer,
     *,
     login: bool = True,
+    timeouts: Timeouts = TIMEOUTS,
 ) -> tuple[TestClient[Any, Any], WorkerClient, str]:
     application = web.Application()
     application.router.add_get("/v1/{tail:.*}", peer.handle)
     server = await aiohttp_server(application)
     worker = WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-provisioning-peer")
     client = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, job_worker=worker)
+        create_app(
+            ProjectStore(state_dir),
+            static_dir,
+            login_token=TOKEN,
+            job_worker=worker,
+            timeouts=timeouts,
+        )
     )
     if login:
         assert (
@@ -610,12 +619,16 @@ async def test_actual_transport_whole_deadline_and_chunk_limit(
     peer = Peer()
     peer.blocked = mode == "deadline"
     peer.mode = mode
-    if mode == "deadline":
-        monkeypatch.setattr(provisioning_client, "CALL_TIMEOUT", 0.02)
-    else:
+    if mode == "chunks":
         monkeypatch.setattr(provisioning_client, "MAX_CHUNKS", 1)
+    # A blocked peer never answers, so the worker call's deadline is the only way out.
     client, _, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
+        aiohttp_client,
+        aiohttp_server,
+        state_dir,
+        static_dir,
+        peer,
+        timeouts=Timeouts(worker_call=0.02) if mode == "deadline" else TIMEOUTS,
     )
     try:
         assert (await client.get(url(environment))).status == 503
@@ -679,13 +692,11 @@ async def test_actual_file_owner_retains_capacity_and_close_through_repeated_can
         return result
 
     monkeypatch.setattr(provisioning, "project_snapshot", blocked)
-    monkeypatch.setattr(provisioning, "CALL_TIMEOUT", 0.02)
-    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None)
+    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None, timeouts=Timeouts(call=0.02))
     read = asyncio.create_task(
         proxy.read("p1", None, provisioning.Selection("environments"), "login", lambda: True)
     )
-    while not entered.is_set():
-        await asyncio.sleep(0)
+    assert await asyncio.to_thread(entered.wait, 5)
     try:
         if cancel:
             read.cancel()
@@ -739,10 +750,7 @@ async def test_browser_disconnect_does_not_release_ongoing_server_request(
     proxy = client.app[provisioning.PROXY]
     assert len(proxy._tasks) == 1
     peer.release.set()
-    for _ in range(100):
-        if not proxy._tasks:
-            break
-        await asyncio.sleep(0.001)
+    await eventually(lambda: not proxy._tasks, describe="the admitted read finished")
     assert not proxy._tasks
     assert (await client.get(url(environment))).status == 200
 
@@ -902,13 +910,11 @@ async def test_postawait_file_proof_is_owned_through_deadline_cancel_and_close(
         return original(self, other)
 
     monkeypatch.setattr(provisioning.ProjectSnapshot, "matches", blocked)
-    monkeypatch.setattr(provisioning, "CALL_TIMEOUT", 0.02)
-    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None)
+    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None, timeouts=Timeouts(call=0.02))
     call = asyncio.create_task(
         proxy.read("p1", None, provisioning.Selection("environments"), "login", lambda: True)
     )
-    while not entered.is_set():
-        await asyncio.sleep(0)
+    assert await asyncio.to_thread(entered.wait, 5)
     try:
         with pytest.raises(ProjectError, match="timed out"):
             await call

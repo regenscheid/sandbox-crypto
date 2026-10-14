@@ -29,6 +29,7 @@ from sandbox_science.orchestrator.session_plans import (
 )
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import eventually
 from sandbox_science.workspace import plan_edits, plans
 from sandbox_science.workspace.app import create_app
 
@@ -398,7 +399,7 @@ async def test_request_body_deadline_and_capacity_are_owned_before_sql(
 ):
     ref = seed(journal)
     canonical = DocumentStore(store_path(state_dir), readonly=True)
-    editor = plan_edits.PlanEditor(ProjectStore(state_dir), canonical)
+    editor = plan_edits.PlanEditor(ProjectStore(state_dir), canonical, timeout=0.03)
     entered = asyncio.Event()
 
     async def slow():
@@ -406,7 +407,6 @@ async def test_request_body_deadline_and_capacity_are_owned_before_sql(
         await asyncio.Event().wait()
         return json.dumps(payload(ref)).encode()
 
-    monkeypatch.setattr(plan_edits, "CALL_TIMEOUT", 0.03)
     first = asyncio.create_task(editor.change("p1", "a", "login", slow, lambda: True))
     await entered.wait()
     try:
@@ -414,8 +414,7 @@ async def test_request_body_deadline_and_capacity_are_owned_before_sql(
             await editor.change("p1", "a", "login", slow, lambda: True)
         with pytest.raises(Exception, match="timed out"):
             await first
-        await asyncio.sleep(0)
-        assert not editor._tasks
+        await eventually(lambda: not editor._tasks, describe="the timed-out edit released")
         assert journal.summary(authority()).head == ref
     finally:
         await editor.close()
@@ -715,11 +714,7 @@ async def test_actual_http_disconnect_before_write_refuses_and_drains_owned_prep
         assert len(editor._tasks) == 1
         assert editor._scopes == {("p1", "a")}
         release.set()
-        for _ in range(100):
-            if not editor._tasks:
-                break
-            await asyncio.sleep(0.002)
-        assert not editor._tasks
+        await eventually(lambda: not editor._tasks, describe="the drained edit released")
         assert journal.summary(authority()).head == ref
     finally:
         release.set()

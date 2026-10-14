@@ -17,9 +17,12 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, Protocol, cast
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
+    Clock,
     ExecutionContext,
     KernelLineageIdentity,
     KernelLineageObservation,
+    wait_or_sleep,
 )
 
 from .kernel_notice_bindings import BindingError, KernelBindings, WorkerConfiguration
@@ -129,7 +132,11 @@ class _Lane:
 
 
 class KernelDeliveryController:
-    """Only a trusted explicitly started stateful MAIN owns this optional controller."""
+    """Only a trusted explicitly started stateful MAIN owns this optional controller.
+
+    A proof of the kernels' lineage gives up after ``proof_timeout`` seconds; a held
+    claim is renewed every ``renew_seconds`` of ``clock`` time.
+    """
 
     def __init__(
         self,
@@ -139,8 +146,12 @@ class KernelDeliveryController:
         source_client: WorkerClient,
         *,
         observer: LineageClient | None = None,
+        clock: Clock = SYSTEM_CLOCK,
+        proof_timeout: float = PROOF_TIMEOUT,
+        renew_seconds: float = RENEW_SECONDS,
     ) -> None:
         self.projects, self.context, self.run_id = projects, context, run_id
+        self.clock, self.proof_timeout, self.renew_seconds = clock, proof_timeout, renew_seconds
         self.source_client = source_client
         self.client: LineageClient | None = observer
         self.bindings = KernelBindings(projects.root.parent)
@@ -379,7 +390,7 @@ class KernelDeliveryController:
             return None
         self._proof = asyncio.create_task(self._collect(acknowledge=acknowledge))
         try:
-            async with asyncio.timeout(PROOF_TIMEOUT):
+            async with asyncio.timeout(self.proof_timeout):
                 return await asyncio.shield(self._proof)
         except TimeoutError:
             self._proof.cancel()
@@ -418,11 +429,8 @@ class KernelDeliveryController:
 
     async def _renew(self) -> None:
         while not self._stop.is_set() and not self._replaced:
-            try:
-                await asyncio.wait_for(self._stop.wait(), RENEW_SECONDS)
+            if await wait_or_sleep(self.clock, self._stop, self.renew_seconds):
                 return
-            except TimeoutError:
-                pass
             if self._replaced:
                 return
             try:

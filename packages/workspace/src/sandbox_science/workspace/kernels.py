@@ -19,9 +19,10 @@ from sandbox_science.contracts import ErrorKind, Identifier, KernelObservation
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, SessionSnapshot
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
+from .api import TIMEOUTS, Timeouts
+
 MAX_CALLS: Final = 8
 MAX_LOGIN_CALLS: Final = 2
-CALL_TIMEOUT: Final = 6.0
 MAX_RESPONSE_BYTES: Final = 8 * 1024
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/kernels"
 T = TypeVar("T")
@@ -40,9 +41,12 @@ class LoginEndedError(Exception):
 class KernelProxy:
     """Bounded passive proxy; close drains admitted work before the client may close."""
 
-    def __init__(self, store: ProjectStore, worker: WorkerClient | None) -> None:
+    def __init__(
+        self, store: ProjectStore, worker: WorkerClient | None, *, timeout: float = TIMEOUTS.call
+    ) -> None:
         self.store = store
         self.worker = worker
+        self.timeout = timeout
         self._files = ThreadPoolExecutor(max_workers=2, thread_name_prefix="kernel-registry")
         self._tasks: set[asyncio.Task[str]] = set()
         self._scopes: set[tuple[str, str]] = set()
@@ -165,7 +169,7 @@ class KernelProxy:
 
         task.add_done_callback(finished)
         try:
-            async with asyncio.timeout(CALL_TIMEOUT):
+            async with asyncio.timeout(self.timeout):
                 return await asyncio.shield(task)
         except TimeoutError:
             task.cancel()
@@ -210,9 +214,10 @@ def add_routes(
     worker: WorkerClient | None,
     principal: Callable[[web.Request], str],
     authorized: Callable[[web.Request], bool],
+    timeouts: Timeouts = TIMEOUTS,
 ) -> None:
     """Register the sole passive route with app-owned login authority callbacks."""
-    proxy = KernelProxy(store, worker)
+    proxy = KernelProxy(store, worker, timeout=timeouts.call)
     app[PROXY] = proxy
 
     async def observed(request: web.Request) -> web.Response:

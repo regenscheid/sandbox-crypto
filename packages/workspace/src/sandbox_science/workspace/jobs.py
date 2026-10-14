@@ -110,7 +110,7 @@ async def listed(request: web.Request) -> web.Response:
         tools.check_owner(execution)
         values.append(
             {
-                **summary(await tools.owned(execution.execution_id)),
+                **summary(await tools.owned(execution.execution_id), tools.clock.now()),
                 "checkin": latest.get(execution.execution_id),
             }
         )
@@ -128,7 +128,7 @@ async def listed(request: web.Request) -> web.Response:
 async def status(request: web.Request) -> web.Response:
     tools = await _tools(request)
     job_id = tools.job_id({"job_id": request.match_info["job"]})
-    return _answer(summary(await tools.owned(job_id)))
+    return _answer(summary(await tools.owned(job_id), tools.clock.now()))
 
 
 @_worker_route

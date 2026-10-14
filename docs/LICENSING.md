@@ -95,6 +95,8 @@ for embedded subcomponents.
 | types-PyYAML, types-grpcio, types-protobuf | Apache-2.0 | Development and CI only (type stubs) |
 | grpcio-tools, setuptools | Apache-2.0; MIT | Development only: generates the middleware's protobuf code |
 | pytest-aiohttp, pytest-asyncio | Apache-2.0 | Development and CI only (async tests) |
+| pytest-xdist, execnet | MIT | Development and CI only (parallel test runs) |
+| pytest-repeat | MPL-2.0, unmodified | Development and CI only (repeated test runs that measure flakiness) |
 | packaging, pygments, nodeenv | Apache-2.0 OR BSD-2-Clause; BSD-2-Clause; BSD-3-Clause | Development and CI only (pytest and pyright dependencies) |
 | Pandoc | GPL | Tier 3: runtime-installed in workers for `.tex`/PDF export, invoked as a separate program |
 | Claude Agent SDK (Python) | MIT wrapper that bundles the proprietary Claude Code CLI | **Not** for the MIT core: the runtime it drives is proprietary |
