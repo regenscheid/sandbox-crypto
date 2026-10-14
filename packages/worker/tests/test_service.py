@@ -66,7 +66,9 @@ async def test_an_executor_that_cannot_start_fails_the_attempt(tmp_path: Path) -
 
 
 async def test_a_dead_executor_loses_its_attempts(worker: Harness) -> None:
-    execution = await worker.submit("op-long", kind="shell", script="sleep 60")
+    # The command outlives a killed executor, so it ends once its executor is gone.
+    script = "while kill -0 $PPID 2>/dev/null; do sleep 0.1; done"
+    execution = await worker.submit("op-long", kind="shell", script=script)
     await worker.wait_running(execution["execution_id"])
     worker.view.executor_process().send_signal(signal.SIGKILL)
     lost = await worker.finish(execution["execution_id"])

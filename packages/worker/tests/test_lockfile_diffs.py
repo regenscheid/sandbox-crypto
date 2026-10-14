@@ -723,11 +723,13 @@ def test_copied_ref_cannot_bypass_path_or_count_preflight(
     a, b = fixture.seed(0, Lockfile()), fixture.seed(1, Lockfile())
     assert a.lockfile is not None
     forged = a.model_copy(update={"lockfile": a.lockfile.model_copy(update={field: value})})
-    monkeypatch.setattr(
-        os, "open", lambda *args, **kwargs: pytest.fail("forged ref reached file open")
-    )
-    with pytest.raises(WorkerError, match="unavailable"):
-        diff.compare(fixture.blobs.root, (forged, b), 0, 8)
+    # Only for the call: the temporary directory's own cleanup opens files too.
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            os, "open", lambda *args, **kwargs: pytest.fail("forged ref reached file open")
+        )
+        with pytest.raises(WorkerError, match="unavailable"):
+            diff.compare(fixture.blobs.root, (forged, b), 0, 8)
 
 
 @pytest.mark.parametrize(
