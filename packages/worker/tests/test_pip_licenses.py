@@ -167,10 +167,13 @@ def test_snapshot_retained_inventory_and_license_only_diff_are_coherent(tmp_path
     for field in ("package", "license"):
         copied = page.model_dump(mode="json")
         copied["packages"][0][field]["license" if field == "package" else "declared"] = "BSD"
+        if field == "license":
+            copied["packages"][0][field]["agpl"] = False
         with pytest.raises(ValidationError, match="declared license"):
             RevisionPackagePage.model_validate_json(json.dumps(copied), strict=True)
     copied = diff.model_dump(mode="json")
     copied["differences"][0]["after_license"]["declared"] = "BSD"
+    copied["differences"][0]["after_license"]["agpl"] = False
     with pytest.raises(ValidationError, match="declared license"):
         LockfileDiffPage.model_validate_json(json.dumps(copied), strict=True)
 
@@ -206,3 +209,38 @@ def test_strict_pip_license_field_refuses_invalid_raw_types_and_bounds(value: ob
     raw = json.dumps({"name": "example", "version": "1", "license": value}).encode()
     with pytest.raises(ValidationError):
         PipDistribution.model_validate_json(raw, strict=True)
+
+
+@pytest.mark.parametrize(
+    ("declared", "wrong"), [("MIT", True), ("AGPL-3.0-only", False), ("GNU Affero GPL", False)]
+)
+def test_declared_flag_is_bound_in_inventory_and_each_difference_side(
+    tmp_path: Path, declared: str, wrong: bool
+):
+    blobs = Blobs(tmp_path / "blobs")
+    lock = Lockfile(pip=(PipDistribution(name="example", version="1", license=declared),))
+    a, b = (
+        retain(blobs, lock.model_dump_json().encode(), 0),
+        retain(
+            blobs,
+            Lockfile(pip=(PipDistribution(name="example", version="2", license=declared),))
+            .model_dump_json()
+            .encode(),
+            1,
+        ),
+    )
+    scope = {"project_id": "p", "environment_id": "e", "observed_at": NOW}
+    page = RevisionPackagePage.model_validate(
+        {**scope, **lockfile_diffs.revision_packages(blobs.root, a, 0, 8)}, strict=True
+    ).model_dump(mode="json")
+    page["packages"][0]["license"]["agpl"] = wrong
+    with pytest.raises(ValidationError, match="AGPL flag"):
+        RevisionPackagePage.model_validate_json(json.dumps(page), strict=True)
+    diff = LockfileDiffPage.model_validate(
+        {**scope, **lockfile_diffs.compare(blobs.root, (a, b), 0, 8)}, strict=True
+    ).model_dump(mode="json")
+    for side in ("before_license", "after_license"):
+        copied = json.loads(json.dumps(diff))
+        copied["differences"][0][side]["agpl"] = wrong
+        with pytest.raises(ValidationError, match="AGPL flag"):
+            LockfileDiffPage.model_validate_json(json.dumps(copied), strict=True)
