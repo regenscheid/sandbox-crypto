@@ -244,3 +244,24 @@ async def test_a_kernel_that_dies_fails_the_cell_and_loses_its_state(tmp_path: P
         "error": {"kind": "kernel_died", "message": "the kernel process ended"},
     }
     assert cell.kernel.state_lost
+
+
+def test_a_timed_out_cell_keeps_the_kernels_account_of_the_interrupt() -> None:
+    error = {"name": "KeyboardInterrupt", "value": "", "traceback": ["tb"]}
+    state, result = executor.cell_outcome(
+        "error", 3, error, cancelled=False, timed_out=True, timeout=5
+    )
+    assert state == "timed_out"
+    assert result == {
+        "status": "error",
+        "execution_count": 3,
+        "error": {
+            "kind": "timed_out",
+            "message": "exceeded the 5 s limit: KeyboardInterrupt",
+            "name": "KeyboardInterrupt",
+            "value": "",
+            "traceback": ["tb"],
+        },
+    }
+    _, plain = executor.cell_outcome("ok", None, None, cancelled=False, timed_out=True, timeout=2.5)
+    assert plain["error"] == {"kind": "timed_out", "message": "exceeded the 2.5 s limit"}

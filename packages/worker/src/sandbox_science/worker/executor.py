@@ -471,6 +471,135 @@ async def _interrupt(manager: Any) -> None:
         await manager.interrupt_kernel()
 
 
+@dataclass
+class CellMessages:
+    """A cell's messages from its kernel, taken one at a time: what each gives to send,
+    and what the cell keeps for its result. It sends nothing itself.
+
+    The kernel runs research code: its messages are checked like anything else, and
+    those of another cell or in another form are passed over.
+    """
+
+    msg_id: str | None
+    limit: int
+    """Bytes of rich output the cell may return."""
+    captures: dict[str, Capture]
+    outputs: list[Message]
+    execution_count: int | None = None
+    error: Message | None = None
+    """The cell's exception, as the kernel reported it."""
+    idle: bool = False
+    """The kernel is idle again: the cell is over, and later messages are not its own."""
+    spent: int = 0
+    omitted: int = 0
+
+    def take(self, message: object) -> list[Message]:
+        """The events ``message`` gives, in order: ``stream`` steps with ``name`` and
+        ``text``, and ``output`` steps with ``output``, already among ``outputs``."""
+        if not isinstance(message, dict):
+            return []
+        message = cast(Message, message)
+        header = message.get("parent_header")
+        if not isinstance(header, dict) or cast(Message, header).get("msg_id") != self.msg_id:
+            return []
+        kind, content = message.get("msg_type"), message.get("content")
+        if not isinstance(content, dict):
+            return []
+        content = cast(Message, content)
+        if kind == "status" and content.get("execution_state") == "idle":
+            self.idle = True
+            return []
+        if kind == "stream":
+            capture = self.captures.get(str(content.get("name", "stdout")), self.captures["stdout"])
+            data = str(content.get("text", "")).encode("utf-8", "replace")
+            text = capture.feed(data)
+            return [{"event": "stream", "name": capture.name, "text": text}] if text else []
+        if kind == "execute_input":
+            self.execution_count = _count(content.get("execution_count"))
+        elif kind in ("display_data", "execute_result"):
+            return self._output(kind, content)
+        elif kind == "error":
+            self.error = _exception(content)
+        return []
+
+    def _output(self, kind: object, content: Message) -> list[Message]:
+        data = _mime_bundle(content.get("data", {}))
+        size = sum(len(value.encode("utf-8", "replace")) for value in data.values())
+        self.spent += size
+        if self.spent > self.limit or len(self.outputs) >= MAX_OUTPUTS:
+            self.omitted += 1
+            if self.omitted > 1:
+                return []  # one note at the end stands for the rest
+            data = {"text/plain": f"[output of {size} bytes omitted: over the limit]"}
+        output: Message = {
+            "type": "result" if kind == "execute_result" else "display",
+            "data": data,
+            "execution_count": _count(content.get("execution_count")),
+        }
+        self.outputs.append(output)
+        return [{"event": "output", "output": output}]
+
+    def closing_note(self) -> Message | None:
+        """The note for outputs omitted after the first, added to ``outputs``, if any."""
+        if self.omitted <= 1:
+            return None
+        note: Message = {
+            "type": "display",
+            "data": {"text/plain": f"[{self.omitted - 1} more outputs omitted: over the limit]"},
+            "execution_count": None,
+        }
+        self.outputs.append(note)
+        return note
+
+
+def _exception(content: Message) -> Message:
+    """A kernel's ``error`` message as the cell's exception, bounded."""
+    name = bounded(str(content.get("ename") or ""), 256)
+    value = bounded(str(content.get("evalue") or ""), MAX_ERROR_TEXT)
+    lines = content.get("traceback")
+    lines = cast(list[object], lines)[-MAX_TRACEBACK_LINES:] if isinstance(lines, list) else []
+    return {
+        "kind": "exception",
+        "message": f"{name}: {value}",
+        "name": name,
+        "value": value,
+        "traceback": [bounded(_ANSI_RE.sub("", str(line)), MAX_TRACEBACK_LINE) for line in lines],
+    }
+
+
+def cell_outcome(
+    status: str,
+    execution_count: int | None,
+    error: Message | None,
+    *,
+    cancelled: bool,
+    timed_out: bool,
+    timeout: float,
+) -> tuple[str, Message]:
+    """A finished cell's state and result, from the kernel's reply ``status`` and what its
+    messages said."""
+    result: Message = {"status": status, "execution_count": execution_count}
+    if cancelled or timed_out:
+        kind = "cancelled" if cancelled else "timed_out"
+        reason = "interrupted on request" if cancelled else f"exceeded the {timeout:g} s limit"
+        interruption: Message = {"kind": kind, "message": reason}
+        if error is not None:
+            # The kernel's own account of the interrupt: KeyboardInterrupt in Python.
+            interruption.update(
+                message=f"{reason}: {error['name']}",
+                name=error["name"],
+                value=error["value"],
+                traceback=error["traceback"],
+            )
+        result["error"] = interruption
+        return kind, result
+    if error is not None:
+        # A cell that raised: its exception, as the kernel reported it.
+        result["error"] = error
+        return "failed", result
+    return "succeeded", result
+
+
 class Executor:
     """Handles one connection's requests. ``root`` holds sessions/ and shared/."""
 
@@ -1626,9 +1755,7 @@ class Executor:
         deadline = loop.time() + max(0.0, timeout - running.waited)
         interrupted_at: float | None = None
         timed_out = False
-        error: Message | None = None
-        execution_count: int | None = None
-        spent = omitted = 0
+        cell = CellMessages(msg_id, limit, captures, outputs)
         died: Message = {
             "status": "error",
             "error": {"kind": "kernel_died", "message": "the kernel process ended"},
@@ -1690,98 +1817,29 @@ class Executor:
                     continue
                 kernel.state_lost = True
                 return "failed", died
-            # The kernel runs research code: its messages are checked like anything else.
-            if not isinstance(message, dict):
-                continue
-            message = cast(Message, message)
-            header = message.get("parent_header")
-            if not isinstance(header, dict) or cast(Message, header).get("msg_id") != msg_id:
-                continue
-            kind, content = message.get("msg_type"), message.get("content")
-            if not isinstance(content, dict):
-                continue
-            content = cast(Message, content)
-            if kind == "status" and content.get("execution_state") == "idle":
+            for step in cell.take(message):
+                if step["event"] == "stream":
+                    await self.stream(running.execution, step["name"], step["text"])
+                else:
+                    await self.event(running.execution, "output", output=step["output"])
+            if cell.idle:
                 break
-            if kind == "stream":
-                capture = captures.get(str(content.get("name", "stdout")), captures["stdout"])
-                data = str(content.get("text", "")).encode("utf-8", "replace")
-                if text := capture.feed(data):
-                    await self.stream(running.execution, capture.name, text)
-            elif kind == "execute_input":
-                execution_count = _count(content.get("execution_count"))
-            elif kind in ("display_data", "execute_result"):
-                data = _mime_bundle(content.get("data", {}))
-                size = sum(len(value.encode("utf-8", "replace")) for value in data.values())
-                spent += size
-                if spent > limit or len(outputs) >= MAX_OUTPUTS:
-                    omitted += 1
-                    if omitted > 1:
-                        continue  # one note at the end stands for the rest
-                    data = {"text/plain": f"[output of {size} bytes omitted: over the limit]"}
-                output: Message = {
-                    "type": "result" if kind == "execute_result" else "display",
-                    "data": data,
-                    "execution_count": _count(content.get("execution_count")),
-                }
-                outputs.append(output)
-                await self.event(running.execution, "output", output=output)
-            elif kind == "error":
-                name = bounded(str(content.get("ename") or ""), 256)
-                value = bounded(str(content.get("evalue") or ""), MAX_ERROR_TEXT)
-                lines = content.get("traceback")
-                lines = (
-                    cast(list[object], lines)[-MAX_TRACEBACK_LINES:]
-                    if isinstance(lines, list)
-                    else []
-                )
-                error = {
-                    "kind": "exception",
-                    "message": f"{name}: {value}",
-                    "name": name,
-                    "value": value,
-                    "traceback": [
-                        bounded(_ANSI_RE.sub("", str(line)), MAX_TRACEBACK_LINE) for line in lines
-                    ],
-                }
-        if omitted > 1:
-            note: Message = {
-                "type": "display",
-                "data": {"text/plain": f"[{omitted - 1} more outputs omitted: over the limit]"},
-                "execution_count": None,
-            }
-            outputs.append(note)
+        if (note := cell.closing_note()) is not None:
             await self.event(running.execution, "output", output=note)
-        status = "error" if error else "ok"
+        status = "error" if cell.error else "ok"
         with contextlib.suppress(Empty, Exception):
             reply = await client.get_shell_msg(timeout=5)
             if reply.get("parent_header", {}).get("msg_id") == msg_id:
                 reported = reply["content"].get("status")
                 status = reported if reported in ("ok", "error", "aborted") else status
-        result: Message = {"status": status, "execution_count": execution_count}
-        if running.cancel_requested or timed_out:
-            kind = "cancelled" if running.cancel_requested else "timed_out"
-            reason = (
-                "interrupted on request"
-                if running.cancel_requested
-                else f"exceeded the {timeout:g} s limit"
-            )
-            interruption: Message = {"kind": kind, "message": reason}
-            if error is not None:
-                # The kernel's own account of the interrupt: KeyboardInterrupt in Python.
-                interruption.update(
-                    message=f"{reason}: {error['name']}",
-                    name=error["name"],
-                    value=error["value"],
-                    traceback=error["traceback"],
-                )
-            result["error"] = interruption
-            return kind, result
-        if error is not None:
-            # A cell that raised: its exception, as the kernel reported it.
-            result["error"] = error
-            return "failed", result
-        return "succeeded", result
+        return cell_outcome(
+            status,
+            cell.execution_count,
+            cell.error,
+            cancelled=running.cancel_requested,
+            timed_out=timed_out,
+            timeout=timeout,
+        )
 
     async def op_cancel(self, request: Message) -> None:
         running = self.running.get(str(request.get("execution")))
