@@ -470,12 +470,122 @@ def _math_checks(schema: Schema) -> None:
         rebuild(schema, table, create)
 
 
+def _evidence_checks(schema: Schema) -> None:
+    """Version 7: artifacts, the reviewer's feed and evidence, and session plans check
+    their own values when they are written (decision 3); artifact revisions with a
+    trigger on insert, so their bytes are not copied."""
+    for table, create in (
+        (
+            "artifact_objects",
+            """CREATE TABLE artifact_objects (
+    id TEXT PRIMARY KEY CHECK (length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
+    project TEXT NOT NULL, path TEXT NOT NULL,
+    head INTEGER NOT NULL CHECK (head >= 0),
+    UNIQUE(project,path)) STRICT""",
+        ),
+        (
+            "artifact_operations",
+            """CREATE TABLE artifact_operations (
+    project TEXT NOT NULL, actor TEXT NOT NULL, operation TEXT NOT NULL,
+    digest TEXT NOT NULL CHECK (length(digest) = 64 AND digest NOT GLOB '*[^0-9a-f]*'),
+    request TEXT NOT NULL
+        CHECK (json_valid(request) AND length(CAST(request AS BLOB)) <= 8192),
+    state TEXT NOT NULL CHECK (state IN ('intent', 'transfer', 'done')),
+    worker TEXT CHECK (worker IS NULL
+        OR (json_valid(worker) AND length(CAST(worker AS BLOB)) <= 16384)),
+    receipt TEXT CHECK (receipt IS NULL
+        OR (json_valid(receipt) AND length(CAST(receipt AS BLOB)) <= 16384)),
+    PRIMARY KEY(project,actor,operation)) STRICT""",
+        ),
+        (
+            "artifact_events",
+            """CREATE TABLE artifact_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL,
+    record TEXT NOT NULL
+        CHECK (json_valid(record) AND length(CAST(record AS BLOB)) <= 16384)) STRICT""",
+        ),
+        (
+            "review_feed",
+            """CREATE TABLE review_feed (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, project TEXT NOT NULL, session TEXT NOT NULL,
+    source_key TEXT NOT NULL CHECK (length(CAST(source_key AS BLOB)) BETWEEN 1 AND 1024),
+    kind TEXT NOT NULL CHECK (length(CAST(kind AS BLOB)) BETWEEN 1 AND 32),
+    locator TEXT NOT NULL
+        CHECK (json_valid(locator) AND length(CAST(locator AS BLOB)) <= 4096),
+    payload TEXT NOT NULL
+        CHECK (json_valid(payload) AND length(CAST(payload AS BLOB)) <= 262144),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    characters INTEGER NOT NULL CHECK (characters >= 0),
+    structural INTEGER NOT NULL CHECK (structural >= 0),
+    artifacts INTEGER NOT NULL CHECK (artifacts >= 0),
+    cells INTEGER NOT NULL CHECK (cells >= 0),
+    effects INTEGER NOT NULL CHECK (effects IN (0, 1)),
+    created REAL NOT NULL, UNIQUE(project,session,source_key)) STRICT""",
+        ),
+        (
+            "review_evidence",
+            """CREATE TABLE review_evidence (
+    evidence_id TEXT PRIMARY KEY CHECK (length(CAST(evidence_id AS BLOB)) BETWEEN 1 AND 128),
+    review_id TEXT NOT NULL REFERENCES review_runs(review_id),
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    kind TEXT NOT NULL CHECK (length(CAST(kind AS BLOB)) BETWEEN 1 AND 32),
+    locator TEXT NOT NULL
+        CHECK (json_valid(locator) AND length(CAST(locator AS BLOB)) <= 4096),
+    payload TEXT NOT NULL
+        CHECK (json_valid(payload) AND length(CAST(payload AS BLOB)) <= 262144),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    complete INTEGER NOT NULL CHECK (complete IN (0, 1)),
+    UNIQUE(review_id,ordinal)) STRICT""",
+        ),
+        (
+            "session_plan_records",
+            """CREATE TABLE session_plan_records (
+    project TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL,
+    number INTEGER NOT NULL CHECK (number >= 0), key TEXT NOT NULL,
+    record TEXT NOT NULL
+        CHECK (json_valid(record) AND length(CAST(record AS BLOB)) <= 81920),
+    bytes INTEGER NOT NULL CHECK (bytes = length(CAST(record AS BLOB)) + 512),
+    PRIMARY KEY(project,session,kind,id,number)) STRICT""",
+        ),
+        (
+            "session_plan_projections",
+            """CREATE TABLE session_plan_projections (
+    project TEXT NOT NULL, session TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL,
+    record TEXT NOT NULL
+        CHECK (json_valid(record) AND length(CAST(record AS BLOB)) <= 81920),
+    bytes INTEGER NOT NULL CHECK (bytes = length(CAST(record AS BLOB)) + 512),
+    PRIMARY KEY(project,session,kind,id)) STRICT""",
+        ),
+    ):
+        rebuild(schema, table, create)
+    # artifact_revisions holds the artifacts' bytes: a rebuild would copy them all, hold the
+    # write lock as long, and leave the file twice its size. Its rows are immutable (a
+    # trigger refuses updates), so a check of each insert does what a CHECK would.
+    row = schema.execute(
+        "SELECT rowid FROM artifact_revisions WHERE NOT (number >= 1 AND json_valid(record) "
+        "AND length(CAST(record AS BLOB)) <= 16384) LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        raise RefusedRowError(
+            f"a row of artifact_revisions fails its check (row {row[0]}: its number, or its "
+            "record's JSON or 16 KiB bound)"
+        )
+    schema.execute(
+        "CREATE TRIGGER artifact_revisions_check BEFORE INSERT ON artifact_revisions "
+        "WHEN NOT (NEW.number >= 1 AND json_valid(NEW.record) "
+        "AND length(CAST(NEW.record AS BLOB)) <= 16384) BEGIN "
+        "SELECT RAISE(ABORT, 'CHECK constraint failed: artifact_revisions'); END"
+    )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
     _comment_checks,
     _response_checks,
     _math_checks,
+    _evidence_checks,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

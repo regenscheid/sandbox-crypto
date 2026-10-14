@@ -24,7 +24,7 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 
-from .store import Json, bounded_json
+from .store import Json, stored_json
 
 if TYPE_CHECKING:
     from .store import ReviewStore
@@ -182,14 +182,12 @@ def ingest_artifacts(
             # this call pinned. This is progress, not a turn-aborting conflict.
             target = max(target, after)
             events = db.execute(
-                "SELECT seq,substr(cast(record AS BLOB),1,16385) FROM artifact_events "
+                "SELECT seq,record FROM artifact_events "
                 "WHERE project=? AND seq>? AND seq<=? ORDER BY seq LIMIT 10",
                 (project, after, target),
             ).fetchall()
             unknown = db.execute(
-                "SELECT substr(operation,1,129),substr(cast(request AS BLOB),1,8193),"
-                "substr(digest,1,65),substr(state,1,9),"
-                "substr(cast(worker AS BLOB),1,16385),substr(cast(receipt AS BLOB),1,16385) "
+                "SELECT operation,request,digest,state,worker,receipt "
                 "FROM artifact_operations o WHERE project=? AND actor=? AND state!='done' "
                 "AND NOT EXISTS(SELECT 1 FROM review_feed f WHERE f.project=o.project "
                 "AND f.session=o.actor AND f.source_key='artifact:operation:'||o.operation) "
@@ -199,7 +197,7 @@ def ingest_artifacts(
         prepared: list[tuple[str, Json, Json, bool, int]] = []
         for seq, raw in events:
             try:
-                event = ArtifactEvent.model_validate(bounded_json(raw, 16384))
+                event = ArtifactEvent.model_validate(stored_json(raw))
             except ValidationError:
                 raise DocumentError(CONFLICT, "invalid stored artifact event") from None
             if (
@@ -231,7 +229,7 @@ def ingest_artifacts(
         uncertain: list[tuple[tuple[object, ...], Json, Json]] = []
         for op in unknown[:PAGE]:
             operation, raw, sha, _phase, _worker, _receipt = op
-            request = bounded_json(raw, 8192)
+            request = stored_json(raw)
             try:
                 source = ArtifactPublicationSource.model_validate(request["source"])
                 encoded, expected = inventory.publication_request(
@@ -241,7 +239,7 @@ def ingest_artifacts(
                 raise DocumentError(CONFLICT, "invalid unresolved artifact intent") from None
             if (source.context.project_id, source.context.session_id) != (project, session):
                 raise DocumentError(CONFLICT, "unresolved artifact scope differs")
-            if expected != sha or encoded.encode() != raw:
+            if expected != sha or encoded != raw:
                 raise DocumentError(CONFLICT, "unresolved artifact fingerprint differs")
             with store.documents.control.read() as tx:
                 db = tx.sql
@@ -289,9 +287,7 @@ def ingest_artifacts(
                 )
             for op, locator, payload in uncertain:
                 current = db.execute(
-                    "SELECT substr(operation,1,129),substr(cast(request AS BLOB),1,8193),"
-                    "substr(digest,1,65),substr(state,1,9),"
-                    "substr(cast(worker AS BLOB),1,16385),substr(cast(receipt AS BLOB),1,16385) "
+                    "SELECT operation,request,digest,state,worker,receipt "
                     "FROM artifact_operations WHERE project=? AND actor=? AND operation=?",
                     (project, session, op[0]),
                 ).fetchone()

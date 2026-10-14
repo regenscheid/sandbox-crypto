@@ -63,6 +63,6 @@ of one session are all answered.
 
 `packages/workspace/tests/test_routes_plans.py` and `test_plans.py` cover
 committed live progress, closed and scoped history, revised intent, explicit
-outcomes, authentication, absent versus corrupt state and bounded giant rows.
+outcomes, authentication, and absent versus incoherent state.
 They use synthetic control activity; they do not show browser rendering, model
 planning or approval enforcement.

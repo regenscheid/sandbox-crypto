@@ -29,7 +29,7 @@ from .models import (
     FindingResponse,
     ReviewConfig,
 )
-from .store import MAX_ITEM_BYTES, ReviewStore, bounded_json, digest, dump, identifier, text
+from .store import ReviewStore, digest, dump, identifier, stored_json, text
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
 Json = dict[str, Any]
@@ -731,18 +731,17 @@ class Findings:
             self.store.owner(run, owner)
             pinned = db.execute(
                 (
-                    "SELECT substr(CAST(payload AS BLOB),1,?),evidence_id FROM review_evidence "
-                    "WHERE review_id=? AND "
+                    "SELECT payload,evidence_id FROM review_evidence WHERE review_id=? AND "
                     "kind='finding' AND json_extract(locator,'$.finding')=? AND "
                     "json_extract(locator,'$.revision')=?"
                 ),
-                (MAX_ITEM_BYTES + 1, review, value.finding, value.expected),
+                (review, value.finding, value.expected),
             ).fetchone()
             if pinned is None:
                 raise DocumentError(
                     POLICY_DENIED, "finding response is outside the confirmation snapshot"
                 )
-            pinned_finding = bounded_json(pinned[0], MAX_ITEM_BYTES)
+            pinned_finding = stored_json(pinned[0])
             found = self.load(db, project, session, value.finding)
             if found["origin"] == "math":
                 raise DocumentError(
@@ -755,12 +754,12 @@ class Findings:
             current_body = response_pin(db, value.finding, value.expected)
             if current_body is not None:
                 body_pin = db.execute(
-                    "SELECT body_revision,substr(CAST(sha256 AS BLOB),1,65) "
+                    "SELECT body_revision,sha256 "
                     "FROM review_response_pins WHERE review_id=? AND finding_id=? AND "
                     "decision_revision=?",
                     (review, value.finding, value.expected),
                 ).fetchone()
-                if body_pin != (current_body["revision"], current_body["sha256"].encode()):
+                if body_pin != (current_body["revision"], current_body["sha256"]):
                     raise DocumentError(
                         CONFLICT, "response explanation changed during confirmation"
                     )
@@ -770,11 +769,11 @@ class Findings:
 
                 macro = current_body["macro_context"]
                 pinned_macro = db.execute(
-                    "SELECT revision,substr(CAST(sha256 AS BLOB),1,65) FROM review_macro_pins "
+                    "SELECT revision,sha256 FROM review_macro_pins "
                     "WHERE review_id=? AND finding_id=?",
                     (review, value.finding),
                 ).fetchone()
-                if pinned_macro != (macro["revision"], macro["sha256"].encode()):
+                if pinned_macro != (macro["revision"], macro["sha256"]):
                     raise DocumentError(
                         CONFLICT, "response macro context changed during confirmation"
                     )
@@ -888,16 +887,14 @@ class Findings:
         artifact_pins = response.get("artifact_revisions", [])
         for ref in artifact_pins:
             available_artifacts = db.execute(
-                "SELECT evidence_id,substr(cast(locator AS BLOB),1,4097),complete "
+                "SELECT evidence_id,locator,complete "
                 "FROM review_evidence e WHERE kind='artifact' AND "
                 "(review_id=? OR EXISTS(SELECT 1 FROM review_grants g WHERE "
                 "g.review_id=? AND g.evidence_id=e.evidence_id)) LIMIT 257",
                 (review, review),
             ).fetchall()
             if not any(
-                complete
-                and covered(evidence)
-                and bounded_json(locator, 4096).get("artifact") == ref
+                complete and covered(evidence) and stored_json(locator).get("artifact") == ref
                 for evidence, locator, complete in available_artifacts
             ):
                 raise DocumentError(

@@ -542,21 +542,14 @@ def test_corrupt_progress_fingerprint_cannot_certify_current_completion(store, p
         status(plans, first.ref, "completed", result=outcome())
 
 
-def test_corrupt_large_projection_is_clipped_before_python_allocation(store, plans):
+@pytest.mark.parametrize("value", ["x" * 20_000_000, "not json"])
+def test_large_or_malformed_projection_is_refused_when_written(store, plans, value):
     made(plans)
-    with store.control.write() as tx:
-        db = tx.sql
-        db.execute(
-            "UPDATE session_plan_projections SET record=? WHERE kind='current'", ("x" * 20_000_000,)
-        )
-    tracemalloc.start()
-    try:
-        with pytest.raises(DocumentError, match="unavailable"):
-            plans.summary(actor())
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-    assert peak < 300_000
+    refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+    with refused, store.control.write() as tx:
+        query = "UPDATE session_plan_projections SET record=? WHERE kind='current'"
+        tx.sql.execute(query, (value,))
+    assert plans.summary(actor()) is not None
 
 
 @pytest.mark.parametrize(
@@ -664,10 +657,14 @@ def test_summary_checks_one_canonical_mutation_without_building_current(store, p
     assert len(summary.model_dump_json().encode()) < 8192
     # Validate the latest immutable assertion's actor, but never walk current steps.
     payload_reads = [
-        query for query in statements if "substr" in query and "kind='progress'" in query
+        query
+        for query in statements
+        if query.startswith("SELECT record") and "kind='progress'" in query
     ]
     assert len(payload_reads) == 1
-    assert all("substr" not in query for query in statements if "kind='version'" in query)
+    assert not any(
+        query.startswith("SELECT record") for query in statements if "kind='version'" in query
+    )
 
 
 def test_exact_text_and_reason_preserved_without_rendering(plans):
@@ -725,13 +722,12 @@ def test_replay_cannot_substitute_valid_other_record(store, plans):
         made(plans)
 
 
-def test_schema_and_corrupt_accounting_do_not_damage_document_saves(store, plans):
+def test_wrong_accounting_is_refused_and_document_saves_continue(store, plans):
     made(plans)
-    with store.control.write() as tx:
-        db = tx.sql
-        db.execute("UPDATE session_plan_projections SET bytes=0 WHERE kind='head'")
-    with pytest.raises(DocumentError, match="accounting"):
-        SessionPlans(store)
+    refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+    with refused, store.control.write() as tx:
+        tx.sql.execute("UPDATE session_plan_projections SET bytes=0 WHERE kind='head'")
+    SessionPlans(store)
     result = store.create(
         "p",
         name="still-works",
@@ -882,11 +878,12 @@ def test_a_plan_stored_with_the_removed_approval_status_reads_as_a_draft(store, 
         for name, _ in triggers:
             tx.sql.execute(f"DROP TRIGGER {name}")
         for table in ("session_plan_records", "session_plan_projections"):
+            # One statement, so the row's byte accounting (a CHECK) holds throughout.
             tx.sql.execute(
-                f"UPDATE {table} SET record=replace(record,?,?)",
+                f"UPDATE {table} SET record=replace(record,?1,?2),"
+                "bytes=length(CAST(replace(record,?1,?2) AS BLOB))+512",
                 (old, new),
             )
-            tx.sql.execute(f"UPDATE {table} SET bytes=length(CAST(record AS BLOB))+512")
         for _, sql in triggers:
             tx.sql.execute(sql)
         changed = tx.sql.execute(
@@ -928,3 +925,29 @@ def test_has_records_tells_a_damaged_plan_from_an_absent_one(store, plans):
     assert plans.summary(actor()) is None
     assert plans.has_records(actor().scope)
     assert not plans.has_records(actor(session="other").scope)
+
+
+def test_the_evidence_checks_keep_plans_and_their_accounting(tmp_path, monkeypatch):
+    from sandbox_science.orchestrator.control import migrations
+
+    with monkeypatch.context() as old:  # a store from before version 7
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:5])
+        old.setattr(migrations, "VERSION", migrations.BASELINE + 4)
+        open_sessions(tmp_path)
+        documents = DocumentStore(tmp_path / "control.sqlite3")
+        plans = SessionPlans(documents)
+        first = made(plans)
+        update(plans, first.ref)
+        before = (plans.current(actor()), plans.summary(actor()), rows(documents))
+        documents.close()
+    documents = DocumentStore(tmp_path / "control.sqlite3")
+    documents.initialize()  # the writer brings the store to the current version
+    try:
+        plans = SessionPlans(documents)
+        assert (plans.current(actor()), plans.summary(actor()), rows(documents)) == before
+        update(plans, first.ref, cursor=1, operation="after")
+        summary = plans.summary(actor())
+        assert summary is not None
+        assert summary.progress_cursor == 2
+    finally:
+        documents.close()

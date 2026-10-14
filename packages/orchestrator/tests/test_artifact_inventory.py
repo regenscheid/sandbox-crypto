@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-import tracemalloc
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -335,24 +334,21 @@ def test_replay_receipt_cannot_substitute_another_valid_revision(tmp_path: Path)
 
 
 @pytest.mark.parametrize("column", ["request", "worker", "receipt"])
-def test_corrupt_operation_metadata_is_bounded_before_python(
+@pytest.mark.parametrize("value", ["x" * (20 * 1024 * 1024), "not json"])
+def test_oversized_or_malformed_operation_metadata_is_refused_when_written(
     tmp_path: Path,
     column: str,
+    value: str,
 ) -> None:
     documents = DocumentStore(tmp_path / "control.sqlite3")
     inventory = ArtifactInventory(documents)
     record(inventory, "op1")
-    with sqlite3.connect(documents.path) as db:
-        query = f"UPDATE artifact_operations SET {column}=?"
-        db.execute(query, ("x" * (20 * 1024 * 1024),))
-    tracemalloc.start()
-    try:
-        with pytest.raises(DocumentError, match="metadata exceeds"):
-            inventory.begin(SOURCE, "op1", "out.bin", None)
-        assert tracemalloc.get_traced_memory()[1] < 256 * 1024
-    finally:
-        tracemalloc.stop()
-        documents.close()
+    refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+    with refused, documents.control.write() as tx:
+        tx.sql.execute(f"UPDATE artifact_operations SET {column}=?", (value,))
+    with pytest.raises(DocumentError, match="already used"):
+        inventory.begin(SOURCE, "op1", "other.bin", None)
+    documents.close()
 
 
 def test_latest_hold_observation_survives_restart_and_preserves_transfer(tmp_path: Path) -> None:

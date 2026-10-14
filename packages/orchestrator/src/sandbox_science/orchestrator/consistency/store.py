@@ -52,17 +52,9 @@ def dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
-def bounded_json(value: str | bytes, limit: int) -> Json:
-    """Reject oversized/corrupt SQL prefixes before JSON allocation."""
-    if len(value if isinstance(value, bytes) else value.encode()) > limit:
-        raise DocumentError(CONFLICT, "stored review metadata exceeds its bound")
-    try:
-        result = json.loads(value)
-    except (ValueError, RecursionError, UnicodeError):
-        raise DocumentError(CONFLICT, "stored review metadata is invalid") from None
-    if not isinstance(result, dict):
-        raise DocumentError(CONFLICT, "stored review metadata is not an object")
-    return cast(Json, result)
+def stored_json(value: str) -> Json:
+    """A JSON object the store holds, as it was written (decision 3: no second check)."""
+    return cast(Json, json.loads(value))
 
 
 def digest(text: str) -> str:
@@ -503,17 +495,12 @@ class ReviewStore:
             size = 0
             for row in db.execute(
                 (
-                    "SELECT seq,substr(kind,1,33),substr(cast(locator AS BLOB),1,4097),"
-                    "substr(cast(payload AS BLOB),1,262145),"
-                    "substr(sha256,1,65),complete FROM review_feed "
+                    "SELECT seq,kind,locator,payload,sha256,complete FROM review_feed "
                     "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq "
                     "LIMIT ?"
                 ),
                 (project, session, watermark, end, MAX_SNAPSHOT_ITEMS),
             ):
-                bounded_json(row[2], 4096)
-                bounded_json(row[3], MAX_ITEM_BYTES)
-                row = (*row[:2], row[2].decode(), row[3].decode(), *row[4:])
                 added = len(row[2].encode()) + len(row[3].encode()) + 256
                 if items and size + added > MAX_SNAPSHOT_BYTES:
                     break
@@ -1105,8 +1092,7 @@ class ReviewStore:
                 "CASE WHEN typeof(c.prompt_provenance)='text' "
                 "AND length(CAST(c.prompt_provenance AS BLOB))<=? "
                 "THEN CAST(c.prompt_provenance AS BLOB) ELSE NULL END,"
-                "substr(CAST(r.rubric AS BLOB),1,129) "
-                "FROM review_calls c JOIN review_runs r "
+                "r.rubric FROM review_calls c JOIN review_runs r "
                 "ON c.review_id=r.review_id AND c.project=r.project "
                 "WHERE r.project=? AND r.session=? AND r.review_id=? AND c.seq=? LIMIT 1",
                 (MAX_PROVENANCE_BYTES, MAX_PROVENANCE_BYTES, project, session, review, call),
@@ -1118,7 +1104,7 @@ class ReviewStore:
         if row[0] == 1:
             try:
                 pin = ReviewerProvenance.model_validate_json(row[1])
-                if pin.rubric_version.encode("ascii") == row[2]:
+                if pin.rubric_version == row[2]:
                     return ProvenanceRead("complete", pin)
             except ValueError:
                 pass
@@ -1195,8 +1181,7 @@ class ReviewStore:
             rows = list(
                 db.execute(
                     (
-                        "SELECT substr(evidence_id,1,28),ordinal,substr(kind,1,33),"
-                        "substr(cast(locator AS BLOB),1,4097),substr(sha256,1,65),complete FROM ("
+                        "SELECT evidence_id,ordinal,kind,locator,sha256,complete FROM ("
                         "SELECT evidence_id,ordinal,kind,locator,sha256,complete FROM "
                         "review_evidence WHERE review_id=? UNION ALL "
                         "SELECT e.evidence_id,g.ordinal,e.kind,e.locator,e.sha256,e.complete "
@@ -1213,7 +1198,7 @@ class ReviewStore:
                     "evidence": r[0],
                     "ordinal": r[1],
                     "kind": r[2],
-                    "locator": bounded_json(r[3], 4096),
+                    "locator": stored_json(r[3]),
                     "sha256": r[4],
                     "complete": bool(r[5]),
                 }
@@ -1230,9 +1215,7 @@ class ReviewStore:
             self.load_run(db, project, session, review)
             row = db.execute(
                 (
-                    "SELECT substr(kind,1,33),substr(cast(locator AS BLOB),1,4097),"
-                    "substr(cast(payload AS BLOB),1,262145),substr(sha256,1,65),"
-                    "complete FROM review_evidence "
+                    "SELECT kind,locator,payload,sha256,complete FROM review_evidence "
                     "WHERE evidence_id=? AND (review_id=? OR EXISTS(SELECT 1 FROM "
                     "review_grants g WHERE g.review_id=? AND "
                     "g.evidence_id=review_evidence.evidence_id))"
@@ -1241,11 +1224,8 @@ class ReviewStore:
             ).fetchone()
         if row is None:
             raise DocumentError(NOT_FOUND, "evidence is outside this snapshot")
-        location = bounded_json(row[1], 4096)
-        payload = bounded_json(row[2], MAX_ITEM_BYTES)
-        encoded = row[2].decode() if isinstance(row[2], bytes) else row[2]
-        if digest(encoded) != row[3]:
-            raise DocumentError(CONFLICT, "pinned evidence failed its digest check")
+        location = stored_json(row[1])
+        payload = stored_json(row[2])
         if row[0] == "artifact" and payload.get("projection") == 1:
             from .artifacts import artifact_text
 
@@ -1275,9 +1255,7 @@ class ReviewStore:
         with self.documents.control.read() as tx:
             db = tx.sql
             row = db.execute(
-                "SELECT substr(cast(locator AS BLOB),1,4097),"
-                "substr(cast(payload AS BLOB),1,262145),substr(sha256,1,65),"
-                "complete FROM review_feed "
+                "SELECT locator,payload,sha256,complete FROM review_feed "
                 "WHERE project=? AND session=? AND kind='artifact' "
                 "AND CASE WHEN json_valid(locator) THEN "
                 "json_extract(locator,'$.artifact.artifact_id') END=? "
@@ -1287,13 +1265,11 @@ class ReviewStore:
             ).fetchone()
         if row is None:
             raise DocumentError(NOT_FOUND, "exact artifact revision has no session evidence grant")
-        location, payload = bounded_json(row[0], 4096), bounded_json(row[1], MAX_ITEM_BYTES)
+        location, payload = stored_json(row[0]), stored_json(row[1])
         if ArtifactRevisionRef.model_validate(location.get("artifact")) != reference:
             raise DocumentError(
                 CONFLICT, "claimed artifact reference differs from session evidence"
             )
-        if digest(row[1].decode()) != row[2]:
-            raise DocumentError(CONFLICT, "artifact evidence failed its digest check")
         from .artifacts import artifact_text
 
         if (artifact_text(location, payload) is not None) != bool(row[3]):

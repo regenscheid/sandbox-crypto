@@ -73,12 +73,6 @@ def _json(value: Contract, limit: int = _MAX_RECORD) -> str:
     return text
 
 
-def _clipped(value: object, limit: int) -> str:
-    if not isinstance(value, bytes) or len(value) > limit:
-        raise DocumentError(INTERNAL, "stored artifact metadata exceeds its limit")
-    return value.decode("utf-8", "strict")
-
-
 class ArtifactInventory:
     """Project-scoped internal ingestion/read boundary sharing DocumentStore ownership."""
 
@@ -145,18 +139,9 @@ class ArtifactInventory:
     ) -> ArtifactOperation | None:
         _IDENTIFIER.validate_python(operation)
         row = db.execute(
-            "SELECT substr(digest,1,65),substr(state,1,9),substr(cast(worker AS BLOB),1,?),"
-            "substr(cast(receipt AS BLOB),1,?),substr(cast(request AS BLOB),1,?) "
-            "FROM artifact_operations "
+            "SELECT digest,state,worker,receipt,request FROM artifact_operations "
             "WHERE project=? AND actor=? AND operation=?",
-            (
-                _MAX_RECORD + 1,
-                _MAX_RECORD + 1,
-                _MAX_REQUEST + 1,
-                source.context.project_id,
-                source.context.session_id,
-                operation,
-            ),
+            (source.context.project_id, source.context.session_id, operation),
         ).fetchone()
         if row is None:
             return None
@@ -165,26 +150,14 @@ class ArtifactInventory:
                 CONFLICT,
                 "artifact operation was already used with another request or publisher binding",
             )
-        if hashlib.sha256(_clipped(row[4], _MAX_REQUEST).encode()).hexdigest() != digest:
-            raise DocumentError(INTERNAL, "stored artifact intent differs from its fingerprint")
-        if row[1] not in ("intent", "transfer", "done"):
-            raise DocumentError(INTERNAL, "invalid stored artifact operation state")
-        worker = (
-            ArtifactRef.model_validate_json(_clipped(row[2], _MAX_RECORD))
-            if row[2] is not None
-            else None
-        )
-        receipt = (
-            ArtifactReceipt.model_validate_json(_clipped(row[3], _MAX_RECORD))
-            if row[3] is not None
-            else None
-        )
+        worker = ArtifactRef.model_validate_json(row[2]) if row[2] is not None else None
+        receipt = ArtifactReceipt.model_validate_json(row[3]) if row[3] is not None else None
         if row[1] == "done" and (worker is None or receipt is None or receipt.state != "recorded"):
             raise DocumentError(INTERNAL, "incomplete stored artifact acknowledgement")
         if row[1] == "done":
             assert worker is not None  # noqa: S101 - validated above
             assert receipt is not None  # noqa: S101 - validated above
-            request = json.loads(_clipped(row[4], _MAX_REQUEST))
+            request = json.loads(row[4])
             path = request["path"]
             logical_path = (
                 path
@@ -340,13 +313,10 @@ class ArtifactInventory:
                 )
             self._budget(db, project)
             row = db.execute(
-                "SELECT substr(id,1,129),head FROM artifact_objects WHERE project=? AND path=?",
+                "SELECT id,head FROM artifact_objects WHERE project=? AND path=?",
                 (project, logical_path),
             ).fetchone()
             artifact, head = (new_id("artifact"), 0) if row is None else row
-            _IDENTIFIER.validate_python(artifact)
-            if type(head) is not int or not 0 <= head < MAX_COUNTER:
-                raise DocumentError(INTERNAL, "invalid artifact head")
             previous = self._revision(db, project, artifact, head) if head else None
             reproduced = previous is not None and (
                 previous.reference.sha256,
@@ -423,13 +393,12 @@ class ArtifactInventory:
         self, db: sqlite3.Connection, project: str, artifact: str, revision: int
     ) -> ArtifactRevision:
         row = db.execute(
-            "SELECT substr(cast(record AS BLOB),1,?) FROM artifact_revisions "
-            "WHERE project=? AND artifact=? AND number=?",
-            (_MAX_RECORD + 1, project, artifact, revision),
+            "SELECT record FROM artifact_revisions WHERE project=? AND artifact=? AND number=?",
+            (project, artifact, revision),
         ).fetchone()
         if row is None:
             raise DocumentError(NOT_FOUND, "no such artifact revision in project")
-        result = ArtifactRevision.model_validate_json(_clipped(row[0], _MAX_RECORD))
+        result = ArtifactRevision.model_validate_json(row[0])
         if (
             result.reference.project_id,
             result.reference.artifact_id,
@@ -514,7 +483,7 @@ class ArtifactInventory:
         with self.documents.control.read() as tx:
             db = tx.sql
             rows = db.execute(
-                "SELECT substr(id,1,129),head FROM artifact_objects "
+                "SELECT id,head FROM artifact_objects "
                 "WHERE project=? AND id>? ORDER BY id LIMIT 11",
                 (project, after),
             ).fetchall()
@@ -538,14 +507,11 @@ class ArtifactInventory:
         with self.documents.control.read() as tx:
             db = tx.sql
             rows = db.execute(
-                "SELECT seq,substr(cast(record AS BLOB),1,?) FROM artifact_events "
+                "SELECT seq,record FROM artifact_events "
                 "WHERE project=? AND seq>? ORDER BY seq LIMIT 10",
-                (_MAX_RECORD + 1, project, after),
+                (project, after),
             ).fetchall()
-            events = tuple(
-                ArtifactEvent.model_validate_json(_clipped(record, _MAX_RECORD))
-                for _, record in rows
-            )
+            events = tuple(ArtifactEvent.model_validate_json(record) for _, record in rows)
             if any(
                 event.project_id != project or event.seq != row[0]
                 for event, row in zip(events, rows, strict=True)
