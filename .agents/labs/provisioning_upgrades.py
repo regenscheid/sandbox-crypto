@@ -25,7 +25,6 @@ import tomllib
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
-from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -582,7 +581,7 @@ class Owner:
         from aiohttp import web
 
         from sandbox_science.orchestrator.worker_client import WorkerClient
-        from sandbox_science.worker import cli
+        from sandbox_science.worker import build
         from sandbox_science.worker.app import create_app
         from sandbox_science.worker.artifacts import Blobs
         from sandbox_science.worker.backends import OpenShellBackend
@@ -595,7 +594,7 @@ class Owner:
 
         settings = private_settings()
         logging.disable(logging.CRITICAL)
-        self.environments = cli._environments(settings)
+        self.environments = build.build_environments(settings)
         if self.environments is None:
             raise RefusalError("managed environment required")
         if (
@@ -609,7 +608,7 @@ class Owner:
         )
         self.shared_records = SharedRecords(settings.state_dir / "shared.sqlite3")
         self.shared = SharedSync(self.shared_records, settings.state_dir / "shared")
-        backend = cli._backend(settings, self.environments)
+        backend = build.build_backend(settings, self.environments)
         if not isinstance(backend, OpenShellBackend):
             raise RefusalError("host fallback forbidden")
 
@@ -654,22 +653,12 @@ class Owner:
             state_dir=settings.state_dir,
             shared=self.shared,
             package_cache=settings.openshell.package_cache,
+            lifecycle=build.build_lifecycle(settings, backend, self.environments, self.store),
         )
         env, m = self.environments, self.manager
         env.release, env.release_idle = m.release, m.release_if_idle
-        m.notices = env.notices
         env.deleted.append(self.shared.forget)
-        m.confirmed_daemon_loss = partial(cli._confirmed_daemon_loss, settings, m, env, self.store)
-        m.recycle_daemon = env.recycle_executor
-
-        def identity(environment: str):
-            if not env.manages(environment):
-                return None
-            info = env.get(environment)
-            return (info.sandbox, info.sandbox_id) if info.sandbox_id else None
-
-        m.daemon_identity = identity
-        self.provisioner = cli._provisioner(settings, m, env)
+        self.provisioner = build.build_provisioner(settings, m, env)
         pool_token, project_token, foreign_token = (secrets.token_urlsafe(48) for _ in range(3))
         self.private_literals = (pool_token, project_token, foreign_token)
         clients = [

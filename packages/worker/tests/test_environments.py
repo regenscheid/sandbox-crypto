@@ -2224,6 +2224,32 @@ async def test_the_backend_never_resolves_without_knowing_the_workers_environmen
     assert backend.manages is not None
 
 
+async def test_the_built_lifecycle_gives_the_policys_job_limits(tmp_path: Path) -> None:
+    """Environments.job_resources, given to the manager when the worker is built."""
+    setup = Setup(tmp_path)
+    settings = Settings.model_validate(
+        {
+            "token_file": tmp_path / "worker.token",
+            "state_dir": tmp_path / "built",
+            "openshell": {**setup.settings.model_dump(), "sandboxes": {"env-hand": "research-1"}},
+        }
+    )
+    parts = build_worker(settings, "test-secret-" + "j" * 40)
+    try:
+        environments = parts.environments
+        assert environments is not None
+        environments.cli.env = setup.environments.cli.env  # the fake openshell
+        job_resources = parts.manager.lifecycle.job_resources
+        assert job_resources is not None
+        with pytest.raises(WorkerError) as refused:
+            job_resources("env-unknown")
+        assert refused.value.kind is ErrorKind.POLICY_DENIED
+        assert job_resources("env-hand") == environments.ceiling.resources
+    finally:
+        await parts.close()
+        setup.environments.close()
+
+
 async def test_a_worker_built_on_managed_environments_gets_their_lifecycle(setup: Setup) -> None:
     """The manager learns the environments' bindings, recycles, notices and job limits
     when the worker is built, not from assignments after."""

@@ -62,7 +62,15 @@ from .errors import WorkerError
 from .files import Files
 from .journal import ExecutionJournal
 from .kernels import KernelRegistry
-from .lifecycle import UNMANAGED, EnvironmentLifecycle
+from .lifecycle import (
+    UNMANAGED,
+    ConfirmedLoss,
+    DaemonIdentity,
+    EnvironmentLifecycle,
+    JobResources,
+    Notices,
+    Recycle,
+)
 from .package_admission import PackageAdmission, guard_reuse
 from .package_changes import PackageChanges
 from .package_gate import PackageGate
@@ -237,6 +245,29 @@ class ExecutionManager:
     def lifecycle(self) -> EnvironmentLifecycle:
         """What the managed environments answer; nothing without any."""
         return self._lifecycle
+
+    # The lifecycle's answers, by the names the manager's attributes had before they were
+    # given at construction; reading them is allowed, assigning them is refused.
+
+    @property
+    def daemon_identity(self) -> DaemonIdentity | None:
+        return self._lifecycle.daemon_identity
+
+    @property
+    def confirmed_daemon_loss(self) -> ConfirmedLoss | None:
+        return self._lifecycle.confirmed_daemon_loss
+
+    @property
+    def recycle_daemon(self) -> Recycle | None:
+        return self._lifecycle.recycle_daemon
+
+    @property
+    def notices(self) -> Notices | None:
+        return self._lifecycle.notices
+
+    @property
+    def job_resources(self) -> JobResources | None:
+        return self._lifecycle.job_resources
 
     @property
     def shared(self) -> SharedSync | None:
