@@ -86,7 +86,7 @@ collector. No product, test-source, service or build change followed.
 
 ## Evidence and remaining delivery gates
 
-[Evidence archive](math-license-notices-evidence-2026-10-12.json): **61,846 bytes**,
+Evidence archive (archived outside git, sha256 `bbe0cead6866`): **61,846 bytes**,
 SHA-256 `bbe0cead68664f2c734df7ea92b26784e2a16e2f07ed4117183ad2d2649012ff`.
 Its 28 exact UTF-8 records total 54,101 underlying bytes and retain the fresh
 logs, full generated notices/license/manifest text, pre-change baseline, emitted

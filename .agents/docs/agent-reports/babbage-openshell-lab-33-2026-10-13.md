@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # OpenShell Lab33: internal child-kernel dispatcher
 
-Root's bounded OpenShell run passed on 2026-10-13. Independent runtime and complete owned-cleanup reviews are clear. The [exact public archive](babbage-openshell-lab-33-evidence-2026-10-13.json) retains 653 UTF-8 records: 3,546,481 original public bytes in a 3,904,374-byte archive, SHA `6a2af6baa2635af89930ce77d25572498385e63fa637ecc7f5db7ede9d05c6b7`. No images or private values/hashes are included. Final delivery review and fresh PR CI remain separate.
+Root's bounded OpenShell run passed on 2026-10-13. Independent runtime and complete owned-cleanup reviews are clear. The exact public archive (archived outside git, sha256 `6a2af6baa263`) retains 653 UTF-8 records: 3,546,481 original public bytes in a 3,904,374-byte archive, SHA `6a2af6baa2635af89930ce77d25572498385e63fa637ecc7f5db7ede9d05c6b7`. No images or private values/hashes are included. Final delivery review and fresh PR CI remain separate.
 
 ## Frozen source and fixture
 

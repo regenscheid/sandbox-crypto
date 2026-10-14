@@ -7,7 +7,7 @@ observations survived successful, failed, cancelled and timed-out work and a
 graceful worker restart. The original attempt, managed VM and Python kernel
 remained intact. The complete disposable lab was removed before documentation edits.
 
-The [immutable evidence](babbage-openshell-lab-24-evidence-2026-10-12.json) contains
+The immutable evidence (archived outside git, sha256 `6b8ce007f6c7`) contains
 23 exact UTF-8 text records, totaling 180,606 underlying bytes. The 200,670-byte
 archive has SHA-256
 `6b8ce007f6c7f1e111244dc01f7c3a94debbcd93c7e6f157b5c1e91f1b1c3f64`.

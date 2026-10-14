@@ -6,7 +6,7 @@ binary and empty content, promptly refused oversized and special sources, and
 left healthy execution and ordinary file access available. The disposable lab
 was completely removed before any subsequent source-tree changes.
 
-The [retained evidence](babbage-openshell-lab-22-evidence-2026-10-12.json) contains
+The retained evidence (archived outside git, sha256 `3474c2a6577e`) contains
 16 exact UTF-8 text records: API checks, independent guest/SQLite inspection,
 source/settings identities, preflight, service logs and teardown verification.
 Its 103,849 bytes have SHA-256

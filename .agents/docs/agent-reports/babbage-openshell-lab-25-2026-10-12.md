@@ -7,7 +7,7 @@ places an existing assertion in the intended test. A real package install change
 revision 0 to 1 without replacing an existing kernel. Graceful worker restart
 preserved that kernel and the same VM; explicit kernel restart replaced it.
 
-The [exact archive](babbage-openshell-lab-25-evidence-2026-10-12.json) retains API
+The exact archive (archived outside git, sha256 `1f89881098c7`) retains API
 results, endpoint identities, the reusable helper, completed and preliminary gate
 logs with their source provenance, the early connection failure, independent
 review and complete teardown. Every embedded text record includes its exact byte

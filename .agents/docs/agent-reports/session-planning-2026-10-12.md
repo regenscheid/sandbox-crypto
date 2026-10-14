@@ -65,7 +65,7 @@ findings in the core, copied-base/outcome-scope and missing-current-pointer
 findings in the API, complete-response/closing-reread findings in the adapter,
 closed-history failure retry in the viewer, and bounded/truthful cleanup findings
 in the helper. Exact source/union ties and logs are retained in the
-[evidence archive](session-planning-evidence-2026-10-12.json).
+evidence archive (archived outside git, sha256 `65a7ece1f219`).
 
 ## Actual browser acceptance
 
@@ -96,9 +96,9 @@ The actual Codex browser showed:
 - Normal sign-out removing the plan, with zero later plan requests during the
   observed 39-second window. The owned browser tab was closed.
 
-![A revised step preserves its old assertion without inheriting completion](session-planning-revised-2026-10-12.jpg)
+*A revised step preserves its old assertion without inheriting completion: screenshot `session-planning-revised-2026-10-12.jpg`, archived outside git (sha256 `f3252790f974`)*
 
-![Terminal workflow remains qualified as partially achieved](session-planning-finished-2026-10-12.jpg)
+*Terminal workflow remains qualified as partially achieved: screenshot `session-planning-finished-2026-10-12.jpg`, archived outside git (sha256 `a92dde4aa6db`)*
 
 Native visibility changes, a true unseeded no-plan session, failed logout POST,
 late-response races and closed-history error retries remain focused-test evidence;

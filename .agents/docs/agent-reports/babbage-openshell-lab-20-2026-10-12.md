@@ -4,9 +4,9 @@ Run on 2026-10-12. Worker and bridge restart recovery passed against real
 OpenShell VMs. The initial daemon-loss check failed; the corrected lifecycle
 fence then passed the expanded checks. The lab was completely removed.
 
-[Initial restart evidence](babbage-openshell-lab-20-initial-evidence-2026-10-12.json),
-the [initial daemon-loss failure](babbage-openshell-lab-20-initial-failure-2026-10-12.json)
-and the [final evidence](babbage-openshell-lab-20-final-evidence-2026-10-12.json)
+Initial restart evidence (archived outside git, sha256 `80398be53bb5`),
+the initial daemon-loss failure (archived outside git, sha256 `64ad1ab49749`)
+and the final evidence (archived outside git, sha256 `18685646cd13`)
 are retained separately. These are API records and observed process identities,
 without client or daemon tokens. The reusable [check script](../../labs/recovery.py)
 runs research commands only inside the VMs.

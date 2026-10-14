@@ -49,7 +49,7 @@ freshness and 75 Python licenses. Fresh web license/install/check, 656 web cases
 both production builds and 24 post-build math cases also pass.
 No external model, service, worker or VM was used for this metadata slice.
 
-The [exact archive](watcher-prompt-provenance-evidence-2026-10-12.json) retains source,
+The exact archive (archived outside git, sha256 `2ef4c217d987`) retains source,
 review and focused/combined gate evidence. Fresh exact-head CI and final delivery
 review remain required before merge. Planning browser evidence and MAIN provenance
 validation keep their original pins. Reviewer provenance is separate in-process

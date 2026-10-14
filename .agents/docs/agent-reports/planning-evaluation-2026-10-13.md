@@ -1,6 +1,6 @@
 # Planning and progress evaluator: scripted calibration
 
-Root ran the opt-in evaluator's two local scripted controls on 2026-10-13. The positive control met the evaluator's criteria. The deliberately missing-progress control correctly failed the progress criterion and returned the expected negative result. Both marked fixtures were removed; independent source, public-result and cleanup review cleared the controls. The [exact evidence archive](planning-evaluation-evidence-2026-10-13.json) preserves the original and corrected source/probe records alongside these results.
+Root ran the opt-in evaluator's two local scripted controls on 2026-10-13. The positive control met the evaluator's criteria. The deliberately missing-progress control correctly failed the progress criterion and returned the expected negative result. Both marked fixtures were removed; independent source, public-result and cleanup review cleared the controls. The exact evidence archive (archived outside git, sha256 `fea2485c3cb4`) preserves the original and corrected source/probe records alongside these results.
 
 This establishes the measurement path through actual production `run_task`, `PlanTools` and canonical `SessionPlans` reads. No real model pilot, provider request, worker, VM, service or browser ran. Model adherence, scientific correctness and broader planning acceptance remain unproved.
 

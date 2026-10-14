@@ -2,7 +2,7 @@
 
 The first provisioning viewer passed independent corrected-source review, fresh combined Python gates and root-owned real-worker/native-browser acceptance on signed clean `220cddd80f217288959890cb35779bc5c6a4948d`. Its helper SHA-256 is `d72cb2695047b41d6d872935803784878ff5b1fb2d06366ed903e93276079829`. The actual run is `a8bdc1c866394d78a1673453cc072f1b`. All owned runtime/private state was removed at 14:21:57Z; independent current cleanup cleared at 14:24:45.935296Z on 2026-10-13. Fresh delivery CI and merge remain separate.
 
-The [exact archive](babbage-openshell-lab-30-evidence-2026-10-13.json) retains **393 UTF-8 records**, 1,722,979 original text bytes, and ten separately stored JPEG images. Each record has an origin, exact byte count and SHA-256. The archive is 1,930,821 bytes, SHA-256 `b23873c28a8eacc4122007122bed05bbd7b8ed0977e80709dcf9a3fe4610c8f2`. It preserves the failed and corrected sources, actual unsuccessful invocations, dated predecessor readiness, combined gates, public runtime evidence and cleanup. Counts from different invocations are not added together.
+The exact archive (archived outside git, sha256 `b23873c28a8e`) retains **393 UTF-8 records**, 1,722,979 original text bytes, and ten separately stored JPEG images. Each record has an origin, exact byte count and SHA-256. The archive is 1,930,821 bytes, SHA-256 `b23873c28a8eacc4122007122bed05bbd7b8ed0977e80709dcf9a3fe4610c8f2`. It preserves the failed and corrected sources, actual unsuccessful invocations, dated predecessor readiness, combined gates, public runtime evidence and cleanup. Counts from different invocations are not added together.
 
 ## Actual runtime and browser coverage
 
@@ -24,11 +24,11 @@ Production `ProjectStore`, `create_app`, authenticated `WorkerClient` and worker
 
 The live browser rendered all six GP files and four escalated Flint files with their exact hashes, declared license text and recorded allow/escalate decisions. The sibling's five-file count and separate waiting request were visible; its complete typed file page was checked by the helper. None of these observed package licenses was AGPL, so the AGPL flag remains focused synthetic frontend coverage. The browser does not certify licenses, approve downloads or infer VM health from a ready package gate. No install, answer, cancel, rebuild or recovery control is present.
 
-![Exact GP files and declared licenses](babbage-openshell-lab-30-gp-files-2026-10-13.jpg)
+*Exact GP files and declared licenses: screenshot `babbage-openshell-lab-30-gp-files-2026-10-13.jpg`, archived outside git (sha256 `9c9aa98106fc`)*
 
-![Awaiting Flint and queued GP](babbage-openshell-lab-30-permission-queue-2026-10-13.jpg)
+*Awaiting Flint and queued GP: screenshot `babbage-openshell-lab-30-permission-queue-2026-10-13.jpg`, archived outside git (sha256 `231c92900df5`)*
 
-![Worker offline with unknown current state](babbage-openshell-lab-30-offline-2026-10-13.jpg)
+*Worker offline with unknown current state: screenshot `babbage-openshell-lab-30-offline-2026-10-13.jpg`, archived outside git (sha256 `3b7584c9255c`)*
 
 Gateway proofs are dated root observations, not continuous VM-state proof. The independent reviewer checked their exact original IDs and chronology and the saved SQL/DTO evidence without making independent runtime RPCs. The 30-loop no-wake check is 60 environment samples, each paired across worker/GUI, rather than 120 pairs.
 

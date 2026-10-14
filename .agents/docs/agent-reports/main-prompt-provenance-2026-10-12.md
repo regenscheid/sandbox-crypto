@@ -43,7 +43,7 @@ plan's old D82 integration focus is refreshed. This expands no runtime capabilit
 
 ## Delivery and retained evidence
 
-The [exact evidence archive](main-prompt-provenance-evidence-2026-10-12.json)
+The exact evidence archive (archived outside git, sha256 `ba84cd9a6eb8`)
 retains source pins, independent review and original focused/combined logs. Fresh
 exact-head CI and final signed delivery review are required before merge.
 

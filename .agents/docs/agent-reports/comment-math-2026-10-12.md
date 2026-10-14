@@ -26,13 +26,13 @@ execution was contacted.
 | Session scope | Session `b` showed no session `a` findings or selected evidence. The project-wide mechanical check inventory remained visible as intended. |
 | Diagnostics | The final console capture contained no warnings or errors. The stale-save conflict above was intentional and visible in the GUI. |
 
-Screenshots retain the [initial pinned reply finding](comment-math-initial-2026-10-12.jpg),
-[stale retained drafts](comment-math-stale-draft-2026-10-12.jpg),
-[saved USER correction](comment-math-user-correction-2026-10-12.jpg),
-[MAIN correction and original delegated source](comment-math-main-correction-2026-10-12.jpg)
-and [mechanical confirmation history](comment-math-confirmed-2026-10-12.jpg).
+Screenshots retain the initial pinned reply finding (archived outside git, sha256 `ec8a0d10bdfa`),
+stale retained drafts (archived outside git, sha256 `1693e2197c42`),
+saved USER correction (archived outside git, sha256 `c1d175c3c677`),
+MAIN correction and original delegated source (archived outside git, sha256 `f027e4239d37`)
+and mechanical confirmation history (archived outside git, sha256 `a1c0373a821d`).
 
-The [evidence archive](comment-math-browser-evidence-2026-10-12.json) retains 21
+The evidence archive (archived outside git, sha256 `18f334198b5c`) retains 21
 exact UTF-8 records, including initial/final canonical audits, browser observations,
 the final raw Python test log and cleanup. Each record and screenshot has its byte
 length and SHA-256. All 71 GUI/math asset hashes were checked before and after

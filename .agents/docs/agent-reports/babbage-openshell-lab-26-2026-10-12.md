@@ -7,7 +7,7 @@ observation route neither opens an executor nor refreshes ordinary idle activity
 Continuous observation allowed the real managed VM to stop; further observations
 did not wake it. An ordinary cell resumed execution and disclosed lost kernel state.
 
-The [exact evidence](babbage-openshell-lab-26-evidence-2026-10-12.json) retains
+The exact evidence (archived outside git, sha256 `5818a1dbd52f`) retains
 API results, safe SQL/gateway projections, source/helper pins, passing and failed
 gate logs, independent review and complete teardown. Every embedded text record
 has a byte length and SHA-256. Private settings, tokens, provider records, TLS

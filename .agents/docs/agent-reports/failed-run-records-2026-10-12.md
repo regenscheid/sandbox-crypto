@@ -47,11 +47,11 @@ are identical to the final source. The workspace visibly showed **Failed run
 (model)**, the partial-transcript notice, the completed `read_file` content
 `6 * 7 = 42`, and zero Answer headings. Console and server warning/error
 records were empty. A final-source CLI run separately reconfirmed the ordinary
-failure path. [Screenshot](failed-run-2026-10-12.jpg).
+failure path. Screenshot (archived outside git, sha256 `43bfb568e904`).
 
 ## Archive and teardown
 
-[Evidence archive](failed-run-evidence-2026-10-12.json): **107,728 bytes**, SHA-256
+Evidence archive (archived outside git, sha256 `c1d9e2b87f5f`): **107,728 bytes**, SHA-256
 `c1d9e2b87f5f87eb53aad2a350ec4162c7aa2fecd2d0ee7e6b771f790e4044c3`.
 It retains 22 exact UTF-8 records with byte lengths and SHA-256 values, including
 the CLI transcript, browser checks, source/asset pins, complete final gates,

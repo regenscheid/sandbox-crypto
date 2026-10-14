@@ -6,7 +6,7 @@ The production web build ran in a transient user unit on loopback port 8101,
 with a fresh disposable ProjectStore and SQLite control store. No worker,
 OpenShell sandbox or model gateway was needed for these control-store flows.
 
-[Recorded revisions and events](document-editing-evidence-2026-10-12.json)
+Recorded revisions and events (archived outside git, sha256 `1e39f601880f`)
 contain only synthetic research notes and identities. The reusable
 [fixture helper](../../labs/document_editing.py) creates that data, simulates
 concurrent agent changes, and exports the final store without browser tokens.
@@ -24,9 +24,9 @@ concurrent agent changes, and exports the final store without browser tokens.
 | Reviewed suggestion | Preview against revision 8 displayed current and proposed text. Explicit Apply appended revision 9 attributed to the original agent, with acceptance attributed to the user |
 | Workbook promotion | Moved the workbook into the project. Its document ID, revision 1, text and original agent attribution remained intact |
 
-The [conflict view](document-editing-conflict-2026-10-12.jpg) shows the retained
+The conflict view (archived outside git, sha256 `8797f8702816`) shows the retained
 user draft alongside the current agent block. The
-[accepted suggestion view](document-editing-accepted-patch-2026-10-12.jpg)
+accepted suggestion view (archived outside git, sha256 `13347a429cc5`)
 shows the accepted-by-user attribution and rendered equation. The browser
 reported no warning or error logs during these flows.
 

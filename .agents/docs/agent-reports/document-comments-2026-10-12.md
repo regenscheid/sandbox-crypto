@@ -7,7 +7,7 @@ document and annotation records. No OpenShell sandbox or real model was used.
 
 The [fixture helper](../../labs/document_comments.py) seeds two neutral formula
 comments, runs a scripted document-only main agent, appends concurrent history,
-and exports [token-free records](document-comments-evidence-2026-10-12.json).
+and exports token-free records (archived outside git, sha256 `85caab84fb8d`).
 The initial create/respond steps used the same helper before formatting and
 adding its record mode. Its WorkerClient has no tool that makes an HTTP call;
 the recorded provider and worker call counts are both zero.
@@ -25,9 +25,9 @@ the recorded provider and worker call counts are both zero.
 | Concurrent history | Kept an unsaved reply while another process appended 55 entries. Refresh showed the latest 50, retained the draft and its base revision 1, and offered explicit adoption of current revision 56 |
 | Pagination and reply | Loading earlier entries restored all 56 entries without losing the draft. Explicitly adopting revision 56 and posting appended USER entry 57 and cleared the submitted draft |
 
-Screenshots show the [queued request](document-comments-queued-2026-10-12.jpg),
-[responded thread and resolution history](document-comments-response-2026-10-12.jpg),
-and [retained stale draft](document-comments-draft-2026-10-12.jpg). The browser
+Screenshots show the queued request (archived outside git, sha256 `ea7e7b3b817f`),
+responded thread and resolution history (archived outside git, sha256 `e94e417c9837`),
+and retained stale draft (archived outside git, sha256 `9fd1129b4c37`). The browser
 reported no warning or error logs. The synthetic formula replacement exercises
 revision/anchor plumbing; it does not validate mathematical judgment.
 
