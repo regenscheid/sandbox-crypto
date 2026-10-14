@@ -8,8 +8,7 @@ can correct an agent-authored explanation; findings grant no extra authority.
 
 from __future__ import annotations
 
-import hashlib
-import re
+import json
 import sqlite3
 from typing import TYPE_CHECKING, Any, cast
 
@@ -27,7 +26,7 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.models import Author
 
-from .store import bounded_json, digest, dump, identifier, text
+from .store import digest, dump, identifier, text
 
 if TYPE_CHECKING:
     from .store import ReviewStore
@@ -64,25 +63,18 @@ def original(
 ) -> Json:
     source = source_key(finding, revision)
     row = db.execute(
-        "SELECT substr(CAST(f.project AS BLOB),1,129),"
-        "substr(CAST(f.session AS BLOB),1,129),"
-        "substr(CAST(f.origin AS BLOB),1,33),substr(CAST(t.actor AS BLOB),1,129),"
-        "coalesce(substr(CAST(t.reason AS BLOB),1,32769),X''),"
-        "substr(CAST(t.payload AS BLOB),1,131073) FROM review_transitions t JOIN "
-        "review_findings f USING(finding_id) WHERE t.finding_id=? AND t.revision=?",
+        "SELECT f.project,f.session,f.origin,t.actor,coalesce(t.reason,''),t.payload "
+        "FROM review_transitions t JOIN review_findings f USING(finding_id) "
+        "WHERE t.finding_id=? AND t.revision=?",
         (finding, revision),
     ).fetchone()
     if row is None:
         raise DocumentError(NOT_FOUND, "no such original finding response")
-    if any(not isinstance(v, bytes) for v in row) or any(
-        len(v) > n for v, n in zip(row, (128, 128, 32, 128, BODY_BYTES, 131072), strict=True)
-    ):
-        raise DocumentError(INTERNAL, "retained response exceeds its bounds")
+    p, s, origin, actor, body, raw = row
     try:
-        p, s, origin, actor, body = (v.decode() for v in row[:5])
-        payload = bounded_json(row[5], 131072)
+        payload = cast(Json, json.loads(raw))
         author = Author.model_validate(payload.get("author"))
-    except (ValueError, TypeError, RecursionError):
+    except (ValueError, TypeError, AttributeError):
         raise DocumentError(POLICY_DENIED, "original response author is unknown") from None
     if (project is not None and project != p) or (session is not None and session != s):
         raise DocumentError(NOT_FOUND, "response is outside this scope")
@@ -117,52 +109,29 @@ def read(
     session: str | None = None,
     full: bool = True,
 ) -> Json:
+    """A response body revision as it was written (the table checks its values then)."""
     parent = original(db, finding, revision, project=project, session=session)
     if not full:
         header = db.execute(
-            "SELECT revision,coalesce(substr(CAST(body AS BLOB),1,32769),X''),"
-            "substr(CAST(sha256 AS BLOB),1,65),substr(CAST(author AS BLOB),1,8193),"
-            "identity_floor,substr(CAST(held AS BLOB),1,1001) FROM review_response_bodies "
+            "SELECT revision,body,sha256,author,identity_floor,held FROM review_response_bodies "
             "WHERE source=? AND finding_id=? AND decision_revision=? "
             "AND (? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
             (parent["source"], finding, revision, body_revision, body_revision),
         ).fetchone()
         if header is not None:
-            if (
-                type(header[0]) is not int
-                or type(header[4]) is not int
-                or not 1 <= header[4] <= header[0] <= 999999999
-                or len(header[1]) > BODY_BYTES
-                or len(header[3]) > 8192
-                or re.fullmatch(b"[0-9a-f]{64}", header[2]) is None
-                or hashlib.sha256(header[1]).hexdigest().encode() != header[2]
-                or (header[5] is not None and len(header[5]) > 1000)
-            ):
-                raise DocumentError(INTERNAL, "retained response header exceeds its bounds")
-            actor = Author.model_validate_json(header[3])
-            if (
-                actor.kind != "agent"
-                or actor.role != "main"
-                or actor.session_id != parent["session"]
-            ):
-                raise DocumentError(INTERNAL, "response correcting actor is outside its source")
             return {
                 **parent,
                 "revision": header[0],
-                "body": header[1].decode(),
-                "sha256": header[2].decode(),
-                "author": actor.model_dump(mode="json"),
+                "body": header[1],
+                "sha256": header[2],
+                "author": json.loads(header[3]),
                 "identity_floor": header[4],
-                "held": header[5].decode() if header[5] else None,
+                "held": header[5] or None,
             }
     row = db.execute(
-        "SELECT revision,coalesce(substr(CAST(body AS BLOB),1,32769),X''),"
-        "substr(CAST(sha256 AS BLOB),1,65),substr(CAST(block_map AS BLOB),1,16777217),"
-        "substr(CAST(author AS BLOB),1,8193),substr(CAST(owners AS BLOB),1,16777217),"
-        "next_block,next_span,identity_floor,substr(CAST(held AS BLOB),1,1001) "
-        "FROM review_response_bodies WHERE source=? AND finding_id=? AND "
-        "decision_revision=? AND "
-        "(? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
+        "SELECT revision,body,sha256,block_map,author,owners,next_block,next_span,"
+        "identity_floor,held FROM review_response_bodies WHERE source=? AND finding_id=? "
+        "AND decision_revision=? AND (? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
         (parent["source"], finding, revision, body_revision, body_revision),
     ).fetchone()
     if row is None:
@@ -179,59 +148,19 @@ def read(
             "next_span": 0,
             "held": "Legacy source has no stable block identity yet",
         }
-    try:
-        if (
-            type(row[0]) is not int
-            or not 1 <= row[0] <= 999999999
-            or len(row[1]) > BODY_BYTES
-            or re.fullmatch(b"[0-9a-f]{64}", row[2]) is None
-            or len(row[3]) > MAP_BYTES
-            or len(row[4]) > 8192
-            or len(row[5]) > MAP_BYTES
-            or any(type(v) is not int or not 0 <= v <= 999999999 for v in row[6:9])
-            or not 1 <= row[8] <= row[0]
-            or (row[9] is not None and len(row[9]) > 1000)
-            or hashlib.sha256(row[1]).hexdigest().encode() != row[2]
-        ):
-            raise ValueError
-        mapped = bounded_json(row[3], MAP_BYTES)
-        owners = bounded_json(row[5], MAP_BYTES)
-        actor = Author.model_validate_json(row[4])
-        if actor.kind != "agent" or actor.role != "main" or actor.session_id != parent["session"]:
-            raise ValueError
-        for proof in owners.values():
-            if not isinstance(proof, dict):
-                raise ValueError
-            proof = cast(Json, proof)
-            if set(proof) != {"revision", "author"}:
-                raise ValueError
-            if proof["revision"] is not None and (
-                type(proof["revision"]) is not int or not 1 <= proof["revision"] <= row[0]
-            ):
-                raise ValueError
-            if proof["author"] is not None:
-                owner = Author.model_validate(proof["author"])
-                if (
-                    owner.kind != "agent"
-                    or owner.role != "main"
-                    or owner.session_id != parent["session"]
-                ):
-                    raise ValueError
-        return {
-            **parent,
-            "revision": row[0],
-            "body": row[1].decode(),
-            "sha256": row[2].decode(),
-            "block_map": mapped,
-            "owners": owners,
-            "author": actor.model_dump(mode="json"),
-            "next_block": row[6],
-            "next_span": row[7],
-            "identity_floor": row[8],
-            "held": row[9].decode() if row[9] else None,
-        }
-    except (ValueError, TypeError, KeyError, RecursionError):
-        raise DocumentError(INTERNAL, "retained response body is invalid or oversized") from None
+    return {
+        **parent,
+        "revision": row[0],
+        "body": row[1],
+        "sha256": row[2],
+        "block_map": json.loads(row[3]),
+        "owners": json.loads(row[5]),
+        "author": json.loads(row[4]),
+        "next_block": row[6],
+        "next_span": row[7],
+        "identity_floor": row[8],
+        "held": row[9] or None,
+    }
 
 
 def projection(value: Json) -> Json:
@@ -374,19 +303,16 @@ class ResponseBodies:
         fingerprint: str,
     ) -> Json | None:
         row = db.execute(
-            "SELECT substr(CAST(fingerprint AS BLOB),1,65),"
-            "substr(CAST(result AS BLOB),1,65537) FROM review_operations "
+            "SELECT fingerprint,result FROM review_operations "
             "WHERE project=? AND actor=? AND operation_id=?",
             (project, author.actor, value.operation_id),
         ).fetchone()
         if row is None:
             return None
-        if row[0] != fingerprint.encode():
+        if row[0] != fingerprint:
             raise DocumentError(CONFLICT, "operation ID already names another finding mutation")
-        if not isinstance(row[1], bytes) or len(row[1]) > 65536:
-            raise DocumentError(INTERNAL, "retained response receipt exceeds its bounds")
         try:
-            retained = bounded_json(row[1], 65536)
+            retained = cast(Json, json.loads(row[1]))
             canonical = projection(
                 read(
                     db,
@@ -457,12 +383,9 @@ class ResponseBodies:
             rows = list(db.execute(legacy_query(), (project,)))
         for seq, finding, revision in rows:
             try:
-                if not isinstance(finding, bytes) or len(finding) > 128:
-                    raise DocumentError(INTERNAL, "legacy response identity exceeds its bound")
-                name = finding.decode()
                 with self.store.documents.control.read() as tx:
                     db = tx.sql
-                    parent = read(db, name, revision, project=project)
+                    parent = read(db, finding, revision, project=project)
                 actor = Author.model_validate(parent["original_author"])
                 prepared = prepare(parent["body"], actor)
             except (DocumentError, ValueError, TypeError):
@@ -492,7 +415,7 @@ class ResponseBodies:
 
 def legacy_query() -> str:
     return (
-        "SELECT t.rowid,substr(CAST(t.finding_id AS BLOB),1,129),t.revision "
+        "SELECT t.rowid,t.finding_id,t.revision "
         "FROM review_transitions t "
         "JOIN review_findings f USING(finding_id) WHERE f.project=? AND f.origin='review' "
         "AND typeof(t.payload)='text' AND CASE WHEN length(CAST(t.payload AS BLOB))<=131072 "

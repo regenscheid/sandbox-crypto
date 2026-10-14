@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from typing import TYPE_CHECKING, Any
 
@@ -23,9 +22,8 @@ Json = dict[str, Any]
 
 def metadata(db: sqlite3.Connection, check: str) -> Json | None:
     row = db.execute(
-        "SELECT substr(CAST(r.source AS BLOB),1,129),substr(CAST(s.finding_id AS BLOB),1,129),"
-        "s.decision_revision,substr(CAST(s.project AS BLOB),1,129),"
-        "substr(CAST(s.session AS BLOB),1,129),j.revision,j.document IS NULL,b.identity_floor "
+        "SELECT r.source,s.finding_id,s.decision_revision,s.project,s.session,j.revision,"
+        "j.document IS NULL,b.identity_floor "
         "FROM math_response_jobs r JOIN math_jobs j USING(check_id) JOIN response_math_sources s "
         "ON s.source=r.source JOIN review_response_bodies b ON b.source=s.source "
         "AND b.revision=j.revision AND b.finding_id=s.finding_id "
@@ -34,17 +32,9 @@ def metadata(db: sqlite3.Connection, check: str) -> Json | None:
     ).fetchone()
     if row is None:
         return None
-    if (
-        any(not isinstance(row[i], bytes) or not 1 <= len(row[i]) <= 128 for i in (0, 1, 3, 4))
-        or any(type(row[i]) is not int or not 1 <= row[i] <= 999999999 for i in (2, 5, 7))
-        or row[6] != 1
-        or row[7] > row[5]
-    ):
-        raise DocumentError(INTERNAL, "retained response math identity exceeds its bounds")
-    try:
-        source, finding, project, session = (row[i].decode() for i in (0, 1, 3, 4))
-    except UnicodeDecodeError:
-        raise DocumentError(INTERNAL, "invalid response math identity") from None
+    if row[6] != 1 or row[7] > row[5]:
+        raise DocumentError(INTERNAL, "response math check does not bind its response body")
+    source, finding, project, session = (row[i] for i in (0, 1, 3, 4))
     parent = bodies.original(db, finding, row[2], project=project, session=session)
     if source != parent["source"]:
         raise DocumentError(INTERNAL, "response queue does not bind its canonical parent")
@@ -64,8 +54,8 @@ class ResponseMath:
 
     def claim(self, db: sqlite3.Connection, project: str, owner: str, now: float) -> str | None:
         row = db.execute(
-            "SELECT substr(CAST(s.source AS BLOB),1,129),substr(CAST(s.finding_id AS BLOB),1,129),"
-            "s.decision_revision,CASE WHEN s.completed<s.target THEN s.completed+1 ELSE "
+            "SELECT s.source,s.finding_id,s.decision_revision,"
+            "CASE WHEN s.completed<s.target THEN s.completed+1 ELSE "
             "s.target END "
             "FROM response_math_sources s JOIN review_findings f ON f.finding_id=s.finding_id "
             "WHERE s.project=? AND s.target>0 "
@@ -77,17 +67,12 @@ class ResponseMath:
         ).fetchone()
         if row is None:
             return None
-        if any(not isinstance(v, bytes) or not 1 <= len(v) <= 128 for v in row[:2]) or any(
-            type(v) is not int or not 1 <= v <= 999999999 for v in row[2:]
-        ):
-            raise DocumentError(INTERNAL, "retained response math cursor exceeds its bounds")
-        source, finding, decision, revision = row[0].decode(), row[1].decode(), row[2], row[3]
+        source, finding, decision, revision = row
         parent = bodies.original(db, finding, decision, project=project)
         retained = db.execute(
-            "SELECT substr(CAST(session AS BLOB),1,129) FROM response_math_sources WHERE source=?",
-            (source,),
+            "SELECT session FROM response_math_sources WHERE source=?", (source,)
         ).fetchone()
-        if retained != (parent["session"].encode(),):
+        if retained != (parent["session"],):
             raise DocumentError(INTERNAL, "response queue does not bind its canonical session")
         saved = bodies.read(db, finding, decision, revision, project=project, full=False)
         if source != saved["source"]:
@@ -138,13 +123,8 @@ class ResponseMath:
         ).fetchone()
         if row is None:
             raise DocumentError(CONFLICT, "response math ownership or source pin changed")
-        if (
-            any(type(v) is not int for v in row)
-            or not 1 <= row[0] <= 999999999
-            or not 0 <= row[1] <= 20000
-            or metadata(db, check) != meta
-        ):
-            raise DocumentError(INTERNAL, "retained response math fence exceeds its bounds")
+        if metadata(db, check) != meta:
+            raise DocumentError(INTERNAL, "response math check no longer binds its response body")
         return None, row[0], row[1], None
 
     def load(self, job: Json) -> Mapped:
@@ -222,8 +202,7 @@ def remaining(db: sqlite3.Connection, project: str) -> bool:
 
 def queue(db: sqlite3.Connection, project: str, *, session: str | None = None) -> list[Json]:
     rows = db.execute(
-        "SELECT substr(CAST(source AS BLOB),1,129),substr(CAST(finding_id AS BLOB),1,129),"
-        "decision_revision,target,completed,substr(CAST(blocked AS BLOB),1,1001),EXISTS(SELECT 1 "
+        "SELECT source,finding_id,decision_revision,target,completed,blocked,EXISTS(SELECT 1 "
         "FROM math_jobs j JOIN math_response_jobs r USING(check_id) WHERE r.source=s.source "
         "AND j.state='running') FROM response_math_sources s WHERE project=? AND (? IS "
         "NULL OR session=?) AND (blocked IS "
@@ -235,43 +214,33 @@ def queue(db: sqlite3.Connection, project: str, *, session: str | None = None) -
     )
     values: list[Json] = []
     for source, finding, decision, target, completed, blocked, running in rows:
-        if (
-            len(source) > 128
-            or re.fullmatch(b"finding-[0-9a-f]{24}", finding) is None
-            or any(
-                type(v) is not int or not 0 <= v <= 999999999 for v in (decision, target, completed)
-            )
-            or (blocked is not None and len(blocked) > 1000)
-        ):
-            raise DocumentError(INTERNAL, "response math queue exceeds its bounds")
-        bodies.original(db, finding.decode(), decision, project=project, session=session)
-        if source.decode() != bodies.source_key(finding.decode(), decision):
+        bodies.original(db, finding, decision, project=project, session=session)
+        if source != bodies.source_key(finding, decision):
             raise DocumentError(INTERNAL, "response math queue field identity changed")
         values.append(
             {
                 "kind": "response",
-                "source": source.decode(),
-                "finding": finding.decode(),
+                "source": source,
+                "finding": finding,
                 "response_revision": decision,
                 "target": target,
                 "completed": completed,
-                "blocked": blocked.decode() if blocked else None,
+                "blocked": blocked or None,
                 "running": running,
             }
         )
     held = db.execute(
-        "SELECT d.transition_seq,substr(CAST(d.finding_id AS BLOB),1,129),d.decision_revision "
+        "SELECT d.transition_seq,d.finding_id,d.decision_revision "
         "FROM review_response_discovery d JOIN review_findings f USING(finding_id) "
         "WHERE f.project=? AND (? IS NULL OR f.session=?) ORDER BY d.rowid LIMIT 2",
         (project, session, session),
     )
     for seq, finding, decision in held:
-        known = re.fullmatch(b"finding-[0-9a-f]{24}", finding) is not None
         values.append(
             {
                 "kind": "response",
                 "transition_seq": seq,
-                "finding": finding.decode() if known else None,
+                "finding": finding,
                 "response_revision": decision,
                 "target": 0,
                 "completed": 0,

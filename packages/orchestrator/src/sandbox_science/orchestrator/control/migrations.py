@@ -263,7 +263,88 @@ def _comment_checks(schema: Schema) -> None:
         rebuild(schema, table, create)
 
 
-MIGRATIONS: Final[tuple[Migration, ...]] = (_baseline, _projects, _comment_checks)
+def _response_checks(schema: Schema) -> None:
+    """Version 5: responses to findings, their bodies and their math checks check their
+    own values when they are written (decision 3), so reads take them as they are."""
+    for table, create in (
+        (
+            "review_response_bodies",
+            """CREATE TABLE review_response_bodies (
+    source TEXT NOT NULL CHECK (length(CAST(source AS BLOB)) BETWEEN 1 AND 128),
+    finding_id TEXT NOT NULL CHECK (length(CAST(finding_id AS BLOB)) BETWEEN 1 AND 128),
+    decision_revision INTEGER NOT NULL CHECK (decision_revision BETWEEN 1 AND 999999999),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= 32768),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    block_map TEXT NOT NULL
+        CHECK (json_valid(block_map) AND length(CAST(block_map AS BLOB)) <= 16777216),
+    author TEXT NOT NULL
+        CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    owners TEXT NOT NULL
+        CHECK (json_valid(owners) AND length(CAST(owners AS BLOB)) <= 16777216),
+    next_block INTEGER NOT NULL CHECK (next_block BETWEEN 0 AND 999999999),
+    next_span INTEGER NOT NULL CHECK (next_span BETWEEN 0 AND 999999999),
+    identity_floor INTEGER NOT NULL CHECK (identity_floor BETWEEN 1 AND revision),
+    held TEXT CHECK (held IS NULL OR length(CAST(held AS BLOB)) <= 4096),
+    PRIMARY KEY(source,revision),
+    FOREIGN KEY(finding_id,decision_revision) REFERENCES review_transitions(finding_id,revision))
+    STRICT""",
+        ),
+        (
+            "response_math_sources",
+            """CREATE TABLE response_math_sources (
+    source TEXT PRIMARY KEY CHECK (length(CAST(source AS BLOB)) BETWEEN 1 AND 128),
+    finding_id TEXT NOT NULL CHECK (length(CAST(finding_id AS BLOB)) BETWEEN 1 AND 128),
+    decision_revision INTEGER NOT NULL CHECK (decision_revision BETWEEN 1 AND 999999999),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    session TEXT NOT NULL CHECK (length(CAST(session AS BLOB)) BETWEEN 1 AND 128),
+    target INTEGER NOT NULL CHECK (target BETWEEN 0 AND 999999999),
+    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed BETWEEN 0 AND 999999999),
+    retry_requested INTEGER NOT NULL DEFAULT 0 CHECK (retry_requested IN (0, 1)),
+    blocked TEXT CHECK (blocked IS NULL OR length(CAST(blocked AS BLOB)) <= 4096),
+    UNIQUE(finding_id,decision_revision),
+    FOREIGN KEY(finding_id,decision_revision) REFERENCES review_transitions(finding_id,revision))
+    STRICT""",
+        ),
+        (
+            "review_response_discovery",
+            """CREATE TABLE review_response_discovery (
+    transition_seq INTEGER PRIMARY KEY,
+    finding_id TEXT NOT NULL CHECK (length(CAST(finding_id AS BLOB)) BETWEEN 1 AND 128),
+    decision_revision INTEGER NOT NULL CHECK (decision_revision BETWEEN 1 AND 999999999),
+    reason TEXT NOT NULL CHECK (length(CAST(reason AS BLOB)) <= 4096),
+    UNIQUE(finding_id,decision_revision),
+    FOREIGN KEY(finding_id,decision_revision) REFERENCES review_transitions(finding_id,revision))
+    STRICT""",
+        ),
+        (
+            "review_response_pins",
+            """CREATE TABLE review_response_pins (
+    review_id TEXT NOT NULL REFERENCES review_runs(review_id),
+    finding_id TEXT NOT NULL CHECK (length(CAST(finding_id AS BLOB)) BETWEEN 1 AND 128),
+    decision_revision INTEGER NOT NULL CHECK (decision_revision BETWEEN 1 AND 999999999),
+    body_revision INTEGER NOT NULL CHECK (body_revision BETWEEN 0 AND 999999999),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    PRIMARY KEY(review_id,finding_id),
+    FOREIGN KEY(finding_id,decision_revision) REFERENCES review_transitions(finding_id,revision))
+    STRICT""",
+        ),
+        (
+            "math_response_jobs",
+            """CREATE TABLE math_response_jobs (
+    check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
+    source TEXT NOT NULL REFERENCES response_math_sources(source)) STRICT""",
+        ),
+    ):
+        rebuild(schema, table, create)
+
+
+MIGRATIONS: Final[tuple[Migration, ...]] = (
+    _baseline,
+    _projects,
+    _comment_checks,
+    _response_checks,
+)
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
 
