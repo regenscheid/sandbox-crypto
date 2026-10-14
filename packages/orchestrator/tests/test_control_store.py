@@ -560,3 +560,105 @@ def test_a_writer_that_opens_during_a_migration_waits_and_does_not_migrate_again
     waiting.join(10)
     assert seen == [migrations.VERSION]
     assert calls == ["first"]
+
+
+def _at_version_6(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty store from before the evidence checks (version 7)."""
+    with monkeypatch.context() as old:
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:5])
+        old.setattr(migrations, "VERSION", migrations.BASELINE + 4)
+        _store(path).initialize()
+
+
+@pytest.mark.parametrize(
+    ("insert", "table"),
+    [
+        (
+            "INSERT INTO artifact_events(project, record) VALUES ('p', 'not json')",
+            "artifact_events",
+        ),
+        (
+            "INSERT INTO artifact_revisions VALUES ('artifact-1', 1, 'p', 0, 'not json', x'')",
+            "artifact_revisions",
+        ),
+    ],
+)
+def test_a_row_the_evidence_checks_refuse_leaves_the_store_at_version_6(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, insert: str, table: str
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _at_version_6(path, monkeypatch)
+    db = sqlite3.connect(path)
+    db.execute("INSERT INTO artifact_objects VALUES ('artifact-1', 'p', 'a.bin', 1)")
+    db.execute(insert)
+    db.commit()
+    schema = db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall()
+    db.close()
+    with pytest.raises(ControlError) as refused:
+        _store(path).initialize()
+    assert refused.value.kind == "unavailable"
+    assert "stays at version 6" in refused.value.message
+    assert table in refused.value.message
+    db = sqlite3.connect(path)
+    assert db.execute("PRAGMA user_version").fetchone() == (migrations.BASELINE + 4,)
+    assert db.execute("SELECT type, name, sql FROM sqlite_master ORDER BY name").fetchall() == (
+        schema
+    )
+    db.close()
+
+
+def test_the_evidence_checks_keep_autoincrement_counters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _at_version_6(path, monkeypatch)
+    db = sqlite3.connect(path)
+    for n in range(3):
+        db.execute("INSERT INTO artifact_events(project, record) VALUES ('p', ?)", (str(n),))
+    db.commit()
+    db.close()
+    _store(path).initialize()
+    db = sqlite3.connect(path)
+    counters = db.execute("SELECT name, seq FROM sqlite_sequence WHERE name LIKE 'artifact%'")
+    assert counters.fetchall() == [("artifact_events", 3)]
+    db.execute("INSERT INTO artifact_events(project, record) VALUES ('p', '4')")
+    assert db.execute("SELECT max(seq) FROM artifact_events").fetchone() == (4,)
+    db.close()
+
+
+def test_the_evidence_checks_neither_copy_artifact_bytes_nor_let_bad_ones_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "control.sqlite3"
+    _at_version_6(path, monkeypatch)
+    db = sqlite3.connect(path)
+    db.execute("INSERT INTO artifact_objects VALUES ('artifact-1', 'p', 'a.bin', 8)")
+    blob = bytes(range(256)) * (16 * 1024)  # 4 MiB
+    for n in range(1, 9):
+        db.execute(
+            "INSERT INTO artifact_revisions VALUES ('artifact-1', ?, 'p', ?, '{}', ?)",
+            (n, len(blob), blob),
+        )
+    db.commit()
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    db.close()
+    size = path.stat().st_size
+    store = _store(path)
+    store.initialize()
+    with store.read() as tx:
+        rows = tx.sql.execute("SELECT number, data = ? FROM artifact_revisions", (blob,))
+        assert rows.fetchall() == [(n, 1) for n in range(1, 9)]
+    for record in ("not json", '"' + "x" * 20000 + '"'):
+        refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+        with refused, store.write() as tx:
+            tx.sql.execute(
+                "INSERT INTO artifact_revisions VALUES ('artifact-1', 9, 'p', 0, ?, x'')",
+                (record,),
+            )
+    store.close()
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    pages = db.execute("PRAGMA freelist_count").fetchone()[0]
+    free = pages * db.execute("PRAGMA page_size").fetchone()[0]
+    db.close()
+    assert free < size // 4

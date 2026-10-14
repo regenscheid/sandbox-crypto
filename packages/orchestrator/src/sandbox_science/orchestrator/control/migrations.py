@@ -472,7 +472,8 @@ def _math_checks(schema: Schema) -> None:
 
 def _evidence_checks(schema: Schema) -> None:
     """Version 7: artifacts, the reviewer's feed and evidence, and session plans check
-    their own values when they are written (decision 3)."""
+    their own values when they are written (decision 3); artifact revisions with a
+    trigger on insert, so their bytes are not copied."""
     for table, create in (
         (
             "artifact_objects",
@@ -481,17 +482,6 @@ def _evidence_checks(schema: Schema) -> None:
     project TEXT NOT NULL, path TEXT NOT NULL,
     head INTEGER NOT NULL CHECK (head >= 0),
     UNIQUE(project,path)) STRICT""",
-        ),
-        (
-            "artifact_revisions",
-            """CREATE TABLE artifact_revisions (
-    artifact TEXT NOT NULL REFERENCES artifact_objects(id),
-    number INTEGER NOT NULL CHECK (number >= 1),
-    project TEXT NOT NULL,
-    size INTEGER NOT NULL CHECK(size>=0),
-    record TEXT NOT NULL
-        CHECK (json_valid(record) AND length(CAST(record AS BLOB)) <= 16384),
-    data BLOB NOT NULL,PRIMARY KEY(artifact,number)) STRICT""",
         ),
         (
             "artifact_operations",
@@ -569,6 +559,24 @@ def _evidence_checks(schema: Schema) -> None:
         ),
     ):
         rebuild(schema, table, create)
+    # artifact_revisions holds the artifacts' bytes: a rebuild would copy them all, hold the
+    # write lock as long, and leave the file twice its size. Its rows are immutable (a
+    # trigger refuses updates), so a check of each insert does what a CHECK would.
+    row = schema.execute(
+        "SELECT rowid FROM artifact_revisions WHERE NOT (number >= 1 AND json_valid(record) "
+        "AND length(CAST(record AS BLOB)) <= 16384) LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        raise RefusedRowError(
+            f"a row of artifact_revisions fails its check (row {row[0]}: its number, or its "
+            "record's JSON or 16 KiB bound)"
+        )
+    schema.execute(
+        "CREATE TRIGGER artifact_revisions_check BEFORE INSERT ON artifact_revisions "
+        "WHEN NOT (NEW.number >= 1 AND json_valid(NEW.record) "
+        "AND length(CAST(NEW.record AS BLOB)) <= 16384) BEGIN "
+        "SELECT RAISE(ABORT, 'CHECK constraint failed: artifact_revisions'); END"
+    )
 
 
 MIGRATIONS: Final[tuple[Migration, ...]] = (
