@@ -901,7 +901,8 @@ def test_a_plan_stored_with_the_removed_approval_status_reads_as_a_draft(store, 
 def test_a_change_needs_its_session_open_and_a_pinned_change_its_opening(store, plans):
     projects = ProjectStore(store.path.parent)
     try:
-        opening = projects.get("p").sessions["s"].opened_at
+        opening = projects.get("p").sessions["s"].kernel_notice_lifetime
+        assert opening is not None
         pinned = plans.pinned(opening)
         first = made(pinned)
         projects.close_session("p", "s")

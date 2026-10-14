@@ -153,7 +153,7 @@ def _json(value: object) -> str:
 
 
 class PlanTools:
-    """Trusted CLI MAIN adapter, borrowing stores and owning one original registry FD."""
+    """Trusted CLI MAIN adapter over the stores it borrows."""
 
     specs = SPECS
 
@@ -186,7 +186,10 @@ class PlanTools:
         if self.snapshot.context != self.registry_context:
             raise DocumentError(POLICY_DENIED, "planning context differs from the recorded session")
         # Each plan change checks, in its own transaction, that this opening is current.
-        self.plans = plans.pinned(self.snapshot.session.opened_at)
+        opening = self.snapshot.session.kernel_notice_lifetime
+        if opening is None:  # every open gives the session one
+            raise DocumentError(POLICY_DENIED, "planning requires an open recorded session")
+        self.plans = plans.pinned(opening)
         self.invalid = False
         self.cursor = 0
         self.initialized = False

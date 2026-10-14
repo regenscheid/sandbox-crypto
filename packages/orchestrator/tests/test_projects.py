@@ -303,8 +303,8 @@ def test_a_record_is_never_replaced(session_store: ProjectStore) -> None:
 
 
 def test_runs_stay_clear_of_other_projects_files(session_store: ProjectStore) -> None:
-    # Project IDs may contain dots, so a project's runs must not live where another
-    # project's record (a.json) or lock (a.lock) is.
+    # Project IDs may contain dots, even ones named like files; each project's runs
+    # stay its own.
     for project in ("a", "a.json", "a.lock"):
         session_store.create(project, "minimal", POLICY)
         session_store.open_session(project, "s", dedicated=False)

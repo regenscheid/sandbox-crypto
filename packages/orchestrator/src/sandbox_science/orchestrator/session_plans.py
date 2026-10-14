@@ -446,16 +446,17 @@ class SessionPlans:
     def __init__(self, documents: DocumentStore, *, limits: PlanLimits | None = None) -> None:
         self.documents = documents
         self.limits = _checked(PlanLimits, limits or PlanLimits())
-        self.opened_at: datetime | None = None
+        self.opening: str | None = None
         if not documents.readonly:
             with documents.control.write() as tx:
                 self._budget(tx.sql, None)
 
-    def pinned(self, opened_at: datetime) -> SessionPlans:
-        """These plans for one opening of the session, the one at ``opened_at``: a change
-        is refused once the session has been closed, even if it was opened again."""
+    def pinned(self, opening: str) -> SessionPlans:
+        """These plans for one opening of the session, named by ``opening``, the random
+        marker each open gives the session (``kernel_notice_lifetime``): a change is
+        refused once the session has been closed, even if it was opened again."""
         pinned = copy.copy(self)
-        pinned.opened_at = opened_at
+        pinned.opening = opening
         return pinned
 
     def has_records(self, scope: PlanScope) -> bool:
@@ -477,13 +478,14 @@ class SessionPlans:
 
     def _session_open(self, db: sqlite3.Connection, scope: PlanScope) -> None:
         row = db.execute(
-            "SELECT opened_at, closed_at FROM sessions WHERE project_id=? AND session_id=?",
+            "SELECT kernel_notice_lifetime, closed_at FROM sessions "
+            "WHERE project_id=? AND session_id=?",
             (scope.project_id, scope.session_id),
         ).fetchone()
         if (
             row is None
             or row[1] is not None
-            or (self.opened_at is not None and datetime.fromisoformat(row[0]) != self.opened_at)
+            or (self.opening is not None and row[0] != self.opening)
         ):
             raise DocumentError(
                 CONFLICT,

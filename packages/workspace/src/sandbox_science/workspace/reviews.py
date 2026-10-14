@@ -10,6 +10,7 @@ from typing import Any, cast
 from aiohttp import hdrs, web
 
 from sandbox_science.orchestrator.consistency.findings import Findings
+from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.documents.mathjobs import MathJobs
@@ -182,8 +183,6 @@ async def math_checks(request: web.Request) -> web.Response:
 
 
 async def response_body(request: web.Request) -> web.Response:
-    from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
-
     raw = request.match_info["response"]
     if not raw.isascii() or not raw.isdigit() or not 1 <= len(raw) <= 9 or int(raw) < 1:
         return documents.api_error(

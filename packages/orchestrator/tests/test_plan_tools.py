@@ -895,3 +895,28 @@ async def test_complete_large_plan_bypasses_generic_notice_clipping_without_mark
     assert jobs.seen == set()
     await f.adapter.model_delivered()
     assert not f.adapter.requires_read
+
+
+@pytest.mark.asyncio
+async def test_plan_tools_aba_after_the_precheck_is_refused_in_the_transaction(
+    fixture, monkeypatch, tmp_path
+):
+    """A close and reopen landing between the run's check and the plan transaction is
+    refused in the transaction, and ends the run's planning."""
+    original = fixture.adapter.snapshot
+
+    def stale(project, session):
+        other = ProjectStore(tmp_path / "state")
+        try:
+            other.close_session("p", "s")
+            other.open_session("p", "s", dedicated=False)
+        finally:
+            other.close()
+        return original  # what the check read just before the close and reopen
+
+    monkeypatch.setattr(fixture.projects, "session_snapshot", stale)
+    with pytest.raises(DocumentError, match="closed or reopened") as refused:
+        await made(fixture)
+    assert refused.value.kind == "policy_denied"
+    assert fixture.adapter.invalid
+    assert fixture.core.summary(fixture.user) is None
