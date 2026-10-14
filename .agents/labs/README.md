@@ -431,7 +431,7 @@ The root-only helper `.agents/labs/provisioning_upgrades.py` is source-admitted
 after independent typed-helper and admission review. Its default only describes
 the finite plan. Root owns the separately reviewed startup, run, exact public
 export and original-state cleanup adapters; source and helper remain frozen until
-complete independent teardown. Actual runtime acceptance is pending.
+complete independent teardown. [The first actual Lab36 run](../docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md) passed EXIT0/57.266s, nine canonical executions and23 public records; complete owned teardown was independently cleared at2026-10-14T04:49:51.949614Z. Fresh publication CI/delivery remain separate.
 
 The bounds are one VM, at most16 accepted executions, two unique provisioning
 operations (one install and one update) and one known terminal replay. A scalar
