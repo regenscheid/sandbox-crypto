@@ -39,7 +39,7 @@ from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import Annotated, Final, Literal, cast
 
 from pydantic import (
     Field,
@@ -63,7 +63,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.model import Contract
 
 from .control import ControlStore, store_path
-from .prompt_bundle import PromptProvenance, verify_retained
+from .prompts import PromptPins
 from .worker_client import WorkerAPIError, WorkerClient, WorkerProtocolError
 
 _MAX_ID: Final = 128
@@ -162,8 +162,11 @@ class RunRecord(Contract):
 
     run_id: str
     """The run's ID, which starts every operation ID of its tool calls."""
-    prompt_provenance: PromptProvenance | None = None
-    """Recorded MAIN system/tool input pins; missing legacy provenance stays unknown."""
+    prompt_provenance: Annotated[
+        PromptPins | dict[str, JsonValue] | None, Field(union_mode="left_to_right")
+    ] = None
+    """The pins of the system message's sections and the tools the run was given. An
+    older run's prompt bundle is kept as read; a run without either stays unknown."""
     kernel_notice_delivery: dict[str, JsonValue] | None = None
     """Older runs' receipt from the kernel-notice inbox, kept as read; new runs have
     none, and their kernel notices are in ``delivered["kernels"]``."""
@@ -224,8 +227,6 @@ class RunRecord(Contract):
 
     @model_validator(mode="after")
     def _failure_is_not_an_answer(self) -> RunRecord:
-        if self.prompt_provenance is not None:
-            verify_retained(self.prompt_provenance, self.messages[0] if self.messages else None)
         if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
             raise ValueError("a failed run must have error status and no final answer")
         return self

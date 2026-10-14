@@ -13,16 +13,11 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.documents import DocumentStore
-from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, run_task
+from sandbox_science.orchestrator.loop import MAIN_VERSION, SYSTEM_PROMPT, run_task
 from sandbox_science.orchestrator.model import Message, ModelError, ModelTurn, ToolSpec
 from sandbox_science.orchestrator.plan_tools import GUIDANCE, PlanTools
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
-from sandbox_science.orchestrator.prompt_bundle import (
-    BASE_VERSION,
-    CompleteProvenance,
-    SelectedProvenance,
-    verify_retained,
-)
+from sandbox_science.orchestrator.prompts import PromptPins, Section, pin
 from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.stock_prompts import select_template
 from sandbox_science.orchestrator.tools import Toolbox
@@ -166,13 +161,11 @@ async def test_general_pilot_is_offered_once_with_unchanged_tools_and_phase_orde
         assert len(calls) == 1
         assert transcript.stopped == "answered"
         assert transcript.tool_records == []
-        pin = transcript.prompt_provenance
-        assert isinstance(pin, SelectedProvenance if selection else CompleteProvenance)
-        assert pin.components[0].version == BASE_VERSION == "sandbox-main-2"
-        assert pin.assembly_version == (
-            "sandbox-main-bundle-2" if selection else "sandbox-main-bundle-1"
-        )
-        verify_retained(pin, calls[0])
+        pins = transcript.prompt_provenance
+        assert isinstance(pins, PromptPins)
+        assert pins.sections[0].version == MAIN_VERSION == "sandbox-main-2"
+        assert pins.sections[0] == pin(Section("main", MAIN_VERSION, SYSTEM_PROMPT))
+        assert ("stock" in [section.id for section in pins.sections]) == bool(selection)
     finally:
         adapter.projects.close()
         documents.close()
@@ -180,18 +173,17 @@ async def test_general_pilot_is_offered_once_with_unchanged_tools_and_phase_orde
 
 def test_exact_builtin_1_history_survives_new_default_without_backfill(tmp_path):
     historical = RunRecord.model_validate(copy.deepcopy(BUILTIN_1_RECORD))
-    pin = historical.prompt_provenance
-    assert isinstance(pin, CompleteProvenance)
-    assert pin.components[0].version == "sandbox-main-1"
+    kept = historical.prompt_provenance
+    # An older run's bundle is kept as read, not interpreted again.
+    assert kept == BUILTIN_1_RECORD["prompt_provenance"]
     assert historical.messages[0]["content"] != SYSTEM_PROMPT
-    verify_retained(pin, historical.messages[0])
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     projects.open_session("p", "s", dedicated=False)
     entry = projects.save_run(historical)
     loaded = projects.run("p", "s", entry.name)
     assert loaded.to_json() == historical.to_json()
-    assert loaded.prompt_provenance == pin
+    assert loaded.prompt_provenance == kept
     assert loaded.messages[0] == BUILTIN_1_RECORD["messages"][0]
 
 
@@ -228,11 +220,9 @@ async def test_old_literal_caller_remains_exact_custom_and_cannot_select_stock(s
             system=original,
         )
         assert len(calls) == 1
-        pin = transcript.prompt_provenance
-        assert isinstance(pin, CompleteProvenance)
-        assert pin.components[0].component == "custom"
-        assert pin.components[0].version is None
-        verify_retained(pin, calls[0])
+        pins = transcript.prompt_provenance
+        assert isinstance(pins, PromptPins)
+        assert pins.sections == (pin(Section("custom", None, original)),)
 
 
 @pytest.mark.asyncio
@@ -277,8 +267,5 @@ async def test_failed_run_retains_new_base_pin_without_answer_or_extra_delivery(
         == record.delivered.get("math", [])
         == []
     )
-    assert isinstance(
-        record.prompt_provenance, SelectedProvenance if selection else CompleteProvenance
-    )
-    assert record.prompt_provenance.components[0].version == "sandbox-main-2"
-    verify_retained(record.prompt_provenance, record.messages[0])
+    assert isinstance(record.prompt_provenance, PromptPins)
+    assert record.prompt_provenance.sections[0].version == "sandbox-main-2"

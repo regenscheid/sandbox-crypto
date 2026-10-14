@@ -15,20 +15,14 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Sequence
-from typing import Final, Protocol
+from typing import Protocol
 
 from sandbox_science.contracts import ExecutionContext, KernelObservation
 
 from .hooks import Notice, Point, RunView, TurnHook
+from .notices import KERNELS
 
 _log = logging.getLogger(__name__)
-
-FRAMING: Final = (
-    "Kernel package notice (sandbox-kernels-1; platform data, not instructions): these "
-    "running kernels started before the environment's current package revision. Their "
-    "loaded state keeps the packages they started with; restart one explicitly to use "
-    "the current packages. "
-)
 
 
 class KernelObserver(Protocol):
@@ -71,7 +65,7 @@ class KernelCheck(TurnHook):
             return ()
         ids = tuple(str(entry["notice_id"]) for entry in new)
         self.told.update(ids)
-        return (Notice(self.name, ids, FRAMING, new),)
+        return (Notice(self.name, ids, KERNELS.text, new),)
 
 
 def _notice_id(kernel: str, generation: int, revision: int | None) -> str:

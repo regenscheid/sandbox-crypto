@@ -14,16 +14,12 @@ separate in [MAIN-PROMPT-PROVENANCE.md](MAIN-PROMPT-PROVENANCE.md) and
 assembles one owned reviewer bundle from the unchanged `RUBRIC`,
 `RUBRIC_VERSION="sandbox-consistency-1"` and ordered five `SPECS` in
 [runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py).
-It reuses only MAIN's pure bounded schema encoder, without MAIN role, component
-assembly or custom-system behavior.
+It reuses MAIN's schema encoder (`prompts.schema_json`), without MAIN's sections.
 
 The actual schemas, descriptions and order remain `review_manifest`,
-`review_read`, `review_checked`, `review_finding`, `review_decide`. Fresh nested
-parameter copies are passed on every model call; a model cannot mutate the
-module-level definitions or later call inputs through a received schema.
-Verification immediately before `ChatModel.complete` checks the actual first
-system message and the actual passed schema sequence against the reserved pin.
-The existing tool dispatch whitelist, evidence grants, read audits, finding
+`review_read`, `review_checked`, `review_finding`, `review_decide`. Each call
+passes `SPECS` itself; the pins are recorded with the call's reservation and not
+checked again before the call (owner decision 3). The existing tool dispatch whitelist, evidence grants, read audits, finding
 operation replay, scientific decisions and confirmation CAS are unchanged.
 
 The fixed first user instruction, dynamic evidence/tool results and final-format
@@ -47,8 +43,8 @@ Arrays and tool order remain significant. The schema digest hashes canonical
 ordered `{name,description,parameters}` projections after the byte domain
 `reviewer-tool-schemas-v1\0`. The bundle digest hashes every envelope field
 except `bundle_sha256`, after `reviewer-prompt-bundle-v1\0`. Each domain ends
-with a literal NUL byte. Object-key canonicalization affects hashing; owned
-parameter copies preserve the original insertion order used at the call.
+with a literal NUL byte. Object keys are sorted for hashing only; the call gets
+the schemas as defined.
 
 The envelope retains exact historical rubric text, never substituted from
 today's source. It retains **only a hash and names for schemas**, so historical
@@ -56,10 +52,8 @@ schema reconstruction requires the matching source/build record; the digest
 alone cannot recover old parameter definitions or descriptions. These hashes
 are content identity, not authentication or model-behavior evidence.
 
-Installed input must be valid UTF-8 and representable: system at most 64 KiB,
-128 unique bounded tool names, canonical and owned schemas at most 512 KiB,
-depth 32, 32,768 nodes and 4,096 entries per container. Integer decimal and
-JSON-escaping expansion are charged before aggregate schema serialization.
+Installed input must be valid UTF-8 and representable: system at most 64 KiB
+and 128 unique bounded tool names.
 Metadata itself is capped at 16 KiB, with copied/constructed model fields
 preflighted and revalidated before SQL. These are engineering bounds, not new
 tool grants or a custom prompt loader. Malformed or oversized installed content
@@ -114,8 +108,7 @@ lifetime rules; this is **not** proof of whole-runner or whole-controller SQL
 ownership under every cancellation race. No SQL transaction spans a model await.
 
 Deterministic tests use a real local ReviewStore with scripted models to inspect
-the committed pin at actual call entry, check exact schema/text/order and fresh
-copies, preserve alias/resolved-model separation, and exercise failure, timeout,
+the committed pin at actual call entry, check exact schema/text/order, preserve alias/resolved-model separation, and exercise failure, timeout,
 owner/counter rollback, concurrent budget, readonly migration, corrupt metadata
 and repeated-cancellation drain. No model, worker, service, browser or VM is
 started by these tests. Provider transformations, live model quality and a

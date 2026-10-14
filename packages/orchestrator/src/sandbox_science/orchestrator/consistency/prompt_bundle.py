@@ -14,12 +14,10 @@ from pydantic import ConfigDict, Field, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.model import ToolSpec
-from sandbox_science.orchestrator.prompt_bundle import (
-    MAX_SCHEMA_BYTES,
-    MAX_SYSTEM_BYTES,
-    _tool_bytes,  # pyright: ignore[reportPrivateUsage] - pure bounded schema encoder only
-)
+from sandbox_science.orchestrator.prompts import schema_json
 
+MAX_SYSTEM_BYTES = 64 * 1024
+MAX_SCHEMA_BYTES = 512 * 1024
 MAX_PROVENANCE_BYTES = 16 * 1024
 ASSEMBLY_VERSION = "sandbox-reviewer-bundle-1"
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -149,29 +147,16 @@ class ProvenanceRead:
 
 @dataclass(frozen=True, slots=True)
 class ReviewerBundle:
+    """The pins a review's calls record; recorded once and not checked again before
+    each call (owner decision 3)."""
+
     provenance: ReviewerProvenance
-    _owned_tools: bytes
-
-    def tool_specs(self) -> tuple[ToolSpec, ...]:
-        return tuple(ToolSpec(**item) for item in json.loads(self._owned_tools))
-
-    def verify(self, first: object, passed: Sequence[ToolSpec]) -> None:
-        if first != {"role": "system", "content": self.provenance.rubric_text}:
-            raise ValueError("actual reviewer system input changed")
-        _, canonical, names = _tool_bytes(passed)
-        if (
-            names != self.provenance.tool_names
-            or len(canonical) != self.provenance.schema_bytes
-            or hashlib.sha256(b"reviewer-tool-schemas-v1\0" + canonical).hexdigest()
-            != self.provenance.schemas_sha256
-        ):
-            raise ValueError("actual reviewer tool input changed")
-        encode_provenance(self.provenance)
 
 
 def assemble_reviewer(system: str, version: str, specs: Sequence[ToolSpec]) -> ReviewerBundle:
     raw = _rubric(system)
-    owned, canonical, names = _tool_bytes(specs)
+    canonical = schema_json(specs)
+    names = tuple(spec.name for spec in specs)
     pin = ReviewerProvenance.model_construct(
         rubric_version=version,
         rubric_text=system,
@@ -191,4 +176,4 @@ def assemble_reviewer(system: str, version: str, specs: Sequence[ToolSpec]) -> R
             ).hexdigest()
         }
     )
-    return ReviewerBundle(ReviewerProvenance.model_validate_json(encode_provenance(pin)), owned)
+    return ReviewerBundle(ReviewerProvenance.model_validate_json(encode_provenance(pin)))

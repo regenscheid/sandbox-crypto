@@ -19,11 +19,13 @@ from .model import ChatModel, Message
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
 from .projects import FailurePhase
-from .prompt_bundle import MainPromptBundle, PromptProvenance, assemble_main
+from .prompts import PromptPins, Section, assemble
 from .stock_prompts import select_template
 from .tools import Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
 
+MAIN_VERSION: Final = "sandbox-main-2"
+"""The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
     "You are a research assistant. Send research code and shell commands through the "
     "offered tools to the configured worker. Document, review, job and policy bookkeeping "
@@ -87,7 +89,7 @@ class Interruption:
 @dataclass
 class Transcript:
     messages: list[Message]
-    prompt_provenance: PromptProvenance | None = None
+    prompt_provenance: PromptPins | None = None
     tool_records: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     delivered: dict[str, set[str]] = field(default_factory=dict[str, set[str]])
     """Each notice source's IDs that a successful model call saw."""
@@ -244,7 +246,6 @@ async def _run_task(
     model: ChatModel,
     toolbox: Toolbox,
     transcript: Transcript,
-    bundle: MainPromptBundle,
     hooks: Sequence[TurnHook],
     *,
     run_id: str,
@@ -255,10 +256,8 @@ async def _run_task(
     for turn in range(transcript.max_turns):
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
-        passed_specs = bundle.tool_specs()
-        bundle.verify(transcript.messages[0], passed_specs)
         transcript.phase = "model"
-        reply = await model.complete(transcript.messages, passed_specs)
+        reply = await model.complete(transcript.messages, toolbox.specs)
         transcript.phase = "harness"
         await _model_returned(hooks, transcript)
         assistant: Message = {"role": "assistant", "content": reply.text}
@@ -297,6 +296,23 @@ async def _run_task(
     return transcript
 
 
+def _sections(system: str, toolbox: Toolbox, template: str | None) -> list[Section]:
+    """The MAIN system message's sections: the base, a research framing if one was
+    selected, and the planning guidance when plan tools are offered."""
+    builtin = system == SYSTEM_PROMPT
+    sections = [
+        Section("main", MAIN_VERSION, system) if builtin else Section("custom", None, system)
+    ]
+    if template is not None:
+        if not builtin:
+            raise ValueError("research templates require the builtin MAIN base")
+        stock = select_template(template)
+        sections.append(Section("stock", stock.version, stock.text))
+    if toolbox.plans is not None:
+        sections.append(Section("planning", GUIDANCE_VERSION, GUIDANCE))
+    return sections
+
+
 async def run_task(
     model: ChatModel,
     toolbox: Toolbox,
@@ -329,23 +345,14 @@ async def run_task(
                     isinstance(hook, Plans) for hook in hooks
                 ):
                     raise ValueError("MAIN planning capability assembly mismatch")
-                bundle = assemble_main(
-                    system,
-                    toolbox.specs,
-                    builtin_content=system == SYSTEM_PROMPT,
-                    guidance=(GUIDANCE_VERSION, GUIDANCE) if toolbox.plans is not None else None,
-                    stock=select_template(research_template)
-                    if research_template is not None
-                    else None,
+                text, pins = assemble(
+                    "main", _sections(system, toolbox, research_template), toolbox.specs
                 )
                 transcript = Transcript(
                     max_turns=max_turns,
-                    prompt_provenance=bundle.provenance,
+                    prompt_provenance=pins,
                     messages=[
-                        {
-                            "role": "system",
-                            "content": bundle.system,
-                        },
+                        {"role": "system", "content": text},
                         {"role": "user", "content": task},
                     ],
                 )
@@ -354,7 +361,6 @@ async def run_task(
                         model,
                         toolbox,
                         transcript,
-                        bundle,
                         hooks,
                         run_id=run_id,
                         on_tool=on_tool,

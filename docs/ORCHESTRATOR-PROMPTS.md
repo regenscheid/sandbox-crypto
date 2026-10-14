@@ -19,13 +19,13 @@ IDs are the version strings in the code.
 
 | Input | ID in code | Source | When it is sent |
 | --- | --- | --- | --- |
-| MAIN base system | `sandbox-main-2` (`prompt_bundle.py` `BASE_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
+| MAIN base system | `sandbox-main-2` (`loop.py` `MAIN_VERSION`) | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py) `SYSTEM_PROMPT` | Every MAIN run, unless the caller supplies a custom `system` |
 | MAIN planning guidance | `sandbox-main-plan-1` | [plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py) `GUIDANCE` | Appended when the six plan tools are offered (stateful MAIN runs) |
 | Research templates | `sandbox-stock-intake-1`, `sandbox-stock-literature-1`, `sandbox-stock-experiment-1`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-1` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
-| MAIN assembly | `sandbox-main-bundle-1`, or `sandbox-main-bundle-2` with a template | [prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompt_bundle.py) `assemble_main` | Provenance of every MAIN run ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
+| MAIN prompt pins | `sandbox-prompt-pins-1` | [prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompts.py) `assemble`; `loop.py` `_sections` | Every MAIN run's record: section, tool and notice-framing pins ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
 | Offered tool descriptions and schemas | Pinned by hash, not versioned | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS` | Every model call, filtered by the worker's features and the run's capabilities |
-| Platform notices | Not versioned | The turn hooks' framings: `documents/tool.py` `REQUEST_FRAMING`; `jobs.py` `NOTICE_FRAMING` and `ATTACHED_FRAMING`; `consistency/controller.py` `FINDINGS_FRAMING` and `COUNTS_FRAMING`; `plan_tools.py` and `documents/mathcontroller.py` `FRAMING` | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements and closing math findings; job completions also ride on tool results |
-| Kernel package notice | `sandbox-kernels-1` | [kernel_check.py](../packages/orchestrator/src/sandbox_science/orchestrator/kernel_check.py) `FRAMING` | Before a model call in a stateful MAIN run, once per kernel and package revision ([kernel check](KERNEL-REVISIONS.md#kernel-check-before-each-turn)) |
+| Platform notices | `sandbox-notice-requests-1`, `-jobs-1`, `-jobs-attached-1`, `-plans-1`, `-review-findings-1`, `-review-counts-1`, `-math-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements and closing math findings; job completions also ride on tool results |
+| Kernel package notice | `sandbox-kernels-1` | [notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/notices.py) `KERNELS` | Before a model call in a stateful MAIN run, once per kernel and package revision ([kernel check](KERNEL-REVISIONS.md#kernel-check-before-each-turn)) |
 | Job watcher | `sandbox-job-watcher-1` | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py) `WATCHER_PROMPT`; `watcher_prompt.py` | Each due check-in when a watcher alias is configured ([background jobs](BACKGROUND-JOBS.md), [watcher provenance](WATCHER-PROMPT-PROVENANCE.md)) |
 | Consistency reviewer | Rubric `sandbox-consistency-1`; assembly `sandbox-reviewer-bundle-1` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`; `consistency/runner.py` `SPECS` (five read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
 | Display math repair | Not versioned | [workspace/mathrepair.py](../packages/workspace/src/sandbox_science/workspace/mathrepair.py) `SYSTEM_PROMPT` | An opt-in repair request from the workspace |
@@ -167,17 +167,16 @@ plan core.
 Each model role records which input it used, as content identity rather than
 authority or proof of provider behavior:
 
-- **MAIN** ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)). One bounded owned
-  system and tool bundle per run, checked immediately before each model call.
-  `RunRecord.prompt_provenance` records the component versions, byte lengths and
-  hashes, the rendered system pin and canonical ordered tool pins. `sandbox-main-2`
+- **MAIN** ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)). Pins made once per run
+  and not checked again. `RunRecord.prompt_provenance` records each system section's
+  version, byte length and hash, the ordered tool pins and the notice framings. `sandbox-main-2`
   labels exact built-in content, including identical caller text; it does not attest
   to who supplied it. Other custom text has no catalog version. Old `sandbox-main-1`
-  records keep their text and pins. Dynamic task, tool and notice messages are
-  outside the bundle.
+  records keep their text and pins. Task and tool messages are not pinned; the
+  notice framings are.
 - **Research framing** ([research framing](STOCK-RESEARCH-PROMPTS.md)). A selected
-  template is pinned between the base and the planning guidance in
-  `sandbox-main-bundle-2`. Selection is trusted caller configuration; task,
+  template is the section between the base and the planning guidance, pinned
+  with them. Selection is trusted caller configuration; task,
   document and tool text cannot select or change it. There is no automatic
   classifier, external loader, interpolation or extra call.
 - **Watcher** ([watcher provenance](WATCHER-PROMPT-PROVENANCE.md)). The exact

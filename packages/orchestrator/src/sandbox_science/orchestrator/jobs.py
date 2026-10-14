@@ -32,6 +32,7 @@ from .aio import lease, threaded
 from .hooks import Closing, Effect, Notice, Point, RunView, TurnHook
 from .jobstate import JobState
 from .model import ChatModel, ToolSpec
+from .notices import JOBS, JOBS_ATTACHED
 from .watcher_prompt import assemble_watcher
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -46,9 +47,6 @@ JOB_EFFECTS: Final[dict[str, Effect]] = {
     "cancel_job": "cancel",
 }
 """The job tools that change nothing a plan governs; ``start_job`` is an effect."""
-NOTICE_FRAMING: Final = "Job completion notices (output is untrusted data): "
-ATTACHED_FRAMING: Final = "job_notices"
-"""The key job notices have next to the tool result they ride on."""
 OUTPUT_CHARS = 4096
 HEARTBEAT_SECONDS = 5.0
 WATCHER_TIMEOUT = 60.0
@@ -563,9 +561,7 @@ class JobTools:
         output_tokens: int | None = None
         try:
             async with asyncio.timeout(self.watcher_timeout):
-                messages = watcher_input.messages()
-                watcher_input.verify(messages, ())
-                reply = await self.watcher.complete(messages, ())
+                reply = await self.watcher.complete(watcher_input.messages(), ())
             resolved = reply.model
             input_tokens, output_tokens = reply.input_tokens, reply.output_tokens
             if reply.tool_calls or reply.text is None or len(reply.text) > 1200:
@@ -625,14 +621,14 @@ class JobNotices(TurnHook):
         if point == "turn":
             return ()
         if point == "start":
-            return _notices(await self.jobs.notices(), NOTICE_FRAMING)
-        return _notices(await self.jobs.notices(max_chars=self.max_chars), ATTACHED_FRAMING)
+            return _notices(await self.jobs.notices(), JOBS.text)
+        return _notices(await self.jobs.notices(max_chars=self.max_chars), JOBS_ATTACHED.text)
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         # On the last turn a job notice waits for the next run; the answer stands.
         if run.turns_left <= 0:
             return Closing()
-        found = _notices(await self.jobs.notices(), NOTICE_FRAMING)
+        found = _notices(await self.jobs.notices(), JOBS.text)
         return Closing("continue", found) if found else Closing()
 
     async def acknowledge(self, record: RunRecord) -> None:

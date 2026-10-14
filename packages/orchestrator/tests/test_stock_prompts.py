@@ -5,15 +5,12 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import hashlib
-import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, stock_prompts
@@ -29,18 +26,9 @@ from sandbox_science.orchestrator.model import (
     ToolCall,
     ToolSpec,
 )
-from sandbox_science.orchestrator.plan_tools import GUIDANCE, PlanTools
+from sandbox_science.orchestrator.plan_tools import GUIDANCE, GUIDANCE_VERSION, PlanTools
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
-from sandbox_science.orchestrator.prompt_bundle import (
-    MAX_PROVENANCE_BYTES,
-    MAX_SYSTEM_BYTES,
-    CompleteProvenance,
-    PromptProvenance,
-    SelectedProvenance,
-    UnavailableProvenance,
-    assemble_main,
-    verify_retained,
-)
+from sandbox_science.orchestrator.prompts import PromptPins
 from sandbox_science.orchestrator.session_plans import SessionPlans
 from sandbox_science.orchestrator.stock_prompts import (
     MAX_TEMPLATE_BYTES,
@@ -115,14 +103,11 @@ async def test_actual_inputs_select_exact_framing_without_adding_tools(
         assert transcript.stopped == "answered"
         assert len(calls) == 1
         pin = transcript.prompt_provenance
-        assert isinstance(pin, SelectedProvenance)
-        assert [component.component for component in pin.components] == (
-            ["main", "stock", "planning"] if planning else ["main", "stock"]
-        )
-        assert pin.components[1].model_dump()["template_id"] == template_id
-        assert pin.components[1].version == selected.version
-        assert len(pin.model_dump_json().encode()) <= MAX_PROVENANCE_BYTES
-        verify_retained(pin, calls[0])
+        assert isinstance(pin, PromptPins)
+        assert [(section.id, section.version) for section in pin.sections] == [
+            ("main", "sandbox-main-2"),
+            ("stock", selected.version),
+        ] + ([("planning", GUIDANCE_VERSION)] if planning else [])
         assert kept(transcript, context).prompt_provenance == pin
     finally:
         adapter.projects.close()
@@ -151,7 +136,6 @@ async def test_document_injection_catalog_change_and_schema_mutation_do_not_rese
             assert messages[1]["content"] == INJECTION
             assert tools == expected_tools
             calls.append(messages[0]["content"])
-            tools[0].parameters["outside-authority"] = "mutation"
             if len(calls) == 1:
                 monkeypatch.setattr(
                     stock_prompts,
@@ -172,10 +156,12 @@ async def test_document_injection_catalog_change_and_schema_mutation_do_not_rese
         )
         assert len(calls) == 2
         assert len(transcript.tool_records) == 1
-        assert isinstance(
-            transcript.prompt_provenance, SelectedProvenance if selection else CompleteProvenance
+        pins = transcript.prompt_provenance
+        assert isinstance(pins, PromptPins)
+        # The selection made at the start holds, though the catalog changed meanwhile.
+        assert [section.id for section in pins.sections] == (
+            ["main", "stock"] if selection else ["main"]
         )
-        assert "outside-authority" not in toolbox.specs[0].parameters
     finally:
         documents.close()
 
@@ -230,25 +216,6 @@ def test_installed_template_is_validated_at_selection(monkeypatch, changes):
     monkeypatch.setattr(stock_prompts, "_CATALOG", {"intake": damaged})
     with pytest.raises(ValueError, match="installed research template"):
         select_template("intake")
-
-
-def test_selected_aggregate_and_metadata_overflow_have_no_unavailable_fallback():
-    stock = select_template("experiment")
-    with pytest.raises(ValueError, match="selected MAIN content"):
-        assemble_main(
-            SYSTEM_PROMPT,
-            (),
-            builtin_content=True,
-            stock=stock,
-            guidance=("plan", "x" * MAX_SYSTEM_BYTES),
-        )
-    with pytest.raises(ValueError, match="selected MAIN content"):
-        assemble_main(
-            SYSTEM_PROMPT, (), builtin_content=True, stock=stock, guidance=("plan", "\ud800")
-        )
-    tools = tuple(ToolSpec(f"t{i:03}-" + "x" * 123, "Read", {}) for i in range(128))
-    with pytest.raises(ValueError, match="selected MAIN metadata"):
-        assemble_main(SYSTEM_PROMPT, tools, builtin_content=True, stock=stock)
 
 
 @pytest.mark.asyncio
@@ -312,58 +279,6 @@ async def test_selected_history_is_exact_after_catalog_changes_and_safe_failed_s
         == 1
     )  # Existing duplicate save refuses.
     assert observed == [[]]
-    damaged = record.model_dump(mode="json")
-    damaged["messages"][0]["content"] += "changed"
-    with pytest.raises(ValidationError, match="recorded system does not match"):
-        RunRecord.model_validate(damaged)
-
-
-def test_v1_omitted_defaults_and_unavailable_and_legacy_remain_readable():
-    old = assemble_main(SYSTEM_PROMPT, (), builtin_content=True).provenance.model_dump(mode="json")
-    old.pop("assembly_version")
-    assert isinstance(TypeAdapter(PromptProvenance).validate_python(old), CompleteProvenance)
-    assert TypeAdapter(PromptProvenance).validate_python(
-        {"status": "unavailable", "reason": "system_too_large"}
-    ) == UnavailableProvenance(reason="system_too_large")
-
-
-def test_retained_selected_content_cannot_be_empty_even_with_coherent_hashes():
-    bundle = assemble_main(SYSTEM_PROMPT, (), builtin_content=True, stock=select_template("intake"))
-    receipt = bundle.provenance.model_dump(mode="json")
-    receipt["components"][1].update(bytes=0, sha256=hashlib.sha256(b"").hexdigest())
-    rendered = (SYSTEM_PROMPT + "\n\n").encode()
-    receipt["system"] = {"bytes": len(rendered), "sha256": hashlib.sha256(rendered).hexdigest()}
-    fields = {key: value for key, value in receipt.items() if key != "bundle_sha256"}
-    receipt["bundle_sha256"] = hashlib.sha256(
-        b"main-prompt-bundle-v2\0"
-        + json.dumps(
-            fields, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
-        ).encode()
-    ).hexdigest()
-    with pytest.raises(ValidationError, match="invalid retained research template pin"):
-        TypeAdapter(PromptProvenance).validate_python(receipt)
-
-
-@pytest.mark.parametrize("damage", ["unavailable", "order", "id", "version", "digest"])
-def test_selected_receipt_refuses_invalid_shape(damage):
-    bundle = assemble_main(SYSTEM_PROMPT, (), builtin_content=True, stock=select_template("intake"))
-    receipt = bundle.provenance.model_dump(mode="json")
-    if damage == "unavailable":
-        receipt = {
-            "assembly_version": "sandbox-main-bundle-2",
-            "status": "unavailable",
-            "reason": "metadata_too_large",
-        }
-    elif damage == "order":
-        receipt["components"].reverse()
-    elif damage == "id":
-        receipt["components"][1]["template_id"] = "other"
-    elif damage == "version":
-        receipt["components"][1]["version"] = "sandbox-stock-report-1"
-    else:
-        receipt["bundle_sha256"] = "0" * 64
-    with pytest.raises(ValidationError):
-        TypeAdapter(PromptProvenance).validate_python(receipt)
 
 
 @pytest.mark.parametrize("selection", [None, *TEMPLATE_IDS])
@@ -507,7 +422,8 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
     assert closed == ["client"]
     (entry,) = projects.runs("p", "s")
     record = projects.run("p", "s", entry.name)
-    assert isinstance(record.prompt_provenance, SelectedProvenance)
+    assert isinstance(record.prompt_provenance, PromptPins)
+    assert [section.id for section in record.prompt_provenance.sections][:2] == ["main", "stock"]
     assert record.failure == ("model" if failure else None)
     assert record.final_text == (None if failure else "Observed")
     assert not record.delivered.get("jobs", [])
