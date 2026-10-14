@@ -391,12 +391,13 @@ class ReviewStore:
         self.scope(project, session)
         with self.documents.control.read() as tx:
             target = self.documents.event_log.head(tx.sql, project)
-        after = 0
-        for _ in range(50 if drain else 1):
+        after, pages = 0, 50 if drain else 1
+        # A page another ingestor wrote first does not count: it moved the cursor, so
+        # every retry starts further on, and the loop ends at the target at the latest.
+        while pages:
             after, rows = self._document_page(project, session, target)
             if not rows:
                 break
-            read = after
             observations = [
                 (self._document_observation(project, document, number), chars, structural)
                 for _seq, document, owner, kind, author, number, chars, structural in rows
@@ -407,8 +408,8 @@ class ReviewStore:
             end = rows[-1][0]
             with self.documents.control.write() as tx:
                 db = tx.sql
-                if not DOCUMENT_FEED.advance(db, project, session, read, end):
-                    continue  # another ingestor read this page; read the next one
+                if not DOCUMENT_FEED.advance(db, project, session, after, end):
+                    continue  # another ingestor wrote this page; read on from its cursor
                 for (key, locator, payload), chars, structural in observations:
                     self.record_observation(
                         db,
@@ -423,7 +424,7 @@ class ReviewStore:
                         effects=True,
                     )
                 self._window(db, project, session)
-            after = end
+            after, pages = end, pages - 1
             if after >= target:
                 break
         return {"cursor": after, "target": target, "complete": after >= target}

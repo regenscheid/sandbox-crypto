@@ -195,8 +195,10 @@ def ingest_artifacts(
         target = tx.sql.execute(
             "SELECT coalesce(max(seq),0) FROM artifact_events WHERE project=?", (project,)
         ).fetchone()[0]
-    after, unknown_more = 0, False
-    for _ in range(10 if drain else 1):
+    after, unknown_more, pages = 0, False, 10 if drain else 1
+    # A page another ingestor committed first does not count: it moved the cursor, so
+    # every retry starts further on.
+    while pages:
         page = _read_page(store, project, session, target)
         after, target = page.after, page.target
         events = _project_events(store, project, session, page.events)
@@ -204,7 +206,7 @@ def ingest_artifacts(
         end = page.events[-1][0] if page.events else after
         if not _commit_page(store, project, session, page, events, uncertain, end):
             continue  # another ingestor owns this prefix; retry a fresh bounded page
-        after = end
+        after, pages = end, pages - 1
         unknown_more = len(page.unknown) > PAGE
         if after >= target and not unknown_more:
             break

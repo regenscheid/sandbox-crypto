@@ -10,6 +10,7 @@ import sqlite3
 import pytest
 
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
+from sandbox_science.orchestrator.consistency import artifacts as consumer_module
 from sandbox_science.orchestrator.consistency.artifacts import ingest_artifacts
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.control import ControlError
@@ -17,7 +18,7 @@ from sandbox_science.orchestrator.control.feeds import FeedCursor
 from sandbox_science.orchestrator.documents import Author, DocumentStore, store_path
 
 from .control_versions import FEED_CURSORS, older_store
-from .test_artifact_review import publish
+from .test_artifact_review import dispatch, items, publish
 from .test_artifact_review import state as state
 
 AGENT = Author(kind="agent", session_id="s", run_id="author", role="main", model="scripted")
@@ -48,6 +49,50 @@ def test_a_document_page_that_fails_leaves_its_cursor_and_is_read_again(state, m
         "target": target,
         "complete": True,
     }
+
+
+def test_a_document_page_another_ingestor_wrote_first_does_not_end_the_read(state, monkeypatch):
+    """A second ingestor writes the page this one read before it commits: this one's
+    compare-and-set fails, it reads on from the winner's cursor, and it reports the
+    target reached rather than its stale cursor."""
+    reviews, _, _ = state
+    write(reviews, "first")
+    other = ReviewStore(reviews.documents)
+    read = getattr(reviews, "_document_page")  # noqa: B009 - the race needs the page read
+    won: list[dict] = []
+
+    def racing(project: str, session: str, target: int):
+        page = read(project, session, target)
+        if not won:
+            won.append(other.ingest_documents(project, session))
+        return page
+
+    monkeypatch.setattr(reviews, "_document_page", racing)
+    found = reviews.ingest_documents("p", "s")
+    assert won[0]["complete"]
+    assert found == {"cursor": won[0]["target"], "target": won[0]["target"], "complete": True}
+    review = dispatch(reviews)
+    documents = [i for i in items(reviews, review) if i["kind"] == "document"]
+    assert len(documents) == 1  # written once, by the winner
+
+
+def test_an_artifact_page_another_ingestor_wrote_first_does_not_end_the_read(state, monkeypatch):
+    reviews, _, _ = state
+    publish(state)
+    read = getattr(consumer_module, "_read_page")  # noqa: B009 - the race needs the page read
+    won: list[dict] = []
+
+    def racing(store, project: str, session: str, target: int):
+        page = read(store, project, session, target)
+        if not won:
+            won.append({})  # the winner reads through this function too
+            won[0] = ingest_artifacts(store, project, session)
+        return page
+
+    monkeypatch.setattr(consumer_module, "_read_page", racing)
+    found = ingest_artifacts(reviews, "p", "s")
+    assert won[0]["complete"]
+    assert found == won[0]
 
 
 def test_a_cursor_moves_only_from_where_it_was_read(state):

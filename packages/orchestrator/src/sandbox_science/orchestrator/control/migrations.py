@@ -948,8 +948,8 @@ BEGIN SELECT RAISE(ABORT, 'events are append-only'); END""",
 def _feed_cursors(schema: Schema) -> None:
     """Version 14: the reviewer's cursors on the document and artifact events move into
     one table, ``feed_cursors``, each under its feed (B-04); ``review_artifact_cursors``
-    and ``review_windows.document_cursor`` go. A cursor the table refuses refuses the
-    migration."""
+    and ``review_windows.document_cursor`` go, every cursor copied, 0 or not. A cursor
+    the table refuses refuses the migration."""
     schema.execute(
         """CREATE TABLE feed_cursors (
     feed TEXT NOT NULL CHECK (length(feed) BETWEEN 1 AND 32 AND feed NOT GLOB '*[^a-z_]*'),
@@ -968,7 +968,7 @@ def _feed_cursors(schema: Schema) -> None:
         (
             "review_windows",
             "INSERT INTO feed_cursors SELECT 'document',project,session,document_cursor "
-            "FROM review_windows WHERE document_cursor<>0 ORDER BY rowid",
+            "FROM review_windows ORDER BY rowid",
         ),
     ):
         try:
