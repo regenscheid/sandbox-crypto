@@ -579,8 +579,8 @@ class ReviewStore:
                 "AND coalesce((SELECT body FROM latest WHERE latest.finding=f.finding_id),0)="
                 "coalesce((SELECT p.body_revision FROM review_response_pins p "
                 "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) "
-                "AND (NOT EXISTS(SELECT 1 FROM review_response_bodies b WHERE "
-                "b.finding_id=f.finding_id AND b.decision_revision=f.revision) OR EXISTS("
+                "AND (NOT EXISTS(SELECT 1 FROM text_revisions b WHERE b.subject_type='response' "
+                "AND b.parent=f.finding_id AND b.parent_revision=f.revision) OR EXISTS("
                 "SELECT 1 FROM review_response_pins m WHERE m.review_id=t.review_id AND "
                 "m.finding_id=f.finding_id AND m.macro_revision=:macros)) AND r.state "
             )
@@ -588,8 +588,9 @@ class ReviewStore:
                 tuple(row)
                 for row in db.execute(
                     "WITH latest(finding,body) AS (SELECT f.finding_id,(SELECT b.revision "  # noqa: S608 - fixed SQL
-                    "FROM review_response_bodies b WHERE b.finding_id=f.finding_id AND "
-                    "b.decision_revision=f.revision ORDER BY b.revision DESC LIMIT 1) "
+                    "FROM text_revisions b WHERE b.subject_type='response' AND "
+                    "b.parent=f.finding_id AND b.parent_revision=f.revision "
+                    "ORDER BY b.revision DESC LIMIT 1) "
                     "FROM review_findings f WHERE f.project=:project AND f.session=:session) "
                     "SELECT f.finding_id,f.revision FROM review_findings f WHERE "
                     "project=:project AND session=:session AND category!='math' "

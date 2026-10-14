@@ -815,10 +815,21 @@ def _same_anchors(schema: Schema) -> None:
     """Refuse the migration when an explanation's pinned anchors, or an explanation
     check's, differ from those version 10 derives for it (its finding's anchors at the
     explanation's decision revision)."""
-    # The derivation is the documents' own; it reads only through ``execute``.
-    from sandbox_science.orchestrator.documents.project_macros import response_anchors
+    # The derivation is the documents' own; it reads only through ``execute``. The
+    # explanation's first body revision is read here, from the table version 10 has.
+    from sandbox_science.orchestrator.documents.project_macros import explanation_anchors
 
     db = cast(sqlite3.Connection, schema)
+
+    def response_anchors(db: sqlite3.Connection, source: str) -> object:
+        row = db.execute(
+            "SELECT f.project,f.finding_id,b.decision_revision,b.macro_revision "
+            "FROM review_response_bodies b JOIN review_findings f USING(finding_id) "
+            "WHERE b.source=? ORDER BY b.revision LIMIT 1",
+            (source,),
+        ).fetchone()
+        return explanation_anchors(db, *row) if row else [{"unknown": True}]
+
     pinned = [
         *schema.execute("SELECT source,anchors FROM response_macro_anchors ORDER BY rowid"),
         *schema.execute(
@@ -979,6 +990,129 @@ def _feed_cursors(schema: Schema) -> None:
     schema.execute("ALTER TABLE review_windows DROP COLUMN document_cursor")
 
 
+_TEXTS: Final = (
+    # An explanation's rows keep their rowids, which a finding's response generation reads.
+    (
+        "review_response_bodies",
+        "INSERT INTO text_revisions(rowid,subject_type,subject_id,revision,parent,"
+        "parent_revision,origin,body,sha256,block_map,author,owners,next_block,next_span,"
+        "identity_floor,held,macro_revision) SELECT rowid,'response',source,revision,"
+        "finding_id,decision_revision,NULL,body,sha256,block_map,author,owners,next_block,"
+        "next_span,identity_floor,held,macro_revision FROM review_response_bodies "
+        "ORDER BY rowid",
+    ),
+    # A comment body kept its identity floor and held reason in its block map.
+    (
+        "annotation_body_revisions",
+        "INSERT INTO text_revisions(subject_type,subject_id,revision,parent,parent_revision,"
+        "origin,body,sha256,block_map,author,owners,next_block,next_span,identity_floor,held,"
+        "macro_revision) SELECT 'comment',entry_id,revision,NULL,NULL,history_entry,body,"
+        "sha256,block_map,author,owners,next_block,next_span,CASE WHEN "
+        "json_type(block_map,'$.identity_floor')='integer' THEN "
+        "json_extract(block_map,'$.identity_floor') END,CASE WHEN "
+        "json_type(block_map,'$.held')='text' THEN json_extract(block_map,'$.held') END,NULL "
+        "FROM annotation_body_revisions ORDER BY rowid",
+    ),
+)
+
+_CURRENT_CHECKS: Final = """CREATE VIEW math_current_checks AS
+    SELECT j.check_id,j.document AS source,j.revision FROM math_jobs j
+    JOIN documents d ON d.document_id=j.document
+    WHERE NOT EXISTS(SELECT 1 FROM math_comment_jobs c WHERE c.check_id=j.check_id)
+    AND d.head=j.revision AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k
+    WHERE k.document=j.document AND k.revision=d.head AND NOT EXISTS
+    (SELECT 1 FROM math_comment_jobs c WHERE c.check_id=k.check_id))
+    UNION ALL
+    SELECT j.check_id,'comment:'||c.entry_id,j.revision FROM math_jobs j
+    JOIN math_comment_jobs c USING(check_id) JOIN documents d ON d.document_id=j.document
+    JOIN comment_math_sources s ON s.entry_id=c.entry_id
+    JOIN text_revisions b ON b.subject_type='comment' AND b.subject_id=c.entry_id
+    AND b.revision=j.revision
+    JOIN annotation_entries original ON original.entry_id=c.entry_id
+    JOIN annotation_threads t ON t.thread_id=original.thread_id
+    WHERE t.document_id=j.document AND s.document=j.document AND s.project=d.project_id
+    AND original.kind IN ('create','reply')
+    AND s.target=j.revision AND d.head=c.macro_revision AND b.origin=(
+      SELECT e.entry_id FROM annotation_entries e WHERE e.thread_id=original.thread_id
+      AND (e.entry_id=original.entry_id OR (e.kind='edit' AND original.number=1)
+      OR (e.kind='edit_body' AND json_extract(e.payload,'$.entry')=original.entry_id))
+      ORDER BY e.number DESC LIMIT 1)
+    AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_comment_jobs x
+    USING(check_id) WHERE x.entry_id=c.entry_id AND k.revision=j.revision
+    AND x.macro_revision=c.macro_revision) UNION ALL
+    SELECT j.check_id,r.source,j.revision FROM math_jobs j JOIN math_response_jobs r
+    USING(check_id) JOIN response_math_sources s ON s.source=r.source
+    JOIN review_findings f ON f.finding_id=s.finding_id
+    JOIN text_revisions b ON b.subject_type='response' AND b.subject_id=s.source
+    AND b.revision=j.revision
+    WHERE j.document IS NULL AND f.origin='review' AND s.project=f.project AND s.session=f.session
+    AND b.parent=s.finding_id AND b.parent_revision=s.decision_revision
+    AND s.target=j.revision AND j.source_sha256=b.sha256
+    AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_response_jobs x USING(check_id)
+                WHERE x.source=r.source AND k.revision=j.revision)"""
+
+
+def _text_revisions(schema: Schema) -> None:
+    """Version 15: the revisions of comment bodies and of finding explanations move into
+    one table, ``text_revisions``, each under its kind of text (B-04). An explanation
+    names its finding and decision revision as its parent and keeps its rowid; a
+    comment body names the entry that recorded it as its origin, and its identity floor
+    and held reason, which its block map held, become columns. A revision the table
+    refuses, or an explanation whose source does not name its finding and decision,
+    refuses the migration."""
+    found = schema.execute(
+        "SELECT source FROM review_response_bodies WHERE source IS NOT "
+        "'response:'||finding_id||':r'||decision_revision||':explanation' LIMIT 1"
+    ).fetchone()
+    if found is not None:
+        raise RefusedRowError(f"the explanation {found[0]} does not name its finding")
+    schema.execute(
+        """CREATE TABLE text_revisions (
+    subject_type TEXT NOT NULL
+        CHECK (length(subject_type) BETWEEN 1 AND 32 AND subject_type NOT GLOB '*[^a-z_]*'),
+    subject_id TEXT NOT NULL CHECK (length(CAST(subject_id AS BLOB)) BETWEEN 1 AND 128),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    parent TEXT CHECK (parent IS NULL OR length(CAST(parent AS BLOB)) BETWEEN 1 AND 128),
+    parent_revision INTEGER
+        CHECK (parent_revision IS NULL OR parent_revision BETWEEN 1 AND 999999999),
+    origin TEXT CHECK (origin IS NULL OR length(CAST(origin AS BLOB)) BETWEEN 1 AND 128),
+    body TEXT NOT NULL CHECK (length(CAST(body AS BLOB)) <= 32768),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    block_map TEXT NOT NULL
+        CHECK (json_valid(block_map) AND length(CAST(block_map AS BLOB)) <= 16777216),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    owners TEXT NOT NULL
+        CHECK (json_valid(owners) AND length(CAST(owners AS BLOB)) <= 16777216),
+    next_block INTEGER NOT NULL CHECK (next_block BETWEEN 0 AND 999999999),
+    next_span INTEGER NOT NULL CHECK (next_span BETWEEN 0 AND 999999999),
+    identity_floor INTEGER
+        CHECK (identity_floor IS NULL OR identity_floor BETWEEN 1 AND revision),
+    held TEXT CHECK (held IS NULL OR length(CAST(held AS BLOB)) <= 4096),
+    macro_revision INTEGER
+        CHECK (macro_revision IS NULL OR macro_revision BETWEEN 0 AND 999999999),
+    PRIMARY KEY (subject_type, subject_id, revision)
+) STRICT"""
+    )
+    schema.execute(
+        "CREATE INDEX text_revisions_parents ON text_revisions(subject_type,parent,parent_revision)"
+    )
+    schema.execute("DROP VIEW math_current_checks")
+    for table, statement in _TEXTS:
+        try:
+            schema.execute(statement)
+        except sqlite3.IntegrityError as error:
+            raise RefusedRowError(f"a revision of {table} fails its check ({error})") from None
+        schema.execute(f"DROP TABLE {table}")
+    for statement in (
+        """CREATE TRIGGER text_revisions_no_update BEFORE UPDATE ON text_revisions
+BEGIN SELECT RAISE(ABORT, 'text revisions are immutable'); END""",
+        """CREATE TRIGGER text_revisions_no_delete BEFORE DELETE ON text_revisions
+BEGIN SELECT RAISE(ABORT, 'text revisions are immutable'); END""",
+        _CURRENT_CHECKS,
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -993,6 +1127,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _receipts,
     _event_log,
     _feed_cursors,
+    _text_revisions,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
