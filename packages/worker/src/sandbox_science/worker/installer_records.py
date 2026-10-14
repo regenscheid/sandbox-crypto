@@ -207,6 +207,11 @@ def prepare(operation: ProvisionOperation, execution: Execution, label: str) -> 
         if type(step.label) is not str:
             raise InstallerLogError("invalid original installer label")
         if step.label == label:
+            _id(step.operation_id)
+            _id(step.execution_id)
+            _id(step.attempt_id)
+            if type(step.log_status) is not str:
+                raise InstallerLogError("invalid original installer log status")
             found.append(step)
     if len(found) != 1 or (
         found[0].operation_id != execution.operation_id
