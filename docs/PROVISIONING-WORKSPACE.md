@@ -11,7 +11,8 @@ workspace responses are `no-store`.
 Inventories include unchanged/base packages and retained unmanaged revisions,
 independently of an install's files or comparison differences. Entries retain
 canonical ecosystem/name/location ordering, package metadata and declared Conda
-licenses. Pip licenses remain unknown. AGPL text matching reports a declaration;
+and optional [pip licenses](PIP-LOCKFILE-LICENSES.md). Missing or ambiguous pip
+declarations remain unknown. AGPL text matching reports a declaration;
 it does not certify compliance or installation state. Missing, skipped,
 unsupported or unproved sources stay held. Source URLs are escaped text.
 
