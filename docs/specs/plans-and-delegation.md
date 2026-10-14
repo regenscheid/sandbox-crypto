@@ -27,7 +27,7 @@ Terms:
 - PD-2. Steps have stable IDs and a short title unique within the plan. IDs survive revisions; a revision that drops a step keeps that step's history (new).
 - PD-3. A plan is an artifact. Creating or changing it appends an immutable version that records its author (the user or an agent run) and a short reason (CScience). A change names the version it is based on; a stale base returns a conflict with the current version (D28).
 - PD-4. The user can edit the plan directly. The edit is an attributed version, and an agent working from the plan is told to reread it (D23; CScience notifies agents of user edits).
-- PD-5. A session has one current plan, with a status: `draft`, `awaiting_approval`, `active`, `completed` or `abandoned`. Earlier plans remain as artifacts (new).
+- PD-5. A session has one current plan, with a status: `draft`, `active`, `completed` or `abandoned`. Earlier plans remain as artifacts (new). The `awaiting_approval` state was removed until plan approval is built (refactoring plan, decision 10); with approval off by default (PD-6), it returns only with that.
 - PD-6. Approval: when the project or the agent requires it, a plan version waits for the user's approval. Meanwhile the session's agents can read and plan but cannot start executions or external changes. Approval names one exact version and comes only from the user, never from tool output or an agent; a later version needs approval again (CScience has such a mode and the pack relies on it). Approval is off by default, a project setting (decided 2026-10-14, open question 1).
 
 ### Progress
