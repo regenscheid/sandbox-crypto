@@ -3,7 +3,9 @@
 import katex from 'katex';
 import { macroSet } from './macros';
 import { KATEX_OPTIONS, MAX_FORMULA } from './mathoptions';
-import { definesMacros, describeError, repairTex } from './mathrepair';
+import { describeError } from './mathrepair';
+import { definesMacros } from './texDefinitions';
+import { repairTex } from './texRepairs';
 
 export interface Formula {
   id: string;

@@ -49,16 +49,10 @@ import { CONTAINER, containerRule, frontMatterRule } from './documentrules';
 import { dollarMath, type DollarMathOptions } from './dollarmath';
 import { NO_MACROS, TooMuchExpansion, type MacroSet } from './macros';
 import { backslashMath, type MathMeta } from './mathdelimiters';
-import {
-  definesMacros,
-  Kept,
-  OutOfTime,
-  recoveredHtml,
-  recoverMath,
-  repairKey,
-  type MathRenderer,
-} from './mathrepair';
+import { Kept } from './kept';
+import { OutOfTime, recoveredHtml, recoverMath, repairKey, type MathRenderer } from './mathrepair';
 import type { ModelRepairs } from './modelRepairs';
+import { definesMacros } from './texDefinitions';
 import { visible } from './text';
 
 /** The dollar math rules; the server's mdit-py-plugins must use the same settings. */
