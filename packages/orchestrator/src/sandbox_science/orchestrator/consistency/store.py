@@ -13,6 +13,7 @@ import re
 import sqlite3
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 
 from pydantic import ValidationError
@@ -46,7 +47,94 @@ Json = dict[str, Any]
 MAX_ITEM_BYTES: Final = 256 * 1024
 MAX_SNAPSHOT_BYTES: Final = 8 * 1024 * 1024
 MAX_SNAPSHOT_ITEMS: Final = 256
+ITEM_OVERHEAD: Final = 256
+"""Bytes a snapshot's budget counts for each item beyond its locator and payload."""
+MAX_SNAPSHOT_FINDINGS: Final = 100
+"""Open findings a snapshot copies; one more is read to tell whether some were left out."""
+CONFIRMATION_ATTEMPTS: Final = 3
+"""Failed or dropped confirmations of the same targets before they are given up."""
 LEASE_SECONDS: Final = 120
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceItem:
+    """One item a review snapshot pins."""
+
+    kind: str
+    locator: str
+    payload: str
+    sha256: str
+    complete: int
+
+    @property
+    def size(self) -> int:
+        return len(self.locator.encode()) + len(self.payload.encode()) + ITEM_OVERHEAD
+
+
+@dataclass(frozen=True, slots=True)
+class FindingGroup:
+    """An open finding's items (its response's changed revisions and artifacts, then the
+    finding itself), the earlier evidence it grants, and its response body's pin."""
+
+    finding: str
+    revision: int
+    items: list[EvidenceItem]
+    grants: dict[str, Json]
+    body_pin: Json | None
+
+
+@dataclass
+class SnapshotBudget:
+    """The bytes and items a snapshot has used of ``MAX_SNAPSHOT_BYTES`` and
+    ``MAX_SNAPSHOT_ITEMS``."""
+
+    size: int = 0
+    items: int = 0
+
+    @staticmethod
+    def cost(group: FindingGroup) -> int:
+        return sum(item.size for item in group.items) + sum(
+            len(dump(grant["locator"]).encode())
+            + len(dump(grant["payload"]).encode())
+            + ITEM_OVERHEAD
+            for grant in group.grants.values()
+        )
+
+    def fits(self, group: FindingGroup) -> bool:
+        return (
+            all(len(item.payload.encode()) <= MAX_ITEM_BYTES for item in group.items)
+            and self.size + self.cost(group) <= MAX_SNAPSHOT_BYTES
+            and self.items + len(group.items) + len(group.grants) <= MAX_SNAPSHOT_ITEMS
+        )
+
+    def add(self, group: FindingGroup) -> None:
+        self.size += self.cost(group)
+        self.items += len(group.items) + len(group.grants)
+
+
+@dataclass(frozen=True, slots=True)
+class _Window:
+    """The author-work window a dispatch reads: its watermark, a failed window's retry
+    end, and the end it covers."""
+
+    watermark: int
+    retry: int | None
+    end: int
+
+
+@dataclass
+class _Plan:
+    """What a dispatch pins, before the change that commits it."""
+
+    kind: ReviewType
+    window: _Window
+    selected_end: int
+    items: list[EvidenceItem]
+    grants: dict[str, Json]
+    targets: list[tuple[str, int]]
+    response_pins: dict[str, Json]
+    complete: bool
+    confirmation_key: str | None
 
 
 def dump(value: object) -> str:
@@ -82,6 +170,37 @@ def clipped(value: str, limit: int) -> str:
         return value
     half = max(0, (limit - 30) // 2)
     return value[:half] + "\n… evidence omitted …\n" + value[-half:]
+
+
+_FINDING_FIELDS: Final = (
+    "finding",
+    "severity",
+    "category",
+    "statement",
+    "anchors",
+    "remedy",
+    "status",
+    "revision",
+    "reflags",
+    "supersedes",
+)
+"""An open finding as a snapshot copies it."""
+
+
+def _confirmation_key(targets: list[tuple[str, int]], pins: dict[str, Json]) -> str:
+    """What a confirmation is of: its targets, and each response body and macro context
+    it pinned. Three failures of the same key give the targets up."""
+    return digest(
+        dump(
+            [
+                targets,
+                sorted(
+                    (finding, pin["revision"], pin["sha256"], digest(dump(pin["macro_context"])))
+                    for finding, pin in pins.items()
+                ),
+            ]
+        )
+    )
 
 
 class ReviewStore:
@@ -434,40 +553,39 @@ class ReviewStore:
         self.scope(project, session)
         with self.documents.control.read() as tx:
             db = tx.sql
-
-            macro_match = (
-                "(NOT EXISTS(SELECT 1 FROM review_response_bodies b WHERE "
+            revision = head(db, project)
+            # A review of a target counts when it pinned the response's latest body and,
+            # for a response with a body, the current project macro setting.
+            reviews = (
+                "SELECT count(*) FROM review_confirmation_targets t JOIN review_runs r "
+                "USING(review_id) WHERE t.finding_id=f.finding_id AND t.revision=f.revision "
+                "AND coalesce((SELECT body FROM latest WHERE latest.finding=f.finding_id),0)="
+                "coalesce((SELECT p.body_revision FROM review_response_pins p "
+                "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) "
+                "AND (NOT EXISTS(SELECT 1 FROM review_response_bodies b WHERE "
                 "b.finding_id=f.finding_id AND b.decision_revision=f.revision) OR EXISTS("
                 "SELECT 1 FROM review_macro_pins m WHERE m.review_id=t.review_id AND "
-                "m.finding_id=f.finding_id AND m.revision=?)) AND "
+                "m.finding_id=f.finding_id AND m.revision=:macros)) AND r.state "
             )
-            revision = head(db, project)
-            parameters = (project, session, revision, revision)
             return [
                 tuple(row)
                 for row in db.execute(
-                    "SELECT f.finding_id,f.revision FROM review_findings f WHERE project=? "  # noqa: S608 - fixed SQL fragments
-                    "AND session=? AND category!='math' AND status='claimed fixed' "
-                    "AND NOT EXISTS(SELECT 1 FROM "
-                    "review_confirmation_targets t JOIN review_runs r USING(review_id) "
-                    "WHERE t.finding_id=f.finding_id AND t.revision=f.revision AND "
-                    "coalesce((SELECT b.revision FROM review_response_bodies b WHERE "
-                    "b.finding_id=f.finding_id AND b.decision_revision=f.revision ORDER BY "
-                    "b.revision "
-                    "DESC LIMIT 1),0)=coalesce((SELECT p.body_revision FROM review_response_pins p "
-                    "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) AND "
-                    + macro_match
-                    + "r.state NOT IN ('running','failed','dropped')) AND (SELECT count(*) FROM "
-                    "review_confirmation_targets t JOIN review_runs r USING(review_id) "
-                    "WHERE t.finding_id=f.finding_id AND t.revision=f.revision AND "
-                    "coalesce((SELECT b.revision FROM review_response_bodies b WHERE "
-                    "b.finding_id=f.finding_id AND b.decision_revision=f.revision ORDER BY "
-                    "b.revision "
-                    "DESC LIMIT 1),0)=coalesce((SELECT p.body_revision FROM review_response_pins p "
-                    "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) AND "
-                    + macro_match
-                    + "r.state IN ('failed','dropped'))<3 ORDER BY f.rowid LIMIT 100",
-                    parameters,
+                    "WITH latest(finding,body) AS (SELECT f.finding_id,(SELECT b.revision "  # noqa: S608 - fixed SQL
+                    "FROM review_response_bodies b WHERE b.finding_id=f.finding_id AND "
+                    "b.decision_revision=f.revision ORDER BY b.revision DESC LIMIT 1) "
+                    "FROM review_findings f WHERE f.project=:project AND f.session=:session) "
+                    "SELECT f.finding_id,f.revision FROM review_findings f WHERE "
+                    "project=:project AND session=:session AND category!='math' "
+                    "AND status='claimed fixed' "
+                    f"AND ({reviews}NOT IN ('running','failed','dropped'))=0 "
+                    f"AND ({reviews}IN ('failed','dropped'))<:attempts "
+                    "ORDER BY f.rowid LIMIT 100",
+                    {
+                        "project": project,
+                        "session": session,
+                        "macros": revision,
+                        "attempts": CONFIRMATION_ATTEMPTS,
+                    },
                 )
             ]
 
@@ -483,7 +601,12 @@ class ReviewStore:
         classifier: Json | None = None,
         coverage_complete: bool = True,
     ) -> str | None:
-        """Pin a bounded prefix. No unseen overflow item is skipped by the watermark."""
+        """Pin a bounded prefix. No unseen overflow item is skipped by the watermark.
+
+        A confirmation whose fix groups do not fit the snapshot's bounds leaves those
+        responses unconfirmed and serves author work instead, as incomplete coverage,
+        rather than make an empty confirmation that would starve the feed.
+        """
         self.scope(project, session)
         config, config_revision = self.config(project)
         if not config.enabled:
@@ -491,346 +614,384 @@ class ReviewStore:
         targets = self.confirmation_targets(project, session)
         if kind == "confirmation" and not targets:
             return None
-        with self.documents.control.read() as tx:
-            db = tx.sql
-            window = db.execute(
-                "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
-                (project, session),
-            ).fetchone()
-            watermark, retry = window if window else (0, None)
-            end = (
-                retry
-                if retry is not None
-                else db.execute(
-                    "SELECT coalesce(max(seq),?) FROM review_feed WHERE project=? AND session=?",
-                    (watermark, project, session),
-                ).fetchone()[0]
-            )
-            items: list[tuple[Any, ...]] = []
-            size = 0
-            for row in db.execute(
-                (
-                    "SELECT seq,kind,locator,payload,sha256,complete FROM review_feed "
-                    "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq "
-                    "LIMIT ?"
-                ),
-                (project, session, watermark, end, MAX_SNAPSHOT_ITEMS),
-            ):
-                added = len(row[2].encode()) + len(row[3].encode()) + 256
-                if items and size + added > MAX_SNAPSHOT_BYTES:
-                    break
-                items.append(tuple(row))
-                size += added
-            if kind == "confirmation":
-                # Fix targets and their original evidence take precedence over new
-                # feed items; the latter retain their watermark for a later review.
-                items, size = [], 0
-            selected_end = items[-1][0] if items else watermark
-            # Open finding state is copied, so a later user response cannot change
-            # what the detached reviewer saw. History remains separately append-only.
-            findings = list(
-                db.execute(
-                    (
-                        "SELECT finding_id,severity,category,statement,anchors,remedy,"
-                        "status,revision,reflags,supersedes FROM review_findings f WHERE "
-                        "project=? AND session=? AND category!='math' "
-                        "AND status NOT IN ('confirmed fixed',"
-                        "'withdrawn') ORDER BY CASE WHEN finding_id IN "
-                        "(SELECT value FROM json_each(?)) THEN 0 WHEN (SELECT "
-                        "json_extract(t.payload,'$.action') FROM review_transitions t "
-                        "WHERE t.finding_id=f.finding_id ORDER BY t.revision DESC "
-                        "LIMIT 1)='rebut' THEN 1 WHEN status='open' "
-                        "THEN 2 ELSE 3 END,f.rowid LIMIT 101"
-                    ),
-                    (project, session, dump([target[0] for target in targets])),
-                )
-            )
-        prepared: list[tuple[str, str, str, str, int]] = []
-        grants: dict[str, Json] = {}
-        included_findings = 0
-        confirmation_targets: list[tuple[str, int]] = []
-        response_pins: dict[str, Json] = {}
-        for _, item_kind, location, payload, sha, complete in items:
-            prepared.append((item_kind, location, payload, sha, complete))
-        for row in findings[:100]:
-            finding: Json = dict(
-                zip(
-                    (
-                        "finding",
-                        "severity",
-                        "category",
-                        "statement",
-                        "anchors",
-                        "remedy",
-                        "status",
-                        "revision",
-                        "reflags",
-                        "supersedes",
-                    ),
-                    row,
-                    strict=True,
-                )
-            )
-            finding["anchors"] = json.loads(finding["anchors"])
-            with self.documents.control.read() as tx:
-                db = tx.sql
-                response = db.execute(
-                    "SELECT reason,payload FROM review_transitions WHERE finding_id=? "
-                    "AND revision=?",
-                    (row[0], row[7]),
-                ).fetchone()
-                from .response_bodies import pin as response_pin
-
-                body_pin = response_pin(db, row[0], row[7])
-            finding["response"] = (
-                {
-                    "reason": response[0],
-                    "payload": {
-                        key: value
-                        for key, value in json.loads(response[1]).items()
-                        if key not in ("previous_assessment", "assessment")
-                    },
-                }
-                if response
-                else None
-            )
-            if body_pin is not None and finding["response"] is not None:
-                finding["response"]["body"] = body_pin
-
-                finding["response"]["macro_context"] = response_view(
-                    self.documents, project, body_pin["source"]
-                )
-            payload = dump(finding)
-            group: list[tuple[str, str, str, str, int]] = []
-            group_grants: dict[str, Json] = {}
-            evidence_anchors = list(finding["anchors"])
-            if finding["response"]:
-                response_payload = finding["response"]["payload"]
-                evidence_anchors.extend(response_payload.get("anchors", []))
-                for locator in response_payload.get("revisions", []) + response_payload.get(
-                    "replacements", []
-                ):
-                    revision = self.documents.revision(
-                        project, locator["document"], locator["revision"]
-                    )
-                    if revision.info.sha256 != locator["sha256"]:
-                        raise DocumentError(
-                            CONFLICT, "changed revision digest differs from the claimed fix"
-                        )
-                    encoded = dump(locator)
-                    group.append(("document", encoded, encoded, digest(encoded), 1))
-            if finding["response"]:
-                response_payload = finding["response"]["payload"]
-                for raw in response_payload.get("artifact_revisions", []) + response_payload.get(
-                    "artifact_replacements", []
-                ):
-                    ref = ArtifactRevisionRef.model_validate(raw)
-                    location, projection, ready = self.artifact_pin(project, session, ref)
-                    encoded = dump(projection)
-                    group.append(("artifact", dump(location), encoded, digest(encoded), int(ready)))
-            # Cross-snapshot access is an explicit immutable grant. Keeping the
-            # original ID makes the retained finding/response anchors readable;
-            # it does not give the reviewer ambient access to other reviews.
-            for anchored in evidence_anchors:
-                evidence_id = anchored["evidence"]
-                if evidence_id not in grants and evidence_id not in group_grants:
-                    group_grants[evidence_id] = self.evidence(
-                        project, session, anchored["review"], evidence_id
-                    )
-            group.append(
-                (
-                    "finding",
-                    dump({"finding": row[0], "revision": row[7]}),
-                    payload,
-                    digest(payload),
-                    int(
-                        not finding["response"]
-                        or not finding["response"].get("macro_context", {}).get("held", False)
-                    ),
-                )
-            )
-            added = sum(len(p[1].encode()) + len(p[2].encode()) + 256 for p in group)
-            added += sum(
-                len(dump(p["locator"]).encode()) + len(dump(p["payload"]).encode()) + 256
-                for p in group_grants.values()
-            )
-            if (
-                any(len(item[2].encode()) > MAX_ITEM_BYTES for item in group)
-                or size + added > MAX_SNAPSHOT_BYTES
-                or len(prepared) + len(grants) + len(group) + len(group_grants) > MAX_SNAPSHOT_ITEMS
-            ):
-                continue
-            prepared.extend(group)
-            if body_pin is not None:
-                response_pins[finding["finding"]] = body_pin
-            if (finding["finding"], finding["revision"]) in targets:
-                confirmation_targets.append((finding["finding"], finding["revision"]))
-            grants.update(group_grants)
-            included_findings += 1
-            size += added
-        if kind == "confirmation" and not confirmation_targets:
-            # No exact fix group fit the immutable evidence bounds. Leave those
-            # responses unconfirmed, but service author work rather than create
-            # an empty confirmation key that starves its feed indefinitely.
-            return self.dispatch(
+        plan = self._plan(project, session, kind, targets, coverage_complete)
+        if plan.kind == "confirmation" and not plan.targets:
+            # Serve author work instead, with the configuration and targets as they are
+            # now: the review may have been disabled or reconfigured meanwhile.
+            self.scope(project, session)
+            config, config_revision = self.config(project)
+            if not config.enabled:
+                return None
+            targets = self.confirmation_targets(project, session)
+            plan = self._plan(project, session, "terminal", targets, False)
+        review = new_id("rev")
+        with self.documents.control.write() as tx:
+            committed = self._commit_snapshot(
+                tx.sql,
                 project,
                 session,
-                "terminal",
+                review,
+                plan,
                 author_run=author_run,
                 owner=owner,
                 alias=alias,
+                config=config,
+                config_revision=config_revision,
                 classifier=classifier,
-                coverage_complete=False,
             )
+        return review if committed else None
+
+    def _plan(
+        self,
+        project: str,
+        session: str,
+        kind: ReviewType,
+        targets: list[tuple[str, int]],
+        coverage_complete: bool,
+    ) -> _Plan:
+        """The items, grants and pins a review of ``kind`` would take now."""
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            window = self._dispatch_window(db, project, session)
+            # Fix targets and their original evidence take precedence over new feed
+            # items; those keep their watermark for a later review.
+            selected_end, pinned = (
+                (window.watermark, [])
+                if kind == "confirmation"
+                else self._feed_items(db, project, session, window)
+            )
+            findings = self._open_findings(db, project, session, targets)
+        budget = SnapshotBudget(size=sum(item.size for item in pinned), items=len(pinned))
+        grants: dict[str, Json] = {}
+        included: list[tuple[str, int]] = []
+        response_pins: dict[str, Json] = {}
+        groups = 0
+        for row in findings[:MAX_SNAPSHOT_FINDINGS]:
+            group = self._finding_group(project, session, row, grants)
+            if not budget.fits(group):
+                continue
+            pinned.extend(group.items)
+            if group.body_pin is not None:
+                response_pins[group.finding] = group.body_pin
+            if (group.finding, group.revision) in targets:
+                included.append((group.finding, group.revision))
+            grants.update(group.grants)
+            budget.add(group)
+            groups += 1
         # A confirmation pins finding groups rather than consuming author work.
         # A failed author window stays independently queued, with its exact end.
         complete = (
             coverage_complete
             and (
-                set(confirmation_targets) == set(targets)
+                set(included) == set(targets)
                 if kind == "confirmation"
-                else selected_end == end
+                else selected_end == window.end
             )
-            and included_findings == len(findings)
-            and all(item[4] for item in prepared)
-            and all(item["complete"] for item in grants.values())
+            and groups == len(findings)
+            and all(item.complete for item in pinned)
+            and all(grant["complete"] for grant in grants.values())
         )
-        confirmation_key = (
-            digest(
-                dump(
-                    [
-                        confirmation_targets,
-                        sorted(
-                            (f, p["revision"], p["sha256"], digest(dump(p["macro_context"])))
-                            for f, p in response_pins.items()
-                        ),
-                    ]
-                )
-            )
+        return _Plan(
+            kind=kind,
+            window=window,
+            selected_end=selected_end,
+            items=pinned,
+            grants=grants,
+            targets=included,
+            response_pins=response_pins,
+            complete=complete,
+            confirmation_key=_confirmation_key(included, response_pins)
             if kind == "confirmation"
-            else None
+            else None,
         )
-        review = new_id("rev")
-        with self.documents.control.write() as tx:
-            db = tx.sql
-            self._window(db, project, session)
-            actual = db.execute(
-                "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
-                (project, session),
-            ).fetchone()
-            if tuple(actual) != (watermark, retry):
-                return None
-            for finding_id, body_pin in response_pins.items():
-                from .response_bodies import pin as response_pin
 
-                current_pin = response_pin(db, finding_id, body_pin["response_revision"])
-                if current_pin is None or (current_pin["revision"], current_pin["sha256"]) != (
-                    body_pin["revision"],
-                    body_pin["sha256"],
-                ):
-                    return None
-                if current_pin["macro_context"] != body_pin["macro_context"]:
-                    return None
-            if db.execute(
-                "SELECT 1 FROM review_runs WHERE project=? AND session=? AND state='running'",
-                (project, session),
-            ).fetchone():
-                return None
-            if confirmation_key is not None and self.confirmation_failed(
-                db, project, session, confirmation_key
-            ):
-                return None
-            db.execute(
-                """INSERT INTO review_runs(review_id,project,session,kind,author_run,owner,state,
-              start_seq,end_seq,created,lease_until,alias,rubric,config,config_revision,classifier,
-              coverage_complete,confirmation_key)
-              VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?,?,?,?,?)""",
+    @staticmethod
+    def _dispatch_window(db: sqlite3.Connection, project: str, session: str) -> _Window:
+        """The session's watermark, its failed window's retry end, and the end a review
+        covers: that retry end, or the feed's last item."""
+        found = db.execute(
+            "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
+            (project, session),
+        ).fetchone()
+        watermark, retry = found if found else (0, None)
+        end = (
+            retry
+            if retry is not None
+            else db.execute(
+                "SELECT coalesce(max(seq),?) FROM review_feed WHERE project=? AND session=?",
+                (watermark, project, session),
+            ).fetchone()[0]
+        )
+        return _Window(watermark, retry, end)
+
+    @staticmethod
+    def _feed_items(
+        db: sqlite3.Connection, project: str, session: str, window: _Window
+    ) -> tuple[int, list[EvidenceItem]]:
+        """The feed's next items after the watermark, as many as the snapshot's bytes
+        allow, and the last one's sequence number."""
+        items: list[EvidenceItem] = []
+        size, end = 0, window.watermark
+        for seq, kind, locator, payload, sha, complete in db.execute(
+            "SELECT seq,kind,locator,payload,sha256,complete FROM review_feed "
+            "WHERE project=? AND session=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
+            (project, session, window.watermark, window.end, MAX_SNAPSHOT_ITEMS),
+        ):
+            item = EvidenceItem(kind, locator, payload, sha, complete)
+            if items and size + item.size > MAX_SNAPSHOT_BYTES:
+                break
+            items.append(item)
+            size += item.size
+            end = seq
+        return end, items
+
+    @staticmethod
+    def _open_findings(
+        db: sqlite3.Connection, project: str, session: str, targets: list[tuple[str, int]]
+    ) -> list[tuple[Any, ...]]:
+        """The session's open findings, confirmation targets first, then rebutted, then
+        open, then the rest; one more than a snapshot copies."""
+        # Open finding state is copied, so a later user response cannot change what the
+        # detached reviewer saw. History remains separately append-only.
+        return [
+            tuple(row)
+            for row in db.execute(
+                "SELECT finding_id,severity,category,statement,anchors,remedy,"
+                "status,revision,reflags,supersedes FROM review_findings f WHERE "
+                "project=? AND session=? AND category!='math' "
+                "AND status NOT IN ('confirmed fixed','withdrawn') ORDER BY CASE WHEN "
+                "finding_id IN (SELECT value FROM json_each(?)) THEN 0 WHEN (SELECT "
+                "json_extract(t.payload,'$.action') FROM review_transitions t "
+                "WHERE t.finding_id=f.finding_id ORDER BY t.revision DESC "
+                "LIMIT 1)='rebut' THEN 1 WHEN status='open' THEN 2 ELSE 3 END,f.rowid "
+                "LIMIT ?",
                 (
-                    review,
                     project,
                     session,
-                    kind,
-                    author_run,
-                    owner,
-                    watermark + 1,
-                    selected_end,
-                    self.clock(),
-                    self.clock() + LEASE_SECONDS,
-                    alias,
-                    RUBRIC_VERSION,
-                    config.model_dump_json(),
-                    config_revision,
-                    dump(classifier or {}),
-                    int(complete),
-                    confirmation_key,
+                    dump([target[0] for target in targets]),
+                    MAX_SNAPSHOT_FINDINGS + 1,
                 ),
             )
-            for ordinal, (item_kind, location, payload, sha, item_complete) in enumerate(
-                prepared, 1
-            ):
-                db.execute(
-                    "INSERT INTO review_evidence VALUES(?,?,?,?,?,?,?,?)",
-                    (
-                        new_id("ev"),
-                        review,
-                        ordinal,
-                        item_kind,
-                        location,
-                        payload,
-                        sha,
-                        item_complete,
-                    ),
+        ]
+
+    def _finding_group(
+        self, project: str, session: str, row: tuple[Any, ...], granted: dict[str, Json]
+    ) -> FindingGroup:
+        """A finding's group: the revisions and artifacts its response claims, the
+        finding with its response, and grants for the evidence its anchors name that
+        ``granted`` does not hold yet."""
+        from .response_bodies import pin as response_pin  # response_bodies imports this module
+
+        finding: Json = dict(zip(_FINDING_FIELDS, row, strict=True))
+        finding["anchors"] = json.loads(finding["anchors"])
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            response = db.execute(
+                "SELECT reason,payload FROM review_transitions WHERE finding_id=? AND revision=?",
+                (finding["finding"], finding["revision"]),
+            ).fetchone()
+            body_pin = response_pin(db, finding["finding"], finding["revision"])
+        finding["response"] = (
+            {
+                "reason": response[0],
+                "payload": {
+                    key: value
+                    for key, value in json.loads(response[1]).items()
+                    if key not in ("previous_assessment", "assessment")
+                },
+            }
+            if response
+            else None
+        )
+        if body_pin is not None and finding["response"] is not None:
+            finding["response"]["body"] = body_pin
+            finding["response"]["macro_context"] = response_view(
+                self.documents, project, body_pin["source"]
+            )
+        items: list[EvidenceItem] = []
+        anchors = list(finding["anchors"])
+        if finding["response"]:
+            claimed = finding["response"]["payload"]
+            anchors.extend(claimed.get("anchors", []))
+            for locator in claimed.get("revisions", []) + claimed.get("replacements", []):
+                revision = self.documents.revision(
+                    project, locator["document"], locator["revision"]
                 )
-            if kind == "confirmation":
-                for finding_id, revision in confirmation_targets:
-                    db.execute(
-                        "INSERT INTO review_confirmation_targets VALUES(?,?,?)",
-                        (review, finding_id, revision),
+                if revision.info.sha256 != locator["sha256"]:
+                    raise DocumentError(
+                        CONFLICT, "changed revision digest differs from the claimed fix"
                     )
-            for finding_id, body_pin in response_pins.items():
-                db.execute(
-                    "INSERT INTO review_response_pins VALUES(?,?,?,?,?)",
-                    (
-                        review,
-                        finding_id,
-                        body_pin["response_revision"],
-                        body_pin["revision"],
-                        body_pin["sha256"],
-                    ),
+                encoded = dump(locator)
+                items.append(EvidenceItem("document", encoded, encoded, digest(encoded), 1))
+            for raw in claimed.get("artifact_revisions", []) + claimed.get(
+                "artifact_replacements", []
+            ):
+                ref = ArtifactRevisionRef.model_validate(raw)
+                location, projection, ready = self.artifact_pin(project, session, ref)
+                encoded = dump(projection)
+                items.append(
+                    EvidenceItem("artifact", dump(location), encoded, digest(encoded), int(ready))
                 )
-                macro = body_pin["macro_context"]
-                db.execute(
-                    "INSERT INTO review_macro_pins VALUES(?,?,?,?)",
-                    (review, finding_id, macro["revision"], macro["sha256"]),
-                )
-            for ordinal, evidence_id in enumerate(grants, len(prepared) + 1):
-                db.execute(
-                    "INSERT INTO review_grants VALUES(?,?,?)", (review, evidence_id, ordinal)
-                )
-            db.execute(
-                (
-                    "UPDATE review_windows SET last_dispatch=?,requested=0 WHERE "
-                    "project=? AND session=?"
-                ),
-                (self.clock(), project, session),
+        # Cross-snapshot access is an explicit immutable grant. Keeping the original ID
+        # makes the retained finding/response anchors readable; it does not give the
+        # reviewer ambient access to other reviews.
+        grants: dict[str, Json] = {}
+        for anchored in anchors:
+            evidence = anchored["evidence"]
+            if evidence not in granted and evidence not in grants:
+                grants[evidence] = self.evidence(project, session, anchored["review"], evidence)
+        payload = dump(finding)
+        held = bool(
+            finding["response"] and finding["response"].get("macro_context", {}).get("held")
+        )
+        items.append(
+            EvidenceItem(
+                "finding",
+                dump({"finding": finding["finding"], "revision": finding["revision"]}),
+                payload,
+                digest(payload),
+                int(not held),
             )
-            self.event(
-                db,
+        )
+        return FindingGroup(finding["finding"], finding["revision"], items, grants, body_pin)
+
+    def _commit_snapshot(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        session: str,
+        review: str,
+        plan: _Plan,
+        *,
+        author_run: str,
+        owner: str,
+        alias: str | None,
+        config: ReviewConfig,
+        config_revision: str,
+        classifier: Json | None,
+    ) -> bool:
+        """Commit the planned review, unless its window, a pinned response body or its
+        macro context changed since, a review is already running, or its confirmation
+        failed too often."""
+        from .response_bodies import pin as response_pin  # response_bodies imports this module
+
+        self._window(db, project, session)
+        window = plan.window
+        actual = db.execute(
+            "SELECT watermark,retry_end FROM review_windows WHERE project=? AND session=?",
+            (project, session),
+        ).fetchone()
+        if tuple(actual) != (window.watermark, window.retry):
+            return False
+        for finding, pinned in plan.response_pins.items():
+            current = response_pin(db, finding, pinned["response_revision"])
+            if current is None or (current["revision"], current["sha256"]) != (
+                pinned["revision"],
+                pinned["sha256"],
+            ):
+                return False
+            if current["macro_context"] != pinned["macro_context"]:
+                return False
+        if db.execute(
+            "SELECT 1 FROM review_runs WHERE project=? AND session=? AND state='running'",
+            (project, session),
+        ).fetchone():
+            return False
+        if plan.confirmation_key is not None and self.confirmation_failed(
+            db, project, session, plan.confirmation_key
+        ):
+            return False
+        db.execute(
+            """INSERT INTO review_runs(review_id,project,session,kind,author_run,owner,state,
+          start_seq,end_seq,created,lease_until,alias,rubric,config,config_revision,classifier,
+          coverage_complete,confirmation_key)
+          VALUES(?,?,?,?,?,?,'running',?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                review,
                 project,
                 session,
-                "review.dispatched",
-                {"review": review, "type": kind, "start": watermark + 1, "end": selected_end},
+                plan.kind,
+                author_run,
+                owner,
+                window.watermark + 1,
+                plan.selected_end,
+                self.clock(),
+                self.clock() + LEASE_SECONDS,
+                alias,
+                RUBRIC_VERSION,
+                config.model_dump_json(),
+                config_revision,
+                dump(classifier or {}),
+                int(plan.complete),
+                plan.confirmation_key,
+            ),
+        )
+        for ordinal, item in enumerate(plan.items, 1):
+            db.execute(
+                "INSERT INTO review_evidence VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    new_id("ev"),
+                    review,
+                    ordinal,
+                    item.kind,
+                    item.locator,
+                    item.payload,
+                    item.sha256,
+                    item.complete,
+                ),
             )
-        return review
+        if plan.kind == "confirmation":
+            for finding, revision in plan.targets:
+                db.execute(
+                    "INSERT INTO review_confirmation_targets VALUES(?,?,?)",
+                    (review, finding, revision),
+                )
+        for finding, pinned in plan.response_pins.items():
+            db.execute(
+                "INSERT INTO review_response_pins VALUES(?,?,?,?,?)",
+                (
+                    review,
+                    finding,
+                    pinned["response_revision"],
+                    pinned["revision"],
+                    pinned["sha256"],
+                ),
+            )
+            macro = pinned["macro_context"]
+            db.execute(
+                "INSERT INTO review_macro_pins VALUES(?,?,?,?)",
+                (review, finding, macro["revision"], macro["sha256"]),
+            )
+        for ordinal, evidence in enumerate(plan.grants, len(plan.items) + 1):
+            db.execute("INSERT INTO review_grants VALUES(?,?,?)", (review, evidence, ordinal))
+        db.execute(
+            "UPDATE review_windows SET last_dispatch=?,requested=0 WHERE project=? AND session=?",
+            (self.clock(), project, session),
+        )
+        self.event(
+            db,
+            project,
+            session,
+            "review.dispatched",
+            {
+                "review": review,
+                "type": plan.kind,
+                "start": window.watermark + 1,
+                "end": plan.selected_end,
+            },
+        )
+        return True
 
     @staticmethod
     def confirmation_failed(db: sqlite3.Connection, project: str, session: str, key: str) -> bool:
         rows = db.execute(
             "SELECT state FROM review_runs WHERE project=? AND session=? "
-            "AND confirmation_key=? AND state!='running' ORDER BY rowid DESC LIMIT 3",
-            (project, session, key),
+            "AND confirmation_key=? AND state!='running' ORDER BY rowid DESC LIMIT ?",
+            (project, session, key, CONFIRMATION_ATTEMPTS),
         ).fetchall()
-        return len(rows) == 3 and all(r[0] in ("failed", "dropped") for r in rows)
+        return len(rows) == CONFIRMATION_ATTEMPTS and all(
+            r[0] in ("failed", "dropped") for r in rows
+        )
 
     def event(
         self, db: sqlite3.Connection, project: str, session: str, kind: str, payload: Json
