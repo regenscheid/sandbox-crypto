@@ -8,8 +8,6 @@ import {
   definesMacros,
   describeError,
   Kept,
-  MAX_MODEL_TEX,
-  ModelRepairs,
   OutOfTime,
   recoveredHtml,
   recoverMath,
@@ -21,6 +19,7 @@ import {
   type Recovery,
   type ShownRecovery,
 } from './mathrepair';
+import { MAX_MODEL_TEX, ModelRepairs } from './modelRepairs';
 
 interface Call {
   tex: string;

@@ -18,7 +18,8 @@ import {
   type Rendered,
   type TextState,
 } from './markdown';
-import { ModelRepairs, repairKey } from './mathrepair';
+import { repairKey } from './mathrepair';
+import { ModelRepairs } from './modelRepairs';
 
 // Each test starts with KaTeX's results forgotten and a go of its own.
 beforeEach(() => forgetResults());
