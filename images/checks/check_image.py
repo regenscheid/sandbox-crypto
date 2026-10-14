@@ -56,7 +56,7 @@ SERVICES = ("orchestrator", "mcp-proxy")
 """The platform services' images: no executor or kernels, and a read-only prefix."""
 PREFIX = "/opt/sandbox-science"
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
-WORKER_FILES = ("executor.py", "pdfhelper.py")
+WORKER_FILES = ("executor.py", "provisioning.py", "pdfhelper.py", "daemon.py", "capture.py")
 """The worker's files that run inside a sandbox (packages/worker/src/sandbox_science/worker)."""
 PROJECT = Path("/sandbox/project")
 SESSION = "image-check"
@@ -915,7 +915,7 @@ def main(argv: list[str]) -> int:
         "--worker-files",
         required=True,
         type=Path,
-        help="a directory with executor.py and pdfhelper.py (unused for the services' images)",
+        help="a directory with the worker's in-sandbox files (unused for the services' images)",
     )
     parser.add_argument("--network", action="store_true", help="also install packages at runtime")
     parser.add_argument("--landlock", action="store_true", help="expect a Landlock ruleset")
