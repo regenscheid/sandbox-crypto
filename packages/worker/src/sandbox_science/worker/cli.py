@@ -23,6 +23,7 @@ import secrets
 import signal
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aiohttp import web
@@ -163,15 +164,20 @@ def show_captures(settings: Settings, clear: Sequence[str]) -> int:
         print(f"error: {exc}; stop it first", file=sys.stderr)
         return 1
     with lock:
-        store = Store(settings.state_dir / "worker.sqlite3")
+        path = settings.state_dir / "worker.sqlite3"
+        if not path.is_file():
+            print(f"error: no worker store at {path}; check state_dir", file=sys.stderr)
+            return 1
+        store = Store(path)  # brings the store to this worker's version, as serve does
         try:
             status = 0
             for publication_id in clear:
-                if store.clear_capture(publication_id):
-                    print(f"cleared {publication_id}")
-                else:
-                    print(f"error: no capture lease {publication_id}", file=sys.stderr)
-                    status = 1
+                cleared = store.clear_capture(publication_id, datetime.now(UTC).isoformat())
+                if cleared is None:
+                    print(f"no capture lease {publication_id}: already cleared or never held")
+                    continue
+                _log.warning("capture lease cleared on the operator's word: %s", cleared)
+                print(f"cleared {cleared}")
             leases = store.capture_leases()
             if not leases:
                 print("no capture leases")

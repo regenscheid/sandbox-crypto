@@ -26,6 +26,7 @@ trigger instead.
 
 from __future__ import annotations
 
+import re
 import secrets
 import sqlite3
 from collections.abc import Callable
@@ -52,69 +53,105 @@ class RefusedRowError(Exception):
 
 
 def rebuild(db: sqlite3.Connection, table: str, create: str) -> None:
-    """Make ``table`` again as ``create`` defines it, with its rows and rowids and its
-    indexes: SQLite cannot add a constraint to a table. Only for small tables: the rows are
-    copied. A row the new definition refuses fails the step with ``RefusedRowError``."""
+    """Make ``table`` again as ``create`` defines it, with its rows and rowids, its indexes
+    and triggers, the other tables' triggers and the views that name it: SQLite cannot add
+    a constraint to a table. Only for small tables: the rows are copied, one at a time, so
+    that a row the new definition refuses is named in the ``RefusedRowError``."""
     if not create.startswith(f"CREATE TABLE {table} ("):
         raise WorkerError(ErrorKind.INTERNAL, f"a rebuild of {table} needs its CREATE TABLE")
-    indexes = [
+    attached = [
         str(sql)
         for (sql,) in db.execute(
-            "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type='index' AND sql IS NOT NULL"
-            " ORDER BY rowid",
+            "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type IN ('index','trigger')"
+            " AND sql IS NOT NULL ORDER BY rowid",
             (table,),
         )
     ]
-    columns = ", ".join(str(row[1]) for row in db.execute(f"PRAGMA table_info({table})"))
-    db.execute(create.replace(f"CREATE TABLE {table} (", f"CREATE TABLE {table}__new (", 1))
-    try:
-        db.execute(
-            f"INSERT INTO {table}__new (rowid, {columns}) "  # noqa: S608 - the store's own names
-            f"SELECT rowid, {columns} FROM {table} ORDER BY rowid"
+    named = re.compile(rf"\b{re.escape(table)}\b")
+    dependents = [
+        (str(kind), str(name), str(sql))
+        for kind, name, sql in db.execute(
+            "SELECT type, name, sql FROM sqlite_master WHERE type IN ('trigger','view')"
+            " AND tbl_name<>? AND sql IS NOT NULL ORDER BY rowid",
+            (table,),
         )
-    except sqlite3.IntegrityError as error:
-        raise RefusedRowError(f"a row of {table} fails its check ({error})") from None
+        if named.search(str(sql))
+    ]
+    for kind, name, _ in dependents:
+        db.execute(f'DROP {kind.upper()} "{name}"')
+    info = list(db.execute(f"PRAGMA table_info({table})"))
+    columns = ", ".join(str(row[1]) for row in info)
+    key = [str(row[1]) for row in sorted(info, key=lambda row: int(row[5])) if int(row[5])]
+    db.execute(create.replace(f"CREATE TABLE {table} (", f"CREATE TABLE {table}__new (", 1))
+    for (rowid,) in db.execute(f"SELECT rowid FROM {table} ORDER BY rowid").fetchall():  # noqa: S608
+        try:
+            db.execute(
+                f"INSERT INTO {table}__new (rowid, {columns}) "  # noqa: S608 - the store's own names
+                f"SELECT rowid, {columns} FROM {table} WHERE rowid=?",
+                (rowid,),
+            )
+        except sqlite3.IntegrityError as error:
+            values = db.execute(
+                f"SELECT {', '.join(key) or 'rowid'} FROM {table} WHERE rowid=?",  # noqa: S608
+                (rowid,),
+            ).fetchone()
+            named_key = ", ".join(
+                f"{column}={value!r}"
+                for column, value in zip(key or ["rowid"], values, strict=True)
+            )
+            reason = str(error).replace(f"{table}__new", table)
+            raise RefusedRowError(
+                f"the row of {table} with {named_key} fails its check ({reason})"
+            ) from None
     db.execute(f"DROP TABLE {table}")
     db.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
-    for sql in indexes:
+    for sql in attached:
+        db.execute(sql)
+    for _, _, sql in dependents:
         db.execute(sql)
 
 
-def _identifier(column: str) -> str:
-    """SQL for an identifier like ``[A-Za-z0-9][A-Za-z0-9._-]{0,127}``."""
-    return (
-        f"(length({column}) BETWEEN 1 AND 128 AND {column} NOT GLOB '*[^A-Za-z0-9._-]*'"
-        f" AND {column} NOT GLOB '[._-]*')"
+def _identifier(column: str, *, nul: bool = False) -> str:
+    """SQL for an identifier like ``[A-Za-z0-9][A-Za-z0-9._-]{0,127}``; with ``nul``, also
+    one without a NUL, which ``length`` and ``GLOB`` stop at."""
+    check = (
+        f"length({column}) BETWEEN 1 AND 128 AND {column} NOT GLOB '*[^A-Za-z0-9._-]*'"
+        f" AND {column} NOT GLOB '[._-]*'"
     )
+    return f"({check} AND instr({column}, char(0)) = 0)" if nul else f"({check})"
 
 
-def _prefixed(column: str, prefix: str) -> str:
-    """SQL for an ID like ``pub-`` and 24 lower-case hex digits."""
-    return (
-        f"(length({column}) = 28 AND {column} GLOB '{prefix}-*'"
-        f" AND substr({column}, 5) NOT GLOB '*[^0-9a-f]*')"
+def _prefixed(column: str, prefix: str, *, nul: bool = False) -> str:
+    """SQL for an ID like ``pub-`` and 24 lower-case hex digits; with ``nul``, also one
+    without a NUL."""
+    check = (
+        f"length({column}) = 28 AND {column} GLOB '{prefix}-*'"
+        f" AND substr({column}, 5) NOT GLOB '*[^0-9a-f]*'"
     )
+    return f"({check} AND instr({column}, char(0)) = 0)" if nul else f"({check})"
 
 
 _COUNT: Final = "BETWEEN 0 AND 4611686018427387903"
 """A generation or revision: from 0 below 2**62."""
 
 
-def _admission_checks(db: sqlite3.Connection) -> None:
-    """Version 2: capture leases, package gates, recovery marks and provisioning steps
-    check their values when they are written, so reads take them as they are."""
-    for table, create in (
+def _admission_tables(*, nul: bool) -> tuple[tuple[str, str], ...]:
+    """The capture leases', package gates', recovery marks' and provisioning steps'
+    definitions with their checks; ``nul`` also refuses a NUL in an identifier."""
+    return (
         (
             "artifact_capture_leases",
             f"""CREATE TABLE artifact_capture_leases (
-    publication_id TEXT PRIMARY KEY CHECK {_prefixed("publication_id", "pub")},
-    environment_id TEXT NOT NULL CHECK {_identifier("environment_id")},
-    incarnation TEXT NOT NULL CHECK (incarnation = '' OR {_prefixed("incarnation", "inc")}),
-    capture_id TEXT NOT NULL CHECK (capture_id = '' OR {_prefixed("capture_id", "cap")}),
+    publication_id TEXT PRIMARY KEY CHECK {_prefixed("publication_id", "pub", nul=nul)},
+    environment_id TEXT NOT NULL CHECK {_identifier("environment_id", nul=nul)},
+    incarnation TEXT NOT NULL
+        CHECK (incarnation = '' OR {_prefixed("incarnation", "inc", nul=nul)}),
+    capture_id TEXT NOT NULL
+        CHECK (capture_id = '' OR {_prefixed("capture_id", "cap", nul=nul)}),
     phase TEXT NOT NULL CHECK (phase IN ('active', 'held')),
     guest_clean INTEGER NOT NULL CHECK (guest_clean IN (0, 1)),
-    sandbox TEXT NOT NULL CHECK (sandbox = '' OR {_identifier("sandbox")}),
-    sandbox_id TEXT NOT NULL CHECK (sandbox_id = '' OR {_identifier("sandbox_id")}),
+    sandbox TEXT NOT NULL CHECK (sandbox = '' OR {_identifier("sandbox", nul=nul)}),
+    sandbox_id TEXT NOT NULL CHECK (sandbox_id = '' OR {_identifier("sandbox_id", nul=nul)}),
     CHECK ((incarnation = '') = (capture_id = '')),
     CHECK ((sandbox = '') = (sandbox_id = ''))
 ) STRICT""",
@@ -125,7 +162,7 @@ def _admission_checks(db: sqlite3.Connection) -> None:
     environment_id TEXT PRIMARY KEY,
     generation INTEGER NOT NULL CHECK (generation {_COUNT}),
     mode TEXT NOT NULL CHECK (mode IN ('ready', 'hold', 'needs_recovery')),
-    operation TEXT NOT NULL CHECK (operation = '' OR {_identifier("operation")}),
+    operation TEXT NOT NULL CHECK (operation = '' OR {_identifier("operation", nul=nul)}),
     revision INTEGER CHECK (revision IS NULL OR revision {_COUNT}),
     binding TEXT NOT NULL DEFAULT '' CHECK (length(CAST(binding AS BLOB)) <= 4096),
     CHECK (mode != 'ready' OR operation = ''),
@@ -137,7 +174,7 @@ def _admission_checks(db: sqlite3.Connection) -> None:
             f"""CREATE TABLE package_status (
     environment_id TEXT PRIMARY KEY,
     status TEXT NOT NULL CHECK (status = 'needs_recovery'),
-    provision_id TEXT NOT NULL CHECK {_identifier("provision_id")},
+    provision_id TEXT NOT NULL CHECK {_identifier("provision_id", nul=nul)},
     revision INTEGER CHECK (revision IS NULL OR revision {_COUNT})
 ) STRICT""",
         ),
@@ -151,11 +188,36 @@ def _admission_checks(db: sqlite3.Connection) -> None:
     PRIMARY KEY (provision_id, operation_id)
 ) STRICT""",
         ),
-    ):
+    )
+
+
+def _admission_checks(db: sqlite3.Connection) -> None:
+    """Version 2: capture leases, package gates, recovery marks and provisioning steps
+    check their values when they are written, so reads take them as they are."""
+    for table, create in _admission_tables(nul=False):
         rebuild(db, table, create)
 
 
-MIGRATIONS: list[Migration] = [_admission_checks]
+def _nul_checks_and_clears(db: sqlite3.Connection) -> None:
+    """Version 3: those identifiers refuse a NUL too, and the capture leases an operator
+    clears are recorded (``captures --clear``)."""
+    for table, create in _admission_tables(nul=True):
+        rebuild(db, table, create)
+    db.execute(
+        """CREATE TABLE capture_clears (
+    cleared_at TEXT NOT NULL,
+    publication_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    incarnation TEXT NOT NULL,
+    capture_id TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    sandbox TEXT NOT NULL,
+    sandbox_id TEXT NOT NULL
+) STRICT"""
+    )
+
+
+MIGRATIONS: list[Migration] = [_admission_checks, _nul_checks_and_clears]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 
 _STATE: Final = (
@@ -275,8 +337,8 @@ def prepare(path: Path, db: sqlite3.Connection) -> None:
                     raise WorkerError(
                         ErrorKind.UNAVAILABLE,
                         f"{path} stays at version {version}: version {number} refuses it, as "
-                        f"{refused}. Release or recycle its sandboxes and discard the state "
-                        "directory, or use the worker that made it",
+                        f"{refused}. With the worker stopped, repair or delete that row, or use "
+                        "the worker that made the store",
                     ) from None
                 version = number
             db.execute(f"PRAGMA user_version={latest()}")

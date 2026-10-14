@@ -4,7 +4,9 @@
 The worker holds the lock for as long as it runs, so nothing it finds in its state at
 startup belongs to a process still running. Operator commands that change that state,
 such as clearing a capture lease, take the same lock, so they refuse while a worker
-runs.
+runs. The lock is on the file's inode: never delete ``worker.lock``, or a second worker
+could lock a new one, and keep the state directory on a local file system, where
+``flock`` holds between processes (not NFS).
 """
 
 from __future__ import annotations
@@ -36,6 +38,16 @@ class StateLock:
         except BaseException:
             os.close(descriptor)
             raise
+        try:
+            replaced = os.stat(self.path).st_ino != os.fstat(descriptor).st_ino
+        except FileNotFoundError:
+            replaced = True
+        if replaced:
+            os.close(descriptor)
+            raise SettingsError(
+                f"{self.path} was removed or replaced while it was being locked; a running "
+                "worker may hold the old one, so never delete the lock file"
+            )
         self._descriptor: int | None = descriptor
 
     def release(self) -> None:

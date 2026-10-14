@@ -146,17 +146,19 @@ class WorkerParts:
 
     async def close(self) -> None:
         """Stop the provisioner and the manager, then close every store, after the app."""
-        await self.provisioner.close()
-        await self.manager.close()
-        if self.provisioner.permissions is not None:
-            self.provisioner.permissions.close()
-        self.store.close()
-        self.documents.close()
-        if self.shared is not None:
-            self.shared.records.close()
-        if self.environments is not None:
-            self.environments.close()
-        self.lock.release()
+        try:
+            await self.provisioner.close()
+            await self.manager.close()
+            if self.provisioner.permissions is not None:
+                self.provisioner.permissions.close()
+            self.store.close()
+            self.documents.close()
+            if self.shared is not None:
+                self.shared.records.close()
+            if self.environments is not None:
+                self.environments.close()
+        finally:
+            self.lock.release()
 
 
 def build_worker(settings: Settings, token: str, *, clock: Clock = SYSTEM_CLOCK) -> WorkerParts:

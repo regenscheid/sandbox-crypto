@@ -200,8 +200,58 @@ def test_a_row_the_checks_refuse_leaves_the_store_at_its_version(
         )
         before = list(db.iterdump())
     monkeypatch.setattr(schema, "MIGRATIONS", shipped)
-    with pytest.raises(WorkerError, match=r"stays at version 1.*package_execution_gates"):
+    with pytest.raises(
+        WorkerError, match=r"stays at version 1.*package_execution_gates"
+    ) as refused:
         Store(path)
+    # It names the row and says what to do with it; the rebuild's own table name stays out.
+    assert "environment_id='env1'" in refused.value.message
+    assert "repair or delete that row" in refused.value.message
+    assert "__new" not in refused.value.message
     with raw(path) as db:
         assert list(db.iterdump()) == before
     assert pragmas(path) == (schema.BASELINE, schema.APPLICATION_ID)
+
+
+def test_a_rebuild_keeps_the_tables_triggers_and_the_views_and_triggers_that_name_it(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "worker.sqlite3"
+    Store(path).close()
+    with raw(path) as db:
+        db.execute("CREATE TABLE audit (note TEXT)")
+        db.execute(
+            "CREATE TRIGGER status_audit AFTER INSERT ON package_status"
+            " BEGIN INSERT INTO audit VALUES (NEW.environment_id); END"
+        )
+        db.execute(
+            "CREATE TRIGGER audit_status AFTER INSERT ON audit"
+            " BEGIN SELECT count(*) FROM package_status; END"
+        )
+        db.execute("CREATE VIEW marked AS SELECT environment_id FROM package_status")
+        db.execute("BEGIN")
+        schema.rebuild(
+            db,
+            "package_status",
+            "CREATE TABLE package_status (environment_id TEXT PRIMARY KEY, status TEXT NOT NULL,"
+            " provision_id TEXT NOT NULL, revision INTEGER) STRICT",
+        )
+        db.execute("COMMIT")
+        names = {
+            str(row[0])
+            for row in db.execute("SELECT name FROM sqlite_master WHERE type IN ('trigger','view')")
+        }
+        assert names == {"status_audit", "audit_status", "marked"}
+        db.execute("INSERT INTO package_status VALUES ('env1','needs_recovery','prv-first',1)")
+        assert db.execute("SELECT note FROM audit").fetchall() == [("env1",)]
+        assert db.execute("SELECT environment_id FROM marked").fetchall() == [("env1",)]
+
+
+def test_an_identifier_with_a_nul_is_refused_when_written(tmp_path: Path) -> None:
+    path = tmp_path / "worker.sqlite3"
+    Store(path).close()
+    with raw(path) as db, pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        db.execute(
+            "INSERT INTO package_status VALUES ('env1', 'needs_recovery', ?, 1)",
+            ("prv-first\x00tail",),
+        )
