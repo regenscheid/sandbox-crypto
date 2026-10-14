@@ -6,9 +6,9 @@
 
 A tier is a marker expression. Pull requests run ``fast`` and ``slow``, each in a job
 of its own; pushes to main and the nightly run also run the whole suite serially, with
-no marker filter, on every supported Python. ``check`` also fails when a tracked
-``test_*.py`` file yields no test at all, so a file outside ``testpaths`` is not
-silently left out.
+no marker filter, on every supported Python. ``check`` also fails when a ``test_*.py``
+file (tracked, or new and not ignored) yields no test at all, so a file outside
+``testpaths`` is not silently left out.
 """
 
 from __future__ import annotations
