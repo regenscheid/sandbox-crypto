@@ -29,6 +29,7 @@ import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
     EnvironmentRequest,
     EnvironmentState,
     ErrorKind,
@@ -41,8 +42,8 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.policy import HardFloor
+from sandbox_science.testing import FakeClock
 from sandbox_science.worker import environments as environments_module
-from sandbox_science.worker import suspend as suspend_module
 from sandbox_science.worker.admission import (
     MAX_DRAFTS,
     MAX_ENDPOINTS,
@@ -310,8 +311,15 @@ def variant(tmp_path: Path, name: str, *, extra_rule: bool = False, providers: b
 
 
 class Setup:
-    def __init__(self, tmp_path: Path, sandboxes: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        tmp_path: Path,
+        sandboxes: dict[str, str] | None = None,
+        clock: FakeClock | None = None,
+        **timeouts: float,
+    ) -> None:
         self.tmp = tmp_path
+        self.clock = clock
         self.fake = Fake(tmp_path)
         ceiling = tmp_path / "pool-ceiling.yaml"
         ceiling.write_text("apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n")
@@ -330,7 +338,12 @@ class Setup:
         env = {"FAKE_OPENSHELL_STATE": str(self.fake.path), "PATH": os.environ["PATH"]}
         assert self.settings.environments is not None
         self.environments = Environments(
-            self.settings, self.settings.environments, self.state_dir, env
+            self.settings,
+            self.settings.environments,
+            self.state_dir,
+            env,
+            clock=clock or SYSTEM_CLOCK,
+            **timeouts,
         )
         self.released: list[str] = []
 
@@ -339,6 +352,10 @@ class Setup:
 
         self.environments.release = release
         self.policy = self.add(EXAMPLE)
+
+    def fake_clock(self) -> FakeClock:
+        assert self.clock is not None, "these environments run on the system clock"
+        return self.clock
 
     def add(self, path: Path) -> str:
         return self.environments.store.add_policy(path.read_bytes()).digest
@@ -356,6 +373,12 @@ class Setup:
 @pytest_asyncio.fixture
 async def setup(tmp_path: Path) -> Setup:
     return Setup(tmp_path)
+
+
+@pytest_asyncio.fixture
+async def paused(tmp_path: Path) -> Setup:
+    """Environments whose time moves only when the test advances it."""
+    return Setup(tmp_path, clock=FakeClock(datetime.now(UTC)))
 
 
 async def test_create_compiles_attaches_exactly_the_listed_providers_and_binds(
@@ -1103,12 +1126,11 @@ async def test_recycle_stop_failure_is_not_recorded_as_confirmed_stopped(setup: 
 
 
 async def test_recycle_waits_for_actual_stop_and_refuses_changed_identity(
-    setup: Setup, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
+    setup = Setup(tmp_path, resume_timeout=0.1, poll_seconds=0.01)
     info, _ = await setup.environments.create(setup.request())
     setup.fake.update(phase_on_stop="Ready")
-    monkeypatch.setattr(environments_module, "_RESUME_TIMEOUT", 0.1)
-    monkeypatch.setattr(environments_module, "_POLL_SECONDS", 0.01)
     with pytest.raises(WorkerError, match="did not confirm stopping"):
         await setup.environments.recycle_executor("env-1", info.sandbox, info.sandbox_id or "")
     assert setup.environments.get("env-1").state is EnvironmentState.READY
@@ -1238,7 +1260,9 @@ def age(setup: Setup, environment_id: str, seconds: float) -> None:
     """Pretend the environment last changed ``seconds`` ago."""
     info = setup.environments.get(environment_id)
     setup.environments.records.save(
-        info.model_copy(update={"updated_at": datetime.now(UTC) - timedelta(seconds=seconds)})
+        info.model_copy(
+            update={"updated_at": setup.environments.clock.now() - timedelta(seconds=seconds)}
+        )
     )
 
 
@@ -1252,22 +1276,25 @@ class StubManager:
         return self.activities.get(environment_id)
 
 
-async def test_the_suspender_stops_only_idle_environments(setup: Setup) -> None:
+async def test_the_suspender_stops_only_idle_environments(paused: Setup) -> None:
+    clock = paused.fake_clock()
     for name in ("idle", "running", "computing", "unknown", "quiet", "recent"):
-        await setup.environments.create(setup.request(f"env-{name}"))
-        age(setup, f"env-{name}", 100)
-    setup.environments.release_idle = always
+        await paused.environments.create(paused.request(f"env-{name}"))
+        age(paused, f"env-{name}", 100)
+    paused.environments.release_idle = always
     stub = StubManager()
-    long_ago = time.monotonic() - 100
+    long_ago = clock.monotonic() - 100
     stub.activities = {
         "env-idle": Activity(long_ago, 0, None, 0),
         "env-running": Activity(long_ago, 1, 2.0, 1),
         "env-computing": Activity(long_ago, 0, 1.0, 1),
         "env-unknown": None,
         "env-quiet": Activity(long_ago, 0, 3.0, 1),
-        "env-recent": Activity(time.monotonic(), 0, None, 0),
+        "env-recent": Activity(clock.monotonic(), 0, None, 0),
     }
-    suspender = Suspender(setup.environments, cast(ExecutionManager, stub), 10.0, interval=1)
+    suspender = Suspender(
+        paused.environments, cast(ExecutionManager, stub), 10.0, interval=1, clock=clock
+    )
     suspender.started = long_ago
     # An executor's CPU needs two samples to tell.
     assert await suspender.check() == ["env-idle"]
@@ -1276,7 +1303,7 @@ async def test_the_suspender_stops_only_idle_environments(setup: Setup) -> None:
     states = {
         info.environment_id: info.state
         for name in ("idle", "running", "computing", "unknown", "quiet", "recent")
-        if (info := setup.environments.get(f"env-{name}"))
+        if (info := paused.environments.get(f"env-{name}"))
     }
     assert {name for name, state in states.items() if state is EnvironmentState.STOPPED} == {
         "env-idle",
@@ -1284,32 +1311,35 @@ async def test_the_suspender_stops_only_idle_environments(setup: Setup) -> None:
     }
 
 
-async def test_a_failed_suspension_leaves_the_others_to_go_on(setup: Setup) -> None:
+async def test_a_failed_suspension_leaves_the_others_to_go_on(paused: Setup) -> None:
+    clock = paused.fake_clock()
     for name in ("a", "b"):
-        await setup.environments.create(setup.request(f"env-{name}"))
-        age(setup, f"env-{name}", 100)
-    setup.environments.release_idle = always
+        await paused.environments.create(paused.request(f"env-{name}"))
+        age(paused, f"env-{name}", 100)
+    paused.environments.release_idle = always
     stub = StubManager()
-    long_ago = time.monotonic() - 100
+    long_ago = clock.monotonic() - 100
     stub.activities = {name: Activity(long_ago, 0, None, 0) for name in ("env-a", "env-b")}
-    suspender = Suspender(setup.environments, cast(ExecutionManager, stub), 10.0, interval=1)
+    suspender = Suspender(
+        paused.environments, cast(ExecutionManager, stub), 10.0, interval=1, clock=clock
+    )
     suspender.started = long_ago
-    real = setup.environments.cli.run
+    real = paused.environments.cli.run
 
     async def flaky(*args: str, timeout: float = 120.0) -> str:
-        if args[:2] == ("sandbox", "stop") and args[2] == setup.environments.get("env-a").sandbox:
+        if args[:2] == ("sandbox", "stop") and args[2] == paused.environments.get("env-a").sandbox:
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox stop failed")
         return await real(*args, timeout=timeout)
 
-    setup.environments.cli.run = flaky
+    paused.environments.cli.run = flaky
     assert await suspender.check() == ["env-b"]
     # Recorded stopped before the stop failed: its next use finds the sandbox still
     # ready, and carries on without starting it (review finding 2).
-    assert setup.environments.get("env-a").state is EnvironmentState.STOPPED
-    setup.environments.cli.run = real
-    await setup.environments.resume("env-a")
-    assert setup.environments.get("env-a").state is EnvironmentState.READY
-    assert setup.fake.calls("sandbox", "start") == []
+    assert paused.environments.get("env-a").state is EnvironmentState.STOPPED
+    paused.environments.cli.run = real
+    await paused.environments.resume("env-a")
+    assert paused.environments.get("env-a").state is EnvironmentState.READY
+    assert paused.fake.calls("sandbox", "start") == []
 
 
 async def test_admission_notices_say_what_was_admitted_and_refused(setup: Setup) -> None:
@@ -1350,27 +1380,33 @@ async def test_operators_can_list_an_environments_admissions(
     assert main(["admissions", "--settings", str(settings), "--environment", "nope"]) == 1
 
 
-async def test_a_new_environment_gets_its_full_idle_time(setup: Setup) -> None:
+async def test_a_new_environment_gets_its_full_idle_time(paused: Setup) -> None:
+    clock = paused.fake_clock()
     # The worker has run for long, but the environment was created just now (review 3).
-    await setup.environments.create(setup.request())
-    setup.environments.release_idle = always
+    await paused.environments.create(paused.request())
+    paused.environments.release_idle = always
     stub = StubManager()
-    long_ago = time.monotonic() - 1000
+    long_ago = clock.monotonic() - 1000
     stub.activities = {"env-1": Activity(None, 0, None, 0)}
-    suspender = Suspender(setup.environments, cast(ExecutionManager, stub), 60.0, interval=1)
+    suspender = Suspender(
+        paused.environments, cast(ExecutionManager, stub), 60.0, interval=1, clock=clock
+    )
     suspender.started = long_ago
     assert await suspender.check() == []
-    age(setup, "env-1", 120)
+    clock.advance(120)
     assert await suspender.check() == ["env-1"]
 
 
-async def test_a_cpu_counter_that_drops_or_restarts_is_no_sign_of_idleness(setup: Setup) -> None:
-    await setup.environments.create(setup.request())
-    age(setup, "env-1", 100)
-    setup.environments.release_idle = always
+async def test_a_cpu_counter_that_drops_or_restarts_is_no_sign_of_idleness(paused: Setup) -> None:
+    clock = paused.fake_clock()
+    await paused.environments.create(paused.request())
+    age(paused, "env-1", 100)
+    paused.environments.release_idle = always
     stub = StubManager()
-    long_ago = time.monotonic() - 100
-    suspender = Suspender(setup.environments, cast(ExecutionManager, stub), 10.0, interval=1)
+    long_ago = clock.monotonic() - 100
+    suspender = Suspender(
+        paused.environments, cast(ExecutionManager, stub), 10.0, interval=1, clock=clock
+    )
     suspender.started = long_ago
     stub.activities = {"env-1": Activity(long_ago, 0, 50.0, 1, "inc-a")}
     assert await suspender.check() == []  # a first sample
@@ -1382,13 +1418,14 @@ async def test_a_cpu_counter_that_drops_or_restarts_is_no_sign_of_idleness(setup
 
 
 async def test_an_executor_that_does_not_answer_holds_up_no_other(
-    setup: Setup, monkeypatch: pytest.MonkeyPatch
+    paused: Setup,
 ) -> None:
+    clock = paused.fake_clock()
     for name in ("frozen", "idle"):
-        await setup.environments.create(setup.request(f"env-{name}"))
-        age(setup, f"env-{name}", 100)
-    setup.environments.release_idle = always
-    long_ago = time.monotonic() - 100
+        await paused.environments.create(paused.request(f"env-{name}"))
+        age(paused, f"env-{name}", 100)
+    paused.environments.release_idle = always
+    long_ago = clock.monotonic() - 100
 
     class Frozen(StubManager):
         async def activity(self, environment_id: str) -> Activity | None:
@@ -1396,12 +1433,16 @@ async def test_an_executor_that_does_not_answer_holds_up_no_other(
                 await asyncio.sleep(3600)
             return Activity(long_ago, 0, None, 0)
 
-    monkeypatch.setattr(suspend_module, "SAMPLE_TIMEOUT", 0.2)
-    suspender = Suspender(setup.environments, cast(ExecutionManager, Frozen()), 10.0, interval=1)
+    suspender = Suspender(
+        paused.environments,
+        cast(ExecutionManager, Frozen()),
+        10.0,
+        interval=1,
+        sample_timeout=0.2,
+        clock=clock,
+    )
     suspender.started = long_ago
-    started = time.monotonic()
-    assert await suspender.check() == ["env-idle"]
-    assert time.monotonic() - started < 5
+    assert await asyncio.wait_for(suspender.check(), 10) == ["env-idle"]
 
 
 async def test_a_sandbox_in_a_dead_phase_fails_fast_and_backs_off(setup: Setup) -> None:
@@ -2394,3 +2435,10 @@ async def test_required_original_binding_guard_precedes_guest_delete(
     finally:
         await manager.close()
         store.close()
+
+
+@pytest.mark.parametrize("name", ["poll_seconds", "resume_timeout", "start_backoff"])
+async def test_environment_waits_must_be_positive(tmp_path: Path, name: str) -> None:
+    waits: dict[str, float] = {name: 0.0}
+    with pytest.raises(ValueError, match=name):
+        Setup(tmp_path, None, None, **waits)

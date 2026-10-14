@@ -16,11 +16,13 @@ import logging
 import math
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, cast
+from dataclasses import dataclass
+from typing import Any, Final, cast
 
 from sandbox_science.contracts import ErrorKind, new_id
 
 from .errors import ExecutorRefusalError, WorkerError
+from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
 
@@ -35,6 +37,22 @@ WRITE_TIMEOUT = 30.0
 CLOSE_GRACE = 15.0
 """Seconds an executor gets to stop its commands and kernels once its stdin closes."""
 MAX_ERROR_MESSAGE = 2000
+
+
+@dataclass(frozen=True)
+class ChannelTimeouts:
+    """Seconds a channel waits for its executor; the defaults are the production values."""
+
+    write: float = WRITE_TIMEOUT
+    close_grace: float = CLOSE_GRACE
+
+    def __post_init__(self) -> None:
+        seconds("write", self.write)
+        seconds("close_grace", self.close_grace)
+
+
+CHANNEL_TIMEOUTS: Final = ChannelTimeouts()
+"""The production values."""
 
 _STRING = re.compile(rb'"[^"\\]*(?:\\.[^"\\]*)*"')
 _SURROGATE_ESCAPE = re.compile(r"\\u[dD][89a-fA-F]")
@@ -109,8 +127,10 @@ class ExecutorChannel:
         *,
         env: Mapping[str, str] | None = None,
         daemon_token: str | None = None,
+        timeouts: ChannelTimeouts = CHANNEL_TIMEOUTS,
     ) -> None:
         self.daemon_token = daemon_token
+        self.timeouts = timeouts
         self.detaching = False
         self.bridge_id = new_id("bridge")
         self.argv = list(argv)
@@ -176,7 +196,7 @@ class ExecutorChannel:
         line = json.dumps({"id": request_id, "op": op, **fields}, separators=(",", ":")) + "\n"
         try:
             try:
-                async with asyncio.timeout(WRITE_TIMEOUT), self._write_lock:
+                async with asyncio.timeout(self.timeouts.write), self._write_lock:
                     process.stdin.write(line.encode())
                     await process.stdin.drain()
             except TimeoutError as exc:
@@ -212,7 +232,7 @@ class ExecutorChannel:
         """Stop the daemon and its processes, then the bridge (environment lifecycle)."""
         if self.daemon_token is not None and not self.closed:
             with contextlib.suppress(WorkerError):
-                await self.request("daemon_shutdown", reply_timeout=CLOSE_GRACE)
+                await self.request("daemon_shutdown", reply_timeout=self.timeouts.close_grace)
         self.detaching = True
         await self.close()
 
@@ -239,9 +259,10 @@ class ExecutorChannel:
             with contextlib.suppress(Exception):
                 process.stdin.close()
         try:
-            await asyncio.wait_for(process.wait(), CLOSE_GRACE)
+            await asyncio.wait_for(process.wait(), self.timeouts.close_grace)
         except TimeoutError:
-            _log.warning("the executor did not exit within %g s; killing it", CLOSE_GRACE)
+            grace = self.timeouts.close_grace
+            _log.warning("the executor did not exit within %g s; killing it", grace)
             with contextlib.suppress(ProcessLookupError):
                 process.kill()
             await process.wait()

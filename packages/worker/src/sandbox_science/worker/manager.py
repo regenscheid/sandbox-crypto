@@ -22,7 +22,6 @@ import mimetypes
 import posixpath
 import re
 import sqlite3
-import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -36,10 +35,12 @@ from typing import Any, TypeVar, cast
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
     TERMINAL_STATES,
     ArtifactRef,
     Capabilities,
     CellRequest,
+    Clock,
     ErrorInfo,
     ErrorKind,
     Event,
@@ -106,14 +107,13 @@ from .package_gate import refusal as recovery_refusal
 from .revisions import Prepared, Revisions, package_commands
 from .shared_sync import SharedSync
 from .store import CaptureLease, KernelRecord, Store
+from .timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
 _REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
 _SOURCE_EVENT: ContextVar[tuple[str, int] | None] = ContextVar("executor_source", default=None)
 
-SHARED_TIMEOUT = 120.0
-"""The longest one step of the shared files' sync may take around a call (D79)."""
 MAX_HELD_NOTICES = 20
 """Sync notices held for one call's or one session's next result."""
 MAX_HELD_BYTES = 16 * 1024
@@ -122,24 +122,8 @@ _UNSYNCED = (
     "shared/ could not be synced with the project's other environments just now; "
     "it is synced again at the next call"
 )
-WATCHDOG_GRACE = 30.0
-"""Seconds past an execution's own limit before the worker cancels it itself."""
-CANCEL_GRACE = 30.0
-"""Seconds to confirm job cancellation before abandoning its executor connection."""
-LOST_GRACE = 60.0
-"""Seconds after that cancel before the worker gives the attempt up as lost."""
-RECOVERY_RETRY = 0.2
-"""Seconds before a failed recovery attempt is repeated; the wait doubles each time."""
-RECOVERY_RETRY_MAX = 30.0
-"""The longest wait between recovery attempts."""
 STARTUP_RECOVERY_ATTEMPTS = 5
 """Recovery attempts at startup before the worker refuses to start."""
-POLL_INTERVAL = 0.1
-"""Seconds between the daemon poller's rounds."""
-POLL_RETRY_MAX = 10.0
-"""The longest wait after rounds of the poller that failed unexpectedly."""
-RETAIN_LIVE = 600.0
-"""Seconds a finished execution stays in memory for clients still streaming it."""
 EVENT_PAGE = 64
 """Events read from the store at a time when a client replays a stream."""
 OUTPUT_BUDGET = 4
@@ -160,18 +144,12 @@ MAX_EXECUTION_LOCKFILES = 4
 """Lockfiles one execution's ``revision`` events may bring or have asked for: one for each
 attempt whose package commands made a change. A revision left without one gets the
 current lockfile asked for instead, while it is current."""
-LOCKFILE_TIMEOUT = 120.0
-"""Seconds the executor gets to send the current revision's lockfile."""
 _EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
 
 
 class _DaemonIncarnationError(WorkerError):
     def __init__(self) -> None:
         super().__init__(ErrorKind.UNAVAILABLE, "the sandbox executor incarnation was lost")
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 def _integer(value: object, low: int = -(2**31), high: int = 2**31 - 1) -> int | None:
@@ -248,8 +226,8 @@ class _Environment:
     languages: tuple[str, ...] = ()
     features: tuple[str, ...] = ()
     running: set[str] = field(default_factory=set[str])
-    last_used: float = field(default_factory=time.monotonic)
-    """Last ordinary use, by the monotonic clock; passive observers never refresh it."""
+    last_used: float = field(kw_only=True)
+    """Last ordinary use, by the manager's clock; passive observers never refresh it."""
     requests: int = 0
     """Ordinary requests in flight: files, publication and explicit kernel operations."""
 
@@ -261,8 +239,6 @@ class _KernelObserver:
     """A matching session close invalidates only this active, bounded observation."""
 
 
-KERNEL_OBSERVATION_TIMEOUT = 2.0
-"""Whole existing-channel RPC budget, including the transport write lock."""
 MAX_KERNEL_OBSERVATIONS = 8
 """No queued observers, and at most one in flight for each environment."""
 
@@ -323,6 +299,8 @@ class ExecutionManager:
         package_cache: str | None = None,
         capture_timeout: float = 30.0,
         capture_ack_timeout: float = 1.0,
+        timeouts: ManagerTimeouts = MANAGER_TIMEOUTS,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         for name, value in (
             ("capture_timeout", capture_timeout),
@@ -332,6 +310,9 @@ class ExecutionManager:
                 raise ValueError(f"{name} must be between 0.05 and 60 seconds")
         self.store = store
         self.backend = backend
+        self.timeouts = timeouts
+        self.clock = clock
+        """Time as the manager sees it: idle times, deadlines and execution watchdogs."""
         self.blobs = blobs
         self.shared = shared
         """Keeps the project's shared files in step across its environments (D79)."""
@@ -538,7 +519,7 @@ class ExecutionManager:
         if environment_id in self._recovering or self._closing:
             return
         self._recovering.add(environment_id)
-        delay = RECOVERY_RETRY
+        delay = self.timeouts.recovery_retry
         try:
             for attempt in itertools.count(1):
                 try:
@@ -556,7 +537,7 @@ class ExecutionManager:
                         "cannot reconcile the sandbox daemon; startup refused",
                     )
                 await asyncio.sleep(delay)
-                delay = min(2 * delay, RECOVERY_RETRY_MAX)
+                delay = min(2 * delay, self.timeouts.recovery_retry_max)
         finally:
             self._recovering.discard(environment_id)
         if startup and not self._closing and self._unattached(environment_id):
@@ -586,7 +567,7 @@ class ExecutionManager:
             elapsed = max(
                 0.0,
                 (
-                    _now() - (live.execution.started_at or live.execution.submitted_at)
+                    self.clock.now() - (live.execution.started_at or live.execution.submitted_at)
                 ).total_seconds(),
             )
             live.watchdog = self._spawn(self._watch(live, request.timeout_seconds - elapsed))
@@ -639,7 +620,7 @@ class ExecutionManager:
                 if live.cancel_watchdog is None or live.cancel_watchdog.done():
                     live.cancel_watchdog = self._spawn(self._watch_cancel(live))
                 try:
-                    async with asyncio.timeout(CANCEL_GRACE):
+                    async with asyncio.timeout(self.timeouts.cancel_grace):
                         await self._send_cancel(live)
                         if live.execution.origin is not None:
                             # Withdrawn provisioning ownership cannot leave an
@@ -670,7 +651,7 @@ class ExecutionManager:
             key for key, live in self._live.items() if live.execution.state not in TERMINAL_STATES
         }
         try:
-            async with asyncio.timeout(CANCEL_GRACE):
+            async with asyncio.timeout(self.timeouts.cancel_grace):
                 reply = await channel.request("active")
                 raw: Any = reply.get("executions")
                 if (
@@ -726,7 +707,7 @@ class ExecutionManager:
         A failed bridge is closed, which starts a recovery. Any other failure, such as
         one of the store, is logged and the poller goes on, waiting longer while it lasts.
         """
-        delay = POLL_INTERVAL
+        delay = self.timeouts.poll_interval
         while not self._closing and not channel.closed:
             try:
                 for live in list(self._live.values()):
@@ -736,13 +717,13 @@ class ExecutionManager:
                         and live.final is None
                     ):
                         await self._replay(live, channel)
-                delay = POLL_INTERVAL
+                delay = self.timeouts.poll_interval
             except WorkerError:
                 await channel.close()
                 return
             except Exception:
                 _log.exception("polling the executor of %s failed", environment_id)
-                delay = min(2 * delay, POLL_RETRY_MAX)
+                delay = min(2 * delay, self.timeouts.poll_retry_max)
             await asyncio.sleep(delay)
 
     async def release(self, environment_id: str) -> None:
@@ -957,7 +938,7 @@ class ExecutionManager:
 
     def _emit(self, live: _Live, make: Callable[[int, datetime], Event]) -> None:
         seq = live.execution.last_seq + 1
-        event = make(seq, _now())
+        event = make(seq, self.clock.now())
         live.execution = live.execution.model_copy(update={"last_seq": seq})
         source = _SOURCE_EVENT.get()
         acknowledged = (
@@ -997,12 +978,14 @@ class ExecutionManager:
         environment = self._environments.get(live.environment_id)
         if environment is not None:
             environment.running.discard(execution_id)
-            environment.last_used = time.monotonic()
+            environment.last_used = self.clock.monotonic()
         if live.watchdog is not None and live.watchdog is not asyncio.current_task():
             live.watchdog.cancel()
         if live.cancel_watchdog is not None and live.cancel_watchdog is not asyncio.current_task():
             live.cancel_watchdog.cancel()
-        asyncio.get_running_loop().call_later(RETAIN_LIVE, self._live.pop, execution_id, None)
+        asyncio.get_running_loop().call_later(
+            self.timeouts.retain_live, self._live.pop, execution_id, None
+        )
 
     def _final(
         self, execution: Execution, state: ExecutionState, result: Result
@@ -1022,7 +1005,7 @@ class ExecutionManager:
             (state, _shrunk(result)),
             (ExecutionState.FAILED, unstorable),
         )
-        now = _now()
+        now = self.clock.now()
         seq = execution.last_seq
         for final_state, candidate in candidates:
             final = execution.model_copy(
@@ -1064,7 +1047,9 @@ class ExecutionManager:
             if fence is not None:
                 await asyncio.shield(fence)
                 continue
-            environment = self._environments.setdefault(environment_id, _Environment())
+            environment = self._environments.setdefault(
+                environment_id, _Environment(last_used=self.clock.monotonic())
+            )
             if self.store.recycle_needed(environment_id):
                 async with environment.lock:
                     if not self.store.recycle_needed(environment_id):
@@ -1073,7 +1058,7 @@ class ExecutionManager:
                 await asyncio.shield(fence)
                 continue
             # Marked used before anything waits, so that suspension leaves it alone.
-            environment.last_used = time.monotonic()
+            environment.last_used = self.clock.monotonic()
             if environment.channel is None or environment.channel.closed:
                 # Outside the lock: preparing may start a stopped sandbox under the
                 # environments' own lock, which suspension holds while it takes this one.
@@ -1292,7 +1277,7 @@ class ExecutionManager:
 
     async def _fetch_lockfile(self, environment_id: str, channel: ExecutorChannel) -> None:
         try:
-            reply = await channel.request("lockfile", reply_timeout=LOCKFILE_TIMEOUT)
+            reply = await channel.request("lockfile", reply_timeout=self.timeouts.lockfile)
         except WorkerError as error:
             _log.info("environment %s: no lockfile from its executor: %s", environment_id, error)
             return
@@ -1365,7 +1350,7 @@ class ExecutionManager:
             yield channel
         finally:
             environment.requests -= 1
-            environment.last_used = time.monotonic()
+            environment.last_used = self.clock.monotonic()
 
     async def _on_closed(self, environment_id: str, channel: ExecutorChannel) -> None:
         self._channels.discard(channel)
@@ -1497,7 +1482,7 @@ class ExecutionManager:
             kind=request.kind,
             context=request.context,
             state=ExecutionState.QUEUED,
-            submitted_at=_now(),
+            submitted_at=self.clock.now(),
             origin=origin,
             job=job,
         )
@@ -1537,7 +1522,7 @@ class ExecutionManager:
         environment = self._environments.get(live.environment_id)
         if environment is not None:
             environment.running.discard(live.execution.execution_id)
-            environment.last_used = time.monotonic()
+            environment.last_used = self.clock.monotonic()
         self._finish(live, ExecutionState.FAILED, Result(error=error))
 
     async def _send(self, live: _Live, request: ExecutionRequest) -> None:
@@ -1628,7 +1613,7 @@ class ExecutionManager:
                 package_operation=live.execution.origin, package_generation=gate.generation
             )
         live.dispatched = True
-        live.dispatched_at = time.monotonic()
+        live.dispatched_at = self.clock.monotonic()
         live.channel = channel
         identity = self.daemon_identity(live.environment_id) if self.daemon_identity else None
         if channel.daemon_token is not None and (
@@ -1645,13 +1630,13 @@ class ExecutionManager:
             self._poll(request.context.environment_id, channel)
 
     async def _watch(self, live: _Live, timeout: float) -> None:
-        await asyncio.sleep(max(0, timeout + WATCHDOG_GRACE))
+        await self.clock.sleep(max(0, timeout + self.timeouts.watchdog_grace))
         if live.execution.state in TERMINAL_STATES or live.final is not None:
             return
         _log.warning("execution %s overran its limit; cancelling it", live.execution.execution_id)
         with contextlib.suppress(WorkerError):
             await self.cancel(live.execution.execution_id)
-        await asyncio.sleep(LOST_GRACE)
+        await self.clock.sleep(self.timeouts.lost_grace)
         self._finish(
             live,
             ExecutionState.LOST,
@@ -1732,7 +1717,10 @@ class ExecutionManager:
         kind = message.get("event")
         if kind == "state" and message.get("state") == "running":
             if live.execution.state is ExecutionState.QUEUED:
-                update: dict[str, Any] = {"state": ExecutionState.RUNNING, "started_at": _now()}
+                update: dict[str, Any] = {
+                    "state": ExecutionState.RUNNING,
+                    "started_at": self.clock.now(),
+                }
                 # The revision as it started, which waiting for a package command can change.
                 location = live.execution.location
                 if location is not None and "environment" in message:
@@ -1744,7 +1732,7 @@ class ExecutionManager:
                 event = StateEvent(
                     execution_id=execution_id,
                     seq=live.execution.last_seq + 1,
-                    time=_now(),
+                    time=self.clock.now(),
                     state=ExecutionState.RUNNING,
                 )
 
@@ -1841,7 +1829,7 @@ class ExecutionManager:
             live.final = (state, result)
             if live.cancel_watchdog is not None:
                 live.cancel_watchdog.cancel()
-            live.ended_at = time.monotonic()
+            live.ended_at = self.clock.monotonic()
             if self.shared is None or live.channel is None:
                 self._complete(live, live.notices)
             else:
@@ -1944,7 +1932,7 @@ class ExecutionManager:
         try:
             return await asyncio.wait_for(
                 step(context.project_id, context.environment_id, context.session_id, channel),
-                SHARED_TIMEOUT,
+                self.timeouts.shared,
             )
         except Exception as exc:  # the call goes on with shared/ as it is
             _log.warning(
@@ -2399,7 +2387,7 @@ class ExecutionManager:
         self, context: ExecutionContext, channel: ExecutorChannel, raw: object
     ) -> KernelObservation:
         listing = self._kernel_listing(context, channel, raw)
-        return KernelObservation(**listing.model_dump(), observed_at=_now())
+        return KernelObservation(**listing.model_dump(), observed_at=self.clock.now())
 
     async def observe_kernel_lineage(
         self, request: KernelStatusRequest
@@ -2469,7 +2457,7 @@ class ExecutionManager:
             session_id=context.session_id,
             current_revision=listing.current_revision,
             kernels=tuple(entries),
-            observed_at=_now(),
+            observed_at=self.clock.now(),
         )
 
     async def _passive_kernels(
@@ -2497,12 +2485,12 @@ class ExecutionManager:
         self._kernel_observations[environment_id] = observer
         try:
             try:
-                async with asyncio.timeout(KERNEL_OBSERVATION_TIMEOUT):
+                async with asyncio.timeout(self.timeouts.kernel_observation):
                     reply = await channel.request(
                         operation,
                         session=context.session_id,
                         **(fields or {}),
-                        reply_timeout=KERNEL_OBSERVATION_TIMEOUT,
+                        reply_timeout=self.timeouts.kernel_observation,
                     )
             except TimeoutError as exc:
                 raise WorkerError(
@@ -2556,7 +2544,7 @@ class ExecutionManager:
             await asyncio.gather(*(self.wait(job.execution_id) for job in jobs))
 
         try:
-            await asyncio.wait_for(cancel_all(), CANCEL_GRACE)
+            await asyncio.wait_for(cancel_all(), self.timeouts.cancel_grace)
         except (TimeoutError, WorkerError):
             channels: set[ExecutorChannel] = set()
             for job in jobs:
@@ -2739,7 +2727,7 @@ class ExecutionManager:
 
     async def _watch_cancel(self, live: _Live) -> None:
         """A direct job cancel has its own deadline, independent of the wall-time limit."""
-        await asyncio.sleep(CANCEL_GRACE)
+        await self.clock.sleep(self.timeouts.cancel_grace)
         if live.execution.state in TERMINAL_STATES or live.final is not None:
             return
         channel = live.channel
@@ -2819,7 +2807,7 @@ class ExecutionManager:
             )
         finally:
             environment.requests -= 1
-            environment.last_used = time.monotonic()
+            environment.last_used = self.clock.monotonic()
         raw: object = reply.get("kernels")
         stopped: list[KernelInfo] = []
         for item in cast(list[object], raw) if isinstance(raw, list) else []:
@@ -2921,7 +2909,7 @@ class ExecutionManager:
                         context.session_id,
                         channel,
                         fields,
-                        SHARED_TIMEOUT,
+                        self.timeouts.shared,
                         notices,
                     )
                 finally:  # what the sync found is told even when the write is refused
@@ -2976,7 +2964,7 @@ class ExecutionManager:
         *,
         hashed: bool,
     ) -> _Range:
-        remaining = deadline - time.monotonic()
+        remaining = deadline - self.clock.monotonic()
         if remaining <= 0:
             raise TimeoutError
         capture_id = new_id("cap")
@@ -3154,7 +3142,7 @@ class ExecutionManager:
         environment_id = request.context.environment_id
         if self._closing or environment_id in self._released_environments:
             raise WorkerError(ErrorKind.UNAVAILABLE, "artifact capture admission limit reached")
-        deadline = time.monotonic() + self.capture_timeout
+        deadline = self.clock.monotonic() + self.capture_timeout
         try:
             lease = self.store.reserve_capture(new_id("pub"), environment_id)
         except ValueError as exc:
@@ -3192,7 +3180,7 @@ class ExecutionManager:
         writer: BlobWriter | None = None
         try:
             async with asyncio.timeout_at(
-                asyncio.get_running_loop().time() + max(0, deadline - time.monotonic())
+                asyncio.get_running_loop().time() + max(0, deadline - self.clock.monotonic())
             ):
                 async with self._using(context.environment_id) as channel:
                     protocol = channel.hello.get("artifact_capture_protocol")
@@ -3247,7 +3235,7 @@ class ExecutionManager:
                         request.path,
                         deadline,
                     )
-                    if time.monotonic() >= deadline:
+                    if self.clock.monotonic() >= deadline:
                         raise TimeoutError
                     artifact = ArtifactRef(
                         artifact_id=new_id("art"),
@@ -3257,7 +3245,7 @@ class ExecutionManager:
                         media_type=media_type,
                         source_path=request.path,
                         produced_by=produced_by,
-                        created_at=_now(),
+                        created_at=self.clock.now(),
                     )
                     self.store.insert_artifact(artifact)
                     return artifact

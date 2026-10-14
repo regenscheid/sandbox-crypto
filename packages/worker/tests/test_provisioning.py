@@ -43,6 +43,7 @@ from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import (
     EnvironmentInfo,
+    EnvironmentRevision,
     EnvironmentState,
     Lockfile,
     RevisionHistory,
@@ -657,7 +658,10 @@ async def test_new_executions_wait_while_packages_link_and_running_ones_do_not(
 ) -> None:
     # CP-F7 and CP-12: an execution submitted during an install starts after it.
     await worker.call("op-0", script="true")
-    running = await worker.begin("op-running", "s1", script="sleep 1.5; echo done")
+    # The first call runs until the test lets it end, after the install.
+    later_gate = worker.root.parent / "later"
+    script = f"until [ -e {later_gate} ]; do sleep 0.01; done; echo done"
+    running = await worker.begin("op-running", "s1", script=script)
     await worker.until_state(running, "running")
     gate = worker.root.parent / "gate"
     install = await worker.begin("op-install", "s2", script=f"FAKEPM_GATE={gate} pip install gamma")
@@ -674,6 +678,7 @@ async def test_new_executions_wait_while_packages_link_and_running_ones_do_not(
     assert float(later["result"]["stdout"]["text"]) >= worker.prefix.spans()["gamma"][1]
     assert later["location"]["environment_revision"] == "1"
     assert later["result"]["overlapping_change"] is False
+    later_gate.touch()
     ran = await worker.finish(running)
     assert (ran["state"], ran["result"]["stdout"]["text"]) == ("succeeded", "done\n")
     assert ran["location"]["environment_revision"] == "0"
@@ -724,10 +729,12 @@ async def test_changes_are_recorded_as_managed_or_unmanaged(worker: Worker) -> N
 @pytest.mark.asyncio
 async def test_revision_zero_gets_its_lockfile(worker: Worker) -> None:
     await worker.call("op-0", script="true")
-    deadline = time.monotonic() + 30
-    while (zero := (await worker.revisions()).revisions[0]).lockfile is None:
-        assert time.monotonic() < deadline, "revision 0 never got its lockfile"
-        await asyncio.sleep(0.05)
+
+    async def with_lockfile() -> EnvironmentRevision | None:
+        zero = (await worker.revisions()).revisions[0]
+        return zero if zero.lockfile is not None else None
+
+    zero = await eventually(with_lockfile, describe="revision 0's lockfile")
     lockfile, _ = await worker.lockfile(0)
     assert lockfile.python == ".".join(map(str, sys.version_info[:3]))
     assert lockfile.conda == ()

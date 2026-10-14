@@ -25,12 +25,19 @@ from typing import Any, Literal, Self
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from sandbox_science.contracts import ExecutionContext, ExecutionState
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext, ExecutionState
+from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS
 from sandbox_science.testing import WorkerApi
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import Backend, ClosedHandler, LocalBackend
-from sandbox_science.worker.channel import EventHandler, ExecutorChannel, Message
+from sandbox_science.worker.channel import (
+    CHANNEL_TIMEOUTS,
+    ChannelTimeouts,
+    EventHandler,
+    ExecutorChannel,
+    Message,
+)
 from sandbox_science.worker.manager import (
     ExecutionManager,
     _Environment,
@@ -40,6 +47,7 @@ from sandbox_science.worker.manager import (
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
+from sandbox_science.worker.timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
 
 TOKEN = "test-secret-worker-pool-token-0000000000"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -268,9 +276,15 @@ class HostileBackend:
 
     name: Literal["local"] = "local"
 
-    def __init__(self, mode: str, env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        mode: str,
+        env: dict[str, str] | None = None,
+        timeouts: ChannelTimeouts = CHANNEL_TIMEOUTS,
+    ) -> None:
         self.mode = mode
         self.env = env
+        self.timeouts = timeouts
         self.channels: list[ExecutorChannel] = []
 
     async def prepare(self, environment_id: str) -> None:
@@ -280,7 +294,7 @@ class HostileBackend:
         self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
     ) -> ExecutorChannel:
         argv = [sys.executable, "-I", str(HOSTILE), self.mode]
-        channel = ExecutorChannel(argv, on_event, on_closed, env=self.env)
+        channel = ExecutorChannel(argv, on_event, on_closed, env=self.env, timeouts=self.timeouts)
         self.channels.append(channel)
         await channel.start()
         return channel
@@ -316,6 +330,9 @@ class Harness(WorkerApi):
         max_artifact_size: int = 1 << 20,
         capture_timeout: float = 30.0,
         capture_ack_timeout: float = 1.0,
+        timeouts: ManagerTimeouts = MANAGER_TIMEOUTS,
+        clock: Clock = SYSTEM_CLOCK,
+        heartbeat: float = EVENT_HEARTBEAT_SECONDS,
         token: str = TOKEN,
         pool_id: str = "test-pool",
         store_name: str = "worker.sqlite3",
@@ -335,7 +352,11 @@ class Harness(WorkerApi):
             "package_cache": package_cache,
             "capture_timeout": capture_timeout,
             "capture_ack_timeout": capture_ack_timeout,
+            "timeouts": timeouts,
+            "clock": clock,
         }
+        self.clock = clock
+        self.heartbeat = heartbeat
         self.store_path = root / store_name
         self.store = Store(self.store_path)
         self.shared = self._new_shared()
@@ -358,6 +379,7 @@ class Harness(WorkerApi):
             self.root / "shared",
             max_file_bytes=self._shared_bytes,
             max_project_bytes=self._shared_total,
+            clock=self.clock,
         )
 
     def new_manager(self) -> ExecutionManager:
@@ -389,7 +411,8 @@ class Harness(WorkerApi):
     async def open(self) -> None:
         """Start the manager and serve its API."""
         await self.manager.start()
-        client = TestClient(TestServer(create_app(self.manager, self.token)))
+        app = create_app(self.manager, self.token, heartbeat=self.heartbeat)
+        client = TestClient(TestServer(app))
         await client.start_server()
         self._client = client
         super().__init__(client.session, str(client.make_url("")), self.token, self.context)

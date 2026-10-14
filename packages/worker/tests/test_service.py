@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import shutil
 import signal
 import sqlite3
@@ -26,7 +27,15 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from sandbox_science.contracts import ErrorKind, Execution, ExecutionContext, ExecutionState
+from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
+    Clock,
+    ErrorKind,
+    Execution,
+    ExecutionContext,
+    ExecutionState,
+)
+from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
@@ -255,12 +264,20 @@ async def test_closing_a_session_starts_no_executor(worker: Harness) -> None:
     assert "env-idle" not in worker.view.connected()
 
 
-async def test_an_idle_kernel_is_stopped_and_its_state_reported_lost(tmp_path: Path) -> None:
+async def test_an_idle_kernel_is_stopped_and_its_state_reported_lost(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The option reaches the executor; the reaper itself runs on a fake clock in
+    # test_executor.py. The executor says on stderr when it stopped the kernel.
+    caplog.set_level(logging.DEBUG, logger="sandbox_science.worker.channel")
     async with await Harness.start(
         tmp_path / "worker", executor_args=("--kernel-idle", "0.5")
     ) as idle:
         await idle.run("op-i1", kind="cell", code="x = 1")
-        await asyncio.sleep(1.5)
+        await eventually(
+            lambda: any("stopped kernel" in record.getMessage() for record in caplog.records),
+            describe="the idle kernel stopped",
+        )
         after = await idle.run("op-i2", kind="cell", code="x")
         assert after["result"]["state_lost"] is True
         assert after["result"]["error"]["name"] == "NameError"
@@ -289,24 +306,31 @@ async def test_activity_reports_use_running_calls_and_kernel_cpu(worker: Harness
 
 
 async def test_cpu_used_by_a_kernel_thread_counts_as_activity(worker: Harness) -> None:
+    # The thread spins until the test is done with it.
     spin = (
-        "import threading, time\n"
+        "import os, threading\n"
         "def spin():\n"
-        "    end = time.time() + 4\n"
-        "    while time.time() < end:\n"
+        "    while not os.path.exists('stop-spinning'):\n"
         "        pass\n"
         "threading.Thread(target=spin, daemon=True).start()"
     )
     await worker.run("op-t1", kind="cell", code=spin)
     first = await worker.manager.activity("env1")
-    await asyncio.sleep(1.5)
-    second = await worker.manager.activity("env1")
     assert first is not None
-    assert second is not None
     assert first.cpu_seconds is not None
-    assert second.cpu_seconds is not None
-    assert second.cpu_seconds - first.cpu_seconds > 0.5
-    assert second.running == 0
+    start = first.cpu_seconds
+
+    async def busy() -> Activity | None:
+        second = await worker.manager.activity("env1")
+        assert second is not None
+        assert second.cpu_seconds is not None
+        return second if second.cpu_seconds - start > 0.5 else None
+
+    try:
+        second = await eventually(busy, describe="the thread's CPU time counted")
+        assert second.running == 0
+    finally:
+        (worker.workspace / "stop-spinning").touch()
 
 
 async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker: Harness) -> None:
@@ -658,10 +682,11 @@ async def test_a_call_cancelled_while_shared_files_sync_never_runs(
 ) -> None:
     sync = synced.manager.shared
     assert sync is not None
-    gate = asyncio.Event()
+    gate, entered = asyncio.Event(), asyncio.Event()
     down = sync.down
 
     async def held(*args: Any) -> list[str]:
+        entered.set()
         await gate.wait()
         return await down(*args)
 
@@ -676,7 +701,7 @@ async def test_a_call_cancelled_while_shared_files_sync_never_runs(
         },
     )
     assert status == 201
-    await asyncio.sleep(0.2)
+    await asyncio.wait_for(entered.wait(), 60)
     status, _ = await synced.post(f"/v1/executions/{execution['execution_id']}/cancel", {})
     assert status == 200
     gate.set()
@@ -722,22 +747,28 @@ async def test_an_attempts_result_outlives_a_sync_cut_short(
     assert any("could not be synced" in notice for notice in done["result"]["notices"])
 
 
-async def test_files_the_sync_brings_are_not_a_calls_own(synced: Harness) -> None:
-    status, long = await synced.post(
-        "/v1/executions",
-        {
-            "operation_id": "op-l",
-            "context": _in("env2", "s2"),
-            "kind": "shell",
-            "script": "sleep 2",
-        },
-    )
-    assert status == 201
-    await synced.wait_running(long["execution_id"])
-    await _shell(synced, "op-1", _in("env1", "s1"), 'echo r > "$PROJECT_SHARED/r.txt"')
-    await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
-    done = await synced.finish(long["execution_id"])
-    assert done["result"]["written_files"] == []
+@pytest.mark.parametrize("fake", [False, True], ids=["system-clock", "fake-clock"])
+async def test_files_the_sync_brings_are_not_a_calls_own(tmp_path: Path, fake: bool) -> None:
+    # The sync and the manager compare times: both read the manager's clock, whatever it is.
+    clock: Clock = FakeClock() if fake else SYSTEM_CLOCK
+    gate = tmp_path / "gate"
+    async with await Harness.start(tmp_path / "worker", shared_bytes=64, clock=clock) as synced:
+        status, long = await synced.post(
+            "/v1/executions",
+            {
+                "operation_id": "op-l",
+                "context": _in("env2", "s2"),
+                "kind": "shell",
+                "script": f"until [ -e {gate} ]; do sleep 0.01; done",
+            },
+        )
+        assert status == 201
+        await synced.wait_running(long["execution_id"])
+        await _shell(synced, "op-1", _in("env1", "s1"), 'echo r > "$PROJECT_SHARED/r.txt"')
+        await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
+        gate.touch()
+        done = await synced.finish(long["execution_id"])
+        assert done["result"]["written_files"] == []
 
 
 async def test_a_conflict_found_for_a_file_request_reaches_the_running_call(

@@ -35,15 +35,17 @@ import contextlib
 import hashlib
 import logging
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Final, Protocol, cast
 
 from pydantic import ValidationError
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
     TERMINAL_STATES,
+    Clock,
     ErrorInfo,
     ErrorKind,
     Execution,
@@ -81,6 +83,7 @@ from .permissions import Permissions, PermissionStoreError
 from .provision_events import ProvisionEvents
 from .resolution import Decided, Resolved, ResolveError
 from .revisions import read_lockfile
+from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
 
@@ -95,8 +98,6 @@ DRY_RUN_OUTPUT: Final = 16 * 1024 * 1024
 STEP_OUTPUT: Final = 1024 * 1024
 PERMISSION_POLL: Final = 2.0
 """Seconds between looks at the event store while an operation waits for permission."""
-LOCKFILE_WAIT: Final = 10.0
-"""Seconds an operation waits for a revision's lockfile to arrive."""
 LOOK_TIMEOUT: Final = 120.0
 """Seconds a look at the packages may take, after an install step that reported no revision."""
 GRANT_MARGIN: Final = timedelta(minutes=30)
@@ -106,8 +107,6 @@ MAX_WAIT: Final = 60.0
 """The longest a client may ask ``wait`` to wait for a change."""
 MAX_QUEUED: Final = 32
 """Operations an environment may have that have not finished; more are refused for now."""
-RETAIN: Final = 600.0
-"""Seconds a finished operation stays in memory for clients still waiting on it."""
 ERROR_TEXT: Final = 1500
 """Characters of a step's output an error quotes."""
 MAX_NOTES: Final = 32
@@ -124,10 +123,6 @@ _STAGES: Final[dict[ProvisionState, Stage]] = {
     ProvisionState.PROBING: "probe",
     ProvisionState.FINISHED: "probe",
 }
-
-
-def _now() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,8 +195,10 @@ class Provisioner:
         permissions: Permissions | None,
         cache: str | None,
         restorer: Restorer | None = None,
-        clock: Callable[[], datetime] = _now,
+        clock: Clock = SYSTEM_CLOCK,
         poll: float = PERMISSION_POLL,
+        lockfile_wait: float = 10.0,
+        retain: float = 600.0,
     ) -> None:
         self.manager = manager
         self.store = manager.store
@@ -212,7 +209,12 @@ class Provisioner:
         self.cache = cache
         self.restorer = restorer
         self.clock = clock
-        self.poll = poll
+        """Stamps the operations' records and times permission deadlines."""
+        self.poll = seconds("poll", poll)
+        self.lockfile_wait = seconds("lockfile_wait", lockfile_wait)
+        """Seconds an operation waits for a revision's lockfile to arrive."""
+        self.retain = seconds("retain", retain)
+        """Seconds a finished operation stays in memory for clients still waiting on it."""
         self.installer_logs = installer_records.InstallerArtifacts(
             self.store, manager.blobs, manager.max_artifact_size
         )
@@ -243,7 +245,7 @@ class Provisioner:
                     self.permissions.withdraw_operations,
                     self.store.provision_ids(),
                     "the worker restarted",
-                    self.clock(),
+                    self.clock.now(),
                 )
             except PermissionStoreError as exc:
                 _log.warning("could not withdraw the permission requests left open: %s", exc)
@@ -313,7 +315,7 @@ class Provisioner:
             state=ProvisionState.QUEUED,
             catalog=self.catalog.ref,
             planned_revision=current.revision if current is not None else None,
-            submitted_at=self.clock(),
+            submitted_at=self.clock.now(),
             installer_steps=(),
         )
         self.store.insert_provision(record, digest)
@@ -486,7 +488,7 @@ class Provisioner:
 
         def retire(_task: asyncio.Task[None] | None = None) -> None:
             asyncio.get_running_loop().call_later(
-                RETAIN, self._ops.pop, op.record.provision_id, None
+                self.retain, self._ops.pop, op.record.provision_id, None
             )
 
         # forget() locates environment owners through _ops. A terminal append
@@ -595,7 +597,7 @@ class Provisioner:
         self._update(
             op,
             state=ProvisionState.CHECKING if request.capability else ProvisionState.RESOLVING,
-            started_at=self.clock(),
+            started_at=self.clock.now(),
             policy=governing.policy.digest,
             queue_position=None,
         )
@@ -906,7 +908,7 @@ class Provisioner:
             output=_tail(output, MAX_PROBE_OUTPUT),
             duration_seconds=result.elapsed_seconds if result is not None else 0.0,
             operation=op.record.provision_id,
-            recorded_at=self.clock(),
+            recorded_at=self.clock.now(),
         )
 
     def _unrun(self, op: _Op, capability: str, probe: ProbeSpec, why: str) -> ProbeResult:
@@ -919,7 +921,7 @@ class Provisioner:
             status="error",
             output=why,
             operation=op.record.provision_id,
-            recorded_at=self.clock(),
+            recorded_at=self.clock.now(),
         )
 
     async def _resolve(self, op: _Op, conda: Sequence[str], pip: Sequence[str]) -> list[Resolved]:
@@ -1154,7 +1156,7 @@ class Provisioner:
             "escalation": {"timeout_seconds": int(timeout.total_seconds()), "on_timeout": "deny"},
             "asked": _asked(request),
             VALID_UNTIL: (
-                self.clock()
+                self.clock.now()
                 + timeout
                 + timedelta(seconds=_install_timeout(governing))
                 + GRANT_MARGIN
@@ -1187,7 +1189,7 @@ class Provisioner:
             f"{minutes} minutes.",
         )
         _log.info("provisioning %s waits for permission request %d", op.record.provision_id, seq)
-        deadline = self.clock() + timeout
+        deadline = self.clock.now() + timeout
         await self._observe(op.record, "provision.awaiting_permission")
         await self._await_answer(op, seq, self.permissions, deadline, timeout)
 
@@ -1216,7 +1218,7 @@ class Provisioner:
             except PermissionStoreError as exc:
                 _log.warning("provisioning %s: %s", op.record.provision_id, exc)
             answer = permissions.answer(seq)
-            now = self.clock()
+            now = self.clock.now()
             if answer is not None and answer.kind == "approval":
                 if answer.expires is not None and answer.expires <= now:
                     raise _Stop(
@@ -1266,7 +1268,7 @@ class Provisioner:
         if self.permissions is None:
             return
         try:
-            await asyncio.to_thread(self.permissions.withdraw, seq, reason, self.clock())
+            await asyncio.to_thread(self.permissions.withdraw, seq, reason, self.clock.now())
         except PermissionStoreError as exc:
             _log.warning("could not withdraw permission request %d: %s", seq, exc)
 
@@ -1281,7 +1283,7 @@ class Provisioner:
                     self.permissions.withdraw_operations,
                     [owed],
                     "its operation ended",
-                    self.clock(),
+                    self.clock.now(),
                 )
                 self._owed.discard(owed)
             except PermissionStoreError:
@@ -1290,7 +1292,7 @@ class Provisioner:
             return  # it asked nothing: a request a stop cut short is closed at the next start
         try:
             await asyncio.to_thread(
-                self.permissions.close_operation, provision_id, seq, reason, self.clock()
+                self.permissions.close_operation, provision_id, seq, reason, self.clock.now()
             )
             self._owed.discard(provision_id)
         except PermissionStoreError as exc:
@@ -1682,7 +1684,7 @@ class Provisioner:
                     revision=revision,
                     output=output,
                     operation=op.record.provision_id,
-                    recorded_at=self.clock(),
+                    recorded_at=self.clock.now(),
                 )
             )
         return checks
@@ -1692,7 +1694,7 @@ class Provisioner:
         if revision is None:
             return None
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + LOCKFILE_WAIT
+        deadline = loop.time() + self.lockfile_wait
         while True:
             # The store is read here, on the event loop; only the file in a thread.
             path = self.revisions.lockfile_path(environment_id, revision)
@@ -1713,7 +1715,7 @@ class Provisioner:
             "stage": None if completed else stop.stage,
             "error": stop.error,
             "next_step": _clip(stop.next_step) if stop.next_step is not None else None,
-            "ended_at": self.clock(),
+            "ended_at": self.clock.now(),
             "queue_position": None,
             **stop.updates,
         }
@@ -1750,7 +1752,7 @@ class Provisioner:
                     op.record.provision_id,
                     op.record.permission_request,
                     "the worker stopped",
-                    self.clock(),
+                    self.clock.now(),
                 )
         with contextlib.suppress(Exception):
             self._update(op, **self._fields(op.record, self._cut_short(op.record, "stopped")))

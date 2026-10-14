@@ -40,15 +40,15 @@ from sandbox_science.contracts import (
     ExecutionState,
     StreamEvent,
 )
-from sandbox_science.worker import app as app_module
-from sandbox_science.worker import channel as channel_module
+from sandbox_science.testing import eventually
 from sandbox_science.worker import manager as manager_module
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, OpenShellBackend
-from sandbox_science.worker.channel import EventHandler, ExecutorChannel, Message
+from sandbox_science.worker.channel import ChannelTimeouts, EventHandler, ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.settings import LocalBackendSettings, OpenShellBackendSettings
 from sandbox_science.worker.store import Store
+from sandbox_science.worker.timeouts import ManagerTimeouts
 
 from .harness import AUTH, CONTEXT, HOSTILE, TOKEN, Harness, HostileBackend
 
@@ -249,12 +249,13 @@ async def test_sigterm_ends_open_event_streams_instead_of_waiting_for_them(
 async def test_h2_values_that_could_not_be_stored_are_cleaned(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    monkeypatch.setattr(manager_module, "RETAIN_LIVE", 0.2)  # later reads come from the store
-    started = await Harness.start(tmp_path, backend=HostileBackend(mode))
+    # Later reads come from the store.
+    timeouts = ManagerTimeouts(retain_live=0.01)
+    started = await Harness.start(tmp_path, backend=HostileBackend(mode), timeouts=timeouts)
     try:
         execution = await started.run("op-x", kind="shell", script="true")
         assert execution["state"] == "succeeded"
-        await asyncio.sleep(0.5)
+        await eventually(lambda: execution["execution_id"] not in started.view.live_executions())
         status, stored = await started.get(f"/v1/executions/{execution['execution_id']}")
         assert status == 200
         result = Execution.model_validate(stored).result
@@ -381,17 +382,20 @@ async def test_h2_a_client_leaving_a_stream_is_not_an_error(
     assert worker_errors == []
 
 
-async def test_h2_quiet_streams_carry_heartbeats(
-    worker: Harness, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(app_module, "EVENT_HEARTBEAT_SECONDS", 0.2)
-    execution = await worker.submit("op-quiet", kind="shell", script="sleep 1.5")
-    lines: list[bytes] = []
-    async with worker.client.get(
-        f"/v1/executions/{execution['execution_id']}/events", headers=AUTH
-    ) as response:
-        while line := await response.content.readline():
-            lines.append(line)
+async def test_h2_quiet_streams_carry_heartbeats(tmp_path: Path) -> None:
+    # The call ends only once the stream has carried three heartbeats.
+    gate = tmp_path / "gate"
+    script = f"until [ -e {gate} ]; do sleep 0.01; done"
+    async with await Harness.start(tmp_path / "worker", heartbeat=0.05) as worker:
+        execution = await worker.submit("op-quiet", kind="shell", script=script)
+        lines: list[bytes] = []
+        async with worker.client.get(
+            f"/v1/executions/{execution['execution_id']}/events", headers=AUTH
+        ) as response:
+            while line := await response.content.readline():
+                lines.append(line)
+                if lines.count(b"\n") == 3:
+                    gate.touch()
     assert lines.count(b"\n") >= 3
     assert json.loads(lines[-1])["type"] == "result"
 
@@ -732,11 +736,12 @@ async def test_low_requests_can_name_the_project(worker: Harness) -> None:
 
 
 async def test_an_executor_that_stops_reading_fails_its_requests_in_time(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
-    # Research code can stop its executor; a request must not wait for it forever.
-    monkeypatch.setattr(channel_module, "WRITE_TIMEOUT", 0.5)
-    started = await Harness.start(tmp_path, backend=HostileBackend("deaf"))
+    # Research code can stop its executor; a request must not wait for it forever. Nor
+    # does closing the worker wait the full grace for an executor that does not exit.
+    timeouts = ChannelTimeouts(write=0.5, close_grace=0.5)
+    started = await Harness.start(tmp_path, backend=HostileBackend("deaf", timeouts=timeouts))
     try:
         payload = base64.b64encode(b"x" * (4 << 20)).decode()
         began = time.monotonic()

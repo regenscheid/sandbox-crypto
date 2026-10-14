@@ -20,6 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from pydantic import ValidationError
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
     CondaPackage,
     EnvironmentInfo,
     EnvironmentRevision,
@@ -146,6 +147,7 @@ class Fixture:
             ExecutionManager,
             SimpleNamespace(
                 store=self.store,
+                clock=SYSTEM_CLOCK,
                 revisions=SimpleNamespace(blobs=self.blobs),
                 forget_revisions=lambda _: None,
                 guard_package_deletion=lambda _: None,

@@ -63,6 +63,7 @@ from sandbox_science.policy_middleware.cli import _read_records
 from sandbox_science.policy_middleware.cli import main as middleware
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import StoreSink
+from sandbox_science.testing import FakeClock
 from sandbox_science.worker import provisioner as provisioner_module
 from sandbox_science.worker import resolution
 from sandbox_science.worker.app import create_app
@@ -289,7 +290,7 @@ class World:
     prefix: Prefix
     settings: Path
     governed: Governed
-    clock: Clock
+    clock: FakeClock
     sink: EventStore
 
     async def provision(
@@ -374,16 +375,6 @@ class World:
         return loaded
 
 
-class Clock:
-    """The provisioner's idea of now, which a test can move forward."""
-
-    def __init__(self) -> None:
-        self.offset = timedelta()
-
-    def __call__(self) -> datetime:
-        return datetime.now(UTC) + self.offset
-
-
 Factory = Callable[..., Awaitable[World]]
 
 
@@ -447,7 +438,7 @@ async def make_world(
             package_cache=url,
         )
         await manager.start()
-        clock = Clock()
+        clock = FakeClock(datetime.now(UTC))
         provisioner = kind(
             manager,
             catalog=Catalog.parse(CATALOG.encode()),
@@ -1267,7 +1258,7 @@ async def test_nothing_to_install_unconfirmed_by_a_lockfile_fails(
     world = await make_world()
     first = await world.finished((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
     assert first.outcome == "completed"
-    monkeypatch.setattr(provisioner_module, "LOCKFILE_WAIT", 0.2)
+    world.provisioner.lockfile_wait = 0.2
     monkeypatch.setattr(world.provisioner.revisions, "lockfile_path", lambda *args: None)
     again = await world.finished((await world.provision("op-2", conda=["fpylll"]))["provision_id"])
     assert (again.outcome, again.reason, again.stage) == ("failed", "probe_failed", "probe")
@@ -1293,7 +1284,7 @@ async def test_the_earliest_recovery_mark_holds(make_world: Factory) -> None:
 async def test_an_unanswered_permission_request_times_out_denied(make_world: Factory) -> None:
     world = await make_world(ESCALATE)
     waiting = await world.waiting((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
-    world.clock.offset = timedelta(minutes=31)
+    world.clock.advance(31 * 60)
     done = await world.finished(waiting.provision_id)
     assert (done.outcome, done.reason, done.stage) == (
         "denied",

@@ -22,6 +22,7 @@ from uuid import uuid4
 import pytest
 
 from sandbox_science.contracts import ProbeFacts
+from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker import executor
 
 
@@ -191,8 +192,8 @@ def test_lines_are_utf8_whatever_the_text() -> None:
 
 
 def test_a_long_session_gets_a_kernel_id_the_worker_can_report(tmp_path: Path) -> None:
-    long = executor.Kernel("s" * 128, "python", tmp_path, {})
-    short = executor.Kernel("s1", "python", tmp_path, {})
+    long = executor.Kernel("s" * 128, "python", tmp_path, {}, last_used=0.0)
+    short = executor.Kernel("s1", "python", tmp_path, {}, last_used=0.0)
     assert short.kernel_id == "krn-s1-python"
     assert len(long.kernel_id) <= 128
     assert long.kernel_id.startswith("krn-")
@@ -850,3 +851,52 @@ def test_pdf_is_offered_with_the_helper_and_pdf_oxide() -> None:
 def test_the_kernel_idle_option_must_be_positive(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         executor.main(["--stdio", "--root", str(tmp_path), "--kernel-idle", "0"])
+
+
+@pytest.mark.asyncio
+async def test_an_idle_kernel_is_stopped_once_it_has_been_unused_long_enough(
+    tmp_path: Path,
+) -> None:
+    # The reaper reads the fake clock, so a kernel's idle time passes only when the test
+    # moves the clock; the next cell in the session reports the lost state.
+    clock = FakeClock()
+    messages: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    instance = executor.Executor(tmp_path, send, kernel_idle=10, clock=clock)
+
+    async def seen(accept: Callable[[dict[str, Any]], bool]) -> dict[str, Any]:
+        return await eventually(lambda: next((m for m in messages if accept(m)), None), timeout=120)
+
+    async def ask(request: dict[str, Any]) -> dict[str, Any]:
+        await instance.handle(request)
+        return await seen(_reply(request["id"]))
+
+    async def cell(number: int, code: str) -> dict[str, Any]:
+        execution = f"exe-{number}"
+        request = {"op": "cell", "session": "s1", "timeout": 60, "limit": 65536}
+        await ask({"id": number, **request, "execution": execution, "code": code})
+        return await seen(_end(execution))
+
+    hello = await ask({"id": -2, "op": "hello"})
+    gate = {"incarnation": hello["package_gate"], "generation": 0, "mode": "ready"}
+    ready = await ask({"id": -1, "op": "package_gate", **gate, "operation": "", "revision": None})
+    assert ready["ok"]
+    try:
+        assert (await cell(1, "x = 1"))["state"] == "succeeded"
+        kernel = instance.kernels[("s1", "python")]
+        reaper = instance.spawn(instance.reap_idle_kernels(10))
+        await eventually(lambda: clock.sleepers == 1)
+        clock.advance(5)  # the reaper looks, and keeps a kernel used 5 s ago
+        await eventually(lambda: clock.sleepers == 1)
+        assert kernel.manager is not None
+        clock.advance(5)
+        await eventually(lambda: kernel.manager is None)
+        after = await cell(2, "x")
+        assert after["result"]["state_lost"] is True
+        assert after["result"]["error"]["name"] == "NameError"
+        reaper.cancel()
+    finally:
+        await instance.shutdown()

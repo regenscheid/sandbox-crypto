@@ -31,6 +31,7 @@ from sandbox_science.contracts import (
     ReadFileRequest,
     ShellRequest,
 )
+from sandbox_science.testing import eventually
 from sandbox_science.worker import daemon, executor
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, daemon_token
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel
@@ -50,6 +51,15 @@ def request(operation: str, script: str = "sleep 60", **fields: Any) -> JobReque
         expected_progress="eventual completion",
         **fields,
     )
+
+
+def gated(then: str, gate: str = "go") -> str:
+    """A job script that runs ``then`` once the test creates ``gate`` in the session."""
+    return f"until [ -e {gate} ]; do sleep 0.01; done; {then}"
+
+
+def open_gate(worker: Harness, gate: str = "go") -> None:
+    (worker.workspace / gate).touch()
 
 
 def internal_request(worker: Harness, script: str = "sleep 60") -> ShellRequest:
@@ -87,12 +97,13 @@ async def test_worker_restart_preserves_identity_events_logs_and_never_replays(
     worker: Harness,
 ) -> None:
     job, _ = await worker.manager.submit(
-        request("restart", "printf run >> marker; printf before; sleep 1; printf after")
+        request("restart", "printf run >> marker; printf before; " + gated("printf after"))
     )
     await running(worker.manager, job.execution_id)
     channel = worker.view.live_channel(job.execution_id)
     incarnation = channel.incarnation
     await worker.restart()
+    open_gate(worker)
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
     assert result.state is ExecutionState.SUCCEEDED
     assert result.attempt_id == job.attempt_id
@@ -115,11 +126,14 @@ async def test_worker_restart_preserves_identity_events_logs_and_never_replays(
 
 @pytest.mark.asyncio
 async def test_bridge_failure_recovers_without_losing_or_restarting_job(worker: Harness) -> None:
-    job, _ = await worker.manager.submit(request("bridge", "printf before; sleep 1; printf after"))
+    job, _ = await worker.manager.submit(
+        request("bridge", "printf before; " + gated("printf after"))
+    )
     await running(worker.manager, job.execution_id)
     channel = worker.view.live_channel(job.execution_id)
     assert channel._process is not None
     channel._process.kill()
+    open_gate(worker)
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
     assert result.state is ExecutionState.SUCCEEDED
     assert result.result is not None
@@ -189,7 +203,7 @@ async def test_kernel_globals_survive_worker_restart(worker: Harness) -> None:
 
 @pytest.mark.asyncio
 async def test_unknown_control_requests_are_cancelled_during_recovery(worker: Harness) -> None:
-    job, _ = await worker.manager.submit(request("known", "sleep 1; printf kept"))
+    job, _ = await worker.manager.submit(request("known", gated("printf kept")))
     await running(worker.manager, job.execution_id)
     channel = worker.view.live_channel(job.execution_id)
     unknown = "exe-" + "f" * 24
@@ -197,6 +211,7 @@ async def test_unknown_control_requests_are_cancelled_during_recovery(worker: Ha
     await worker.restart()
     channel = worker.view.channel("env1")
     assert unknown not in (await channel.request("active"))["executions"]
+    open_gate(worker)
     assert (
         await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
     ).state is ExecutionState.SUCCEEDED
@@ -215,7 +230,7 @@ async def test_withdrawn_provisioning_execution_is_cancelled_on_restart(worker: 
 @pytest.mark.asyncio
 async def test_corrupt_recovery_row_does_not_block_other_jobs(worker: Harness) -> None:
     bad, _ = await worker.manager.submit(request("bad"))
-    good, _ = await worker.manager.submit(request("good", "sleep 1; echo good"))
+    good, _ = await worker.manager.submit(request("good", gated("echo good")))
     await running(worker.manager, good.execution_id)
     worker.store._db.execute(
         "UPDATE execution_recovery SET request = 'invalid' WHERE execution_id = ?",
@@ -223,6 +238,7 @@ async def test_corrupt_recovery_row_does_not_block_other_jobs(worker: Harness) -
     )
     await worker.restart()
     assert worker.manager.get(bad.execution_id).state is ExecutionState.LOST
+    open_gate(worker)
     assert (
         await asyncio.wait_for(worker.manager.wait(good.execution_id), 10)
     ).state is ExecutionState.SUCCEEDED
@@ -242,9 +258,7 @@ async def test_daemon_incarnation_loss_reaps_escaped_children(worker: Harness) -
     os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
     assert result.state is ExecutionState.LOST
-    async with asyncio.timeout(5):
-        while (info := executor.process_info(child)) is not None and not info.zombie:
-            await asyncio.sleep(0.02)
+    await eventually(lambda: (info := executor.process_info(child)) is None or info.zombie)
 
 
 @pytest.mark.asyncio
@@ -351,7 +365,7 @@ async def test_recycle_intent_survives_failed_fence_and_worker_restart(
     async def succeeded(environment: str, _sandbox: str, _sandbox_id: str) -> None:
         assert worker.store.recycle_needed(environment)
         os.kill(pid, signal.SIGKILL)  # local fixture's stand-in for a confirmed VM stop
-        await asyncio.sleep(0.05)
+        await eventually(lambda: (info := executor.process_info(pid)) is None or info.zombie)
 
     worker.manager.recycle_daemon = succeeded
     await asyncio.wait_for(worker.manager.start(), 10)
@@ -462,13 +476,14 @@ async def test_same_incarnation_backfills_legacy_endpoint_binding(worker: Harnes
 
 @pytest.mark.asyncio
 async def test_output_charge_survives_restart(worker: Harness) -> None:
-    job, _ = await worker.manager.submit(request("budget", "printf before; sleep 2; printf after"))
+    job, _ = await worker.manager.submit(
+        request("budget", "printf before; " + gated("printf after"))
+    )
     await running(worker.manager, job.execution_id)
-    async with asyncio.timeout(5):
-        while worker.store.event_usage(job.execution_id)[1] == 0:
-            await asyncio.sleep(0.02)
+    await eventually(lambda: worker.store.event_usage(job.execution_id)[1] > 0)
     previous = worker.store.event_usage(job.execution_id)
     await worker.restart()
+    open_gate(worker)
     live = worker.view.live(job.execution_id)
     assert live.events >= previous[0]
     assert live.stored >= previous[1]
@@ -739,13 +754,14 @@ async def test_offline_rollover_preserves_full_log_and_same_attempt(worker: Harn
     job, _ = await worker.manager.submit(
         request(
             "noisy",
-            f'sleep .3; {sys.executable} -I -c \'print("z"*3000000,end="")\'',
+            gated(f'{sys.executable} -I -c \'print("z"*3000000,end="")\'; touch printed'),
             output_limit_bytes=2_000_000,
         )
     )
     await running(worker.manager, job.execution_id)
     await worker.manager.close()
-    await asyncio.sleep(0.8)
+    open_gate(worker)
+    await eventually(lambda: (worker.workspace / "printed").exists())
     worker.manager = worker.new_manager()
     await worker.manager.start()
     ended = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
@@ -764,7 +780,7 @@ async def test_offline_rollover_preserves_full_log_and_same_attempt(worker: Harn
 
 @pytest.mark.asyncio
 async def test_stale_bridge_event_cannot_finish_reconnected_attempt(worker: Harness) -> None:
-    job, _ = await worker.manager.submit(request("fenced", "sleep .4; printf actual"))
+    job, _ = await worker.manager.submit(request("fenced", gated("printf actual")))
     await running(worker.manager, job.execution_id)
     worker.view.live_channel(job.execution_id)
     await worker.view.deliver(
@@ -779,6 +795,7 @@ async def test_stale_bridge_event_cannot_finish_reconnected_attempt(worker: Harn
             "_bridge": "bridge-old",
         },
     )
+    open_gate(worker)
     ended = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
     assert ended.result is not None
     assert ended.result.stdout is not None
@@ -867,7 +884,7 @@ async def test_wrong_server_proof_is_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_reconnect_keeps_existing_watchdog_and_replaces_old_poller(worker: Harness) -> None:
-    job, _ = await worker.manager.submit(request("watchdog", "sleep 1; printf done"))
+    job, _ = await worker.manager.submit(request("watchdog", gated("printf done")))
     await running(worker.manager, job.execution_id)
     live = worker.view.live(job.execution_id)
     watchdog = live.watchdog
@@ -887,6 +904,7 @@ async def test_reconnect_keeps_existing_watchdog_and_replaces_old_poller(worker:
     assert worker.view.poller("env1")[0] is channel
     await asyncio.sleep(0)
     assert stale.cancelled()
+    open_gate(worker)
     ended = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
     assert ended.state is ExecutionState.SUCCEEDED
 
@@ -1162,7 +1180,7 @@ async def test_execution_dispatched_during_a_recovery_is_recovered_too(
     worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened = record_channels(worker, monkeypatch)
-    first, _ = await worker.manager.submit(request("first", "sleep 1; printf first"))
+    first, _ = await worker.manager.submit(request("first", gated("printf first")))
     await running(worker.manager, first.execution_id)
     entered, release = asyncio.Event(), asyncio.Event()
     calls = 0
@@ -1178,10 +1196,11 @@ async def test_execution_dispatched_during_a_recovery_is_recovered_too(
     worker.manager.confirmed_daemon_loss = held_loss_check
     await opened[-1].close()  # the bridge is lost: a recovery starts and waits
     await asyncio.wait_for(entered.wait(), 10)
-    second, _ = await worker.manager.submit(request("second", "sleep 1; printf second"))
+    second, _ = await worker.manager.submit(request("second", gated("printf second")))
     await running(worker.manager, second.execution_id)
     await opened[-1].close()  # the second job's bridge is lost while the recovery runs
     release.set()
+    open_gate(worker)
     for job, text in ((first, "first"), (second, "second")):
         result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
         assert result.state is ExecutionState.SUCCEEDED
@@ -1194,7 +1213,7 @@ async def test_execution_dispatched_during_a_recovery_is_recovered_too(
 async def test_poller_survives_an_unexpected_error_and_logs_it(
     worker: Harness, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
 ) -> None:
-    job, _ = await worker.manager.submit(request("poll-error", "sleep 1; printf done"))
+    job, _ = await worker.manager.submit(request("poll-error", gated("printf done")))
     await running(worker.manager, job.execution_id)
     original = worker.store.recovery
     failed = False
@@ -1207,6 +1226,8 @@ async def test_poller_survives_an_unexpected_error_and_logs_it(
         return original(execution_id)
 
     monkeypatch.setattr(worker.store, "recovery", fail_once)
+    await eventually(lambda: failed)  # the poller met the failure while the job ran
+    open_gate(worker)
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
     assert result.state is ExecutionState.SUCCEEDED
     assert "synthetic database failure" in manager_errors.failures()
@@ -1217,7 +1238,7 @@ async def test_unexpected_recovery_error_is_logged_and_recovery_goes_on(
     worker: Harness, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
 ) -> None:
     opened = record_channels(worker, monkeypatch)
-    job, _ = await worker.manager.submit(request("recovery-error", "sleep 1; printf done"))
+    job, _ = await worker.manager.submit(request("recovery-error", gated("printf done")))
     await running(worker.manager, job.execution_id)
     calls = 0
 
@@ -1230,6 +1251,8 @@ async def test_unexpected_recovery_error_is_logged_and_recovery_goes_on(
 
     worker.manager.confirmed_daemon_loss = failing_loss_check
     await opened[-1].close()
+    await eventually(lambda: calls >= 2)  # recovery went on after the failure
+    open_gate(worker)
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
     assert result.state is ExecutionState.SUCCEEDED
     assert "synthetic recovery failure" in manager_errors.failures()

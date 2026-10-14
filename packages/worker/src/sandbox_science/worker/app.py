@@ -20,7 +20,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Final, cast
 
 from aiohttp import web
@@ -78,6 +78,7 @@ from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
 from .settings import ClientSettings, token_digest
+from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
 
@@ -90,6 +91,7 @@ CATALOG_EXECUTOR: Final = web.AppKey("catalog_executor", ThreadPoolExecutor)
 CREATING: Final = web.AppKey("creating", dict[str, set[str]])
 """The environments each limited client is creating right now, which its limit counts too."""
 LOCKFILE_DIFFS: Final = web.AppKey("lockfile_diffs", LockfileDiffs)
+HEARTBEAT: Final = web.AppKey("heartbeat", float)
 MAX_BODY: Final = 16 * 1024 * 1024
 _REQUEST = TypeAdapter[ExecutionRequest](ExecutionRequest)
 _EVENT = TypeAdapter[Event](Event)
@@ -134,7 +136,12 @@ def create_app(
     clients: Sequence[ClientSettings] = (),
     provisioner: Provisioner | None = None,
     document_catalog: DocumentsCatalog | None = None,
+    *,
+    heartbeat: float = EVENT_HEARTBEAT_SECONDS,
 ) -> web.Application:
+    """The worker's HTTP API; event streams carry an empty line after ``heartbeat`` quiet
+    seconds."""
+    seconds("heartbeat", heartbeat)
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
@@ -194,6 +201,7 @@ def create_app(
 
     app = web.Application(middlewares=[guard], client_max_size=MAX_BODY)
     app[MANAGER] = manager
+    app[HEARTBEAT] = heartbeat
     app[CREATING] = {}
     app[LOCKFILE_DIFFS] = LockfileDiffs()
     app.on_shutdown.append(_end_streams)
@@ -950,7 +958,7 @@ async def observe_lockfile_diff(request: web.Request) -> web.Response:
             {
                 "project_id": scope[0],
                 "environment_id": scope[1],
-                "observed_at": datetime.now(UTC),
+                "observed_at": request.app[MANAGER].clock.now(),
                 **result,
             },
             strict=True,
@@ -1002,7 +1010,7 @@ async def observe_revision_packages(request: web.Request) -> web.Response:
             {
                 "project_id": scope[0],
                 "environment_id": scope[1],
-                "observed_at": datetime.now(UTC),
+                "observed_at": request.app[MANAGER].clock.now(),
                 **result,
             },
             strict=True,
@@ -1032,7 +1040,7 @@ async def events(request: web.Request) -> web.StreamResponse:
     response = web.StreamResponse(headers={"Content-Type": "application/x-ndjson"})
     await response.prepare(request)
     # The status line is sent: from here on, an error can only end the stream early.
-    stream = manager.events(execution_id, after, heartbeat=EVENT_HEARTBEAT_SECONDS)
+    stream = manager.events(execution_id, after, heartbeat=request.app[HEARTBEAT])
     try:
         async with contextlib.aclosing(stream):
             async for event in stream:

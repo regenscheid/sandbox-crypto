@@ -56,7 +56,6 @@ import re
 import secrets
 import sqlite3
 import threading
-import time
 import weakref
 from collections import OrderedDict, deque
 from collections.abc import AsyncGenerator, Collection, Generator, Sequence
@@ -64,7 +63,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
-from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ErrorKind
 
 from .artifacts import Blobs
 from .errors import WorkerError
@@ -453,8 +452,12 @@ class SharedSync:
         step_seconds: float = STEP_SECONDS,
         step_bytes: int = STEP_BYTES,
         call_seconds: float = CALL_SECONDS,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self.records = records
+        self.clock = clock
+        """The execution manager's clock: it stamps calls with it, and asks which files the
+        sync wrote between two of its readings."""
         self.root = root
         """Each project's blob store is a directory here, named by a hash of its ID."""
         self.max_file_bytes = max_file_bytes
@@ -501,7 +504,7 @@ class SharedSync:
         self, project_id: str, environment_id: str, session_id: str, channel: Channel
     ) -> list[str]:
         """Copy the environment's changes to its shared files into the project's copy."""
-        ends = time.monotonic() + self.call_seconds
+        ends = self.clock.monotonic() + self.call_seconds
         async with self._locked(self._environment_locks, environment_id):
             scan, notices = await self._attach(project_id, environment_id, channel)
             if scan is not None:
@@ -515,7 +518,7 @@ class SharedSync:
         self, project_id: str, environment_id: str, session_id: str, channel: Channel
     ) -> list[str]:
         """Bring the environment's shared files up to the project's, its own changes first."""
-        ends = time.monotonic() + self.call_seconds
+        ends = self.clock.monotonic() + self.call_seconds
         async with self._locked(self._environment_locks, environment_id):
             scan, notices = await self._attach(project_id, environment_id, channel)
             if scan is not None:
@@ -551,7 +554,7 @@ class SharedSync:
         """
         path = posixpath.normpath(str(fields.get("path", "")))
         synced = False
-        ends = time.monotonic() + min(self.call_seconds, timeout)
+        ends = self.clock.monotonic() + min(self.call_seconds, timeout)
         async with contextlib.AsyncExitStack() as held:
             try:
                 async with asyncio.timeout(timeout):
@@ -598,7 +601,7 @@ class SharedSync:
                             session_id,
                             channel,
                             after,
-                            time.monotonic() + self.step_seconds,
+                            self.clock.monotonic() + self.step_seconds,
                         )
                 except Exception as error:  # the write stands; the next sync takes it
                     _log.warning(
@@ -730,7 +733,7 @@ class SharedSync:
                     total -= current.size
                 batch.drop(path)
             for path in candidates:
-                if time.monotonic() > deadline or read > self.step_bytes:
+                if self.clock.monotonic() > deadline or read > self.step_bytes:
                     break  # the rest at the next step
                 entry = scan.files.get(path)
                 if entry is None:
@@ -856,7 +859,7 @@ class SharedSync:
         state = await asyncio.to_thread(self.records.state, project_id, environment_id)
         files, copies = state.files, state.copies
         failing = self._failing.setdefault(environment_id, {})
-        now = time.monotonic()
+        now = self.clock.monotonic()
         if failing:
             known = {_key(path) for path in files.keys() | copies.keys()}
             for key in failing.keys() - known:
@@ -875,7 +878,7 @@ class SharedSync:
                 store = self.blobs(project_id)
                 # Deletions first: a directory they empty may be where a file is to go.
                 for path in sorted(work, key=lambda p: (p in files, p)):
-                    if time.monotonic() > deadline:
+                    if self.clock.monotonic() > deadline:
                         complete = False
                         break
                     current, copy = files.get(path), copies.get(path)
@@ -1213,7 +1216,7 @@ class SharedSync:
         )
 
     def _fail(self, environment_id: str, path: str, version: int) -> None:
-        until = time.monotonic() + self.failure_backoff
+        until = self.clock.monotonic() + self.failure_backoff
         self._remember(self._failing, environment_id, path, (version, until))
 
     def _settle(self, environment_id: str, path: str) -> None:
@@ -1235,7 +1238,7 @@ class SharedSync:
         recent = self._recent.get(environment_id)
         if recent is None:
             recent = self._recent[environment_id] = _Recent()
-        recent.add(time.monotonic(), path, stamp)
+        recent.add(self.clock.monotonic(), path, stamp)
 
     def _note_scan(self, environment_id: str, scan: _Scan) -> None:
         recent = self._recent.get(environment_id)
@@ -1246,7 +1249,7 @@ class SharedSync:
 
     def _budget(self, ends: float) -> float:
         """The deadline of a step that starts now, within its sync's."""
-        return min(time.monotonic() + self.step_seconds, ends)
+        return min(self.clock.monotonic() + self.step_seconds, ends)
 
     def _reset(self, environment_id: str) -> None:
         self._held.pop(environment_id, None)
