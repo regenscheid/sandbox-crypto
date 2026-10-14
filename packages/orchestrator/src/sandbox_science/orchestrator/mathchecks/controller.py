@@ -69,16 +69,16 @@ class MathController:
             if (response := response_metadata(db, check)) is not None:
                 return bool(
                     db.execute(
-                        "SELECT blocked IS NOT NULL AND blocked!='' FROM "
-                        "response_math_sources WHERE source=?",
+                        "SELECT blocked IS NOT NULL AND blocked!='' FROM text_math_sources "
+                        "WHERE subject_type='response' AND subject_id=?",
                         (response["source"],),
                     ).fetchone()[0]
                 )
             if (meta := metadata(db, check)) is not None:
                 return bool(
                     db.execute(
-                        "SELECT blocked IS NOT NULL AND blocked!='' "
-                        "FROM comment_math_sources WHERE entry_id=?",
+                        "SELECT blocked IS NOT NULL AND blocked!='' FROM text_math_sources "
+                        "WHERE subject_type='comment' AND subject_id=?",
                         (meta["entry_id"],),
                     ).fetchone()[0]
                 )

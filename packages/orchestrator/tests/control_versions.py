@@ -37,6 +37,10 @@ FEED_CURSORS = migrations.BASELINE + 12
 TEXT_REVISIONS = migrations.BASELINE + 13
 """The version that moved comment and explanation bodies into ``text_revisions``."""
 
+TEXT_MATH = migrations.BASELINE + 14
+"""The version that moved the comment and explanation math queues and check links into
+``text_math_sources`` and ``math_text_jobs``."""
+
 EMPTY_SHA = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 """The SHA-256 of ``{}``, the empty macro setting."""
 
@@ -47,7 +51,7 @@ _PINS = (
     "INSERT INTO math_macro_pins SELECT j.check_id,s.project,j.macro_revision,"
     "coalesce((SELECT r.sha256 FROM src.project_macro_revisions r WHERE r.project=s.project "
     f"AND r.revision=j.macro_revision),'{EMPTY_SHA}'),coalesce((SELECT a.anchors FROM "
-    "response_macro_anchors a JOIN src.math_response_jobs r ON r.source=a.source "
+    "response_macro_anchors a JOIN old_response_jobs r ON r.source=a.source "
     "WHERE r.check_id=j.check_id),'[]') FROM src.math_jobs j "
     "JOIN src.math_job_scope s USING(check_id) WHERE j.macro_revision IS NOT NULL",
     "INSERT INTO math_macro_contexts SELECT check_id,'{}','[]',macro_held,"
@@ -102,6 +106,21 @@ _TEXTS = (
     "FROM src.text_revisions WHERE subject_type='comment'",
 )
 
+_TEXT_MATH = (
+    # The queue and link tables version 16 dropped, from the text tables.
+    "CREATE TEMP VIEW old_comment_sources AS SELECT rowid AS rowid,subject_id AS entry_id,"
+    "parent AS document,project,target,completed,macro_revision,retry_requested,blocked "
+    "FROM src.text_math_sources WHERE subject_type='comment'",
+    "CREATE TEMP VIEW old_response_sources AS SELECT rowid AS rowid,subject_id AS source,"
+    "parent AS finding_id,parent_revision AS decision_revision,project,session,target,"
+    "completed,retry_requested,blocked FROM src.text_math_sources "
+    "WHERE subject_type='response'",
+    "CREATE TEMP VIEW old_comment_jobs AS SELECT rowid AS rowid,check_id,subject_id AS "
+    "entry_id,macro_revision,macro_sha256 FROM src.math_text_jobs WHERE subject_type='comment'",
+    "CREATE TEMP VIEW old_response_jobs AS SELECT rowid AS rowid,check_id,subject_id AS source "
+    "FROM src.math_text_jobs WHERE subject_type='response'",
+)
+
 
 @contextmanager
 def at_version(version: int) -> Iterator[None]:
@@ -136,6 +155,16 @@ def older_store(source: Path, target: Path, version: int) -> None:
         ]
         for table in tables:
             _copy(db, table)
+        if version < TEXT_MATH:
+            for statement in _TEXT_MATH:
+                db.execute(statement)
+            for table, view in (
+                ("comment_math_sources", "old_comment_sources"),
+                ("response_math_sources", "old_response_sources"),
+                ("math_comment_jobs", "old_comment_jobs"),
+                ("math_response_jobs", "old_response_jobs"),
+            ):
+                _copy(db, table, view)
         if version < TEXT_REVISIONS:
             for statement in _TEXTS:
                 db.execute(statement)

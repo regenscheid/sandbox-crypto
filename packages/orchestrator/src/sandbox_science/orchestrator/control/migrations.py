@@ -30,12 +30,14 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from importlib import resources
 from pathlib import Path
-from typing import Final, cast
+from typing import Any, Final, cast
 
 from .errors import BUSY, INTERNAL, NOT_FOUND, UNAVAILABLE, ControlError
 
 BASELINE: Final = 2
 """The version ``baseline.sql`` creates. Version 1 was the development stores before it."""
+
+_Json = dict[str, Any]
 
 APPLICATION_ID: Final = 0x53536373
 """The ``application_id`` of a control store ("SScs"), which ``baseline.sql`` sets."""
@@ -811,14 +813,100 @@ def _macro_revisions(schema: Schema) -> None:
         schema.execute(f"DROP TABLE {table}")
 
 
+# The derivation of an explanation's macro anchors as version 10 shipped it
+# (documents/project_macros.py at #221), kept here so that a later change to the live
+# code does not change what this step accepts.
+_V10_SEVERITY_RANK: Final = {"fail": 0, "warn": 1, "note": 2}
+
+
+def _v10_explanation_anchors(
+    db: sqlite3.Connection, project: str, finding: str, decision: int, macros: int | None
+) -> list[_Json]:
+    if macros is None:
+        return [{"unknown": True}]
+    anchors = _v10_header_anchors(db, finding, decision)
+    if anchors is None:
+        return _v10_finding_anchors(db, project, finding)
+    return _v10_anchor_pins(db, project, anchors)
+
+
+def _v10_header_anchors(db: sqlite3.Connection, finding: str, revision: int) -> object | None:
+    row = db.execute(
+        "SELECT payload FROM review_transitions WHERE finding_id=? AND revision<=? "
+        "AND json_extract(payload,'$.assessment') IS NOT NULL ORDER BY revision DESC LIMIT 1",
+        (finding, revision),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        payload = cast(_Json, json.loads(row[0]))
+        new, old = cast(_Json, payload["assessment"]), payload.get("previous_assessment")
+        if not isinstance(old, dict):
+            return new["anchors"]
+        old = cast(_Json, old)
+        stronger = _V10_SEVERITY_RANK[new["severity"]] <= _V10_SEVERITY_RANK[old["severity"]]
+        return new["anchors"] if stronger else old["anchors"]
+    except (ValueError, KeyError, TypeError, RecursionError):
+        return [{"unknown": True}]
+
+
+def _v10_finding_anchors(db: sqlite3.Connection, project: str, finding: str) -> list[_Json]:
+    row = db.execute(
+        "SELECT anchors FROM review_findings WHERE finding_id=? AND project=?",
+        (finding, project),
+    ).fetchone()
+    if row is None:
+        return [{"unknown": True}]
+    try:
+        return _v10_anchor_pins(db, project, json.loads(row[0]))
+    except (ValueError, RecursionError):
+        return [{"unknown": True}]
+
+
+def _v10_anchor_pins(db: sqlite3.Connection, project: str, anchors: object) -> list[_Json]:
+    try:
+        if not isinstance(anchors, list) or len(cast(list[Any], anchors)) > 32:
+            raise ValueError
+        pins: list[_Json] = []
+        for anchor in cast(list[_Json], anchors):
+            if anchor.get("unknown"):
+                raise ValueError
+            locator = anchor.get("locator", {})
+            if "document" not in locator:
+                continue
+            document, revision, sha = (
+                locator.get("document"),
+                locator.get("revision"),
+                locator.get("sha256"),
+            )
+            if (
+                not isinstance(document, str)
+                or re.fullmatch(r"doc-[0-9a-f]{24}", document) is None
+                or type(revision) is not int
+                or not 1 <= revision <= 999999999
+            ):
+                raise ValueError
+            saved = db.execute(
+                "SELECT sha256 FROM revisions r JOIN documents d "
+                "USING(document_id) WHERE d.project_id=? AND r.document_id=? AND r.number=?",
+                (project, document, revision),
+            ).fetchone()
+            if saved is None or (sha is not None and sha != saved[0]):
+                raise ValueError
+            pin = {"document": document, "revision": revision, "sha256": saved[0]}
+            if pin not in pins:
+                pins.append(pin)
+        if len(pins) > 8:
+            raise ValueError
+        return pins
+    except (ValueError, TypeError, AttributeError, RecursionError):
+        return [{"unknown": True}]
+
+
 def _same_anchors(schema: Schema) -> None:
     """Refuse the migration when an explanation's pinned anchors, or an explanation
     check's, differ from those version 10 derives for it (its finding's anchors at the
     explanation's decision revision)."""
-    # The derivation is the documents' own; it reads only through ``execute``. The
-    # explanation's first body revision is read here, from the table version 10 has.
-    from sandbox_science.orchestrator.documents.project_macros import explanation_anchors
-
     db = cast(sqlite3.Connection, schema)
 
     def response_anchors(db: sqlite3.Connection, source: str) -> object:
@@ -828,7 +916,7 @@ def _same_anchors(schema: Schema) -> None:
             "WHERE b.source=? ORDER BY b.revision LIMIT 1",
             (source,),
         ).fetchone()
-        return explanation_anchors(db, *row) if row else [{"unknown": True}]
+        return _v10_explanation_anchors(db, *row) if row else [{"unknown": True}]
 
     pinned = [
         *schema.execute("SELECT source,anchors FROM response_macro_anchors ORDER BY rowid"),
@@ -1113,6 +1201,161 @@ BEGIN SELECT RAISE(ABORT, 'text revisions are immutable'); END""",
         schema.execute(statement)
 
 
+_TEXT_MATH: Final = (
+    # Each kind keeps its order, which claims follow.
+    (
+        "comment_math_sources",
+        "INSERT INTO text_math_sources(subject_type,subject_id,project,session,parent,"
+        "parent_revision,target,completed,macro_revision,retry_requested,blocked) "
+        "SELECT 'comment',entry_id,project,NULL,document,NULL,target,completed,"
+        "macro_revision,retry_requested,blocked FROM comment_math_sources ORDER BY rowid",
+    ),
+    (
+        "response_math_sources",
+        "INSERT INTO text_math_sources(subject_type,subject_id,project,session,parent,"
+        "parent_revision,target,completed,macro_revision,retry_requested,blocked) "
+        "SELECT 'response',source,project,session,finding_id,decision_revision,target,"
+        "completed,0,retry_requested,blocked FROM response_math_sources ORDER BY rowid",
+    ),
+    (
+        "math_comment_jobs",
+        "INSERT INTO math_text_jobs SELECT check_id,'comment',entry_id,macro_revision,"
+        "macro_sha256 FROM math_comment_jobs ORDER BY rowid",
+    ),
+    (
+        "math_response_jobs",
+        "INSERT INTO math_text_jobs SELECT check_id,'response',source,NULL,NULL "
+        "FROM math_response_jobs ORDER BY rowid",
+    ),
+)
+
+_UNQUEUED: Final = (
+    (
+        "SELECT c.check_id,c.entry_id FROM math_comment_jobs c WHERE NOT EXISTS(SELECT 1 "
+        "FROM comment_math_sources s WHERE s.entry_id=c.entry_id) ORDER BY c.rowid LIMIT 1",
+        "the math check {} of comment entry {} has no math queue row",
+    ),
+    (
+        "SELECT r.check_id,r.source FROM math_response_jobs r WHERE NOT EXISTS(SELECT 1 "
+        "FROM response_math_sources s WHERE s.source=r.source) ORDER BY r.rowid LIMIT 1",
+        "the math check {} of explanation {} has no math queue row",
+    ),
+)
+
+_JOB_SCOPE: Final = """CREATE VIEW math_job_scope AS
+    SELECT j.check_id,s.project,NULL AS session FROM math_jobs j
+    JOIN math_sources s USING(document)
+    UNION ALL SELECT j.check_id,f.project,f.session FROM math_jobs j JOIN math_text_jobs r
+    ON r.check_id=j.check_id AND r.subject_type='response' JOIN text_math_sources s
+    ON s.subject_type='response' AND s.subject_id=r.subject_id JOIN review_findings f
+    ON f.finding_id=s.parent WHERE j.document IS NULL AND s.project=f.project
+    AND s.session=f.session"""
+
+_TEXT_CHECKS: Final = """CREATE VIEW math_current_checks AS
+    SELECT j.check_id,j.document AS source,j.revision FROM math_jobs j
+    JOIN documents d ON d.document_id=j.document
+    WHERE NOT EXISTS(SELECT 1 FROM math_text_jobs x WHERE x.check_id=j.check_id)
+    AND d.head=j.revision AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k
+    WHERE k.document=j.document AND k.revision=d.head AND NOT EXISTS
+    (SELECT 1 FROM math_text_jobs x WHERE x.check_id=k.check_id))
+    UNION ALL
+    SELECT j.check_id,'comment:'||c.subject_id,j.revision FROM math_jobs j
+    JOIN math_text_jobs c ON c.check_id=j.check_id AND c.subject_type='comment'
+    JOIN documents d ON d.document_id=j.document
+    JOIN text_math_sources s ON s.subject_type='comment' AND s.subject_id=c.subject_id
+    JOIN text_revisions b ON b.subject_type='comment' AND b.subject_id=c.subject_id
+    AND b.revision=j.revision
+    JOIN annotation_entries original ON original.entry_id=c.subject_id
+    JOIN annotation_threads t ON t.thread_id=original.thread_id
+    WHERE t.document_id=j.document AND s.parent=j.document AND s.project=d.project_id
+    AND original.kind IN ('create','reply')
+    AND s.target=j.revision AND d.head=c.macro_revision AND b.origin=(
+      SELECT e.entry_id FROM annotation_entries e WHERE e.thread_id=original.thread_id
+      AND (e.entry_id=original.entry_id OR (e.kind='edit' AND original.number=1)
+      OR (e.kind='edit_body' AND json_extract(e.payload,'$.entry')=original.entry_id))
+      ORDER BY e.number DESC LIMIT 1)
+    AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_text_jobs x
+    USING(check_id) WHERE x.subject_type='comment' AND x.subject_id=c.subject_id
+    AND k.revision=j.revision AND x.macro_revision=c.macro_revision) UNION ALL
+    SELECT j.check_id,r.subject_id,j.revision FROM math_jobs j JOIN math_text_jobs r
+    ON r.check_id=j.check_id AND r.subject_type='response'
+    JOIN text_math_sources s ON s.subject_type='response' AND s.subject_id=r.subject_id
+    JOIN review_findings f ON f.finding_id=s.parent
+    JOIN text_revisions b ON b.subject_type='response' AND b.subject_id=s.subject_id
+    AND b.revision=j.revision
+    WHERE j.document IS NULL AND f.origin='review' AND s.project=f.project AND s.session=f.session
+    AND b.parent=s.parent AND b.parent_revision=s.parent_revision
+    AND s.target=j.revision AND j.source_sha256=b.sha256
+    AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_text_jobs x USING(check_id)
+                WHERE x.subject_type='response' AND x.subject_id=r.subject_id
+                AND k.revision=j.revision)"""
+
+
+def _text_math(schema: Schema) -> None:
+    """Version 16: the math-check queues of comment bodies and explanations and their
+    checks' links move into one queue, ``text_math_sources``, and one link table,
+    ``math_text_jobs``, each under its kind of text (B-04). A comment's queue names its
+    document as its parent, and its checks the document revision and hash their macros
+    came from; an explanation's queue names its finding and decision revision. The two
+    views over them are made again. A check whose text has no queue row, or a row the new
+    tables refuse, refuses the migration."""
+    for query, what in _UNQUEUED:
+        found = schema.execute(query).fetchone()
+        if found is not None:
+            raise RefusedRowError(what.format(*found))
+    for statement in (
+        """CREATE TABLE text_math_sources (
+    subject_type TEXT NOT NULL
+        CHECK (length(subject_type) BETWEEN 1 AND 32 AND subject_type NOT GLOB '*[^a-z_]*'),
+    subject_id TEXT NOT NULL CHECK (length(CAST(subject_id AS BLOB)) BETWEEN 1 AND 128),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    session TEXT CHECK (session IS NULL OR length(CAST(session AS BLOB)) BETWEEN 1 AND 128),
+    parent TEXT CHECK (parent IS NULL OR length(CAST(parent AS BLOB)) BETWEEN 1 AND 128),
+    parent_revision INTEGER
+        CHECK (parent_revision IS NULL OR parent_revision BETWEEN 1 AND 999999999),
+    target INTEGER NOT NULL CHECK (target BETWEEN 0 AND 999999999),
+    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed BETWEEN 0 AND 999999999),
+    macro_revision INTEGER NOT NULL DEFAULT 0 CHECK (macro_revision BETWEEN 0 AND 999999999),
+    retry_requested INTEGER NOT NULL DEFAULT 0 CHECK (retry_requested IN (0, 1)),
+    blocked TEXT CHECK (blocked IS NULL OR length(CAST(blocked AS BLOB)) <= 4096),
+    PRIMARY KEY (subject_type, subject_id)
+) STRICT""",
+        """CREATE TABLE math_text_jobs (
+    check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
+    subject_type TEXT NOT NULL,
+    subject_id TEXT NOT NULL,
+    macro_revision INTEGER
+        CHECK (macro_revision IS NULL OR macro_revision BETWEEN 0 AND 999999999),
+    macro_sha256 TEXT CHECK (macro_sha256 IS NULL
+        OR (length(macro_sha256) = 64 AND macro_sha256 NOT GLOB '*[^0-9a-f]*')),
+    -- A comment's check names the document revision and hash its macros came from.
+    CHECK ((subject_type = 'comment') = (macro_revision IS NOT NULL AND macro_sha256 IS NOT NULL)),
+    FOREIGN KEY (subject_type, subject_id) REFERENCES text_math_sources(subject_type, subject_id)
+) STRICT""",
+        "CREATE INDEX math_text_jobs_subjects ON math_text_jobs(subject_type,subject_id)",
+        # One queue row per explanation decision, and the legacy discovery's lookup.
+        "CREATE UNIQUE INDEX text_math_sources_parents "
+        "ON text_math_sources(subject_type,parent,parent_revision)",
+        "DROP VIEW math_current_checks",
+        "DROP VIEW math_job_scope",
+    ):
+        schema.execute(statement)
+    for table, statement in _TEXT_MATH:
+        try:
+            schema.execute(statement)
+        except sqlite3.IntegrityError as error:
+            raise RefusedRowError(f"a row of {table} fails its check ({error})") from None
+    for table in (
+        "math_comment_jobs",
+        "math_response_jobs",
+        "comment_math_sources",
+        "response_math_sources",
+    ):
+        schema.execute(f"DROP TABLE {table}")
+    schema.execute(_JOB_SCOPE)
+    schema.execute(_TEXT_CHECKS)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1128,6 +1371,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _event_log,
     _feed_cursors,
     _text_revisions,
+    _text_math,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

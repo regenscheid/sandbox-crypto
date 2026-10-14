@@ -23,12 +23,14 @@ Json = dict[str, Any]
 
 def metadata(db: sqlite3.Connection, check: str) -> Json | None:
     row = db.execute(
-        "SELECT r.source,s.finding_id,s.decision_revision,s.project,s.session,j.revision,"
+        "SELECT r.subject_id,s.parent,s.parent_revision,s.project,s.session,j.revision,"
         "j.document IS NULL,b.identity_floor "
-        "FROM math_response_jobs r JOIN math_jobs j USING(check_id) JOIN response_math_sources s "
-        "ON s.source=r.source JOIN text_revisions b ON b.subject_type='response' "
-        "AND b.subject_id=s.source AND b.revision=j.revision AND b.parent=s.finding_id "
-        "AND b.parent_revision=s.decision_revision WHERE r.check_id=?",
+        "FROM math_text_jobs r JOIN math_jobs j USING(check_id) JOIN text_math_sources s "
+        "ON s.subject_type='response' AND s.subject_id=r.subject_id "
+        "JOIN text_revisions b ON b.subject_type='response' "
+        "AND b.subject_id=s.subject_id AND b.revision=j.revision AND b.parent=s.parent "
+        "AND b.parent_revision=s.parent_revision "
+        "WHERE r.check_id=? AND r.subject_type='response'",
         (check,),
     ).fetchone()
     if row is None:
@@ -55,13 +57,14 @@ class ResponseMath:
 
     def claim(self, db: sqlite3.Connection, project: str, owner: str, now: float) -> str | None:
         row = db.execute(
-            "SELECT s.source,s.finding_id,s.decision_revision,s.target "
-            "FROM response_math_sources s JOIN review_findings f ON f.finding_id=s.finding_id "
-            "WHERE s.project=? AND s.target>0 "
+            "SELECT s.subject_id,s.parent,s.parent_revision,s.target "
+            "FROM text_math_sources s JOIN review_findings f ON f.finding_id=s.parent "
+            "WHERE s.subject_type='response' AND s.project=? AND s.target>0 "
             "AND (s.completed<s.target OR s.retry_requested=1) AND "
             "(s.blocked IS NULL OR s.blocked NOT LIKE 'Derived body identity%') AND NOT EXISTS("
-            "SELECT 1 FROM math_jobs j JOIN math_response_jobs r USING(check_id) WHERE "
-            "r.source=s.source AND j.state='running') ORDER BY s.rowid LIMIT 1",
+            "SELECT 1 FROM math_jobs j JOIN math_text_jobs r USING(check_id) WHERE "
+            "r.subject_type='response' AND r.subject_id=s.subject_id AND j.state='running') "
+            "ORDER BY s.rowid LIMIT 1",
             (project,),
         ).fetchone()
         if row is None:
@@ -69,7 +72,8 @@ class ResponseMath:
         source, finding, decision, revision = row
         parent = bodies.original(db, finding, decision, project=project)
         retained = db.execute(
-            "SELECT session FROM response_math_sources WHERE source=?", (source,)
+            "SELECT session FROM text_math_sources WHERE subject_type='response' AND subject_id=?",
+            (source,),
         ).fetchone()
         if retained != (parent["session"],):
             raise DocumentError(INTERNAL, "response queue does not bind its canonical session")
@@ -78,8 +82,8 @@ class ResponseMath:
             raise DocumentError(INTERNAL, "response queue does not bind its original field")
         if db.execute("SELECT count(*) FROM math_jobs").fetchone()[0] >= self.jobs.limits.jobs:
             db.execute(
-                "UPDATE response_math_sources SET blocked='math job history quota reached' "
-                "WHERE source=?",
+                "UPDATE text_math_sources SET blocked='math job history quota reached' "
+                "WHERE subject_type='response' AND subject_id=?",
                 (source,),
             )
             return None
@@ -90,11 +94,12 @@ class ResponseMath:
             "VALUES(?,NULL,?,?,'running',?,?,?)",
             (check, revision, saved["sha256"], owner, now + LEASE, now),
         )
-        db.execute("INSERT INTO math_response_jobs VALUES(?,?)", (check, source))
+        db.execute("INSERT INTO math_text_jobs VALUES(?,'response',?,NULL,NULL)", (check, source))
 
         pin(db, check, project)
         db.execute(
-            "UPDATE response_math_sources SET retry_requested=0,blocked=NULL WHERE source=?",
+            "UPDATE text_math_sources SET retry_requested=0,blocked=NULL "
+            "WHERE subject_type='response' AND subject_id=?",
             (source,),
         )
         if saved["held"]:
@@ -105,16 +110,18 @@ class ResponseMath:
                 (saved["held"], now, check),
             )
             db.execute(
-                "UPDATE response_math_sources SET completed=max(completed,?) WHERE source=?",
+                "UPDATE text_math_sources SET completed=max(completed,?) "
+                "WHERE subject_type='response' AND subject_id=?",
                 (revision, source),
             )
         return check
 
     def fence(self, db: sqlite3.Connection, check: str, owner: str, meta: Json) -> tuple[Any, ...]:
         row = db.execute(
-            "SELECT j.revision,j.cursor FROM math_jobs j JOIN math_response_jobs r "
-            "USING(check_id) JOIN text_revisions b ON b.subject_type='response' "
-            "AND b.subject_id=r.source AND b.revision=j.revision "
+            "SELECT j.revision,j.cursor FROM math_jobs j JOIN math_text_jobs r "
+            "ON r.check_id=j.check_id AND r.subject_type='response' "
+            "JOIN text_revisions b ON b.subject_type='response' "
+            "AND b.subject_id=r.subject_id AND b.revision=j.revision "
             "WHERE j.check_id=? AND j.state='running' AND j.owner=? AND j.lease_until>? "
             "AND j.document IS NULL AND j.source_sha256=b.sha256",
             (check, owner, self.store.clock()),
@@ -165,19 +172,21 @@ class ResponseMath:
 
     def finish(self, db: sqlite3.Connection, job: Json) -> None:
         db.execute(
-            "UPDATE response_math_sources SET completed=max(completed,?),blocked=NULL WHERE "
-            "source=?",
+            "UPDATE text_math_sources SET completed=max(completed,?),blocked=NULL WHERE "
+            "subject_type='response' AND subject_id=?",
             (job["revision"], job["response"]["source"]),
         )
 
     def retry(self, db: sqlite3.Connection, project: str, configuration: str | None) -> None:
         db.execute(
-            "UPDATE response_math_sources SET retry_requested=1 WHERE project=? AND target>0 "
-            "AND completed=target AND EXISTS(SELECT 1 FROM math_jobs j JOIN math_response_jobs r "
-            "USING(check_id) WHERE r.source=response_math_sources.source AND j.revision=target "
-            "AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_response_jobs x "
-            "USING(check_id) "
-            "WHERE x.source=r.source AND k.revision=j.revision) AND j.state='finished' AND "
+            "UPDATE text_math_sources AS s SET retry_requested=1 WHERE "
+            "s.subject_type='response' AND s.project=? AND s.target>0 "
+            "AND s.completed=s.target AND EXISTS(SELECT 1 FROM math_jobs j "
+            "JOIN math_text_jobs r USING(check_id) WHERE r.subject_type='response' "
+            "AND r.subject_id=s.subject_id AND j.revision=s.target "
+            "AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_text_jobs x "
+            "USING(check_id) WHERE x.subject_type='response' AND x.subject_id=r.subject_id "
+            "AND k.revision=j.revision) AND j.state='finished' AND "
             "(j.unavailable>0 OR (? IS NOT NULL AND j.configuration!=?)))",
             (project, configuration, configuration),
         )
@@ -188,10 +197,11 @@ def remaining(db: sqlite3.Connection, project: str) -> bool:
         return True
     return (
         db.execute(
-            "SELECT 1 FROM response_math_sources s WHERE s.project=? AND "
-            "(s.completed<s.target OR s.retry_requested=1 OR EXISTS(SELECT 1 FROM math_jobs j "
-            "JOIN math_response_jobs r USING(check_id) WHERE r.source=s.source AND "
-            "j.state='running')) LIMIT 1",
+            "SELECT 1 FROM text_math_sources s WHERE s.subject_type='response' "
+            "AND s.project=? AND (s.completed<s.target OR s.retry_requested=1 "
+            "OR EXISTS(SELECT 1 FROM math_jobs j JOIN math_text_jobs r USING(check_id) "
+            "WHERE r.subject_type='response' AND r.subject_id=s.subject_id "
+            "AND j.state='running')) LIMIT 1",
             (project,),
         ).fetchone()
         is not None
@@ -200,13 +210,14 @@ def remaining(db: sqlite3.Connection, project: str) -> bool:
 
 def queue(db: sqlite3.Connection, project: str, *, session: str | None = None) -> list[Json]:
     rows = db.execute(
-        "SELECT source,finding_id,decision_revision,target,completed,blocked,EXISTS(SELECT 1 "
-        "FROM math_jobs j JOIN math_response_jobs r USING(check_id) WHERE r.source=s.source "
-        "AND j.state='running') FROM response_math_sources s WHERE project=? AND (? IS "
-        "NULL OR session=?) AND (blocked IS "
-        "NOT NULL "
-        "OR completed<target OR retry_requested=1 OR EXISTS(SELECT 1 FROM math_jobs j JOIN "
-        "math_response_jobs r USING(check_id) WHERE r.source=s.source AND j.state='running')) "
+        "SELECT s.subject_id,s.parent,s.parent_revision,s.target,s.completed,s.blocked,"
+        "EXISTS(SELECT 1 FROM math_jobs j JOIN math_text_jobs r USING(check_id) "
+        "WHERE r.subject_type='response' AND r.subject_id=s.subject_id "
+        "AND j.state='running') FROM text_math_sources s WHERE s.subject_type='response' "
+        "AND s.project=? AND (? IS NULL OR s.session=?) AND (s.blocked IS NOT NULL "
+        "OR s.completed<s.target OR s.retry_requested=1 OR EXISTS(SELECT 1 FROM math_jobs j "
+        "JOIN math_text_jobs r USING(check_id) WHERE r.subject_type='response' "
+        "AND r.subject_id=s.subject_id AND j.state='running')) "
         "ORDER BY s.rowid LIMIT 21",
         (project, session, session),
     )

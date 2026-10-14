@@ -74,6 +74,12 @@ def read(db: sqlite3.Connection, entry: str, revision: int | None = None) -> Jso
     }
 
 
+def _held(value: Json) -> bool:
+    """Whether a body's block identity is held: its revision's held reason, which a
+    block map written by ``prepare`` also carries (the column is the one read)."""
+    return bool(value.get("held"))
+
+
 _FIELDS: Final = (
     "revision",
     "body",
@@ -83,6 +89,8 @@ _FIELDS: Final = (
     "owners",
     "next_block",
     "next_span",
+    "identity_floor",
+    "held",
 )
 
 
@@ -129,8 +137,6 @@ def current(
             }
             if header["held"] is not None:
                 result["held"] = header["held"]
-        if full and result["block_map"].get("held"):
-            result["held"] = result["block_map"]["held"]
         if result["history_entry"] != latest_entry or result["sha256"] != sha(body):
             if not allow_legacy:
                 raise DocumentError(
@@ -272,7 +278,7 @@ def _prepare(body: str, actor: Author, parent: Json | None = None) -> PreparedBo
     parsed = parse(body, documents=False)
     before = (
         attach(parent["body"], parent["block_map"], documents=False)
-        if parent and parent["block_map"] and not parent["block_map"].get("held")
+        if parent and parent["block_map"] and not _held(parent)
         else None
     )
     allocate = Allocator(
@@ -298,8 +304,8 @@ def _prepare(body: str, actor: Author, parent: Json | None = None) -> PreparedBo
     }
     stored_map = block_map(mapped, changes)
     stored_map["identity_floor"] = (
-        parent["block_map"].get("identity_floor", 1)
-        if parent and parent["block_map"] and not parent["block_map"].get("held")
+        parent.get("identity_floor") or 1
+        if parent and parent["block_map"] and not _held(parent)
         else revision
     )
     stored, encoded = dump(stored_map), dump(owners)
@@ -335,8 +341,8 @@ def commit(
     revision = prepared.base + 1
     TEXTS.append(db, entry, prepared.revision(revision, actor, origin=history))
     db.execute(
-        "INSERT INTO comment_math_sources(entry_id,document,project,target,blocked) "
-        "VALUES(?,?,?,?,?) ON CONFLICT(entry_id) DO UPDATE SET "
+        "INSERT INTO text_math_sources(subject_type,subject_id,parent,project,target,blocked) "
+        "VALUES('comment',?,?,?,?,?) ON CONFLICT(subject_type,subject_id) DO UPDATE SET "
         "target=excluded.target,blocked=excluded.blocked",
         (entry, document, project, revision, prepared.held),
     )

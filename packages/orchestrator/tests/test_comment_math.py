@@ -571,7 +571,7 @@ def test_atomic_revision_scheduling_and_append_only_history(stores):
     assert Annotations(docs).body("p", doc, source["entry_id"])["revision"] == 1
     with docs.control.read() as tx:
         db = tx.sql
-        assert db.execute("SELECT target FROM comment_math_sources").fetchone()[0] == 1
+        assert db.execute("SELECT target FROM text_math_sources").fetchone()[0] == 1
         assert db.execute("SELECT count(*) FROM annotation_entries").fetchone()[0] == 1
     with docs.control.write() as tx:
         db = tx.sql
@@ -641,7 +641,7 @@ async def test_derived_source_cannot_borrow_another_canonical_parent(stores, pro
     with docs.control.write() as tx:
         db = tx.sql
         db.execute(
-            "UPDATE comment_math_sources SET document=?,project=? WHERE entry_id=?",
+            "UPDATE text_math_sources SET parent=?,project=? WHERE subject_id=?",
             (other, project, source["entry_id"]),
         )
     # Scope failure occurs before admission, parsing, rendering or a foreign listing.
@@ -697,7 +697,7 @@ async def test_an_oversized_blocked_reason_is_refused_when_written(stores):
     await drain(reviews, ScriptedChecker())
     with pytest.raises(sqlite3.IntegrityError, match="CHECK"), docs.control.write() as tx:
         tx.sql.execute(
-            "UPDATE comment_math_sources SET blocked=? WHERE entry_id=?",
+            "UPDATE text_math_sources SET blocked=? WHERE subject_id=?",
             ("x" * 5000, source["entry_id"]),
         )
 

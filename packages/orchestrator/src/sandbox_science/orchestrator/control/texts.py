@@ -9,7 +9,9 @@ and span IDs come from, the first revision whose identities it carries
 (``identity_floor``), why its identity is held if it is, the project macro revision it
 was saved with, and what it belongs to: an explanation's finding and decision revision
 (``parent``, ``parent_revision``) or the comment entry that recorded the revision
-(``origin``). The kind of text checks its own parent; this table checks values.
+(``origin``). The kind of text checks its own parent; this table checks values. The
+identity floor and held reason are read from their columns; the block map the writer
+stores also carries them, as it always did, and nothing reads that copy.
 """
 
 from __future__ import annotations
