@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -195,6 +196,43 @@ def test_a_reader_racing_the_first_writer_finds_the_store_missing(tmp_path: Path
     _store(path).initialize()
     assert not reader.missing
     reader.close()
+
+
+def test_a_store_another_process_creates_during_the_check_is_not_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The first writer's commit lands while a second one checks the file read-only.
+    path = tmp_path / "control.sqlite3"
+    sqlite3.connect(path).close()  # created, nothing written yet
+    connect = sqlite3.connect
+    statements: list[str] = []
+
+    def first_commit(statement: str) -> None:
+        if statement.startswith("--"):  # a pragma's own statement, inside another
+            return
+        statements.append(statement)
+        if len(statements) == 2:
+            other = connect(path, isolation_level=None)
+            other.execute("PRAGMA journal_mode=WAL")
+            other.execute("BEGIN IMMEDIATE")
+            other.execute("CREATE TABLE documents (document_id TEXT PRIMARY KEY)")
+            other.execute(f"PRAGMA application_id = {migrations.APPLICATION_ID}")
+            other.execute(f"PRAGMA user_version = {migrations.VERSION}")
+            other.execute("COMMIT")
+            other.close()
+
+    def traced(target: object, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        db = connect(target, *args, **kwargs)  # type: ignore[arg-type]
+        if str(target).endswith("?mode=ro"):
+            db.set_trace_callback(first_commit)
+        return db
+
+    monkeypatch.setattr(sqlite3, "connect", traced)
+    store = _store(path)
+    store.initialize()
+    with store.read() as tx:
+        assert tx.sql.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
+    store.close()
 
 
 _FIRST_OPEN = """

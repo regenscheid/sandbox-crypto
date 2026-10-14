@@ -87,9 +87,13 @@ def check(path: Path, db: sqlite3.Connection, *, readonly: bool) -> int:
     bring it to ``VERSION`` (a writer); a refusal otherwise. Only reads."""
     not_ours = ControlError(UNAVAILABLE, f"{path.name} is not a control store")
     try:
-        (version,) = db.execute("PRAGMA user_version").fetchone()
-        (application,) = db.execute("PRAGMA application_id").fetchone()
-        (objects,) = db.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        # One statement, so one snapshot: read separately, another process's first
+        # commit could land in between, and its schema show without its version.
+        version, application, objects = db.execute(
+            "SELECT (SELECT user_version FROM pragma_user_version), "
+            "(SELECT application_id FROM pragma_application_id), "
+            "(SELECT count(*) FROM sqlite_master)"
+        ).fetchone()
     except sqlite3.OperationalError as error:
         if _busy(error):
             raise ControlError(BUSY, "another process held the control store: try again") from None
