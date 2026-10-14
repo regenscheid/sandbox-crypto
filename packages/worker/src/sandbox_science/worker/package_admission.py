@@ -52,6 +52,7 @@ class PackageAdmission:
         *,
         connect: Callable[[str], Awaitable[Connection]],
         spawn: Callable[[Any], asyncio.Task[Any]],
+        sync: Callable[[str], Awaitable[None]],
         daemon_identity: Callable[[], DaemonIdentity | None],
     ) -> None:
         self.store = store
@@ -60,6 +61,8 @@ class PackageAdmission:
         self.connect = connect
         """How a request connects to an environment's executor: the manager's way."""
         self.spawn = spawn
+        self.sync_through = sync
+        """How a retry syncs an environment: the manager's ``sync_package_gate``."""
         """Starts a background task that the manager owns and cancels when it closes."""
         self.daemon_identity = daemon_identity
         """The manager's daemon identity, which is set after it is built; None for none."""
@@ -167,7 +170,7 @@ class PackageAdmission:
                 for delay in (0, 0.1, 0.5, 1, 2):
                     await asyncio.sleep(delay)
                     try:
-                        await self.sync_environment(environment_id)
+                        await self.sync_through(environment_id)
                         return
                     except WorkerError:
                         pass
