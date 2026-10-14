@@ -16,7 +16,7 @@ import hashlib
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Final, cast
@@ -41,16 +41,14 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.worker import Language
 
 from .artifact_publisher import ArtifactPublisher
-from .consistency.controller import AUTHOR_NAMES, ReviewController, Reviews
+from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .documents.errors import DocumentError
 from .documents.mathcontroller import MathChecks, MathController
-from .documents.tool import NAMES as DOCUMENT_TOOLS
-from .documents.tool import DocumentTool, WorkRequests, with_notices
-from .hooks import TurnHook
-from .jobs import BACKGROUND, JOB_SPECS, JobNotices, JobTools
+from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
+from .hooks import Effect, TurnHook
+from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, JobNotices, JobTools
 from .kernel_delivery import KernelDeliveryController
 from .model import ToolCall, ToolSpec
-from .plan_tools import NAMES as PLAN_TOOLS
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .worker_client import WorkerAPIError, WorkerClient, dump
@@ -259,6 +257,56 @@ class ToolOutcome:
     """The result must reach the model as it is, with no notices riding on it."""
 
 
+@dataclass(frozen=True)
+class Request:
+    """One tool call as its handler gets it; ``args`` is empty for a raw entry."""
+
+    call: ToolCall
+    args: dict[str, Any]
+    operation: str
+    model: str | None
+
+
+Handler = Callable[[Request], Awaitable[ToolOutcome]]
+
+
+@dataclass(frozen=True)
+class ToolEntry:
+    """An offered tool: its spec, its handler, and the effect class a gate reads."""
+
+    spec: ToolSpec
+    effect: Effect
+    handler: Handler
+    raw: bool = False
+    """The handler parses the call's arguments itself."""
+    bound: bool = False
+    """The result is bounded like a file's or an execution's text."""
+    whole: bool = False
+    """The result reaches the model as it is, with no notices riding on it."""
+
+
+def _group(
+    specs: Sequence[ToolSpec],
+    run: Callable[[str, Request], Awaitable[tuple[str, dict[str, Any]]]],
+    effects: Mapping[str, Effect],
+    **flags: bool,
+) -> list[ToolEntry]:
+    """A group's entries, whose ``run`` answers a call with text and a record. A tool
+    ``effects`` does not name is an effect, so a new tool is gated until classified."""
+
+    async def handler(name: str, request: Request) -> ToolOutcome:
+        return ToolOutcome(*await run(name, request))
+
+    return [
+        ToolEntry(spec, effects.get(spec.name, "effect"), partial(handler, spec.name), **flags)
+        for spec in specs
+    ]
+
+
+def _plain(handler: Callable[[dict[str, Any], str], Awaitable[ToolOutcome]]) -> Handler:
+    return lambda request: handler(request.args, request.operation)
+
+
 def operation_id(prefix: str, call: ToolCall) -> str:
     """A worker operation ID for a tool call: stable, path-safe and at most 128 characters.
 
@@ -304,6 +352,24 @@ class Toolbox:
         self.artifacts = artifacts
         self.plans = plans
         self.kernel_notices = kernel_notices
+        self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
+        worker: dict[str, tuple[Effect, Handler]] = {
+            "shell": ("effect", _plain(self._shell)),
+            "python": ("effect", _plain(self._python)),
+            "read_file": ("read", _plain(self._read)),
+            "write_file": ("effect", _plain(self._write)),
+            "list_files": ("read", _plain(self._list)),
+            "publish": ("effect", self._publish),
+            "sage": ("effect", _plain(self._sage)),
+            "restart_kernel": ("effect", _plain(self._restart)),
+            **{
+                spec.name: ("effect", _plain(partial(self._pdf, spec.name.removeprefix("pdf_"))))
+                for spec in PDF_SPECS
+            },
+            "admit_hosts": ("effect", _plain(self._admit)),
+            "provision": ("effect", _plain(self.provisioning.provision)),
+            "provision_status": ("read", _plain(self.provisioning.status)),
+        }
         specs = [spec for spec in SPECS if spec.name != "python" or "python" in self.languages]
         if "sage" in self.languages:
             specs.append(SAGE)
@@ -327,38 +393,75 @@ class Toolbox:
             specs.append(ADMIT_HOSTS)
         if PROVISIONING in features:
             specs.extend(PROVISION_SPECS)
-        if self.jobs is not None:
-            specs.extend(JOB_SPECS)
-        self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
+        entries = [ToolEntry(spec, *worker[spec.name]) for spec in specs]
+        if (job_tools := self.jobs) is not None:
+            entries += _group(
+                JOB_SPECS,
+                lambda name, call: job_tools.handlers[name](call.args, call.operation),
+                JOB_EFFECTS,
+                bound=True,
+            )
         if documents is not None:
-            specs.extend(documents.specs)
+            entries += _group(
+                documents.specs,
+                lambda name, call: documents.call(
+                    name,
+                    call.args,
+                    operation=call.operation,
+                    call_id=call.call.id,
+                    model=call.model,
+                ),
+                DOCUMENT_EFFECTS,
+            )
         if reviews is not None:
-            specs.extend(reviews.specs)
+            entries += _group(
+                reviews.specs,
+                lambda name, call: reviews.author_call(
+                    name, call.args, call.operation, model=call.model
+                ),
+                REVIEW_EFFECTS,
+                bound=True,
+            )
         if plans is not None:
-            specs.extend(plans.specs)
-        self.specs = tuple(specs)
+            entries += _group(
+                plans.specs,
+                lambda name, call: plans.call(
+                    name, call.call.arguments, call_id=call.call.id, model=call.model
+                ),
+                {spec.name: "plan" for spec in plans.specs},
+                raw=True,
+                whole=True,
+            )
+        self.entries = {entry.spec.name: entry for entry in entries}
+        self.specs = tuple(entry.spec for entry in entries)
 
     async def call(
-        self, call: ToolCall, operation: str, *, model: str | None = None
+        self,
+        call: ToolCall,
+        operation: str,
+        *,
+        model: str | None = None,
+        gates: Sequence[TurnHook] = (),
     ) -> ToolOutcome:
         """Run one tool call; whatever goes wrong comes back as an error for the model.
 
         ``model`` is the model that asked for the call, as the gateway named it, which
-        document revisions record. After the call, the run's next safe point, the result
-        carries notices of changes others made to the documents the run has seen (LD-15).
+        document revisions record. Each of ``gates`` may refuse the call by its effect
+        class. After the call, the run's next safe point, the result carries notices of
+        changes others made to the documents the run has seen (LD-15).
         """
+        entry = self.entries.get(call.name)
+        if entry is None:
+            return _failure(ErrorKind.INVALID_REQUEST, f"there is no tool named {call.name!r}")
         try:
-            outcome = await self._call(call, operation, model)
+            outcome = await self._call(entry, call, operation, model, gates)
         except Exception as exc:  # one bad call must not end the task
             _log.exception("the %s tool failed", call.name)
             outcome = _failure(
                 ErrorKind.INTERNAL,
                 f"the {call.name} tool failed unexpectedly ({type(exc).__name__})",
             )
-        if self.plans is not None and call.name in PLAN_TOOLS:
-            # A complete current plan may exceed the ordinary clipped-output
-            # budget. Do not truncate it and then acknowledge a false reread.
-            # Leave unrelated notices unseen for their existing later paths.
+        if entry.whole:
             outcome.whole = True
             return outcome
         if self.documents is not None:
@@ -387,76 +490,40 @@ class Toolbox:
             hooks.append(MathChecks(self.math_checks))
         return tuple(hooks)
 
-    async def _call(self, call: ToolCall, operation: str, model: str | None) -> ToolOutcome:
-        if self.plans is not None:
+    async def _call(
+        self,
+        entry: ToolEntry,
+        call: ToolCall,
+        operation: str,
+        model: str | None,
+        gates: Sequence[TurnHook],
+    ) -> ToolOutcome:
+        for gate in gates:
+            refused = await gate.gate(entry.effect)
+            if refused is not None:
+                return _failure(ErrorKind(refused.kind), refused.message)
+        args: dict[str, Any] = {}
+        if not entry.raw:
             try:
-                if call.name in PLAN_TOOLS:
-                    text, record = await self.plans.call(
-                        call.name, call.arguments, call_id=call.id, model=model
-                    )
-                    return ToolOutcome(text, record)
-                await self.plans.check_dispatch(call.name)
-            except DocumentError as error:
-                return _failure(ErrorKind(error.kind), error.message)
+                arguments: object = json.loads(call.arguments or "{}")
+            except (ValueError, RecursionError) as exc:
+                return _failure(ErrorKind.INVALID_REQUEST, f"arguments are not JSON: {exc}")
+            if not isinstance(arguments, dict):
+                return _failure(ErrorKind.INVALID_REQUEST, "arguments must be a JSON object")
+            args = cast(dict[str, Any], arguments)
         try:
-            arguments: object = json.loads(call.arguments or "{}")
-        except (ValueError, RecursionError) as exc:
-            return _failure(ErrorKind.INVALID_REQUEST, f"arguments are not JSON: {exc}")
-        if not isinstance(arguments, dict):
-            return _failure(ErrorKind.INVALID_REQUEST, "arguments must be a JSON object")
-        args = cast(dict[str, Any], arguments)
-        if call.name in AUTHOR_NAMES and self.reviews is not None:
-            try:
-                text, record = await self.reviews.author_call(
-                    call.name, args, operation, model=model
-                )
-                return ToolOutcome(self._bound(text), record)
-            except DocumentError as error:
-                return _failure(ErrorKind(error.kind), error.message)
-        if call.name in DOCUMENT_TOOLS and self.documents is not None:
-            text, record = await self.documents.call(
-                call.name, args, operation=operation, call_id=call.id, model=model
-            )
-            return ToolOutcome(text, record)
-        if self.jobs is not None and call.name in self.jobs.handlers:
-            try:
-                text, record = await self.jobs.handlers[call.name](args, operation)
-                return ToolOutcome(self._bound(text), record)
-            except (ValidationError, WorkerAPIError) as exc:
-                return (
-                    _failure(exc.kind, exc.message)
-                    if isinstance(exc, WorkerAPIError)
-                    else _failure(ErrorKind.INVALID_REQUEST, str(exc)[:500])
-                )
-        handlers = {
-            "shell": self._shell,
-            "python": self._python,
-            "sage": self._sage,
-            "restart_kernel": self._restart,
-            "read_file": self._read,
-            "write_file": self._write,
-            "list_files": self._list,
-            "publish": self._publish,
-            "pdf_info": partial(self._pdf, "info"),
-            "pdf_pages": partial(self._pdf, "pages"),
-            "pdf_search": partial(self._pdf, "search"),
-            "pdf_render": partial(self._pdf, "render"),
-            "admit_hosts": self._admit,
-            **self.provisioning.handlers,
-        }
-        handler = handlers.get(call.name)
-        if handler is None or call.name not in {spec.name for spec in self.specs}:
-            return _failure(ErrorKind.INVALID_REQUEST, f"there is no tool named {call.name!r}")
-        try:
-            if call.name == "publish" and self.artifacts is not None:
-                return await self._publish(args, operation, call_id=call.id, model=model)
-            return await handler(args, operation)
+            outcome = await entry.handler(Request(call, args, operation, model))
+        except DocumentError as error:
+            return _failure(ErrorKind(error.kind), error.message)
         except ValidationError as exc:
             first = exc.errors()[0]
             where = ".".join(str(part) for part in first.get("loc", ()))
             return _failure(ErrorKind.INVALID_REQUEST, f"{where}: {first.get('msg')}")
         except WorkerAPIError as exc:
             return _failure(exc.kind, exc.message)
+        if entry.bound:
+            outcome.text = self._bound(outcome.text)
+        return outcome
 
     # Executions.
 
@@ -674,20 +741,13 @@ class Toolbox:
         ]
         return ToolOutcome("\n".join(lines), {"admissions": decisions})
 
-    async def _publish(
-        self,
-        args: dict[str, Any],
-        operation: str,
-        *,
-        call_id: str = "publish",
-        model: str | None = None,
-    ) -> ToolOutcome:
+    async def _publish(self, call: Request) -> ToolOutcome:
         request = PublishRequest.model_validate(
-            {"context": self.context, **_known(args, "path", "media_type")}
+            {"context": self.context, **_known(call.args, "path", "media_type")}
         )
         if self.artifacts is not None:
             result = await self.artifacts.publish(
-                request, operation, tool_call=call_id, model=model
+                request, call.operation, tool_call=call.call.id, model=call.model
             )
             worker = result.worker.model_dump(mode="json") if result.worker is not None else None
             receipt = result.receipt.model_dump(mode="json")

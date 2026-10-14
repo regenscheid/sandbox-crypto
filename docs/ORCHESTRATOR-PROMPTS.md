@@ -123,13 +123,15 @@ match. Historical reads, mutation or replay receipts, a failed model call, or a 
 and an effect in the same assistant batch do not satisfy it. A GUI read or save does
 not clear it.
 
-**Tool classes.** [Toolbox](../packages/orchestrator/src/sandbox_science/orchestrator/tools.py)
-uses the finite classes in `plan_tools.py`: `READ_TOOLS` (file, document and review
-reads, job list/status/wait and provisioning status), `CANCEL_TOOLS` (`cancel_job`)
-and `EFFECT_TOOLS`. Unclassified tools get no exemption. Writes, execution,
-publication, provisioning, host admission and PDF helpers need the plan fence; PDF
-helpers are effects because they execute in the worker. Plan results are returned
-as complete JSON, not clipped like ordinary text.
+**Tool classes.** Each tool's entry in the
+[Toolbox](../packages/orchestrator/src/sandbox_science/orchestrator/tools.py) has an
+effect class, which the plans hook's gate reads: `read` (file, document and review
+reads, job list/status/wait and provisioning status), `cancel` (`cancel_job`),
+`plan` (the plan tools, which check the plan themselves) and `effect`. A tool its
+group does not classify is an effect. Writes, execution, publication, provisioning,
+host admission and PDF helpers need the plan fence; PDF helpers are effects because
+they execute in the worker. Plan results are returned as complete JSON, not clipped
+like ordinary text.
 
 **Limits.** Tool requests are at most 96 KiB UTF-8 and refuse unknown authority or
 scope fields, non-strict counters and malformed text. Plan bodies keep the core's

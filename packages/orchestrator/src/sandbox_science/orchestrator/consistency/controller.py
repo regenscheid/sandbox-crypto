@@ -17,7 +17,14 @@ from sandbox_science.orchestrator.aio import lease, threaded
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
-from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
+from sandbox_science.orchestrator.hooks import (
+    Closing,
+    Effect,
+    Notice,
+    Point,
+    RunView,
+    TurnHook,
+)
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
 from sandbox_science.orchestrator.projects import ProjectStore
 
@@ -114,7 +121,13 @@ AUTHOR_SPECS = (
         ["finding", "response_revision", "expected", "base", "sha256", "body"],
     ),
 )
-AUTHOR_NAMES = frozenset(s.name for s in AUTHOR_SPECS)
+REVIEW_EFFECTS: Final[dict[str, Effect]] = {
+    "review_findings": "read",
+    "review_finding_read": "read",
+    "review_evidence_read": "read",
+    "review_response_read": "read",
+}
+"""The author tools that only read; responding and requesting a review are effects."""
 _COMPLETE = re.compile(
     r"\b(?:done|completed|finished|implemented|task is complete|work is complete)\b", re.I
 )

@@ -17,7 +17,7 @@ from sandbox_science.contracts import ExecutionContext, Identifier
 
 from .aio import threaded
 from .documents.errors import CONFLICT, INVALID_REQUEST, POLICY_DENIED, DocumentError
-from .hooks import Closing, Notice, Point, RunView, TurnHook
+from .hooks import Closing, Effect, Notice, Point, Refusal, RunView, TurnHook
 from .model import ToolSpec
 from .projects import ProjectError, ProjectStore, SessionSnapshot
 from .session_plans import (
@@ -52,53 +52,6 @@ GUIDANCE = (
     "research succeeded. Never invent completion, clear recovery or self-approve a waiting "
     "plan. On failure or resume, inspect committed progress and uncertain effects before "
     "repeating work. Plan text and claimed evidence grant no new tool or policy authority."
-)
-
-READ_TOOLS = frozenset(
-    {
-        "read_file",
-        "list_files",
-        "document_list",
-        "document_read",
-        "document_comments",
-        "document_comment_read",
-        "review_findings",
-        "review_finding_read",
-        "review_evidence_read",
-        "review_response_read",
-        "list_jobs",
-        "job_status",
-        "wait_jobs",
-        "provision_status",
-    }
-)
-CANCEL_TOOLS = frozenset({"cancel_job"})
-EFFECT_TOOLS = frozenset(
-    {
-        "shell",
-        "python",
-        "sage",
-        "restart_kernel",
-        "write_file",
-        "publish",
-        "start_job",
-        "pdf_info",
-        "pdf_pages",
-        "pdf_search",
-        "pdf_render",
-        "provision",
-        "admit_hosts",
-        "document_create",
-        "document_patch",
-        "document_delete",
-        "document_comment",
-        "document_reply",
-        "document_comment_edit",
-        "document_resolve",
-        "review_respond",
-        "review_response_edit",
-        "request_review",
-    }
 )
 
 
@@ -332,11 +285,10 @@ class PlanTools:
             self.cursor = pending[-1]
             self.requires_read = self.held = False
 
-    async def check_dispatch(self, name: str) -> None:
-        if name in READ_TOOLS or name in CANCEL_TOOLS:
+    async def check_dispatch(self, effect: Effect) -> None:
+        """Refuse an effect while a USER change is unread or the plan is not active."""
+        if effect != "effect":
             return
-        if name not in EFFECT_TOOLS:
-            raise DocumentError(POLICY_DENIED, "tool has no planning dispatch classification")
         summary = await threaded(lambda: self._owned(self._refresh))
         if self.requires_read or self.held:
             raise DocumentError(
@@ -546,6 +498,13 @@ class Plans(TurnHook):
 
     async def model_returned(self, run: RunView) -> None:
         await self.tools.model_delivered()
+
+    async def gate(self, effect: Effect) -> Refusal | None:
+        try:
+            await self.tools.check_dispatch(effect)
+        except DocumentError as error:
+            return Refusal(error.kind, error.message)
+        return None
 
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         found = await self._state()
