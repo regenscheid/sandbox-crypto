@@ -515,3 +515,11 @@ def test_the_response_checks_keep_a_response_and_its_body(tmp_path, monkeypatch)
             assert tx.sql.execute("PRAGMA user_version").fetchone() == (migrations.VERSION,)
     finally:
         docs.close()
+
+
+def test_a_response_explanation_at_its_byte_limit_is_kept(stores) -> None:
+    _, reviews, _ = stores
+    finding, decision = response(reviews)
+    body = "\U0001d465" * 8192  # 8192 characters, 32768 bytes: the model's and the table's
+    edit(reviews, finding, decision, body)
+    assert ResponseBodies(reviews).get("p", "s", finding, decision)["body"] == body
