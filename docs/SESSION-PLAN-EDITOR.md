@@ -45,7 +45,8 @@ that retained draft.
 
 ## Unknown save outcomes
 
-Before a write, the browser retains its exact operation ID, base, body and reason.
+Before a write, the browser retains its exact operation ID, base, body and reason
+in the plan's draft, kept by the workspace's shared draft store ([saving](WORKSPACE.md#views)).
 Transport failure, abort, 401 or 503 can follow a committed write. These outcomes
 remain unknown. Retry uses the exact retained request; editing its intent is held.
 After an earlier unknown outcome, a later 404 or 409 does not prove the earlier

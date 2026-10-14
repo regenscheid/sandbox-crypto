@@ -3,8 +3,8 @@
   import { untrack } from 'svelte';
   import { api, type CommentThread, type CommentEntry, type Session } from '../lib/api';
   import { describeAuthor } from '../lib/authors';
-  import { documentRequest, documentAnswered } from '../lib/documentRequests';
-  import { loadDraft, saveDraft, clearDraft } from '../lib/drafts';
+  import { replyDrafts } from '../lib/drafts';
+  import { guardedWrite } from '../lib/mutation';
   import type { MacroSet } from '../lib/macros';
   import Markdown from '../lib/Markdown.svelte';
   import { documentHref } from '../lib/router';
@@ -26,12 +26,12 @@
     changed: () => Promise<void>;
   } = $props();
   const initial = untrack(() => thread);
-  const draftKey = untrack(() => `${documentId}:reply:${initial.thread_id}`);
-  const draft = untrack(() => loadDraft(projectId, draftKey));
-  let body = $state(draft?.text ?? '');
-  let expected = $state(draft?.base ?? initial.revision);
-  let session = $state(draft?.retained ?? '');
-  let mode = $state(draft?.reason === 'edit' ? 'edit' : 'reply');
+  const draftScope = untrack(() => `${projectId}:${documentId}:${initial.thread_id}`);
+  const draft = replyDrafts.load(draftScope).draft;
+  let body = $state(draft?.body ?? '');
+  let expected = $state(draft?.expected ?? initial.revision);
+  let session = $state(draft?.session ?? '');
+  let mode = $state<'reply' | 'edit'>(draft?.mode ?? 'reply');
   let busy = $state(false);
   let error = $state<unknown>(null);
   let persisted = $state(true);
@@ -46,16 +46,9 @@
     }
   });
   $effect(() => {
-    if (body)
-      persisted = saveDraft(projectId, draftKey, {
-        base: expected,
-        text: body,
-        reason: mode,
-        block: null,
-        retained: session,
-      });
+    if (body) persisted = replyDrafts.save(draftScope, { expected, body, mode, session });
     else {
-      clearDraft(projectId, draftKey);
+      replyDrafts.clear(draftScope);
       expected = thread.revision;
     }
   });
@@ -70,16 +63,13 @@
         expected: writing ? expected : thread.revision,
         ...(writing ? { body, ...(session ? { addressed_to: session } : {}) } : {}),
       };
-      const request = await documentRequest(projectId, documentId, change);
-      const result = await api.changeComment(projectId, documentId, {
-        ...change,
-        operation_id: request.id,
-      });
-      documentAnswered(request);
+      const result = await guardedWrite('comment', `${projectId}:${documentId}`, change, (sent) =>
+        api.changeComment(projectId, documentId, sent),
+      );
       if (writing) {
         body = '';
         expected = result.revision;
-        clearDraft(projectId, draftKey);
+        replyDrafts.clear(draftScope);
       }
       await changed();
     } catch (caught) {
@@ -105,7 +95,7 @@
   function discard() {
     body = '';
     expected = thread.revision;
-    clearDraft(projectId, draftKey);
+    replyDrafts.clear(draftScope);
   }
 </script>
 

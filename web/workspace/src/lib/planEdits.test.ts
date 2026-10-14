@@ -308,7 +308,7 @@ describe('structured drafts', () => {
   });
   it('holds corrupt storage untouched', async () => {
     const v = observed(),
-      k = `plan-text-draft:p:s:${v.plan!.head.ref.plan_id}`;
+      k = `draft:plan:p:s:${v.plan!.head.ref.plan_id}`;
     storage.set(k, '{broken');
     const s = session(v);
     await s.editor.save();

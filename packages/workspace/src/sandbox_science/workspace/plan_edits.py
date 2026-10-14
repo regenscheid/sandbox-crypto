@@ -33,7 +33,7 @@ from sandbox_science.orchestrator.session_plans import (
 )
 
 from . import errors
-from .context import CONTEXT, identifier, json_answer, session_record
+from .context import CONTEXT, identifier, json_answer, read_body, session_record
 from .plans import PATH, has_records
 
 MAX_REQUEST_BYTES: Final = 128 * 1024
@@ -65,10 +65,7 @@ async def change(request: web.Request) -> web.Response:
     project, session = identifier(request, "project"), identifier(request, "session")
     if request.query or request.content_type != "application/json":
         raise ProjectError(ErrorKind.INVALID_REQUEST, "plan edit needs path scope and JSON")
-    try:
-        raw = await request.clone(client_max_size=MAX_REQUEST_BYTES).read()
-    except web.HTTPRequestEntityTooLarge:
-        return errors.json_error(413, ErrorKind.INVALID_REQUEST, "plan edit exceeds its byte limit")
+    raw = await read_body(request, "plan edit", limit=MAX_REQUEST_BYTES)
     try:
         wanted = BodyChange.model_validate_json(raw, strict=True)
     except ValidationError:

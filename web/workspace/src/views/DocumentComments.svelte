@@ -3,8 +3,8 @@
   import { untrack } from 'svelte';
   import { api, type DocumentRevision, type CommentThread, type Session } from '../lib/api';
   import { commentAnchor } from '../lib/commentAnchors';
-  import { loadDraft, saveDraft, clearDraft } from '../lib/drafts';
-  import { documentRequest, documentAnswered } from '../lib/documentRequests';
+  import { commentDrafts } from '../lib/drafts';
+  import { guardedWrite } from '../lib/mutation';
   import { macroSet } from '../lib/macros';
   import Markdown from '../lib/Markdown.svelte';
   import AnnotationThread from './AnnotationThread.svelte';
@@ -12,23 +12,15 @@
   let { projectId, found }: { projectId: string; found: DocumentRevision } = $props();
   const initial = untrack(() => found);
   const id = $derived(found.document.document_id);
-  const draftKey = `${initial.document.document_id}:comment`;
-  const draft = untrack(() => loadDraft(projectId, draftKey));
-  function options() {
-    try {
-      return JSON.parse(draft?.retained || '{}') as Record<string, string>;
-    } catch {
-      return {};
-    }
-  }
-  const saved = options();
-  let body = $state(draft?.text ?? '');
+  const draftScope = untrack(() => `${projectId}:${initial.document.document_id}`);
+  const draft = commentDrafts.load(draftScope).draft;
+  let body = $state(draft?.body ?? '');
   let base = $state(draft?.base ?? initial.revision.number);
   let block = $state(draft?.block ?? initial.blocks[0]?.id ?? '');
-  let kind = $state(saved.kind ?? 'block');
-  let math = $state(saved.math ?? '');
-  let quote = $state(saved.quote ?? '');
-  let session = $state(saved.session ?? initial.document.session_id ?? '');
+  let kind = $state(draft?.kind ?? 'block');
+  let math = $state(draft?.math ?? '');
+  let quote = $state(draft?.quote ?? '');
+  let session = $state(draft?.session ?? initial.document.session_id ?? '');
   let sessions = $state<Session[]>([]);
   let threads = $state<CommentThread[]>([]);
   let next = $state<string | null>(null);
@@ -44,14 +36,8 @@
   );
   $effect(() => {
     if (body)
-      persisted = saveDraft(projectId, draftKey, {
-        base,
-        text: body,
-        reason: '',
-        block,
-        retained: JSON.stringify({ kind, math, quote, session }),
-      });
-    else clearDraft(projectId, draftKey);
+      persisted = commentDrafts.save(draftScope, { base, block, body, kind, math, quote, session });
+    else commentDrafts.clear(draftScope);
   });
   $effect(() => {
     void refresh();
@@ -83,11 +69,11 @@
         body,
         ...(session ? { addressed_to: session } : {}),
       };
-      const request = await documentRequest(projectId, id, change);
-      await api.changeComment(projectId, id, { ...change, operation_id: request.id });
-      documentAnswered(request);
+      await guardedWrite('comment', `${projectId}:${id}`, change, (sent) =>
+        api.changeComment(projectId, id, sent),
+      );
       body = '';
-      clearDraft(projectId, draftKey);
+      commentDrafts.clear(draftScope);
       await refresh();
     } catch (caught) {
       error = caught;
@@ -97,7 +83,7 @@
   }
   function discard() {
     body = '';
-    clearDraft(projectId, draftKey);
+    commentDrafts.clear(draftScope);
   }
 </script>
 

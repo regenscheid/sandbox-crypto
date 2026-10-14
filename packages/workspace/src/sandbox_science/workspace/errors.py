@@ -2,8 +2,10 @@
 """The API's one error mapping: an error kind's HTTP status, and the error body.
 
 An error is ``{"error": {"kind", "message"}}`` with ``Cache-Control: no-store``. Every
-route raises ``ProjectError`` or lets ``WorkerAPIError`` or ``TimeoutError`` through;
-the application's guard answers them here. Anything else is a 500 with a fixed message,
+route raises ``ProjectError``, ``DocumentError`` or ``TooLargeError``, or lets
+``WorkerAPIError`` or ``TimeoutError`` through; the application's guard answers them here.
+A document store error also carries its ``details``, such as a conflict's current
+revision. Anything else is a 500 with a fixed message,
 and is logged.
 
 A worker refusal the browser can act on keeps its kind and the worker's message. Any
@@ -92,6 +94,10 @@ def document_kind(caught: DocumentError) -> ErrorKind:
         return ErrorKind.INTERNAL
 
 
+class TooLargeError(Exception):
+    """A request body over its route's byte limit: 413."""
+
+
 def log_worker_failure(caught: WorkerAPIError) -> None:
     """Log a worker failure that the browser sees only as a fixed 503."""
     _log.warning("worker request failed (%s): %s", caught.kind.value, caught.message)
@@ -99,7 +105,16 @@ def log_worker_failure(caught: WorkerAPIError) -> None:
 
 def to_response(caught: Exception, *, extra: dict[str, object] | None = None) -> web.Response:
     """The error response for an exception a route raised."""
+    fields: dict[str, object] = {}
     match caught:
+        case TooLargeError():
+            return json_error(413, ErrorKind.INVALID_REQUEST, str(caught), extra=extra)
+        case DocumentError():
+            kind, message = document_kind(caught), caught.message
+            fields = {"details": caught.details}
+            if caught.kind == "unavailable":
+                # The control store is one this version cannot use, such as a newer one.
+                _log.error("the control store is unavailable: %s", caught.message)
         case ProjectError() if caught.kind is ErrorKind.INTERNAL:
             _log.error("workspace API request failed", exc_info=caught)
             kind, message = ErrorKind.UNAVAILABLE, "a project record is unreadable"
@@ -116,4 +131,4 @@ def to_response(caught: Exception, *, extra: dict[str, object] | None = None) ->
             kind, message = ErrorKind.INTERNAL, INTERNAL_MESSAGE
     if kind not in STATUS:
         _log.error("workspace API request failed", exc_info=caught)
-    return error(kind, message, extra=extra)
+    return error(kind, message, fields=fields, extra=extra)

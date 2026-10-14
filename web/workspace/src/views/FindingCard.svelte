@@ -2,8 +2,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { reviews, parseRevisionReferences, type Finding, type Transition } from '../lib/reviews';
-  import { documentRequest, documentAnswered } from '../lib/documentRequests';
-  import { loadDraft, saveDraft, clearDraft } from '../lib/drafts';
+  import { findingDrafts } from '../lib/drafts';
+  import { guardedWrite } from '../lib/mutation';
   import ErrorMessage from './ErrorMessage.svelte';
   import Markdown from '../lib/Markdown.svelte';
   import ResponseBody from './ResponseBody.svelte';
@@ -29,12 +29,12 @@
       `${projectId}:${finding.macro_context?.key ?? 'unknown-finding'}`,
     ),
   );
-  const key = untrack(() => `review:${sessionId}:${initial.finding_id}`);
-  const draft = untrack(() => loadDraft(projectId, key));
-  let explanation = $state(draft?.text ?? ''),
-    action = $state(draft?.reason ?? 'rebut'),
-    references = $state(draft?.retained ?? '');
-  let expected = $state(draft?.base ?? initial.revision),
+  const key = untrack(() => `${projectId}:${sessionId}:${initial.finding_id}`);
+  const draft = findingDrafts.load(key).draft;
+  let explanation = $state(draft?.explanation ?? ''),
+    action = $state(draft?.action ?? 'rebut'),
+    references = $state(draft?.references ?? '');
+  let expected = $state(draft?.expected ?? initial.revision),
     persisted = $state(true),
     busy = $state(false),
     error = $state<unknown>(null);
@@ -54,15 +54,9 @@
   });
   $effect(() => {
     if (explanation)
-      persisted = saveDraft(projectId, key, {
-        base: expected,
-        text: explanation,
-        reason: action,
-        retained: references,
-        block: null,
-      });
+      persisted = findingDrafts.save(key, { expected, explanation, action, references });
     else {
-      clearDraft(projectId, key);
+      findingDrafts.clear(key);
       expected = finding.revision;
     }
   });
@@ -98,16 +92,13 @@
         explanation,
         revisions: parseRevisionReferences(references),
       };
-      const request = await documentRequest(projectId, key, body);
-      const result = await reviews.respond(projectId, sessionId, finding.finding_id, {
-        ...body,
-        operation_id: request.id,
-      });
-      documentAnswered(request);
+      const result = await guardedWrite('finding', key, body, (sent) =>
+        reviews.respond(projectId, sessionId, finding.finding_id, sent),
+      );
       explanation = '';
       references = '';
       expected = result.revision;
-      clearDraft(projectId, key);
+      findingDrafts.clear(key);
       await changed();
     } catch (caught) {
       error = caught;
@@ -230,7 +221,7 @@
         onclick={() => {
           explanation = '';
           references = '';
-          clearDraft(projectId, key);
+          findingDrafts.clear(key);
         }}>Discard response draft</button
       >
     </fieldset>

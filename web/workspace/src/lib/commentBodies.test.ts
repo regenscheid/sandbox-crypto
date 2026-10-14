@@ -6,7 +6,7 @@ import { render } from 'svelte/server';
 import CommentBodyEditor from '../views/CommentBodyEditor.svelte';
 import AnnotationThread from '../views/AnnotationThread.svelte';
 import { type CommentBodySource, type CommentThread, api } from './api';
-import { saveDraft, clearDraft } from './drafts';
+import { bodyCorrectionDrafts, replyDrafts } from './drafts';
 import { parser } from './markdown';
 import { NO_MACROS } from './macros';
 
@@ -21,20 +21,19 @@ const source: CommentBodySource = {
 };
 
 it('retains a separate original-body draft with stale thread and exact body CAS', () => {
-  const key = 'doc:comment-body:cmt-original';
-  saveDraft('p', key, {
-    text: 'Unsaved <script> body',
-    base: 4,
-    reason: 'edit_body',
-    retained: JSON.stringify({ base: 2, sha256: 'b'.repeat(64) }),
-    block: null,
+  const key = 'p:doc:cmt-original';
+  // No sessionStorage here: the draft is kept in memory only.
+  bodyCorrectionDrafts.save(key, {
+    expected: 4,
+    body: 'Unsaved <script> body',
+    base: 2,
+    sha256: 'b'.repeat(64),
   });
-  saveDraft('p', 'doc:reply:thread', {
-    text: 'Independent reply draft',
-    base: 5,
-    reason: 'reply',
-    retained: '',
-    block: null,
+  replyDrafts.save('p:doc:thread', {
+    expected: 5,
+    body: 'Independent reply draft',
+    mode: 'reply',
+    session: '',
   });
   const html = render(CommentBodyEditor, {
     props: {
@@ -52,8 +51,8 @@ it('retains a separate original-body draft with stale thread and exact body CAS'
   expect(html).not.toContain('<script>');
   expect(html).not.toContain('Independent reply draft');
   expect(html).toContain('History and existing work requests retain their original text');
-  clearDraft('p', key);
-  clearDraft('p', 'doc:reply:thread');
+  bodyCorrectionDrafts.clear(key);
+  replyDrafts.clear('p:doc:thread');
 });
 
 it('renders immutable original and correcting actor while exposing USER-own body editing only', () => {

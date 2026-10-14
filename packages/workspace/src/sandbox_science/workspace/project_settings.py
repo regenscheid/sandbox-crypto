@@ -5,10 +5,11 @@ from __future__ import annotations
 
 from aiohttp import web
 
-from sandbox_science.orchestrator.documents import USER, DocumentError
+from sandbox_science.orchestrator.documents import USER
 from sandbox_science.orchestrator.documents.project_macros import ProjectMacros
 
 from . import documents
+from .context import json_body
 
 
 def add_routes(app: web.Application) -> None:
@@ -23,10 +24,7 @@ async def macros(request: web.Request) -> web.Response:
 
 
 async def change(request: web.Request) -> web.Response:
-    try:
-        value = await request.json()
-    except (ValueError, UnicodeDecodeError, RecursionError):
-        return documents.api_error(DocumentError("invalid_request", "invalid project macro JSON"))
+    value = await json_body(request, "project macro JSON")
     return await documents.answer(
         request,
         lambda store: ProjectMacros(store).change(request.match_info["project"], value, USER),

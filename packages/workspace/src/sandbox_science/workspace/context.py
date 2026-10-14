@@ -2,13 +2,15 @@
 """What every feature's routes share: the stores, the worker, the timeouts and the login.
 
 ``create_app`` sets one ``WorkspaceContext`` as ``CONTEXT``. A route reads it from
-``request.app[CONTEXT]``, checks the IDs in its path, does its work in a thread or
-through the worker under a timeout, and answers JSON with ``json_answer``. Failures are
+``request.app[CONTEXT]``, checks the IDs in its path, reads a write's body with
+``json_body`` or ``read_body``, does its work in a thread or through the worker under a
+timeout, and answers JSON with ``json_answer``. Failures are
 raised and answered by the guard through ``errors``.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
@@ -23,6 +25,7 @@ from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, Se
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
 from .api import Timeouts
+from .errors import TooLargeError
 
 _IDENTIFIER: Final = TypeAdapter[str](Identifier)
 
@@ -65,6 +68,24 @@ def no_query(request: web.Request, what: str) -> None:
     """Refuse a query or a body on a route that takes its scope from its path only."""
     if request.query or request.can_read_body:
         raise ProjectError(ErrorKind.INVALID_REQUEST, f"{what} accepts only its path scope")
+
+
+async def read_body(request: web.Request, what: str, *, limit: int | None = None) -> bytes:
+    """A write's body, up to ``limit`` bytes or the application's 64 KiB."""
+    try:
+        source = request if limit is None else request.clone(client_max_size=limit)
+        return await source.read()
+    except web.HTTPRequestEntityTooLarge:
+        raise TooLargeError(f"{what} exceeds its byte limit") from None
+
+
+async def json_body(request: web.Request, what: str, *, limit: int | None = None) -> object:
+    """A write's JSON body; anything else is a 400 that names ``what``."""
+    raw = await read_body(request, what, limit=limit)
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError
+        raise ProjectError(ErrorKind.INVALID_REQUEST, f"invalid {what}") from None
 
 
 def json_answer(text: str) -> web.Response:
