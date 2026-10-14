@@ -26,6 +26,7 @@ from typing import Any, cast
 from sandbox_science.contracts import Clock, ErrorKind, Location
 from sandbox_science.contracts.worker import FEATURES, LANGUAGES
 
+from . import capture
 from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .errors import WorkerError
@@ -82,6 +83,9 @@ class Activity:
 class ConnectionHooks:
     """What the rest of the manager does as an environment's executor connects."""
 
+    connect: Callable[[str], Awaitable[Connection]]
+    """How a request connects: the manager's way to ``EnvironmentConnections.connect``,
+    which ``using`` goes through too."""
     on_event: Callable[[str, Message], Awaitable[None]]
     """An executor's message, by environment."""
     on_closed: Callable[[str, ExecutorChannel], Awaitable[None]]
@@ -201,14 +205,16 @@ class EnvironmentConnections:
             await channel.shutdown()
             self.hooks.incarnation_lost(environment_id, previous)
             raise DaemonIncarnationError()
-        await self.hooks.sync_package_gate(environment_id, channel)
         try:
+            await self.hooks.sync_package_gate(environment_id, channel)
             hostname, languages, features = describe(environment_id, channel.hello)
             self.hooks.hello(environment_id, channel)
             declared = self.backend.isolation_tier
             isolation = await probe(channel, declared, self.state_dir)
-        except Exception:
-            await channel.shutdown()  # never leave an executor running unused
+        except BaseException:
+            # Never leave an executor running unused, even when the open is cancelled,
+            # as a capture's deadline can; the shutdown outlasts further cancels.
+            await capture.owned(channel.shutdown())
             raise
         if isolation.tier < declared:
             _log.warning(
@@ -237,7 +243,7 @@ class EnvironmentConnections:
     @contextlib.asynccontextmanager
     async def using(self, environment_id: str) -> AsyncGenerator[ExecutorChannel]:
         """The environment's executor, counted as in use until the block ends."""
-        environment = await self.connect(environment_id)
+        environment = await self.hooks.connect(environment_id)
         channel = environment.channel
         if channel is None:
             raise WorkerError(

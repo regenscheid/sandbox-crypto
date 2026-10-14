@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sandbox_science.contracts import ExecutionContext
 
@@ -39,7 +39,8 @@ class EnvironmentUse:
     closing_sessions: dict[tuple[str, str], int] = field(default_factory=dict[tuple[str, str], int])
     """Closes in progress, by project and session."""
 
-    def clear(self) -> bool:
+    @property
+    def is_clear(self) -> bool:
         return not (
             self.recovering
             or self.fence is not None
@@ -47,6 +48,10 @@ class EnvironmentUse:
             or self.releases
             or self.closing_sessions
         )
+
+
+_CLEAR = EnvironmentUse()
+"""What every environment without a kept record reads as; never changed."""
 
 
 class Usability:
@@ -58,9 +63,19 @@ class Usability:
         """The worker is shutting down: no environment may be used again."""
         self._uses: dict[str, EnvironmentUse] = {}
 
-    def use(self, environment_id: str) -> EnvironmentUse:
-        """The environment's record; a clear one, not kept, when nothing stands in its way."""
-        return self._uses.get(environment_id) or EnvironmentUse()
+    def peek(self, environment_id: str) -> EnvironmentUse:
+        """A copy of the environment's record, clear when nothing stands in its way.
+
+        Changing the copy changes nothing; the transitions below change the record.
+        """
+        use = self._uses.get(environment_id)
+        if use is None:
+            return EnvironmentUse()
+        return replace(use, closing_sessions=dict(use.closing_sessions))
+
+    def _use(self, environment_id: str) -> EnvironmentUse:
+        """The kept record, or a clear one that is not kept; only for reading."""
+        return self._uses.get(environment_id) or _CLEAR
 
     def close(self) -> None:
         self.closing = True
@@ -71,15 +86,18 @@ class Usability:
         """Whether nothing stands in the way of using the environment for the session."""
         return not (
             self.closing
-            or self.use(context.environment_id).recovering
+            or self._use(context.environment_id).recovering
             or self.fenced(context.environment_id)
             or self.winding_down(context)
         )
 
     def fenced(self, environment_id: str) -> bool:
         """Whether no new work may start until the environment's sandbox is recycled."""
-        use = self.use(environment_id)
-        return use.quarantined or use.fence is not None or self.recycle_pending(environment_id)
+        return (
+            self._use(environment_id).quarantined
+            or self.fence(environment_id) is not None
+            or self.recycle_pending(environment_id)
+        )
 
     def recycle_pending(self, environment_id: str) -> bool:
         """Whether the store holds an intent to recycle the environment's sandbox."""
@@ -87,24 +105,30 @@ class Usability:
 
     def winding_down(self, context: ExecutionContext) -> bool:
         """Whether the environment's executor or the session is being closed."""
-        use = self.use(context.environment_id)
+        use = self._use(context.environment_id)
         return bool(use.releases) or (context.project_id, context.session_id) in (
             use.closing_sessions
         )
 
     def releasing(self, environment_id: str) -> bool:
-        return bool(self.use(environment_id).releases)
+        return bool(self._use(environment_id).releases)
 
     def fence(self, environment_id: str) -> asyncio.Task[None] | None:
-        """The recycle the environment's requests wait for, if one runs."""
-        return self.use(environment_id).fence
+        """The recycle the environment's requests wait for, if one runs.
+
+        A recycle that has ended is not returned, though its done callback may not have
+        run yet: awaiting a finished task never yields, so a caller that waited on it
+        again and again would spin.
+        """
+        fence = self._use(environment_id).fence
+        return fence if fence is not None and not fence.done() else None
 
     # Changes.
 
     def begin_recovery(self, environment_id: str) -> bool:
         """Mark a recovery of the environment as running; False if one is, or the worker
         is closing."""
-        if self.closing or self.use(environment_id).recovering:
+        if self.closing or self._use(environment_id).recovering:
             return False
         self._change(environment_id).recovering = True
         return True
@@ -124,7 +148,7 @@ class Usability:
         """The environment's fence; ``recycle`` starts one unless one runs."""
         self.quarantine(environment_id)
         use = self._change(environment_id)
-        if use.fence is None:
+        if use.fence is None or use.fence.done():
             fence = recycle()
             use.fence = fence
             fence.add_done_callback(lambda done: self._fence_done(environment_id, done))
@@ -181,5 +205,5 @@ class Usability:
 
     def _prune(self, environment_id: str) -> None:
         use = self._uses.get(environment_id)
-        if use is not None and use.clear():
+        if use is not None and use.is_clear:
             del self._uses[environment_id]

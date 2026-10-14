@@ -155,7 +155,7 @@ class ManagerView:
         self.manager._usability.lift_quarantine(environment_id)
 
     def quarantined(self, environment_id: str) -> bool:
-        return self.manager._usability.use(environment_id).quarantined
+        return self.manager._usability.peek(environment_id).quarantined
 
     def reopen(self) -> None:
         """Let a closed manager start again, as a new worker process would."""
@@ -216,6 +216,30 @@ class ManagerView:
 
         patch.setattr(self.manager, "_on_event", wrapped)
         return original
+
+    def watch_connects(self, patch: pytest.MonkeyPatch) -> list[str]:
+        """Record every environment a request connects to; the list fills as they do."""
+        connects: list[str] = []
+        original = self.manager._environment
+
+        async def watched(environment_id: str) -> Connection:
+            connects.append(environment_id)
+            return await original(environment_id)
+
+        patch.setattr(self.manager, "_environment", watched)
+        return connects
+
+    def watch_package_gate_syncs(self, patch: pytest.MonkeyPatch) -> list[ExecutorChannel]:
+        """Record every executor whose package gate the manager syncs as it opens."""
+        synced: list[ExecutorChannel] = []
+        original = self.manager._sync_package_gate
+
+        async def watched(environment_id: str, channel: ExecutorChannel) -> bool:
+            synced.append(channel)
+            return await original(environment_id, channel)
+
+        patch.setattr(self.manager, "_sync_package_gate", watched)
+        return synced
 
     def kernel_lineage(
         self, context: ExecutionContext, channel: ExecutorChannel, kernels: object

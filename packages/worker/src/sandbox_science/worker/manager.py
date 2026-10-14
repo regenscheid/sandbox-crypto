@@ -318,16 +318,24 @@ class ExecutionManager:
             backend,
             store,
             self._usability,
+            # Each hook looks the manager's method up when it is called, so that one
+            # replaced on the manager (as tests do) takes effect at the next call.
             ConnectionHooks(
-                # Looked up when a message arrives, as tests wrap them.
+                connect=lambda environment_id: self._environment(environment_id),
                 on_event=lambda environment_id, message: self._on_event(environment_id, message),
                 on_closed=lambda environment_id, channel: self._on_closed(environment_id, channel),
-                daemon_identity=self._daemon_binding,
-                incarnation_lost=self._incarnation_lost,
+                daemon_identity=lambda environment_id: self._daemon_binding(environment_id),
+                incarnation_lost=lambda environment_id, previous: self._incarnation_lost(
+                    environment_id, previous
+                ),
                 recycle=lambda environment_id: self._spawn(self._recycle_daemon(environment_id)),
-                sync_package_gate=self._sync_package_gate,
-                hello=self._hello,
-                connected=self._reconcile_captures,
+                sync_package_gate=lambda environment_id, channel: self._sync_package_gate(
+                    environment_id, channel
+                ),
+                hello=lambda environment_id, channel: self._hello(environment_id, channel),
+                connected=lambda environment_id, channel: self._reconcile_captures(
+                    environment_id, channel
+                ),
             ),
             clock=clock,
             pool_id=pool_id,
