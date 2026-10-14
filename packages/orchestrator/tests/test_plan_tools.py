@@ -15,12 +15,13 @@ from typing import cast
 
 import pytest
 
-from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator import cli
+from sandbox_science.contracts import ErrorKind, ExecutionContext
+from sandbox_science.orchestrator import cli, harness
 from sandbox_science.orchestrator.consistency.controller import ReviewController
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.errors import DocumentError
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.loop import run_task
@@ -40,7 +41,7 @@ from sandbox_science.orchestrator.session_plans import (
     SessionPlans,
 )
 from sandbox_science.orchestrator.tools import Toolbox, ToolEntry, ToolOutcome
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 
 def body(goal="Check the claim", *, count=1):
@@ -627,8 +628,7 @@ async def test_committed_progress_survives_later_failure_without_fabricating_com
             monkeypatch.setattr(ProjectStore, "save_run", failed_save)
             now = datetime.now(UTC)
             assert (
-                cli._keep(
-                    argparse.Namespace(state_dir=f.projects.root.parent, transcript=None),
+                await save(
                     {
                         "run_id": "main-run",
                         "context": f.context,
@@ -641,6 +641,9 @@ async def test_committed_progress_survives_later_failure_without_fabricating_com
                         "final_text": result.final_text,
                     },
                     0,
+                    (),
+                    projects=f.projects,
+                    error=print,
                 )
                 == 1
             )
@@ -683,10 +686,7 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
 ):
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
-    session = projects.open_session("p", "s", dedicated=False)
-    context = ExecutionContext(
-        project_id="p", session_id="s", environment_id=session.environment_id
-    )
+    projects.open_session("p", "s", dedicated=False)
     entered, release = threading.Event(), threading.Event()
     owners = []
     closed = []
@@ -708,6 +708,9 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
         async def __aenter__(self):
             return self
 
+        async def environment(self, environment_id):
+            raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
+
         async def __aexit__(self, *args):
             closed.append("client")
 
@@ -724,12 +727,14 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
                 ),
             )
 
-    async def resolved(*args):
-        return context
-
     script = tmp_path / "script.json"
     script.write_text('[{"text":"Never called"}]')
     args = argparse.Namespace(
+        project="p",
+        session="s",
+        environment=None,
+        dedicated=False,
+        research_template=None,
         script=script,
         run_id="run",
         worker="unused",
@@ -746,9 +751,8 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
         max_turns=1,
         transcript=None,
     )
-    monkeypatch.setattr(cli, "PlanTools", factory)
+    monkeypatch.setattr(harness, "PlanTools", factory)
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_context", resolved)
     monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused")
     task = asyncio.create_task(cli._run(args))
     assert await asyncio.to_thread(entered.wait, 5)

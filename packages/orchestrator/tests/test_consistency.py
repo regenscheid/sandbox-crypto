@@ -22,6 +22,7 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     store_path,
 )
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.model import ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore
 
@@ -1112,7 +1113,6 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
     from datetime import UTC, datetime
 
     from sandbox_science.contracts import ErrorKind
-    from sandbox_science.orchestrator import cli
     from sandbox_science.orchestrator.consistency.controller import ReviewController, Reviews
     from sandbox_science.orchestrator.consistency.notices import FindingNotices
     from sandbox_science.orchestrator.loop import run_task
@@ -1161,12 +1161,32 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
         raise ProjectError(ErrorKind.INTERNAL, "Synthetic save failure")
 
     monkeypatch.setattr(ProjectStore, "save_run", failed_save)
-    assert await cli._save(args, fields, 0, hooks) == 1
+    assert (
+        await save(
+            fields,
+            0,
+            hooks,
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
+        )
+        == 1
+    )
     with documents.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT delivered_run FROM review_notices").fetchone()[0] is None
     monkeypatch.setattr(ProjectStore, "save_run", original)
-    assert await cli._save(args, fields, 0, hooks) == 0
+    assert (
+        await save(
+            fields,
+            0,
+            hooks,
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
+        )
+        == 0
+    )
     assert ProjectStore(documents.path.parent).run(
         "p", "s", ProjectStore(documents.path.parent).runs("p", "s")[0].name
     ).delivered["reviews"] == sorted(transcript.delivered_ids("reviews"))

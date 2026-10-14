@@ -15,9 +15,10 @@ from typing import cast
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import ExecutionContext
+from sandbox_science.contracts import ErrorKind, ExecutionContext
 from sandbox_science.orchestrator import cli, stock_prompts
 from sandbox_science.orchestrator.documents import USER, DocumentStore, DocumentTool
+from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.loop import SYSTEM_PROMPT, Transcript, run_task
 from sandbox_science.orchestrator.model import (
@@ -47,7 +48,7 @@ from sandbox_science.orchestrator.stock_prompts import (
     select_template,
 )
 from sandbox_science.orchestrator.tools import Toolbox
-from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
 CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="env")
 HOSTILE = "Authorization: Bearer test-secret-stock-not-a-credential"
@@ -290,9 +291,26 @@ async def test_selected_history_is_exact_after_catalog_changes_and_safe_failed_s
 
     args = argparse.Namespace(transcript=None, state_dir=tmp_path)
     fields = record.model_dump(mode="json")
-    assert await cli._save(args, fields, int(failure), [Hook()]) == int(failure)
+    assert await save(
+        fields,
+        int(failure),
+        [Hook()],
+        projects=ProjectStore(args.state_dir),
+        transcript=args.transcript,
+        error=print,
+    ) == int(failure)
     assert observed == [[]]
-    assert await cli._save(args, fields, 0, [Hook()]) == 1  # Existing duplicate save refuses.
+    assert (
+        await save(
+            fields,
+            0,
+            [Hook()],
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
+        )
+        == 1
+    )  # Existing duplicate save refuses.
     assert observed == [[]]
     damaged = record.model_dump(mode="json")
     damaged["messages"][0]["content"] += "changed"
@@ -415,8 +433,7 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
 ):
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
-    session = projects.open_session("p", "s", dedicated=False)
-    context = CONTEXT.model_copy(update={"environment_id": session.environment_id})
+    projects.open_session("p", "s", dedicated=False)
     closed, calls = [], []
 
     class Client:
@@ -427,6 +444,9 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
 
         async def __aenter__(self):
             return self
+
+        async def environment(self, environment_id):
+            raise WorkerAPIError(ErrorKind.UNSUPPORTED, "a local worker manages no environments")
 
         async def __aexit__(self, *args):
             closed.append("client")
@@ -455,12 +475,13 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
                 raise ModelError(HOSTILE)
             return ModelTurn("Observed")
 
-    async def resolved(*args):
-        return context
-
     script = tmp_path / "script.json"
     script.write_text("[]")
     args = argparse.Namespace(
+        project="p",
+        session="s",
+        environment=None,
+        dedicated=False,
         script=script,
         run_id="cli-run",
         worker="unused",
@@ -479,7 +500,6 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
         research_template="report",
     )
     monkeypatch.setattr(cli, "WorkerClient", Client)
-    monkeypatch.setattr(cli, "_context", resolved)
     monkeypatch.setattr(cli, "_read_secret", lambda _: "test-secret-unused-not-a-credential")
     monkeypatch.setattr(ScriptedModel, "from_json", lambda _: Model())
     assert await cli._run(args) == int(failure)

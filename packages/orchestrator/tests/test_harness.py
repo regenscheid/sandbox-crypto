@@ -8,7 +8,6 @@ orchestrator and the worker share in production.
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import base64
 import contextlib
@@ -53,6 +52,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.orchestrator import cli, worker_client
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
+from sandbox_science.orchestrator.harness import describe_isolation, save, tier_in_effect
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.loop import run_task
@@ -314,9 +314,11 @@ async def test_a_record_that_cannot_be_kept_still_reaches_the_transcript(
         "tools": [{"tool": "pdf_info", "arguments": "{}", "pdf": deep}],
     }
     transcript = tmp_path / "t.json"
-    args = argparse.Namespace(transcript=transcript, state_dir=tmp_path / "state")
-    assert cli._keep(args, fields, 0) == 1
-    assert "the run's record could not be kept" in capsys.readouterr().err
+    errors: list[str] = []
+    assert (
+        await save(fields, 0, (), projects=store, transcript=transcript, error=errors.append) == 1
+    )
+    assert "the run's record could not be kept" in errors[0]
     assert json.loads(transcript.read_text())["final_text"] == "done"
     assert store.runs("p1", "s1") == []
 
@@ -338,13 +340,13 @@ def test_only_a_probed_tier_counts() -> None:
         pool_id="p", backend="openshell", hostname="h", isolation_tier=3, declared_isolation_tier=3
     )
     # A worker that did not probe offers no tier at all, whatever it declares.
-    assert cli.tier_in_effect(declared) is None
-    assert cli.describe_isolation(declared) == "no isolation evidence"
+    assert tier_in_effect(declared) is None
+    assert describe_isolation(declared) == "no isolation evidence"
     probed = declared.model_copy(
         update={"isolation_evidence": IsolationEvidence(kernel="separate", sentinel="hidden")}
     )
-    assert cli.tier_in_effect(probed) == 3
-    assert cli.describe_isolation(probed) == "isolation tier 3"
+    assert tier_in_effect(probed) == 3
+    assert describe_isolation(probed) == "isolation tier 3"
     lowered = declared.model_copy(
         update={
             "isolation_tier": 0,
@@ -353,8 +355,8 @@ def test_only_a_probed_tier_counts() -> None:
             ),
         }
     )
-    assert cli.tier_in_effect(lowered) == 0
-    assert cli.describe_isolation(lowered) == "isolation tier 0 (declared 3): one thing; another"
+    assert tier_in_effect(lowered) == 0
+    assert describe_isolation(lowered) == "isolation tier 0 (declared 3): one thing; another"
 
 
 @pytest.mark.filterwarnings("ignore::pytest.PytestWarning")

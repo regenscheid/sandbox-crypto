@@ -100,7 +100,7 @@ the original tool bytes. Coherent rewriting of an entire record is not prevented
 by self-checksums. The record is an audit observation, not a permission grant or
 cryptographic attestation of a provider's behavior.
 
-[`CLI`](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py) carries the
+The [harness](../packages/orchestrator/src/sandbox_science/orchestrator/harness.py) carries the
 metadata unchanged into ordinary and safely retained failed runs. The existing
 file+directory fsync still precedes notice ACK. Metadata creates no new ACK path,
 closing round or scientific state transition. Setup refusal before a transcript

@@ -64,7 +64,7 @@ What each input does:
 The development and test [LocalBackend](../packages/worker/src/sandbox_science/worker/backends.py)
 runs its executor beside the worker with isolation tier 0, so MAIN must not infer a
 remote host, VM or sandbox from a tool name. It describes location and isolation
-only from worker-returned evidence; the [CLI](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py)
+only from worker-returned evidence; the [harness](../packages/orchestrator/src/sandbox_science/orchestrator/harness.py)
 distinguishes absent isolation evidence from a measured tier. Production policy is
 enforced in code, not promised by a system message. Operators developing this
 repository may use ordinary local tools; that is outside the product's research
@@ -83,7 +83,7 @@ has an explicit operation ID; a replay returns its original receipt, never advan
 the current-read pin, and a changed resolved model conflicts rather than replacing
 the original actor. The tool-call identity is kept in the run's tool record.
 
-The [CLI](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py) offers the
+The [harness](../packages/orchestrator/src/sandbox_science/orchestrator/harness.py) offers the
 tools only to a stateful MAIN run with a recorded open session. Stateless runs, the
 watcher and the reviewer get no plan tools or guidance. The `sandbox-main-plan-1`
 guidance is appended to the MAIN system message only when the tools are offered. It
