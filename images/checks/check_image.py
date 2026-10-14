@@ -63,6 +63,7 @@ WORKER_FILES = (
     "daemon.py",
     "capture.py",
     "sandbox_files.py",
+    "sandbox_processes.py",
 )
 """The worker's files that run inside a sandbox (packages/worker/src/sandbox_science/worker)."""
 PROJECT = Path("/sandbox/project")

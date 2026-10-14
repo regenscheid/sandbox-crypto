@@ -23,7 +23,9 @@ LAZY: dict[str, frozenset[str]] = {
 }
 """Packages a file may import inside a function, for a feature the image may lack."""
 LOADS: dict[str, frozenset[str]] = {
-    "executor.py": frozenset({"capture", "provisioning", "sandbox_files", "pdfhelper"}),
+    "executor.py": frozenset(
+        {"capture", "provisioning", "sandbox_files", "sandbox_processes", "pdfhelper"}
+    ),
     "daemon.py": frozenset({"executor"}),
 }
 """The siblings each file loads or runs by path; the others load none."""
