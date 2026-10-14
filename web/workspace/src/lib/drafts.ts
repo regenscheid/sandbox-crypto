@@ -125,3 +125,9 @@ export const macroDrafts = new DraftStore<MacroDraft>(
   'macros',
   shape<MacroDraft>({ expected: revision, text }),
 );
+
+/** A chat message to a session's main agent, not yet sent (at most 64 KiB, RS-4). */
+export interface ChatDraft {
+  text: string;
+}
+export const chatDrafts = new DraftStore<ChatDraft>('chat', shape<ChatDraft>({ text }));

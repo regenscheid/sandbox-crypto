@@ -6,6 +6,7 @@
   import { projectHref } from '../lib/router';
   import { kernelPanelScope } from '../lib/kernels';
   import { planPanelScope } from '../lib/plans';
+  import ChatPanel from './ChatPanel.svelte';
   import JobsPanel from './JobsPanel.svelte';
   import KernelPanel from './KernelPanel.svelte';
   import PlanPanel from './PlanPanel.svelte';
@@ -54,6 +55,7 @@
     </dd>
   </dl>
 
+  <ChatPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />
   {@const planScope = planPanelScope(projectId, sessionId, detail)}
   {#if planScope}
     <PlanPanel {projectId} {sessionId} closed={detail.session.closed_at !== null} />

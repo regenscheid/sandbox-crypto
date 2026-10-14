@@ -62,7 +62,10 @@ class ChatMessage(Contract):
     run: str | None = None
     """The run that delivered it: the name its record is kept under."""
     reason: str | None = None
-    """Why it was refused."""
+    """Why it was refused, or held."""
+    offered: str | None = None
+    """The run that last offered it, which saw it whether or not it answered: what a
+    cancelled or interrupted run left held, the GUI shows from it."""
 
 
 class RunEvent(Contract):
@@ -91,7 +94,9 @@ class DeadLease(Contract):
     holder: str
 
 
-_MESSAGE_COLUMNS: Final = "message_id, number, text, author, created_at, state, run, reason"
+_MESSAGE_COLUMNS: Final = (
+    "message_id, number, text, author, created_at, state, run, reason, offered"
+)
 
 
 class RunState:
@@ -528,7 +533,7 @@ def _holding(db: sqlite3.Connection, project: str, session: str, run: str) -> No
 
 
 def _message(row: tuple[object, ...]) -> ChatMessage:
-    message_id, number, text, author, created_at, state, run, reason = row[:8]
+    message_id, number, text, author, created_at, state, run, reason, offered = row[:9]
     return ChatMessage.model_validate(
         {
             "message_id": message_id,
@@ -539,5 +544,6 @@ def _message(row: tuple[object, ...]) -> ChatMessage:
             "state": state,
             "run": run,
             "reason": reason,
+            "offered": offered,
         }
     )
