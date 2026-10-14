@@ -447,12 +447,15 @@ class Toolbox:
 
         ``model`` is the model that asked for the call, as the gateway named it, which
         document revisions record. Each of ``gates`` may refuse the call by its effect
-        class. After the call, the run's next safe point, the result carries notices of
-        changes others made to the documents the run has seen (LD-15).
+        class; with plan tools, the plan's gate is always among them. After the call, the
+        run's next safe point, the result carries notices of changes others made to the
+        documents the run has seen (LD-15).
         """
         entry = self.entries.get(call.name)
         if entry is None:
             return _failure(ErrorKind.INVALID_REQUEST, f"there is no tool named {call.name!r}")
+        if self.plans is not None and not any(isinstance(gate, Plans) for gate in gates):
+            gates = (*gates, Plans(self.plans))
         try:
             outcome = await self._call(entry, call, operation, model, gates)
         except Exception as exc:  # one bad call must not end the task

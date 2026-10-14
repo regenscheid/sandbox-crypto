@@ -128,7 +128,9 @@ not clear it.
 effect class, which the plans hook's gate reads: `read` (file, document and review
 reads, job list/status/wait and provisioning status), `cancel` (`cancel_job`),
 `plan` (the plan tools, which check the plan themselves) and `effect`. A tool its
-group does not classify is an effect. Writes, execution, publication, provisioning,
+group does not classify is an effect, and the gate checks every class but `read`,
+`cancel` and `plan`. A toolbox with plan tools applies the gate to every call, even
+when its caller passes none. Writes, execution, publication, provisioning,
 host admission and PDF helpers need the plan fence; PDF helpers are effects because
 they execute in the worker. Plan results are returned as complete JSON, not clipped
 like ordinary text.

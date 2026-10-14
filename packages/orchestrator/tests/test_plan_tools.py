@@ -21,6 +21,7 @@ from sandbox_science.orchestrator.consistency.controller import ReviewController
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.documents.errors import DocumentError
+from sandbox_science.orchestrator.hooks import Effect
 from sandbox_science.orchestrator.jobs import JobTools
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelError, ModelTurn, ScriptedModel, ToolCall
@@ -271,6 +272,27 @@ async def test_guidance_is_conditional_and_every_offered_tool_has_one_explicit_c
     assert GUIDANCE_VERSION not in model.requests[0][0]["content"]
     assert not (NAMES & {spec.name for spec in plain.specs})
     await reviews.close()
+
+
+@pytest.mark.asyncio
+async def test_a_toolbox_with_plan_tools_fences_effects_without_a_gate_passed(fixture):
+    f = fixture
+    await made(f)
+    toolbox = tools(f)
+    dispatched = []
+
+    async def shell(request):
+        dispatched.append(request.operation)
+        return ToolOutcome('{"ran":true}', {})
+
+    toolbox.entries["shell"] = ToolEntry(toolbox.entries["shell"].spec, "effect", shell)
+    refused = await toolbox.call(ToolCall("c1", "shell", '{"script": "true"}'), "op-ungated")
+    assert "not active" in json.loads(refused.text)["error"]["message"]
+    assert dispatched == []
+    # A class the fence does not know is checked like an effect.
+    with pytest.raises(DocumentError, match="not active"):
+        await f.adapter.check_dispatch(cast(Effect, "future"))
+    await f.adapter.check_dispatch("plan")
 
 
 @pytest.mark.asyncio

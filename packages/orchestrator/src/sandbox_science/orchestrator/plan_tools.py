@@ -286,8 +286,11 @@ class PlanTools:
             self.requires_read = self.held = False
 
     async def check_dispatch(self, effect: Effect) -> None:
-        """Refuse an effect while a USER change is unread or the plan is not active."""
-        if effect != "effect":
+        """Refuse an effect while a USER change is unread or the plan is not active.
+
+        Only the classes known to change nothing the plan governs pass unchecked.
+        """
+        if effect in ("read", "cancel", "plan"):
             return
         summary = await threaded(lambda: self._owned(self._refresh))
         if self.requires_read or self.held:
