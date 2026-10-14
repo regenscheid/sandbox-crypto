@@ -35,52 +35,6 @@ if TYPE_CHECKING:
 Json = dict[str, Any]
 BODY_BYTES = 32768
 MAP_BYTES = 16 * 1024 * 1024
-SCHEMA = (
-    """CREATE TABLE IF NOT EXISTS review_response_bodies (
-      source TEXT NOT NULL, finding_id TEXT NOT NULL, decision_revision INTEGER NOT NULL,
-      revision INTEGER NOT NULL,body TEXT NOT NULL,sha256 TEXT NOT NULL,
-      block_map TEXT NOT NULL,author TEXT NOT NULL,owners TEXT NOT NULL,
-      next_block INTEGER NOT NULL,next_span INTEGER NOT NULL,
-      identity_floor INTEGER NOT NULL,held TEXT,
-      PRIMARY KEY(source,revision),
-      FOREIGN KEY(finding_id,decision_revision) REFERENCES review_transitions(finding_id,revision),
-      CHECK(revision>0)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS response_math_sources (
-      source TEXT PRIMARY KEY,finding_id TEXT NOT NULL,decision_revision INTEGER NOT NULL,
-      project TEXT NOT NULL,session TEXT NOT NULL,target INTEGER NOT NULL,
-      completed INTEGER NOT NULL DEFAULT 0,retry_requested INTEGER NOT NULL DEFAULT 0,
-      blocked TEXT,UNIQUE(finding_id,decision_revision),
-      FOREIGN KEY(finding_id,decision_revision) REFERENCES review_transitions(finding_id,revision))
-      STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_response_discovery (
-      transition_seq INTEGER PRIMARY KEY,finding_id TEXT NOT NULL,
-      decision_revision INTEGER NOT NULL,reason TEXT NOT NULL,
-      UNIQUE(finding_id,decision_revision),
-      FOREIGN KEY(finding_id,decision_revision) REFERENCES review_transitions(finding_id,revision))
-      STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_response_pins (
-      review_id TEXT NOT NULL REFERENCES review_runs(review_id),finding_id TEXT NOT NULL,
-      decision_revision INTEGER NOT NULL,body_revision INTEGER NOT NULL,sha256 TEXT NOT NULL,
-      PRIMARY KEY(review_id,finding_id),
-      FOREIGN KEY(finding_id,decision_revision) REFERENCES review_transitions(finding_id,revision))
-      STRICT""",
-    """CREATE TABLE IF NOT EXISTS math_response_jobs (
-      check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
-      source TEXT NOT NULL REFERENCES response_math_sources(source)) STRICT""",
-    """CREATE VIEW IF NOT EXISTS math_job_scope AS
-      SELECT j.check_id,s.project,NULL AS session FROM math_jobs j
-      JOIN math_sources s USING(document)
-      UNION ALL SELECT j.check_id,f.project,f.session FROM math_jobs j JOIN math_response_jobs r
-      USING(check_id) JOIN response_math_sources s ON s.source=r.source JOIN review_findings f
-      ON f.finding_id=s.finding_id WHERE j.document IS NULL AND s.project=f.project
-      AND s.session=f.session""",
-    *tuple(
-        f"CREATE TRIGGER IF NOT EXISTS {table}_{verb.lower()} BEFORE {verb} ON {table} "
-        "BEGIN SELECT RAISE(ABORT,'response source and pins are immutable'); END"
-        for table in ("review_response_bodies", "review_response_pins")
-        for verb in ("UPDATE", "DELETE")
-    ),
-)
 
 
 class ResponseEdit(Contract):
@@ -100,35 +54,6 @@ def source_key(finding: str, revision: int) -> str:
     return f"response:{finding}:r{revision}:explanation"
 
 
-def available(db: sqlite3.Connection) -> bool:
-    return (
-        db.execute("SELECT 1 FROM sqlite_master WHERE name='review_response_bodies'").fetchone()
-        is not None
-    )
-
-
-def prepare_schema(db: sqlite3.Connection) -> None:
-    from sandbox_science.orchestrator.documents.comment_bodies import SCHEMA as COMMENT_SCHEMA
-
-    db.execute("DROP VIEW IF EXISTS math_job_scope")
-    for statement in SCHEMA:
-        db.execute(statement)
-    db.execute("DROP VIEW IF EXISTS math_current_checks")
-    db.execute(
-        COMMENT_SCHEMA[3]  # noqa: S608 - fixed schema fragments
-        + """ UNION ALL
-      SELECT j.check_id,r.source,j.revision FROM math_jobs j JOIN math_response_jobs r
-      USING(check_id) JOIN response_math_sources s ON s.source=r.source
-      JOIN review_findings f ON f.finding_id=s.finding_id
-      JOIN review_response_bodies b ON b.source=s.source AND b.revision=j.revision
-      WHERE j.document IS NULL AND f.origin='review' AND s.project=f.project AND s.session=f.session
-      AND b.finding_id=s.finding_id AND b.decision_revision=s.decision_revision
-      AND s.target=j.revision AND j.source_sha256=b.sha256
-      AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_response_jobs x USING(check_id)
-                  WHERE x.source=r.source AND k.revision=j.revision)"""
-    )
-
-
 def original(
     db: sqlite3.Connection,
     finding: str,
@@ -138,15 +63,10 @@ def original(
     session: str | None = None,
 ) -> Json:
     source = source_key(finding, revision)
-    origin = (
-        "f.origin"
-        if any(r[1] == "origin" for r in db.execute("PRAGMA table_info(review_findings)"))
-        else "'review'"
-    )
     row = db.execute(
-        "SELECT substr(CAST(f.project AS BLOB),1,129),"  # noqa: S608 - fixed origin column
+        "SELECT substr(CAST(f.project AS BLOB),1,129),"
         "substr(CAST(f.session AS BLOB),1,129),"
-        f"substr(CAST({origin} AS BLOB),1,33),substr(CAST(t.actor AS BLOB),1,129),"
+        "substr(CAST(f.origin AS BLOB),1,33),substr(CAST(t.actor AS BLOB),1,129),"
         "coalesce(substr(CAST(t.reason AS BLOB),1,32769),X''),"
         "substr(CAST(t.payload AS BLOB),1,131073) FROM review_transitions t JOIN "
         "review_findings f USING(finding_id) WHERE t.finding_id=? AND t.revision=?",
@@ -198,7 +118,7 @@ def read(
     full: bool = True,
 ) -> Json:
     parent = original(db, finding, revision, project=project, session=session)
-    if not full and available(db):
+    if not full:
         header = db.execute(
             "SELECT revision,coalesce(substr(CAST(body AS BLOB),1,32769),X''),"
             "substr(CAST(sha256 AS BLOB),1,65),substr(CAST(author AS BLOB),1,8193),"
@@ -235,20 +155,16 @@ def read(
                 "identity_floor": header[4],
                 "held": header[5].decode() if header[5] else None,
             }
-    row = (
-        db.execute(
-            "SELECT revision,coalesce(substr(CAST(body AS BLOB),1,32769),X''),"
-            "substr(CAST(sha256 AS BLOB),1,65),substr(CAST(block_map AS BLOB),1,16777217),"
-            "substr(CAST(author AS BLOB),1,8193),substr(CAST(owners AS BLOB),1,16777217),"
-            "next_block,next_span,identity_floor,substr(CAST(held AS BLOB),1,1001) "
-            "FROM review_response_bodies WHERE source=? AND finding_id=? AND "
-            "decision_revision=? AND "
-            "(? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
-            (parent["source"], finding, revision, body_revision, body_revision),
-        ).fetchone()
-        if available(db)
-        else None
-    )
+    row = db.execute(
+        "SELECT revision,coalesce(substr(CAST(body AS BLOB),1,32769),X''),"
+        "substr(CAST(sha256 AS BLOB),1,65),substr(CAST(block_map AS BLOB),1,16777217),"
+        "substr(CAST(author AS BLOB),1,8193),substr(CAST(owners AS BLOB),1,16777217),"
+        "next_block,next_span,identity_floor,substr(CAST(held AS BLOB),1,1001) "
+        "FROM review_response_bodies WHERE source=? AND finding_id=? AND "
+        "decision_revision=? AND "
+        "(? IS NULL OR revision=?) ORDER BY revision DESC LIMIT 1",
+        (parent["source"], finding, revision, body_revision, body_revision),
+    ).fetchone()
     if row is None:
         if body_revision not in (None, 0):
             raise DocumentError(NOT_FOUND, "no such response body revision")
@@ -341,16 +257,13 @@ def pin(db: sqlite3.Connection, finding: str, revision: int) -> Json | None:
         body = read(db, finding, revision, full=False)
         result = projection(body)
         from sandbox_science.orchestrator.documents.project_macros import (
-            exists,
-            response_anchors,
-        )
-        from sandbox_science.orchestrator.documents.project_macros import (
             read as macros_read,
         )
+        from sandbox_science.orchestrator.documents.project_macros import response_anchors
 
         result["macro_context"] = {
             **macros_read(db, body["project"]),
-            "anchors": response_anchors(db, body["source"]) if exists(db) else [{"unknown": True}],
+            "anchors": response_anchors(db, body["source"]),
         }
         return result
     except DocumentError as error:

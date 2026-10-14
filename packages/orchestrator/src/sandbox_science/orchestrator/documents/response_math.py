@@ -22,8 +22,6 @@ Json = dict[str, Any]
 
 
 def metadata(db: sqlite3.Connection, check: str) -> Json | None:
-    if db.execute("SELECT 1 FROM sqlite_master WHERE name='math_response_jobs'").fetchone() is None:
-        return None
     row = db.execute(
         "SELECT substr(CAST(r.source AS BLOB),1,129),substr(CAST(s.finding_id AS BLOB),1,129),"
         "s.decision_revision,substr(CAST(s.project AS BLOB),1,129),"
@@ -223,11 +221,6 @@ def remaining(db: sqlite3.Connection, project: str) -> bool:
 
 
 def queue(db: sqlite3.Connection, project: str, *, session: str | None = None) -> list[Json]:
-    if (
-        db.execute("SELECT 1 FROM sqlite_master WHERE name='response_math_sources'").fetchone()
-        is None
-    ):
-        return []
     rows = db.execute(
         "SELECT substr(CAST(source AS BLOB),1,129),substr(CAST(finding_id AS BLOB),1,129),"
         "decision_revision,target,completed,substr(CAST(blocked AS BLOB),1,1001),EXISTS(SELECT 1 "

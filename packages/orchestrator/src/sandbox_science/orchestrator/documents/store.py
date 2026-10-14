@@ -12,8 +12,8 @@ The database uses write-ahead logging, so readers never wait for a writer, and
 ``synchronous=FULL``, so a change reported done survives a crash.
 
 Revisions and events cannot be updated or deleted: triggers refuse it, as a guard
-against mistakes (anyone who can write the file can drop them). The schema's version is
-SQLite's ``user_version``; a database in another version is refused.
+against mistakes (anyone who can write the file can drop them). The schema of the whole
+control store, and its version, are the control package's (control/migrations.py).
 """
 
 from __future__ import annotations
@@ -79,94 +79,8 @@ from .operations import MAX_OPERATIONS, Operation, touches
 from .parser import parser_versions
 
 FILE_NAME: Final = "control.sqlite3"
-SCHEMA_VERSION: Final = 1
 CACHED: Final = 16
 """Parsed revisions kept, by document, revision and content hash."""
-
-_SCHEMA: Final = (
-    """CREATE TABLE documents (
-    document_id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    session_id TEXT,
-    name TEXT NOT NULL,
-    title TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    created_by TEXT NOT NULL,
-    created_session TEXT,
-    takes_suggestions INTEGER NOT NULL DEFAULT 0,
-    head INTEGER NOT NULL,
-    deleted INTEGER NOT NULL DEFAULT 0,
-    next_block INTEGER NOT NULL,
-    next_span INTEGER NOT NULL
-) STRICT""",
-    """CREATE UNIQUE INDEX documents_names
-    ON documents (project_id, coalesce(session_id, ''), name) WHERE deleted = 0""",
-    """CREATE TABLE revisions (
-    document_id TEXT NOT NULL REFERENCES documents (document_id),
-    number INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    author TEXT NOT NULL,
-    accepted_by TEXT,
-    session_id TEXT,
-    base INTEGER,
-    parent INTEGER,
-    reason TEXT NOT NULL,
-    operations TEXT NOT NULL,
-    patch_id TEXT,
-    text TEXT NOT NULL,
-    sha256 TEXT NOT NULL,
-    tombstone INTEGER NOT NULL,
-    normalized TEXT NOT NULL,
-    warnings TEXT NOT NULL,
-    block_map TEXT NOT NULL,
-    parser TEXT NOT NULL,
-    PRIMARY KEY (document_id, number)
-) STRICT""",
-    """CREATE TABLE patches (
-    patch_id TEXT PRIMARY KEY,
-    document_id TEXT NOT NULL REFERENCES documents (document_id),
-    created_at TEXT NOT NULL,
-    author TEXT NOT NULL,
-    session_id TEXT,
-    base INTEGER NOT NULL,
-    reason TEXT NOT NULL,
-    operations TEXT NOT NULL,
-    state TEXT NOT NULL,
-    revision INTEGER,
-    details TEXT NOT NULL,
-    decided_at TEXT,
-    decided_by TEXT
-) STRICT""",
-    "CREATE INDEX patches_documents ON patches (document_id, created_at)",
-    """CREATE TABLE requests (
-    project_id TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    operation_id TEXT NOT NULL,
-    fingerprint TEXT NOT NULL,
-    result TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY (project_id, actor, operation_id)
-) STRICT""",
-    """CREATE TABLE events (
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    time TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    producer TEXT NOT NULL,
-    project_id TEXT NOT NULL,
-    session_id TEXT,
-    document_id TEXT NOT NULL,
-    payload TEXT NOT NULL
-) STRICT""",
-    "CREATE INDEX events_projects ON events (project_id, seq)",
-    """CREATE TRIGGER revisions_no_update BEFORE UPDATE ON revisions
-BEGIN SELECT RAISE(ABORT, 'revisions are immutable'); END""",
-    """CREATE TRIGGER revisions_no_delete BEFORE DELETE ON revisions
-BEGIN SELECT RAISE(ABORT, 'revisions are append-only'); END""",
-    """CREATE TRIGGER events_no_update BEFORE UPDATE ON events
-BEGIN SELECT RAISE(ABORT, 'events are immutable'); END""",
-    """CREATE TRIGGER events_no_delete BEFORE DELETE ON events
-BEGIN SELECT RAISE(ABORT, 'events are append-only'); END""",
-)
 
 _DOCUMENT: Final = (
     "SELECT document_id, project_id, session_id, name, title, created_at, created_by, "
@@ -389,57 +303,17 @@ class DocumentStore:
         self.path = path
         self.producer = producer
         self.readonly = readonly
-        self.control = ControlStore(
-            path, version=SCHEMA_VERSION, prepare=self._schema, readonly=readonly, timeout=timeout
-        )
+        self.control = ControlStore(path, readonly=readonly, timeout=timeout)
         self._clock = clock
         self._cache_lock = threading.Lock()
         self._cache: OrderedDict[tuple[str, int, str], Mapped] = OrderedDict()
 
     def initialize(self) -> None:
-        """Open or initialize the control store before another control component adds tables."""
+        """Open the control store, creating it or bringing its schema up to date."""
         self.control.initialize()
 
     def close(self) -> None:
         self.control.close()
-
-    def _schema(self, db: sqlite3.Connection) -> None:
-        """Create or check the schema, in the first transaction of a writer's connection."""
-        (version,) = db.execute("PRAGMA user_version").fetchone()
-        if version == 0:
-            (objects,) = db.execute("SELECT count(*) FROM sqlite_master").fetchone()
-            if objects:
-                raise DocumentError(INTERNAL, f"{self.path} is not a control store")
-            for statement in _SCHEMA:
-                db.execute(statement)
-            db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        elif version != SCHEMA_VERSION:
-            raise DocumentError(
-                INTERNAL,
-                f"{self.path} is in store format {version}; this version reads {SCHEMA_VERSION}",
-            )
-        from .annotations import SCHEMA as ANNOTATION_SCHEMA
-
-        for statement in ANNOTATION_SCHEMA:
-            db.execute(statement)
-        from .mathqueue import prepare as prepare_math
-
-        prepare_math(db)
-        from .project_macros import prepare as prepare_macros
-
-        prepare_macros(db)
-        from .comment_bodies import SCHEMA as COMMENT_BODY_SCHEMA
-
-        for statement in COMMENT_BODY_SCHEMA:
-            db.execute(statement)
-        db.execute(
-            "INSERT OR IGNORE INTO "
-            "comment_math_sources(entry_id,document,project,target,blocked) "
-            "SELECT e.entry_id,t.document_id,d.project_id,0,"
-            "'Legacy body identity is unknown; automatic math attribution is excluded' "
-            "FROM annotation_entries e JOIN annotation_threads t USING(thread_id) "
-            "JOIN documents d ON d.document_id=t.document_id WHERE e.kind IN ('create','reply')"
-        )
 
     # Reads.
 

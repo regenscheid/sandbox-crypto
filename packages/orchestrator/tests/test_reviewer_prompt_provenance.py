@@ -246,47 +246,6 @@ def test_atomic_pin_counter_rollback_owner_and_concurrent_budget(store):
     assert reviews.run("p", "s", review)["calls"] == 3
 
 
-def test_legacy_readonly_projection_and_writable_migration_preserve_rows(store):
-    reviews, documents, review = store
-    call = reserve(reviews, review)
-    assert call is not None
-    with documents.control.write() as tx:
-        db = tx.sql
-        version = db.execute("PRAGMA user_version").fetchone()[0]
-        db.execute("DROP TRIGGER review_calls_prompt_immutable")
-        db.execute("ALTER TABLE review_calls DROP COLUMN prompt_provenance")
-    readonly = DocumentStore(documents.path, readonly=True)
-    try:
-        historical = ReviewStore(readonly)
-        assert historical.call_provenance("p", "s", review, call).status == "legacy"
-        with readonly.control.read() as tx:
-            db = tx.sql
-            assert not db.execute(
-                "SELECT 1 FROM pragma_table_info('review_calls') WHERE name='prompt_provenance'"
-            ).fetchone()
-    finally:
-        readonly.close()
-
-    def migrate(_):
-        connection = DocumentStore(documents.path)
-        try:
-            return ReviewStore(connection).call_provenance("p", "s", review, call).status
-        finally:
-            connection.close()
-
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        assert list(pool.map(migrate, range(4))) == ["legacy"] * 4
-    for _ in range(2):
-        upgraded = ReviewStore(documents)
-        assert upgraded.call_provenance("p", "s", review, call).status == "legacy"
-    with documents.control.read() as tx:
-        db = tx.sql
-        assert db.execute("PRAGMA user_version").fetchone()[0] == version
-        assert db.execute("SELECT seq,estimated_tokens,answered FROM review_calls").fetchall() == [
-            (call, 100, 0)
-        ]
-
-
 @pytest.mark.parametrize("call", [False, 0, 2**63])
 def test_exact_reader_refuses_invalid_reservation_ids(store, call):
     reviews, _documents, review = store

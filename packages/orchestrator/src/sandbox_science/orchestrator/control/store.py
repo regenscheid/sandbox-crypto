@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Callable, Generator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from . import migrations
 from .errors import BUSY, INTERNAL, NOT_FOUND, ControlError
 
 DEFAULT_TIMEOUT: Final = 10.0
@@ -41,27 +42,23 @@ def _busy(error: sqlite3.OperationalError) -> bool:
 class ControlStore:
     """One process's connection to the control store at ``path``.
 
-    A writer creates the database when it first opens it and runs ``prepare`` in that
-    first transaction, to create or check the schema. A read-only store opens the
-    database only to read, refuses one whose ``user_version`` is not ``version``, and
-    is ``missing`` until a writer has made it. One lock serializes this object's
-    transactions across threads.
+    A writer creates the database when it first opens it, or brings it to the current
+    schema version, in that first transaction (migrations.py). A read-only store opens
+    the database only to read, refuses one in another version, and is ``missing``
+    until a writer has made it. One lock serializes this object's transactions across
+    threads.
     """
 
     def __init__(
         self,
         path: Path,
         *,
-        version: int,
-        prepare: Callable[[sqlite3.Connection], None],
         readonly: bool = False,
         timeout: float = DEFAULT_TIMEOUT,
     ) -> None:
         self.path = path
         self.readonly = readonly
         self.timeout = timeout
-        self._version = version
-        self._prepare = prepare
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
 
@@ -155,12 +152,12 @@ class ControlStore:
                 isolation_level=None,
                 check_same_thread=False,
             )
-            (version,) = db.execute("PRAGMA user_version").fetchone()
-            if version != self._version:
+            try:
+                (version,) = db.execute("PRAGMA user_version").fetchone()
+                migrations.check(self.path, version, readonly=True)
+            except BaseException:
                 db.close()
-                raise ControlError(
-                    INTERNAL, f"{self.path} is in store format {version}, not {self._version}"
-                )
+                raise
         else:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             db = sqlite3.connect(
@@ -175,6 +172,9 @@ class ControlStore:
         return db
 
     def _open(self, db: sqlite3.Connection) -> None:
+        # Refuse a database this code cannot use before anything could change it.
+        (version,) = db.execute("PRAGMA user_version").fetchone()
+        migrations.check(self.path, version, readonly=False)
         (mode,) = db.execute("PRAGMA journal_mode=WAL").fetchone()
         if str(mode).lower() != "wal":
             raise ControlError(INTERNAL, f"{self.path} cannot use write-ahead logging")
@@ -182,7 +182,7 @@ class ControlStore:
         db.execute("PRAGMA foreign_keys=ON")
         db.execute("BEGIN IMMEDIATE")
         try:
-            self._prepare(db)
+            migrations.migrate(db, self.path)
             db.execute("COMMIT")
         finally:
             if db.in_transaction:

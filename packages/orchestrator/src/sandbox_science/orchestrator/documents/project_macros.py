@@ -30,50 +30,6 @@ MAX_HISTORY = 1024
 MAX_CONTEXT_BYTES = 64 * 1024 * 1024
 _NAME = re.compile(r"\\(?:[A-Za-z]+|[^A-Za-z\s])\Z")
 EMPTY_SHA = hashlib.sha256(b"{}").hexdigest()
-SCHEMA = (
-    """CREATE TABLE IF NOT EXISTS project_macro_revisions (
-      project TEXT NOT NULL,revision INTEGER NOT NULL,definitions TEXT NOT NULL,
-      sha256 TEXT NOT NULL,author TEXT NOT NULL,PRIMARY KEY(project,revision)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS project_macro_heads (
-      project TEXT PRIMARY KEY,revision INTEGER NOT NULL) STRICT""",
-    """CREATE TABLE IF NOT EXISTS project_macro_operations (
-      project TEXT NOT NULL,actor TEXT NOT NULL,operation TEXT NOT NULL,
-      fingerprint TEXT NOT NULL,revision INTEGER NOT NULL,
-      PRIMARY KEY(project,actor,operation)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS math_macro_pins (
-      check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),project TEXT NOT NULL,
-      revision INTEGER NOT NULL,sha256 TEXT NOT NULL,anchors TEXT NOT NULL) STRICT""",
-    """CREATE TABLE IF NOT EXISTS document_macro_pins (
-      document TEXT NOT NULL,revision INTEGER NOT NULL,project_revision INTEGER NOT NULL,
-      PRIMARY KEY(document,revision),
-      FOREIGN KEY(document,revision) REFERENCES revisions(document_id,number)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS response_macro_anchors (
-      source TEXT PRIMARY KEY,anchors TEXT NOT NULL) STRICT""",
-    """CREATE TABLE IF NOT EXISTS response_macro_revisions (
-      source TEXT NOT NULL,body_revision INTEGER NOT NULL,project_revision INTEGER NOT NULL,
-      PRIMARY KEY(source,body_revision)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS math_macro_contexts (
-      check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
-      definitions TEXT NOT NULL,problems TEXT NOT NULL,held INTEGER NOT NULL,
-      context_key TEXT NOT NULL) STRICT""",
-    """CREATE TABLE IF NOT EXISTS review_macro_pins (
-      review_id TEXT NOT NULL,finding_id TEXT NOT NULL,revision INTEGER NOT NULL,
-      sha256 TEXT NOT NULL,PRIMARY KEY(review_id,finding_id)) STRICT""",
-    *tuple(
-        f"CREATE TRIGGER IF NOT EXISTS {table}_{verb.lower()} BEFORE {verb} ON {table} "
-        "BEGIN SELECT RAISE(ABORT,'macro revisions and pins are immutable'); END"
-        for table in (
-            "project_macro_revisions",
-            "math_macro_pins",
-            "document_macro_pins",
-            "response_macro_anchors",
-            "response_macro_revisions",
-            "math_macro_contexts",
-            "review_macro_pins",
-        )
-        for verb in ("UPDATE", "DELETE")
-    ),
-)
 
 
 class MacroChange(Contract):
@@ -117,25 +73,9 @@ def resolve(project: dict[str, str], document: dict[str, str]) -> tuple[dict[str
     return bounded_macros(combined, problems), problems
 
 
-def prepare(db: sqlite3.Connection) -> None:
-    for statement in SCHEMA:
-        db.execute(statement)
-
-
-def exists(db: sqlite3.Connection | None) -> bool:
-    return (
-        db is not None
-        and db.execute(
-            "SELECT 1 FROM sqlite_master WHERE name='project_macro_revisions'"
-        ).fetchone()
-        is not None
-    )
-
-
 def head(db: sqlite3.Connection | None, project: str) -> int:
-    if not exists(db):
+    if db is None:
         return 0
-    assert db is not None  # noqa: S101 - exists checked
     row = db.execute(
         "SELECT revision FROM project_macro_heads WHERE project=?", (project,)
     ).fetchone()
@@ -151,7 +91,7 @@ def read(db: sqlite3.Connection | None, project: str, revision: int | None = Non
         raise DocumentError(INTERNAL, "invalid project macro revision")
     if revision == 0:
         return {"project": project, "revision": 0, "sha256": EMPTY_SHA, "macros": {}}
-    if not exists(db) or db is None:
+    if db is None:
         raise DocumentError(INTERNAL, "pinned project macro revision is missing")
     row = db.execute(
         "SELECT substr(CAST(definitions AS BLOB),1,16385),substr(CAST(sha256 AS BLOB),1,65) "
@@ -289,7 +229,7 @@ def pin(
 
 
 def job_context(db: sqlite3.Connection | None, check: str, project: str) -> Json:
-    if not exists(db) or db is None:
+    if db is None:
         return {**read(db, project, 0), "known": False, "anchors": []}
     row = db.execute(
         "SELECT revision,substr(CAST(sha256 AS BLOB),1,65),substr(CAST(anchors AS BLOB),1,16385) "
@@ -493,15 +433,10 @@ def view(
             # No immutable source-to-setting pin is available for legacy prose.
             known, setting = False, read(db, project, 0)
         elif historical and document is not None:
-            row = (
-                db.execute(
-                    "SELECT project_revision FROM document_macro_pins "
-                    "WHERE document=? AND revision=?",
-                    (document, revision),
-                ).fetchone()
-                if exists(db)
-                else None
-            )
+            row = db.execute(
+                "SELECT project_revision FROM document_macro_pins WHERE document=? AND revision=?",
+                (document, revision),
+            ).fetchone()
             known = row is not None
             setting = read(db, project, 0 if row is None else row[0])
     pins = anchors or []
@@ -524,14 +459,14 @@ def response_view(
 ) -> Json:
     with documents.control.read() as tx:
         db = tx.sql
-        anchors = response_anchors(db, source) if exists(db) else [{"unknown": True}]
+        anchors = response_anchors(db, source)
         saved = (
             db.execute(
                 "SELECT project_revision FROM response_macro_revisions "
                 "WHERE source=? AND body_revision=?",
                 (source, body_revision),
             ).fetchone()
-            if exists(db) and body_revision is not None
+            if body_revision is not None
             else None
         )
     return view(
@@ -544,8 +479,6 @@ def response_view(
 
 
 def resolved(db: sqlite3.Connection, check: str, context: Json) -> Json | None:
-    if not exists(db):
-        return None
     row = db.execute(
         "SELECT substr(CAST(definitions AS BLOB),1,65537),"
         "substr(CAST(problems AS BLOB),1,32769),held,substr(CAST(context_key AS BLOB),1,65) "
@@ -676,16 +609,11 @@ def _candidates(table: str, key: str, join: str, condition: str) -> str:
 
 
 def needs_refresh(db: sqlite3.Connection, project: str) -> bool:
-    if not exists(db):
-        return False
     for table, key, join, condition in _sources():
-        if (
-            db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone() is not None
-            and db.execute(
-                "SELECT 1 FROM (" + _candidates(table, key, join, condition) + ")",  # noqa: S608 - fixed SQL
-                (project, head(db, project)),
-            ).fetchone()
-        ):
+        if db.execute(
+            "SELECT 1 FROM (" + _candidates(table, key, join, condition) + ")",  # noqa: S608 - fixed SQL
+            (project, head(db, project)),
+        ).fetchone():
             return True
     return False
 
@@ -694,8 +622,6 @@ def refresh(db: sqlite3.Connection, project: str) -> None:
     """Admit at most 32 current sources per source kind; write no backlog copies."""
     revision = head(db, project)
     for table, key, join, condition in _sources():
-        if db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (table,)).fetchone() is None:
-            continue
         db.execute(
             f"UPDATE {table} SET retry_requested=1 WHERE {key} IN ("  # noqa: S608 - fixed schema
             + _candidates(table, key, join, condition)

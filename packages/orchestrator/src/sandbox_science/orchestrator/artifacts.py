@@ -66,27 +66,6 @@ class ArtifactOperation:
     fresh: bool = False
 
 
-_SCHEMA = (
-    """CREATE TABLE IF NOT EXISTS artifact_meta(
-    singleton INTEGER PRIMARY KEY CHECK(singleton=1),version INTEGER NOT NULL) STRICT""",
-    """CREATE TABLE IF NOT EXISTS artifact_objects(
-    id TEXT PRIMARY KEY,project TEXT NOT NULL,path TEXT NOT NULL,head INTEGER NOT NULL,
-    UNIQUE(project,path)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS artifact_revisions(
-    artifact TEXT NOT NULL REFERENCES artifact_objects(id),number INTEGER NOT NULL,
-    project TEXT NOT NULL,size INTEGER NOT NULL CHECK(size>=0),record TEXT NOT NULL,
-    data BLOB NOT NULL,PRIMARY KEY(artifact,number)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS artifact_operations(
-    project TEXT NOT NULL,actor TEXT NOT NULL,operation TEXT NOT NULL,digest TEXT NOT NULL,
-    request TEXT NOT NULL,state TEXT NOT NULL,worker TEXT,receipt TEXT,
-    PRIMARY KEY(project,actor,operation)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS artifact_events(
-    seq INTEGER PRIMARY KEY AUTOINCREMENT,project TEXT NOT NULL,record TEXT NOT NULL) STRICT""",
-    "CREATE INDEX IF NOT EXISTS artifact_events_project ON artifact_events(project,seq)",
-    "CREATE INDEX IF NOT EXISTS artifact_revisions_project ON artifact_revisions(project)",
-)
-
-
 def _json(value: Contract, limit: int = _MAX_RECORD) -> str:
     text = value.model_dump_json()
     if len(text.encode()) > limit:
@@ -106,24 +85,6 @@ class ArtifactInventory:
     def __init__(self, documents: DocumentStore, *, limits: ArtifactLimits | None = None) -> None:
         self.documents = documents
         self.limits = limits or ArtifactLimits()
-        if not documents.readonly:
-            with documents.control.write() as tx:
-                db = tx.sql
-                for statement in _SCHEMA:
-                    db.execute(statement)
-                version = db.execute(
-                    "SELECT version FROM artifact_meta WHERE singleton=1"
-                ).fetchone()
-                if version not in (None, (1,)):
-                    raise DocumentError(INTERNAL, "unsupported artifact inventory version")
-                db.execute("INSERT OR IGNORE INTO artifact_meta VALUES (1,1)")
-                for table in ("artifact_revisions", "artifact_events"):
-                    for verb in ("UPDATE", "DELETE"):
-                        db.execute(
-                            f"CREATE TRIGGER IF NOT EXISTS {table}_no_{verb.lower()} "
-                            f"BEFORE {verb} ON {table} BEGIN "
-                            "SELECT RAISE(ABORT,'artifacts are immutable'); END"
-                        )
 
     def _scope(self, project: str) -> None:
         _IDENTIFIER.validate_python(project)

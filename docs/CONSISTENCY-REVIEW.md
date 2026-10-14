@@ -194,7 +194,7 @@ server and directory afterwards.
 
 ## Mechanical math findings
 
-D82 math checks use the same finding/history and authenticated USER decision surfaces, with explicit `math` origin, a real mechanical check ID and no synthetic reviewer run. The additive migration preserves existing reviewer IDs, history, notices and CAS heads; readonly legacy stores project `review` origin without migration. Reviewer categories/grants are unchanged and exclude this mechanical authority. Generic confirmation, reflag, supersession and threshold delivery paths cannot decide math findings. A separate bounded controller checks immutable document revisions and collects closing-only notices together with terminal findings, sharing at most two author response rounds. Accepted current formulas and complete parsed removal confirm mechanically; stale, skipped and unavailable evidence never does. USER takeover retains unresolved historical evidence while excluding new author reflags/notices. The checks cover document revisions, comment and reply bodies ([comment math](COMMENT-MATH.md)) and MAIN fix/rebut explanations; details and limits are in [document math checks](MATH-CHECKS.md).
+D82 math checks use the same finding/history and authenticated USER decision surfaces, with explicit `math` origin, a real mechanical check ID and no synthetic reviewer run. Reviewer categories/grants are unchanged and exclude this mechanical authority. Generic confirmation, reflag, supersession and threshold delivery paths cannot decide math findings. A separate bounded controller checks immutable document revisions and collects closing-only notices together with terminal findings, sharing at most two author response rounds. Accepted current formulas and complete parsed removal confirm mechanically; stale, skipped and unavailable evidence never does. USER takeover retains unresolved historical evidence while excluding new author reflags/notices. The checks cover document revisions, comment and reply bodies ([comment math](COMMENT-MATH.md)) and MAIN fix/rebut explanations; details and limits are in [document math checks](MATH-CHECKS.md).
 
 The [MAIN explanation math checks](FINDING-PROSE-MATH.md) cover only
 agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the
@@ -203,8 +203,9 @@ stale reviewer snapshots independently. The workspace history is read-only.
 
 ## Tables
 
-`ReviewStore` adds these tables to the control store when it opens. A test
-(`test_docs_inventory.py`) compares this list with the store.
+These are the reviewer's tables in the control store's schema
+([living documents](LIVING-DOCUMENTS.md#the-control-store)). A test
+(`test_docs_inventory.py`) compares this list with the schema.
 
 | Table | Holds |
 | --- | --- |
@@ -217,7 +218,7 @@ stale reviewer snapshots independently. The workspace history is read-only.
 | `review_confirmation_targets` | The finding revisions a confirmation review checks, append-only |
 | `review_calls` | Each reviewer model call's usage and prompt provenance |
 | `review_records` | A review's checked items, findings and deferred reflags, append-only |
-| `review_findings`, `review_finding_schema` | Findings with their current severity, category, statement, anchors, remedy, status, revision and origin (`review` or `math`), and the findings schema's version (2) |
+| `review_findings` | Findings with their current severity, category, statement, anchors, remedy, status, revision and origin (`review` or `math`) |
 | `review_transitions` | Every finding revision with its status, actor and reason, append-only |
 | `review_operations` | The first result of each user or agent finding change under an operation ID |
 | `review_notices` | Findings due for delivery to the author, with their claim and delivery |

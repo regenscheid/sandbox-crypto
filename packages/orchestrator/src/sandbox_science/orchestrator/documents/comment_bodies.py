@@ -23,53 +23,6 @@ from .models import Author
 
 Json = dict[str, Any]
 MAP_BYTES = 16 * 1024 * 1024
-SCHEMA = (
-    """CREATE TABLE IF NOT EXISTS annotation_body_revisions (
-      entry_id TEXT NOT NULL REFERENCES annotation_entries(entry_id), revision INTEGER NOT NULL,
-      history_entry TEXT NOT NULL REFERENCES annotation_entries(entry_id), body TEXT NOT NULL,
-      sha256 TEXT NOT NULL, block_map TEXT NOT NULL, author TEXT NOT NULL, owners TEXT NOT NULL,
-      next_block INTEGER NOT NULL,next_span INTEGER NOT NULL,
-      PRIMARY KEY(entry_id,revision),CHECK(revision>0)) STRICT""",
-    """CREATE TABLE IF NOT EXISTS comment_math_sources (
-      entry_id TEXT PRIMARY KEY REFERENCES annotation_entries(entry_id),
-      document TEXT NOT NULL REFERENCES documents(document_id),project TEXT NOT NULL,
-      target INTEGER NOT NULL,completed INTEGER NOT NULL DEFAULT 0,
-      macro_revision INTEGER NOT NULL DEFAULT 0,retry_requested INTEGER NOT NULL DEFAULT 0,
-      blocked TEXT) STRICT""",
-    """CREATE TABLE IF NOT EXISTS math_comment_jobs (
-      check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
-      entry_id TEXT NOT NULL REFERENCES annotation_entries(entry_id),
-      macro_revision INTEGER NOT NULL,macro_sha256 TEXT NOT NULL) STRICT""",
-    """CREATE VIEW IF NOT EXISTS math_current_checks AS
-      SELECT j.check_id,j.document AS source,j.revision FROM math_jobs j
-      JOIN documents d ON d.document_id=j.document
-      WHERE NOT EXISTS(SELECT 1 FROM math_comment_jobs c WHERE c.check_id=j.check_id)
-      AND d.head=j.revision AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k
-      WHERE k.document=j.document AND k.revision=d.head AND NOT EXISTS
-      (SELECT 1 FROM math_comment_jobs c WHERE c.check_id=k.check_id))
-      UNION ALL
-      SELECT j.check_id,'comment:'||c.entry_id,j.revision FROM math_jobs j
-      JOIN math_comment_jobs c USING(check_id) JOIN documents d ON d.document_id=j.document
-      JOIN comment_math_sources s ON s.entry_id=c.entry_id
-      JOIN annotation_body_revisions b ON b.entry_id=c.entry_id AND b.revision=j.revision
-      JOIN annotation_entries original ON original.entry_id=c.entry_id
-      JOIN annotation_threads t ON t.thread_id=original.thread_id
-      WHERE t.document_id=j.document AND s.document=j.document AND s.project=d.project_id
-      AND original.kind IN ('create','reply')
-      AND s.target=j.revision AND d.head=c.macro_revision AND b.history_entry=(
-        SELECT e.entry_id FROM annotation_entries e WHERE e.thread_id=original.thread_id
-        AND (e.entry_id=original.entry_id OR (e.kind='edit' AND original.number=1)
-        OR (e.kind='edit_body' AND json_extract(e.payload,'$.entry')=original.entry_id))
-        ORDER BY e.number DESC LIMIT 1)
-      AND j.rowid=(SELECT max(k.rowid) FROM math_jobs k JOIN math_comment_jobs x
-      USING(check_id) WHERE x.entry_id=c.entry_id AND k.revision=j.revision
-      AND x.macro_revision=c.macro_revision)""",
-    *tuple(
-        f"CREATE TRIGGER IF NOT EXISTS annotation_body_revisions_{verb.lower()} BEFORE {verb} "
-        "ON annotation_body_revisions BEGIN SELECT RAISE(ABORT,'body revisions are immutable'); END"
-        for verb in ("UPDATE", "DELETE")
-    ),
-)
 
 
 def dump(value: object) -> str:
@@ -84,13 +37,6 @@ def source_key(job: Json) -> str:
     if "response" in job:
         return job["response"]["source"]
     return "comment:" + job["comment"]["entry_id"] if "comment" in job else job["document"]
-
-
-def exists(db: sqlite3.Connection) -> bool:
-    return (
-        db.execute("SELECT 1 FROM sqlite_master WHERE name='annotation_body_revisions'").fetchone()
-        is not None
-    )
 
 
 def parent(
@@ -226,14 +172,9 @@ def current(
     if len(latest[0]) > 128 or len(latest[1]) > 16384:
         raise DocumentError(INTERNAL, "retained comment lineage exceeds its bounds")
     body = latest[1].decode()
-    saved = (
-        db.execute(
-            "SELECT 1 FROM annotation_body_revisions WHERE entry_id=? LIMIT 1",
-            (entry,),
-        ).fetchone()
-        if exists(db)
-        else None
-    )
+    saved = db.execute(
+        "SELECT 1 FROM annotation_body_revisions WHERE entry_id=? LIMIT 1", (entry,)
+    ).fetchone()
     if saved:
         if full:
             result = read(db, entry)

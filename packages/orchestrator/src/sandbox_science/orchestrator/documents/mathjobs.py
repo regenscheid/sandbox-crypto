@@ -32,14 +32,6 @@ BATCH = 32
 LEASE = 120
 
 
-def scope_table(db: sqlite3.Connection) -> str:
-    """Legacy readonly stores need no schema/cursor mutation to expose old checks."""
-    if db.execute("SELECT 1 FROM sqlite_master WHERE name='math_job_scope'").fetchone():
-        return "math_job_scope"
-    return (
-        "(SELECT j.check_id,s.project,NULL AS session FROM math_jobs j "
-        "JOIN math_sources s USING(document))"
-    )
 
 
 class Checker(Protocol):
@@ -164,19 +156,6 @@ class MathJobs:
             from .project_macros import refresh
 
             refresh(db, project)
-            # Mixed-version writers may append valid immutable revisions without
-            # the new scheduling hook. Reconcile only authoritative head metadata;
-            # history still proves each queued revision's individual block owner.
-            db.execute(
-                "INSERT OR IGNORE INTO math_sources(document,project,target) "
-                "SELECT document_id,project_id,head FROM documents WHERE project_id=?",
-                (project,),
-            )
-            db.execute(
-                "UPDATE math_sources SET target=max(target,(SELECT head FROM documents d "
-                "WHERE d.document_id=math_sources.document)) WHERE project=?",
-                (project,),
-            )
             if (
                 db.execute(
                     "SELECT 1 FROM math_jobs WHERE state='running' AND "
@@ -323,9 +302,8 @@ class MathJobs:
                             raise ValueError
                         value[name] = value[name].decode("utf-8")
                 project = db.execute(
-                    "SELECT substr(CAST(project AS BLOB),1,129) FROM "  # noqa: S608 - fixed view
-                    + scope_table(db)
-                    + " WHERE check_id=?",
+                    "SELECT substr(CAST(project AS BLOB),1,129) FROM math_job_scope"
+                    " WHERE check_id=?",
                     (check,),
                 ).fetchone()
                 if project is None or len(project[0]) > 128:
@@ -862,16 +840,13 @@ class MathJobs:
             return {"checks": [], "next_after": None, "queue": []}
         with self.documents.control.read() as tx:
             db = tx.sql
-            if db.execute("SELECT 1 FROM sqlite_master WHERE name='math_jobs'").fetchone() is None:
-                return {"checks": [], "next_after": None, "queue": []}
             cursor = db.execute("SELECT coalesce(max(rowid),0)+1 FROM math_jobs").fetchone()[0]
             if after is not None:
                 identifier(after, "math")
                 row = db.execute(
                     (
-                        "SELECT j.rowid FROM math_jobs j JOIN "  # noqa: S608 - fixed view
-                        + scope_table(db)
-                        + " s USING(check_id) "
+                        "SELECT j.rowid FROM math_jobs j JOIN math_job_scope"
+                        " s USING(check_id) "
                         "WHERE s.project=? AND j.check_id=? AND (s.session IS NULL OR ? IS "
                         "NULL OR s.session=?)"
                     ),
@@ -885,12 +860,11 @@ class MathJobs:
             rows = list(
                 db.execute(
                     (
-                        "SELECT substr(CAST(j.check_id AS BLOB),1,129),"  # noqa: S608 - fixed view
+                        "SELECT substr(CAST(j.check_id AS BLOB),1,129),"
                         "substr(CAST(j.document AS BLOB),1,129),j.revision,"
                         "substr(CAST(j.state AS BLOB),1,33),j.cursor,j.spans,j.available,"
-                        "j.rejected,j.unavailable,j.created FROM math_jobs j JOIN "
-                        + scope_table(db)
-                        + " s USING(check_id) WHERE s.project=? AND j.rowid<? "
+                        "j.rejected,j.unavailable,j.created FROM math_jobs j JOIN math_job_scope"
+                        " s USING(check_id) WHERE s.project=? AND j.rowid<? "
                         "AND (s.session IS NULL OR ? IS NULL OR s.session=?) ORDER BY j.rowid "
                         "DESC LIMIT 21"
                     ),
@@ -1017,12 +991,10 @@ class MathJobs:
         with self.documents.control.read() as tx:
             db = tx.sql
             if (
-                db.execute("SELECT 1 FROM sqlite_master WHERE name='math_jobs'").fetchone() is None
-                or db.execute(
+                db.execute(
                     (
-                        "SELECT 1 FROM math_jobs j JOIN "  # noqa: S608 - fixed view
-                        + scope_table(db)
-                        + " s USING(check_id) WHERE "
+                        "SELECT 1 FROM math_jobs j JOIN math_job_scope"
+                        " s USING(check_id) WHERE "
                         "s.project=? AND j.check_id=? AND (s.session IS NULL OR ? IS NULL "
                         "OR s.session=?)"
                     ),

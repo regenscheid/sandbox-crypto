@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: MIT
 """The control-store table lists in the docs match the tables the stores create.
 
-Rule: ``docs/LIVING-DOCUMENTS.md`` lists every table a new ``DocumentStore`` creates
-(documents, comments, project macros and math checks), and ``docs/CONSISTENCY-REVIEW.md``
-lists every table a ``ReviewStore`` then adds (the reviewer, its findings and explanation
-math). Each doc's list is the first column of its first Markdown table headed
-``| Table | Holds |``; a cell may name several tables in backticks. The tables are read
-from ``sqlite_master`` after opening the stores through their public constructors, so a
-table added in code, or one removed from it, fails here and names the doc to update.
+Rule: ``docs/CONSISTENCY-REVIEW.md`` lists the reviewer's tables (``review_*``, and the
+math checks of finding explanations), and ``docs/LIVING-DOCUMENTS.md`` lists every other
+table of the control store. Each doc's list is the first column of its first Markdown
+table headed ``| Table | Holds |``; a cell may name several tables in backticks. The
+tables are read from ``sqlite_master`` after a new store is opened through its public
+constructor, so a table added in a migration, or one removed by it, fails here and names
+the doc to update.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import re
 import sqlite3
 from pathlib import Path
 
-from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentStore
 
 DOCS = Path(__file__).resolve().parents[3] / "docs"
@@ -64,10 +63,9 @@ def test_control_store_tables_match_the_docs(tmp_path: Path) -> None:
     documents = DocumentStore(path)
     try:
         documents.initialize()
-        document_tables = _tables(path)
-        ReviewStore(documents)
-        review_tables = _tables(path) - document_tables
+        tables = _tables(path)
     finally:
         documents.close()
-    _check("LIVING-DOCUMENTS.md", document_tables)
-    _check("CONSISTENCY-REVIEW.md", review_tables)
+    review_tables = _listed("CONSISTENCY-REVIEW.md")
+    _check("CONSISTENCY-REVIEW.md", tables & review_tables)
+    _check("LIVING-DOCUMENTS.md", tables - review_tables)

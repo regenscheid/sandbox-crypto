@@ -13,7 +13,6 @@ import pytest
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import watcher_prompt
-from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.model import ToolSpec
@@ -100,44 +99,10 @@ def test_oversized_copied_system_refuses_before_serialization(monkeypatch):
         encode_provenance(invalid)
 
 
-def test_populated_legacy_migration_is_concurrent_and_never_backfills(tmp_path: Path):
-    documents = DocumentStore(store_path(tmp_path))
-    documents.initialize()
-    documents.close()
-    with sqlite3.connect(store_path(tmp_path)) as db:
-        db.execute(
-            "CREATE TABLE job_watcher_calls (id INTEGER PRIMARY KEY, project TEXT, session TEXT, "
-            "run TEXT,job TEXT,alias TEXT,requested_at REAL,input TEXT,outcome TEXT,model TEXT,"
-            "input_tokens INTEGER,output_tokens INTEGER)"
-        )
-        db.execute(
-            "INSERT INTO job_watcher_calls VALUES (41,'p','s','old-run','job','old-alias',"
-            "0,'{}','pending','old-model',12,5)"
-        )
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        states = list(pool.map(lambda _: JobState(tmp_path), range(8)))
-    assert all(state.watcher_provenance(CONTEXT, 41).status == "legacy" for state in states)
+def test_a_call_reserved_without_a_pin_reads_as_legacy(tmp_path: Path):
     state = JobState(tmp_path)
-    with sqlite3.connect(state.path) as db:
-        row = db.execute("SELECT * FROM job_watcher_calls").fetchone()
-        assert row == (
-            41,
-            "p",
-            "s",
-            "old-run",
-            "job",
-            "old-alias",
-            0,
-            "{}",
-            "pending",
-            "old-model",
-            12,
-            5,
-            None,
-        )
-    # Both old named-column writers and direct callers retain NULL/unknown pins.
     call = reserve(state, job="new")
-    assert call == 42
+    assert call is not None
     assert state.watcher_provenance(CONTEXT, call).status == "legacy"
 
 

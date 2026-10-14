@@ -67,13 +67,11 @@ refuses before a model call; there is no custom-input fallback.
 
 ## Reservation and legacy reads
 
-[store.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/store.py)
-adds one nullable `prompt_provenance` TEXT column to the existing `review_calls`
-table during writable initialization, inside its existing serialized write
-transaction. There is no database-wide schema-version bump or table rebuild.
-Existing rows retain NULL; old internal callers may omit the optional pin.
-No current-source backfill occurs. An UPDATE-OF trigger protects the input
-column while existing answered/usage updates remain allowed.
+`review_calls` has a nullable `prompt_provenance` TEXT column
+([store.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/store.py)).
+Internal callers may omit the optional pin, and the row then keeps NULL. An
+UPDATE-OF trigger protects the input column while answered/usage updates remain
+allowed.
 
 `reserve_call(..., prompt_provenance=...)` validates and encodes before the write
 transaction, then inserts the pin with the original reservation and counter

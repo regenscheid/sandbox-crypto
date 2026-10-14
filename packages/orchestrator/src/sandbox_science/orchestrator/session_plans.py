@@ -377,21 +377,6 @@ class PlanPage[H: (PlanVersion, PlanProgress, PlanStatusChange, PlanEvent)]:
     more: bool
 
 
-_SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS session_plan_meta(singleton INTEGER PRIMARY KEY "
-    "CHECK(singleton=1),version INTEGER NOT NULL) STRICT",
-    "CREATE TABLE IF NOT EXISTS session_plan_records(project TEXT NOT NULL,session TEXT "
-    "NOT NULL,kind TEXT NOT NULL,id TEXT NOT NULL,number INTEGER NOT NULL,key TEXT NOT "
-    "NULL,record TEXT NOT NULL,bytes INTEGER NOT NULL,PRIMARY "
-    "KEY(project,session,kind,id,number)) STRICT",
-    "CREATE INDEX IF NOT EXISTS session_plan_keys ON "
-    "session_plan_records(project,session,kind,id,key,number)",
-    "CREATE TABLE IF NOT EXISTS session_plan_projections(project TEXT NOT NULL,session "
-    "TEXT NOT NULL,kind TEXT NOT NULL,id TEXT NOT NULL,record TEXT NOT NULL,bytes INTEGER"
-    " NOT NULL,PRIMARY KEY(project,session,kind,id)) STRICT",
-)
-
-
 def _checked[M: PlanModel](model: type[M], value: M) -> M:
     try:
         return model.model_validate(value.model_dump(mode="python"), strict=True)
@@ -443,50 +428,9 @@ class SessionPlans:
     def __init__(self, documents: DocumentStore, *, limits: PlanLimits | None = None) -> None:
         self.documents = documents
         self.limits = _checked(PlanLimits, limits or PlanLimits())
-        if documents.readonly and not documents.control.missing:
-            with documents.control.read() as tx:
-                db = tx.sql
-                present = db.execute(
-                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
-                    "name IN ('session_plan_meta','session_plan_records',"
-                    "'session_plan_projections')"
-                ).fetchone()[0]
-                if present == 0:
-                    raise DocumentError(NOT_FOUND, "session-plan history is not initialized")
-                if present != 3:
-                    raise DocumentError(INTERNAL, "session-plan schema is incomplete")
-                self._schema(db)
         if not documents.readonly:
             with documents.control.write() as tx:
-                db = tx.sql
-                present = db.execute(
-                    "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
-                    "name IN ('session_plan_meta','session_plan_records',"
-                    "'session_plan_projections')"
-                ).fetchone()[0]
-                if present not in {0, 3}:
-                    raise DocumentError(INTERNAL, "session-plan schema is incomplete")
-                for statement in _SCHEMA:
-                    db.execute(statement)
-                self._schema(db, initializing=True)
-                db.execute("INSERT OR IGNORE INTO session_plan_meta VALUES(1,1)")
-                for verb in ("UPDATE", "DELETE"):
-                    db.execute(
-                        f"CREATE TRIGGER IF NOT EXISTS "
-                        f"session_plan_records_no_{verb.lower()} BEFORE {verb} ON "
-                        f"session_plan_records BEGIN SELECT RAISE(ABORT,'session-plan "
-                        f"history is immutable'); END"
-                    )
-                self._budget(db, None)
-
-    @staticmethod
-    def _schema(db: sqlite3.Connection, *, initializing: bool = False) -> None:
-        version = db.execute(
-            "SELECT CASE WHEN typeof(version)='integer' THEN version END FROM "
-            "session_plan_meta WHERE singleton=1"
-        ).fetchone()
-        if version != (1,) and not (initializing and version is None):
-            raise DocumentError(INTERNAL, "unsupported session-plan schema")
+                self._budget(tx.sql, None)
 
     def _budget(self, db: sqlite3.Connection, scope: PlanScope | None) -> None:
         limits = self.limits

@@ -61,11 +61,8 @@ admission. A failed insert leaves neither a partial pin nor a charged row.
 All successful reservations still count toward the existing project budget,
 including pending or failed calls.
 
-The additive migration checks and adds one nullable `prompt_provenance` column
-under serialized SQLite write ownership. It preserves existing IDs, payloads,
-outcomes and usage. Repeated or concurrent initialization is idempotent. Old
-rows and callers omitting provenance retain NULL; no current-source backfill
-is attempted.
+`job_watcher_calls` has a nullable `prompt_provenance` column. Callers omitting
+provenance leave it NULL.
 
 The internal `watcher_provenance(context, call)` read requires an exact valid
 project/session scope and positive bounded reservation ID. It returns:

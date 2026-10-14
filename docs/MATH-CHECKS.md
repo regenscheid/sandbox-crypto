@@ -93,9 +93,7 @@ bundle and runs the Python boundary tests with Node available.
 The shared `control.sqlite3` transaction that saves an immutable revision also
 advances its document's math target. Failure rolls back both. The target and
 completed cursors reference retained revisions rather than copying an unbounded
-queue on every save. Writer preparation and admission reconcile targets
-monotonically with authoritative document heads, including revisions written by
-an older writer. Read-only workspace requests never migrate or advance state.
+queue on every save. Read-only workspace requests never advance state.
 
 Each saved revision is checked in turn and in full. The checker claims a
 document's revisions one after another, from the oldest unchecked one to the
@@ -130,9 +128,7 @@ resolve it.
 
 ## Mechanical findings and delivery
 
-Findings have additive `review` or `math` origin. Existing reviewer records,
-immutable history, IDs and USER compare-and-swap revisions survive the schema
-migration. Mechanical findings are `warn`/`math`, name their exact check and
+Findings have `review` or `math` origin. Mechanical findings are `warn`/`math`, name their exact check and
 document/block/span/input identities, and have no fabricated reviewer run or model.
 Model reviewer tools cannot create, confirm, supersede or otherwise decide this
 origin. Existing authenticated USER decisions retain their exact-head guard.
@@ -222,7 +218,7 @@ a writer; `reopen` supports concurrent USER CAS/draft checks.
 
 ## Validation boundary
 
-Tests cover legacy migrations and rollback, historical ownership,
+Tests cover historical ownership,
 stale/unavailable/configuration retries, bounded corrupt-state reads, actual-work
 cancellation, closing-round delivery and failed-save/ACK races. Checked in the
 browser with actual local KaTeX 0.18.9 and Node 24.20.0 on synthetic documents in

@@ -43,40 +43,12 @@ class JobState:
         self.path = store_path(state_dir)
         self.clock = clock
         self.lease_seconds = lease_seconds
+        # Creates the control store, or brings its schema (with these tables) up to date.
         documents = DocumentStore(self.path, producer="job-state")
         try:
             documents.initialize()
         finally:
             documents.close()
-        state_dir.mkdir(parents=True, exist_ok=True)
-        with self._db() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS job_runs (
-                    project TEXT, session TEXT, run TEXT, heartbeat REAL,
-                    PRIMARY KEY(project, session, run));
-                CREATE TABLE IF NOT EXISTS job_origins (
-                    project TEXT, session TEXT, job TEXT, run TEXT,
-                    PRIMARY KEY(project, session, job));
-                CREATE TABLE IF NOT EXISTS job_acknowledged (
-                    project TEXT, session TEXT, job TEXT, run TEXT,
-                    PRIMARY KEY(project, session, job));
-                CREATE TABLE IF NOT EXISTS job_waits (
-                    project TEXT, session TEXT, run TEXT, payload TEXT,
-                    PRIMARY KEY(project, session, run));
-                CREATE TABLE IF NOT EXISTS job_watcher_calls (
-                    id INTEGER PRIMARY KEY, project TEXT, session TEXT, run TEXT,
-                    job TEXT, alias TEXT, requested_at REAL, input TEXT,
-                    outcome TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER);
-            """)
-            db.execute("BEGIN IMMEDIATE")
-            if (
-                db.execute(
-                    "SELECT 1 FROM pragma_table_info('job_watcher_calls') "
-                    "WHERE name='prompt_provenance'"
-                ).fetchone()
-                is None
-            ):
-                db.execute("ALTER TABLE job_watcher_calls ADD COLUMN prompt_provenance TEXT")
 
     @contextmanager
     def _db(self) -> Generator[sqlite3.Connection]:
