@@ -424,7 +424,7 @@ def _selected(blob: _Blob, entry: _Entry | None, kind: str) -> Package | None:
 def _license(package: Package | None) -> LicenseObservation | None:
     if package is None:
         return None
-    text = package.license if isinstance(package, CondaPackage) else None
+    text = package.license
     return LicenseObservation(declared=text, agpl=is_agpl(text) if text is not None else None)
 
 
