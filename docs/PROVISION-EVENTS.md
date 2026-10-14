@@ -69,3 +69,5 @@ commit acknowledgment without retry, original failure classification, owner
 caps, first cancellation identity and actual close/thread drain. These checks
 use no real installer, OpenShell environment or model. Independent source review,
 root combined gates and real runtime acceptance remain separate.
+
+[OpenShell Lab35](../.agents/docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md) passed on signed runtime `d236b6b`/helper `fbbe3b61`, with independent complete teardown at2026-10-14T03:52:41.221801Z. The small scalar pilot preceded two installs; six original-step artifacts and four requested/finished observations matched the selected production APIs. Observed micromamba2.9.0/pip26.2.1 remain self-reports; no genuine awaiting-permission transition occurred. Fresh-CI publication/delivery remain separate.
