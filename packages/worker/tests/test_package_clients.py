@@ -47,6 +47,8 @@ from sandbox_science.worker.package_clients import (
 from sandbox_science.worker.settings import OpenShellBackendSettings, load_settings
 from sandbox_science.worker.store import Store
 
+pytestmark = pytest.mark.slow
+
 CACHE = "http://host.openshell.internal:8090"
 TARGETS = Path(__file__).resolve().parents[3] / "examples" / "openshell" / "targets.yaml"
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")

@@ -64,6 +64,8 @@ from sandbox_science.worker.store import Store
 
 from .harness import AUTH, CONTEXT, TOKEN, Harness, HostileBackend, context
 
+pytestmark = pytest.mark.slow
+
 FAKE = Path(__file__).with_name("fake_package_manager.py")
 CACHE_HOST = "host.openshell.internal"
 CACHE = f"http://{CACHE_HOST}:8090"

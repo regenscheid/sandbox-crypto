@@ -1,23 +1,73 @@
 # SPDX-License-Identifier: MIT
 name: ci
 
+# Pull requests run the static checks, the fast and slow test tiers on Python 3.13, and the
+# web app. Pushes to main also run the whole suite serially on every supported Python; the
+# nightly run does that too, and repeats the slow tier to measure flakiness.
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # A new push to a branch cancels that branch's older runs; every commit on main runs in full.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  check:
+  static:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run python scripts/check_repo_hygiene.py
+      - run: uv run python scripts/generate_protos.py --check
+      - run: uv run ruff format --check .
+      - run: uv run ruff check .
+      - run: uv run pyright
+      - run: uv run python scripts/check_licenses.py
+      # Every collected test is in exactly one tier, so none is left out of pull requests.
+      - run: uv run python scripts/tiers.py check
+
+  test:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [fast, slow]
+    name: test (${{ matrix.tier }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run python scripts/tiers.py run ${{ matrix.tier }} -n auto --durations=25
+
+  # The whole suite, serially and unfiltered, on every supported Python.
+  full:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -31,16 +81,30 @@ jobs:
           python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run python scripts/check_repo_hygiene.py
-      - run: uv run python scripts/generate_protos.py --check
-      - run: uv run ruff format --check .
-      - run: uv run ruff check .
-      - run: uv run pyright
-      - run: uv run pytest
+      - run: uv run pytest --durations=50
       - run: uv run python scripts/check_licenses.py
+
+  # Nightly: the slow tier ten times, in parallel, to measure how often its tests flake.
+  repeat:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: >-
+          uv run python scripts/tiers.py run slow -n auto --count 10
+          -o tmp_path_retention_policy=failed
 
   # The workspace GUI (D80): packages from the lockfile, without install scripts.
   web:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -53,6 +117,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: "24.20.0"
+          cache: npm
+          cache-dependency-path: web/workspace/package-lock.json
       # The lockfile's licenses and sources are checked before any package is installed,
       # and the installed packages' own licenses after.
       - run: python3 ../../scripts/check_licenses.py --npm package-lock.json

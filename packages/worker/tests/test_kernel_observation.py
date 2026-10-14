@@ -21,7 +21,7 @@ from sandbox_science.worker.timeouts import ManagerTimeouts
 
 from .harness import CONTEXT, TOKEN, Harness, view
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 REQUEST = KernelStatusRequest(context=ExecutionContext.model_validate(CONTEXT))
 
 

@@ -69,7 +69,7 @@ from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_i
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import eventually, fake_worker_app
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
 TOKEN = "k" * 40
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")

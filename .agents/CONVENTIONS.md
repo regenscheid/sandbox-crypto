@@ -65,7 +65,8 @@ uv sync
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright
-uv run pytest
+uv run pytest -n auto
+uv run python scripts/tiers.py check
 uv run python scripts/check_licenses.py
 uv run python scripts/generate_protos.py --check
 uv run python scripts/check_repo_hygiene.py
@@ -83,7 +84,7 @@ npm test
 npm run build
 ```
 
-CI runs the same commands.
+CI runs the same checks. On a pull request it runs them on Python 3.13, with the tests in two parallel jobs, the fast tier and the slow tier (`uv run python scripts/tiers.py run fast -n auto`, and `slow`), beside the web app's checks. A push to main also runs the whole suite serially on Python 3.12 and 3.13. A nightly run does the same, and runs the slow tier ten times over to measure how often its tests flake.
 
 ## Licensing
 
@@ -119,7 +120,8 @@ CI runs the same commands.
 - Async tests and fixtures run under pytest-asyncio's auto mode, so they need no `asyncio` mark.
 - Every test has a 300 s limit (pytest-timeout), so a hang fails instead of stalling CI. `--timeout=0` turns it off for long manual runs.
 - A component with a deadline, a lease or a polling interval reads time through the `Clock` protocol in `contracts` and takes its timeouts and intervals as constructor parameters, defaulting to `SYSTEM_CLOCK` and the production values. Code that predates this rule is converted as the refactoring plan reaches it. Tests pass `sandbox_science.testing.FakeClock` and short timeouts instead of patching module constants, and wait for a condition with `eventually()` instead of sleeping. A timeout test uses a peer that never answers, so the timeout is the only possible outcome.
-- `pytest-repeat` (`--count 50`) and `pytest-xdist` (`-n 4`) check a test for flakiness.
+- Tests run in parallel (pytest-xdist), so a test owns its files (`tmp_path`) and does not depend on other tests or their order. `pytest-repeat` (`--count 50`) with `-n 8` checks a test for flakiness; add `-o tmp_path_retention_policy=failed`, since many repetitions fill `/tmp` otherwise.
+- **Tiers.** A test module that starts real processes for its tests (kernels, executors, sandbox daemons, package managers) is marked slow, with `pytestmark = pytest.mark.slow` beside any other marks. The fast tier is everything else, and stays under two minutes on four CPUs. Marks are strict (`--strict-markers`), so a misspelt one fails. `scripts/tiers.py` holds each tier's marker expression; `scripts/tiers.py check` fails when a test is in no tier or in two, or when a `test_*.py` file yields no test, such as one outside `testpaths`.
 - **No processes left behind.** After each test module, the root `conftest.py` looks for processes still running from the run's temporary directory: executors and sandbox daemons whose `--root` is there, and kernels and commands working in a directory there. It counts only this user's processes started after the test process, never the test process's ancestors, and only live directories, since other agents' test runs share the machine. It gives them ten seconds, then kills them and fails the module's last test. A test that kills an executor on purpose gives its commands a way to end with it.
 - pyright reports unnecessary `# type: ignore` and `# pyright: ignore` comments as errors, and ruff reports unused `noqa` comments. Tests may run subprocesses, build SQL and use synthetic secrets and temporary paths without inline suppressions.
 

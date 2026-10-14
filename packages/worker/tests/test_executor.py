@@ -25,6 +25,8 @@ from sandbox_science.contracts import ProbeFacts
 from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker import executor
 
+pytestmark = pytest.mark.slow
+
 
 def _alive(pid: int) -> bool:
     try:

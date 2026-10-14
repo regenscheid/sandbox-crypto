@@ -89,6 +89,7 @@ asyncio_mode = "auto"
 # A hung test fails after five minutes instead of stalling the run (--timeout=0 turns this off).
 timeout = 300
 markers = [
+    "slow: starts real processes for its tests (kernels, executors, daemons, package managers); the slow tier (scripts/tiers.py)",
     "integration: needs OpenShell, KVM or a cluster; runs only when SS_INTEGRATION=1",
     "images: needs Docker and built base images; runs only when SS_IMAGE_TESTS names them",
 ]

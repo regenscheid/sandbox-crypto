@@ -48,6 +48,8 @@ from sandbox_science.worker.store import Store
 
 from .harness import shut_down_daemon, view
 
+pytestmark = pytest.mark.slow
+
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 SCOPE = OutputScope(**CONTEXT.model_dump(include={"project_id", "session_id", "environment_id"}))
 TOKEN = "synthetic-observation-token-000000000000"

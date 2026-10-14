@@ -45,7 +45,7 @@ from sandbox_science.worker.store import Store
 
 from .harness import CONTEXT, Harness
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.slow]
 
 
 @pytest_asyncio.fixture

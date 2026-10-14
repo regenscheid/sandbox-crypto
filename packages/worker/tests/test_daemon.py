@@ -39,6 +39,8 @@ from sandbox_science.worker.store import Store
 
 from .harness import Harness, running
 
+pytestmark = pytest.mark.slow
+
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 
 
