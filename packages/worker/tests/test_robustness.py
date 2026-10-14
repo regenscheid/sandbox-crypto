@@ -41,8 +41,8 @@ from sandbox_science.contracts import (
     StreamEvent,
 )
 from sandbox_science.testing import eventually
+from sandbox_science.worker import dispatcher as dispatcher_module
 from sandbox_science.worker import journal as journal_module
-from sandbox_science.worker import manager as manager_module
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, OpenShellBackend
 from sandbox_science.worker.channel import ChannelTimeouts, EventHandler, ExecutorChannel, Message
@@ -474,7 +474,7 @@ async def test_h4_output_beyond_the_budget_is_not_stored(tmp_path: Path) -> None
 async def test_h4_the_number_of_events_is_bounded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(manager_module, "MAX_EVENTS", 50)
+    monkeypatch.setattr(dispatcher_module, "MAX_EVENTS", 50)
     backend = HostileBackend("tinyflood", env={**os.environ, "FLOOD_N": "500"})
     started = await Harness.start(tmp_path, backend=backend)
     try:

@@ -830,7 +830,7 @@ async def test_a_result_that_cannot_be_stored_still_ends_the_attempt(
     def broken(*args: Any) -> None:
         raise RuntimeError("test: the store is full")
 
-    monkeypatch.setattr(synced.manager, "_complete", broken)
+    synced.view.replace_completion(monkeypatch, broken)
     done = await _shell(synced, "op-1", _in("env1", "s1"), "echo hi")
     assert done["state"] == "failed"
     assert done["result"]["error"]["message"] == "the attempt's result could not be stored"
