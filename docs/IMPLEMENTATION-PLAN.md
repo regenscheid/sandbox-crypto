@@ -25,7 +25,7 @@ Artifact bytes may initially live on private durable filesystem storage with aut
 
 ## Shared contracts to establish first
 
-Names below describe the planned interfaces. `ExecutionContext`, `ArtifactRef` and the execution event types are implemented in `packages/contracts`; the others are not shared contracts yet. Settle names and serialization in W0/W1 from the behavior specification.
+Names below describe the planned interfaces. `ExecutionContext`, `ArtifactRef` and the execution event types are implemented in `packages/contracts`. `PermissionRequest` is a typed record in `policy/approvals` (`records.py`), read by the policy middleware, the MCP proxy and the worker. `Anchor` and `Mutation` go in `packages/contracts` (the worker's PDF operations produce anchors) when the ledger and the PDF viewer first use them; the others are not shared contracts yet. Settle names and serialization in W0/W1 from the behavior specification.
 
 | Contract | Minimum semantics | Consumers |
 | --- | --- | --- |

@@ -34,7 +34,7 @@ from sandbox_science.policy.approvals import (
     ESCALATION,
     Answer,
     Approvals,
-    PendingRequest,
+    PermissionRequest,
     RequestKey,
     withdrawal_payload,
 )
@@ -104,7 +104,7 @@ class Permissions:
         except EventStoreError as exc:
             raise PermissionStoreError(f"the event store cannot be read: {exc}") from exc
 
-    def pending(self, seq: int) -> PendingRequest | None:
+    def pending(self, seq: int) -> PermissionRequest | None:
         """The recorded request ``seq``, as the store holds it."""
         return self._approvals.request(seq)
 
