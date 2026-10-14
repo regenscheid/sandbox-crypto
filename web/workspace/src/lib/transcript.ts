@@ -5,7 +5,7 @@
  * tools.py, write them). Nothing here interprets text as markup; the views show tool
  * arguments and results as plain text.
  */
-import type { Json, RunRecord, ToolRecord } from './api';
+import type { Json, ModelUsage, RunRecord, ToolRecord } from './api';
 
 export interface ToolStep {
   name: string;
@@ -190,6 +190,25 @@ export function describeResult(result: string | undefined, record?: ToolRecord):
   }
   if (Object.keys(rest).length > 0) view.rest = JSON.stringify(rest, null, 2);
   return view;
+}
+
+/**
+ * A run's model calls and tokens in one line, such as "3 model calls (model-a), 1,200
+ * input and 340 output tokens"; null for a record with no usage (older records). Counts
+ * the gateway left out are said to be missing rather than counted as zero.
+ */
+export function usageLine(usage: readonly ModelUsage[] | undefined): string | null {
+  if (!usage || usage.length === 0) return null;
+  const total = (key: 'input_tokens' | 'output_tokens') =>
+    usage.reduce((sum, call) => sum + (call[key] ?? 0), 0).toLocaleString('en-US');
+  const models = [...new Set(usage.map((call) => call.model).filter((name) => name !== null))];
+  const missing = usage.some((call) => call.input_tokens === null || call.output_tokens === null);
+  const calls = `${usage.length} model ${usage.length === 1 ? 'call' : 'calls'}`;
+  return (
+    `${calls}${models.length ? ` (${models.join(', ')})` : ''}, ` +
+    `${total('input_tokens')} input and ${total('output_tokens')} output tokens` +
+    (missing ? ', some counts not reported by the gateway' : '')
+  );
 }
 
 function isObject(value: Json | undefined): value is { [key: string]: Json } {
