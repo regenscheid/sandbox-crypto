@@ -14,9 +14,9 @@ from typing import cast
 import pytest
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext
-from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator import cli, notices
 from sandbox_science.orchestrator.consistency.rubric import RUBRIC, RUBRIC_VERSION
-from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.documents import DocumentStore, DocumentTool
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.hooks import TurnHook
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT
@@ -316,3 +316,21 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
     assert [p.id for p in kept.prompt_provenance.sections] == ["main", "planning"]
     assert HOSTILE not in kept.to_json()
     assert "test-secret-unused" not in kept.to_json()
+
+
+def test_every_notice_framing_is_pinned() -> None:
+    declared = {value for value in vars(notices).values() if isinstance(value, notices.Framing)}
+    assert declared == set(FRAMINGS)
+    assert len({framing.version for framing in FRAMINGS}) == len(FRAMINGS)
+
+
+def test_a_toolbox_refuses_two_tools_with_one_name() -> None:
+    class Documents:
+        specs = (ToolSpec("shell", "Another shell", {"type": "object"}),)
+
+    with pytest.raises(ValueError, match="two offered tools have one name: shell"):
+        Toolbox(
+            cast(WorkerClient, SimpleNamespace()),
+            CONTEXT,
+            documents=cast(DocumentTool, Documents()),
+        )

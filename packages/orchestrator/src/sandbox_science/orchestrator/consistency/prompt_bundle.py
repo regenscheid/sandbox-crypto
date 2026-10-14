@@ -147,29 +147,15 @@ class ProvenanceRead:
 
 @dataclass(frozen=True, slots=True)
 class ReviewerBundle:
+    """The pins a review's calls record; recorded once and not checked again before
+    each call (owner decision 3)."""
+
     provenance: ReviewerProvenance
-    _owned_tools: bytes
-
-    def tool_specs(self) -> tuple[ToolSpec, ...]:
-        return tuple(ToolSpec(**item) for item in json.loads(self._owned_tools))
-
-    def verify(self, first: object, passed: Sequence[ToolSpec]) -> None:
-        if first != {"role": "system", "content": self.provenance.rubric_text}:
-            raise ValueError("actual reviewer system input changed")
-        canonical, names = schema_json(passed), tuple(spec.name for spec in passed)
-        if (
-            names != self.provenance.tool_names
-            or len(canonical) != self.provenance.schema_bytes
-            or hashlib.sha256(b"reviewer-tool-schemas-v1\0" + canonical).hexdigest()
-            != self.provenance.schemas_sha256
-        ):
-            raise ValueError("actual reviewer tool input changed")
-        encode_provenance(self.provenance)
 
 
 def assemble_reviewer(system: str, version: str, specs: Sequence[ToolSpec]) -> ReviewerBundle:
     raw = _rubric(system)
-    owned, canonical = schema_json(specs, canonical=False), schema_json(specs)
+    canonical = schema_json(specs)
     names = tuple(spec.name for spec in specs)
     pin = ReviewerProvenance.model_construct(
         rubric_version=version,
@@ -190,4 +176,4 @@ def assemble_reviewer(system: str, version: str, specs: Sequence[ToolSpec]) -> R
             ).hexdigest()
         }
     )
-    return ReviewerBundle(ReviewerProvenance.model_validate_json(encode_provenance(pin)), owned)
+    return ReviewerBundle(ReviewerProvenance.model_validate_json(encode_provenance(pin)))

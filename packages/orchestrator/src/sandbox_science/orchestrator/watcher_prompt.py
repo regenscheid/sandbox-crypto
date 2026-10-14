@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Literal, Self, cast
 
@@ -13,7 +12,7 @@ from pydantic import ConfigDict, Field, model_validator
 
 from sandbox_science.contracts.model import Contract
 
-from .model import Message, ToolSpec
+from .model import Message
 
 MAX_SYSTEM_BYTES = 2048
 MAX_PROVENANCE_BYTES = 4096
@@ -117,11 +116,6 @@ class WatcherInput:
             {"role": "system", "content": self.provenance.system_text},
             {"role": "user", "content": self.user_text},
         ]
-
-    def verify(self, messages: Sequence[Message], tools: Sequence[ToolSpec]) -> None:
-        if tools or list(messages) != self.messages():
-            raise ValueError("actual watcher input does not match its reservation")
-        encode_provenance(self.provenance)
 
 
 def assemble_watcher(system: str, user_text: str) -> WatcherInput:

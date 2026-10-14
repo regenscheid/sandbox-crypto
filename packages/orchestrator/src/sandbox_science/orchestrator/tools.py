@@ -433,6 +433,10 @@ class Toolbox:
                 whole=True,
             )
         self.entries = {entry.spec.name: entry for entry in entries}
+        if len(self.entries) != len(entries):
+            names = [entry.spec.name for entry in entries]
+            taken = sorted({name for name in names if names.count(name) > 1})
+            raise ValueError(f"two offered tools have one name: {', '.join(taken)}")
         self.specs = tuple(entry.spec for entry in entries)
 
     async def call(

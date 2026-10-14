@@ -327,9 +327,7 @@ class ReviewerRunner:
                 )
                 return
             await threaded(self.store.renew, self.project, self.session, self.review, self.owner)
-            passed = bundle.tool_specs()
-            bundle.verify(messages[0], passed)
-            reply = await self.model.complete(messages, passed)
+            reply = await self.model.complete(messages, SPECS)
             await threaded(
                 self.store.call_usage,
                 self.project,

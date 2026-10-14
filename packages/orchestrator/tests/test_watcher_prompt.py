@@ -15,7 +15,6 @@ from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator import watcher_prompt
 from sandbox_science.orchestrator.jobs import WATCHER_PROMPT
 from sandbox_science.orchestrator.jobstate import JobState
-from sandbox_science.orchestrator.model import ToolSpec
 from sandbox_science.orchestrator.watcher_prompt import (
     MAX_PROVENANCE_BYTES,
     MAX_SYSTEM_BYTES,
@@ -46,13 +45,6 @@ def test_exact_owned_input_and_empty_tools_exclude_dynamic_data():
     assert first.provenance.tool_count == 0
     assert first.provenance.tool_names == ()
     assert len(encode_provenance(first.provenance).encode()) <= MAX_PROVENANCE_BYTES
-    first.verify(first.messages(), ())
-    changed = first.messages()
-    changed[1]["content"] = "different user data"
-    with pytest.raises(ValueError, match="actual watcher input"):
-        first.verify(changed, ())
-    with pytest.raises(ValueError, match="actual watcher input"):
-        first.verify(first.messages(), (ToolSpec("cancel", "Never offered", {}),))
     assert first.messages()[1]["content"] == "untrusted ∀ job data"
 
 

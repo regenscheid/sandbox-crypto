@@ -81,14 +81,6 @@ def test_exact_historical_text_ordered_schema_pins_and_owned_inputs():
     assert pin.tool_names == tuple(s.name for s in SPECS)
     assert pin.tool_count == 5
     assert len(encode_provenance(pin).encode()) <= MAX_PROVENANCE_BYTES
-    original.verify({"role": "system", "content": RUBRIC}, original.tool_specs())
-    altered = original.tool_specs()
-    altered[0].parameters["properties"]["after"]["type"] = "string"
-    with pytest.raises(ValueError, match="tool input changed"):
-        original.verify({"role": "system", "content": RUBRIC}, altered)
-    assert original.tool_specs()[0].parameters == SPECS[0].parameters
-    with pytest.raises(ValueError, match="system input changed"):
-        original.verify({"role": "system", "content": "not the rubric"}, original.tool_specs())
     assert assemble_reviewer(RUBRIC + "\n", RUBRIC_VERSION, SPECS).provenance != pin
     assert assemble_reviewer(RUBRIC, RUBRIC_VERSION, tuple(reversed(SPECS))).provenance != pin
     copied = tuple(
@@ -96,7 +88,6 @@ def test_exact_historical_text_ordered_schema_pins_and_owned_inputs():
     )
     reordered = assemble_reviewer(RUBRIC, RUBRIC_VERSION, copied)
     assert reordered.provenance == pin
-    assert list(reordered.tool_specs()[0].parameters) == list(copied[0].parameters)
     array = ToolSpec("read", "Read", {"required": ["a", "b"]})
     reverse = ToolSpec("read", "Read", {"required": ["b", "a"]})
     assert (
@@ -143,7 +134,7 @@ def test_unrepresentable_installed_input_and_copied_overflow_refuse_before_encod
 
 
 @pytest.mark.asyncio
-async def test_actual_multi_turn_input_is_reserved_before_call_with_fresh_schemas(store):
+async def test_actual_multi_turn_input_is_reserved_before_each_call(store):
     reviews, documents, review = store
     expected = bundle().provenance
     evidence = reviews.manifest("p", "s", review)["evidence"][0]["evidence"]
@@ -167,7 +158,6 @@ async def test_actual_multi_turn_input_is_reserved_before_call_with_fresh_schema
             assert answered == 0
             assert reviews.run("p", "s", review)["calls"] == self.calls
             assert reviews.call_provenance("p", "s", review, call).provenance == expected
-            tools[0].parameters["properties"]["after"]["type"] = "mutated by model"
             if self.calls == 1:
                 return ModelTurn(None, (ToolCall("m", "review_manifest", "{}"),), model="actual")
             if self.calls == 2:

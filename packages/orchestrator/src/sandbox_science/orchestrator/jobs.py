@@ -561,9 +561,7 @@ class JobTools:
         output_tokens: int | None = None
         try:
             async with asyncio.timeout(self.watcher_timeout):
-                messages = watcher_input.messages()
-                watcher_input.verify(messages, ())
-                reply = await self.watcher.complete(messages, ())
+                reply = await self.watcher.complete(watcher_input.messages(), ())
             resolved = reply.model
             input_tokens, output_tokens = reply.input_tokens, reply.output_tokens
             if reply.tool_calls or reply.text is None or len(reply.text) > 1200:

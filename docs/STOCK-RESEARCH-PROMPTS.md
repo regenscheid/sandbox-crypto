@@ -42,8 +42,7 @@ The installed catalog is a fixed immutable mapping of five bounded records in
 Each text is nonempty valid UTF-8 and at most 2 KiB; IDs and version formats are
 fixed. There is no file, environment, plugin or network loader, interpolation or
 model-controlled selection. Invalid selection or installed content refuses before
-model invocation. Selected aggregate system and metadata limits also refuse;
-selected runs never fall back to missing/unavailable provenance.
+model invocation; a selected run always records the template's pin.
 
 The [MAIN plan tools](ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools)
 keep the plan and its progress when they are offered. Selection introduces no

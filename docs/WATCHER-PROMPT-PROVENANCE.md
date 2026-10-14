@@ -19,8 +19,9 @@ does not retry that call.
 assembles one owned input for each due check. The system remains the exact
 original `WATCHER_PROMPT` literal; its wording and whitespace are unchanged.
 The two model messages remain system then untrusted job data. The actual model
-call still receives the literal empty tool tuple `()`. The owned messages and
-zero tools are verified immediately before the call.
+call still receives the literal empty tool tuple `()`. The pins are recorded
+once, with the call's reservation, and not checked again before the call (owner
+decision 3).
 
 The fixed envelope contains:
 
