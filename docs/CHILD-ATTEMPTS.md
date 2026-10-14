@@ -2,7 +2,8 @@
 # Internal child turn journal
 
 `child_attempts.py` retains a canonical child's explicitly supplied input and
-bounded partial conversation before a future controller performs work. It adds
+bounded partial conversation before the explicitly configured
+[child controller](DELEGATED-CHILD-CONTROLLER.md) performs work. This module adds
 no model call, launcher, tool, worker transport, grant, policy default or active
 delegated run. [DelegationRecords](DELEGATION-RECORDS.md) remains the sole source of
 original parent/delegation/child identity and terminal raw/validated handback.
@@ -57,7 +58,10 @@ external await. Caller ceilings specify maximum calls, per-call/total reserved
 output tokens, cumulative retained input bytes and wall seconds. These fields do
 not silently reinterpret the brief's requested limits. UTC wall admission starts
 at the durable begin; a backward or expired time refuses. Actual call deadlines,
-adapter output limits and provider spend controls remain future controller duties.
+adapter output limits and provider spend controls remain controller duties. The
+current controller applies finite call/reservation/deadline checks; caller-applied
+provider limits are a trusted composition assertion, and monetary enforcement is
+unsupported.
 
 There is one unresolved model reservation per attempt. `observe_turn` names that
 exact reservation and retains either an assistant message with exact logical text
