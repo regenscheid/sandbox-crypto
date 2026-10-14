@@ -54,6 +54,14 @@ channel, subdir, name, version and build, in ``pinned_packages`` (its first argu
 so the solve links those builds and nothing else they need, and the environment's history
 records the request, not the pins. micromamba 2.9, the images' (MICROMAMBA_VERSION in
 images/Containerfile), reads the pins from MAMBA_PINNED_PACKAGES, separated by commas."""
+CONDA_UPGRADE_DRY_RUN: Final = (
+    'exec micromamba update --dry-run --json -y -p "${CONDA_PREFIX:?is not set}" "$@"'
+)
+CONDA_UPGRADE: Final = (
+    "MAMBA_PINNED_PACKAGES=$1; export MAMBA_PINNED_PACKAGES; shift; "
+    'exec micromamba update --json -y -p "${CONDA_PREFIX:?is not set}" "$@"'
+)
+"""Named update variants retain the same decided-build pin convention."""
 PIP_DRY_RUN: Final = 'exec pip install --dry-run --quiet --only-binary :all: --report - "$@"'
 """Wheels only: pip resolves from the index's metadata and never builds a source
 distribution, which runs its code (CP-7)."""
@@ -124,6 +132,20 @@ def conda_install(specs: Sequence[str], files: Iterable[ResolvedFile]) -> tuple[
     A file the pins leave out would be refused at its download if the policy escalates
     it, and is reported if the policy allows it (``unplanned``)."""
     return ("sh", "-c", CONDA_INSTALL, "sh", conda_pins(files), *specs)
+
+
+def conda_upgrade_dry_run(specs: Sequence[str]) -> tuple[str, ...]:
+    """Resolve only the explicit named update; no upgrade-all or install fallback."""
+    if not specs:
+        raise ValueError("upgrade requires named Conda specs")
+    return ("sh", "-c", CONDA_UPGRADE_DRY_RUN, "sh", *specs)
+
+
+def conda_upgrade(specs: Sequence[str], files: Iterable[ResolvedFile]) -> tuple[str, ...]:
+    """Update the named specs with the same exact decided-build pins as installs."""
+    if not specs:
+        raise ValueError("upgrade requires named Conda specs")
+    return ("sh", "-c", CONDA_UPGRADE, "sh", conda_pins(files), *specs)
 
 
 def conda_pins(files: Iterable[ResolvedFile]) -> str:

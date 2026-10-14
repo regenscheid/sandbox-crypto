@@ -441,3 +441,30 @@ def test_the_shipped_catalog_loads_and_a_broken_one_does_not() -> None:
     ):
         with pytest.raises(CatalogError):
             Catalog.parse(broken.encode())
+
+
+def test_named_upgrade_commands_preserve_exact_file_pins_without_install_fallback() -> None:
+    file = resolution.parse_conda_dry_run(dry_run(link()), CACHE)[0].file
+    dry = resolution.conda_upgrade_dry_run(("pari>=2",))
+    update = resolution.conda_upgrade(("pari>=2",), (file,))
+    assert dry[-1] == "pari>=2"
+    assert "micromamba update --dry-run" in dry[2]
+    assert update[-1] == "pari>=2"
+    assert "micromamba update --json" in update[2]
+    assert update[-2] == "conda-forge/linux-64::pari==2.15.4=h0_0"
+    assert "micromamba install" not in dry[2] + update[2]
+    assert "--all" not in dry
+    assert "--all" not in update
+    # Legacy commands keep the original install action.
+    assert "micromamba install --dry-run" in resolution.conda_dry_run(("pari",))[2]
+    assert "micromamba install --json" in resolution.conda_install(("pari",), (file,))[2]
+
+
+def test_upgrade_requires_targets_and_reuses_pin_validation() -> None:
+    with pytest.raises(ValueError, match="named"):
+        resolution.conda_upgrade_dry_run(())
+    with pytest.raises(ValueError, match="named"):
+        resolution.conda_upgrade((), ())
+    file = resolution.parse_conda_dry_run(dry_run(link()), CACHE)[0].file
+    with pytest.raises(ValueError, match="cannot pin"):
+        resolution.conda_upgrade(("pari",), (file.model_copy(update={"build": None}),))

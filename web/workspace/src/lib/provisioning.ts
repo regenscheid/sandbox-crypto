@@ -21,7 +21,7 @@ export interface ProvisionObservation extends Observation {
 export interface OperationDetail extends Observation {
   summary: OperationSummary;
   request: {operation_id: string; context: {project_id: string; session_id: string; environment_id: string; policy_revision: string | null; actor: string};
-    purpose: string; capability: string | null; conda: string[]; pip: string[]; pip_reason: string | null; system: string[]};
+    purpose: string; capability: string | null; conda: string[]; pip: string[]; pip_reason: string | null; system: string[]; action?: 'install' | 'upgrade'};
   policy: string | null; catalog: {version: number; sha256: string} | null; next_step: string | null;
   error_present: boolean; error_kind: string | null;
 }
@@ -124,7 +124,12 @@ function selectedSummary(v: unknown, selected: OperationSummary): v is Operation
 function detailSummary(v: unknown, selected: Selection): v is OperationSummary { return selected.kind === 'operation' ? selectedSummary(v, selected.operation) : selected.kind === 'retained_operation' && summary(v) && v.provision_id === selected.provisionId; }
 function specs(v: unknown): v is string[] { return Array.isArray(v) && v.length <= 32 && v.every((s: unknown) => text(s, 256)); }
 function humanText(v: unknown): boolean { return text(v, 2000) && !/[\x00-\x08\x0b-\x1f\x7f]/.test(v); }
+function requestShape(v: unknown): v is Record<string, unknown> {
+  const keys = ['operation_id', 'context', 'purpose', 'capability', 'conda', 'pip', 'pip_reason', 'system'];
+  return object(v, keys) || (object(v, [...keys, 'action']) && choice(v.action, ['install', 'upgrade']));
+}
 function requestKind(v: OperationDetail['request']): boolean {
+  if (v.action === 'upgrade' && (!v.conda.length || v.capability !== null || v.pip.length || v.system.length)) return false;
   const packages = v.conda.length + v.pip.length + v.system.length > 0;
   return (v.capability !== null) !== packages && (v.pip.length > 0) === (v.pip_reason !== null) && !(v.conda.length && v.pip.length) &&
     (v.capability === null || /^[a-z0-9][a-z0-9_-]{0,63}$/.test(v.capability)) && v.system.every(s => /^[a-z0-9][a-z0-9.+-]{0,127}$/.test(s));
@@ -252,7 +257,7 @@ export function provisionData(value: unknown, scope: EnvironmentScope, selection
     }
     case 'retained_operation':
     case 'operation': {
-      if (!object(v, [...common, 'summary', 'request', 'policy', 'catalog', 'next_step', 'error_present', 'error_kind']) || !detailSummary(v.summary, selection) || !object(v.request, ['operation_id', 'context', 'purpose', 'capability', 'conda', 'pip', 'pip_reason', 'system']) || v.request.operation_id !== v.summary.operation_id || !object(v.request.context, ['project_id', 'session_id', 'environment_id', 'policy_revision', 'actor']) || v.request.context.project_id !== scope.projectId || v.request.context.environment_id !== scope.environmentId || v.request.context.session_id !== v.summary.session_id || !id(v.request.context.actor) || !nullable(v.request.context.policy_revision, v => text(v, 256)) || !humanText(v.request.purpose) || !nullable(v.request.capability, v => text(v, 64)) || (!specs(v.request.conda) || !specs(v.request.pip) || !specs(v.request.system)) || !nullable(v.request.pip_reason, humanText) || !nullable(v.policy, v => typeof v === 'string' && /^sha256:[0-9a-f]{64}$/.test(v)) || !(v.catalog === null || (object(v.catalog, ['version', 'sha256']) && count(v.catalog.version, Number.MAX_SAFE_INTEGER, 1) && digest(v.catalog.sha256))) || !nullable(v.next_step, humanText) || typeof v.error_present !== 'boolean' || !nullable(v.error_kind, v => choice(v, ['invalid_request', 'unsupported', 'unavailable', 'policy_denied', 'not_found', 'conflict', 'timed_out', 'cancelled', 'kernel_died', 'exception', 'internal'])) || (v.error_present !== (v.error_kind !== null))) throw bad();
+      if (!object(v, [...common, 'summary', 'request', 'policy', 'catalog', 'next_step', 'error_present', 'error_kind']) || !detailSummary(v.summary, selection) || !requestShape(v.request) || v.request.operation_id !== v.summary.operation_id || !object(v.request.context, ['project_id', 'session_id', 'environment_id', 'policy_revision', 'actor']) || v.request.context.project_id !== scope.projectId || v.request.context.environment_id !== scope.environmentId || v.request.context.session_id !== v.summary.session_id || !id(v.request.context.actor) || !nullable(v.request.context.policy_revision, v => text(v, 256)) || !humanText(v.request.purpose) || !nullable(v.request.capability, v => text(v, 64)) || (!specs(v.request.conda) || !specs(v.request.pip) || !specs(v.request.system)) || !nullable(v.request.pip_reason, humanText) || !nullable(v.policy, v => typeof v === 'string' && /^sha256:[0-9a-f]{64}$/.test(v)) || !(v.catalog === null || (object(v.catalog, ['version', 'sha256']) && count(v.catalog.version, Number.MAX_SAFE_INTEGER, 1) && digest(v.catalog.sha256))) || !nullable(v.next_step, humanText) || typeof v.error_present !== 'boolean' || !nullable(v.error_kind, v => choice(v, ['invalid_request', 'unsupported', 'unavailable', 'policy_denied', 'not_found', 'conflict', 'timed_out', 'cancelled', 'kernel_died', 'exception', 'internal'])) || (v.error_present !== (v.error_kind !== null))) throw bad();
       if (!requestKind(v.request as unknown as OperationDetail['request'])) throw bad();
       return v as unknown as OperationDetail;
     }

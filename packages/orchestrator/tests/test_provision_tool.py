@@ -27,6 +27,7 @@ from sandbox_science.contracts import (
     ResolvedFile,
 )
 from sandbox_science.orchestrator.model import ToolCall
+from sandbox_science.orchestrator.provision import PROVISION, ProvisionTools
 from sandbox_science.orchestrator.tools import Toolbox, operation_id
 from sandbox_science.orchestrator.worker_client import WorkerClient
 
@@ -129,6 +130,93 @@ async def test_the_tools_are_offered_where_the_worker_provisions() -> None:
         assert {"provision", "provision_status"} <= names
     finally:
         await client.close()
+
+
+@pytest.mark.parametrize("action", [None, "install", "upgrade"])
+async def test_main_provision_offers_and_forwards_only_explicit_upgrade(action: str | None) -> None:
+    assert PROVISION.parameters["properties"]["action"] == {
+        "type": "string",
+        "enum": ["install", "upgrade"],
+    }
+    assert "action" not in PROVISION.parameters["required"]
+    client = ScriptedClient([{"state": "finished", "outcome": "already_satisfied"}])
+    toolbox = Toolbox(client, CONTEXT, features=("provisioning",))
+    args: dict[str, Any] = {"purpose": "synthetic", "conda": ["fpylll"]}
+    if action is not None:
+        args["action"] = action
+    try:
+        outcome = await toolbox.call(call("provision", args), "upgrade-tool-test")
+    finally:
+        await client.close()
+    [request] = client.asked
+    assert request.action == (action or "install")
+    if action == "upgrade":
+        assert json.loads(request.model_dump_json())["action"] == "upgrade"
+        assert json.loads(outcome.text)["action"] == "upgrade"
+        assert json.loads(outcome.text)["asked_for"] == "upgrade fpylll"
+    else:
+        # Literal historical encoder bytes; optional action must not change install replay.
+        assert request.model_dump_json() == (
+            '{"operation_id":"upgrade-tool-test","context":{"project_id":"p1",'
+            '"session_id":"s1","environment_id":"env1","policy_revision":null,'
+            '"actor":"agent"},"purpose":"synthetic","capability":null,'
+            '"conda":["fpylll"],"pip":[],"pip_reason":null,"system":[]}'
+        )
+        assert "action" not in json.loads(outcome.text)
+
+
+@pytest.mark.parametrize("action", [None, True, 1, [], {}, "remove", "restore", "upgrade-all", ""])
+async def test_unoffered_upgrade_actions_never_become_install(action: object) -> None:
+    client = ScriptedClient([])
+    toolbox = Toolbox(client, CONTEXT, features=("provisioning",))
+    try:
+        outcome = await toolbox.call(
+            call("provision", {"purpose": "synthetic", "conda": ["fpylll"], "action": action}),
+            "upgrade-tool-test",
+        )
+    finally:
+        await client.close()
+    assert json.loads(outcome.text)["error"]["kind"] == "invalid_request"
+    assert client.asked == []
+
+
+async def test_copied_action_is_refused_before_equality_or_worker() -> None:
+    visits: list[str] = []
+
+    class CopiedAction(str):
+        def __eq__(self, other: object) -> bool:
+            visits.append("eq")
+            return True
+
+    client = ScriptedClient([])
+    tools = ProvisionTools(client, CONTEXT)
+    try:
+        outcome = await tools.provision(
+            {"purpose": "synthetic", "conda": ["fpylll"], "action": CopiedAction("upgrade")},
+            "upgrade-tool-test",
+        )
+    finally:
+        await client.close()
+    assert json.loads(outcome.text)["error"]["kind"] == "invalid_request"
+    assert client.asked == []
+    assert visits == []
+
+
+@pytest.mark.parametrize(
+    "packages",
+    [{"capability": "gp"}, {"pip": ["ecdsa"], "pip_reason": "synthetic"}, {"system": ["x"]}],
+)
+async def test_upgrade_tool_refuses_unsupported_package_kinds(packages: dict[str, Any]) -> None:
+    client = ScriptedClient([])
+    tools = ProvisionTools(client, CONTEXT)
+    try:
+        outcome = await tools.provision(
+            {"purpose": "synthetic", "action": "upgrade", **packages}, "upgrade-tool-test"
+        )
+    finally:
+        await client.close()
+    assert json.loads(outcome.text)["error"]["kind"] == "invalid_request"
+    assert client.asked == []
 
 
 async def test_provision_asks_once_and_reports_a_wait_for_permission() -> None:
