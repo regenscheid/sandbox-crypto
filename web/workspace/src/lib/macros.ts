@@ -6,7 +6,7 @@
  *
  * KaTeX expands a macro wherever a formula uses it, and a few short macros that use one
  * another can expand into a great many characters: three of them took KaTeX 39 s when a
- * formula defined them itself, which is why a formula may not (mathrepair.ts). Macros
+ * formula defined them itself, which is why a formula may not (texDefinitions.ts). Macros
  * from the front matter are bounded the same way, on both sides:
  *
  * - at most `MAX_MACROS` of them, each a control sequence defined in at most `MAX_MACRO`

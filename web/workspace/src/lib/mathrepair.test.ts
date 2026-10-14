@@ -5,8 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { ApiError, type MathRepairAnswer, type MathRepairRequest } from './api';
 import { Kept } from './kept';
+import { describeError } from './mathErrors';
 import {
-  describeError,
   OutOfTime,
   recoveredHtml,
   recoverMath,

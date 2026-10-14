@@ -24,13 +24,11 @@
 import type { MathRepairRequest } from './api';
 import type { ModelRepairs } from './modelRepairs';
 import { Kept } from './kept';
+import { describeError } from './mathErrors';
 import { safeRepair } from './texDefinitions';
 import { repairTex } from './texRepairs';
 import { texToUnicode } from './texUnicode';
 import { visible } from './text';
-
-/** The longest error message kept, from KaTeX or the server. */
-const MAX_ERROR_LENGTH = 300;
 
 /**
  * The candidates and approximations already worked out, for the page's re-renders, within
@@ -65,7 +63,7 @@ function approximationOf(tex: string): string {
 }
 
 // ---------------------------------------------------------------------------------------
-// 3. The ladder: deterministic repairs, the model's repair, the approximation
+// 1. The ladder: deterministic repairs, the model's repair, the approximation
 // ---------------------------------------------------------------------------------------
 
 /** What renders an expression and throws when it cannot: KaTeX, or a stand-in in tests. */
@@ -135,23 +133,6 @@ export interface RecoverOptions {
   scope?: Pick<MathRepairRequest, 'project' | 'macro_context'>;
 }
 
-function cut(text: string, length: number): string {
-  let out = text.slice(0, length);
-  const last = out.charCodeAt(out.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) out = out.slice(0, -1); // half a surrogate pair
-  return out;
-}
-
-/** KaTeX's error, or any other, in a few words. */
-export function describeError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error ?? 'unknown error');
-  const brief = message
-    .replace(/^KaTeX parse error:\s*/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return cut(brief, MAX_ERROR_LENGTH);
-}
-
 /**
  * The page's key for an expression's model repair, and for KaTeX's results: under
  * `macros`, the key of the macros in force (macros.ts), a formula renders otherwise.
@@ -218,7 +199,7 @@ export function recoverMath(katex: MathRenderer, tex: string, options: RecoverOp
 }
 
 // ---------------------------------------------------------------------------------------
-// 4. How a recovered expression is shown
+// 2. How a recovered expression is shown
 // ---------------------------------------------------------------------------------------
 
 function escapeHtml(value: string): string {

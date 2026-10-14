@@ -3,7 +3,7 @@
 import katex from 'katex';
 import { macroSet } from './macros';
 import { KATEX_OPTIONS, MAX_FORMULA } from './mathoptions';
-import { describeError } from './mathrepair';
+import { describeError } from './mathErrors';
 import { definesMacros } from './texDefinitions';
 import { repairTex } from './texRepairs';
 
