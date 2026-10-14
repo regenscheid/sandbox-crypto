@@ -447,13 +447,27 @@ Temporary helpers cancel on daemon bridge detach; research jobs/kernels retain t
 existing survival semantics. Environment release and worker shutdown drain host work.
 
 Unknown cleanup persists a bounded held lease across restart. Exact same-incarnation
-ACK may reconcile a host-drained hold; confirmed original-VM deletion or the existing
-verified recycle fence can mark matching guest ownership clean. Neither a logical
-environment deletion, observed replacement, blank legacy binding nor a new incarnation
-is proof. Active host leases remain counted until their actual work ends. Corrupt
-leases fail closed; crashed foreign active owners need explicit operator investigation
-because guest proof cannot prove their host threads exited. Nothing repairs them
-automatically, and capture never triggers a VM recycle. See [capture limits and recovery](ARTIFACTS.md#bounded-worker-capture-prerequisite)
+ACK may reconcile a host-drained hold: when an executor connects, and again on the
+running executor whenever a publication finds admission full, so that an ACK that missed
+its deadline does not hold admission until the bridge reconnects. Confirmed original-VM
+deletion or the existing verified recycle fence can mark matching guest ownership clean.
+Neither a logical environment deletion, observed replacement, blank legacy binding nor a
+new incarnation is proof. Active host leases remain counted until their actual work ends.
+
+One worker runs for each state directory: `serve` holds an exclusive lock on
+`worker.lock` there (decision 9), and a second worker on the same directory refuses to
+start. So at startup no lease's host work can still run: a lease left `active` that was
+never dispatched, or whose VM is proven gone, goes, and one that was dispatched becomes
+`held` until its executor confirms the cleanup. Capture never triggers a VM recycle. A
+lease whose sandbox the operator knows cleaned up or is gone, but whose executor will
+never say so, is cleared with the worker stopped:
+
+```bash
+sandbox-science-worker captures --settings worker.toml                 # list the leases
+sandbox-science-worker captures --settings worker.toml --clear pub-...  # forget one
+```
+
+The command takes the same lock, so it refuses while a worker runs. See [capture limits and recovery](ARTIFACTS.md#bounded-worker-capture-prerequisite)
 for exact bounds and client-disconnect semantics. Checked on OpenShell in
 [Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md); lost
 transport, blocked host work and corrupt state are covered by local tests only.

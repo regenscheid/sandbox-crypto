@@ -300,7 +300,12 @@ class ExecutionManager:
         self._admission.refresh(environment_id)
 
     async def start(self) -> None:
-        """Recover known daemon executions without ever resubmitting a command."""
+        """Recover known daemon executions without ever resubmitting a command.
+
+        One worker runs for each state directory (state_lock.py), so the capture leases
+        a stopped worker left active are settled first.
+        """
+        self._publication.settle_orphans()
         await self._dispatcher.restore(daemon_enabled=self.backend.daemon)
 
     async def release(self, environment_id: str) -> None:

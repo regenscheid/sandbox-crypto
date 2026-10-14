@@ -293,6 +293,31 @@ class Store:
             )
             return False
 
+    def orphaned_captures(self) -> int:
+        """Settle the leases a stopped worker left ``active``, at startup, under the state
+        directory's lock (state_lock.py): no host work of theirs can still run. One never
+        dispatched, or whose sandbox is proven gone, goes; one dispatched is ``held`` until
+        its executor confirms the cleanup. Returns how many there were."""
+        with self._transaction():
+            settled = self._db.execute(
+                "DELETE FROM artifact_capture_leases"
+                " WHERE phase='active' AND (capture_id='' OR guest_clean=1)"
+            ).rowcount
+            settled += self._db.execute(
+                "UPDATE artifact_capture_leases SET phase='held' WHERE phase='active'"
+            ).rowcount
+        return settled
+
+    def clear_capture(self, publication_id: str) -> bool:
+        """Forget one lease, on the operator's word that its sandbox cleaned up or is gone;
+        whether there was one. Only with the worker stopped (``captures --clear``)."""
+        return (
+            self._db.execute(
+                "DELETE FROM artifact_capture_leases WHERE publication_id=?", (publication_id,)
+            ).rowcount
+            == 1
+        )
+
     def acknowledge_capture(self, lease: CaptureLease) -> None:
         """Release one held exact tuple after a same-incarnation positive cleanup ACK."""
         result = self._db.execute(

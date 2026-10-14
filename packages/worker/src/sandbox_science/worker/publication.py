@@ -140,6 +140,24 @@ class Publication:
             ):
                 self.store.fenced_captures(environment_id, lease.incarnation, sandbox, sandbox_id)
 
+    def settle_orphans(self) -> int:
+        """Settle the leases a stopped worker left active; at startup only."""
+        return self.store.orphaned_captures()
+
+    async def retry_cleanup(self) -> None:
+        """Ask each connected executor that holds leases whether their cleanup is done, so
+        that a cleanup acknowledgement that missed its deadline does not hold admission
+        until the bridge reconnects."""
+        try:
+            held = {lease.environment_id for lease in self.store.capture_leases()}
+        except ValueError:
+            return
+        for environment_id in sorted(held):
+            connection = self.connections.get(environment_id)
+            channel = connection.channel if connection is not None else None
+            if channel is not None and not channel.closed and not channel.detaching:
+                await self.reconcile(environment_id, channel)
+
     async def reconcile(self, environment_id: str, channel: ExecutorChannel) -> None:
         """Only held host-drained leases can receive same-incarnation cleanup ACKs.
 
@@ -182,8 +200,13 @@ class Publication:
         deadline = self.clock.monotonic() + self.timeout
         try:
             lease = self.store.reserve_capture(new_id("pub"), environment_id)
-        except ValueError as exc:
-            raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from exc
+        except ValueError:
+            # Held leases may have cleaned up since: ask the executors that run now.
+            await self.retry_cleanup()
+            try:
+                lease = self.store.reserve_capture(new_id("pub"), environment_id)
+            except ValueError as exc:
+                raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from exc
         owner = _Owner(lease)
         task = asyncio.create_task(self._publish(request, deadline, owner))
 

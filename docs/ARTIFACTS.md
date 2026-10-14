@@ -106,16 +106,17 @@ sandbox name/immutable ID before sending. A positive capture/cancel reply must
 name that exact helper and explicitly prove cleanup. Generic errors, lost replies,
 transport closure and a new incarnation do not release admission. Once actual host
 work drains, missing proof leaves a durable `held` lease. Only exact same-incarnation
-cleanup ACK on reconnect or an existing verified stop/delete fence for its original
-VM may resolve guest uncertainty. A verified VM fence marks an active host lease
+cleanup ACK (on reconnect, or on the running executor when a publication finds admission
+full) or an existing verified stop/delete fence for its original VM may resolve guest
+uncertainty. A verified VM fence marks an active host lease
 guest-clean but never releases it before host completion. Corrupt state fails closed.
 
-The lifecycle still assumes one active worker owns its host tasks. Atomic SQL
-admission also counts other connections, but an `active` row left by a crashed or
-foreign worker has no proof of host cleanup and remains a conservative hold.
-There is no lease expiry, automatic operator repair or new-incarnation reset.
+One worker owns a state directory, under an exclusive lock (decision 9), so an
+`active` row left by a stopped worker has no host work left: at startup one never
+dispatched goes, and a dispatched one becomes `held` until its executor confirms the
+cleanup. There is no lease expiry or new-incarnation reset; with the worker stopped,
+`sandbox-science-worker captures --clear` forgets a lease on the operator's word.
 Unknown legacy/local-backend bindings cannot borrow a managed VM's deletion proof.
-A clean held slot may require a same-daemon reconnect after a lost late ACK.
 
 The bounded client publication request has a 10-second deadline; the server's
 default budget is 30 seconds. Default aiohttp handlers can continue after peer

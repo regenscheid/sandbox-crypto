@@ -96,7 +96,7 @@ async def test_lost_bridge_and_generic_refusal_hold_durable_capacity(
 
 
 @pytest.mark.asyncio
-async def test_restart_same_daemon_exact_ack_reconciles_only_held_rows(
+async def test_restart_settles_a_stopped_workers_leases_and_the_same_daemon_clears_them(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -118,7 +118,9 @@ async def test_restart_same_daemon_exact_ack_reconciles_only_held_rows(
     try:
         with pytest.raises(WorkerError, match="unknown"):
             await first.publish(PublishRequest(context=CONTEXT, path="x"))
-        # Another worker's active host work cannot be reconciled by any guest ACK.
+        # Changed by C-09: one worker runs for each state directory (decision 9), so a
+        # lease still active at restart is the stopped worker's. It is settled to held, and
+        # the same daemon's exact cleanup acknowledgement clears it.
         active = store.reserve_capture(new_id("pub"), "env1")
         store.dispatch_capture(active, incarnation, new_id("cap"))
         await first.close()
@@ -126,8 +128,8 @@ async def test_restart_same_daemon_exact_ack_reconciles_only_held_rows(
         await second.start()
         recovered = view(second).channel("env1")
         assert recovered.incarnation == incarnation
-        assert [item.phase for item in store.capture_leases()] == ["active"]
-        assert view(second).capture_counts() == {"env1": 1}
+        assert store.capture_leases() == ()
+        assert view(second).capture_counts() == {}
     finally:
         if second is not None:
             await second.release("env1")
