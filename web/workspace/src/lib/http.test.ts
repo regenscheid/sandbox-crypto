@@ -99,6 +99,15 @@ describe('one request function', () => {
     expect(() => inScope({ project_id: 'q' }, { project_id: 'p' })).toThrow(ApiError);
     expect(() => inScope(null, { project_id: 'p' })).toThrow(ApiError);
   });
+  it('names a malformed or empty answer as such, not as an unreachable server', async () => {
+    for (const answer of [new Response(null, { status: 204 }), new Response('<html>')]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(answer));
+      await expect(get('/x')).rejects.toMatchObject({
+        status: 0,
+        message: "the server's answer is not JSON",
+      });
+    }
+  });
   // Last: a 401 ends the page's session for the rest of this file.
   it('a 401 signs the page out, and no later request starts', async () => {
     const fetch = vi.fn().mockResolvedValue(json({ error: { kind: 'policy_denied' } }, 401));
@@ -106,5 +115,16 @@ describe('one request function', () => {
     await expect(get('/x')).rejects.toMatchObject({ status: 401, loggedOut: true });
     await expect(get('/y')).rejects.toMatchObject({ status: 401 });
     expect(fetch).toHaveBeenCalledOnce();
+  });
+  it.each([
+    ['non-UTF-8', new Uint8Array([0xff, 0xfe])],
+    ['oversized', new TextEncoder().encode('x'.repeat(70 * 1024))],
+  ])('a 401 with a %s body still signs out and keeps its status', async (_name, bytes) => {
+    vi.resetModules();
+    const fresh = await import('./http'),
+      session = await import('./session');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(bytes, { status: 401 })));
+    await expect(fresh.get('/x')).rejects.toMatchObject({ status: 401 });
+    expect(session.signedOut()).toBe(true);
   });
 });

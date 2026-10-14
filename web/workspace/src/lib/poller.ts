@@ -35,14 +35,23 @@ export interface PollOptions<T> {
   once?: boolean;
   /** Stop after observing data for which this is true, a closed session say. */
   done?: (data: T) => boolean;
+  /**
+   * The statuses that stop the poller for good, and the phase each leaves; any other
+   * failure is retried. The default suits a read of one scope's own record.
+   */
+  endOn?: Partial<Record<number, PollPhase>>;
 }
 
 export const POLL_INTERVAL_MS = 3000;
 export const POLL_DEADLINE_MS = 8000;
 const MAX_BACKOFF_MS = 30_000;
 
-/** The phase an ending status puts a poller in; other failures are 'unavailable'. */
-const ENDING: Record<number, PollPhase> = { 401: 'signed_out', 404: 'missing', 409: 'changed' };
+/** The statuses that end a poller by default; other failures are 'unavailable'. */
+export const ENDING: Partial<Record<number, PollPhase>> = {
+  401: 'signed_out',
+  404: 'missing',
+  409: 'changed',
+};
 
 export function initialPoll<T>(): PollState<T> {
   return { phase: 'loading', data: null, busy: false };
@@ -132,13 +141,14 @@ export class Poller<T> {
       const data = await this.read(controller.signal);
       if (this.current(epoch) && !timedOut) {
         this.failures = 0;
-        this.emit('observed', data);
         if (this.options.done?.(data)) this.stop();
+        this.emit('observed', data);
       }
     } catch (error) {
       if (this.current(epoch)) {
         const status = error instanceof ApiError ? error.status : 0;
-        const ending = ENDING[status];
+        // A 401 always ends the page's session, whatever the poller's own endings.
+        const ending = status === 401 ? 'signed_out' : (this.options.endOn ?? ENDING)[status];
         if (ending !== undefined) {
           this.busy = false;
           if (ending === 'signed_out') this.logout();
@@ -156,7 +166,8 @@ export class Poller<T> {
       this.busy = false;
       if (timedOut) this.failures++;
       if (this.current(epoch)) this.emit(this.state.phase);
-      if (this.options.once && !this.stopped) {
+      // A read that hiding the page interrupted is read again when it is shown.
+      if (this.options.once && !this.stopped && epoch === this.epoch) {
         this.stop();
         if (this.state.phase !== 'observed') this.emit('unavailable');
       }

@@ -14,6 +14,8 @@
   <p class="problem" role="status">{what} unavailable.{earlier}</p>
 {:else if phase === 'unsupported'}
   <p class="problem" role="status">{what} need a configured worker connection.</p>
+{:else if phase === 'changed'}
+  <p class="problem" role="status">{what} stopped: the record changed. Reload the page.</p>
 {:else if phase === 'missing'}
   <p class="problem" role="status">This session or project is not recorded.</p>
 {:else if phase === 'signed_out'}

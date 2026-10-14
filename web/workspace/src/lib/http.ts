@@ -71,7 +71,11 @@ async function read(response: Response, limit: number | undefined, signal: Abort
     bytes.set(chunk, offset);
     offset += chunk.length;
   }
-  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new ApiError(0, 'unavailable', "the server's answer is not UTF-8");
+  }
 }
 
 function failure(status: number, text: string): ApiError {
@@ -109,11 +113,22 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     });
     if (controller.signal.aborted) throw new ApiError(0, 'unavailable', 'the request was stopped');
     if (!response.ok) {
-      const error = failure(response.status, await read(response, ERROR_BYTES, controller.signal));
+      let text = '';
+      try {
+        text = await read(response, ERROR_BYTES, controller.signal);
+      } catch {
+        // An unreadable error body still has its status.
+      }
+      const error = failure(response.status, text);
       if (error.loggedOut) signOut();
       throw error;
     }
-    return JSON.parse(await read(response, options.maxBytes, controller.signal)) as T;
+    const text = await read(response, options.maxBytes, controller.signal);
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      throw new ApiError(0, 'unavailable', "the server's answer is not JSON");
+    }
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError(

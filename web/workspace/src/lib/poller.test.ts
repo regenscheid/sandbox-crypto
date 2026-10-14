@@ -131,6 +131,48 @@ describe('visible polling', () => {
 });
 
 describe('options', () => {
+  it('endOn: retries statuses the poller does not end on, but a 401 always ends it', async () => {
+    vi.useFakeTimers();
+    const read = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(404, 'not_found', 'no environment yet'))
+      .mockRejectedValueOnce(new ApiError(409, 'conflict', 'another project'))
+      .mockResolvedValueOnce({ n: 1 })
+      .mockRejectedValue(new ApiError(401, 'policy_denied', 'signed out'));
+    const { poller, states } = poll(read, { endOn: {} });
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(settled(states).at(-1)?.phase).toBe('unavailable');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(4);
+    expect(states.at(-1)).toEqual({ phase: 'signed_out', data: null, busy: false });
+  });
+  it('done: the final state is not busy', async () => {
+    vi.useFakeTimers();
+    const { poller, states } = poll(vi.fn().mockResolvedValue({ n: 1, closed: true }), {
+      done: (data) => data.closed === true,
+    });
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states.at(-1)).toEqual({ phase: 'observed', data: { n: 1, closed: true }, busy: false });
+  });
+  it('once: a read that hiding the page interrupted is read again when it is shown', async () => {
+    vi.useFakeTimers();
+    const first = deferred<Data>();
+    const read = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue({ n: 2 });
+    const { poller, states } = poll(read, { once: true });
+    poller.setVisible(true);
+    poller.setVisible(false);
+    first.resolve({ n: 1 });
+    await vi.advanceTimersByTimeAsync(0);
+    poller.setVisible(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(settled(states).at(-1)).toEqual({ phase: 'observed', data: { n: 2 }, busy: false });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
   it('once: reads a single time, and failure leaves it unavailable', async () => {
     vi.useFakeTimers();
     const ok = poll(vi.fn().mockResolvedValue({ n: 1 }), { once: true });

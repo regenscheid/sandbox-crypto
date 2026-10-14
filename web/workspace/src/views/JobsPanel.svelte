@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { api, type JobListing } from '../lib/api';
-  import { jobElapsed } from '../lib/jobs';
-  import { initialPoll, Poller, type PollState } from '../lib/poller';
+  import { jobElapsed, jobsPoller } from '../lib/jobs';
+  import { initialPoll, type PollState } from '../lib/poller';
   import ErrorMessage from './ErrorMessage.svelte';
   import JobCard from './JobCard.svelte';
   import PollStatus from './PollStatus.svelte';
@@ -18,20 +18,18 @@
       session = sessionId;
     view = initialPoll();
     error = null;
-    const poller = new Poller(
-      (signal) => api.jobs(project, session, signal),
-      (value) => {
-        view = value;
-      },
-    );
-    return poller.watch();
+    return jobsPoller(project, session, (value) => {
+      view = value;
+    }).watch();
   });
 
   async function cancel(job: string): Promise<void> {
     cancelling = job;
     try {
       await api.cancelJob(projectId, sessionId, job);
-      view = { ...view, data: await api.jobs(projectId, sessionId) };
+      const found = await api.jobs(projectId, sessionId);
+      // Spread the state as it is now: the poller may have published during the await.
+      view = { ...view, data: found };
       error = null;
     } catch (found) {
       error = found;
