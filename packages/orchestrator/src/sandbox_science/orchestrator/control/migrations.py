@@ -854,6 +854,47 @@ def _run_tree(schema: Schema) -> None:
         schema.execute(statement)
 
 
+_MACRO_RECEIPT: Final = "json_object('revision',revision)"
+_RECEIPTS: Final = (
+    # scope, table, project column, operation column, result
+    ("document", "requests", "project_id", "operation_id", "result"),
+    ("comment", "annotation_operations", "project_id", "operation_id", "result"),
+    ("review", "review_operations", "project", "operation_id", "result"),
+    ("macros", "project_macro_operations", "project", "operation", _MACRO_RECEIPT),
+)
+
+
+def _receipts(schema: Schema) -> None:
+    """Version 12: the operation receipts of documents, comments, reviews and project
+    macros move into one table, ``operation_receipts``, each under its scope (B-04). A
+    macro receipt's revision becomes the result ``{"revision": n}``; a document receipt's
+    ``created_at``, which nothing reads, is not kept. A receipt the new table refuses
+    refuses the migration."""
+    schema.execute(
+        """CREATE TABLE operation_receipts (
+    scope TEXT NOT NULL CHECK (length(scope) BETWEEN 1 AND 32 AND scope NOT GLOB '*[^a-z]*'),
+    project TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL
+        CHECK (length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
+    result TEXT NOT NULL CHECK (json_valid(result) AND json_type(result) = 'object'),
+    PRIMARY KEY (scope, project, actor, operation_id)
+) STRICT"""
+    )
+    for scope, table, project, operation, result in _RECEIPTS:
+        try:
+            schema.execute(
+                "INSERT INTO operation_receipts "  # noqa: S608 - the store's own names
+                f"SELECT ?,{project},actor,{operation},fingerprint,{result} FROM {table} "
+                "ORDER BY rowid",
+                (scope,),
+            )
+        except sqlite3.IntegrityError as error:
+            raise RefusedRowError(f"a receipt of {table} fails its check ({error})") from None
+        schema.execute(f"DROP TABLE {table}")
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -865,6 +906,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _run_service_control,
     _macro_revisions,
     _run_tree,
+    _receipts,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

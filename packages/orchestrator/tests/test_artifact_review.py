@@ -774,7 +774,8 @@ def test_legacy_response_receipt_digest_unchanged(state) -> None:
         db = tx.sql
         assert (
             db.execute(
-                "SELECT fingerprint FROM review_operations WHERE operation_id='old-operation'"
+                "SELECT fingerprint FROM operation_receipts WHERE scope='review' "
+                "AND operation_id='old-operation'"
             ).fetchone()[0]
             == expected
         )

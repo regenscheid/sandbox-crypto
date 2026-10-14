@@ -231,8 +231,9 @@ def test_body_queue_receipt_atomicity_and_immutable_rows(stores):
     with reviews.documents.control.write() as tx:
         db = tx.sql
         db.execute(
-            "CREATE TRIGGER receipt_failure BEFORE INSERT ON review_operations WHEN "
-            "NEW.operation_id='edit' BEGIN SELECT RAISE(ABORT,'receipt fault'); END"
+            "CREATE TRIGGER receipt_failure BEFORE INSERT ON operation_receipts WHEN "
+            "NEW.scope='review' AND NEW.operation_id='edit' "
+            "BEGIN SELECT RAISE(ABORT,'receipt fault'); END"
         )
     with pytest.raises(sqlite3.IntegrityError, match="receipt fault"):
         edit(reviews, finding, decision, "$x$")
@@ -369,7 +370,7 @@ def test_initial_body_queue_failure_rolls_back_scientific_response(stores):
         db = tx.sql
         assert db.execute("SELECT count(*) FROM review_response_bodies").fetchone() == (0,)
         assert db.execute(
-            "SELECT count(*) FROM review_operations WHERE operation_id=?", ("atomic-response",)
+            "SELECT count(*) FROM operation_receipts WHERE operation_id=?", ("atomic-response",)
         ).fetchone() == (0,)
 
 
@@ -478,7 +479,8 @@ def test_response_replay_receipt_binds_its_immutable_revision(stores):
         with docs.control.write() as tx:
             db = tx.sql
             db.execute(
-                "UPDATE review_operations SET result=? WHERE operation_id='first'",
+                "UPDATE operation_receipts SET result=? WHERE scope='review' "
+                "AND operation_id='first'",
                 (json.dumps(result),),
             )
         with pytest.raises(DocumentError, match="immutable body"):

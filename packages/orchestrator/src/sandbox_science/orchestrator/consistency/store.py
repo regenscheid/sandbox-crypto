@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from sandbox_science.contracts import new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
+from sandbox_science.orchestrator.control import Receipts
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.blocks import check_text
 from sandbox_science.orchestrator.documents.errors import (
@@ -135,6 +136,10 @@ class _Plan:
     response_pins: dict[str, Json]
     complete: bool
     confirmation_key: str | None
+
+
+RECEIPTS: Final = Receipts("review", "operation ID already names another finding mutation")
+"""The receipts of the findings' and the responses' changes, which share one scope."""
 
 
 def dump(value: object) -> str:

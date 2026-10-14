@@ -563,8 +563,8 @@ def test_atomic_revision_scheduling_and_append_only_history(stores):
     with docs.control.write() as tx:
         db = tx.sql
         db.execute(
-            "CREATE TEMP TRIGGER fail_annotation_receipt BEFORE INSERT ON annotation_operations "
-            "BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END"
+            "CREATE TEMP TRIGGER fail_annotation_receipt BEFORE INSERT ON operation_receipts "
+            "WHEN NEW.scope='comment' BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END"
         )
     with pytest.raises(sqlite3.IntegrityError, match="synthetic receipt"):
         edit(docs, doc, source["entry_id"], "changed")

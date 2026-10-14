@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 from pydantic import Field, JsonValue, ValidationError
 
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.control import Receipts
 
 from .errors import CONFLICT, INTERNAL, INVALID_REQUEST, POLICY_DENIED, DocumentError
 from .frontmatter import MAX_MACRO, MAX_MACROS, bounded_macros
@@ -34,6 +35,7 @@ MAX_BYTES = 16 * 1024
 MAX_HISTORY = 1024
 _NAME = re.compile(r"\\(?:[A-Za-z]+|[^A-Za-z\s])\Z")
 EMPTY_SHA = hashlib.sha256(b"{}").hexdigest()
+_RECEIPTS = Receipts("macros", "operation ID already names another macro change")
 
 
 class MacroContext(Contract):
@@ -152,15 +154,9 @@ class ProjectMacros:
         fingerprint = hashlib.sha256(dump(change.model_dump()).encode()).hexdigest()
         with self.documents.control.write() as tx:
             db = tx.sql
-            replay = db.execute(
-                "SELECT fingerprint,revision FROM project_macro_operations "
-                "WHERE project=? AND actor=? AND operation=?",
-                (project, author.actor, change.operation_id),
-            ).fetchone()
-            if replay:
-                if replay[0] != fingerprint:
-                    raise DocumentError(CONFLICT, "operation ID already names another macro change")
-                return {**read(db, project, replay[1]), "replayed": True}
+            replay = _RECEIPTS.find(db, project, author.actor, change.operation_id, fingerprint)
+            if replay is not None:
+                return {**read(db, project, cast(int, replay["revision"])), "replayed": True}
             current = read(db, project)
             if current["revision"] != change.expected:
                 raise DocumentError(
@@ -186,16 +182,10 @@ class ProjectMacros:
                     "DO UPDATE SET revision=excluded.revision",
                     (project, revision),
                 )
-            if (
-                db.execute(
-                    "SELECT count(*) FROM project_macro_operations WHERE project=?", (project,)
-                ).fetchone()[0]
-                >= 4096
-            ):
+            if _RECEIPTS.count(db, project) >= 4096:
                 raise DocumentError(CONFLICT, "project macro operation quota reached")
-            db.execute(
-                "INSERT INTO project_macro_operations VALUES(?,?,?,?,?)",
-                (project, author.actor, change.operation_id, fingerprint, revision),
+            _RECEIPTS.record(
+                db, project, author.actor, change.operation_id, fingerprint, {"revision": revision}
             )
             return {**read(db, project, revision), "replayed": False}
 

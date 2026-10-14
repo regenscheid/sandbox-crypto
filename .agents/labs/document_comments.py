@@ -275,7 +275,7 @@ def record(root: Path) -> None:
         queries = {
             "threads": "SELECT * FROM annotation_threads ORDER BY rowid",
             "entries": "SELECT * FROM annotation_entries ORDER BY rowid",
-            "operations": "SELECT * FROM annotation_operations ORDER BY rowid",
+            "operations": "SELECT * FROM operation_receipts WHERE scope='comment' ORDER BY rowid",
             "requests": "SELECT * FROM annotation_requests ORDER BY rowid",
         }
         annotations = {

@@ -16,6 +16,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Identifier, new_id
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.control import Receipts
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
 from . import comment_bodies
@@ -30,6 +31,7 @@ from .store import DocumentStore
 Json = dict[str, Any]
 ID = Annotated[str, Field(pattern=r"^b[0-9]{1,9}$")]
 THREAD: Final = re.compile(r"ann-[0-9a-f]{24}")
+_RECEIPTS: Final = Receipts("comment", "operation ID already names another annotation change")
 
 
 class AnchorInput(Contract):
@@ -333,16 +335,8 @@ class Annotations:
         db: sqlite3.Connection, project: str, author: Author, operation: str, fingerprint: str
     ) -> Json | None:
         """The first result of a change made under ``operation``, if it was made."""
-        row = db.execute(
-            "SELECT fingerprint,result FROM annotation_operations WHERE project_id=? "
-            "AND actor=? AND operation_id=?",
-            (project, author.actor, operation),
-        ).fetchone()
-        if row is None:
-            return None
-        if row[0] != fingerprint:
-            raise DocumentError(CONFLICT, "operation ID already names another annotation change")
-        return {**json.loads(row[1]), "replayed": True}
+        found = _RECEIPTS.find(db, project, author.actor, operation, fingerprint)
+        return None if found is None else {**found, "replayed": True}
 
     def _thread(
         self, db: sqlite3.Connection, document: str, thread: str, before: int | None = None
@@ -858,10 +852,7 @@ class Annotations:
             author,
             {**result, "author": author.model_dump(mode="json"), "action": result["outcome"]},
         )
-        db.execute(
-            "INSERT INTO annotation_operations VALUES(?,?,?,?,?)",
-            (project, author.actor, operation, fingerprint, dump(result)),
-        )
+        _RECEIPTS.record(db, project, author.actor, operation, fingerprint, result)
 
     def pending(
         self, project: str, session: str, run: str, *, seen: set[str], max_chars: int = 20000

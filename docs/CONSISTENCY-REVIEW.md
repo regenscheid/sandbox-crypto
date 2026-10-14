@@ -224,7 +224,6 @@ These are the reviewer's tables in the control store's schema
 | `review_records` | A review's checked items, findings and deferred reflags, append-only |
 | `review_findings` | Findings with their current severity, category, statement, anchors, remedy, status, revision and origin (`review` or `math`) |
 | `review_transitions` | Every finding revision with its status, actor and reason, append-only |
-| `review_operations` | The first result of each user or agent finding change under an operation ID |
 | `review_notices` | Findings due for delivery to the author, with their claim and delivery |
 | `review_events` | The reviewer's events per session, append-only |
 | `review_response_bodies`, `review_response_pins`, `review_response_discovery` | MAIN fix/rebut explanation bodies and their revisions, the body revision each confirmation review pinned, and older responses held from checking because their author is unknown ([finding prose math](FINDING-PROSE-MATH.md)) |

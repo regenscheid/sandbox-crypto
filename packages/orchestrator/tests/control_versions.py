@@ -5,7 +5,7 @@ The code writes only the current schema, so a test cannot make a store in an old
 version by writing to it. ``older_store`` makes one: an empty store in that version,
 made by the migration steps up to it, filled with a current store's rows in the columns
 both have, and with the rows of the tables later steps dropped derived from the
-columns that replaced them. A migration test makes its data with the current code,
+columns and tables that replaced them. A migration test makes its data with the current code,
 copies it back, migrates the copy, and reads it as it read the original.
 """
 
@@ -24,6 +24,9 @@ Json = dict[str, Any]
 
 MACRO_REVISIONS = migrations.BASELINE + 8
 """The version that replaced the macro pin tables with ``macro_revision`` columns."""
+
+RECEIPTS = migrations.BASELINE + 10
+"""The version that moved the operation receipts into ``operation_receipts``."""
 
 EMPTY_SHA = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 """The SHA-256 of ``{}``, the empty macro setting."""
@@ -46,6 +49,18 @@ _PINS = (
     "coalesce((SELECT r.sha256 FROM src.project_macro_revisions r JOIN src.review_findings f "
     "ON f.project=r.project WHERE f.finding_id=p.finding_id AND r.revision=p.macro_revision),"
     f"'{EMPTY_SHA}') FROM src.review_response_pins p WHERE p.macro_revision IS NOT NULL",
+)
+
+_RECEIPTS = (
+    # The receipt tables version 12 dropped, from operation_receipts.
+    "INSERT INTO requests SELECT project,actor,operation_id,fingerprint,result,"
+    "'2026-01-01T00:00:00+00:00' FROM src.operation_receipts WHERE scope='document'",
+    "INSERT INTO annotation_operations SELECT project,actor,operation_id,fingerprint,result "
+    "FROM src.operation_receipts WHERE scope='comment'",
+    "INSERT INTO review_operations SELECT project,actor,operation_id,fingerprint,result "
+    "FROM src.operation_receipts WHERE scope='review'",
+    "INSERT INTO project_macro_operations SELECT project,actor,operation_id,fingerprint,"
+    "json_extract(result,'$.revision') FROM src.operation_receipts WHERE scope='macros'",
 )
 
 
@@ -101,6 +116,9 @@ def older_store(source: Path, target: Path, version: int) -> None:
             finally:
                 reader.close()
             for statement in _PINS:
+                db.execute(statement)
+        if version < RECEIPTS:
+            for statement in _RECEIPTS:
                 db.execute(statement)
         db.execute("COMMIT")
     finally:
