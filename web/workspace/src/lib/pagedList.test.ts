@@ -81,4 +81,18 @@ describe('a list read a page at a time', () => {
     await more;
     expect(state).toEqual({ items: ['a'], next: 1, loading: false, error: failure });
   });
+
+  it('reads no state before a reload asks for its page, so a view effect may call it', () => {
+    const { asked, read } = pages();
+    const touched: string[] = [];
+    const state = new Proxy(emptyList<string, number>(), {
+      get(target, name) {
+        touched.push(String(name));
+        return Reflect.get(target, name);
+      },
+    });
+    void new PagedList(state, read).reload();
+    expect(asked).toEqual([null]);
+    expect(touched).toEqual([]);
+  });
 });

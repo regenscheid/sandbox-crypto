@@ -5,18 +5,22 @@
   patches agents submitted, with their states.
 -->
 <script lang="ts">
-  import { api } from '../lib/api';
+  import { api, type DocumentHistory } from '../lib/api';
   import { describeAuthor, describeChanges } from '../lib/authors';
+  import { Detail, noDetail } from '../lib/detail';
+  import { newestFirst, reviewable } from '../lib/documentHistory';
   import { formatTime } from '../lib/format';
   import { documentHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import PatchReview from './PatchReview.svelte';
 
   let { projectId, documentId }: { projectId: string; documentId: string } = $props();
-  let refresh = $state(0);
-  const loading = $derived.by(() => {
-    refresh;
-    return api.history(projectId, documentId);
+  const shown = $state(noDetail<string, DocumentHistory>());
+  // Keyed by the document alone: a document ID is unique in the whole store (the documents
+  // table's key), and the read names the project as the view's properties do now.
+  const histories = new Detail(shown, (document) => api.history(projectId, document));
+  $effect(() => {
+    void histories.show(documentId);
   });
 </script>
 
@@ -24,9 +28,12 @@
   <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> / documents /
 </nav>
 
-{#await loading}
+{#if shown.error}
+  <ErrorMessage error={shown.error} />
+{:else if !shown.value}
   <p class="muted">Loading…</p>
-{:then history}
+{:else}
+  {@const history = shown.value}
   {@const info = history.document}
   <h1>History of {info.title}</h1>
   <p>
@@ -46,7 +53,7 @@
       </tr>
     </thead>
     <tbody>
-      {#each [...history.revisions].reverse() as revision (revision.number)}
+      {#each newestFirst(history.revisions) as revision (revision.number)}
         <tr>
           <td
             ><a href={documentHref(projectId, info.document_id, revision.number)}
@@ -105,50 +112,51 @@
     </table>
   </details>
 
-  {#if history.patches.length > 0}
-    <h2>Patches</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Patch</th>
-          <th>By</th>
-          <th>Base</th>
-          <th>State</th>
-          <th>Reason</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each [...history.patches].reverse() as patch (patch.patch_id)}
+  <!-- A new head (an applied patch, or any other change) closes every open preview. -->
+  {#key history.document.head}
+    {#if history.patches.length > 0}
+      <h2>Patches</h2>
+      <table>
+        <thead>
           <tr>
-            <td><code>{patch.patch_id}</code></td>
-            <td>{describeAuthor(patch.author)}</td>
-            <td>{patch.base}</td>
-            <td>
-              {patch.state}
-              {#if patch.revision}
-                <span class="muted">
-                  in <a href={documentHref(projectId, info.document_id, patch.revision)}
-                    >{patch.revision}</a
-                  >
-                </span>
-              {/if}
-            </td>
-            <td
-              >{patch.reason}
-              {#if ['conflicted', 'refused', 'suggested'].includes(patch.state)}
-                <PatchReview
-                  {projectId}
-                  documentId={info.document_id}
-                  patchId={patch.patch_id}
-                  refreshed={() => (refresh += 1)}
-                />
-              {/if}
-            </td>
+            <th>Patch</th>
+            <th>By</th>
+            <th>Base</th>
+            <th>State</th>
+            <th>Reason</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
-  {/if}
-{:catch error}
-  <ErrorMessage {error} />
-{/await}
+        </thead>
+        <tbody>
+          {#each newestFirst(history.patches) as patch (patch.patch_id)}
+            <tr>
+              <td><code>{patch.patch_id}</code></td>
+              <td>{describeAuthor(patch.author)}</td>
+              <td>{patch.base}</td>
+              <td>
+                {patch.state}
+                {#if patch.revision}
+                  <span class="muted">
+                    in <a href={documentHref(projectId, info.document_id, patch.revision)}
+                      >{patch.revision}</a
+                    >
+                  </span>
+                {/if}
+              </td>
+              <td
+                >{patch.reason}
+                {#if reviewable(patch)}
+                  <PatchReview
+                    {projectId}
+                    documentId={info.document_id}
+                    patchId={patch.patch_id}
+                    refreshed={() => void histories.reload()}
+                  />
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  {/key}
+{/if}

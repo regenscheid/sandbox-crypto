@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import JobCard from '../views/JobCard.svelte';
 import PollStatus from '../views/PollStatus.svelte';
 import type { BackgroundJob, JobListing } from './api';
-import { jobElapsed, jobsPoller } from './jobs';
+import { JobCancels, jobElapsed, jobsPoller } from './jobs';
 import type { PollPhase, PollState } from './poller';
 
 const job: BackgroundJob = {
@@ -86,4 +86,46 @@ describe('job listing polls', () => {
       expect(html.replace(/<!--[^>]*-->/g, '').trim()).not.toBe('');
     },
   );
+});
+
+describe('cancelling jobs', () => {
+  function cancels() {
+    const asked: string[] = [];
+    const answers: { resolve: () => void; reject: (e: unknown) => void }[] = [];
+    const state = { queued: [] as string[], error: null as unknown };
+    const queue = new JobCancels(state, (job) => {
+      asked.push(job);
+      return new Promise<void>((resolve, reject) => answers.push({ resolve, reject }));
+    });
+    return { asked, answers, state, queue };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('cancels a job asked for during another cancellation, after it, instead of dropping it', async () => {
+    const { asked, answers, state, queue } = cancels();
+    const first = queue.ask('job-a');
+    void queue.ask('job-b');
+    void queue.ask('job-b'); // asked twice, cancelled once
+    expect(state.queued).toEqual(['job-a', 'job-b']); // both buttons show "Cancelling…"
+    expect(asked).toEqual(['job-a']);
+    answers[0]!.resolve();
+    await settle();
+    expect(asked).toEqual(['job-a', 'job-b']);
+    answers[1]!.resolve();
+    await first;
+    expect(state).toEqual({ queued: [], error: null });
+  });
+
+  it('goes on after a failure and keeps it to show', async () => {
+    const { asked, answers, state, queue } = cancels();
+    const first = queue.ask('job-a');
+    void queue.ask('job-b');
+    const failure = new Error('worker unavailable');
+    answers[0]!.reject(failure);
+    await settle();
+    answers[1]!.resolve();
+    await first;
+    expect(asked).toEqual(['job-a', 'job-b']);
+    expect(state).toEqual({ queued: [], error: failure });
+  });
 });

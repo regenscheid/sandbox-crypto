@@ -1,8 +1,11 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { api, type PatchPreview } from '../lib/api';
-  import { guardedWrite } from '../lib/mutation';
   import { describeAuthor } from '../lib/authors';
+  import { Detail, noDetail } from '../lib/detail';
+  import { applyPatch, patchApplied } from '../lib/documentHistory';
+  import { guardedWrite } from '../lib/mutation';
+  import { idle, submit } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
   let {
     projectId,
@@ -10,44 +13,34 @@
     patchId,
     refreshed,
   }: { projectId: string; documentId: string; patchId: string; refreshed: () => void } = $props();
-  let preview = $state<PatchPreview | null>(null);
-  let busy = $state(false);
-  let error = $state<unknown>(null);
+  const shown = $state(noDetail<string, PatchPreview>());
+  const previews = new Detail(shown, (patch) => api.previewPatch(projectId, documentId, patch));
+  const applying = $state(idle());
   let message = $state('');
-  async function load() {
-    busy = true;
-    error = null;
+  const preview = $derived(shown.value);
+  const busy = $derived(shown.loading || applying.busy);
+  const error = $derived(applying.error ?? shown.error);
+  function load() {
     message = '';
-    try {
-      preview = await api.previewPatch(projectId, documentId, patchId);
-    } catch (caught) {
-      error = caught;
-      preview = null;
-    } finally {
-      busy = false;
-    }
+    applying.error = null;
+    void previews.show(patchId);
   }
   async function apply() {
-    if (!preview) return;
-    busy = true;
-    error = null;
-    try {
-      const body = {
-        action: 'apply_patch',
-        patch_id: patchId,
-        base: preview.base,
-        reason: `User reviewed and applied patch ${patchId}`,
-      };
-      const result = await guardedWrite('document', `${projectId}:${documentId}`, body, (change) =>
-        api.changeDocument(projectId, documentId, change),
+    const reviewed = shown.value;
+    if (!reviewed) return;
+    await submit(applying, async () => {
+      const result = await guardedWrite(
+        'document',
+        `${projectId}:${documentId}`,
+        applyPatch(reviewed),
+        (change) => api.changeDocument(projectId, documentId, change),
       );
       message = result.message || result.outcome;
-      if (['accepted', 'unchanged'].includes(result.outcome)) refreshed();
-    } catch (caught) {
-      error = caught;
-    } finally {
-      busy = false;
-    }
+      if (patchApplied(result)) {
+        previews.clear(); // its preview no longer describes the document
+        refreshed();
+      }
+    });
   }
 </script>
 
@@ -78,7 +71,7 @@
     <button disabled={busy || !preview.allowed} onclick={apply}
       >Apply reviewed patch to revision {preview.base}</button
     >
-    <button disabled={busy} onclick={() => (preview = null)}>Close preview</button>
+    <button disabled={busy} onclick={() => previews.clear()}>Close preview</button>
   </section>
 {/if}
 {#if message}<p role="status">{message}</p>{/if}
