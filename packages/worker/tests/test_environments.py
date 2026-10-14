@@ -1136,6 +1136,9 @@ async def test_recycle_waits_for_actual_stop_and_refuses_changed_identity(
         await setup.environments.recycle_executor("env-1", info.sandbox, info.sandbox_id or "")
     assert setup.environments.get("env-1").state is EnvironmentState.READY
     assert setup.fake.calls("sandbox", "start") == []
+    # The first look after the stop finds the new identity: no deadline is involved,
+    # so a slow fake CLI under load must not reach the 0.1 s one the case above needs.
+    setup.environments.resume_timeout = 60
     setup.fake.update(phase_on_stop="Stopped", new_id_on_stop=True)
     with pytest.raises(WorkerError, match="changed while stopping"):
         await setup.environments.recycle_executor("env-1", info.sandbox, info.sandbox_id or "")
