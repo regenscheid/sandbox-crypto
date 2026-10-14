@@ -44,7 +44,9 @@ file does not promise a new revision. The next snapshot records what it reads.
 
 The selected package and difference rows bind their declared license to the
 retained pip entry. Known text uses the existing AGPL/Affero text flag; unknown
-text keeps `agpl=null`. This flag is a text observation, not an SPDX evaluator,
+text keeps `agpl=null`. Shared page validation binds the flag to that same
+text heuristic, refusing a copied/inverted flag on either comparison side.
+This flag is a text observation, not an SPDX evaluator,
 verified license, or install permission. The existing GUI decoder accepts
 legacy absent fields and new bounded declarations without loosening unrelated
 field validation. Scope, pins, paging, deadlines and request ownership are
