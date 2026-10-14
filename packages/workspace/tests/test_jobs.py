@@ -158,6 +158,42 @@ async def test_no_worker_is_explicit(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["", "/exe-1", "/exe-1/cancel"])
+async def test_unreachable_worker_is_unavailable_without_its_address(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, path: str
+) -> None:
+    # Port 9 (discard) on loopback refuses the connection.
+    worker = WorkerClient("http://127.0.0.1:9", "test-secret-worker-token")
+    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, job_worker=worker)
+    client = await aiohttp_client(app)
+    await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
+    request = client.post if path.endswith("cancel") else client.get
+    response = await request(
+        "/api/v0/projects/p1/sessions/a/jobs" + path,
+        headers={"Origin": str(client.make_url("/")).rstrip("/")},
+    )
+    assert response.status == 503
+    assert response.headers["Cache-Control"] == "no-store"
+    text = await response.text()
+    assert "127.0.0.1" not in text
+    assert (await response.json())["error"]["kind"] == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_worker_refusals_keep_their_status(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    worker = Worker(context(state_dir))
+    client = await create(aiohttp_client, state_dir, static_dir, worker)
+    response = await client.get("/api/v0/projects/p1/sessions/a/jobs/" + "x" * 300)
+    assert response.status == 400
+    assert (await response.json())["error"] == {
+        "kind": "invalid_request",
+        "message": "invalid job ID",
+    }
+
+
+@pytest.mark.asyncio
 async def test_cancellation_requires_login_and_same_origin(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
