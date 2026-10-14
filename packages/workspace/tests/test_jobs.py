@@ -131,7 +131,7 @@ async def test_views_jobs_wait_checkins_and_cancels(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["", "/exe-1", "/exe-1/cancel"])
+@pytest.mark.parametrize("path", ["", "/exe-1/cancel"])
 async def test_wrong_session_job_cannot_be_viewed_or_cancelled(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, path: str
 ) -> None:
@@ -158,7 +158,7 @@ async def test_no_worker_is_explicit(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("path", ["", "/exe-1", "/exe-1/cancel"])
+@pytest.mark.parametrize("path", ["", "/exe-1/cancel"])
 async def test_unreachable_worker_is_unavailable_without_its_address(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, path: str
 ) -> None:
@@ -185,7 +185,10 @@ async def test_worker_refusals_keep_their_status(
 ) -> None:
     worker = Worker(context(state_dir))
     client = await create(aiohttp_client, state_dir, static_dir, worker)
-    response = await client.get("/api/v0/projects/p1/sessions/a/jobs/" + "x" * 300)
+    response = await client.post(
+        "/api/v0/projects/p1/sessions/a/jobs/" + "x" * 300 + "/cancel",
+        headers={"Origin": str(client.make_url("/")).rstrip("/")},
+    )
     assert response.status == 400
     assert (await response.json())["error"] == {
         "kind": "invalid_request",

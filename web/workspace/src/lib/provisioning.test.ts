@@ -95,6 +95,7 @@ function detail(): OperationDetail {
       pip: [],
       pip_reason: null,
       system: [],
+      action: 'install',
     },
     policy: null,
     catalog: null,
@@ -371,7 +372,9 @@ describe('recorded permission references', () => {
   it('does not infer an unanswered permission from a retained reference during installation', () => {
     const data = {
       ...overview(),
-      operations: [{ ...op(), state: 'installing' as const, stage: 'link', outcome: null }],
+      operations: [
+        { ...op(), state: 'installing' as const, stage: 'link' as const, outcome: null },
+      ],
     };
     const html = render(EnvironmentPanel, {
       props: {
@@ -513,6 +516,7 @@ describe('explicit pinned lockfile comparisons', () => {
         location: 'user',
         url: 'https://example.invalid/<script>',
         sha256: null,
+        license: null,
       },
       changed_fields: ['installer', 'location', 'name', 'url', 'version'],
       before_license: null,
@@ -616,6 +620,7 @@ function packageInventory(): RevisionPackagePage {
           location: 'user',
           url: 'https://example.invalid/<script>',
           sha256: null,
+          license: null,
         },
         license: { declared: null, agpl: null },
       },

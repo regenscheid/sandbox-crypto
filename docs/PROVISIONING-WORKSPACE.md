@@ -86,11 +86,10 @@ headers for its request and never closes the borrowed session. Ordinary
 WorkerClient APIs keep their existing defaults and behavior.
 
 Each worker read has a five-second whole-call timeout, refuses redirects and
-compressed bodies, and independently caps the streamed response at 64 KiB and 256
-chunks before strict JSON parsing. No active status/reconnect/create fallback is
-available. Success JSON is decoded as strict UTF-8 and checked for duplicate object
-keys (including escaped-equivalent keys) before Pydantic can normalize a repeated
-scope, sequence or policy action. Non-JSON numeric constants are refused as well.
+compressed bodies, reads at most 64 KiB, and validates the answer against its
+contract model in strict JSON mode. No active status/reconnect/create fallback is
+available. The worker is trusted policy infrastructure (Z1), so its answers are not
+checked again for duplicate keys or an echo of the selection.
 
 ## Scope
 

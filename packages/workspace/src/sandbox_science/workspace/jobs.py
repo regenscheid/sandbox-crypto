@@ -24,7 +24,6 @@ PATH: Final = "/api/v0/projects/{project}/sessions/{session}/jobs"
 
 def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, listed)
-    app.router.add_get(PATH + "/{job}", status)
     app.router.add_post(PATH + "/{job}/cancel", cancel)
 
 
@@ -62,12 +61,6 @@ async def listed(request: web.Request) -> web.Response:
             {"enabled": True, "jobs": values, "truncated": listing.truncated, "waits": waiting}
         )
     )
-
-
-async def status(request: web.Request) -> web.Response:
-    tools = await _tools(request)
-    job_id = tools.job_id({"job_id": request.match_info["job"]})
-    return json_answer(api.dumps(summary(await tools.owned(job_id), tools.clock.now())))
 
 
 async def cancel(request: web.Request) -> web.Response:

@@ -1,98 +1,36 @@
 // SPDX-License-Identifier: MIT
 /** Read-only, scoped views of committed session plans. */
+import type {
+  CompactPlan,
+  CompactProgress,
+  CompactStep,
+  GoalOutcome,
+  PlanAuthority,
+  PlanBody,
+  PlanRef,
+  PlanStep,
+  WorkspacePlan,
+} from './api-types';
 import { get, inScope } from './http';
 
 export interface PlanScope {
   projectId: string;
   sessionId: string;
 }
-export interface PlanRef {
-  plan_id: string;
-  version: number;
-}
-export type StepStatus = 'pending' | 'in_progress' | 'completed' | 'blocked' | 'skipped';
-export type PlanStatus = 'draft' | 'awaiting_approval' | 'active' | 'completed' | 'abandoned';
-export interface PlanAuthor {
-  scope: { project_id: string; session_id: string };
-  role: 'user' | 'main' | 'delegated';
-  user_id: string | null;
-  run_id: string | null;
-  alias: string | null;
-  resolved_model: string | null;
-  tool_call: string | null;
-  grant: PlanRef | null;
-  track_id: string | null;
-}
-export interface PlanStep {
-  step_id: string;
-  title: string;
-  description: string;
-  evidence_standard: string;
-  track_id: string | null;
-}
-export interface PlanBody {
-  goal: string;
-  feasibility: string;
-  outputs: { title: string; description: string; evidence_standard: string }[];
-  tracks: { track_id: string; title: string }[];
-  phases: { phase_id: string; title: string; steps: PlanStep[] }[];
-}
-export interface PlanOutcome {
-  status: 'achieved' | 'partially_achieved' | 'not_achieved';
-  summary: string;
-  evidence: {
-    project_id: string;
-    kind: string;
-    reference_id: string;
-    revision: number | null;
-    sha256: string | null;
-    attempt_id: string | null;
-  }[];
-  remaining_work: string[];
-}
-export interface PlanProgressView {
-  ref: PlanRef;
-  sequence: number;
-  step_sha256: string;
-  status: StepStatus;
-  author: PlanAuthor;
-  recorded_at: string;
-  evidence_count: number;
-}
-export interface PlanStepView {
-  step_id: string;
-  step_sha256: string;
-  matches_current_step: boolean;
-  latest: PlanProgressView | null;
-}
-export interface CompactPlan {
-  event_cursor: number;
-  head: {
-    scope: { project_id: string; session_id: string };
-    ref: PlanRef;
-    status_revision: number;
-    progress_cursor: number;
-    status: PlanStatus;
-    outcome: PlanOutcome | null;
-  };
-  version: {
-    scope: { project_id: string; session_id: string };
-    ref: PlanRef;
-    base: number | null;
-    body: PlanBody;
-    author: PlanAuthor;
-    reason: string;
-    recorded_at: string;
-  };
-  steps: PlanStepView[];
-}
-export interface PlanObservation {
-  project_id: string;
-  session_id: string;
-  observed_at: string;
-  session_closed_at: string | null;
-  plan: CompactPlan | null;
-}
+export type {
+  CompactPlan,
+  PlanBody,
+  PlanRef,
+  PlanStep,
+  GoalOutcome as PlanOutcome,
+  PlanAuthority as PlanAuthor,
+  CompactProgress as PlanProgressView,
+  CompactStep as PlanStepView,
+};
+export type StepStatus = CompactProgress['status'];
+export type PlanStatus = CompactPlan['head']['status'];
+/** A session's compact plan, or null when it has none. */
+export type PlanObservation = WorkspacePlan;
 const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 function object(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -191,7 +129,7 @@ export { body as validPlanBody };
 export function planObservation(value: PlanObservation, scope: PlanScope): PlanObservation {
   return inScope(value, { project_id: scope.projectId, session_id: scope.sessionId });
 }
-export function currentStepStatus(step: PlanStepView): StepStatus {
+export function currentStepStatus(step: CompactStep): StepStatus {
   return step.matches_current_step && step.latest ? step.latest.status : 'pending';
 }
 export function planCounts(plan: CompactPlan): Record<StepStatus, number> {
@@ -199,7 +137,7 @@ export function planCounts(plan: CompactPlan): Record<StepStatus, number> {
   for (const step of plan.steps) counts[currentStepStatus(step)]++;
   return counts;
 }
-export function authorLabel(value: PlanAuthor): string {
+export function authorLabel(value: PlanAuthority): string {
   return value.role === 'user'
     ? 'USER'
     : (value.alias ?? (value.role === 'main' ? 'MAIN' : 'Delegated agent'));

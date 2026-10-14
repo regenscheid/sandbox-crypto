@@ -98,11 +98,6 @@ class DiffPeer(Peer):
             value["project_id"] = "p2"
         elif self.mode == "environment":
             value["environment_id"] = "another"
-        if self.mode == "duplicate":
-            raw = json.dumps(value).replace(
-                '"status": "complete"', '"status": "held", "status": "complete"'
-            )
-            return web.Response(text=raw, content_type="application/json")
         return web.json_response(value)
 
 
@@ -186,7 +181,6 @@ async def test_pair_query_is_explicit_canonical_and_bounded_before_any_peer_call
         "held-total",
         "bool",
         "float",
-        "duplicate",
         "redirect",
         "large",
     ],

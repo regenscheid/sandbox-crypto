@@ -117,10 +117,6 @@ class PackagePeer(Peer):
         elif self.mode == "environment":
             value["environment_id"] = "foreign"
         raw = json.dumps(value)
-        if self.mode == "duplicate":
-            raw = raw.replace('"revision": 1', '"revision": 2, "revision": 1', 1)
-        elif self.mode == "nested-duplicate":
-            raw = raw.replace('"agpl": true', '"agpl": false, "agpl": true', 1)
         return web.Response(text=raw, content_type="application/json")
 
 
@@ -207,8 +203,6 @@ async def test_query_requires_exact_pin_and_bounded_canonical_page_before_peer(
         "float",
         "license",
         "pip-license",
-        "duplicate",
-        "nested-duplicate",
         "large",
         "redirect",
     ],

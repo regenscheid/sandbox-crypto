@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 /** Scoped USER text drafts and exact uncertain requests; no plan execution authority. */
+import type { BodyChange, PlanReceipt } from './api-types';
 import { ApiError, post } from './http';
 import {
   planObservation,
@@ -119,21 +120,9 @@ export function editProblem(body: PlanBody, reason: string): string | null {
   return null;
 }
 
-export interface PlanChange {
-  operation_id: string;
-  base: PlanRef;
-  body: PlanBody;
-  reason: string;
-}
-export interface PlanReceipt {
-  scope: { project_id: string; session_id: string };
-  operation_id: string;
-  action: 'revise';
-  ref: PlanRef;
-  event_sequence: number;
-  status_revision: number;
-  progress_cursor: number;
-}
+/** A body edit against an exact base version. */
+export type PlanChange = BodyChange;
+export type { PlanReceipt };
 function receipt(value: unknown, scope: PlanScope, request: PlanChange): PlanReceipt {
   if (
     !object(value) ||

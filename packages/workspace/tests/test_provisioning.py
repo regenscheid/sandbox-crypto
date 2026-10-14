@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -84,14 +83,6 @@ class Peer:
             raise web.HTTPTemporaryRedirect("/stolen")
         if self.mode == "large":
             return web.Response(body=b" " * (64 * 1024 + 1), content_type="application/json")
-        if self.mode == "chunks":
-            response = web.StreamResponse(headers={"Content-Type": "application/json"})
-            await response.prepare(request)
-            await response.write(b" ")
-            await asyncio.sleep(0.02)
-            await response.write(b" ")
-            await response.write_eof()
-            return response
         if "/operations/" in request.path and request.query.get("seq", "3") != "3":
             return web.json_response({"error": {"kind": "conflict"}}, status=409)
         environment = request.match_info["tail"].split("/")[1]
@@ -214,20 +205,6 @@ class Peer:
             value["offset"] = 1
         elif self.mode == "limit":
             value["limit"] = 7
-        if self.mode.startswith("duplicate"):
-            raw = json.dumps(value, separators=(",", ":"))
-            if self.mode == "duplicate-scope":
-                raw = raw.replace('"project_id":"p1"', '"project_id":"p2","project_id":"p1"', 1)
-            else:
-                prior = '"action":"escalate"'
-                assert prior in raw
-                first = (
-                    '"\\u0061ction":"deny"'
-                    if self.mode == "duplicate-escaped"
-                    else '"action":"deny"'
-                )
-                raw = raw.replace(prior, first + "," + prior, 1)
-            return web.Response(text=raw, content_type="application/json")
         return web.json_response(value)
 
 
@@ -443,20 +420,14 @@ async def test_actual_http_refuses_invalid_or_unbounded_records(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["deadline", "chunks"])
-async def test_actual_transport_whole_deadline_and_chunk_limit(
+async def test_actual_transport_whole_deadline(
     aiohttp_client: ClientFactory,
     aiohttp_server: ServerFactory,
     state_dir: Path,
     static_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mode: str,
 ) -> None:
     peer = Peer()
-    peer.blocked = mode == "deadline"
-    peer.mode = mode
-    if mode == "chunks":
-        monkeypatch.setattr(provisioning_client, "MAX_CHUNKS", 1)
+    peer.blocked = True
     # A blocked peer never answers, so the worker call's deadline is the only way out.
     client, _, environment = await create(
         aiohttp_client,
@@ -464,7 +435,7 @@ async def test_actual_transport_whole_deadline_and_chunk_limit(
         state_dir,
         static_dir,
         peer,
-        timeouts=Timeouts(worker_call=0.02) if mode == "deadline" else TIMEOUTS,
+        timeouts=Timeouts(worker_call=0.02),
     )
     try:
         assert (await client.get(url(environment))).status == 503
@@ -485,27 +456,6 @@ async def test_observer_config_preflight_refuses_before_creating_a_session(damag
     with pytest.raises(WorkerAPIError, match="configuration is unavailable"):
         worker.observation_transport()
     assert worker._session is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["duplicate-scope", "duplicate-action", "duplicate-escaped"])
-async def test_raw_duplicate_scope_and_policy_action_refuse_before_normalization(
-    aiohttp_client: ClientFactory,
-    aiohttp_server: ServerFactory,
-    state_dir: Path,
-    static_dir: Path,
-    mode: str,
-) -> None:
-    peer = Peer()
-    peer.mode = mode
-    client, _, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
-    )
-    response = await client.get(url(environment) + "/operations/prv-1/files?seq=3")
-    assert response.status == 503
-    assert response.headers["Cache-Control"] == "no-store"
-    assert "files" not in await response.json()
-    assert len(peer.calls) == 1
 
 
 @pytest.mark.asyncio

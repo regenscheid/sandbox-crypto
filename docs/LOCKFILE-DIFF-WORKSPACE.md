@@ -45,8 +45,8 @@ totals, difference sides and continuation.
 Comparison transport permits nine seconds for the worker's eight-second budget;
 the workspace response budget is ten seconds. Ordinary small observations retain
 their five-second transport and six-second response budgets. Every comparison
-response is capped at 64 KiB and 256 chunks before UTF-8/JSON parsing; redirects,
-compression, duplicate decoded keys and nonfinite JSON numbers refuse. No two raw
+response is capped at 64 KiB and validated against its contract model; redirects
+and compression refuse. No two raw
 eight-MiB lockfiles pass through the workspace.
 
 ## Errors and boundaries

@@ -34,7 +34,7 @@ from .route_support import (
 )
 
 JOBS = "/api/v0/projects/{project}/sessions/{session}/jobs"
-ROUTES = ["list", "status", "cancel"]
+ROUTES = ["list", "cancel"]
 
 
 def jobs_path(project: str = "p1", session: str = "a") -> str:
@@ -42,12 +42,10 @@ def jobs_path(project: str = "p1", session: str = "a") -> str:
 
 
 async def call(client: Any, route: str, path: str | None = None, job_id: str = "exe-1") -> Any:
-    """One of the three job routes, as the page sends it."""
+    """One of the two job routes, as the page sends it."""
     base = path or jobs_path()
     if route == "list":
         return await client.get(base)
-    if route == "status":
-        return await client.get(f"{base}/{job_id}")
     return await client.post(f"{base}/{job_id}/cancel", headers=origin(client))
 
 
@@ -171,16 +169,6 @@ async def test_listing_shows_only_this_sessions_jobs(
     assert [found["job_id"] for found in other["jobs"]] == ["exe-2"]
 
 
-async def test_one_job_has_the_shape_the_page_reads(
-    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
-) -> None:
-    client, _ = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
-    response = await call(client, "status")
-    assert response.status == 200
-    assert response.headers["Cache-Control"] == "no-store"
-    assert_job(await response.json())
-
-
 async def test_cancel_reaches_the_worker_and_answers_the_job(
     aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
 ) -> None:
@@ -218,7 +206,7 @@ async def test_another_sessions_job_is_not_found(
     assert worker.cancelled == []
 
 
-@pytest.mark.parametrize("route", ["status", "cancel"])
+@pytest.mark.parametrize("route", ["cancel"])
 async def test_a_job_the_worker_does_not_know_is_not_found(
     aiohttp_client: ClientFactory,
     aiohttp_server: ServerFactory,
@@ -251,7 +239,7 @@ async def test_unknown_session_is_not_found_without_asking_the_worker(
     assert worker.calls == []
 
 
-@pytest.mark.parametrize("route", ["status", "cancel"])
+@pytest.mark.parametrize("route", ["cancel"])
 @pytest.mark.parametrize("job_id", ["-bad", "x" * 129], ids=["invalid", "overlong"])
 async def test_invalid_job_id_is_refused_without_asking_the_worker(
     aiohttp_client: ClientFactory,
@@ -422,8 +410,6 @@ async def test_job_routes_refuse_a_foreign_host_name(
     headers = {"Host": "rebound.example", "Origin": "http://rebound.example"}
     if route == "list":
         response = await client.get(jobs_path(), headers=headers)
-    elif route == "status":
-        response = await client.get(jobs_path() + "/exe-1", headers=headers)
     else:
         response = await client.post(jobs_path() + "/exe-1/cancel", headers=headers)
     assert response.status == 403
