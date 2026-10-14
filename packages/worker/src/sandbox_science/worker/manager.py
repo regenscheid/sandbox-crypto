@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import hashlib
 import itertools
 import logging
 import math
@@ -27,7 +26,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
@@ -95,7 +94,7 @@ from .channel import ExecutorChannel, Message
 from .connections import Activity, Connection, ConnectionHooks, EnvironmentConnections
 from .errors import ExecutorRefusalError, WorkerError
 from .identity import execution_digest, same_execution
-from .kernel_revisions import KernelBirth
+from .kernels import KernelRegistry
 from .output_observations import normalize as normalize_observation
 from .package_gate import PackageGate
 from .package_gate import refusal as recovery_refusal
@@ -103,7 +102,7 @@ from .publication import Publication
 from .replies import Range, epoch, integer
 from .revisions import Prepared, Revisions, package_commands
 from .shared_sync import SharedSync
-from .store import KernelRecord, Store
+from .store import Store
 from .timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
 from .usability import Usability
 
@@ -204,19 +203,6 @@ class _Live:
     """The attempts whose lockfiles its ``revision`` events brought."""
 
 
-@dataclass
-class _KernelObserver:
-    scope: tuple[str, str, str]
-    valid: bool = True
-    """A matching session close invalidates only this active, bounded observation."""
-
-
-MAX_KERNEL_OBSERVATIONS = 8
-"""No queued observers, and at most one in flight for each environment."""
-
-
-_Observation = TypeVar("_Observation")
-
 Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
 
 
@@ -300,6 +286,14 @@ class ExecutionManager:
             pool_id=pool_id,
             state_dir=state_dir,
         )
+        self._kernels = KernelRegistry(
+            store,
+            self._connections,
+            self._usability,
+            clock=clock,
+            observation_timeout=lambda: self.timeouts.kernel_observation,
+            daemon_identity=lambda: self.daemon_identity,
+        )
         self._publication = Publication(
             store,
             blobs,
@@ -316,7 +310,6 @@ class ExecutionManager:
         self.confirmed_daemon_loss: Callable[[str], Awaitable[bool]] | None = None
         self.daemon_identity: Callable[[str], tuple[str, str] | None] | None = None
         self.recycle_daemon: Callable[[str, str, str], Awaitable[None]] | None = None
-        self._kernel_observations: dict[str, _KernelObserver] = {}
         self.notices: Notices | None = None
         """Admission notices for an environment since a time; the environments set it."""
         self._noticed: dict[tuple[str, str], datetime] = {}
@@ -1430,7 +1423,7 @@ class ExecutionManager:
                 )
 
                 def start() -> Execution:
-                    kernel, kernel_state_lost = self._kernel(
+                    kernel, kernel_state_lost = self._kernels.kernel(
                         environment_id,
                         live.execution.context.session_id,
                         message.get("kernel"),
@@ -1668,7 +1661,7 @@ class ExecutionManager:
     def _result(self, environment_id: str, live: _Live, raw: dict[str, Any]) -> Result:
         """The executor's result, checked and bounded by the attempt's output limit."""
         after = self._revision_after(environment_id, live, raw)
-        kernel, lost = self._kernel(
+        kernel, lost = self._kernels.kernel(
             environment_id,
             live.execution.context.session_id,
             raw.get("kernel"),
@@ -1695,7 +1688,7 @@ class ExecutionManager:
             kernel = kernel.model_copy(
                 update={"start_revision": start_revision, "revision_status": status}
             )
-        running = self._session_kernel_info(
+        running = self._kernels.session_kernels(
             live.execution.context, raw.get("running_kernels"), expected_channel=live.channel
         )
         written = raw.get("written_files")
@@ -1861,273 +1854,13 @@ class ExecutionManager:
             return "", None
         return execution.attempt_id, execution.origin
 
-    def _kernel(
-        self,
-        environment_id: str,
-        session_id: str,
-        raw: object,
-        state_lost: bool,
-        *,
-        project_id: str | None = None,
-        birth_execution: str | None = None,
-        fingerprint: object = None,
-        restarted: bool = False,
-        expected_channel: ExecutorChannel | None = None,
-        remember: bool = True,
-    ) -> tuple[KernelInfo | None, bool]:
-        """Map the executor's kernel generation onto one that never goes back."""
-        if not isinstance(raw, dict):
-            return None, state_lost
-        raw = cast(dict[str, Any], raw)
-        language = raw.get("language", "python")
-        generation = integer(raw.get("generation", 1), 1, 2**31 - 1)
-        if language not in LANGUAGES or generation is None:
-            return None, state_lost
-        environment = self._connections.get(environment_id)
-        channel = environment.channel if environment is not None else None
-        if expected_channel is not None and channel is not expected_channel:
-            return None, state_lost  # old bridge cannot rebind a replacement's kernel
-        incarnation = channel.incarnation if channel is not None else "unknown"
-        try:
-            record = self.store.kernel(environment_id, session_id, language)
-        except ValueError:
-            return None, state_lost  # damaged derived metadata cannot fail a shell result
-        if record is None:
-            base = 0
-        elif record.incarnation != incarnation:
-            # A new executor: its kernels start over, and earlier state is gone.
-            base, state_lost = record.last, state_lost or record.last > 0
-        else:
-            base = record.base
-        if base + generation > 2**62:
-            return None, state_lost
-        if remember:
-            self.store.save_kernel(
-                environment_id,
-                session_id,
-                language,
-                KernelRecord(
-                    incarnation, base, max(base + generation, record.last if record else 0)
-                ),
-            )
-        info = {
-            "kernel_id": raw.get("kernel_id"),
-            "language": language,
-            "generation": base + generation,
-        }
-        try:
-            kernel = KernelInfo.model_validate(info)
-        except ValidationError:
-            # Not an identifier the worker can report: name the kernel after its session.
-            digest = hashlib.sha256(f"{session_id}\0{language}".encode()).hexdigest()[:24]
-            kernel = KernelInfo.model_validate({**info, "kernel_id": f"krn-{digest}"})
-        current = self.store.kernel_starts.current(environment_id)
-        revision = current[0] if current is not None else None
-        kernel = kernel.model_copy(update={"current_revision": revision})
-        start_environment = raw.get("start_environment")
-        can_pin = (
-            current is not None
-            and current[1] == start_environment
-            and self.store.kernel_starts.epoch(
-                environment_id, incarnation, raw.get("start_package_epoch"), start_environment
-            )
-            == revision
-            and (
-                (
-                    birth_execution is not None
-                    and raw.get("start_execution") == birth_execution
-                    and fingerprint == start_environment
-                )
-                or restarted
-            )
-        )
-        if project_id is not None and channel is not None and not channel.closed:
-            binding = None
-            if channel.daemon_token is not None:
-                endpoint = self.store.lineage_endpoint(environment_id)
-                if endpoint is not None and endpoint[0] == incarnation:
-                    binding = endpoint[1:]
-                if binding is None and self.daemon_identity is not None:
-                    can_pin = False  # a managed VM's original binding must be known
-            try:
-                birth = KernelBirth.model_validate(
-                    {
-                        "project_id": project_id,
-                        "environment_id": environment_id,
-                        "session_id": session_id,
-                        "language": language,
-                        "incarnation": incarnation,
-                        "kernel_id": kernel.kernel_id,
-                        "sandbox": binding[0] if binding else None,
-                        "sandbox_id": binding[1] if binding else None,
-                        "generation": generation,
-                        "birth_id": raw.get("birth_id"),
-                        "start_revision": revision if can_pin else None,
-                    }
-                )
-            except ValidationError:
-                pass  # legacy or malformed sandbox birth: do not infer it from today's packages
-            else:
-                kernel = self.store.kernel_starts.observe(
-                    birth, kernel, revision, remember=remember
-                )
-        return kernel, state_lost
-
-    def _session_kernel_info(
-        self,
-        context: ExecutionContext,
-        raw: object,
-        *,
-        expected_channel: ExecutorChannel | None = None,
-    ) -> tuple[KernelInfo, ...]:
-        if not isinstance(raw, list):
-            return ()
-        raw = cast(list[object], raw)
-        if len(raw) > len(LANGUAGES):
-            return ()
-        found: dict[str, KernelInfo] = {}
-        for item in raw:
-            kernel, _ = self._kernel(
-                context.environment_id,
-                context.session_id,
-                item,
-                False,
-                project_id=context.project_id,
-                expected_channel=expected_channel,
-                remember=False,
-            )
-            if kernel is not None:
-                found[kernel.language] = kernel
-        return tuple(found.values())
-
     async def kernel_status(self, request: KernelStatusRequest) -> KernelListing:
         """Observe only the authenticated context's kernels; admission gates stay unchanged."""
-        context = request.context
-        async with self._connections.using(context.environment_id) as channel:
-            if (
-                type(channel.hello.get("kernel_revision_protocol")) is not int
-                or channel.hello.get("kernel_revision_protocol") != 1
-            ):
-                raise WorkerError(
-                    ErrorKind.UNSUPPORTED, "legacy executor lacks scoped kernel status"
-                )
-            reply = await channel.request("kernels", session=context.session_id)
-            return self._kernel_listing(context, channel, reply.get("kernels"))
-
-    def _kernel_listing(
-        self, context: ExecutionContext, channel: ExecutorChannel, raw: object
-    ) -> KernelListing:
-        if not isinstance(raw, list) or len(cast(list[object], raw)) > len(LANGUAGES):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "executor sent invalid kernel status")
-        for item in cast(list[object], raw):
-            if not isinstance(item, dict):
-                raise WorkerError(ErrorKind.UNAVAILABLE, "executor sent invalid kernel identity")
-            item = cast(dict[str, object], item)
-            generation = item.get("generation")
-            if type(generation) is not int or not 1 <= generation < 2**31:
-                raise WorkerError(ErrorKind.UNAVAILABLE, "executor sent invalid kernel generation")
-            try:
-                KernelInfo.model_validate(
-                    {key: item.get(key) for key in ("kernel_id", "language", "generation")}
-                )
-            except ValidationError as exc:
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE, "executor sent invalid kernel identity"
-                ) from exc
-        kernels = self._session_kernel_info(
-            context, cast(list[object], raw), expected_channel=channel
-        )
-        if len(kernels) != len(cast(list[object], raw)):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "executor sent invalid kernel identities")
-        current = self.store.kernel_starts.current(context.environment_id)
-        return KernelListing(
-            environment_id=context.environment_id,
-            session_id=context.session_id,
-            current_revision=current[0] if current is not None else None,
-            kernels=kernels,
-        )
-
-    def _observed_environment(
-        self, context: ExecutionContext
-    ) -> tuple[Connection, ExecutorChannel]:
-        environment_id = context.environment_id
-        environment = self._connections.get(environment_id)
-        channel = environment.channel if environment is not None else None
-        if (
-            not self._usability.usable(context)
-            or environment is None
-            or environment.lock.locked()
-            or channel is None
-            or channel.closed
-            or channel.detaching
-        ):
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE, "kernel observation needs an existing healthy connection"
-            )
-        return environment, channel
+        return await self._kernels.status(request)
 
     async def observe_kernels(self, request: KernelStatusRequest) -> KernelObservation:
         """Read an existing channel without keeping it alive or waiting on its lifecycle."""
-        return await self._passive_kernels(request, self._kernel_observation)
-
-    def _kernel_observation(
-        self, context: ExecutionContext, channel: ExecutorChannel, raw: object
-    ) -> KernelObservation:
-        listing = self._kernel_listing(context, channel, raw)
-        return KernelObservation(**listing.model_dump(), observed_at=self.clock.now())
-
-    async def _passive_kernels(
-        self,
-        request: KernelStatusRequest,
-        build: Callable[[ExecutionContext, ExecutorChannel, object], _Observation],
-        *,
-        operation: str = "kernels",
-        fields: dict[str, object] | None = None,
-        protocol: str = "kernel_revision_protocol",
-    ) -> _Observation:
-        """One bounded admission lane and close token for every passive kernel consumer."""
-        context = request.context
-        environment_id = context.environment_id
-        environment, channel = self._observed_environment(context)
-        if (
-            environment_id in self._kernel_observations
-            or len(self._kernel_observations) >= MAX_KERNEL_OBSERVATIONS
-        ):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "kernel observation capacity is busy")
-        if type(channel.hello.get(protocol)) is not int or channel.hello.get(protocol) != 1:
-            raise WorkerError(ErrorKind.UNSUPPORTED, "legacy executor lacks scoped kernel status")
-        incarnation = channel.incarnation
-        observer = _KernelObserver((context.project_id, environment_id, context.session_id))
-        self._kernel_observations[environment_id] = observer
-        try:
-            try:
-                async with asyncio.timeout(self.timeouts.kernel_observation):
-                    reply = await channel.request(
-                        operation,
-                        session=context.session_id,
-                        **(fields or {}),
-                        reply_timeout=self.timeouts.kernel_observation,
-                    )
-            except TimeoutError as exc:
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE, "kernel observation deadline expired"
-                ) from exc
-            current_environment, current_channel = self._observed_environment(context)
-            if (
-                not observer.valid
-                or current_environment is not environment
-                or current_channel is not channel
-                or channel.incarnation != incarnation
-            ):
-                raise WorkerError(ErrorKind.UNAVAILABLE, "kernel observation connection changed")
-            try:
-                return build(context, channel, reply.get("kernels"))
-            except ValidationError as exc:
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE, "executor sent incoherent kernel observation"
-                ) from exc
-        finally:
-            self._kernel_observations.pop(environment_id)
+        return await self._kernels.observe(request)
 
     # Queries and control.
 
@@ -2374,7 +2107,7 @@ class ExecutionManager:
             reply = await channel.request(
                 "restart", session=context.session_id, language=request.language, reply_timeout=180
             )
-            kernel, _ = self._kernel(
+            kernel, _ = self._kernels.kernel(
                 context.environment_id,
                 context.session_id,
                 reply.get("kernel"),
@@ -2390,10 +2123,7 @@ class ExecutionManager:
     async def close_session(self, request: SessionCloseRequest) -> SessionClosed:
         """Cancel and reap jobs, then stop kernels. Starts racing the close are refused."""
         context = request.context
-        key = (context.project_id, context.environment_id, context.session_id)
-        observer = self._kernel_observations.get(context.environment_id)
-        if observer is not None and observer.scope == key:
-            observer.valid = False  # close may finish before its old reply arrives
+        self._kernels.invalidate(context)
         with self._usability.closing_session(context):
             jobs = [
                 job
@@ -2405,26 +2135,8 @@ class ExecutionManager:
             return await self._close_session(request)
 
     async def _close_session(self, request: SessionCloseRequest) -> SessionClosed:
-        context = request.context
-        environment = self._connections.get(context.environment_id)
-        channel = environment.channel if environment is not None else None
-        if environment is None or channel is None or channel.closed:
-            return SessionClosed()
-        environment.requests += 1
-        try:
-            reply = await channel.request(
-                "close_session", session=context.session_id, reply_timeout=180
-            )
-        finally:
-            environment.requests -= 1
-            environment.last_used = self.clock.monotonic()
-        raw: object = reply.get("kernels")
-        stopped: list[KernelInfo] = []
-        for item in cast(list[object], raw) if isinstance(raw, list) else []:
-            kernel, _ = self._kernel(context.environment_id, context.session_id, item, False)
-            if kernel is not None:
-                stopped.append(kernel)
-        return SessionClosed(kernels=tuple(stopped))
+        """Stop the session's kernels; a seam that tests replace to hold a close open."""
+        return await self._kernels.close_session(request)
 
     async def capabilities(self, environment_id: str) -> Capabilities:
         environment = await self._environment(environment_id)
