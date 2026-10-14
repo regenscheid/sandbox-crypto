@@ -27,6 +27,7 @@ from sandbox_science.contracts import (
     KernelInfo,
     KernelListing,
     KernelObservation,
+    KernelRestartRequest,
     KernelStatusRequest,
     SessionClosed,
     SessionCloseRequest,
@@ -37,6 +38,7 @@ from .channel import ExecutorChannel
 from .connections import Connection, EnvironmentConnections
 from .errors import WorkerError
 from .kernel_revisions import KernelBirth
+from .package_admission import PackageAdmission
 from .replies import integer
 from .store import KernelRecord, Store
 from .usability import Usability
@@ -63,6 +65,7 @@ class KernelRegistry:
         store: Store,
         connections: EnvironmentConnections,
         usability: Usability,
+        admission: PackageAdmission,
         *,
         clock: Clock,
         observation_timeout: Callable[[], float],
@@ -71,6 +74,8 @@ class KernelRegistry:
         self.store = store
         self.connections = connections
         self.usability = usability
+        self.admission = admission
+        """The package gate, which a kernel restart must pass like any package change."""
         self.clock = clock
         self.observation_timeout = observation_timeout
         """The whole budget of a passive kernel observation, the transport write lock
@@ -227,6 +232,32 @@ class KernelRegistry:
             if kernel is not None:
                 found[kernel.language] = kernel
         return tuple(found.values())
+
+    async def restart(self, request: KernelRestartRequest) -> KernelInfo:
+        """Restart the session's kernel of a language, fenced by the package gate."""
+        context = request.context
+        self.admission.admission(context.environment_id)
+        async with self.connections.using(context.environment_id) as channel:
+            if not await self.admission.sync(context.environment_id, channel):
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "legacy executor cannot fence kernel restart"
+                )
+            self.admission.admission(context.environment_id)
+            reply = await channel.request(
+                "restart", session=context.session_id, language=request.language, reply_timeout=180
+            )
+            kernel, _ = self.kernel(
+                context.environment_id,
+                context.session_id,
+                reply.get("kernel"),
+                True,
+                project_id=context.project_id,
+                restarted=True,
+                expected_channel=channel,
+            )
+            if kernel is None:
+                raise WorkerError(ErrorKind.INTERNAL, "the executor did not describe the kernel")
+            return kernel
 
     async def status(self, request: KernelStatusRequest) -> KernelListing:
         """Observe only the authenticated context's kernels; admission gates stay unchanged."""

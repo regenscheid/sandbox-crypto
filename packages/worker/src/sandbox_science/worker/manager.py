@@ -60,7 +60,6 @@ from sandbox_science.contracts import (
     Location,
     OutputEvent,
     PdfRequest,
-    ProvisionState,
     PublishRequest,
     ReadFileRequest,
     Result,
@@ -96,8 +95,9 @@ from .errors import ExecutorRefusalError, WorkerError
 from .identity import execution_digest, same_execution
 from .kernels import KernelRegistry
 from .output_observations import normalize as normalize_observation
+from .package_admission import LEGACY as PACKAGE_GATE_LEGACY
+from .package_admission import PackageAdmission, guard_reuse
 from .package_gate import PackageGate
-from .package_gate import refusal as recovery_refusal
 from .publication import Publication
 from .replies import Range, epoch, integer
 from .revisions import Prepared, Revisions, package_commands
@@ -274,7 +274,7 @@ class ExecutionManager:
                     environment_id, previous
                 ),
                 recycle=lambda environment_id: self._spawn(self._recycle_daemon(environment_id)),
-                sync_package_gate=lambda environment_id, channel: self._sync_package_gate(
+                sync_package_gate=lambda environment_id, channel: self._admission.sync(
                     environment_id, channel
                 ),
                 hello=lambda environment_id, channel: self._hello(environment_id, channel),
@@ -286,10 +286,19 @@ class ExecutionManager:
             pool_id=pool_id,
             state_dir=state_dir,
         )
+        self._admission = PackageAdmission(
+            store,
+            backend,
+            self._usability,
+            connect=lambda environment_id: self._environment(environment_id),
+            spawn=lambda coroutine: self._spawn(coroutine),
+            daemon_identity=lambda: self.daemon_identity,
+        )
         self._kernels = KernelRegistry(
             store,
             self._connections,
             self._usability,
+            self._admission,
             clock=clock,
             observation_timeout=lambda: self.timeouts.kernel_observation,
             daemon_identity=lambda: self.daemon_identity,
@@ -313,116 +322,18 @@ class ExecutionManager:
         self.notices: Notices | None = None
         """Admission notices for an environment since a time; the environments set it."""
         self._noticed: dict[tuple[str, str], datetime] = {}
-        self._gate_locks: dict[str, asyncio.Lock] = {}
-        self._gate_acked: dict[ExecutorChannel, PackageGate] = {}
-        self._gate_retries: dict[str, asyncio.Task[Any]] = {}
 
     def package_admission(self, environment_id: str) -> PackageGate:
-        gate = self.store.package_gate(environment_id)
-        if gate.mode == "needs_recovery":
-            raise recovery_refusal(gate)
-        return gate
-
-    def _package_origin(self, request: ExecutionRequest, origin: str | None) -> None:
-        if origin is None:
-            self.package_admission(request.context.environment_id)
-            return
-        saved = self.store.provision_authority(origin)
-        if (
-            not isinstance(request, ShellRequest)
-            or saved is None
-            or saved[0] != request.context
-            or saved[1] is ProvisionState.FINISHED
-            or not same_execution(self.store.provision_step(origin, request.operation_id), request)
-            or not request.operation_id.startswith(origin + ".")
-            or re.fullmatch(r"[a-z][a-z0-9-]{0,95}", request.operation_id[len(origin) + 1 :])
-            is None
-        ):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "invalid internal provisioning operation")
-        gate = self.package_admission(request.context.environment_id)
-        if gate.mode == "hold" and gate.operation != origin:
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE, "another provisioning operation holds admission"
-            )
-
-    async def _sync_package_gate(self, environment_id: str, channel: ExecutorChannel) -> bool:
-        identity = channel.hello.get("package_gate")
-        if not isinstance(identity, str) or re.fullmatch(r"gate-[0-9a-f]{24}", identity) is None:
-            return False
-        lock = self._gate_locks.setdefault(environment_id, asyncio.Lock())
-        async with lock:
-            binding = self.daemon_identity(environment_id) if self.daemon_identity else None
-            try:
-                self.store.bind_package_gate(
-                    environment_id,
-                    repr(
-                        binding
-                        or (
-                            self.backend.name,
-                            str(getattr(self.backend, "root", "")),
-                            self.backend.sandbox_id(environment_id),
-                        )
-                    ),
-                )
-            except WorkerError:
-                return False  # no gate mutation on an unproven or replacement sandbox
-            while True:
-                gate = self.store.package_gate(environment_id)
-                if self._gate_acked.get(channel) == gate:
-                    return True
-                reply = await channel.request(
-                    "package_gate",
-                    incarnation=identity,
-                    generation=gate.generation,
-                    mode=gate.mode,
-                    operation=gate.operation,
-                    revision=gate.revision,
-                )
-                if channel.closed or (
-                    self.daemon_identity is not None
-                    and self.daemon_identity(environment_id) != binding
-                ):
-                    raise WorkerError(
-                        ErrorKind.UNAVAILABLE, "package admission binding changed during ACK"
-                    )
-                if reply.get("incarnation") != identity or any(
-                    reply.get(key) != value or type(reply.get(key)) is not type(value)
-                    for key, value in gate.fields().items()
-                ):
-                    raise WorkerError(
-                        ErrorKind.UNAVAILABLE, "invalid package admission acknowledgement"
-                    )
-                self._gate_acked[channel] = gate
-                if gate == self.store.package_gate(environment_id):
-                    return True
+        """The environment's package gate; refused while it needs recovery."""
+        return self._admission.admission(environment_id)
 
     async def sync_package_gate(self, environment_id: str) -> None:
-        environment = await self._environment(environment_id)
-        channel = environment.channel
-        if channel is None or not await self._sync_package_gate(environment_id, channel):
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE,
-                "legacy executor lacks package admission fencing; protected work refused",
-            )
+        """Bring the environment's executor in step with its package gate."""
+        await self._admission.sync_environment(environment_id)
 
     def refresh_package_gate(self, environment_id: str) -> None:
         """Bounded retry of release/classification ACK; uncertainty leaves the guest closed."""
-        if self._usability.closing or environment_id in self._gate_retries:
-            return
-
-        async def retry() -> None:
-            try:
-                for delay in (0, 0.1, 0.5, 1, 2):
-                    await asyncio.sleep(delay)
-                    try:
-                        await self.sync_package_gate(environment_id)
-                        return
-                    except WorkerError:
-                        pass
-            finally:
-                self._gate_retries.pop(environment_id, None)
-
-        self._gate_retries[environment_id] = self._spawn(retry())
+        self._admission.refresh(environment_id)
 
     async def start(self) -> None:
         """Recover known daemon executions without ever resubmitting a command."""
@@ -979,39 +890,17 @@ class ExecutionManager:
         """Trusted lifecycle callback after proof of this exact original VM's deletion."""
         self._publication.confirm_cleanup(environment_id, sandbox, sandbox_id)
 
-    def _package_deletion_binding(self, environment_id: str) -> str | None:
-        if self.daemon_identity is not None:
-            identity = self.daemon_identity(environment_id)
-            return repr(identity) if identity is not None else None
-        return repr(
-            (
-                self.backend.name,
-                str(getattr(self.backend, "root", "")),
-                self.backend.sandbox_id(environment_id),
-            )
-        )
-
     async def forget_package_gate(self, environment_id: str) -> None:
         """Only confirmed deletion, after provisioning drain, may remove this fence."""
-        self.store.forget_package_gate(
-            environment_id, binding=self._package_deletion_binding(environment_id)
-        )
+        self._admission.forget(environment_id)
 
     async def guard_package_deletion(self, environment_id: str) -> None:
         """Require original-binding proof before any explicit guest teardown."""
-        self.store.guard_package_deletion(
-            environment_id, self._package_deletion_binding(environment_id)
-        )
+        self._admission.guard_deletion(environment_id)
 
     async def guard_package_reuse(self, environment_id: str) -> None:
         """A new VM cannot replace the unknown original held package binding."""
-        if self.store.package_gate(
-            environment_id
-        ).mode != "ready" or self.store.package_gate_has_binding(environment_id):
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE,
-                "original package binding requires confirmed sandbox deletion",
-            )
+        guard_reuse(self.store, environment_id)
 
     def _want_lockfile(self, environment_id: str) -> bool:
         """Ask the executor for the current lockfile if the current revision has none, as
@@ -1061,7 +950,7 @@ class ExecutionManager:
 
     async def _on_closed(self, environment_id: str, channel: ExecutorChannel) -> None:
         self._connections.channels.discard(channel)
-        self._gate_acked.pop(channel, None)
+        self._admission.channel_closed(channel)
         if channel.daemon_token is not None and (self._usability.closing or not channel.detaching):
             poller = self._pollers.get(environment_id)
             if poller is not None and poller[0] is channel:
@@ -1101,7 +990,7 @@ class ExecutionManager:
                     f"operation {request.operation_id} was submitted with a different request",
                 )
             return self.get(execution_id), False
-        self._package_origin(request, origin)
+        self._admission.check_origin(request, origin)
         if self._usability.fenced(request.context.environment_id):
             raise WorkerError(
                 ErrorKind.UNAVAILABLE,
@@ -1286,14 +1175,11 @@ class ExecutionManager:
                     ),
                 )
                 return
-        self._package_origin(request, live.execution.origin)
-        if not await self._sync_package_gate(request.context.environment_id, channel):
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE,
-                "legacy executor lacks package admission fencing; protected work refused",
-            )
+        self._admission.check_origin(request, live.execution.origin)
+        if not await self._admission.sync(request.context.environment_id, channel):
+            raise WorkerError(ErrorKind.UNAVAILABLE, PACKAGE_GATE_LEGACY)
         gate = self.store.package_gate(request.context.environment_id)
-        self._package_origin(request, live.execution.origin)
+        self._admission.check_origin(request, live.execution.origin)
         if live.execution.origin is not None:
             fields.update(
                 package_operation=live.execution.origin, package_generation=gate.generation
@@ -2096,29 +1982,7 @@ class ExecutionManager:
         await channel.request("cancel", execution=live.execution.execution_id)
 
     async def restart_kernel(self, request: KernelRestartRequest) -> KernelInfo:
-        context = request.context
-        self.package_admission(context.environment_id)
-        async with self._connections.using(context.environment_id) as channel:
-            if not await self._sync_package_gate(context.environment_id, channel):
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE, "legacy executor cannot fence kernel restart"
-                )
-            self.package_admission(context.environment_id)
-            reply = await channel.request(
-                "restart", session=context.session_id, language=request.language, reply_timeout=180
-            )
-            kernel, _ = self._kernels.kernel(
-                context.environment_id,
-                context.session_id,
-                reply.get("kernel"),
-                True,
-                project_id=context.project_id,
-                restarted=True,
-                expected_channel=channel,
-            )
-            if kernel is None:
-                raise WorkerError(ErrorKind.INTERNAL, "the executor did not describe the kernel")
-            return kernel
+        return await self._kernels.restart(request)
 
     async def close_session(self, request: SessionCloseRequest) -> SessionClosed:
         """Cancel and reap jobs, then stop kernels. Starts racing the close are refused."""
