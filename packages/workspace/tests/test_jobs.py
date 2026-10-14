@@ -75,7 +75,7 @@ async def create(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, worker: Worker | None
 ) -> TestClient[Any, Any]:
     app = create_app(
-        ProjectStore(state_dir),
+        ProjectStore(state_dir, readonly=True),
         static_dir,
         login_token=TOKEN,
         job_worker=cast(WorkerClient, worker),
@@ -164,7 +164,9 @@ async def test_unreachable_worker_is_unavailable_without_its_address(
 ) -> None:
     # Port 9 (discard) on loopback refuses the connection.
     worker = WorkerClient("http://127.0.0.1:9", "test-secret-worker-token")
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, job_worker=worker)
+    app = create_app(
+        ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN, job_worker=worker
+    )
     client = await aiohttp_client(app)
     await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
     request = client.post if path.endswith("cancel") else client.get
@@ -202,7 +204,7 @@ async def test_cancellation_requires_login_and_same_origin(
 ) -> None:
     worker = Worker(context(state_dir))
     app = create_app(
-        ProjectStore(state_dir),
+        ProjectStore(state_dir, readonly=True),
         static_dir,
         login_token=TOKEN,
         job_worker=cast(WorkerClient, worker),

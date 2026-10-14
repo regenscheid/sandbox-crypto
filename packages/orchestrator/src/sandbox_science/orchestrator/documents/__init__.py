@@ -16,11 +16,13 @@ by area:
 - the agents' document tool: ``tool``.
 """
 
+from sandbox_science.orchestrator.control import FILE_NAME, store_path
+
 from .blocks import Block, Parsed, Span, parse
 from .errors import DocumentError
 from .identity import Mapped
 from .models import USER, Author, ChangeResult, DocumentInfo, PatchInfo, Revision, RevisionInfo
-from .store import FILE_NAME, DocumentStore, store_path
+from .store import DocumentStore
 from .tool import DocumentTool, with_notices
 
 __all__ = [

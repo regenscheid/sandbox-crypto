@@ -98,7 +98,7 @@ def payload(ref, *, operation="user-edit", description="USER refined ∀ claim")
 
 async def create(aiohttp_client, state_dir, static_dir, *, login=True, **kwargs):
     client = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, **kwargs)
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN, **kwargs)
     )
     if login:
         assert (
@@ -273,11 +273,12 @@ async def test_get_and_refused_absent_edit_do_not_initialize_plan_sql(
     aiohttp_client, state_dir, static_dir
 ):
     client = await create(aiohttp_client, state_dir, static_dir)
-    assert not store_path(state_dir).exists()
     assert (await client.get(PATH)).status == 200
     request = payload(SimpleNamespace(model_dump=lambda **_: {"plan_id": "plan", "version": 1}))
     assert (await post(client, request)).status == 404
-    assert not store_path(state_dir).exists()
+    database = sqlite3.connect(store_path(state_dir))
+    assert database.execute("SELECT count(*) FROM session_plan_records").fetchone() == (0,)
+    database.close()
 
 
 @pytest.mark.asyncio
@@ -426,4 +427,4 @@ async def test_actual_http_user_edit_requires_successful_main_current_read(
         assert journal.compact_current(authority()).version.author.role == "user"
         assert len(projects.runs("p1", "a")) == 2
     finally:
-        adapter.close()
+        adapter.projects.close()

@@ -71,7 +71,7 @@ def seed(inventory, *, project="p1", session="a"):
 async def create(aiohttp_client, state_dir, static_dir, *, login=True, **kwargs):
     client = await aiohttp_client(
         create_app(
-            ProjectStore(state_dir),
+            ProjectStore(state_dir, readonly=True),
             static_dir,
             login_token=TOKEN,
             **kwargs,
@@ -247,12 +247,9 @@ async def test_absent_history_returns_null_without_creating_or_migrating_sql(
     response = await client.get(PATH)
     assert response.status == 200
     assert (await response.json())["plan"] is None
-    if not existing:
-        assert not path.exists()
-    else:
-        with owner.control.read() as tx:
-            db = tx.sql
-            assert db.execute("SELECT count(*) FROM session_plan_records").fetchone() == (0,)
+    with owner.control.read() as tx:
+        db = tx.sql
+        assert db.execute("SELECT count(*) FROM session_plan_records").fetchone() == (0,)
     owner.close()
 
 

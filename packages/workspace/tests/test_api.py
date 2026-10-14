@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,6 +17,7 @@ import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.control import migrations, store_path
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.workspace.app import create_app
 
@@ -39,7 +41,7 @@ async def logged_in(client: TestClient[Any, Any]) -> TestClient[Any, Any]:
 async def client(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> TestClient[Any, Any]:
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+    app = create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     return await logged_in(await aiohttp_client(app))
 
 
@@ -169,7 +171,9 @@ async def test_errors_name_their_kind(
 async def test_a_run_too_large_to_show_is_refused(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, max_run_bytes=100)
+    app = create_app(
+        ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN, max_run_bytes=100
+    )
     client = await logged_in(await aiohttp_client(app))
     refused = await get(client, f"/api/v0/projects/p1/sessions/a/runs/{FIRST_RUN}", 422)
     assert refused["error"]["kind"] == "unsupported"
@@ -206,3 +210,21 @@ async def test_a_run_holding_values_json_cannot_carry_is_still_shown(
     assert found["final_text"] == "half an emoji \ud83d"
     assert found["tools"][0]["pdf"] == {"x0": "nan", "x1": "inf"}
     assert text.isascii()
+
+
+async def test_a_newer_control_store_is_503_with_the_reason_on_project_routes(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
+) -> None:
+    database = sqlite3.connect(store_path(state_dir))
+    database.execute(f"PRAGMA user_version = {migrations.VERSION + 1}")  # a newer harness
+    database.commit()
+    database.close()
+    client = await logged_in(
+        await aiohttp_client(
+            create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
+        )
+    )
+    for path in ("/api/v0/projects", "/api/v0/projects/p1", "/api/v0/projects/p1/documents"):
+        body = await get(client, path, 503)
+        assert body["error"]["kind"] == "unavailable"
+        assert "newer than this version's" in body["error"]["message"]

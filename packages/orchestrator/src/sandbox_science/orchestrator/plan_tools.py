@@ -183,7 +183,6 @@ class PlanTools:
             context.project_id, context.session_id
         )
         if self.snapshot.context != self.registry_context:
-            self.snapshot.close()
             raise DocumentError(POLICY_DENIED, "planning context differs from the recorded session")
         self.invalid = False
         self.cursor = 0
@@ -192,9 +191,6 @@ class PlanTools:
         self.held = False
         self.pending_read: Pin | None = None
         self.last_notice: tuple[Pin | None, bool, bool] | None = None
-
-    def close(self) -> None:
-        self.snapshot.close()
 
     def _owned(self, action: Callable[[], _T]) -> _T:
         if self.invalid:
@@ -206,21 +202,14 @@ class PlanTools:
                 current = self.projects.session_snapshot(
                     self.context.project_id, self.context.session_id
                 )
-                try:
-                    # A close and reopen gives the session a new record (opened_at
-                    # and kernel_notice_lifetime), so it still ends this run's effects.
-                    if (
-                        current.session != self.snapshot.session
-                        or current.context != self.registry_context
-                    ):
-                        self.invalid = True
-                        raise DocumentError(
-                            POLICY_DENIED,
-                            "planning session was closed or reopened; start a new run",
-                        )
-                    return action()
-                finally:
-                    current.close()
+                # A close and reopen gives the session a new record (opened_at and
+                # kernel_notice_lifetime), so it still ends this run's effects.
+                if current != self.snapshot or current.context != self.registry_context:
+                    self.invalid = True
+                    raise DocumentError(
+                        POLICY_DENIED, "planning session was closed or reopened; start a new run"
+                    )
+                return action()
         except ProjectError:
             self.invalid = True
             raise DocumentError(

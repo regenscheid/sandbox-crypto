@@ -335,7 +335,12 @@ async def test_existing_api_adds_only_static_pin_and_preserves_auth(
 
     service = MathRepairService(Model(), reviewer="rev")
     client: TestClient[Any, Any] = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=token, math_repair=service)
+        create_app(
+            ProjectStore(state_dir, readonly=True),
+            static_dir,
+            login_token=token,
+            math_repair=service,
+        )
     )
     origin = {"Origin": f"http://127.0.0.1:{client.port}"}
     body = {"tex": "x^", "display": False, "error": HOSTILE}

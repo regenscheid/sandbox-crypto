@@ -14,7 +14,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Identifier, new_id
 from sandbox_science.contracts.model import Contract
-from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
+from sandbox_science.orchestrator.projects import ProjectError, recorded
 
 from . import comment_bodies
 from .blocks import check_text
@@ -530,7 +530,7 @@ class Annotations:
         addressed = value.addressed_to if isinstance(value, (CreateComment, ReplyComment)) else None
         if addressed is not None:
             try:
-                sessions = ProjectStore(self.store.path.parent).get(project).sessions
+                sessions = recorded(self.store.path.parent, project).sessions
             except ProjectError:
                 raise DocumentError(NOT_FOUND, "no such addressed project session") from None
             if addressed not in sessions:

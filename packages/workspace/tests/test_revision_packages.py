@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.api import Timeouts
 
 from .test_provisioning import ClientFactory, Peer, ServerFactory, create, url
@@ -134,7 +135,7 @@ async def test_exact_recorded_metadata_is_forwarded_without_inventory_or_license
         aiohttp_client, aiohttp_server, state_dir, static_dir, peer
     )
     peer.payload = payload(environment, mode)
-    before = (state_dir / "projects/p1.json").read_bytes()
+    before = ProjectStore(state_dir).get("p1")
     response = await client.get(url(environment) + "/revisions/1/packages", params=query())
     assert response.status == 200
     assert response.headers["Cache-Control"] == "no-store"
@@ -147,7 +148,7 @@ async def test_exact_recorded_metadata_is_forwarded_without_inventory_or_license
             {"project_id": "p1", **query()},
         )
     ]
-    assert (state_dir / "projects/p1.json").read_bytes() == before
+    assert ProjectStore(state_dir).get("p1") == before
     if mode == "populated":
         rows = (await response.json())["packages"]
         assert rows[0]["license"] == {"declared": "AGPL-3.0", "agpl": True}

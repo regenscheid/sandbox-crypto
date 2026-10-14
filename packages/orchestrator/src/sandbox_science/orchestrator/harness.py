@@ -364,23 +364,15 @@ class Harness:
         math_checks = MathController(
             reviews.store, context.project_id, context.session_id, run_id, checker=self.checker
         )
-        owners: list[PlanTools] = []
-
-        def make_plans() -> PlanTools:
-            owner = PlanTools(
-                SessionPlans(stores.documents), stores.projects, context, run_id=run_id, alias=alias
-            )
-            # Publish ownership before cancellation-owned threaded() can discard its
-            # return value while propagating an interrupt.
-            owners.append(owner)
-            return owner
-
-        async def close_plans() -> None:
-            if owners:
-                await threaded(owners[0].close)
-
-        on_close(close_plans)
-        plans = await threaded(make_plans)
+        # The plan tools hold nothing to close: the run's project store is the stores'.
+        plans = await threaded(
+            PlanTools,
+            SessionPlans(stores.documents),
+            stores.projects,
+            context,
+            run_id=run_id,
+            alias=alias,
+        )
         return Toolbox(
             self.client,
             context,

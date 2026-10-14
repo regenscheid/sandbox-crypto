@@ -223,14 +223,7 @@ The panel also lists the project's mechanical math checks ([document](MATH-CHECK
 
 ## Run records
 
-With `--state-dir`, the harness keeps every run that reaches the tool loop, including ordinary failures. It keeps the same record `--transcript` writes, beside the projects' records:
-
-```text
-<state-dir>/projects/<project>.json
-<state-dir>/runs/<project>/<session>/<started>-<run-id>.json
-```
-
-Runs have a tree of their own because project IDs may contain dots: a project's runs kept beside its record could collide with another project's record or lock file. `<started>` is the start time in UTC, such as `20261011T130102345678Z`, so names sort in order of starting, and a run ID used again adds a record rather than replacing one. With `--state-dir`, a `--run-id` must therefore be an identifier. Each record is written once: to a temporary file, synced, then linked to its name, which fails rather than replace another record, so a reader never sees half of one. A record holds:
+With `--state-dir`, the harness keeps every run that reaches the tool loop, including ordinary failures. It keeps the same record `--transcript` writes, in the control store's `runs` table beside the projects and sessions, named `<started>-<run-id>`. `<started>` is the start time in UTC, such as `20261011T130102345678Z`, so names sort in order of starting, and a run ID used again adds a record rather than replacing one. With `--state-dir`, a `--run-id` must therefore be an identifier. Each record is written once, in one transaction; a trigger refuses to change or delete it. A record holds:
 
 | Field | Contents |
 | --- | --- |

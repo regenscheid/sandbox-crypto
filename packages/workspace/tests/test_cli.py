@@ -102,7 +102,7 @@ def test_the_server_brings_the_control_store_up_to_date_or_says_why_not(
     # A later version adds a step: the server's writer runs it before the views read.
     with monkeypatch.context() as later:
         later.setattr(migrations, "MIGRATIONS", (*migrations.MIGRATIONS, add_notes))
-        later.setattr(migrations, "VERSION", migrations.BASELINE + 1)
+        later.setattr(migrations, "VERSION", migrations.VERSION + 1)
         assert cli.main(args) == 0
         reader = DocumentStore(store_path(state_dir), readonly=True)
         assert reader.documents("p1") == []
@@ -127,6 +127,8 @@ def test_an_old_control_store_stops_the_server_with_the_reason(
         raise AssertionError("the server must not start")
 
     monkeypatch.setattr(cli, "serve", serve)
+    for found in state_dir.glob("control.sqlite3*"):  # in place of the new store
+        found.unlink()
     database = sqlite3.connect(store_path(state_dir))
     database.execute("CREATE TABLE documents (document_id TEXT PRIMARY KEY)")
     database.execute("PRAGMA user_version = 1")

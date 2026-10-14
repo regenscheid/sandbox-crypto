@@ -127,6 +127,10 @@ def to_response(caught: Exception, *, extra: dict[str, object] | None = None) ->
             kind, message = ErrorKind.UNAVAILABLE, "the worker is unavailable"
         case TimeoutError():
             kind, message = ErrorKind.UNAVAILABLE, "the request timed out"
+        case DocumentError():  # the control store, such as one in a newer schema version
+            kind, message = document_kind(caught), caught.message
+            if caught.kind == "unavailable":
+                _log.error("the control store is unavailable: %s", caught.message)
         case _:
             kind, message = ErrorKind.INTERNAL, INTERNAL_MESSAGE
     if kind not in STATUS:

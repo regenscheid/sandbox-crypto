@@ -8,6 +8,6 @@ migrations (``migrations.py``).
 """
 
 from .errors import ControlError
-from .store import DEFAULT_TIMEOUT, ControlStore, Tx
+from .store import DEFAULT_TIMEOUT, FILE_NAME, ControlStore, Tx, store_path
 
-__all__ = ["DEFAULT_TIMEOUT", "ControlError", "ControlStore", "Tx"]
+__all__ = ["DEFAULT_TIMEOUT", "FILE_NAME", "ControlError", "ControlStore", "Tx", "store_path"]

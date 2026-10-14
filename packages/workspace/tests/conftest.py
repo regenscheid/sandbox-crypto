@@ -78,7 +78,12 @@ def state_dir(tmp_path: Path) -> Path:
     store.save_run(run_record("a", "run-1", STARTED, "It is $1$."))
     store.save_run(run_record("a", "run-2", STARTED + timedelta(hours=1), "Still $1$."))
     store.create("p2", "minimal", POLICY)
-    (store.root / "broken.json").write_text("{not json")
+    with store.control.write() as tx:  # a damaged record: its policy is no revision
+        tx.sql.execute(
+            "INSERT INTO projects VALUES ('broken', 'minimal', 'not-a-policy', "
+            "'broken-default', '2026-10-11T13:00:00Z', '2026-10-11T13:00:00Z')"
+        )
+    store.close()
     return root
 
 

@@ -76,7 +76,7 @@ async def create(
 ) -> TestClient[Any, Any]:
     client = await aiohttp_client(
         create_app(
-            ProjectStore(state_dir),
+            ProjectStore(state_dir, readonly=True),
             static_dir,
             login_token=TOKEN,
             job_worker=cast(WorkerClient, worker),
@@ -96,7 +96,7 @@ async def test_passive_response_and_empty_are_typed_no_store(
 ) -> None:
     worker = Worker()
     store = ProjectStore(state_dir)
-    original = (store.root / "p1.json").read_bytes()
+    original = store.get("p1")
     client = await create(aiohttp_client, state_dir, static_dir, worker)
     response = await client.get(PATH)
     assert response.status == 200
@@ -107,7 +107,7 @@ async def test_passive_response_and_empty_are_typed_no_store(
     assert worker.calls == [
         ExecutionContext(project_id="p1", session_id="a", environment_id=result.environment_id)
     ]
-    assert (store.root / "p1.json").read_bytes() == original
+    assert store.get("p1") == original
     worker.empty = True
     response = await client.get(PATH)
     assert response.status == 200

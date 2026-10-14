@@ -26,7 +26,7 @@ from sandbox_science.orchestrator.hooks import (
     TurnHook,
 )
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
-from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.projects import recorded
 
 from .artifacts import ArtifactConsumer
 from .findings import Findings
@@ -222,12 +222,8 @@ class ReviewController:
         persistent: bool = False,
     ) -> None:
         store.scope(context.project_id, context.session_id)
-        recorded = (
-            ProjectStore(store.documents.path.parent)
-            .get(context.project_id)
-            .sessions[context.session_id]
-        )
-        if context.environment_id != recorded.environment_id:
+        project = recorded(store.documents.path.parent, context.project_id)
+        if context.environment_id != project.sessions[context.session_id].environment_id:
             raise DocumentError(POLICY_DENIED, "review context does not match the recorded session")
         if model is not None and (not alias or len(alias) > 128):
             raise ValueError("a reviewer requires its own bounded model alias")

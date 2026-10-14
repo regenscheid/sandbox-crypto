@@ -14,8 +14,8 @@ Routes, for GET and HEAD:
   ``MAX_RUN_BYTES`` is refused.
 
 Errors are ``{"error": {"kind", "message"}}`` with the kinds of the worker API. The
-store's files are read, and the answer encoded, in a thread, so a large run does not
-hold up other requests.
+records are read from the control store, through a read-only connection, and the answer
+encoded, in a thread, so a large run does not hold up other requests.
 """
 
 from __future__ import annotations

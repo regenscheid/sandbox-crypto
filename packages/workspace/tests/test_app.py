@@ -39,7 +39,9 @@ ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 async def client(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> TestClient[Any, Any]:
-    return await aiohttp_client(create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN))
+    return await aiohttp_client(
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
+    )
 
 
 def origin(client: TestClient[Any, Any]) -> str:
@@ -115,9 +117,15 @@ async def test_two_workspaces_keep_their_sessions_apart(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
     # A browser sends a host's cookies to every port on it; each server reads its own.
-    first = await aiohttp_client(create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN))
+    first = await aiohttp_client(
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
+    )
     second = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN.replace("login", "other"))
+        create_app(
+            ProjectStore(state_dir, readonly=True),
+            static_dir,
+            login_token=TOKEN.replace("login", "other"),
+        )
     )
     await login(first)
     issued = first.session.cookie_jar.filter_cookies(first.make_url("/"))[cookie(first)].value
@@ -221,7 +229,7 @@ async def test_the_servers_own_names_are_answered(client: TestClient[Any, Any], 
 async def test_a_listener_on_another_loopback_address_answers_to_it(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+    app = create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     client = await aiohttp_client(app, server_kwargs={"host": "127.0.0.2"})
     response = await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
     assert response.status == 303
@@ -233,7 +241,9 @@ async def test_a_listener_on_another_loopback_address_answers_to_it(
 async def test_without_the_host_check_any_name_is_answered(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path
 ) -> None:
-    app = create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, check_host=False)
+    app = create_app(
+        ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN, check_host=False
+    )
     client = await aiohttp_client(app)
     status, _ = await raw_get(client.port, "/", "babbage.example:8200")
     assert status == 200
@@ -360,7 +370,14 @@ async def test_only_get_and_head_reach_the_files(client: TestClient[Any, Any]) -
 async def test_an_injected_document_store_must_be_read_only(
     state_dir: Path, static_dir: Path
 ) -> None:
+    with pytest.raises(ValueError, match="project store must be read-only"):
+        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
     writable = DocumentStore(store_path(state_dir))
     with pytest.raises(ValueError, match="read-only"):
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, document_store=writable)
+        create_app(
+            ProjectStore(state_dir, readonly=True),
+            static_dir,
+            login_token=TOKEN,
+            document_store=writable,
+        )
     writable.close()

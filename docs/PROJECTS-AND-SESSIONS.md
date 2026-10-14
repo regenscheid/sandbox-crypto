@@ -74,7 +74,7 @@ Closing the GUI does not terminate active computations or discard state. Live ke
 
 ## As built: the harness's project records
 
-The harness keeps a record of each project in its state directory (`packages/orchestrator`, `projects.py`). A record holds:
+The harness keeps a record of each project in the control store of its state directory, `control.sqlite3` (`packages/orchestrator`, `projects.py`; [living documents](LIVING-DOCUMENTS.md#the-control-store)). A record holds:
 - the project's base profile and policy revision;
 - its default environment, `<project>-default-<tag>`, where the tag is random, so that no other project's client of a shared worker can predict the ID and take it first (D78); records made before keep their untagged IDs;
 - its sessions, each with the environment it runs in and when it was last closed.
@@ -99,10 +99,11 @@ sandbox-science-harness project revise --state-dir state --project p1 --policy s
 - **Running a session.** A session runs in the default environment, with its own kernels and workspace. With `--dedicated`, a new session gets an environment of its own, `<project>-<session>-<tag>`, from the same base profile. A session keeps the mode it started with.
 - **Environments.** Before a session runs, the harness has the worker create its environment, or revise it to the project's current policy revision (D73). A worker that does not manage environments, such as the local one, takes the ID as it is.
 - **Closing a session** stops its kernels; running it again opens it again. Files stay.
-- **Run records.** The harness keeps each run of a session, the record `--transcript` writes, in `runs/<project>/<session>/` beside `projects/`, named by its start time and run ID and written once, atomically. The [workspace](WORKSPACE.md#run-records) shows them.
+- **Run records.** The harness keeps each run of a session, the record `--transcript` writes, in the control store's `runs` table, named by its start time and run ID and written once. The [workspace](WORKSPACE.md#run-records) shows them.
 - **Explicit artifact publication.** With a state directory, `publish` additionally retains verified immutable bytes/revisions in the [control inventory](ARTIFACTS.md). Tool/run records keep the worker snapshot and control receipt separately. A successful worker snapshot can remain available when control ingestion is held. Publishing attribution describes the actual run/tool action, with resolved model only when the gateway reports it; actual writer and observed inputs remain unknown.
 - **Revising a project** records the new revision. With `--worker`, it also revises the project's environments at once; otherwise each is revised when a session next runs there.
-- **Concurrency.** Records are JSON files rewritten atomically under a lock, so concurrent harness processes keep each other's sessions.
+- **Concurrency.** Each change is one transaction of the control store, taken under the project's lock file, `<state-dir>/projects/<project>.lock`, so concurrent harness processes and the workspace keep each other's sessions. A caller that checks a session and then changes something of it, such as a plan edit, holds the lock across both, so a close cannot land in between.
+- **Earlier records.** Projects were JSON files, `<state-dir>/projects/<project>.json`, and runs were files under `<state-dir>/runs/`, before they moved into the control store. Such files are not read: a lookup of a project recorded only in a file says so, and the project is created again with `project create` (refactoring plan, decision 6).
 - **Shared files.** A write to the shared area names the version it replaces (`expected_sha256`, or `create_only` for a new file). So of two sessions that read the same version, the second writer gets `conflict`, rereads and tries again; nothing is silently overwritten. The conformance suite checks this with two sessions.
 
 - **Environment revisions.** The worker counts changes to an environment's installed packages, and every execution reports the revision it started and ended under ([worker](WORKER.md#behavior-worth-knowing)).

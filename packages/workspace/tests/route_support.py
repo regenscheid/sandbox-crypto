@@ -455,7 +455,7 @@ async def workspace(
     worker = WorkerClient(worker_url, WORKER_TOKEN) if worker_url is not None else None
     client = await aiohttp_client(
         create_app(
-            ProjectStore(state_dir),
+            ProjectStore(state_dir, readonly=True),
             static_dir,
             login_token=TOKEN,
             job_worker=worker,

@@ -34,7 +34,7 @@ async def test_api_table_matches_routes(
     aiohttp_client: AiohttpClient, state_dir: Path, static_dir: Path
 ) -> None:
     client = await aiohttp_client(
-        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN)
+        create_app(ProjectStore(state_dir, readonly=True), static_dir, login_token=TOKEN)
     )
     registered = {
         (route.method, route.resource.canonical)
