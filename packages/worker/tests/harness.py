@@ -104,16 +104,16 @@ class ManagerView:
 
     def live(self, execution_id: str) -> Live:
         """The manager's record of an execution that has not ended."""
-        return self.manager._live[execution_id]
+        return self.manager._journal.live[execution_id]
 
     def live_channel(self, execution_id: str) -> ExecutorChannel:
         """The executor the execution was sent to."""
-        channel = self.manager._live[execution_id].channel
+        channel = self.manager._journal.live[execution_id].channel
         assert channel is not None, f"{execution_id} was not dispatched"
         return channel
 
     def live_executions(self) -> set[str]:
-        return set(self.manager._live)
+        return set(self.manager._journal.live)
 
     # Kernel observations, captures and lockfile fetches.
 

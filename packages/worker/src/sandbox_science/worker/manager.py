@@ -21,12 +21,11 @@ import re
 import sqlite3
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from sandbox_science.contracts import (
     SYSTEM_CLOCK,
@@ -61,14 +60,12 @@ from sandbox_science.contracts import (
     PublishRequest,
     ReadFileRequest,
     Result,
-    ResultEvent,
     RichOutput,
     SessionClosed,
     SessionCloseRequest,
     ShellRequest,
     StateEvent,
     StreamEvent,
-    StreamOutput,
     WriteFileRequest,
     WriteFileResult,
     new_id,
@@ -77,7 +74,6 @@ from sandbox_science.contracts.worker import (
     DEFAULT_OUTPUT_LIMIT,
     FEATURES,
     LANGUAGES,
-    MAX_EVENT_BYTES,
     MAX_PATH_BYTES,
     PROTOCOL_VERSION,
 )
@@ -90,6 +86,7 @@ from .channel import ExecutorChannel, Message
 from .connections import Activity, Connection, ConnectionHooks, EnvironmentConnections
 from .errors import ExecutorRefusalError, WorkerError
 from .identity import execution_digest, same_execution
+from .journal import SOURCE_EVENT, ExecutionJournal
 from .kernels import KernelRegistry
 from .live import REQUEST, Live, time_limit
 from .output_observations import normalize as normalize_observation
@@ -98,7 +95,17 @@ from .package_admission import PackageAdmission, guard_reuse
 from .package_gate import PackageGate
 from .publication import Publication
 from .recovery import DaemonRecovery, RecoveryHooks
-from .replies import Range, epoch, integer
+from .replies import (
+    Range,
+    checked,
+    epoch,
+    error,
+    integer,
+    outputs,
+    seconds,
+    size,
+    stream,
+)
 from .revisions import Prepared, Revisions, package_commands
 from .shared_sync import SharedSync
 from .store import Store
@@ -106,8 +113,6 @@ from .timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
 from .usability import Usability
 
 _log = logging.getLogger(__name__)
-_EVENT = TypeAdapter[Event](Event)
-_SOURCE_EVENT: ContextVar[tuple[str, int] | None] = ContextVar("executor_source", default=None)
 
 MAX_HELD_NOTICES = 20
 """Sync notices held for one call's or one session's next result."""
@@ -117,17 +122,12 @@ _UNSYNCED = (
     "shared/ could not be synced with the project's other environments just now; "
     "it is synced again at the next call"
 )
-EVENT_PAGE = 64
-"""Events read from the store at a time when a client replays a stream."""
 OUTPUT_BUDGET = 4
 """Stream text and rich output an execution may store as events, in multiples of its
 output limit (UTF-8 bytes). An honest executor stays under three: half the limit of each
 stream, which can triple when invalid bytes become U+FFFD, plus the limit of outputs."""
 MAX_EVENTS = 100_000
 """Stream and output events stored for one execution; later ones are dropped."""
-MAX_ERROR_TEXT = 64 * 1024
-MAX_TRACEBACK_LINES = 100
-MAX_TRACEBACK_LINE = 8 * 1024
 MAX_WRITTEN = 1000
 MAX_LIST = 5000
 MAX_REVISIONS = 64
@@ -137,22 +137,6 @@ MAX_EXECUTION_LOCKFILES = 4
 attempt whose package commands made a change. A revision left without one gets the
 current lockfile asked for instead, while it is current."""
 _EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
-
-
-def _seconds(value: object) -> float:
-    if isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value):
-        return max(0.0, float(value))
-    return 0.0
-
-
-def _text(value: object, limit: int) -> str | None:
-    """A string from the executor, keeping its head and tail if it is over ``limit``."""
-    if not isinstance(value, str):
-        return None
-    if len(value) <= limit:
-        return value
-    half = limit // 2
-    return f"{value[:half]}\n[… {len(value) - 2 * half} characters omitted …]\n{value[-half:]}"
 
 
 Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
@@ -204,7 +188,6 @@ class ExecutionManager:
         """Seconds the executor gets to confirm it cleaned up a cancelled capture."""
         self._closing_task: asyncio.Task[None] | None = None
         self.state_dir = state_dir
-        self._live: dict[str, Live] = {}
         self._held_notices: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
         """Notices from syncing shared files for file requests, by environment and session,
         for the session's next result there (D79)."""
@@ -237,6 +220,9 @@ class ExecutionManager:
             clock=clock,
             pool_id=pool_id,
             state_dir=state_dir,
+        )
+        self._journal = ExecutionJournal(
+            store, self._connections, clock=clock, timeouts=lambda: self.timeouts
         )
         self._admission = PackageAdmission(
             store,
@@ -271,7 +257,7 @@ class ExecutionManager:
             self._usability,
             self._publication,
             RecoveryHooks(
-                lives=lambda: self._live.values(),
+                lives=lambda: self._journal.live.values(),
                 lose=lambda live, what: self._lose(live, what),
                 spawn=lambda coroutine: self._spawn(coroutine),
                 watch=lambda live, timeout: self._watch(live, timeout),
@@ -284,7 +270,6 @@ class ExecutionManager:
             confirmed_daemon_loss=lambda: self.confirmed_daemon_loss,
             recycle_daemon=lambda: self.recycle_daemon,
         )
-        self._streams_ended = False
         self.job_resources: Callable[[str], Resources] | None = None
         self.confirmed_daemon_loss: Callable[[str], Awaitable[bool]] | None = None
         self.daemon_identity: Callable[[str], tuple[str, str] | None] | None = None
@@ -327,7 +312,7 @@ class ExecutionManager:
             except (ValueError, sqlite3.Error):
                 request = None
                 saved = None
-            live = self._track(
+            live = self._journal.track(
                 execution.model_copy(update={"last_seq": last}),
                 request.output_limit_bytes if request else DEFAULT_OUTPUT_LIMIT,
             )
@@ -352,14 +337,14 @@ class ExecutionManager:
 
     async def _release(self, environment_id: str) -> None:
         await self._publication.cancel(environment_id)
-        jobs = self._running_jobs(environment_id)
+        jobs = self._journal.running_jobs(environment_id)
         await self._cancel_jobs(jobs)
         await self._connections.release(environment_id)
 
     async def activity(self, environment_id: str) -> Activity | None:
         """What an environment is doing now; None when its executor cannot say."""
         return await self._connections.activity(
-            environment_id, [job.execution_id for job in self._running_jobs(environment_id)]
+            environment_id, [job.execution_id for job in self._journal.running_jobs(environment_id)]
         )
 
     async def release_if_idle(self, environment_id: str, idle_since: float) -> bool:
@@ -367,7 +352,7 @@ class ExecutionManager:
 
         Returns whether it did (or there was none), so that its sandbox may stop.
         """
-        if self._running_jobs(environment_id) or self._publication.holds(environment_id):
+        if self._journal.running_jobs(environment_id) or self._publication.holds(environment_id):
             return False
         return await self._connections.release_if_idle(environment_id, idle_since)
 
@@ -392,7 +377,7 @@ class ExecutionManager:
                 for channel in self._connections.channels
             )
         )
-        for live in list(self._live.values()):
+        for live in list(self._journal.live.values()):
             saved = self.store.recovery(live.execution.execution_id)
             recoverable = (
                 getattr(getattr(self.backend, "settings", None), "daemon", False)
@@ -418,7 +403,7 @@ class ExecutionManager:
                 # The outcome is known; only the shared files' sync after it was cut short.
                 self._complete(live, [*live.notices, _UNSYNCED])
                 return
-            self._finish(
+            self._journal.finish(
                 live,
                 ExecutionState.LOST,
                 Result(error=ErrorInfo(kind=ErrorKind.INTERNAL, message=message)),
@@ -448,127 +433,6 @@ class ExecutionManager:
             _log.warning("background task %s failed: %s", name, error)
         else:
             _log.error("background task %s failed", name, exc_info=error)
-
-    def _track(self, execution: Execution, limit: int = DEFAULT_OUTPUT_LIMIT) -> Live:
-        live = Live(
-            execution,
-            execution.context.environment_id,
-            asyncio.get_running_loop().create_future(),
-            limit=limit,
-        )
-        self._live[execution.execution_id] = live
-        return live
-
-    def _save(self, live: Live, **changes: Any) -> None:
-        live.execution = live.execution.model_copy(update=changes)
-        self.store.update_execution(live.execution)
-
-    def _changed(self, live: Live) -> None:
-        changed, live.changed = live.changed, asyncio.get_running_loop().create_future()
-        changed.set_result(None)
-
-    def _emit(self, live: Live, make: Callable[[int, datetime], Event]) -> None:
-        seq = live.execution.last_seq + 1
-        event = make(seq, self.clock.now())
-        live.execution = live.execution.model_copy(update={"last_seq": seq})
-        source = _SOURCE_EVENT.get()
-        acknowledged = (
-            source[1] if source is not None and source[0] == live.execution.execution_id else None
-        )
-        self.store.commit_event(live.execution, event, acknowledged)
-        self._changed(live)
-
-    def _state(self, live: Live, state: ExecutionState) -> None:
-        execution_id = live.execution.execution_id
-        self._emit(
-            live,
-            lambda seq, time: StateEvent(
-                execution_id=execution_id, seq=seq, time=time, state=state
-            ),
-        )
-
-    def _finish(self, live: Live, state: ExecutionState, result: Result) -> None:
-        """End an execution: its state event, result event and record are stored together."""
-        if live.execution.state in TERMINAL_STATES:
-            return
-        execution_id = live.execution.execution_id
-        final, events = self._final(live.execution, state, result)
-        source = _SOURCE_EVENT.get()
-        acknowledged = live.final_source_seq
-        if acknowledged is None and source is not None and source[0] == execution_id:
-            acknowledged = source[1]
-        self.store.finish(
-            final,
-            events,
-            acknowledged,
-            observation=live.observation,
-            observation_gap=live.observation_gap,
-        )
-        live.execution = final
-        self._changed(live)
-        environment = self._connections.get(live.environment_id)
-        if environment is not None:
-            environment.running.discard(execution_id)
-            environment.last_used = self.clock.monotonic()
-        if live.watchdog is not None and live.watchdog is not asyncio.current_task():
-            live.watchdog.cancel()
-        if live.cancel_watchdog is not None and live.cancel_watchdog is not asyncio.current_task():
-            live.cancel_watchdog.cancel()
-        asyncio.get_running_loop().call_later(
-            self.timeouts.retain_live, self._live.pop, execution_id, None
-        )
-
-    def _final(
-        self, execution: Execution, state: ExecutionState, result: Result
-    ) -> tuple[Execution, tuple[StateEvent, ResultEvent]]:
-        """The terminal record and its last two events, checked before anything is stored.
-
-        Every value must survive a round trip through JSON and fit in one event
-        line; a result that does not is shrunk, and failing that replaced.
-        """
-        unstorable = Result(
-            error=ErrorInfo(
-                kind=ErrorKind.INTERNAL, message="the attempt's result could not be stored"
-            )
-        )
-        candidates = (
-            (state, result),
-            (state, _shrunk(result)),
-            (ExecutionState.FAILED, unstorable),
-        )
-        now = self.clock.now()
-        seq = execution.last_seq
-        for final_state, candidate in candidates:
-            final = execution.model_copy(
-                update={
-                    "state": final_state,
-                    "ended_at": now,
-                    "result": candidate,
-                    "last_seq": seq + 2,
-                }
-            )
-            try:
-                event = ResultEvent(
-                    execution_id=execution.execution_id, seq=seq + 2, time=now, execution=final
-                )
-                encoded = _EVENT.dump_json(event)
-                if len(encoded) > MAX_EVENT_BYTES:
-                    raise ValueError(f"{len(encoded)} bytes")
-                checked = _EVENT.validate_json(encoded)
-            except ValueError as exc:  # PydanticSerializationError and ValidationError too
-                _log.warning(
-                    "execution %s: result not storable as reported (%s)",
-                    execution.execution_id,
-                    str(exc)[:300],
-                )
-                continue
-            if not isinstance(checked, ResultEvent):
-                continue
-            state_event = StateEvent(
-                execution_id=execution.execution_id, seq=seq + 1, time=now, state=final_state
-            )
-            return checked.execution, (state_event, checked)
-        raise RuntimeError("the fallback result could not be stored")
 
     # Environments.
 
@@ -668,7 +532,7 @@ class ExecutionManager:
             return
         # The executions sent to this executor end with it, whether or not its
         # environment's record still names it.
-        for live in list(self._live.values()):
+        for live in list(self._journal.live.values()):
             if live.channel is channel and live.execution.state not in TERMINAL_STATES:
                 self._lose(live, "the worker" if self._usability.closing else "the executor")
         self._connections.closed(environment_id, channel)
@@ -730,10 +594,10 @@ class ExecutionManager:
                     ErrorKind.POLICY_DENIED,
                     f"job time limit exceeds the policy maximum of {maximum:g} s",
                 )
-            running = self._running_jobs(context.environment_id)
+            running = self._journal.running_jobs(context.environment_id)
             session = [
                 live.execution
-                for live in self._live.values()
+                for live in self._journal.live.values()
                 if live.execution.kind == "job"
                 and live.execution.state not in TERMINAL_STATES
                 and live.execution.context.project_id == context.project_id
@@ -768,8 +632,8 @@ class ExecutionManager:
         )
         self.store.insert_execution(execution, digest)
         self.store.remember_request(execution_id, request.model_dump_json())
-        live = self._track(execution, request.output_limit_bytes)
-        self._state(live, ExecutionState.QUEUED)
+        live = self._journal.track(execution, request.output_limit_bytes)
+        self._journal.state(live, ExecutionState.QUEUED)
         self.store.update_execution(live.execution)
         self._spawn(self._dispatch(live, request))
         return live.execution, True
@@ -803,12 +667,12 @@ class ExecutionManager:
         if environment is not None:
             environment.running.discard(live.execution.execution_id)
             environment.last_used = self.clock.monotonic()
-        self._finish(live, ExecutionState.FAILED, Result(error=error))
+        self._journal.finish(live, ExecutionState.FAILED, Result(error=error))
 
     async def _send(self, live: Live, request: ExecutionRequest) -> None:
         execution_id = live.execution.execution_id
         if live.cancel_requested or live.execution.state in TERMINAL_STATES:
-            self._finish(
+            self._journal.finish(
                 live,
                 ExecutionState.CANCELLED,
                 Result(
@@ -818,7 +682,7 @@ class ExecutionManager:
             return
         environment = await self._environment(request.context.environment_id)
         if live.cancel_requested or live.execution.state in TERMINAL_STATES:
-            self._finish(
+            self._journal.finish(
                 live,
                 ExecutionState.CANCELLED,
                 Result(
@@ -838,7 +702,9 @@ class ExecutionManager:
             raise WorkerError(
                 ErrorKind.UNSUPPORTED, f"no {request.language} kernel in this environment"
             )
-        self._save(live, location=self._located(request.context.environment_id, environment))
+        self._journal.save(
+            live, location=self._located(request.context.environment_id, environment)
+        )
         fields: dict[str, Any] = {
             "execution": execution_id,
             "session": request.context.session_id,
@@ -869,7 +735,7 @@ class ExecutionManager:
         if self.shared is not None:
             live.notices += await self._sync(self.shared.down, request.context, channel)
             if live.cancel_requested:  # while the shared files synced
-                self._finish(
+                self._journal.finish(
                     live,
                     ExecutionState.CANCELLED,
                     Result(
@@ -914,7 +780,7 @@ class ExecutionManager:
         with contextlib.suppress(WorkerError):
             await self.cancel(live.execution.execution_id)
         await self.clock.sleep(self.timeouts.lost_grace)
-        self._finish(
+        self._journal.finish(
             live,
             ExecutionState.LOST,
             Result(
@@ -926,7 +792,7 @@ class ExecutionManager:
 
     async def _on_event(self, environment_id: str, message: Message) -> None:
         execution_id = message.get("execution")
-        live = self._live.get(execution_id) if isinstance(execution_id, str) else None
+        live = self._journal.live.get(execution_id) if isinstance(execution_id, str) else None
         # Only the executor an execution was sent to may report on it.
         if (
             live is None
@@ -955,7 +821,7 @@ class ExecutionManager:
             ):
                 self._lose(live, "the executor with an invalid replay range")
                 return
-        token = _SOURCE_EVENT.set(
+        token = SOURCE_EVENT.set(
             (live.execution.execution_id, source)
             if isinstance(source, int)
             and not isinstance(source, bool)
@@ -977,7 +843,7 @@ class ExecutionManager:
         except Exception:
             _log.exception("execution %s: an event from the executor failed", execution_id)
             if message.get("event") == "end":  # the execution must end all the same
-                self._finish(
+                self._journal.finish(
                     live,
                     ExecutionState.FAILED,
                     Result(
@@ -987,7 +853,7 @@ class ExecutionManager:
                     ),
                 )
         finally:
-            _SOURCE_EVENT.reset(token)
+            SOURCE_EVENT.reset(token)
 
     def _apply(self, live: Live, environment_id: str, message: Message) -> None:
         execution_id = live.execution.execution_id
@@ -1031,19 +897,19 @@ class ExecutionManager:
                         )
                     return live.execution.model_copy(update={**update, "last_seq": event.seq})
 
-                source = _SOURCE_EVENT.get()
+                source = SOURCE_EVENT.get()
                 acknowledged = (
                     source[1] if source is not None and source[0] == execution_id else None
                 )
                 live.execution = self.store.commit_kernel_start(start, event, acknowledged)
-                self._changed(live)
+                self._journal.changed(live)
                 self._ask_lockfile(environment_id, live)
         elif kind == "stream":
             name = "stderr" if message.get("name") == "stderr" else "stdout"
             text = message.get("text")
-            if not isinstance(text, str) or not text or not self._admit(live, _size(text)):
+            if not isinstance(text, str) or not text or not self._admit(live, size(text)):
                 return
-            self._emit(
+            self._journal.emit(
                 live,
                 lambda seq, time: StreamEvent(
                     execution_id=execution_id, seq=seq, time=time, name=name, text=text
@@ -1055,9 +921,9 @@ class ExecutionManager:
             except ValidationError:
                 _log.warning("execution %s: malformed output dropped", execution_id)
                 return
-            if not self._admit(live, sum(_size(value) for value in output.data.values())):
+            if not self._admit(live, sum(size(value) for value in output.data.values())):
                 return
-            self._emit(
+            self._journal.emit(
                 live,
                 lambda seq, time: OutputEvent(
                     execution_id=execution_id, seq=seq, time=time, output=output
@@ -1101,7 +967,7 @@ class ExecutionManager:
                     "The executor retained a compact recovery result after journal pressure; "
                     "whole job stdout/stderr logs remain in the workspace."
                 )
-            source = _SOURCE_EVENT.get()
+            source = SOURCE_EVENT.get()
             live.final_source_seq = source[1] if source is not None else None
             live.final = (state, result)
             if live.cancel_watchdog is not None:
@@ -1131,7 +997,7 @@ class ExecutionManager:
                 "execution %s: its result could not be stored", live.execution.execution_id
             )
             with contextlib.suppress(Exception):
-                self._finish(
+                self._journal.finish(
                     live,
                     ExecutionState.FAILED,
                     Result(
@@ -1161,7 +1027,7 @@ class ExecutionManager:
                 changes["written_files"] = tuple(
                     path for path in result.written_files if path not in synced
                 )
-        self._finish(live, state, result.model_copy(update=changes) if changes else result)
+        self._journal.finish(live, state, result.model_copy(update=changes) if changes else result)
 
     async def _sync_shared(
         self, context: ExecutionContext, path: str, channel: ExecutorChannel
@@ -1181,7 +1047,7 @@ class ExecutionManager:
         if not notices:
             return
         told = False
-        for live in self._live.values():
+        for live in self._journal.live.values():
             running = live.execution.context
             if (
                 live.environment_id == context.environment_id
@@ -1297,14 +1163,14 @@ class ExecutionManager:
             signal=integer(raw.get("signal"), 1, 255),
             status=raw.get("status"),
             execution_count=integer(raw.get("execution_count"), 0),
-            stdout=_stream(raw.get("stdout"), "stdout", live.limit),
-            stderr=_stream(raw.get("stderr"), "stderr", live.limit),
-            outputs=_outputs(raw.get("outputs"), live.limit),
-            error=_error(raw.get("error")),
+            stdout=stream(raw.get("stdout"), "stdout", live.limit),
+            stderr=stream(raw.get("stderr"), "stderr", live.limit),
+            outputs=outputs(raw.get("outputs"), live.limit),
+            error=error(raw.get("error")),
             kernel=kernel,
             running_kernels=running,
             state_lost=lost,
-            elapsed_seconds=_seconds(raw.get("elapsed_seconds")),
+            elapsed_seconds=seconds(raw.get("elapsed_seconds")),
             sandbox_started_at=epoch(raw.get("sandbox_started")),
             sandbox_ended_at=epoch(raw.get("sandbox_ended")),
             written_files=tuple(paths[:MAX_WRITTEN]),
@@ -1436,7 +1302,7 @@ class ExecutionManager:
         operation it is a step of; empty for any other execution."""
         if not _EXECUTION.fullmatch(execution_id):
             return "", None
-        live = self._live.get(execution_id)
+        live = self._journal.live.get(execution_id)
         try:
             execution = live.execution if live is not None else self.store.execution(execution_id)
         except ValidationError:
@@ -1455,25 +1321,6 @@ class ExecutionManager:
 
     # Queries and control.
 
-    def get(self, execution_id: str, project_id: str | None = None) -> Execution:
-        """The execution, which must belong to ``project_id`` when one is given."""
-        live = self._live.get(execution_id)
-        if live is not None:
-            execution = live.execution
-        else:
-            try:
-                found = self.store.execution(execution_id)
-            except ValidationError as exc:
-                raise WorkerError(
-                    ErrorKind.INTERNAL, f"the stored record of {execution_id} is unreadable"
-                ) from exc
-            if found is None:
-                raise WorkerError(ErrorKind.NOT_FOUND, f"no execution {execution_id}")
-            execution = found
-        if project_id is not None and execution.context.project_id != project_id:
-            raise WorkerError(ErrorKind.NOT_FOUND, f"no execution {execution_id}")
-        return execution
-
     async def _cancel_jobs(self, jobs: list[Execution]) -> None:
         """Bound cancel acknowledgments and process completion together, including broken peers."""
         if not jobs:
@@ -1488,160 +1335,46 @@ class ExecutionManager:
         except (TimeoutError, WorkerError):
             channels: set[ExecutorChannel] = set()
             for job in jobs:
-                live = self._live.get(job.execution_id)
+                live = self._journal.live.get(job.execution_id)
                 if live is not None and live.execution.state not in TERMINAL_STATES:
                     if live.channel is not None:
                         channels.add(live.channel)
                     self._lose(live, "the executor that did not confirm job cancellation")
             await asyncio.gather(*(channel.shutdown() for channel in channels))
 
-    def _running_jobs(self, environment_id: str) -> list[Execution]:
-        return [
-            live.execution
-            for live in self._live.values()
-            if live.environment_id == environment_id
-            and live.execution.kind == "job"
-            and live.execution.state not in TERMINAL_STATES
-        ]
+    # Queries.
+
+    def get(self, execution_id: str, project_id: str | None = None) -> Execution:
+        """The execution, which must belong to ``project_id`` when one is given."""
+        return self._journal.get(execution_id, project_id)
 
     def jobs(
         self, context: ExecutionContext, limit: int = 100, after: str | None = None
     ) -> JobListing:
         """List only the requested session's jobs, including recently ended attempts."""
-        if not 1 <= limit <= 500:
-            raise WorkerError(
-                ErrorKind.INVALID_REQUEST, "job listing limit must be between 1 and 500"
-            )
-        try:
-            jobs = self.store.session_jobs(context, limit + 1, after)
-        except LookupError as exc:
-            raise WorkerError(
-                ErrorKind.NOT_FOUND, "no job listing cursor for this session"
-            ) from exc
-        selected: list[Execution] = []
-        total = 0
-        for job in jobs[:limit]:
-            size = len(job.model_dump_json().encode())
-            if total + size > 1024 * 1024:
-                break
-            selected.append(job)
-            total += size
-        return JobListing(
-            jobs=tuple(selected),
-            truncated=len(jobs) > len(selected),
-            next_after=selected[-1].execution_id if selected else after,
-        )
+        return self._journal.jobs(context, limit, after)
 
     async def job_status(self, execution_id: str, project_id: str | None = None) -> JobStatus:
         """Read bounded live output without opening a new executor or waiting for the job."""
-        execution = self.get(execution_id, project_id)
-        if execution.kind != "job":
-            raise WorkerError(ErrorKind.NOT_FOUND, f"no job {execution_id}")
-        result = execution.result
-        if result is not None:
-            error = result.error
-            if error is not None:
-                error = ErrorInfo(kind=error.kind, message=_text(error.message, 4096) or "")
-            compact = result.model_copy(
-                update={
-                    "stdout": None,
-                    "stderr": None,
-                    "outputs": (),
-                    "written_files": (),
-                    "notices": (),
-                    "error": error,
-                }
-            )
-            return JobStatus(
-                execution=execution.model_copy(update={"result": compact}),
-                stdout=_job_stream(result.stdout),
-                stderr=_job_stream(result.stderr),
-            )
-        live = self._live.get(execution_id)
-        channel = live.channel if live is not None else None
-        if live is None or channel is None or channel.closed:
-            return JobStatus(execution=execution)
-        reply = await channel.request("job_status", execution=execution_id, reply_timeout=10)
-        cpu = reply.get("cpu_seconds")
-        cpu = (
-            float(cpu)
-            if isinstance(cpu, int | float) and not isinstance(cpu, bool) and 0 <= cpu <= 1e15
-            else None
-        )
-        memory = integer(reply.get("memory_bytes"), 0, 2**62)
-        execution = self.get(execution_id)
-        if execution.result is not None:
-            return await self.job_status(execution_id, project_id)
-        return JobStatus(
-            execution=execution,
-            stdout=_stream(reply.get("stdout"), "stdout", min(live.limit, 16384)),
-            stderr=_stream(reply.get("stderr"), "stderr", min(live.limit, 16384)),
-            cpu_seconds=cpu,
-            memory_bytes=memory,
-        )
+        return await self._journal.job_status(execution_id, project_id)
 
-    async def events(
+    def events(
         self, execution_id: str, after: int, *, heartbeat: float | None = None
     ) -> AsyncGenerator[Event | None, None]:
-        """Yield the events after ``after``, then new ones, ending with the result.
-
-        While nothing happens, ``None`` comes every ``heartbeat`` seconds. The
-        stream also ends when the execution is over, whatever ``after`` was, and
-        without a result once ``end_streams`` was called.
-        """
-        self.get(execution_id)
-        while True:
-            live = self._live.get(execution_id)
-            changed = live.changed if live is not None else None
-            over = live is None or live.execution.state in TERMINAL_STATES or self._streams_ended
-            while True:
-                try:
-                    page = self.store.events_after(execution_id, after, EVENT_PAGE)
-                except ValidationError as exc:
-                    raise WorkerError(
-                        ErrorKind.INTERNAL, f"a stored event of {execution_id} is unreadable"
-                    ) from exc
-                for event in page:
-                    yield event
-                    after = event.seq
-                    if isinstance(event, ResultEvent):
-                        return
-                if len(page) < EVENT_PAGE:
-                    break
-            if over or changed is None:
-                return
-            # Every reader shares the future: one that goes away must not cancel it.
-            if heartbeat is None:
-                await asyncio.shield(changed)
-                continue
-            try:
-                await asyncio.wait_for(asyncio.shield(changed), heartbeat)
-            except TimeoutError:
-                yield None
+        """Yield the events after ``after``, then new ones, ending with the result."""
+        return self._journal.events(execution_id, after, heartbeat=heartbeat)
 
     def end_streams(self) -> None:
-        """End every event stream, so that shutdown does not wait for its readers.
-
-        Readers ask again with ``after``, from this worker once it runs again.
-        """
-        self._streams_ended = True
-        for live in self._live.values():
-            self._changed(live)
+        """End every event stream, so that shutdown does not wait for its readers."""
+        self._journal.end_streams()
 
     async def wait(self, execution_id: str) -> Execution:
         """The execution once it is terminal."""
-        while True:
-            live = self._live.get(execution_id)
-            if live is None:
-                return self.get(execution_id)
-            if live.execution.state in TERMINAL_STATES:
-                return live.execution
-            # Every waiter shares the future: one that goes away must not cancel it.
-            await asyncio.shield(live.changed)
+        return await self._journal.wait(execution_id)
 
     async def cancel(self, execution_id: str, project_id: str | None = None) -> Execution:
         execution = self.get(execution_id, project_id)
-        live = self._live.get(execution_id)
+        live = self._journal.live.get(execution_id)
         if live is None or live.execution.state in TERMINAL_STATES or live.final is not None:
             return execution
         already_requested = live.cancel_requested
@@ -1656,7 +1389,7 @@ class ExecutionManager:
                 if live.execution.state not in TERMINAL_STATES:
                     raise
         elif not live.dispatched:
-            self._finish(
+            self._journal.finish(
                 live,
                 ExecutionState.CANCELLED,
                 Result(
@@ -1678,7 +1411,7 @@ class ExecutionManager:
     async def _send_cancel(self, live: Live) -> None:
         if live.execution.state not in (ExecutionState.CANCELLING, *TERMINAL_STATES):
             live.execution = live.execution.model_copy(update={"state": ExecutionState.CANCELLING})
-            self._state(live, ExecutionState.CANCELLING)
+            self._journal.state(live, ExecutionState.CANCELLING)
             self.store.update_execution(live.execution)
         # Only the executor it was sent to has it; never start another one to cancel.
         channel = live.channel
@@ -1696,7 +1429,7 @@ class ExecutionManager:
         with self._usability.closing_session(context):
             jobs = [
                 job
-                for job in self._running_jobs(context.environment_id)
+                for job in self._journal.running_jobs(context.environment_id)
                 if job.context.project_id == context.project_id
                 and job.context.session_id == context.session_id
             ]
@@ -1770,7 +1503,7 @@ class ExecutionManager:
             found = await self._read_range(
                 channel, request, request.offset, request.length, hashed=True
             )
-            return _checked(
+            return checked(
                 FileContent,
                 path=request.path,
                 sha256=found.sha256,
@@ -1807,7 +1540,7 @@ class ExecutionManager:
                     self._tell(context, notices)
             else:
                 reply = await channel.request("write", session=context.session_id, **fields)
-            return _checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
+            return checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         context = request.context
@@ -1821,7 +1554,7 @@ class ExecutionManager:
             for entry in entries:
                 item = cast(dict[str, Any], entry) if isinstance(entry, dict) else {}
                 listed.append(
-                    _checked(
+                    checked(
                         FileEntry,
                         name=item.get("name"),
                         type=item.get("type"),
@@ -1843,10 +1576,6 @@ class ExecutionManager:
         return self._publication.artifact(artifact_id, project_id)
 
 
-def _size(text: str) -> int:
-    return len(text.encode("utf-8", "replace"))
-
-
 def _held(notices: list[str]) -> list[str]:
     """The latest notices, within ``MAX_HELD_NOTICES`` and ``MAX_HELD_BYTES``."""
     kept: list[str] = []
@@ -1863,102 +1592,3 @@ def _in_shared(path: str) -> bool:
     """Whether a file request's path is in the project's shared area (D79)."""
     normal = posixpath.normpath(path)
     return normal == "shared" or normal.startswith("shared/")
-
-
-def _checked[Model: BaseModel](model: type[Model], **fields: Any) -> Model:
-    """A reply from the executor as a contract model; a malformed one is an internal error."""
-    try:
-        return model.model_validate(fields)
-    except ValidationError as exc:
-        raise WorkerError(
-            ErrorKind.INTERNAL, f"the executor sent a malformed reply ({model.__name__})"
-        ) from exc
-
-
-def _job_stream(stream: StreamOutput | None) -> StreamOutput | None:
-    if stream is None:
-        return None
-    text = _text(stream.text, 16384) or ""
-    return stream.model_copy(
-        update={"text": text, "truncated": stream.truncated or text != stream.text}
-    )
-
-
-def _stream(raw: object, name: str, limit: int) -> StreamOutput | None:
-    """A stream's summary; its text keeps its head and tail within three times the limit."""
-    if not isinstance(raw, dict):
-        return None
-    raw = cast(dict[str, Any], raw)
-    text = _text(raw.get("text"), 3 * limit)
-    total = integer(raw.get("total_bytes"), 0, 2**62)
-    if text is None or total is None:
-        return None
-    truncated = raw.get("truncated") is True or text is not raw.get("text")
-    return StreamOutput.model_validate(
-        {"name": name, "text": text, "total_bytes": total, "truncated": truncated}
-    )
-
-
-def _outputs(raw: object, limit: int) -> tuple[RichOutput, ...]:
-    """Rich outputs up to the limit; a note stands for those beyond it."""
-    outputs: list[RichOutput] = []
-    spent, omitted = 0, 0
-    for item in cast(list[object], raw) if isinstance(raw, list) else []:
-        try:
-            output = RichOutput.model_validate(item)
-        except ValidationError:
-            continue
-        spent += sum(_size(value) for value in output.data.values())
-        if spent > limit + 65536:
-            omitted += 1
-            continue
-        outputs.append(output)
-    if omitted:
-        note = f"[{omitted} outputs omitted: over the output limit]"
-        outputs.append(RichOutput(type="display", data={"text/plain": note}))
-    return tuple(outputs)
-
-
-def _error(raw: object) -> ErrorInfo | None:
-    if not isinstance(raw, dict):
-        return None
-    raw = cast(dict[str, Any], raw)
-    lines = raw.get("traceback")
-    traceback = cast(list[object], lines)[-MAX_TRACEBACK_LINES:] if isinstance(lines, list) else []
-    return ErrorInfo.model_validate(
-        {
-            "kind": raw.get("kind"),
-            "message": _text(raw.get("message"), MAX_ERROR_TEXT) or "",
-            "name": _text(raw.get("name"), 256),
-            "value": _text(raw.get("value"), MAX_ERROR_TEXT),
-            "traceback": [_text(line, MAX_TRACEBACK_LINE) or "" for line in traceback],
-        }
-    )
-
-
-def _shrunk(result: Result) -> Result:
-    """The result without its bulk, for when it is too large to store as reported."""
-    note = "[omitted: the result was too large to store]"
-
-    def stream(output: StreamOutput | None) -> StreamOutput | None:
-        return (
-            None if output is None else output.model_copy(update={"text": note, "truncated": True})
-        )
-
-    error = result.error
-    if error is not None:
-        error = error.model_copy(
-            update={"message": error.message[:1000], "value": None, "traceback": ()}
-        )
-    return result.model_copy(
-        update={
-            "stdout": stream(result.stdout),
-            "stderr": stream(result.stderr),
-            "outputs": (RichOutput(type="display", data={"text/plain": note}),)
-            if result.outputs
-            else (),
-            "error": error,
-            "written_files": (),
-            "written_files_truncated": bool(result.written_files),
-        }
-    )

@@ -41,6 +41,7 @@ from sandbox_science.contracts import (
     StreamEvent,
 )
 from sandbox_science.testing import eventually
+from sandbox_science.worker import journal as journal_module
 from sandbox_science.worker import manager as manager_module
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, OpenShellBackend
@@ -590,7 +591,7 @@ async def test_m3_replay_reads_the_store_a_page_at_a_time(
 ) -> None:
     script = "for i in $(seq 1 12); do echo $i; sleep 0.02; done"
     execution = await worker.run("op-many", kind="shell", script=script)
-    monkeypatch.setattr(manager_module, "EVENT_PAGE", 2)
+    monkeypatch.setattr(journal_module, "EVENT_PAGE", 2)
     limits: list[int] = []
     events_after = worker.manager.store.events_after
 
