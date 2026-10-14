@@ -945,7 +945,7 @@ async def test_reconnect_keeps_existing_watchdog_and_replaces_old_poller(worker:
     channel = live.channel
     assert channel is not None
     # A live recovery must never add another grace period or replace its deadline.
-    await worker.manager._recover("env1", [live])
+    await worker.manager._recover("env1")
     assert live.watchdog is watchdog
     stale = asyncio.create_task(asyncio.Event().wait())
     worker.manager._pollers["env1"][1].cancel()
