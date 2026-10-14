@@ -71,7 +71,6 @@ it('shows ambiguous anchored prose as diagnostic without hiding the warning', ()
       sessionId: 's',
       finding,
       changed: async () => {},
-      read: async () => {},
     },
   }).body;
   expect(html).toContain('Conflicting anchored document macro contexts');

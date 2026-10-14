@@ -9,7 +9,9 @@
   import { guardedWrite } from '../lib/mutation';
   import { emptyList } from '../lib/pagedList';
   import { idle, submit } from '../lib/submit';
+  import { EvidenceText } from '../lib/evidenceText';
   import ErrorMessage from './ErrorMessage.svelte';
+  import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
   import Markdown from '../lib/Markdown.svelte';
   import ResponseBody from './ResponseBody.svelte';
   import { macroSet } from '../lib/macros';
@@ -18,13 +20,11 @@
     sessionId,
     finding,
     changed,
-    read,
   }: {
     projectId: string;
     sessionId: string;
     finding: Finding;
     changed: () => Promise<void>;
-    read: (review: string, evidence: string) => Promise<void>;
   } = $props();
   const initial = untrack(() => finding);
   const macros = $derived(
@@ -41,6 +41,11 @@
   const history = new Earlier(
     pages,
     findingHistory((before) => reviews.finding(projectId, sessionId, finding.finding_id, before)),
+  );
+  // Pinned evidence a reviewer anchored the finding to, read here, slice by slice.
+  const slices = $state(emptyList<string, number>());
+  const pinned = new EvidenceText(slices, (review, item, start) =>
+    reviews.evidence(projectId, sessionId, review, item, start),
   );
   // Mechanical evidence of one check (and formula), keyed by both.
   const evidence = $state(noDetail<string, string>());
@@ -113,13 +118,20 @@
           onclick={() => mathEvidence(anchor.check!, anchor.math)}
           >Read mechanical evidence {index + 1}</button
         >{:else if anchor.review && anchor.evidence}<button
-          onclick={() => read(anchor.review!, anchor.evidence!)}>Read evidence {index + 1}</button
+          onclick={() => pinned.read(anchor.review!, anchor.evidence!)}
+          >Read evidence {index + 1}</button
         >{/if}
       <pre>{JSON.stringify(anchor, null, 2)}</pre>{/each}
   </details>
   <!-- Each failure shows beside its own control, so a newer one is never hidden. -->
   {#if evidence.value}<pre aria-label="Mechanical math evidence">{evidence.value}</pre>{/if}
   {#if evidence.error}<ErrorMessage error={evidence.error} />{/if}
+  {#if slices.items.length}<PinnedEvidencePreview
+      text={pinned.text()}
+    />{#if slices.next !== null}<button onclick={() => pinned.list.more()}
+        >Read next evidence slice</button
+      >{/if}{/if}
+  {#if slices.error}<ErrorMessage error={slices.error} />{/if}
   <button disabled={busy || !history.available()} onclick={() => history.read()}
     >{history.started ? 'Load earlier finding history' : 'Read finding history'}</button
   >

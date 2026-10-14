@@ -7,6 +7,7 @@
  * one (pagedList.ts).
  */
 import type { Json } from './api';
+import { EvidenceText } from './evidenceText';
 import { emptyList, PagedList, type ListState } from './pagedList';
 import {
   reviews,
@@ -65,25 +66,15 @@ export function panelBusy(panel: ReviewPanel): boolean {
   );
 }
 
-/** The panel's first failure to show. */
-export function panelError(panel: ReviewPanel): unknown {
-  const lists = [panel.reviews, panel.findings, panel.checks, panel.evidence, panel.records];
-  const failed = [...lists, panel.text, panel.math].find((list) => list.error !== null);
-  return failed?.error ?? panel.requestError;
-}
-
 export class ReviewBrowser {
   readonly reviews: PagedList<Review, string>;
   readonly findings: PagedList<Finding, string>;
   readonly checks: PagedList<MathJob, string>;
   readonly evidence: PagedList<Evidence, number>;
   readonly records: PagedList<Json, number>;
-  readonly text: PagedList<string, number>;
+  readonly text: EvidenceText;
   readonly math: PagedList<string, number>;
   #review = '';
-  /** The text shown, whose next slice continues it, and the one asked for to replace it. */
-  #reading = { review: '', evidence: '' };
-  #asked = { review: '', evidence: '' };
   #askedCheck = '';
 
   constructor(
@@ -144,18 +135,11 @@ export class ReviewBrowser {
       const page = await api.records(...at(), this.#review, after ?? 0);
       return { items: page.records as unknown as Json[], next: page.next_after };
     });
-    // A text (or math check) asked for replaces the one shown only when its first page is
-    // shown: after a failure, the next slice still continues the text on screen, so two
-    // texts are never spliced together.
-    this.text = new PagedList(panel.text, async (start) => {
-      const key = start === null ? this.#asked : this.#reading;
-      const slice = await api.evidence(...at(), key.review, key.evidence, start ?? 0);
-      return {
-        items: [slice.text],
-        next: slice.next_start,
-        shown: () => void (this.#reading = key),
-      };
-    });
+    this.text = new EvidenceText(panel.text, (review, evidence, start) =>
+      api.evidence(...at(), review, evidence, start),
+    );
+    // A math check asked for replaces the one shown only when its first page is shown, as
+    // an evidence text does (evidenceText.ts).
     this.math = new PagedList(panel.math, async (after) => {
       const check = after === null ? this.#askedCheck : panel.mathCheck;
       const page = await api.mathEvidence(...at(), check, after ?? 0);
@@ -181,15 +165,14 @@ export class ReviewBrowser {
     this.#review = review.review_id;
     this.panel.selected = review;
     this.records.clear();
-    this.text.clear();
+    this.text.list.clear();
     this.evidence.clear(); // the last review's evidence and cursor never serve this one
     return this.evidence.reload();
   }
 
   /** Read an evidence text from its start, in place of the one being read. */
   read(review: string, evidence: string): Promise<void> {
-    this.#asked = { review, evidence };
-    return this.text.reload();
+    return this.text.read(review, evidence);
   }
 
   /** Read a math check's evidence from its first page, in place of the one being read. */
