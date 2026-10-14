@@ -53,7 +53,7 @@ without raw exception text and do not relabel installer/recovery outcomes.
 
 At most eight observation append owners are active. Their actual threads remain
 owned through repeated caller cancellation and shutdown before the borrowed
-Permissions/EventStore writer may close. The observer never closes that writer.
+Permissions/EventStore writer may close. The observer never closes that writer. A terminal operation releases its environment queue turn before awaiting the final observation. Its task remains registered for environment forget and shutdown until the actual append drains; the normal retention timer begins afterward. Final observations from different operations can therefore arrive in a different order from their canonical transitions.
 The existing event-store five-second lock timeout is not a hard fsync/thread
 termination deadline: observation waits and cleanup can last longer while
 admitted host work drains. Per-record/in-flight bounds do not establish a total

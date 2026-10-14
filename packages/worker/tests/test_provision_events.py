@@ -25,6 +25,7 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.event_store import StoreReader, verify_store
 from sandbox_science.policy.approvals import Approvals
+from sandbox_science.worker import provisioner as provisioner_module
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.catalog import Catalog
 from sandbox_science.worker.manager import ExecutionManager
@@ -357,6 +358,99 @@ async def test_observation_failures_do_not_change_original_operation_outcome_or_
         assert "SYNTHETIC_PRIVATE_WRITER_ERROR" not in caplog.text
         assert not permission.path.exists()
     finally:
+        await provisioner.close()
+        permission.close()
+        store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_following", [False, True])
+async def test_terminal_observation_releases_queue_before_append_but_remains_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, has_following: bool
+):
+    monkeypatch.setattr(provisioner_module, "RETAIN", 0)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingTerminal(Permissions):
+        def observation(self, kind, payload):
+            if kind == "provision.finished":
+                entered.set()
+                assert release.wait(5)
+            return 1
+
+    store = Store(tmp_path / "worker.sqlite3")
+    permission = BlockingTerminal(tmp_path / "events.sqlite3")
+    manager = SimpleNamespace(
+        store=store,
+        blobs=Blobs(tmp_path / "blobs"),
+        max_artifact_size=65536,
+        revisions=SimpleNamespace(),
+        refresh_package_gate=lambda env: None,
+    )
+    provisioner = ScriptedProvisioner(
+        cast(ExecutionManager, manager),
+        catalog=cast(Catalog, SimpleNamespace()),
+        policies=None,
+        permissions=permission,
+        cache=None,
+        clock=lambda: NOW,
+    )
+    source = record()
+    store.insert_provision(source, "a" * 64)
+    op = _Op(source, asyncio.get_running_loop().create_future())
+    following = _Op(
+        source.model_copy(update={"provision_id": "prv-" + "b" * 24}),
+        asyncio.get_running_loop().create_future(),
+    )
+    provisioner._ops[PROVISION] = op
+    provisioner._queues["environment"] = [PROVISION]
+    if has_following:
+        provisioner._ops[following.record.provision_id] = following
+        provisioner._queues["environment"].append(following.record.provision_id)
+    op.turn.set()
+    task = asyncio.create_task(provisioner._run(op))
+    op.task = task
+    drain = None
+    try:
+        async with asyncio.timeout(5):
+            while not entered.is_set():
+                await asyncio.sleep(0)
+        assert op.record.state is ProvisionState.FINISHED
+        assert store.provision(PROVISION) == op.record
+        expected = (following.record.provision_id,) if has_following else ()
+        assert (
+            tuple(x.provision_id for x in provisioner.queue("environment").operations) == expected
+        )
+        assert following.turn.is_set() is has_following
+        assert not task.done()
+        assert len(provisioner.events._work) == 1
+        tick = asyncio.get_running_loop().create_future()
+        asyncio.get_running_loop().call_later(0, tick.set_result, None)
+        await tick
+        assert provisioner._ops.get(PROVISION) is op
+        drain = asyncio.create_task(
+            provisioner.close() if has_following else provisioner.forget("environment")
+        )
+        await asyncio.sleep(0)
+        assert not drain.done()
+        if has_following:
+            drain.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        if has_following:
+            await asyncio.gather(drain, return_exceptions=True)
+        else:
+            await drain
+        assert not provisioner.events._work
+        assert store.provision(PROVISION) == op.record
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        if drain is not None:
+            await asyncio.gather(drain, return_exceptions=True)
         await provisioner.close()
         permission.close()
         store.close()
