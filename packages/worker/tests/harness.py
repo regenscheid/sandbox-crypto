@@ -48,6 +48,7 @@ from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
 from sandbox_science.worker.timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
+from sandbox_science.worker.usability import EnvironmentUse
 
 TOKEN = "test-secret-worker-pool-token-0000000000"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -123,7 +124,12 @@ class ManagerView:
         return dict(self.manager._kernel_observations)
 
     def closing_sessions(self) -> dict[tuple[str, str, str], int]:
-        return dict(self.manager._closing_sessions)
+        """Session closes in progress, by project, environment and session."""
+        return {
+            (project_id, environment_id, session_id): count
+            for environment_id, use in self.manager._usability._uses.items()
+            for (project_id, session_id), count in use.closing_sessions.items()
+        }
 
     def captures(self) -> int:
         """Artifact captures running on the worker's side."""
@@ -147,17 +153,17 @@ class ManagerView:
         await self.manager._recover(environment_id, startup=startup)
 
     def quarantine(self, environment_id: str) -> None:
-        self.manager._quarantined.add(environment_id)
+        self.manager._usability.quarantine(environment_id)
 
     def release_quarantine(self, environment_id: str) -> None:
-        self.manager._quarantined.discard(environment_id)
+        self.manager._usability.lift_quarantine(environment_id)
 
     def quarantined(self, environment_id: str) -> bool:
-        return environment_id in self.manager._quarantined
+        return self.manager._usability.use(environment_id).quarantined
 
     def reopen(self) -> None:
         """Let a closed manager start again, as a new worker process would."""
-        self.manager._closing = False
+        self.manager._usability.closing = False
 
     def make_unusable(
         self,
@@ -168,20 +174,22 @@ class ManagerView:
         context: ExecutionContext,
     ) -> None:
         """Put the environment of ``context`` in a state where it may not be used."""
-        environment_id = context.environment_id
+        usability = self.manager._usability
         if condition == "shutdown":
-            patch.setattr(self.manager, "_closing", True)
-        elif condition == "recovering":
-            patch.setattr(self.manager, "_recovering", {environment_id})
+            patch.setattr(usability, "closing", True)
+            return
+        use = EnvironmentUse()
+        if condition == "recovering":
+            use.recovering = True
         elif condition == "quarantined":
-            patch.setattr(self.manager, "_quarantined", {environment_id})
+            use.quarantined = True
         elif condition == "released":
-            patch.setattr(self.manager, "_released_environments", {environment_id: 1})
+            use.releases = 1
         elif condition == "fence":
-            patch.setattr(self.manager, "_daemon_fences", {environment_id: asyncio.current_task()})
+            use.fence = asyncio.current_task()
         else:
-            key = (context.project_id, environment_id, context.session_id)
-            patch.setattr(self.manager, "_closing_sessions", {key: 1})
+            use.closing_sessions[context.project_id, context.session_id] = 1
+        patch.setitem(usability._uses, context.environment_id, use)
 
     def wrap_apply(
         self,
