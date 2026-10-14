@@ -43,10 +43,9 @@ class RevisionPackage(Bounded):
             not isinstance(self.package, PipDistribution)
             or self.location != self.package.location
             or self.name != re.sub(r"[-_.]+", "-", self.package.name).lower()
-            or self.license.declared is not None
-            or self.license.agpl is not None
+            or self.license.declared != self.package.license
         ):
-            raise ValueError("pip identity or unknown license does not bind its package")
+            raise ValueError("pip identity or declared license does not bind its package")
         return self
 
 

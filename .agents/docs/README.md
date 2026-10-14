@@ -1,5 +1,7 @@
 # Planning analyses and research record
 
+The [parallel pip license metadata slice](../../docs/PIP-LOCKFILE-LICENSES.md) carries bounded declarations from installed core metadata through retained lockfiles and existing package/comparison views. Original stored bytes remain unchanged. Source review and fresh11,264 Python/820 web/42 post-build checks,both builds and required static gates pass. [Compact24-record evidence](agent-reports/pip-lockfile-licenses-evidence-2026-10-13.json) preserves actual outcomes and original corrected failures. Fresh CI/delivery remain pending; no install/runtime or license verification is inferred.
+
 The internal [child-attempt recovery journal](../../docs/CHILD-ATTEMPTS.md) preserves exact pending calls and partial transcripts without repeating unknown work. Its [compact source validation record](agent-reports/delegated-child-attempts-evidence-2026-10-13.json) contains12 exact originals: nine actual gate receipts, full11,223-test stdout and two independent review records. It enables no child controller, model or worker route.
 
 This folder keeps the agent source investigations behind the Sandbox Science plan, and records of runtime validation. Source inspection and planning are distinct from runtime validation: only the lab records below report observed behaviour.

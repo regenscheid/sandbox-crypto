@@ -4,6 +4,18 @@
   "status": "planning and source inspection, isolated delegation-record and original run/kernel-binding validation, bounded scripted planning-evaluator calibration, thirty-three OpenShell runtime lab records, document editing, comments, consistency review and document math findings, comment and reply math findings, MAIN explanation math findings, pinned artifact review and failed-run CLI/browser acceptance , GUI distribution-notice HTTP acceptance and original-LaTeX native clipboard browser acceptance and isolated math distribution build validation, project macro native browser and actual KaTeX acceptance, a proposed document mirror interface plan and a source-only document writer-guard investigation (babbage, 2026-10-10 to 2026-10-13). Earlier plan snapshots are git tags plan-03-pre-review and plan-04-reviewed.",
   "files": [
     {
+      "path": "agent-reports/pip-lockfile-licenses-evidence-2026-10-13.json",
+      "category": "local-validation-evidence",
+      "bytes": 69545,
+      "sha256": "b770106a62c6af0a6dbf88992382db5a9afcbb231d99c358eee019221fb6fc04"
+    },
+    {
+      "path": "../../docs/PIP-LOCKFILE-LICENSES.md",
+      "category": "implementation-boundary",
+      "bytes": 3882,
+      "sha256": "7867930003074fd012e602a5ce5497f1e76f159e74881db622383d256d035c40"
+    },
+    {
       "path": "../../docs/CHILD-ATTEMPTS.md",
       "category": "implementation-boundary",
       "bytes": 8867,
@@ -120,8 +132,8 @@
     {
       "path": "../../docs/PROVISIONING-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 11722,
-      "sha256": "5ce736436279e9bb9637e85091eaa84e0b197dcb5ada19404da315307fa71eba"
+      "bytes": 11792,
+      "sha256": "acfbf5d8aa9c6ba5029ed61a53a9936aaa2d58348d4e1fd021c483a5ea639ef9"
     },
     {
       "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
@@ -186,8 +198,8 @@
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 32634,
-      "sha256": "4a4e5f4feb6e26875ebcf19afdd787713d37db720ec38bb9d8cbc7247aee82a0"
+      "bytes": 33227,
+      "sha256": "689787b8d82c1e492e5b063fdbd01bd949d124631baac95fd3b2807b62837796"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",

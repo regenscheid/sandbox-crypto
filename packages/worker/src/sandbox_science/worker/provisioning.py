@@ -41,6 +41,7 @@ import time
 import urllib.parse
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from email.parser import HeaderParser
 from pathlib import Path
 from typing import Any, Final, NoReturn, cast
 
@@ -733,7 +734,7 @@ def _distributions(directory: str, location: str, owned: set[str]) -> tuple[list
         if described is None:
             skipped += 1
             continue
-        project, version = described
+        project, version, license_text = described
         url, sha256 = _direct_url(path) if directory_entry else (None, None)
         found.append(
             {
@@ -743,12 +744,13 @@ def _distributions(directory: str, location: str, owned: set[str]) -> tuple[list
                 "location": location,
                 "url": url,
                 "sha256": sha256,
+                "license": license_text,
             }
         )
     return found, skipped
 
 
-def _metadata(path: str, name: str, directory: bool) -> tuple[str, str] | None:
+def _metadata(path: str, name: str, directory: bool) -> tuple[str, str, str | None] | None:
     """A distribution's name and version, from its metadata or else its directory's name."""
     source = path
     if directory:
@@ -768,7 +770,39 @@ def _metadata(path: str, name: str, directory: bool) -> tuple[str, str] | None:
         guessed, _, rest = stem.partition("-")
         project = project or _matching(guessed, _NAME)
         version = version or _matching(rest.split("-py", 1)[0], _VERSION)
-    return (project, version) if project and version else None
+    return (project, version, _declared_license(data)) if project and version else None
+
+
+def _declared_license(data: bytes | None) -> str | None:
+    """One bounded installed declaration, never license files or executable metadata.
+
+    License-Expression takes precedence even when it cannot be retained. Multiple
+    declarations stay unknown rather than inventing a choice or an AND/OR expression.
+    Header folding is unfolded; multiline license bodies are not truncated to a claim.
+    """
+    if data is None or len(data) > 64 * 1024:
+        return None
+    try:
+        metadata = HeaderParser().parsestr(data.decode("utf-8"), headersonly=True)
+    except (UnicodeError, ValueError):
+        return None
+    if metadata.defects:
+        return None
+    for key in ("License-Expression", "License"):
+        values = metadata.get_all(key)
+        if values is not None:
+            return _license_header(values[0]) if len(values) == 1 else None
+    classifiers = [
+        value for value in metadata.get_all("Classifier", []) if value.startswith("License ::")
+    ]
+    return _license_header(classifiers[0]) if len(classifiers) == 1 else None
+
+
+def _license_header(value: str) -> str | None:
+    unfolded = re.sub(r"\r?\n[ \t]+", " ", value).strip(" \t")
+    if unfolded.upper() == "UNKNOWN":
+        return None
+    return unfolded if _LICENSE.fullmatch(unfolded) else None
 
 
 def _direct_url(path: str) -> tuple[str | None, str | None]:

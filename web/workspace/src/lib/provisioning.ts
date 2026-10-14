@@ -54,7 +54,7 @@ export type LockfileRef = NonNullable<RevisionSummary['lockfile']>;
 export interface LockfilePin { revision: number; record_sha256: string; lockfile: LockfileRef | null }
 export interface LockfileHeader extends LockfileRef { python: string | null; platform: string | null; skipped: number }
 export interface CondaEntry { name: string; version: string; build: string; channel: string | null; subdir: string | null; file: string | null; sha256: string | null; md5: string | null; license: string | null }
-export interface PipEntry { name: string; version: string; installer: string | null; location: 'prefix' | 'user'; url: string | null; sha256: string | null }
+export interface PipEntry { name: string; version: string; installer: string | null; location: 'prefix' | 'user'; url: string | null; sha256: string | null; license?: string | null }
 export interface DeclaredLicense { declared: string | null; agpl: boolean | null }
 export interface LockfileDifference {
   ecosystem: 'conda' | 'pip'; name: string; location: 'prefix' | 'user' | null; change: 'added' | 'removed' | 'changed';
@@ -167,10 +167,10 @@ function condaEntry(v: unknown): v is CondaEntry {
   return object(v, ['name', 'version', 'build', 'channel', 'subdir', 'file', 'sha256', 'md5', 'license']) && typeof v.name === 'string' && packagePattern.test(v.name) && typeof v.version === 'string' && versionPattern.test(v.version) && typeof v.build === 'string' && /^[A-Za-z0-9_.+]{1,256}$/.test(v.build) && nullable(v.channel, v => text(v, 2048) && /^(?:[A-Za-z0-9_][A-Za-z0-9._-]{0,255}(?:\/label\/[A-Za-z0-9._-]{1,255})?|(?:https?|file):\/\/[!-~]+)$/.test(v)) && nullable(v.subdir, v => text(v, 128) && /^[a-z0-9]+(?:-[a-z0-9_]+)?$/.test(v)) && nullable(v.file, v => typeof v === 'string' && /^[A-Za-z0-9_][A-Za-z0-9._+!-]{0,250}\.(?:conda|tar\.bz2)$/.test(v)) && nullable(v.sha256, digest) && nullable(v.md5, v => typeof v === 'string' && /^[0-9a-f]{32}$/.test(v)) && nullable(v.license, v => typeof v === 'string' && /^[ -~]{1,256}$/.test(v));
 }
 function pipEntry(v: unknown): v is PipEntry {
-  return object(v, ['name', 'version', 'installer', 'location', 'url', 'sha256']) && typeof v.name === 'string' && packagePattern.test(v.name) && typeof v.version === 'string' && versionPattern.test(v.version) && nullable(v.installer, v => typeof v === 'string' && /^[A-Za-z0-9_.+-]{1,64}$/.test(v)) && choice(v.location, ['prefix', 'user']) && nullable(v.url, v => text(v, 2048) && /^(?:https?|file|(?:git|hg|svn|bzr)\+(?:https?|ssh|file)):\/\/[!-~]+$/.test(v)) && nullable(v.sha256, digest);
+  return (object(v, ['name', 'version', 'installer', 'location', 'url', 'sha256']) || object(v, ['name', 'version', 'installer', 'location', 'url', 'sha256', 'license'])) && (!Object.hasOwn(v, 'license') || nullable(v.license, v => typeof v === 'string' && /^[ -~]{1,256}$/.test(v))) && typeof v.name === 'string' && packagePattern.test(v.name) && typeof v.version === 'string' && versionPattern.test(v.version) && nullable(v.installer, v => typeof v === 'string' && /^[A-Za-z0-9_.+-]{1,64}$/.test(v)) && choice(v.location, ['prefix', 'user']) && nullable(v.url, v => text(v, 2048) && /^(?:https?|file|(?:git|hg|svn|bzr)\+(?:https?|ssh|file)):\/\/[!-~]+$/.test(v)) && nullable(v.sha256, digest);
 }
 function declared(v: unknown, expected: string | null): v is DeclaredLicense {
-  return object(v, ['declared', 'agpl']) && v.declared === expected && (expected === null ? v.agpl === null : typeof v.agpl === 'boolean');
+  return object(v, ['declared', 'agpl']) && v.declared === expected && (expected === null ? v.agpl === null : v.agpl === /agpl|affero/i.test(expected));
 }
 export function differenceKey(v: LockfileDifference): string {return [v.ecosystem, v.location ?? '', v.name].join('\0');}
 function difference(v: unknown): v is LockfileDifference {
@@ -179,7 +179,7 @@ function difference(v: unknown): v is LockfileDifference {
     const entry = v[side], license = v[`${side}_license`];
     if (entry === null) {if (license !== null) return false; continue;}
     if (v.ecosystem === 'conda') {if (!condaEntry(entry) || entry.name !== v.name || !declared(license, entry.license)) return false;}
-    else if (!pipEntry(entry) || entry.name.replace(/[-_.]+/g, '-').toLowerCase() !== v.name || entry.location !== v.location || !declared(license, null)) return false;
+    else if (!pipEntry(entry) || entry.name.replace(/[-_.]+/g, '-').toLowerCase() !== v.name || entry.location !== v.location || !declared(license, entry.license ?? null)) return false;
   }
   if (v.change === 'added' ? v.before !== null || v.after === null : v.change === 'removed' ? v.before === null || v.after !== null : v.before === null || v.after === null) return false;
   const a = (v.before ?? {}) as Record<string, unknown>, b = (v.after ?? {}) as Record<string, unknown>;
@@ -213,7 +213,7 @@ export function packageIdentity(v: RevisionPackagePage): PackageIdentity {return
 function revisionPackage(v: unknown): v is RevisionPackage {
   if (!object(v, ['ecosystem', 'name', 'location', 'package', 'license']) || typeof v.name !== 'string' || !packagePattern.test(v.name)) return false;
   if (v.ecosystem === 'conda') return v.location === null && condaEntry(v.package) && v.package.name === v.name && declared(v.license, v.package.license) && (v.package.license === null || v.license.agpl === /agpl|affero/i.test(v.package.license));
-  return v.ecosystem === 'pip' && pipEntry(v.package) && v.location === v.package.location && v.package.name.replace(/[-_.]+/g, '-').toLowerCase() === v.name && declared(v.license, null);
+  return v.ecosystem === 'pip' && pipEntry(v.package) && v.location === v.package.location && v.package.name.replace(/[-_.]+/g, '-').toLowerCase() === v.name && declared(v.license, v.package.license ?? null) && (v.package.license == null || v.license.agpl === /agpl|affero/i.test(v.package.license));
 }
 function packagePage(v: Record<string, unknown>, selected: Extract<Selection, {kind: 'packages'}>): boolean {
   if (!revision(selected.revision) || !count(selected.offset, 40_000) || !object(v, [...common, 'selection', 'status', 'holds', 'header', 'total', 'offset', 'limit', 'next_offset', 'packages']) || !pin(v.selection, selected.revision) || !choice(v.status, ['complete', 'held']) || !Array.isArray(v.holds) || v.holds.length > 1 || !v.holds.every(h => choice(h, ['lockfile_unrecorded', 'blob_missing', 'unsupported_format', 'skipped_entries', 'input_limit'])) || !nullable(v.header, h => header(h, selected.revision.lockfile)) || v.offset !== selected.offset || v.limit !== 8 || !Array.isArray(v.packages)) return false;
