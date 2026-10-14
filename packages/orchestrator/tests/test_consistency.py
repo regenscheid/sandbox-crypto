@@ -1294,14 +1294,57 @@ def test_confirmation_requires_nonempty_reads_and_stops_after_two_rejections(sto
     assert Findings(reviews).get("p", "s", finding["finding_id"])["reflags"] == 2
 
 
+_SEP = r"[\s\"'+]+"
+"""Between SQL words: whitespace, or the quotes and plus of a string split over lines."""
+FINDING_WRITES = re.compile(
+    rf"\b(INSERT({_SEP}OR{_SEP}\w+)?{_SEP}INTO|REPLACE{_SEP}INTO|UPDATE|DELETE{_SEP}FROM)"
+    rf"{_SEP}(main\.)?review_findings\b",
+    re.IGNORECASE,
+)
+
+
 def test_only_the_findings_module_writes_findings() -> None:
-    """One module writes ``review_findings``: the math checks go through ``Findings``."""
+    """One module writes ``review_findings``: the math checks go through ``Findings``.
+    Every Python module and SQL file of the orchestrator counts."""
     root = Path(storage.__file__).resolve().parents[1]
-    # SQL split over string literals still counts: quotes may come between the words.
-    writes = re.compile(r"(UPDATE|INSERT INTO)[\s\"']*review_findings\b")
     writers = sorted(
         str(path.relative_to(root))
-        for path in root.rglob("*.py")
-        if writes.search(path.read_text())
+        for pattern in ("*.py", "*.sql")
+        for path in root.rglob(pattern)
+        if FINDING_WRITES.search(path.read_text())
     )
     assert writers == ["consistency/findings.py"]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '"UPDATE review_findings SET status=?"',
+        '"INSERT INTO review_findings VALUES(?)"',
+        '"INSERT OR REPLACE INTO review_findings VALUES(?)"',
+        '"INSERT OR IGNORE INTO review_findings VALUES(?)"',
+        '"REPLACE INTO review_findings VALUES(?)"',
+        '"DELETE FROM review_findings WHERE finding_id=?"',
+        '"update review_findings set status=?"',
+        '"INSERT " "INTO review_findings VALUES(?)"',
+        '"INSERT INTO "\n    "review_findings(finding_id) VALUES(?)"',
+        '"UPDATE " + "review_findings SET status=?"',
+        '"UPDATE main.review_findings SET status=?"',
+        "CREATE TRIGGER t AFTER INSERT ON x BEGIN DELETE FROM review_findings; END;",
+    ],
+)
+def test_the_writer_guard_sees_each_form_of_write(source: str) -> None:
+    assert FINDING_WRITES.search(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '"SELECT * FROM review_findings"',
+        '"UPDATE review_findings_other SET x=?"',
+        "CREATE TABLE review_findings (finding_id TEXT)",
+        "CREATE TRIGGER t BEFORE UPDATE ON review_findings BEGIN SELECT 1; END;",
+    ],
+)
+def test_the_writer_guard_ignores_reads_and_definitions(source: str) -> None:
+    assert FINDING_WRITES.search(source) is None
