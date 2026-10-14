@@ -39,7 +39,15 @@ from sandbox_science.policy import (
     evaluate_monitors,
     normalize_host,
 )
-from sandbox_science.policy.approvals import Approvals, RequestKey
+from sandbox_science.policy.approvals import (
+    Approvals,
+    Approved,
+    Denied,
+    RequestKey,
+    TimedOut,
+    Unrecorded,
+    Waiting,
+)
 from sandbox_science.policy.openshell import CREDENTIAL_PORT
 from sandbox_science.policy.package_requests import SANDBOX_HEADER
 from sandbox_science.policy.reasons import (
@@ -420,31 +428,10 @@ class PolicyMiddleware:
                 # Without the records no answer is known; the request waits, as before.
                 _log.exception("could not read permission requests from the event store")
         rule = decision.rule or "escalation"
-        answer = self._approvals.answer(target, now)
-        if isinstance(operation, PackageOperation) and operation.kind == "artifact":
-            # A provisioning operation's approved file set (Conda provisioning, CP-8): the
-            # files it lists download to this sandbox under this revision, nothing else. An
-            # answer to this very download that came later still decides it.
-            grant = self._approvals.granted(facts.sandbox_id, loaded.digest, facts.path, now)
-            if grant is not None and (answer is None or answer.seq < grant.seq):
-                extra = {
-                    "approval_seq": grant.seq,
-                    "request_seq": grant.request_seq,
-                    "grant": "packages",
-                }
-                try:
-                    self._record("approved", facts, loaded, decision, operation, extra=extra)
-                except Exception:
-                    _log.exception("could not record approved request %s", facts.request_id)
-                    return _deny(
-                        AUDIT_UNAVAILABLE, "the approved request could not be recorded", decision
-                    )
-                return (Finding("policy_approval", rule, "low"),)
-        if answer is not None and answer.kind == "denial":
-            reason = f"permission request {answer.request_seq} was denied"
-            return _deny(APPROVAL_DENIED, reason, decision)
-        if answer is not None:
-            extra = {"approval_seq": answer.seq, "request_seq": answer.request_seq}
+        resolution = self._approvals.resolve(target, now)
+
+        def approved(extra: Mapping[str, object]) -> Verdict | tuple[Finding, ...]:
+            # An approved request proceeds only once that is recorded.
             try:
                 self._record("approved", facts, loaded, decision, operation, extra=extra)
             except Exception:
@@ -453,32 +440,57 @@ class PolicyMiddleware:
                     AUDIT_UNAVAILABLE, "the approved request could not be recorded", decision
                 )
             return (Finding("policy_approval", rule, "low"),)
-        pending = self._approvals.pending(target)
-        if pending is None:
-            try:
-                seq = self._record("escalation", facts, loaded, decision, operation, target=target)
-            except Exception:
-                # No permission request exists, so the agent must not wait for an approval.
-                _log.exception("could not record escalation of request %s", facts.request_id)
-                return _deny(
-                    AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
+
+        if isinstance(operation, PackageOperation) and operation.kind == "artifact":
+            # A provisioning operation's approved file set (Conda provisioning, CP-8): the
+            # files it lists download to this sandbox under this revision, nothing else. An
+            # answer to this very download that came later still decides it.
+            grant = self._approvals.granted(facts.sandbox_id, loaded.digest, facts.path, now)
+            answered = resolution.answer if isinstance(resolution, Approved | Denied) else None
+            if grant is not None and (answered is None or answered.seq < grant.seq):
+                return approved(
+                    {
+                        "approval_seq": grant.seq,
+                        "request_seq": grant.request_seq,
+                        "grant": "packages",
+                    }
                 )
-            named = f" (permission request {seq})" if seq is not None else ""
-            return _deny(APPROVAL_REQUIRED, decision.reason + named, decision)
-        if not pending.expired(now):
-            reason = f"{decision.reason} (permission request {pending.seq}, still waiting)"
-            return _deny(APPROVAL_REQUIRED, reason, decision)
-        if pending.on_timeout == "alert":
-            extra = {"timed_out_request": pending.seq}
-            try:
-                self._record("alert", facts, loaded, decision, operation, extra=extra)
-            except Exception:
-                _log.exception("could not record alert for request %s", facts.request_id)
-                return _deny(AUDIT_UNAVAILABLE, "the alert could not be recorded", decision)
-            return (Finding("policy_alert", rule, "medium"),)
-        minutes = int(pending.timeout.total_seconds() // 60)
-        reason = f"permission request {pending.seq} was not answered within {minutes} minutes"
-        return _deny(ESCALATION_TIMED_OUT, reason, decision)
+        match resolution:
+            case Denied(answer):
+                reason = f"permission request {answer.request_seq} was denied"
+                return _deny(APPROVAL_DENIED, reason, decision)
+            case Approved(answer):
+                return approved({"approval_seq": answer.seq, "request_seq": answer.request_seq})
+            case Unrecorded():
+                try:
+                    seq = self._record(
+                        "escalation", facts, loaded, decision, operation, target=target
+                    )
+                except Exception:
+                    # No permission request exists, so the agent must not wait for an approval.
+                    _log.exception("could not record escalation of request %s", facts.request_id)
+                    return _deny(
+                        AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
+                    )
+                named = f" (permission request {seq})" if seq is not None else ""
+                return _deny(APPROVAL_REQUIRED, decision.reason + named, decision)
+            case Waiting(pending):
+                reason = f"{decision.reason} (permission request {pending.seq}, still waiting)"
+                return _deny(APPROVAL_REQUIRED, reason, decision)
+            case TimedOut(pending) if pending.on_timeout == "alert":
+                extra = {"timed_out_request": pending.seq}
+                try:
+                    self._record("alert", facts, loaded, decision, operation, extra=extra)
+                except Exception:
+                    _log.exception("could not record alert for request %s", facts.request_id)
+                    return _deny(AUDIT_UNAVAILABLE, "the alert could not be recorded", decision)
+                return (Finding("policy_alert", rule, "medium"),)
+            case TimedOut(pending):
+                minutes = int(pending.timeout.total_seconds() // 60)
+                reason = (
+                    f"permission request {pending.seq} was not answered within {minutes} minutes"
+                )
+                return _deny(ESCALATION_TIMED_OUT, reason, decision)
 
     def _monitor_findings(
         self, facts: HttpRequestFacts, loaded: LoadedPolicy

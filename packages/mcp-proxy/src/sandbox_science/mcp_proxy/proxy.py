@@ -44,7 +44,16 @@ from sandbox_science.policy import (
     PoolCeiling,
     evaluate_mcp_message,
 )
-from sandbox_science.policy.approvals import Approvals, RecordLike, RequestKey
+from sandbox_science.policy.approvals import (
+    Approvals,
+    Approved,
+    Denied,
+    RecordLike,
+    RequestKey,
+    TimedOut,
+    Unrecorded,
+    Waiting,
+)
 from sandbox_science.policy.model import McpServer
 from sandbox_science.policy.openshell import McpVersion
 
@@ -682,61 +691,61 @@ class McpProxy:
             except Exception:
                 # Without the records no answer is known; the call waits, as before.
                 _log.exception("could not read permission requests from the event store")
-        answer = self._approvals.answer(key, now)
-        if answer is not None and answer.kind == "denial":
-            raise RefusalError(
-                APPROVAL_DENIED,
-                f"permission request {answer.request_seq} was denied",
-                data={"request": answer.request_seq},
-            )
-        if answer is not None:
-            payload = {
-                **call.finding(decision),
-                "approval_seq": answer.seq,
-                "request_seq": answer.request_seq,
-            }
-            try:
-                await self._events.record("approved", payload)
-            except Exception as exc:
-                _log.exception("could not record an approved call")
+        match self._approvals.resolve(key, now):
+            case Denied(answer):
                 raise RefusalError(
-                    AUDIT_UNAVAILABLE, "the approved call could not be recorded"
-                ) from exc
-            return
-        pending = self._approvals.pending(key)
-        if pending is None:
-            try:
-                seq = await self._events.record(
-                    "escalation", {**call.finding(decision), "target": key.payload()}
+                    APPROVAL_DENIED,
+                    f"permission request {answer.request_seq} was denied",
+                    data={"request": answer.request_seq},
                 )
-            except Exception as exc:
-                # No permission request exists, so the caller must not wait for an approval.
-                _log.exception("could not record an escalation")
+            case Approved(answer):
+                payload = {
+                    **call.finding(decision),
+                    "approval_seq": answer.seq,
+                    "request_seq": answer.request_seq,
+                }
+                try:
+                    await self._events.record("approved", payload)
+                except Exception as exc:
+                    _log.exception("could not record an approved call")
+                    raise RefusalError(
+                        AUDIT_UNAVAILABLE, "the approved call could not be recorded"
+                    ) from exc
+            case Unrecorded():
+                try:
+                    seq = await self._events.record(
+                        "escalation", {**call.finding(decision), "target": key.payload()}
+                    )
+                except Exception as exc:
+                    # No permission request exists, so the caller must not wait for an approval.
+                    _log.exception("could not record an escalation")
+                    raise RefusalError(
+                        AUDIT_UNAVAILABLE, "the permission request could not be recorded"
+                    ) from exc
+                data = {"request": seq} if seq is not None else None
+                raise RefusalError(APPROVAL_REQUIRED, decision.reason, data=data)
+            case Waiting(pending):
                 raise RefusalError(
-                    AUDIT_UNAVAILABLE, "the permission request could not be recorded"
-                ) from exc
-            data = {"request": seq} if seq is not None else None
-            raise RefusalError(APPROVAL_REQUIRED, decision.reason, data=data)
-        if not pending.expired(now):
-            raise RefusalError(
-                APPROVAL_REQUIRED,
-                f"{decision.reason} (permission request {pending.seq}, still waiting)",
-                data={"request": pending.seq},
-            )
-        if pending.on_timeout == "alert":
-            try:
-                await self._events.record(
-                    "alert", {**call.finding(decision), "timed_out_request": pending.seq}
+                    APPROVAL_REQUIRED,
+                    f"{decision.reason} (permission request {pending.seq}, still waiting)",
+                    data={"request": pending.seq},
                 )
-            except Exception as exc:
-                _log.exception("could not record an alert")
-                raise RefusalError(AUDIT_UNAVAILABLE, "the alert could not be recorded") from exc
-            return
-        raise RefusalError(
-            ESCALATION_TIMED_OUT,
-            f"permission request {pending.seq} was not answered in time",
-            data={"request": pending.seq},
-        )
+            case TimedOut(pending) if pending.on_timeout == "alert":
+                try:
+                    await self._events.record(
+                        "alert", {**call.finding(decision), "timed_out_request": pending.seq}
+                    )
+                except Exception as exc:
+                    _log.exception("could not record an alert")
+                    raise RefusalError(
+                        AUDIT_UNAVAILABLE, "the alert could not be recorded"
+                    ) from exc
+            case TimedOut(pending):
+                raise RefusalError(
+                    ESCALATION_TIMED_OUT,
+                    f"permission request {pending.seq} was not answered in time",
+                    data={"request": pending.seq},
+                )
 
     def _target(self, server: McpServer, session: Session | None) -> Target:
         return Target(

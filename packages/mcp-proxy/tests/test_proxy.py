@@ -12,7 +12,7 @@ from typing import Any, Protocol
 import pytest
 
 from sandbox_science.event_store import EventStore
-from sandbox_science.mcp_proxy.cli import _answer, _pending
+from sandbox_science.mcp_proxy.cli import main
 from sandbox_science.mcp_proxy.upstream import address_check
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.approvals import Approvals, RequestKey, prepare_answer
@@ -1139,6 +1139,12 @@ async def test_the_command_line_answers_requests_in_the_store(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "events.db"
+    settings = tmp_path / "proxy.toml"
+    settings.write_text(
+        'state_dir = "state"\nevent_store = "events.db"\nceiling = "c.yaml"\n'
+        '[[callers]]\nname = "orchestrator"\ntoken_sha256 = "' + "a" * 64 + '"\n'
+        'kind = "orchestrator"\nproject = "crypto"\n'
+    )
     key = RequestKey.mcp(
         "crypto", "orchestrator", "sha256:" + "0" * 64, "papers", "tools/call", "crawl", "d" * 64
     )
@@ -1151,9 +1157,15 @@ async def test_the_command_line_answers_requests_in_the_store(
                 "escalation": {"timeout_seconds": 1800, "on_timeout": "deny"},
             },
         )
-    assert _pending(path) == 0
+    command = ["--settings", str(settings)]
+    assert main(["pending", *command]) == 0
     assert "papers tools/call crawl" in capsys.readouterr().out
-    assert _answer(path, approve=True, seq=1, scope="tool", hours=2) == 0
-    assert _answer(path, approve=True, seq=9, scope=None, hours=2) == 1
-    assert _pending(path) == 0
+    assert main(["pending", *command, "--request", "1"]) == 0
+    assert "waiting" in capsys.readouterr().out
+    assert main(["approve", *command, "--request", "1", "--scope", "tool", "--for", "2"]) == 0
+    assert main(["approve", *command, "--request", "9", "--for", "2"]) == 1
+    assert main(["pending", *command]) == 0
     assert "no permission requests are waiting" in capsys.readouterr().out
+    assert main(["pending", *command, "--request", "1"]) == 0
+    assert "approved by record 2" in capsys.readouterr().out
+    assert main(["pending", *command, "--request", "9"]) == 1

@@ -6,7 +6,7 @@ sandbox-science-policy-middleware serve --settings middleware.toml
 sandbox-science-policy-middleware store --state-dir DIR --policy policy.yaml
 sandbox-science-policy-middleware bind --state-dir DIR --sandbox ID --policy policy.yaml
 sandbox-science-policy-middleware unbind --state-dir DIR --sandbox ID
-sandbox-science-policy-middleware pending --settings middleware.toml
+sandbox-science-policy-middleware pending --settings middleware.toml [--request SEQ]
 sandbox-science-policy-middleware approve --settings middleware.toml --request SEQ \
     [--scope host] [--for HOURS]
 sandbox-science-policy-middleware deny --settings middleware.toml --request SEQ
@@ -34,14 +34,8 @@ import grpc
 
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
-from sandbox_science.policy.approvals import (
-    ALL_SCOPES,
-    APPROVAL,
-    Approvals,
-    pending_lines,
-    prepare_answer,
-    request_lines,
-)
+from sandbox_science.policy.approvals import ALL_SCOPES
+from sandbox_science.policy.approvals import commands as approval_commands
 from sandbox_science.policy.loader import read_limited
 
 from .archives import CacheArchiveLookup
@@ -124,7 +118,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"unbound {args.sandbox}" if removed else f"{args.sandbox} was not bound")
                 return 0
             case "pending":
-                return _pending(load_settings(args.settings).event_store_path, args.request)
+                path = load_settings(args.settings).event_store_path
+                return approval_commands.pending(_read_records(path, 0), args.request)
             case _:
                 path = load_settings(args.settings).event_store_path
                 hours = getattr(args, "hours", None)
@@ -142,40 +137,22 @@ def _read_records(path: Path, after: int) -> list[Record]:
         return list(reader.records(after=after))
 
 
-def _pending(path: Path, seq: int | None = None) -> int:
-    approvals = Approvals()
-    approvals.load(_read_records(path, 0))
-    if seq is not None:
-        shown = request_lines(approvals, seq)
-        if shown is None:
-            print(f"error: no permission request {seq}", file=sys.stderr)
-            return 1
-        print("\n".join(shown))
-        return 0
-    lines = pending_lines(approvals)
-    print("\n".join(lines) if lines else "no permission requests are waiting")
-    return 0
-
-
 def _answer(path: Path, command: str, seq: int, scope: str | None, hours: float | None) -> int:
     """Append an approval or a denial of permission request ``seq``."""
-    approvals = Approvals()
-    approvals.load(_read_records(path, 0))
-    try:
-        kind, payload = prepare_answer(
-            approvals, seq, approve=command == "approve", scope=scope, hours=hours,
-            now=datetime.now(UTC),
-        )  # fmt: skip
-    except ValueError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-    with EventStore(path) as events:
-        record = events.append(kind, OPERATOR, payload)
-    print(f"{'approved' if kind == APPROVAL else 'denied'} request {seq} as record {record.seq}")
-    files = approvals.files(seq)
-    if files and kind == APPROVAL:
-        print(f"its {len(files)} package files may download; pending --request {seq} lists them")
-    return 0
+
+    def append(kind: str, payload: dict[str, object]) -> int:
+        with EventStore(path) as events:
+            return events.append(kind, OPERATOR, payload).seq
+
+    return approval_commands.answer(
+        _read_records(path, 0),
+        append,
+        seq,
+        approve=command == "approve",
+        scope=scope,
+        hours=hours,
+        now=datetime.now(UTC),
+    )
 
 
 def _serve(settings: Settings) -> int:
