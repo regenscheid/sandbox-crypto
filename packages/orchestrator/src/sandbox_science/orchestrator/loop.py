@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypeVar
 
 from .hooks import RESPONSE_ROUNDS, Notice, Point, TurnHook
-from .kernel_notice_receipts import KernelNoticeDelivery
 from .model import ChatModel, Message
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
@@ -89,7 +88,6 @@ class Interruption:
 class Transcript:
     messages: list[Message]
     prompt_provenance: PromptProvenance | None = None
-    kernel_notice_delivery: KernelNoticeDelivery | None = None
     tool_records: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     delivered: dict[str, set[str]] = field(default_factory=dict[str, set[str]])
     """Each notice source's IDs that a successful model call saw."""
@@ -259,16 +257,9 @@ async def _run_task(
         transcript.turns = turn + 1
         passed_specs = bundle.tool_specs()
         bundle.verify(transcript.messages[0], passed_specs)
-        if toolbox.kernel_notices is not None:
-            notice = await toolbox.kernel_notices.before_model()
-            if notice is not None:
-                transcript.messages.append({"role": "user", "content": notice.text()})
         transcript.phase = "model"
         reply = await model.complete(transcript.messages, passed_specs)
         transcript.phase = "harness"
-        if toolbox.kernel_notices is not None:
-            toolbox.kernel_notices.model_delivered()
-            transcript.kernel_notice_delivery = toolbox.kernel_notices.delivered
         await _model_returned(hooks, transcript)
         assistant: Message = {"role": "assistant", "content": reply.text}
         if reply.tool_calls:

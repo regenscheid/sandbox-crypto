@@ -65,7 +65,7 @@ the agent and in the GUI's retained tool transcript. The workspace also polls a
 session's running kernels through the observation route below
 ([workspace kernels](WORKSPACE-KERNELS.md)), and stateful MAIN runs are told about
 kernels that predate a package change made from another session
-([kernel-notice delivery](KERNEL-NOTICE-DELIVERY.md)).
+([kernel check](#kernel-check-before-each-turn)).
 
 `POST /v1/kernels/status` accepts only:
 
@@ -121,9 +121,8 @@ without the scoped kernel protocol fail visibly as `unsupported`.
 HTTP deadline, an 8 KiB response/error limit and no redirects. It checks exact
 response environment/session scope and the existing unique-language/current-revision
 coherence rules. It never falls back to explicit `/status` when observation is
-unavailable. The workspace's kernel panel is its caller; nothing restarts a kernel
-automatically. MAIN notices use the separate
-[lineage route](KERNEL-NOTICE-LINEAGE.md).
+unavailable. The workspace's kernel panel and the harness's kernel check are its
+callers; nothing restarts a kernel automatically.
 
 A same-incarnation worker restart preserves a previously recorded exact birth pin
 and kernel globals. First observation of a kernel that was already running,
@@ -133,6 +132,25 @@ restart establishes a fresh known start only when its observed epoch/fingerprint
 matches the worker's retained revision association. Sandbox/incarnation loss keeps
 the existing lifecycle and state-loss behavior. Confirmed environment deletion
 forgets only that environment's birth/epoch metadata.
+
+## Kernel check before each turn
+
+A MAIN run with a state directory checks its session's kernels before each model
+call (`KernelCheck` in
+[kernel_check.py](../packages/orchestrator/src/sandbox_science/orchestrator/kernel_check.py),
+a turn hook). It reads the existing-connection observation above, which never starts
+or wakes a kernel. For each kernel whose status is `predates`, it adds one user
+message, framed as platform data (`sandbox-kernels-1`), naming the kernel, its
+generation and its start and current revisions. Each kernel and current revision is
+told once per run; a later package change is told again. The notice IDs are in the
+run record's `delivered["kernels"]`, and nothing is acknowledged: the check keeps no
+state between runs, so the next run is told again while the kernel still predates
+the packages. A failed or unavailable observation, or a kernel whose start revision
+is unknown, tells nothing, and the run goes on. Every execution result carries the
+same fact in `kernel_revision_notice`.
+
+Older run records may hold a `kernel_notice_delivery` receipt from the durable
+inbox this check replaced; it is kept as read.
 
 ## Tests and labs
 

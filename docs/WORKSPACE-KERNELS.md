@@ -69,7 +69,7 @@ worker integer range exactly: unsafe generation or revision integers refuse the
 observation rather than displaying rounded pins. The panel has no restart action.
 
 The panel is an eventual observation of a visible session. It does not deliver
-notices to agents ([kernel notices](KERNEL-NOTICE-DELIVERY.md) do that), push
+notices to agents (the [kernel check](KERNEL-REVISIONS.md#kernel-check-before-each-turn) does that), push
 updates, alert while the browser is offline, wake an idle agent or restart a
 kernel.
 
