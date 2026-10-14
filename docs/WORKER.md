@@ -447,13 +447,27 @@ Temporary helpers cancel on daemon bridge detach; research jobs/kernels retain t
 existing survival semantics. Environment release and worker shutdown drain host work.
 
 Unknown cleanup persists a bounded held lease across restart. Exact same-incarnation
-ACK may reconcile a host-drained hold; confirmed original-VM deletion or the existing
-verified recycle fence can mark matching guest ownership clean. Neither a logical
-environment deletion, observed replacement, blank legacy binding nor a new incarnation
-is proof. Active host leases remain counted until their actual work ends. Corrupt
-leases fail closed; crashed foreign active owners need explicit operator investigation
-because guest proof cannot prove their host threads exited. Nothing repairs them
-automatically, and capture never triggers a VM recycle. See [capture limits and recovery](ARTIFACTS.md#bounded-worker-capture-prerequisite)
+ACK may reconcile a host-drained hold: when an executor connects, and again on the
+running executor whenever a publication finds admission full, so that an ACK that missed
+its deadline does not hold admission until the bridge reconnects. Confirmed original-VM
+deletion or the existing verified recycle fence can mark matching guest ownership clean.
+Neither a logical environment deletion, observed replacement, blank legacy binding nor a
+new incarnation is proof. Active host leases remain counted until their actual work ends.
+
+One worker runs for each state directory: `serve` holds an exclusive lock on
+`worker.lock` there (decision 9), and a second worker on the same directory refuses to
+start. So at startup no lease's host work can still run: a lease left `active` that was
+never dispatched, or whose VM is proven gone, goes, and one that was dispatched becomes
+`held` until its executor confirms the cleanup. Capture never triggers a VM recycle. A
+lease whose sandbox the operator knows cleaned up or is gone, but whose executor will
+never say so, is cleared with the worker stopped:
+
+```bash
+sandbox-science-worker captures --settings worker.toml                 # list the leases
+sandbox-science-worker captures --settings worker.toml --clear pub-...  # forget one
+```
+
+The command takes the same lock, so it refuses while a worker runs. Run it as the worker's user, on a state directory that has a store (it refuses one without, and brings an older store to this worker's version, as `serve` does). `--clear` prints the lease it forgets, logs a warning and records it in `capture_clears`; clearing a lease that is already gone succeeds. Never delete `worker.lock`: the lock is on its inode, so a second worker could lock a new file. Keep the state directory on a local file system, where `flock` holds between processes (not NFS). See [capture limits and recovery](ARTIFACTS.md#bounded-worker-capture-prerequisite)
 for exact bounds and client-disconnect semantics. Checked on OpenShell in
 [Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md); lost
 transport, blocked host work and corrupt state are covered by local tests only.
@@ -565,7 +579,7 @@ If their incarnation changed before that binding was recorded, automatic replace
 refuses until an operator confirms cleanup of the original sandbox and removes its
 obsolete worker recovery records; the current environment binding is insufficient proof.
 
-The worker's store, `worker.sqlite3` in the state directory, has a version (SQLite's `user_version`, with its own `application_id`). Version 1 is the baseline, `baseline.sql`. Each later change is a step in `schema.py`'s `MIGRATIONS`, which the worker runs once, in one transaction that reads the version again, when it opens an older store. Version 2 adds checks to the capture leases, package gates, recovery marks and provisioning steps, so their values are checked when they are written and read as they are (decision 3); a store holding a row a check refuses stays at its version, with a message that names the table. Before it opens a store to write, the worker checks it through a read-only connection and refuses, leaving every file as it was: an unversioned store from before version 1 (decision 6), a store in a newer version, one holding the executions of a removed feature, and a file that is not a worker store. `serve` prints the refusal as one line. To discard a refused state directory, release or recycle its sandboxes first, since it holds their daemons' endpoints.
+The worker's store, `worker.sqlite3` in the state directory, has a version (SQLite's `user_version`, with its own `application_id`). Version 1 is the baseline, `baseline.sql`. Each later change is a step in `schema.py`'s `MIGRATIONS`, which the worker runs once, in one transaction that reads the version again, when it opens an older store. Version 2 adds checks to the capture leases, package gates, recovery marks and provisioning steps, so their values are checked when they are written and read as they are (decision 3). The tables are STRICT, so a value stored with the wrong type, such as a BLOB in a TEXT column, is refused like a value out of range. Version 3 refuses a NUL in their identifiers too, and adds `capture_clears`, the record of the leases an operator cleared. A store holding a row a check refuses stays at its version, with a message that names the table and the row's key: repair or delete that row with the worker stopped. Before it opens a store to write, the worker checks it through a read-only connection and refuses, leaving every file as it was: an unversioned store from before version 1 (decision 6), a store in a newer version, one holding the executions of a removed feature, and a file that is not a worker store. `serve` prints the refusal as one line. To discard a refused state directory, release or recycle its sandboxes first, since it holds their daemons' endpoints.
 
 An older state directory may still hold the tables and executions of delegated runs, a removed feature ([archive](../.agents/docs/archive/README.md)). The worker leaves those tables alone, and the store refuses to open a state directory with any execution whose `kernel_scope` is not `legacy`; the operator discards that state directory.
 

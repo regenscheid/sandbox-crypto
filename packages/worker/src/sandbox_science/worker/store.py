@@ -107,14 +107,15 @@ class Store:
         # versioning may hold operations whose writer published no gate at all.
         with self._transaction():
             self._db.execute(
-                "INSERT OR IGNORE INTO package_execution_gates"
+                "INSERT INTO package_execution_gates"
                 " SELECT environment_id,1,'needs_recovery',provision_id,revision,''"
-                " FROM package_status"
+                " FROM package_status WHERE true ON CONFLICT(environment_id) DO NOTHING"
             )
             self._db.execute(
-                "INSERT OR IGNORE INTO package_execution_gates"
+                "INSERT INTO package_execution_gates"
                 " SELECT environment_id,1,'hold',provision_id,NULL,''"
                 " FROM provisions WHERE finished=0 ORDER BY submitted"
+                " ON CONFLICT(environment_id) DO NOTHING"
             )
             for row in self._db.execute(
                 "SELECT substr(CAST(environment_id AS BLOB),1,130),"
@@ -292,6 +293,54 @@ class Store:
                 (lease.publication_id,),
             )
             return False
+
+    def orphaned_captures(self) -> int:
+        """Settle the leases a stopped worker left, at startup, under the state directory's
+        lock (state_lock.py): no host work of theirs can still run. One never dispatched,
+        active or held, or whose sandbox is proven gone, goes; one dispatched is ``held``
+        until its executor confirms the cleanup. Returns how many there were."""
+        with self._transaction():
+            settled = self._db.execute(
+                "DELETE FROM artifact_capture_leases"
+                " WHERE capture_id='' OR (phase='active' AND guest_clean=1)"
+            ).rowcount
+            settled += self._db.execute(
+                "UPDATE artifact_capture_leases SET phase='held' WHERE phase='active'"
+            ).rowcount
+        return settled
+
+    def clear_capture(self, publication_id: str, cleared_at: str) -> CaptureLease | None:
+        """Forget one lease, on the operator's word that its sandbox cleaned up or is gone,
+        and record that in ``capture_clears``; the lease, or None if there was none. Only
+        with the worker stopped (``captures --clear``)."""
+        with self._transaction():
+            found = next(
+                (
+                    lease
+                    for lease in self.capture_leases()
+                    if lease.publication_id == publication_id
+                ),
+                None,
+            )
+            if found is None:
+                return None
+            self._db.execute(
+                "INSERT INTO capture_clears VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    cleared_at,
+                    found.publication_id,
+                    found.environment_id,
+                    found.incarnation,
+                    found.capture_id,
+                    found.phase,
+                    found.sandbox,
+                    found.sandbox_id,
+                ),
+            )
+            self._db.execute(
+                "DELETE FROM artifact_capture_leases WHERE publication_id=?", (publication_id,)
+            )
+            return found
 
     def acknowledge_capture(self, lease: CaptureLease) -> None:
         """Release one held exact tuple after a same-incarnation positive cleanup ACK."""
@@ -1135,7 +1184,8 @@ class Store:
         with self._transaction():
             self._guard_package_binding(environment_id, binding)
             self._db.execute(
-                "INSERT OR IGNORE INTO package_execution_gates VALUES (?,0,'ready','',NULL,?)",
+                "INSERT INTO package_execution_gates VALUES (?,0,'ready','',NULL,?)"
+                " ON CONFLICT(environment_id) DO NOTHING",
                 (environment_id, binding),
             )
             self._db.execute(
@@ -1151,7 +1201,8 @@ class Store:
                 # Preserve an exact legacy endpoint proof across executor shutdown,
                 # which normally forgets that endpoint before final gate cleanup.
                 self._db.execute(
-                    "INSERT OR IGNORE INTO package_execution_gates VALUES (?,0,'ready','',NULL,?)",
+                    "INSERT INTO package_execution_gates VALUES (?,0,'ready','',NULL,?)"
+                    " ON CONFLICT(environment_id) DO NOTHING",
                     (environment_id, binding),
                 )
                 self._db.execute(
@@ -1229,7 +1280,8 @@ class Store:
         """Only the internal provisioner registers an exact saved step; no RPC exposes this."""
         with self._transaction():
             self._db.execute(
-                "INSERT OR IGNORE INTO provision_steps VALUES (?,?,?)",
+                "INSERT INTO provision_steps VALUES (?,?,?)"
+                " ON CONFLICT(provision_id, operation_id) DO NOTHING",
                 (provision_id, operation_id, digest),
             )
             if self.provision_step(provision_id, operation_id) != digest:
@@ -1264,7 +1316,8 @@ class Store:
         revisions clears it."""
         with self._transaction():
             self._db.execute(
-                "INSERT OR IGNORE INTO package_status VALUES (?, ?, ?, ?)",
+                "INSERT INTO package_status VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(environment_id) DO NOTHING",
                 (environment_id, status, provision_id, revision),
             )
             marked = self.package_status(environment_id)

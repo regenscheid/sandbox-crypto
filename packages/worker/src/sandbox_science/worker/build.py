@@ -30,6 +30,7 @@ from .permissions import Permissions
 from .provisioner import Provisioner
 from .settings import Settings, SettingsError
 from .shared_sync import SharedRecords, SharedSync
+from .state_lock import StateLock
 from .store import Store
 
 _log = logging.getLogger("sandbox_science.worker")
@@ -134,6 +135,7 @@ def build_lifecycle(
 class WorkerParts:
     """A worker built from its settings, ready to start."""
 
+    lock: StateLock
     store: Store
     documents: DocumentsCatalog
     shared: SharedSync | None
@@ -144,20 +146,33 @@ class WorkerParts:
 
     async def close(self) -> None:
         """Stop the provisioner and the manager, then close every store, after the app."""
-        await self.provisioner.close()
-        await self.manager.close()
-        if self.provisioner.permissions is not None:
-            self.provisioner.permissions.close()
-        self.store.close()
-        self.documents.close()
-        if self.shared is not None:
-            self.shared.records.close()
-        if self.environments is not None:
-            self.environments.close()
+        try:
+            await self.provisioner.close()
+            await self.manager.close()
+            if self.provisioner.permissions is not None:
+                self.provisioner.permissions.close()
+            self.store.close()
+            self.documents.close()
+            if self.shared is not None:
+                self.shared.records.close()
+            if self.environments is not None:
+                self.environments.close()
+        finally:
+            self.lock.release()
 
 
 def build_worker(settings: Settings, token: str, *, clock: Clock = SYSTEM_CLOCK) -> WorkerParts:
-    """The worker the settings describe; ``token`` is the pool's own API token."""
+    """The worker the settings describe; ``token`` is the pool's own API token. It
+    holds the state directory's lock until it is closed."""
+    lock = StateLock(settings.state_dir)
+    try:
+        return _build(settings, token, clock, lock)
+    except BaseException:
+        lock.release()
+        raise
+
+
+def _build(settings: Settings, token: str, clock: Clock, lock: StateLock) -> WorkerParts:
     environments = build_environments(settings, clock)
     store = Store(settings.state_dir / "worker.sqlite3")
     documents = DocumentsCatalog(
@@ -193,4 +208,4 @@ def build_worker(settings: Settings, token: str, *, clock: Clock = SYSTEM_CLOCK)
             environments.deleted.append(shared.forget)
     provisioner = build_provisioner(settings, manager, environments)
     app = create_app(manager, token, environments, settings.clients, provisioner, documents)
-    return WorkerParts(store, documents, shared, environments, manager, provisioner, app)
+    return WorkerParts(lock, store, documents, shared, environments, manager, provisioner, app)

@@ -23,6 +23,7 @@ import secrets
 import signal
 import sys
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aiohttp import web
@@ -37,6 +38,8 @@ from .build import build_worker
 from .environments import EnvironmentRecords, Environments, printable
 from .errors import WorkerError
 from .settings import MIN_TOKEN, Settings, SettingsError, load_settings, token_digest
+from .state_lock import StateLock
+from .store import Store
 from .suspend import Suspender
 
 _log = logging.getLogger("sandbox_science.worker")
@@ -152,6 +155,44 @@ def show_admissions(settings: Settings, environment_id: str) -> int:
     return 0
 
 
+def show_captures(settings: Settings, clear: Sequence[str]) -> int:
+    """Print the capture leases that hold publication admission, after forgetting those in
+    ``clear``. Only with the worker stopped: it takes the state directory's lock."""
+    try:
+        lock = StateLock(settings.state_dir)
+    except SettingsError as exc:
+        print(f"error: {exc}; stop it first", file=sys.stderr)
+        return 1
+    with lock:
+        path = settings.state_dir / "worker.sqlite3"
+        if not path.is_file():
+            print(f"error: no worker store at {path}; check state_dir", file=sys.stderr)
+            return 1
+        store = Store(path)  # brings the store to this worker's version, as serve does
+        try:
+            status = 0
+            for publication_id in clear:
+                cleared = store.clear_capture(publication_id, datetime.now(UTC).isoformat())
+                if cleared is None:
+                    print(f"no capture lease {publication_id}: already cleared or never held")
+                    continue
+                _log.warning("capture lease cleared on the operator's word: %s", cleared)
+                print(f"cleared {cleared}")
+            leases = store.capture_leases()
+            if not leases:
+                print("no capture leases")
+            for lease in leases:
+                sandbox = f"{lease.sandbox} ({lease.sandbox_id})" if lease.sandbox else "unknown"
+                print(
+                    f"{lease.publication_id} {lease.environment_id} {lease.phase}"
+                    f" capture {lease.capture_id or 'none'}"
+                    f" executor {lease.incarnation or 'none'} sandbox {sandbox}"
+                )
+        finally:
+            store.close()
+    return status
+
+
 _IDENTIFIER = TypeAdapter[str](Identifier)
 
 
@@ -196,6 +237,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     admissions_parser.add_argument("--settings", type=Path, required=True)
     admissions_parser.add_argument("--environment", required=True)
+    captures_parser = commands.add_parser(
+        "captures",
+        help="show the capture leases that hold publication admission; the worker is stopped",
+    )
+    captures_parser.add_argument("--settings", type=Path, required=True)
+    captures_parser.add_argument(
+        "--clear",
+        metavar="PUBLICATION_ID",
+        action="append",
+        default=[],
+        help="forget this lease, once its sandbox cleaned up or is gone (repeatable)",
+    )
     args = parser.parse_args(argv)
     if args.command == "token":
         if args.out is not None:
@@ -218,7 +271,7 @@ def main(argv: list[str] | None = None) -> int:
         # The line a [[clients]] entry takes; the digest names the token without revealing it.
         print(f'token_sha256 = "{token_digest(token)}"')
         return 0
-    if args.command in ("policy", "admissions"):
+    if args.command in ("policy", "admissions", "captures"):
         try:
             settings = load_settings(args.settings)
         except SettingsError as exc:
@@ -226,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.command == "policy":
             return add_policies(settings, args.policies, args.projects)
+        if args.command == "captures":
+            return show_captures(settings, args.clear)
         return show_admissions(settings, args.environment)
     logging.basicConfig(
         level=args.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s"

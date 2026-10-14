@@ -140,12 +140,30 @@ class Publication:
             ):
                 self.store.fenced_captures(environment_id, lease.incarnation, sandbox, sandbox_id)
 
+    def settle_orphans(self) -> int:
+        """Settle the leases a stopped worker left active; at startup only."""
+        return self.store.orphaned_captures()
+
+    async def retry_cleanup(self) -> None:
+        """Ask each connected executor that holds leases whether their cleanup is done, so
+        that a cleanup acknowledgement that missed its deadline does not hold admission
+        until the bridge reconnects."""
+        try:
+            held = {lease.environment_id for lease in self.store.capture_leases()}
+        except ValueError:
+            return
+        for environment_id in sorted(held):
+            connection = self.connections.get(environment_id)
+            channel = connection.channel if connection is not None else None
+            if channel is not None and not channel.closed and not channel.detaching:
+                await self.reconcile(environment_id, channel)
+
     async def reconcile(self, environment_id: str, channel: ExecutorChannel) -> None:
         """Only held host-drained leases can receive same-incarnation cleanup ACKs.
 
-        Active rows left by an abruptly lost worker remain conservative holds:
-        another process may still own host I/O. Neither time nor a new executor
-        incarnation proves that ownership ended.
+        Active rows are this worker's own publications, still running; a stopped worker's
+        were settled when this one started (``settle_orphans``). A new executor
+        incarnation never proves that a held lease's cleanup happened.
         """
         protocol = channel.hello.get("artifact_capture_protocol")
         if type(protocol) is not int or protocol != capture.PROTOCOL:
@@ -182,8 +200,26 @@ class Publication:
         deadline = self.clock.monotonic() + self.timeout
         try:
             lease = self.store.reserve_capture(new_id("pub"), environment_id)
-        except ValueError as exc:
-            raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from exc
+        except ValueError:
+            # Held leases may have cleaned up since: ask the executors that run now.
+            connection = self.connections.get(environment_id)
+            await self.retry_cleanup()
+            if (
+                self.usability.closing
+                or self.usability.releasing(environment_id)
+                or (
+                    connection is not None
+                    and self.connections.get(environment_id) is not connection
+                )
+            ):
+                # Released or closed meanwhile: never reopen an executor that was stopped.
+                raise WorkerError(
+                    ErrorKind.UNAVAILABLE, "artifact capture admission limit reached"
+                ) from None
+            try:
+                lease = self.store.reserve_capture(new_id("pub"), environment_id)
+            except ValueError as exc:
+                raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from exc
         owner = _Owner(lease)
         task = asyncio.create_task(self._publish(request, deadline, owner))
 
@@ -324,7 +360,7 @@ class Publication:
                 else None,
             )
         except ValueError as exc:
-            owner.certain = False
+            # Nothing was sent: the sandbox has no capture of this lease's to clean up.
             raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from exc
         owner.certain = False
         # Keep the request pending so cancellation waits for the original reader as
