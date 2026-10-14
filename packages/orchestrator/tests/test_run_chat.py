@@ -101,6 +101,10 @@ async def test_a_run_writes_its_events_as_it_goes(harness: Harness) -> None:
     ]  # fmt: skip
     started, user, _, asked, tool, _, answered, stopped = (e.data for e in events)
     assert started["run_id"] == "run-1"
+    # The root of its session's tree of runs (PD-32): no parent, no delegation.
+    assert (started["role"], started["parent"], started["delegation"]) == ("main", None, None)
+    assert (record.role, record.parent, record.delegation) == ("main", None, None)
+    assert (entry.role, entry.parent) == ("main", None)
     assert started["prompt_provenance"] is not None
     assert user == {"message_id": None, "text": TASK}
     assert cast(list[dict[str, str]], asked["tool_calls"])[0]["name"] == "plan_read"

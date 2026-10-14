@@ -11,7 +11,7 @@ In the code, `sandbox_science.orchestrator.control` owns the connection. `Contro
 | Table | Holds |
 | --- | --- |
 | `projects`, `sessions` | Each project's profile, policy revision and default environment, and its sessions: each one's environment, whether it is its own, when it was opened and closed, and its kernel notice lifetime ([projects and sessions](PROJECTS-AND-SESSIONS.md)) |
-| `runs` | Each run a session keeps: its name, run ID, start and record, written once |
+| `runs` | Each run a session keeps: its name, run ID, start, role, parent and delegation (its place in the session's tree of runs, version 11) and record, written once |
 | `session_messages`, `run_leases`, `run_events` | The user's chat messages to a session and their state, the session's run lease (one run at a time), and each run's events as it went, written once ([run service](specs/run-service.md)) |
 | `run_cancels`, `service_heartbeat`, `project_budgets` | The user's requests to cancel a run, the run service's heartbeat, and each project's MAIN token budget ([run service](specs/run-service.md)) |
 | `documents` | Each document's ID (`doc-…`), project, scope (the project, or one session's workbook), name, title, creator and the session it came from, whether agent patches wait as suggestions, its current revision, whether it is deleted, and the counters its block and span IDs come from |

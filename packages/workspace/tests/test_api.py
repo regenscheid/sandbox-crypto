@@ -123,8 +123,20 @@ async def test_one_session_with_its_runs_oldest_first(client: TestClient[Any, An
     project = (await get(client, "/api/v0/projects/p1"))["project"]
     assert all(set(item) == session_keys | {"runs"} for item in project["sessions"])
     assert found["runs"] == [
-        {"name": FIRST_RUN, "run_id": "run-1", "started_at": "2026-10-11T13:01:02.345678Z"},
-        {"name": SECOND_RUN, "run_id": "run-2", "started_at": "2026-10-11T14:01:02.345678Z"},
+        {
+            "name": FIRST_RUN,
+            "run_id": "run-1",
+            "started_at": "2026-10-11T13:01:02.345678Z",
+            "role": "main",
+            "parent": None,
+        },
+        {
+            "name": SECOND_RUN,
+            "run_id": "run-2",
+            "started_at": "2026-10-11T14:01:02.345678Z",
+            "role": "main",
+            "parent": None,
+        },
     ]
     assert (await get(client, "/api/v0/projects/p1/sessions/c"))["runs"] == []
 
