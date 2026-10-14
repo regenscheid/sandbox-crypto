@@ -13,7 +13,7 @@ Previous accepted archives/refs stay immutable.
 
 ## Scope
 
-[Static repair identity](../../../docs/DISPLAY-REPAIR-PROVENANCE.md) accompanies
+Static repair identity (its page was removed with the descriptor on 2026-10-14) accompanies
 the existing producing answer/cache entry: exact unchanged 575-byte permitted
 MIT-adapted system/version/hash, zero tools, actual fixed formatter and canonical
 envelope. Builtin descriptor is 1,312 compact UTF-8 bytes/1,348 default HTTP JSON

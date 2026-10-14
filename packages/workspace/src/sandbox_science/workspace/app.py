@@ -327,7 +327,6 @@ def create_app(
         worker=job_worker,
         job_state=job_state,
         timeouts=timeouts,
-        principal=principal,
     )
     app.on_response_prepare.append(secure)
     app.on_cleanup.append(close)

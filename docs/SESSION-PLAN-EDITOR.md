@@ -52,10 +52,8 @@ remain unknown. Retry uses the exact retained request; editing its intent is hel
 After an earlier unknown outcome, a later 404 or 409 does not prove the earlier
 write absent. Closed sessions can refuse before replay.
 
-Operation replay is scoped to the authenticated USER principal. A new login may
-have a different cookie digest and therefore a different operation namespace.
-Retaining the operation string does not prove cross-login replay identity. After
-a fresh current read, the USER can explicitly continue from current text while
+Operation replay is scoped to the workspace's one USER, the same for every login,
+so a retained request replays after signing in again. After a fresh current read, the USER can explicitly continue from current text while
 keeping one exact earlier save labeled unresolved. This does not prove failure,
 merge earlier changes, or fabricate an acknowledgment. A new intent gets a new
 operation ID. A second unresolved outcome cannot evict the retained predecessor;

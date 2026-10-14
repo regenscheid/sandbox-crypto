@@ -42,8 +42,6 @@ from sandbox_science.orchestrator.model import (
     OpenAICompatibleModel,
 )
 
-from .repair_prompt import RepairProvenance, assemble_repair, provenance_json
-
 _log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT: Final = " ".join(
@@ -113,22 +111,17 @@ class RepairAnswer:
     reason: str | None = None
     """Why there is no repair."""
     cached: bool = False
-    input_provenance: RepairProvenance | None = None
-    """Producing host's static input identity; absent remains unknown, never backfilled."""
 
     def to_json(self) -> dict[str, object]:
         if not self.enabled:
             return {"enabled": False, "tex": None, "reason": self.reason}
-        answer: dict[str, object] = {
+        return {
             "enabled": True,
             "model": self.model,
             "tex": self.tex,
             "reason": self.reason,
             "cached": self.cached,
         }
-        if self.input_provenance is not None:
-            answer["input_provenance"] = provenance_json(self.input_provenance)
-        return answer
 
 
 def parse_request(payload: object) -> RepairRequest:
@@ -341,17 +334,8 @@ class MathRepairService:
     async def _call(self, request: RepairRequest, model: ChatModel) -> RepairAnswer:
         """The model's answer; any failure is an answer too, kept for ``FAILURE_KEPT``."""
         try:
-            wanted = assemble_repair(SYSTEM_PROMPT, request.tex, request.display, request.error)
-            messages = _messages(request)
-            wanted.verify(messages, ())
-        except Exception:
-            # No gateway boundary was entered. Never echo private input or metadata errors.
-            return RepairAnswer(
-                enabled=True, model=self.reviewer, reason="repair input metadata unavailable"
-            )
-        try:
             async with asyncio.timeout(self._timeout):
-                turn = await model.complete(messages, ())
+                turn = await model.complete(_messages(request), ())
         except TimeoutError:
             reason = f"the reviewer model did not answer within {self._timeout:g} s"
         except Exception as error:  # a gateway error, or anything else: never a 500 to retry
@@ -368,11 +352,8 @@ class MathRepairService:
                 tex=repaired,
                 model=self.reviewer,
                 reason=None if repaired else "no usable repair",
-                input_provenance=wanted.provenance,
             )
-        return RepairAnswer(
-            enabled=True, model=self.reviewer, reason=reason, input_provenance=wanted.provenance
-        )
+        return RepairAnswer(enabled=True, model=self.reviewer, reason=reason)
 
     def _finished(self, key: str, task: asyncio.Task[RepairAnswer]) -> None:
         if self._in_flight.get(key) is task:

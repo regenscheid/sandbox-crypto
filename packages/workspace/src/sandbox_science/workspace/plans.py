@@ -27,7 +27,7 @@ from sandbox_science.orchestrator.session_plans import (
     SessionPlans,
 )
 
-from .context import CONTEXT, identifier, json_answer, no_query, session_record
+from .context import CONTEXT, USER_ID, identifier, json_answer, no_query, session_record
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/plan"
 
@@ -64,14 +64,14 @@ def has_records(documents: DocumentStore, scope: PlanScope) -> bool:
         )
 
 
-def _compact(documents: DocumentStore, scope: PlanScope, login: str) -> CompactPlan | None:
+def _compact(documents: DocumentStore, scope: PlanScope) -> CompactPlan | None:
     try:
         plans = SessionPlans(documents)
     except DocumentError as error:
         if error.kind == "not_found":  # no session has a plan yet
             return None
         raise
-    result = plans.compact_current(PlanAuthority(scope=scope, role="user", user_id=login))
+    result = plans.compact_current(PlanAuthority(scope=scope, role="user", user_id=USER_ID))
     if result is None and has_records(documents, scope):
         raise ProjectError(ErrorKind.UNAVAILABLE, "session plan pointer is missing")
     return result
@@ -81,13 +81,12 @@ async def read(request: web.Request) -> web.Response:
     context = request.app[CONTEXT]
     project, session = identifier(request, "project"), identifier(request, "session")
     no_query(request, "session plan read")
-    login = context.principal(request)
 
     def view() -> str:
         found = session_record(context.projects, project, session)
         scope = PlanScope(project_id=project, session_id=session)
         try:
-            plan = _compact(context.documents, scope, login)
+            plan = _compact(context.documents, scope)
         except (DocumentError, sqlite3.Error, OSError, ValueError, RecursionError) as error:
             raise ProjectError(ErrorKind.UNAVAILABLE, "session plan is unavailable") from error
         return WorkspacePlan(

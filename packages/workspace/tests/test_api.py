@@ -118,6 +118,11 @@ async def test_one_session_with_its_runs_oldest_first(client: TestClient[Any, An
     found = await get(client, "/api/v0/projects/p1/sessions/a")
     assert found["project_id"] == "p1"
     assert found["session"]["session_id"] == "a"
+    # The page sees the session's facts, not the store's own lifetime marker.
+    session_keys = {"session_id", "environment_id", "dedicated", "opened_at", "closed_at"}
+    assert set(found["session"]) == session_keys
+    project = (await get(client, "/api/v0/projects/p1"))["project"]
+    assert all(set(item) == session_keys | {"runs"} for item in project["sessions"])
     assert found["runs"] == [
         {"name": FIRST_RUN, "run_id": "run-1", "started_at": "2026-10-11T13:01:02.345678Z"},
         {"name": SECOND_RUN, "run_id": "run-2", "started_at": "2026-10-11T14:01:02.345678Z"},

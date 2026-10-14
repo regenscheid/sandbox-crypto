@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""What every feature's routes share: the stores, the worker, the timeouts and the login.
+"""What every feature's routes share: the stores, the worker and the timeouts.
 
 ``create_app`` sets one ``WorkspaceContext`` as ``CONTEXT``. A route reads it from
 ``request.app[CONTEXT]``, checks the IDs in its path, reads a write's body with
@@ -11,7 +11,6 @@ raised and answered by the guard through ``errors``.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
@@ -19,7 +18,7 @@ from aiohttp import hdrs, web
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, Identifier
-from sandbox_science.orchestrator.documents import DocumentStore
+from sandbox_science.orchestrator.documents import USER, DocumentStore
 from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.projects import ProjectError, ProjectStore, SessionRecord
 from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -40,11 +39,13 @@ class WorkspaceContext:
     worker: WorkerClient | None
     job_state: JobState | None
     timeouts: Timeouts
-    principal: Callable[[web.Request], str]
-    """The browser session's opaque name: its cookie's digest."""
 
 
 CONTEXT: Final = web.AppKey("workspace_context", WorkspaceContext)
+
+USER_ID: Final = USER.user
+"""The workspace's one user, as plan records name it: the same for every login, as the
+documents' USER author is."""
 
 
 def identifier(request: web.Request, name: str) -> str:

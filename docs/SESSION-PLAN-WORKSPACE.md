@@ -13,7 +13,7 @@ Plan history pages and approval enforcement are not built.
 `GET /api/v0/projects/{project}/sessions/{session}/plan` requires the existing
 workspace login and host guard. The request accepts only its path scope, with no
 query parameters or body. The server derives the read authority from that scope
-and a digest of the session cookie. Browser JSON cannot choose an
+and the workspace's one USER. Browser JSON cannot choose an
 actor, worker, environment, database, plan reference or evidence grant.
 
 The immutable JSON wrapper contains `project_id`, `session_id`, the trusted host

@@ -30,7 +30,12 @@ from typing import Final, cast
 from aiohttp import hdrs, web
 
 from sandbox_science.contracts import ErrorKind
-from sandbox_science.orchestrator.projects import ProjectError, ProjectRecord, ProjectStore
+from sandbox_science.orchestrator.projects import (
+    ProjectError,
+    ProjectRecord,
+    ProjectStore,
+    SessionRecord,
+)
 
 MAX_RUN_BYTES: Final = 64 * 1024 * 1024
 STORE: Final = web.AppKey("store", ProjectStore)
@@ -107,7 +112,7 @@ def _projects(store: ProjectStore) -> list[Json]:
 def _project(store: ProjectStore, project_id: str) -> Json:
     record = store.get(project_id)
     sessions = [
-        {**found.model_dump(mode="json"), "runs": len(store.runs(project_id, session_id))}
+        {**_session_view(found), "runs": len(store.runs(project_id, session_id))}
         for session_id, found in sorted(record.sessions.items())
     ]
     environments = [
@@ -131,7 +136,7 @@ def _session(store: ProjectStore, project_id: str, session_id: str) -> Json:
         raise _no_session(project_id, session_id)
     return {
         "project_id": project_id,
-        "session": found.model_dump(mode="json"),
+        "session": _session_view(found),
         "runs": [entry.model_dump(mode="json") for entry in store.runs(project_id, session_id)],
     }
 
@@ -140,6 +145,12 @@ def _run(store: ProjectStore, project_id: str, session_id: str, name: str, limit
     if session_id not in store.get(project_id).sessions:
         raise _no_session(project_id, session_id)
     return store.run(project_id, session_id, name, max_bytes=limit).model_dump(mode="json")
+
+
+def _session_view(found: SessionRecord) -> Json:
+    """A session as the page sees it. The control store's open-lifetime marker is the
+    harness's own bookkeeping and is left out, so the store may rename it."""
+    return found.model_dump(mode="json", exclude={"kernel_notice_lifetime"})
 
 
 def _facts(record: ProjectRecord) -> Json:

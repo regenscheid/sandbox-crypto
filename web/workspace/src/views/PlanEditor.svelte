@@ -78,8 +78,8 @@
       draft or loading current text.
     </p>{/if}
   {#if uncertain}<p role="alert">
-      The earlier save may already have happened. Keep its exact request for retry; signing in again
-      does not prove it is the same operation.
+      The earlier save may already have happened. Keep its exact request for retry: the server
+      replays it if it did.
     </p>{/if}
   <form
     onsubmit={(event) => {
