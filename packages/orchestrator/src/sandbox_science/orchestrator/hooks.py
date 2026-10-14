@@ -25,14 +25,16 @@ holds whatever happened to the others.
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 if TYPE_CHECKING:
     from .model import Message
-    from .projects import RunRecord
+    from .projects import ModelUsage, RunRecord
+    from .prompts import PromptPins
 
 Point = Literal["start", "turn", "tool"]
 """``start``: once, before the first turn. ``turn``: before each model call.
@@ -52,12 +54,16 @@ class Notice:
 
     As a message, ``framing`` is the text before the JSON payload. At the ``tool``
     point, ``framing`` is the key the payload has next to the tool result.
+
+    A ``user`` notice is the user's own message, not data: its message is ``framing``
+    alone, the text as the user wrote it, and a hook offers it only before a model call.
     """
 
     source: str
     ids: tuple[str, ...]
     framing: str
     payload: object
+    user: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,7 +99,30 @@ class RunView(Protocol):
     def messages(self) -> Sequence[Message]: ...
 
     @property
+    def turns(self) -> int:
+        """Model calls the run has started."""
+        ...
+
+    @property
     def turns_left(self) -> int: ...
+
+    @property
+    def prompt_provenance(self) -> PromptPins | None: ...
+
+    @property
+    def tool_records(self) -> Sequence[dict[str, Any]]:
+        """One record per tool call so far, as the run's record keeps them."""
+        ...
+
+    @property
+    def usage(self) -> Sequence[ModelUsage]:
+        """Each answered model call's usage, in order."""
+        ...
+
+    @property
+    def offered(self) -> Mapping[str, AbstractSet[str]]:
+        """Each source's notice IDs in the conversation, delivered or not."""
+        ...
 
     @property
     def response_rounds(self) -> int:
@@ -123,7 +152,8 @@ class TurnHook:
         return ()
 
     async def model_returned(self, run: RunView) -> None:
-        """After each successful model call, once the loop has counted its deliveries."""
+        """After each successful model call, once the loop has counted its deliveries and
+        added the reply to the conversation."""
 
     async def gate(self, effect: Effect) -> Refusal | None:
         """Before a tool call of this effect class: a refusal, or ``None`` to let it run."""

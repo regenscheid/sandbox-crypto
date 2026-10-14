@@ -148,6 +148,8 @@ class Transcript:
 
 
 def _message(notice: Notice) -> Message:
+    if notice.user:
+        return {"role": "user", "content": notice.framing}
     return {"role": "user", "content": notice.framing + dump(notice.payload)}
 
 
@@ -252,7 +254,9 @@ async def _attach(
     extra: dict[str, object] = {}
     for notice in found:
         taken = {"tool_result", "tool", "arguments", *outcome.record}
-        if notice.framing in extra or notice.framing in taken:
+        if notice.user:
+            _log.error("a %s notice is the user's message; not attached", notice.source)
+        elif notice.framing in extra or notice.framing in taken:
             _log.error("a %s notice's key %r is taken; not attached", notice.source, notice.framing)
         elif len(dump({**extra, notice.framing: notice.payload})) > limit // 2:
             _log.warning("a %s notice is too long to attach; not attached", notice.source)
@@ -329,7 +333,6 @@ async def _run_task(
         if (reply := await _complete(model, toolbox, transcript)) is None:
             await _out_of_room(hooks, transcript)
             return transcript
-        await _model_returned(hooks, transcript)
         assistant: Message = {"role": "assistant", "content": reply.text}
         if reply.tool_calls:
             assistant["tool_calls"] = [
@@ -341,6 +344,7 @@ async def _run_task(
                 for call in reply.tool_calls
             ]
         transcript.messages.append(assistant)
+        await _model_returned(hooks, transcript)
         if not reply.tool_calls:
             if await _closing(hooks, transcript, reply.text):
                 transcript.pending = reply.text

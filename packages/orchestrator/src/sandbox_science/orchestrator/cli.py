@@ -54,6 +54,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import Identifier
 
+from .chat import session_lease
 from .cli_documents import add_parsers, document, project, read_secret, session
 from .documents import DocumentError, DocumentStore, store_path
 from .harness import (
@@ -78,7 +79,8 @@ from .model import (
     OpenAICompatibleModel,
     ScriptedModel,
 )
-from .projects import ProjectError, ProjectStore
+from .projects import ProjectError, ProjectStore, run_name
+from .runstate import RunState
 from .stock_prompts import TEMPLATE_IDS
 from .tools import ToolOutcome
 from .worker_client import WorkerAPIError, WorkerClient
@@ -137,10 +139,18 @@ async def _run_with(args: argparse.Namespace, projects: ProjectStore | None) -> 
     """Run one task against the worker, then save its record and acknowledge its notices.
 
     The session is resolved and the worker's isolation checked before the stores open
-    and the watcher's and reviewer's scripts are read. The worker client, the models and
-    the stores close after the run and before its record is saved, in reverse order; a
-    failure there is recorded as the run's.
+    and the watcher's and reviewer's scripts are read; with stores, the session's run
+    lease is taken then, and held until the record is saved (RS-5). The worker client,
+    the models and the stores close after the run and before its record is saved, in
+    reverse order; a failure there is recorded as the run's.
     """
+    async with AsyncExitStack() as held:
+        return await _held_run(args, projects, held)
+
+
+async def _held_run(
+    args: argparse.Namespace, projects: ProjectStore | None, held: AsyncExitStack
+) -> int:
     sink = _Printer()
     alias = "scripted" if args.script is not None else args.model
     main = _role(args.script, "--script", alias, lambda: _gateway(args, args.model))
@@ -175,8 +185,16 @@ async def _run_with(args: argparse.Namespace, projects: ProjectStore | None) -> 
                 if projects is not None and state_dir is not None:
                     documents = DocumentStore(store_path(state_dir), producer="harness")
                     closing(stack, interruption, lambda: _closed(documents))
+                    runs = RunState(projects.control)
+                    await held.enter_async_context(
+                        session_lease(
+                            runs,
+                            admitted.context,
+                            run_name(admitted.started_at, admitted.run_id),
+                        )
+                    )
                     stores = Stores(
-                        projects, documents, JobState(state_dir, control=documents.control)
+                        projects, documents, JobState(state_dir, control=documents.control), runs
                     )
                 watcher = reviewer = None
                 if args.watcher_model is not None:

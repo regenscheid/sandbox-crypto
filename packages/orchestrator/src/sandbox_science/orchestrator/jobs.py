@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
 from functools import partial
@@ -207,7 +207,8 @@ class JobTools:
         poll_seconds: float = 1,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
         watcher_timeout: float = WATCHER_TIMEOUT,
-        messages: asyncio.Queue[str] | None = None,
+        wake: Callable[[], Coroutine[Any, Any, None]] | None = None,
+        on_wait: Callable[[dict[str, object] | None], Awaitable[None]] | None = None,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         if watcher is not None and (not watcher_alias or state is None):
@@ -232,7 +233,9 @@ class JobTools:
             poll_seconds,
         )
         self.heartbeat_seconds, self.watcher_timeout = heartbeat_seconds, watcher_timeout
-        self.messages = messages
+        self.wake, self.on_wait = wake, on_wait
+        """``wake`` returns once a user message waits for the run: it ends a wait.
+        ``on_wait`` hears of each wait, as ``job_waits`` keeps it, and of its end."""
         self.clock = clock
         self.seen: set[str] = set()
         self.checkins: list[dict[str, object]] = []
@@ -446,8 +449,9 @@ class JobTools:
         }
         await self._waiting(waiting)
         running = asyncio.create_task(self._wait_loop(request, waiting))
-        message = asyncio.create_task(self.messages.get()) if self.messages is not None else None
-        message_consumed = False
+        # A user message ends the wait. The message itself is not consumed here: it
+        # follows this result as the user's own message, before the next model call.
+        message = asyncio.create_task(self.wake()) if self.wake is not None else None
         try:
             if message is None:
                 value = await running
@@ -455,38 +459,26 @@ class JobTools:
                 done, _ = await asyncio.wait(
                     (running, message), return_when=asyncio.FIRST_COMPLETED
                 )
-                if message in done:
-                    message_consumed = True
-                    value = {
-                        "reason": "user_message",
-                        "message": message.result(),
-                        "job_ids": list(request.job_ids),
-                    }
-                else:
+                if running in done:
                     value = await running
+                else:
+                    value = {"reason": "user_message", "job_ids": list(request.job_ids)}
             return dump(value), {"wait": value, "watcher_calls": list(self.checkins)}
         finally:
             cleanup = [task for task in (running, message) if task is not None]
             for task in cleanup:
                 task.cancel()
-            # The winning branch already reports its exception. Cleanup must not
-            # overwrite a user message with an exception from the losing branch.
+            # The winning branch already reports its exception.
             for task in cleanup:
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await task
-            if (
-                message is not None
-                and not message.cancelled()
-                and not message_consumed
-                and self.messages is not None
-            ):
-                # Completion can race the inbox between wait() returning and cleanup.
-                self.messages.put_nowait(message.result())
             await self._waiting(None)
 
     async def _waiting(self, payload: dict[str, object] | None) -> None:
         if self.state is not None:
             await asyncio.to_thread(self.state.waiting, self.context, self.run_id, payload)
+        if self.on_wait is not None:
+            await self.on_wait(payload)
 
     async def _wait_loop(
         self, request: WaitRequest, waiting: dict[str, object]

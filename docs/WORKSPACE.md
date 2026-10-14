@@ -232,7 +232,9 @@ The panel also lists the project's mechanical math checks ([document](MATH-CHECK
 
 ## Chat
 
-The workspace keeps the user's messages to a session's main agent and shows a run's events ([run service](specs/run-service.md)); it starts no run itself. A message is queued in the control store with its state; the same message ID and text again answers the message already written. A run's events are read by cursor, with the run's state: `active` while it holds the session, `ended` once it has stopped, `interrupted` otherwise. The runs that deliver the messages and write the events, and the run service that starts them, are being built.
+The user can write to a session's main agent ([run service](specs/run-service.md)). A message is queued in the control store with its state. A run of the session delivers it before its next model call, as the user's own message, and a message waiting when the run is about to answer makes it go on. Once the run's record is saved, the message is `delivered` with that run. A message a failed model call saw stays `queued` for the next run. While the agent waits on jobs, a message ends the wait. One run holds a session at a time: a run started while another holds it is refused (`busy`).
+
+Each run writes its events as it goes, in the control store: `started`, `user`, `model` (a model call began), `assistant`, `tool`, `notice`, `waiting` and `stopped`. Each is at most 64 KiB, with long text cut to its head and tail; the record keeps the whole text. The events are for display; deliveries are acknowledged only after the record is saved. The workspace reads them by cursor. Nothing starts a run from the GUI yet: the run service that will (`sandbox-science-harness serve`) is not built, so a message waits for a run started with `run`.
 
 ## Run records
 

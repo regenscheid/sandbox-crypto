@@ -24,6 +24,7 @@ from sandbox_science.orchestrator.jobstate import JobState
 from sandbox_science.orchestrator.mathchecks.jobs import Checker
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore
+from sandbox_science.orchestrator.runstate import RunState
 from sandbox_science.orchestrator.tools import ToolOutcome
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
@@ -71,7 +72,7 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     harness = Harness(
         cast(WorkerClient, worker),
         main("Answered."),
-        stores=Stores(projects, documents, JobState(tmp_path)),
+        stores=Stores(projects, documents, JobState(tmp_path), RunState(projects.control)),
         settings=Settings(min_isolation_tier=None),
     )
     sink = Sink()
@@ -84,7 +85,7 @@ async def test_a_run_with_stores_resolves_its_session_runs_and_is_saved(tmp_path
     assert finished.context.environment_id == worker.environment_id == session.environment_id
     assert (finished.status, finished.transcript.final_text) == (0, "Answered.")
     names = [hook.name for hook in finished.hooks]
-    assert names == ["requests", "plans", "reviews", "math", "kernels"]
+    assert names == ["requests", "plans", "reviews", "math", "kernels", "messages", "events"]
     assert sink.notes[0].startswith("worker: pool p")
     assert (
         await save(
@@ -110,7 +111,7 @@ def stores(tmp_path: Path) -> tuple[Stores, DocumentStore]:
     projects = ProjectStore(tmp_path)
     projects.create("p", "minimal", "sha256:" + "a" * 64)
     documents = DocumentStore(store_path(tmp_path), producer="harness")
-    return Stores(projects, documents, JobState(tmp_path)), documents
+    return Stores(projects, documents, JobState(tmp_path), RunState(projects.control)), documents
 
 
 @pytest.mark.parametrize(
