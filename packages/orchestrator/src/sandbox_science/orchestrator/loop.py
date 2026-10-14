@@ -15,7 +15,7 @@ from contextlib import (
 from dataclasses import dataclass, field
 from typing import Any, Final, TypeVar, cast
 
-from .documents.mathjobs import threaded
+from .aio import threaded
 from .hooks import Notice, Point, TurnHook
 from .kernel_notice_receipts import KernelNoticeDelivery
 from .model import ChatModel, Message

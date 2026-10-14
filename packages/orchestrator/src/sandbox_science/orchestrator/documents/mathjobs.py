@@ -7,17 +7,16 @@ is discovered automatically. Exhausted logical quotas hold the cursor, not saves
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
 import re
 import sqlite3
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.consistency.store import ReviewStore, dump
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
 
@@ -41,28 +40,6 @@ def scope_table(db: sqlite3.Connection) -> str:
         "(SELECT j.check_id,s.project,NULL AS session FROM math_jobs j "
         "JOIN math_sources s USING(document))"
     )
-
-
-async def owned[T](work: Awaitable[T]) -> T:
-    """Retain actual work ownership through repeated caller cancellation."""
-    task = asyncio.ensure_future(work)
-    cancelled = False
-    while True:
-        try:
-            result = await asyncio.shield(task)
-            break
-        except asyncio.CancelledError:
-            cancelled = True
-            if task.done():
-                result = task.result()
-                break
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
-
-
-async def threaded[T](call: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-    return await owned(asyncio.to_thread(call, *args, **kwargs))
 
 
 class Checker(Protocol):

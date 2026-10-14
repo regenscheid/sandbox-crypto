@@ -9,6 +9,7 @@ import math
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import Field, TypeAdapter, ValidationError
@@ -23,11 +24,11 @@ from sandbox_science.contracts import (
     JobListing,
     JobRequest,
     JobStatus,
-    wait_or_sleep,
 )
 from sandbox_science.contracts.model import Contract
 from sandbox_science.contracts.worker import TERMINAL_STATES
 
+from .aio import lease, threaded
 from .hooks import Closing, Notice, Point, RunView, TurnHook
 from .jobstate import JobState
 from .model import ChatModel, ToolSpec
@@ -241,27 +242,18 @@ class JobTools:
     @asynccontextmanager
     async def active(self) -> AsyncGenerator[None]:
         """Lease originating-run notice delivery while the model or tools are busy."""
-
-        stopping = asyncio.Event()
-
-        async def heartbeat() -> None:
-            while not stopping.is_set():
-                if self.state is not None:
-                    await asyncio.to_thread(self.state.heartbeat, self.context, self.run_id)
-                await wait_or_sleep(self.clock, stopping, self.heartbeat_seconds)
-
-        task = asyncio.create_task(heartbeat())
-        try:
-            if self.state is not None:
-                await asyncio.to_thread(self.state.heartbeat, self.context, self.run_id)
+        if self.state is None:
             yield
+            return
+        renew = partial(self.state.heartbeat, self.context, self.run_id)
+        try:
+            await threaded(renew)
+            async with lease(
+                renew, interval=self.heartbeat_seconds, name="job notice", clock=self.clock
+            ):
+                yield
         finally:
-            # Finish any in-flight database write before deleting the lease. Cancelling
-            # to_thread would leave its thread free to recreate the lease after deletion.
-            stopping.set()
-            await task
-            if self.state is not None:
-                await asyncio.to_thread(self.state.end_run, self.context, self.run_id)
+            await threaded(self.state.end_run, self.context, self.run_id)
 
     def check_owner(self, execution: Execution) -> None:
         found = execution.context

@@ -6,13 +6,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Any
 
 from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.aio import lease, owned, threaded
 from sandbox_science.orchestrator.consistency.mathnotices import MathNotices
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 
-from .mathjobs import Checker, MathJobs, owned, threaded
+from .mathjobs import Checker, MathJobs
 
 
 class MathController:
@@ -144,28 +146,22 @@ class MathController:
 
     @asynccontextmanager
     async def active(self) -> AsyncGenerator[None]:
-        async def renew() -> None:
-            while True:
-                await asyncio.sleep(30)
-                await threaded(self.notice_store.renew, self.project, self.session, self.run)
-
         try:
             configuration = await threaded(self.checker.identity) if self.checker else None
         except (OSError, ValueError):
             configuration = None
         await threaded(self.jobs.retry_unavailable, self.project, configuration)
-        renewal = asyncio.create_task(renew())
+        renew = partial(self.notice_store.renew, self.project, self.session, self.run)
         try:
-            yield
+            async with lease(renew, interval=30, name="math notice"):
+                yield
         finally:
 
             async def cleanup() -> None:
-                renewal.cancel()
                 if self.task is not None and not self.task.done():
                     self.task.cancel()
-                await asyncio.gather(
-                    renewal, *([self.task] if self.task is not None else []), return_exceptions=True
-                )
+                if self.task is not None:
+                    await asyncio.gather(self.task, return_exceptions=True)
                 await threaded(
                     self.notice_store.release, self.project, self.session, self.run, self.delivered
                 )

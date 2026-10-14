@@ -58,6 +58,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 
+from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .consistency.controller import ReviewController
@@ -67,7 +68,6 @@ from .consistency.store import ReviewStore
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
 from .documents.errors import CONFLICT
 from .documents.mathcontroller import MathController
-from .documents.mathjobs import threaded
 from .documents.tool import view_blocks
 from .hooks import TurnHook
 from .jobs import JobTools

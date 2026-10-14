@@ -12,8 +12,8 @@ from typing import Literal
 from pydantic import Field, ValidationError
 
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.aio import threaded
 from sandbox_science.orchestrator.documents.errors import DocumentError
-from sandbox_science.orchestrator.documents.mathjobs import threaded
 from sandbox_science.orchestrator.model import ChatModel, Message, ModelError, ToolCall, ToolSpec
 
 from .findings import Findings

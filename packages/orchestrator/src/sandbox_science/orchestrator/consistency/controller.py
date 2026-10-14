@@ -8,10 +8,12 @@ import contextlib
 import re
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Literal, cast
 
 from sandbox_science.contracts import ExecutionContext, new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
+from sandbox_science.orchestrator.aio import lease, threaded
 from sandbox_science.orchestrator.documents.errors import POLICY_DENIED, DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.model import ChatModel, Message, ToolSpec
@@ -490,8 +492,6 @@ class ReviewController:
                 block=args.get("block"),
             )
         elif name in ("review_response_read", "review_response_edit"):
-            from sandbox_science.orchestrator.documents.mathjobs import threaded
-
             from .response_bodies import ResponseBodies
 
             bodies = ResponseBodies(self.store)
@@ -578,21 +578,13 @@ class ReviewController:
     @asynccontextmanager
     async def active(self) -> AsyncGenerator[None]:
         await asyncio.to_thread(self.store.recover, *self.scope)
-
-        async def heartbeat() -> None:
-            while True:
-                await asyncio.sleep(30)
-                await asyncio.to_thread(self.notice_store.renew, *self.scope, self.run_id)
-
-        lease = asyncio.create_task(heartbeat())
+        renew = partial(self.notice_store.renew, *self.scope, self.run_id)
         successful = False
         try:
-            yield
+            async with lease(renew, interval=30, name="review notice"):
+                yield
             successful = True
         finally:
-            lease.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await lease
             if (
                 (not successful or not self.persistent)
                 and self.task is not None

@@ -18,12 +18,14 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncGenerator, Callable, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from pydantic import JsonValue
 
 from sandbox_science.contracts import ExecutionContext
+from sandbox_science.orchestrator.aio import lease, threaded
 from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
 from sandbox_science.orchestrator.model import ToolSpec
 
@@ -274,46 +276,19 @@ class DocumentTool:
             yield
             return
 
-        async def renew() -> None:
-            while True:
-                await asyncio.sleep(30)
-                try:
-                    await asyncio.to_thread(
-                        Annotations(self.store).renew,
-                        self.context.project_id,
-                        self.context.session_id,
-                        self.run_id,
-                    )
-                except DocumentError:
-                    # A transient busy store retries before the 120-second lease ends.
-                    # A lease lost across a long outage may safely replay the request.
-                    continue
-
-        heartbeat = asyncio.create_task(renew())
+        annotations = Annotations(self.store)
+        scope = (self.context.project_id, self.context.session_id, self.run_id)
         failed = True
         try:
-            yield
+            # A lease lost across a long outage may safely replay the request.
+            async with lease(partial(annotations.renew, *scope), interval=30, name="request"):
+                yield
             failed = False
-        except BaseException:
-            await asyncio.to_thread(
-                Annotations(self.store).release,
-                self.context.project_id,
-                self.context.session_id,
-                self.run_id,
-            )
-            raise
         finally:
-            heartbeat.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat
-            if not failed:
-                await asyncio.to_thread(
-                    Annotations(self.store).release,
-                    self.context.project_id,
-                    self.context.session_id,
-                    self.run_id,
-                    keep=self.request_delivered,
-                )
+            # A failed run keeps no request: each may reach a later run.
+            await threaded(
+                annotations.release, *scope, keep=None if failed else self.request_delivered
+            )
 
     def author(self, call_id: str | None, model: str | None) -> Author:
         return Author(
