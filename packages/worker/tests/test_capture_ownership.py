@@ -340,7 +340,7 @@ async def test_pipe_drain_error_waits_for_actual_process_reap() -> None:
             self.returncode = 0
             return 0
 
-    task = asyncio.create_task(capture._reap(Process()))  # type: ignore[arg-type]
+    task = asyncio.create_task(capture._reap(Process()))  # pyright: ignore
     try:
         await asyncio.sleep(0.25)
         assert not task.done()

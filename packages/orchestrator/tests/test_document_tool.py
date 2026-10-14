@@ -320,7 +320,7 @@ async def test_ld_f13_document_revisions_count_as_text_and_structure(
     assert [event.payload["agent_characters"] for event in small] == [100, 100, 100]
     assert all(event.payload["structural_added"] == [] for event in small)
     assert lemma_event.payload["agent_characters"] == 2100
-    assert [entry["kind"] for entry in lemma_event.payload["structural_added"]] == ["container"]  # type: ignore[index, union-attr]
+    assert [entry["kind"] for entry in lemma_event.payload["structural_added"]] == ["container"]  # pyright: ignore
     # The user's table counts as structure and text in its event, but no agent wrote it.
     table = "| n | n^16 |\n| - | - |\n" + "".join(f"| {n} | 1 |\n" for n in range(2, 300))
     head = store.document("p1", "ff").head
@@ -331,7 +331,7 @@ async def test_ld_f13_document_revisions_count_as_text_and_structure(
     user_event = store.events("p1")[-1]
     assert user_event.payload["author_kind"] == "user"
     assert user_event.payload["agent_characters"] == 0
-    assert [entry["kind"] for entry in user_event.payload["structural_added"]] == ["table"]  # type: ignore[index, union-attr]
+    assert [entry["kind"] for entry in user_event.payload["structural_added"]] == ["table"]  # pyright: ignore
 
 
 async def test_revisions_are_attributed_to_the_run(

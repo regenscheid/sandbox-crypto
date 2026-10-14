@@ -427,7 +427,7 @@ def test_orphan_detail_counts_against_global_quota(
 def test_cursor_bounds_precede_sql(tmp_path: Path, after: object, target: object) -> None:
     store = Store(tmp_path / "worker.db")
     with pytest.raises(WorkerError, match="invalid observation cursor"):
-        store.observation_page(SCOPE, after=after, target=target)  # type: ignore[arg-type]
+        store.observation_page(SCOPE, after=after, target=target)  # pyright: ignore
     store.close()
 
 

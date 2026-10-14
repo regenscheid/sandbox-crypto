@@ -115,8 +115,9 @@ checks these completion claims.
 `active` is a workflow record only. The store permits trusted USER/MAIN status
 bookkeeping; it does not implement PD-6's exact-version USER approval, revoke
 execution grants, or enforce an execution barrier. There is no approval state until
-plan approval's default is decided (decision 10). Callers must not turn status alone
-into approval or execution authority.
+plan approval's default is decided (decision 10); a plan an older writer stored as
+`awaiting_approval` reads as a draft, which fences effects. Callers must not turn
+status alone into approval or execution authority.
 
 ## Bounded reads, retention and failures
 

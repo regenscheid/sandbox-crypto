@@ -308,7 +308,7 @@ async def test_notice_replays_after_restart_until_saved_run_acknowledges(tmp_pat
     assert await first.notices() == []
     restarted = tools(worker, tmp_path)
     assert len(await restarted.notices()) == 1
-    restarted.state.acknowledge(CONTEXT, "saved-run", ["exe-1"])  # type: ignore[union-attr]
+    restarted.state.acknowledge(CONTEXT, "saved-run", ["exe-1"])  # pyright: ignore
     assert await tools(worker, tmp_path).notices() == []
 
 
@@ -535,7 +535,7 @@ async def test_failed_notice_batch_does_not_acknowledge_unseen_output(tmp_path: 
         async def job_status(self, job: str, *, project_id: str) -> JobStatus:
             if job == "exe-2" and not self.failed:
                 self.failed = True
-                raise WorkerAPIError("unavailable", "temporary disconnect")  # type: ignore[arg-type]
+                raise WorkerAPIError("unavailable", "temporary disconnect")  # pyright: ignore
             return await super().job_status(job, project_id=project_id)
 
     worker = FailingWorker()
@@ -584,7 +584,7 @@ async def test_pagination_delivers_old_completions_and_displays_new_running_jobs
     }
     worker.records["exe-new"] = execution("exe-new")
     jobs = tools(worker, tmp_path)
-    jobs.state.acknowledge(CONTEXT, "saved-run", list(worker.records)[1:-1])  # type: ignore[union-attr]
+    jobs.state.acknowledge(CONTEXT, "saved-run", list(worker.records)[1:-1])  # pyright: ignore
     notices = await jobs.notices()
     assert [notice["job_id"] for notice in notices] == ["exe-0"]
     recent = await jobs.recent(limit=20)

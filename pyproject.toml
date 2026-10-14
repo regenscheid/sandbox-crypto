@@ -80,6 +80,7 @@ strict = ["packages/*/src"]
 pythonVersion = "3.12"
 reportMissingTypeStubs = false
 reportUnnecessaryTypeIgnoreComment = "error"
+enableTypeIgnoreComments = false
 
 [tool.pytest.ini_options]
 testpaths = ["packages", "images"]

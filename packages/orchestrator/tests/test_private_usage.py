@@ -7,7 +7,11 @@ import importlib.util
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[3]
+PRODUCT = "packages/orchestrator/src/sandbox_science/orchestrator/example.py"
+USE = "from sandbox_science.orchestrator.loop import _sections"
 
 
 def hygiene() -> ModuleType:
@@ -21,20 +25,50 @@ def hygiene() -> ModuleType:
     return module
 
 
-def test_a_file_wide_disable_or_an_unexplained_ignore_is_refused_in_product_code() -> None:
+# Each of these would hide a private use from pyright in a product module.
+HIDDEN = {
+    "file reportPrivateUsage=false": f"# pyright: reportPrivateUsage=false\n{USE}",
+    "file reportPrivateUsage=none": f"# pyright: reportPrivateUsage=none\n{USE}",
+    "file reportPrivateUsage=warning": f"# pyright: reportPrivateUsage=warning\n{USE}",
+    "file reportPrivateUsage=information": f"# pyright: reportPrivateUsage=information\n{USE}",
+    "file pyright: basic": f"# pyright: basic\n{USE}",
+    "file pyright: standard": f"# pyright: standard\n{USE}",
+    "file type: ignore": f"# type: ignore\n{USE}",
+    "line type: ignore": f"{USE}  # type: ignore",
+    "line type: ignore[arg-type]": f"{USE}  # type: ignore[arg-type]",
+    "line bare pyright: ignore": f"{USE}  # pyright: ignore",
+    "line ignore[rule] without a reason": f"{USE}  # pyright: ignore[reportPrivateUsage]",
+    "line ignore[rule] with only a noqa after it": (
+        f"{USE}  # pyright: ignore[reportPrivateUsage]  # noqa: E501"
+    ),
+    "line ignore[rule] with only punctuation after it": (
+        f"{USE}  # pyright: ignore[reportPrivateUsage] - :"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(HIDDEN))
+def test_every_way_pyright_accepts_to_hide_a_private_use_is_refused(name: str) -> None:
+    assert hygiene().pragma_problems({PRODUCT: HIDDEN[name]}), name
+
+
+def test_strict_named_rules_and_a_reasoned_private_use_are_accepted() -> None:
+    allowed = "\n".join(
+        [
+            "# pyright: strict",
+            "x = int(y)  # pyright: ignore[reportUnknownArgumentType]",
+            f"{USE}  # pyright: ignore[reportPrivateUsage] - the loop's own test seam",
+        ]
+    )
+    assert hygiene().pragma_problems({PRODUCT: allowed}) == []
+    tests = "packages/orchestrator/tests/test_example.py"
+    assert hygiene().pragma_problems({tests: "# pyright: reportPrivateUsage=false"}) == []
+
+
+def test_the_pyright_settings_the_rule_relies_on_are_kept() -> None:
     check = hygiene()
-    product = "packages/orchestrator/src/sandbox_science/orchestrator/example.py"
-    sources = {
-        product: "\n".join(
-            [
-                "# pyright: reportPrivateUsage=false",
-                "x = store._read()  # pyright: ignore[reportPrivateUsage]",
-                "y = store._read()  # pyright: ignore[reportPrivateUsage] - the parser's own cache",
-            ]
-        ),
-        "packages/orchestrator/tests/test_example.py": "# pyright: reportPrivateUsage=false",
-    }
-    assert check.pragma_problems(sources) == [
-        f"{product}:1: private usage is checked in every file",
-        f"{product}:2: say why this line uses a private name",
+    assert check.settings_problems((ROOT / "pyproject.toml").read_text()) == []
+    assert check.settings_problems("[tool.pyright]\n") == [
+        'pyproject.toml: pyright needs strict = ["packages/*/src"]',
+        "pyproject.toml: pyright needs enableTypeIgnoreComments = false",
     ]

@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: MIT
-"""Internal immutable session plans and attributed progress, used by `plan_tools` and the CLI.
+"""Internal immutable session plans and attributed progress, used by the plan tools
+(`plan_tools`, for MAIN runs the harness builds) and by the workspace's plan views and
+USER plan editing.
 
 Authority is a trusted caller capability, never a field decoded from model requests.
 This module borrows DocumentStore's connection/transaction and never closes it.
@@ -17,6 +19,7 @@ from typing import Annotated, Literal, Self, TypeVar
 
 from pydantic import (
     AwareDatetime,
+    BeforeValidator,
     ConfigDict,
     Field,
     ValidationError,
@@ -45,7 +48,17 @@ Positive = Annotated[int, Field(strict=True, ge=1, le=MAX_COUNTER)]
 Text = Annotated[str, Field(min_length=1, max_length=4096)]
 Title = Annotated[str, Field(min_length=1, max_length=128)]
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-PlanStatus = Literal["draft", "active", "completed", "abandoned"]
+
+
+def _status(value: object) -> object:
+    """A plan stored with the removed ``awaiting_approval`` status reads as a draft,
+    which fences effects (decision 10)."""
+    return "draft" if value == "awaiting_approval" else value
+
+
+PlanStatus = Annotated[
+    Literal["draft", "active", "completed", "abandoned"], BeforeValidator(_status)
+]
 StepStatus = Literal["pending", "in_progress", "completed", "blocked", "skipped"]
 Action = Literal["publish", "revise", "progress", "status"]
 

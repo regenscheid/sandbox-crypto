@@ -851,3 +851,33 @@ def test_unfiltered_history_cannot_silently_skip_missing_record(store, plans, ki
         db.execute("DELETE FROM session_plan_records WHERE kind=? AND number=1", (kind,))
     with pytest.raises(DocumentError, match="history has a gap"):
         plans.history(actor(), first.ref.plan_id, kind)
+
+
+def test_a_plan_stored_with_the_removed_approval_status_reads_as_a_draft(store, plans):
+    first = made(plans)
+    status(plans, first.ref, "active", operation="active")
+    # An older writer could record awaiting_approval, which no longer exists.
+    old, new = '"status":"active"', '"status":"awaiting_approval"'
+    with store.control.write() as tx:
+        # History is immutable; an older writer's rows are made by lifting that briefly.
+        triggers = tx.sql.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name=?",
+            ("session_plan_records",),
+        ).fetchall()
+        for name, _ in triggers:
+            tx.sql.execute(f"DROP TRIGGER {name}")
+        for table in ("session_plan_records", "session_plan_projections"):
+            tx.sql.execute(
+                f"UPDATE {table} SET record=replace(record,?,?)",
+                (old, new),
+            )
+            tx.sql.execute(f"UPDATE {table} SET bytes=length(CAST(record AS BLOB))")
+        for _, sql in triggers:
+            tx.sql.execute(sql)
+        changed = tx.sql.execute(
+            "SELECT count(*) FROM session_plan_projections WHERE record LIKE ?", (f"%{new}%",)
+        ).fetchone()[0]
+    assert changed
+    # The plan stays readable, and as a draft it fences effects.
+    assert plans.summary(actor()).status == "draft"
+    assert plans.current(actor()).head.status == "draft"
