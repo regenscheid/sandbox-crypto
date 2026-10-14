@@ -14,6 +14,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Final, Literal, cast
 
 from pydantic import ValidationError
@@ -21,7 +22,7 @@ from pydantic import ValidationError
 from sandbox_science.contracts import new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
-from sandbox_science.orchestrator.control import Receipts
+from sandbox_science.orchestrator.control import EventLog, Receipts
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.blocks import check_text
 from sandbox_science.orchestrator.documents.errors import (
@@ -142,6 +143,12 @@ RECEIPTS: Final = Receipts("review", "operation ID already names another finding
 """The receipts of the findings' and the responses' changes, which share one scope."""
 
 
+def _length(value: object) -> int | None:
+    """The length of a revision event's ``structural_added`` list, or None when the event
+    has none (an event that is not a revision's)."""
+    return len(cast(list[object], value)) if isinstance(value, list) else None
+
+
 def dump(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
@@ -219,6 +226,8 @@ class ReviewStore:
         artifacts: ArtifactInventory | None = None,
     ) -> None:
         self.documents, self.clock, self.artifacts = documents, clock, artifacts
+        self.review_log = EventLog(documents.control, "review", documents.producer)
+        self.finding_log = EventLog(documents.control, "finding", documents.producer)
         if artifacts is None and not documents.control.missing:
             self.artifacts = ArtifactInventory(documents)
         if artifacts is not None and artifacts.documents is not documents:
@@ -377,9 +386,7 @@ class ReviewStore:
         """
         self.scope(project, session)
         with self.documents.control.read() as tx:
-            target = tx.sql.execute(
-                "SELECT coalesce(max(seq),0) FROM events WHERE project_id=?", (project,)
-            ).fetchone()[0]
+            target = self.documents.event_log.head(tx.sql, project)
         after = 0
         for _ in range(50 if drain else 1):
             after, rows = self._document_page(project, session, target)
@@ -429,15 +436,20 @@ class ReviewStore:
                 (project, session),
             ).fetchone()
             after = current[0] if current else 0
-            rows = db.execute(
-                """SELECT seq,document_id,session_id,kind,
-                json_extract(payload,'$.author_kind'),json_extract(payload,'$.revision'),
-                json_extract(payload,'$.agent_characters'),
-                json_array_length(payload,'$.structural_added')
-                FROM events WHERE project_id=? AND seq>? AND seq<=? ORDER BY seq LIMIT 200""",
-                (project, after, target),
-            ).fetchall()
-        return after, [tuple(row) for row in rows]
+            events = self.documents.event_log.page(db, project, after, 200, through=target)
+        return after, [
+            (
+                event.seq,
+                event.subject,
+                event.session,
+                event.kind,
+                event.payload.get("author_kind"),
+                event.payload.get("revision"),
+                event.payload.get("agent_characters"),
+                _length(event.payload.get("structural_added")),
+            )
+            for event in events
+        ]
 
     def _document_observation(
         self, project: str, document: str, number: int
@@ -997,10 +1009,13 @@ class ReviewStore:
     def event(
         self, db: sqlite3.Connection, project: str, session: str, kind: str, payload: Json
     ) -> None:
-        db.execute(
-            "INSERT INTO review_events(project,session,kind,payload,created) VALUES(?,?,?,?,?)",
-            (project, session, kind, dump(payload), self.clock()),
-        )
+        """Record a review's (``review.*``) or a finding's (``finding.*``) event in the
+        open change ``db``; its payload names the review or the finding."""
+        at = datetime.fromtimestamp(self.clock(), UTC)
+        if kind.startswith("finding."):
+            self.finding_log.append(db, kind, project, session, payload["finding"], payload, at)
+        else:
+            self.review_log.append(db, kind, project, session, payload["review"], payload, at)
 
     def load_run(self, db: sqlite3.Connection, project: str, session: str, review: str) -> Json:
         identifier(review, "rev")
@@ -1596,14 +1611,8 @@ class ReviewStore:
                 )
             ]
             unreviewed = [
-                json.loads(r[0])
-                for r in db.execute(
-                    (
-                        "SELECT payload FROM review_events WHERE project=? AND session=? "
-                        "AND kind='review.unreviewed' ORDER BY seq DESC LIMIT 50"
-                    ),
-                    (project, session),
-                )
+                event.payload
+                for event in self.review_log.recent(db, project, session, "review.unreviewed", 50)
             ]
         values: list[Json] = []
         size = 0

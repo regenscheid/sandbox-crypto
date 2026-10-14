@@ -28,6 +28,9 @@ MACRO_REVISIONS = migrations.BASELINE + 8
 RECEIPTS = migrations.BASELINE + 10
 """The version that moved the operation receipts into ``operation_receipts``."""
 
+EVENT_LOG = migrations.BASELINE + 11
+"""The version that moved the documents' and the reviewer's events into ``control_events``."""
+
 EMPTY_SHA = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
 """The SHA-256 of ``{}``, the empty macro setting."""
 
@@ -61,6 +64,16 @@ _RECEIPTS = (
     "FROM src.operation_receipts WHERE scope='review'",
     "INSERT INTO project_macro_operations SELECT project,actor,operation_id,fingerprint,"
     "json_extract(result,'$.revision') FROM src.operation_receipts WHERE scope='macros'",
+)
+
+_EVENTS = (
+    # The event tables version 13 dropped, from control_events.
+    "INSERT INTO events(seq,time,kind,producer,project_id,session_id,document_id,payload) "
+    "SELECT seq,time,kind,producer,project,session,subject_id,payload "
+    "FROM src.control_events WHERE subject_type='document' ORDER BY seq",
+    "INSERT INTO review_events(project,session,kind,payload,created) "
+    "SELECT project,session,kind,payload,(julianday(time)-2440587.5)*86400.0 "
+    "FROM src.control_events WHERE subject_type IN ('review','finding') ORDER BY seq",
 )
 
 
@@ -119,6 +132,9 @@ def older_store(source: Path, target: Path, version: int) -> None:
                 db.execute(statement)
         if version < RECEIPTS:
             for statement in _RECEIPTS:
+                db.execute(statement)
+        if version < EVENT_LOG:
+            for statement in _EVENTS:
                 db.execute(statement)
         db.execute("COMMIT")
     finally:

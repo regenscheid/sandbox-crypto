@@ -35,8 +35,8 @@ def record_event(tx: Tx, event: ControlEvent) -> None:
     # Verify the exact event, rather than trusting a caller-supplied revision/author.
     if (
         db.execute(
-            "SELECT 1 FROM events WHERE seq=? AND document_id=? AND kind=? "
-            "AND json_extract(payload,'$.revision')=?",
+            "SELECT 1 FROM control_events WHERE seq=? AND subject_type='document' "
+            "AND subject_id=? AND kind=? AND json_extract(payload,'$.revision')=?",
             (event.seq, document, kind, revision),
         ).fetchone()
         is None

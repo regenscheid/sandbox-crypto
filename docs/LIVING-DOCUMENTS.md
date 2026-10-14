@@ -18,7 +18,7 @@ In the code, `sandbox_science.orchestrator.control` owns the connection. `Contro
 | `revisions` | Every revision, append-only: its number, author, the user who accepted it if it was a suggestion, session, base and parent revisions, reason, operations, the patch it came from, its text and SHA-256, whether it is a tombstone, what was normalized, its warnings, its block map, and the profile and parser versions that made the map |
 | `patches` | Every patch an agent submitted: applied, unchanged, conflicted (a rejected patch, LD-19), refused, suggested, accepted or declined, with its base, operations, author and the user's decision |
 | `operation_receipts` | The first result of each change made under an operation ID, so that a retry gets it and another request under that ID is refused; one scope each for documents (`document`), comments (`comment`), findings and finding responses (`review`) and project macros (`macros`, whose result is the setting revision) |
-| `events` | The changes' events (LD-39), numbered in commit order |
+| `control_events` | The changes' events (LD-39), numbered in commit order, each naming its project, session, producer and subject: a document (`document.*` and `annotation.*` events), a review (`review.*`) or a finding (`finding.*`); append-only |
 | `annotation_threads`, `annotation_entries` | Immutable anchor/opening author and append-only attributed create, reply, edit, resolve and reopen entries |
 | `annotation_requests` | User-addressed requests, their session, delivery lease and queued/delivered/responded lifecycle |
 | `project_macro_revisions`, `project_macro_heads` | Immutable bounded USER definitions and the current setting revision |

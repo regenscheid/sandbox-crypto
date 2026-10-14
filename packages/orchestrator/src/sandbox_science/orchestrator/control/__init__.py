@@ -8,6 +8,7 @@ migrations (``migrations.py``).
 """
 
 from .errors import ControlError
+from .events import Event, EventLog
 from .receipts import Receipts
 from .store import (
     DEFAULT_TIMEOUT,
@@ -25,6 +26,8 @@ __all__ = [
     "ControlError",
     "ControlEvent",
     "ControlStore",
+    "Event",
+    "EventLog",
     "Receipts",
     "Subscriber",
     "Tx",

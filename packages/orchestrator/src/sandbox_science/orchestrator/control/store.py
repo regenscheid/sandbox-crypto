@@ -47,7 +47,9 @@ class Tx:
 
 @dataclass(frozen=True, slots=True)
 class ControlEvent:
-    """An event a change recorded (a row of ``events``), as its subscribers see it."""
+    """An event a change recorded (a row of ``control_events``), as its subscribers see
+    it. ``document`` names the document a document event is about; review and finding
+    events arrive with no document."""
 
     seq: int
     kind: str

@@ -895,6 +895,56 @@ def _receipts(schema: Schema) -> None:
         schema.execute(f"DROP TABLE {table}")
 
 
+_EVENTS: Final = (
+    # The documents' events keep their numbers, which the reviewer's document cursors hold.
+    "INSERT INTO control_events(seq,time,kind,producer,project,session,subject_type,"
+    "subject_id,payload) SELECT seq,time,kind,producer,project_id,session_id,'document',"
+    "document_id,payload FROM events ORDER BY seq",
+    # The reviewer's events follow them: nothing kept their numbers or read their producer.
+    "INSERT INTO control_events(time,kind,producer,project,session,subject_type,subject_id,"
+    "payload) SELECT strftime('%Y-%m-%dT%H:%M:%f',created,'unixepoch')||'+00:00',kind,"
+    "'unrecorded',project,session,CASE WHEN kind LIKE 'finding.%' THEN 'finding' "
+    "ELSE 'review' END,CASE WHEN kind LIKE 'finding.%' THEN json_extract(payload,'$.finding') "
+    "ELSE json_extract(payload,'$.review') END,payload FROM review_events ORDER BY seq",
+)
+
+
+def _event_log(schema: Schema) -> None:
+    """Version 13: the documents' and the reviewer's events move into one log,
+    ``control_events``, each naming its subject (B-04). The documents' events keep their
+    numbers; the reviewer's follow, their time from the seconds they kept, their
+    producer not recorded. An event the log refuses refuses the migration."""
+    for statement in (
+        """CREATE TABLE control_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    time TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (length(CAST(kind AS BLOB)) BETWEEN 1 AND 64),
+    producer TEXT NOT NULL CHECK (length(CAST(producer AS BLOB)) BETWEEN 1 AND 64),
+    project TEXT NOT NULL,
+    session TEXT,
+    subject_type TEXT NOT NULL
+        CHECK (length(subject_type) BETWEEN 1 AND 32 AND subject_type NOT GLOB '*[^a-z_]*'),
+    subject_id TEXT NOT NULL,
+    payload TEXT NOT NULL CHECK (json_valid(payload) AND json_type(payload) = 'object')
+) STRICT""",
+        "CREATE INDEX control_events_subjects ON control_events(project,subject_type,seq)",
+    ):
+        schema.execute(statement)
+    for statement, table in zip(_EVENTS, ("events", "review_events"), strict=True):
+        try:
+            schema.execute(statement)
+        except sqlite3.IntegrityError as error:
+            raise RefusedRowError(f"an event of {table} fails its check ({error})") from None
+        schema.execute(f"DROP TABLE {table}")
+    for statement in (
+        """CREATE TRIGGER control_events_no_update BEFORE UPDATE ON control_events
+BEGIN SELECT RAISE(ABORT, 'events are immutable'); END""",
+        """CREATE TRIGGER control_events_no_delete BEFORE DELETE ON control_events
+BEGIN SELECT RAISE(ABORT, 'events are append-only'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -907,6 +957,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _macro_revisions,
     _run_tree,
     _receipts,
+    _event_log,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
