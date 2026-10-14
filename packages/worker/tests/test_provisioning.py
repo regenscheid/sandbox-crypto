@@ -110,10 +110,10 @@ class Prefix:
 
 def make_prefix(directory: Path, *, kernels: bool = False) -> Prefix:
     root = directory / "prefix"
-    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(root)], check=True)  # noqa: S603
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(root)], check=True)
     python = root / "bin" / "python"
     purelib = "import sysconfig; print(sysconfig.get_paths()['purelib'])"
-    site = Path(subprocess.check_output([python, "-c", purelib], text=True).strip())  # noqa: S603
+    site = Path(subprocess.check_output([python, "-c", purelib], text=True).strip())
     (root / "conda-meta").mkdir()
     (root / "conda-meta" / "history").write_text("")
     shutil.copy(FAKE, site / "fakepm.py")
@@ -143,10 +143,10 @@ class Sandbox:
 
     def run(self, *argv: str, **kwargs: Any) -> subprocess.CompletedProcess[str]:
         options: dict[str, Any] = {"capture_output": True, "text": True, "timeout": 60}
-        return subprocess.run(argv, env=self.env, check=False, **(options | kwargs))  # noqa: S603
+        return subprocess.run(argv, env=self.env, check=False, **(options | kwargs))
 
     def start(self, *argv: str, **env: str) -> subprocess.Popen[str]:
-        return subprocess.Popen(  # noqa: S603
+        return subprocess.Popen(
             argv, env={**self.env, **env}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
 
@@ -1444,7 +1444,7 @@ def test_l3_scripts_find_the_environment_beside_its_package_managers(sandbox: Sa
         ' && "$(dirname "$(command -v pip)")/pip" install sigma'
     )
     env = {**sandbox.env, "PATH": f"{sandbox.state.bin}:{path}:/usr/bin:/bin"}
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         ["/bin/sh", "-c", script], env=env, capture_output=True, text=True, timeout=60, check=False
     )
     assert result.returncode == 0, result.stderr
@@ -1570,7 +1570,7 @@ def test_review2_m2_the_prefixs_programs_are_beside_the_python_on_path(
     env = {**sandbox.env, "PATH": f"{sandbox.state.bin}:{path}"}
 
     def shell(script: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(  # noqa: S603
+        return subprocess.run(
             ["/bin/sh", "-c", script], env=env, capture_output=True, text=True, check=False
         )
 
@@ -1636,7 +1636,7 @@ print(size, (after - before) * 1024)
 def test_review2_m3_refusing_a_lockfile_of_unknown_keys_takes_no_memory(tmp_path: Path) -> None:
     # 1.5 million unknown keys in one object (14.7 MiB, as the channel decodes it): the
     # check took 873 MiB, building and formatting an error for each.
-    done = subprocess.run(  # noqa: S603
+    done = subprocess.run(
         [sys.executable, "-c", MEASURE, str(tmp_path), "1500000"],
         capture_output=True,
         text=True,
@@ -1703,7 +1703,7 @@ def test_review2_l1_checking_a_lockfile_in_a_thread_holds_the_interpreter_briefl
     # Keep the original 0.25 s bound and hostile inputs, but measure in a fresh
     # interpreter: an unrelated full-suite heap collection must not be attributed
     # to the lockfile validator. Deterministic byte/count/shape tests also run here.
-    done = subprocess.run(  # noqa: S603
+    done = subprocess.run(
         [
             sys.executable,
             "-c",
@@ -2063,7 +2063,7 @@ def test_review2_l5_a_signal_to_the_process_group_reaches_the_command_once(
 ) -> None:
     # A kernel interrupt is killpg(SIGINT): off a terminal, the command no longer shares
     # its wrapper's group, and gets the signal once, from the wrapper.
-    wrapper = subprocess.Popen(  # noqa: S603
+    wrapper = subprocess.Popen(
         [str(sandbox.state.bin / "pip"), "install", "counting"],
         env=sandbox.env,
         start_new_session=True,  # a group of its own, as a kernel's

@@ -68,7 +68,7 @@ def request(operation: str = "cell", child: str = "child") -> RunCellRequest:
 
 class FakeChannel:
     incarnation = INC
-    daemon_token = "synthetic-not-connected"  # noqa: S105
+    daemon_token = "synthetic-not-connected"
     closed = False
     detaching = False
 
@@ -224,7 +224,7 @@ def test_control_all_retained_keys_bounded_before_fetch(manager, column):
     state = manager.store.run_kernel_state
     state.begin_control(binding(), "restart", "restart", "python")
     manager.store._db.execute("DROP TRIGGER run_controls_identity")
-    manager.store._db.execute(f"UPDATE run_kernel_controls SET {column}=?", ("x" * 2_000_000,))  # noqa: S608 - fixed internal names
+    manager.store._db.execute(f"UPDATE run_kernel_controls SET {column}=?", ("x" * 2_000_000,))
     tracemalloc.start()
     try:
         with pytest.raises(WorkerError):
@@ -242,7 +242,7 @@ def test_control_replay_binds_canonical_columns(manager, column, value):
     state = manager.store.run_kernel_state
     state.begin_control(binding(), "restart", "restart", "python")
     manager.store._db.execute("DROP TRIGGER run_controls_identity")
-    manager.store._db.execute(f"UPDATE run_kernel_controls SET {column}=?", (value,))  # noqa: S608 - fixed internal names
+    manager.store._db.execute(f"UPDATE run_kernel_controls SET {column}=?", (value,))
     with pytest.raises(WorkerError):
         state.begin_control(binding(), "restart", "restart", "python")
 
@@ -769,7 +769,7 @@ async def test_selected_canonical_scope_columns_cannot_disagree_or_nul_normalize
         db.execute("UPDATE run_cell_selections SET project=?", ("p\0bad",))
     else:
         original = {"environment_id": "e", "session_id": "s", "operation_id": "p/cell"}[column]
-        db.execute(f"UPDATE executions SET {column}=?", (original + "\0bad",))  # noqa: S608 - fixed internal names
+        db.execute(f"UPDATE executions SET {column}=?", (original + "\0bad",))
     with pytest.raises(WorkerError):
         manager.store.run_kernel_state.request(first.execution)
     assert channel(manager).calls == []

@@ -50,7 +50,7 @@ from urllib.parse import unquote, urlsplit
 
 # The ignore is needed until package_cache ships a py.typed marker; strict pyright
 # otherwise treats the contract module as an untyped library.
-from sandbox_science.package_cache.adapter import (  # pyright: ignore[reportMissingTypeStubs]
+from sandbox_science.package_cache.adapter import (
     Digest,
     Fetch,
     Kind,

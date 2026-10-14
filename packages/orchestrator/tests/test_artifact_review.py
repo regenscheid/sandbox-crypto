@@ -45,7 +45,7 @@ from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
-TOKEN = "test-secret-artifact-review-0123456789"  # noqa: S105 - synthetic local fixture
+TOKEN = "test-secret-artifact-review-0123456789"
 
 
 @pytest_asyncio.fixture
@@ -485,7 +485,7 @@ def test_corrupt_large_metadata_refuses_before_json_allocation(state, table, col
     with reviews.documents._write() as db:
         if table == "artifact_events":
             db.execute("DROP TRIGGER artifact_events_no_update")
-        db.execute(f"UPDATE {table} SET {column}=cast(zeroblob(20971520) AS TEXT)")  # noqa: S608
+        db.execute(f"UPDATE {table} SET {column}=cast(zeroblob(20971520) AS TEXT)")
     tracemalloc.start()
     try:
         with pytest.raises(DocumentError):
@@ -604,7 +604,7 @@ def test_corrupt_review_pin_columns_remain_bounded(state, column) -> None:
     ingest_artifacts(reviews, "p", "s")
     with reviews.documents._write() as db:
         db.execute("DROP TRIGGER review_feed_update")
-        db.execute(f"UPDATE review_feed SET {column}=cast(zeroblob(20971520) AS TEXT)")  # noqa: S608
+        db.execute(f"UPDATE review_feed SET {column}=cast(zeroblob(20971520) AS TEXT)")
     tracemalloc.start()
     try:
         with pytest.raises(DocumentError):

@@ -486,7 +486,7 @@ async def test_final_turn_new_request_stays_pending_for_next_run(store: Document
             create(store, addressed_to="a")
             return await super().complete(messages, tools)
 
-    model = Arriving(ScriptedModel.from_json([{"text": "Done"}])._turns)  # pyright: ignore[reportPrivateUsage]
+    model = Arriving(ScriptedModel.from_json([{"text": "Done"}])._turns)
     async with WorkerClient("http://127.0.0.1:9", "k" * 40) as worker:
         transcript = await run_task(
             model,
@@ -671,7 +671,7 @@ async def test_request_arriving_during_answer_reaches_next_model_safe_point(
     context = ExecutionContext(project_id="p", session_id="a", environment_id="env")
     model = Arriving(
         ScriptedModel.from_json([{"text": "Premature answer"}, {"text": "Handled request"}])._turns
-    )  # pyright: ignore[reportPrivateUsage]
+    )
     async with WorkerClient("http://127.0.0.1:9", "k" * 40) as worker:
         transcript = await run_task(
             model,

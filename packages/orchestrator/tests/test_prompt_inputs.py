@@ -42,7 +42,7 @@ class ObservedModel(ScriptedModel):
                     {"tool_calls": [{"name": "document_read", "arguments": {"document": "note"}}]},
                     {"text": "The document is quoted data."},
                 ]
-            )._turns  # pyright: ignore[reportPrivateUsage]
+            )._turns
         )
         self.offered: list[tuple[ToolSpec, ...]] = []
 

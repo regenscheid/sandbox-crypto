@@ -37,13 +37,8 @@ from sandbox_science.worker.backends import EXECUTOR_SOURCE, configure_package_c
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.package_clients import render
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.skipif(
-        os.environ.get("SS_INTEGRATION") != "1",
-        reason="needs SS_INTEGRATION=1 and access to the public registries",
-    ),
-]
+# Skipped unless SS_INTEGRATION=1 (the root conftest.py); needs the public registries.
+pytestmark = pytest.mark.integration
 
 SETTINGS = """\
 listen = "127.0.0.1:{port}"
@@ -129,7 +124,7 @@ def network(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Network]:
     settings.write_text(SETTINGS.format(port=port))
     log_path = root / "serve.log"
     log = log_path.open("w")
-    server = subprocess.Popen(  # noqa: S603 - our own command
+    server = subprocess.Popen(
         [
             sys.executable,
             "-c",
@@ -147,7 +142,7 @@ def network(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Network]:
     try:
         for _ in range(100):
             try:
-                with urllib.request.urlopen(f"{url}/-/health", timeout=1):  # noqa: S310
+                with urllib.request.urlopen(f"{url}/-/health", timeout=1):
                     break
             except OSError:
                 time.sleep(0.1)
@@ -325,7 +320,7 @@ async def test_npm_installs_from_a_lockfile_made_against_the_public_registry(
 ) -> None:
     # npm rebases lockfile URLs on the default registry onto the configured one.
     npm = need("npm")
-    with urllib.request.urlopen(f"{network.url}/npm/is-number", timeout=30) as response:  # noqa: S310
+    with urllib.request.urlopen(f"{network.url}/npm/is-number", timeout=30) as response:
         integrity = json.load(response)["versions"]["7.0.0"]["dist"]["integrity"]
     project = sandbox.workspace / "locked"
     project.mkdir()

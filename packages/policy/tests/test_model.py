@@ -367,4 +367,4 @@ def test_a_host_is_bound_to_one_provider() -> None:
 def test_models_are_frozen() -> None:
     policy = parse_policy(HEADER).policy
     with pytest.raises(ValueError, match="frozen"):
-        policy.defaults.action = Action.ALLOW  # type: ignore[misc]
+        policy.defaults.action = Action.ALLOW

@@ -55,7 +55,7 @@ def test_the_documented_test_vector() -> None:
     }
     expected = "7155c4ba8d22fd08663539e775ac8df53cf3d200c771acbddba28937242d1419"
     assert record_hash(**arguments) == expected
-    assert independent_hash(*arguments.values()) == expected  # pyright: ignore[reportArgumentType]
+    assert independent_hash(*arguments.values()) == expected
 
 
 def test_appends_build_a_chain(path: Path) -> None:

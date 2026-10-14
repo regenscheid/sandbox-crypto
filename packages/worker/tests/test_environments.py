@@ -54,9 +54,9 @@ from sandbox_science.worker.admission import (
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend, OpenShellBackend
-from sandbox_science.worker.cli import _backend as cli_backend  # pyright: ignore[reportPrivateUsage]
+from sandbox_science.worker.cli import _backend as cli_backend
 from sandbox_science.worker.cli import (
-    _confirmed_daemon_loss as confirmed_daemon_loss,  # pyright: ignore[reportPrivateUsage]
+    _confirmed_daemon_loss as confirmed_daemon_loss,
 )
 from sandbox_science.worker.cli import main
 from sandbox_science.worker.environments import (
@@ -368,7 +368,7 @@ async def test_create_compiles_attaches_exactly_the_listed_providers_and_binds(
     box = setup.fake.read()["sandboxes"][info.sandbox]
     assert box["image"] == IMAGE
     assert box["providers"] == ["github-readonly"]
-    assert "/dev/shm" in box["policy"]["filesystem_policy"]["read_write"]  # noqa: S108 - a device path
+    assert "/dev/shm" in box["policy"]["filesystem_policy"]["read_write"]
     config = box["policy"]["network_middlewares"]["sandbox-science-policy"]["config"]
     assert config["policy"]["digest"] == setup.policy
     [create] = setup.fake.calls("sandbox", "create")
@@ -1299,12 +1299,12 @@ async def test_a_failed_suspension_leaves_the_others_to_go_on(setup: Setup) -> N
             raise WorkerError(ErrorKind.UNAVAILABLE, "openshell sandbox stop failed")
         return await real(*args, timeout=timeout)
 
-    setup.environments.cli.run = flaky  # type: ignore[method-assign]
+    setup.environments.cli.run = flaky
     assert await suspender.check() == ["env-b"]
     # Recorded stopped before the stop failed: its next use finds the sandbox still
     # ready, and carries on without starting it (review finding 2).
     assert setup.environments.get("env-a").state is EnvironmentState.STOPPED
-    setup.environments.cli.run = real  # type: ignore[method-assign]
+    setup.environments.cli.run = real
     await setup.environments.resume("env-a")
     assert setup.environments.get("env-a").state is EnvironmentState.READY
     assert setup.fake.calls("sandbox", "start") == []
@@ -2002,7 +2002,7 @@ async def test_a_busy_environment_does_not_hold_up_admission(setup: Setup) -> No
     info, _ = await setup.environments.create(setup.request())
     setup.fake.draft(info.sandbox, "eprint.iacr.org:443")
     watcher = DraftWatcher(setup.environments, 1.0)
-    lock = setup.environments._lock("env-1")  # pyright: ignore[reportPrivateUsage]
+    lock = setup.environments._lock("env-1")
     async with lock:
         assert await watcher.check("env-1", info.sandbox) == ()
     decisions = await watcher.check("env-1", info.sandbox)
@@ -2106,7 +2106,7 @@ async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> N
             await release.wait()
         return await real(*args, timeout=timeout)
 
-    setup.environments.cli.run = slow  # type: ignore[method-assign]
+    setup.environments.cli.run = slow
     revision = setup.add(variant(setup.tmp, "v2.yaml", extra_rule=True))
     revising = asyncio.create_task(setup.environments.revise("env-1", revision))
     queued = asyncio.create_task(setup.environments.revise("env-1", setup.policy))
@@ -2119,7 +2119,7 @@ async def test_admission_does_not_wait_for_a_change_under_way(setup: Setup) -> N
     release.set()
     await revising
     await queued
-    setup.environments.cli.run = real  # type: ignore[method-assign]
+    setup.environments.cli.run = real
     assert not setup.environments.busy("env-1")
     decisions = await watcher.check("env-1", info.sandbox)
     assert [(d.host, d.admitted) for d in decisions] == [("eprint.iacr.org", True)]
@@ -2236,7 +2236,7 @@ async def test_a_client_has_at_most_its_limit_of_environments(
         async with serial:  # every CLI call, sandbox() included, goes through run()
             return await run(*args, timeout=timeout)
 
-    cli.run = run_serially  # type: ignore[method-assign]
+    cli.run = run_serially
     try:
         # Concurrent requests across the client's projects: exactly its limit succeed.
         results = await asyncio.gather(

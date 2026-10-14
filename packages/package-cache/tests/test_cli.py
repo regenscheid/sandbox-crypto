@@ -206,8 +206,8 @@ def test_serve_warns_when_the_open_file_limit_is_low(
         return soft, 524288
 
     monkeypatch.setattr(resource, "getrlimit", getrlimit)
-    monkeypatch.setattr(cli, "build_adapters", lambda settings: {})  # pyright: ignore[reportUnknownLambdaType]
-    monkeypatch.setattr(web, "run_app", lambda app, **options: None)  # pyright: ignore[reportUnknownLambdaType]
+    monkeypatch.setattr(cli, "build_adapters", lambda settings: {})
+    monkeypatch.setattr(web, "run_app", lambda app, **options: None)
     caplog.set_level(logging.WARNING, logger="sandbox_science.package_cache")
     assert cli.main(["serve", "--settings", str(settings_file(tmp_path))]) == 0
     warnings = [

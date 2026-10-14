@@ -44,7 +44,7 @@ from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
 pytestmark = pytest.mark.asyncio
-TOKEN = "test-secret-artifact"  # noqa: S105 - synthetic local fixture
+TOKEN = "test-secret-artifact"
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 
 

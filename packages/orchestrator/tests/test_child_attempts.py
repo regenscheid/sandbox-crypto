@@ -500,7 +500,7 @@ def test_corrupt_large_sql_fields_refuse_before_materialization(f, column):
     db = f.documents._db
     assert db is not None
     db.execute("DROP TRIGGER child_attempt_events_no_update")
-    db.execute(f"UPDATE child_attempt_events SET {column}=?", ("x" * (20 * 1024 * 1024),))  # noqa: S608 - fixed parametrize columns
+    db.execute(f"UPDATE child_attempt_events SET {column}=?", ("x" * (20 * 1024 * 1024),))
     import tracemalloc
 
     tracemalloc.start()
@@ -654,7 +654,7 @@ def test_retained_exact_bytes_request_binding_refuses(f, change):
     else:
         raw = raw.replace("Original synthetic child framing.", "Changed synthetic child framing.")
     db.execute("UPDATE child_attempt_events SET record=?", (raw,))
-    db.execute("UPDATE child_attempt_events SET bytes=" + module._CHARGE)  # noqa: S608 - static charge expression
+    db.execute("UPDATE child_attempt_events SET bytes=" + module._CHARGE)
     with pytest.raises(DocumentError):
         f.journal.get(f.authority, started.attempt_id)
 
@@ -682,7 +682,7 @@ def test_retained_nested_decoder_recursion_is_fixed_refusal(f):
     db.execute("DROP TRIGGER child_attempt_events_no_update")
     raw = '{"nested":' * 2000 + "0" + "}" * 2000
     db.execute("UPDATE child_attempt_events SET record=?", (raw,))
-    db.execute("UPDATE child_attempt_events SET bytes=" + module._CHARGE)  # noqa: S608 - static expression
+    db.execute("UPDATE child_attempt_events SET bytes=" + module._CHARGE)
     with pytest.raises(DocumentError, match="identity is corrupt"):
         f.journal.get(f.authority, started.attempt_id)
 

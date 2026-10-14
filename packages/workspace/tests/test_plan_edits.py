@@ -32,7 +32,7 @@ from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.workspace import plan_edits, plans
 from sandbox_science.workspace.app import create_app
 
-TOKEN = "test-secret-plan-edit-login-0123456789"  # noqa: S105
+TOKEN = "test-secret-plan-edit-login-0123456789"
 PATH = "/api/v0/projects/p1/sessions/a/plan"
 
 

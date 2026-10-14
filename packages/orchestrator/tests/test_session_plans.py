@@ -147,7 +147,7 @@ def damage(store, table, kind, transform, *, identifier=None):
         if table == "session_plan_records":
             db.execute("DROP TRIGGER session_plan_records_no_update")
         assert table in {"session_plan_records", "session_plan_projections"}
-        query = f"SELECT rowid,record FROM {table} WHERE kind=?"  # noqa: S608 - fixed test tables
+        query = f"SELECT rowid,record FROM {table} WHERE kind=?"
         params = (kind,)
         if identifier is not None:
             query += " AND id=?"
@@ -156,7 +156,7 @@ def damage(store, table, kind, transform, *, identifier=None):
         value = transform(json.loads(record))
         changed = json.dumps(value, separators=(",", ":"))
         db.execute(
-            f"UPDATE {table} SET record=?,bytes=? WHERE rowid=?",  # noqa: S608 - fixed test tables
+            f"UPDATE {table} SET record=?,bytes=? WHERE rowid=?",
             (changed, len(changed) + 512, rowid),
         )
 

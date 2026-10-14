@@ -84,7 +84,7 @@ def test_populated_legacy_readonly_and_writer_migration_preserves_identity(tmp_p
     with docs._read() as db:
         assert db is not None
         assert db.execute(
-            "SELECT rowid," + ",".join(finding_schema.LEGACY_FIELDS) + " FROM review_findings"  # noqa: S608
+            "SELECT rowid," + ",".join(finding_schema.LEGACY_FIELDS) + " FROM review_findings"
         ).fetchone() == (42, *HEADER)
         assert db.execute("PRAGMA foreign_key_check").fetchall() == []
         assert db.execute("PRAGMA defer_foreign_keys").fetchone() == (0,)

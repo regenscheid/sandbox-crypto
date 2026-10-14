@@ -25,7 +25,7 @@ from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.workspace.app import create_app
 
-TOKEN = "test-secret-workspace-login-0123456789"  # noqa: S105
+TOKEN = "test-secret-workspace-login-0123456789"
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 
 

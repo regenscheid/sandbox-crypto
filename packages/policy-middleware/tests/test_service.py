@@ -125,7 +125,7 @@ def evaluation(policy: LoadedPolicy, **target: Any) -> pb.HttpRequestEvaluation:
 
 
 def status_of(error: pytest.ExceptionInfo[grpc.RpcError]) -> grpc.StatusCode:
-    return error.value.code()  # pyright: ignore[reportAttributeAccessIssue]
+    return error.value.code()
 
 
 # --- Describe --------------------------------------------------------------------------------

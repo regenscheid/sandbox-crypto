@@ -70,17 +70,17 @@ def test_a_calls_leftovers_end_one_process_at_a_time(
         f"setsid sleep 61 & echo $! > {tmp_path}/setsid\n"
         "wait"
     )
-    call = subprocess.Popen(  # noqa: S603 - a fixed command
+    call = subprocess.Popen(
         ["/bin/bash", "-c", script],
         env={**os.environ, executor.OWNER: owner},
         start_new_session=True,
     )
     other = subprocess.Popen(
-        ["sleep", "60"],  # noqa: S607
+        ["sleep", "60"],
         env={**os.environ, executor.OWNER: other_owner},
         start_new_session=True,
     )
-    executor._spawned.add(call.pid)  # pyright: ignore[reportPrivateUsage]
+    executor._spawned.add(call.pid)
     try:
         plain, escaped = _read_pid(tmp_path / "plain"), _read_pid(tmp_path / "setsid")
         info = executor.process_info(call.pid)
@@ -93,7 +93,7 @@ def test_a_calls_leftovers_end_one_process_at_a_time(
     finally:
         executor.end_owned(owner, None)
         call.wait(timeout=10)
-        executor._spawned.discard(call.pid)  # pyright: ignore[reportPrivateUsage]
+        executor._spawned.discard(call.pid)
         other.kill()
         other.wait()
 
@@ -116,7 +116,7 @@ def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup(tmp_path: Pat
     try:
         for index, owner in enumerate(owners):
             processes.append(
-                subprocess.Popen(  # noqa: S603 - fixed readiness child
+                subprocess.Popen(
                     [sys.executable, "-c", child, str(tmp_path / f"ready-{index}")],
                     env={**os.environ, executor.OWNER: owner},
                     start_new_session=True,
@@ -128,7 +128,7 @@ def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup(tmp_path: Pat
             assert _read_pid(tmp_path / f"ready-{index}") == process.pid
             assert executor.process_owner(process.pid) == owner
         for index, owner in enumerate(owners):
-            cleaned = subprocess.run(  # noqa: S603 - fixed trusted cleanup helper
+            cleaned = subprocess.run(
                 [sys.executable, "-c", cleaner, owner],
                 capture_output=True,
                 text=True,
@@ -147,7 +147,7 @@ def test_parallel_fixture_owners_are_isolated_from_sibling_cleanup(tmp_path: Pat
 
 
 def test_ending_an_owner_with_nothing_left_is_harmless() -> None:
-    process = subprocess.Popen(["true"], start_new_session=True)  # noqa: S607
+    process = subprocess.Popen(["true"], start_new_session=True)
     process.wait()
     assert executor.end_owned(f"test-executor-{uuid4().hex}", (process.pid, 0)) == 0
 
@@ -409,12 +409,12 @@ def test_a_digest_belongs_to_the_stamp_it_was_scanned_with(tmp_path: Path) -> No
     stamp = [info.st_mtime_ns, info.st_size, info.st_ino]
     directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        digest = executor._stamped_sha256(directory, "f", stamp)  # pyright: ignore[reportPrivateUsage]
+        digest = executor._stamped_sha256(directory, "f", stamp)
         assert digest == hashlib.sha256(b"one").hexdigest()
         # Replaced since the scan: no digest, so the worker compares it again later.
         (tmp_path / "g").write_bytes(b"two")
         os.replace(tmp_path / "g", tmp_path / "f")
-        assert executor._stamped_sha256(directory, "f", stamp) is None  # pyright: ignore[reportPrivateUsage]
+        assert executor._stamped_sha256(directory, "f", stamp) is None
     finally:
         os.close(directory)
 
@@ -503,7 +503,7 @@ def _holder(path: Path, mode: str) -> subprocess.Popen[bytes]:
     script = (
         "import sys, time; f = open(sys.argv[1], sys.argv[2]); print(flush=True); time.sleep(30)"
     )
-    holder = subprocess.Popen(  # noqa: S603 - a fixed command
+    holder = subprocess.Popen(
         [sys.executable, "-c", script, str(path), mode], stdout=subprocess.PIPE
     )
     assert holder.stdout is not None
@@ -546,7 +546,7 @@ def test_a_writer_that_opens_the_file_just_before_the_swap_keeps_it(
 ) -> None:
     target = tmp_path / "log.csv"
     target.write_bytes(b"v1\n")
-    exchange = executor._exchange  # pyright: ignore[reportPrivateUsage]
+    exchange = executor._exchange
     holders: list[subprocess.Popen[bytes]] = []
 
     def a_job_opens_it_first(parent: int, first: str, second: str) -> bool:
@@ -573,7 +573,7 @@ def test_a_write_that_lands_after_the_check_is_a_conflict(
 ) -> None:
     (tmp_path / "f").write_bytes(b"old")
     expected = hashlib.sha256(b"old").hexdigest()
-    hashed = executor._hashed  # pyright: ignore[reportPrivateUsage]
+    hashed = executor._hashed
 
     def and_then_research_code_writes(
         parent: int, name: str, path: str
@@ -593,7 +593,7 @@ def test_a_write_landing_just_before_the_swap_is_kept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "f").write_bytes(b"old")
-    exchange = executor._exchange  # pyright: ignore[reportPrivateUsage]
+    exchange = executor._exchange
     swaps: list[tuple[str, str]] = []
 
     def research_code_writes_first(parent: int, first: str, second: str) -> bool:
@@ -819,7 +819,7 @@ def test_a_refused_prctl_leaves_the_executor_unprotected(monkeypatch: pytest.Mon
 
 
 def test_loopback_sockets_work_here() -> None:
-    assert executor._sockets_work()  # pyright: ignore[reportPrivateUsage]
+    assert executor._sockets_work()
 
 
 def test_pdf_requests_become_the_helpers_command_line() -> None:

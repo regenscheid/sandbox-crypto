@@ -26,7 +26,7 @@ from sandbox_science.contracts.documents import (
 from sandbox_science.orchestrator import worker_client
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
-TOKEN = "test-secret-catalog-client"  # noqa: S105 - visibly synthetic credential
+TOKEN = "test-secret-catalog-client"
 CONTENT_SHA = hashlib.sha256(b"x").hexdigest()
 ENTRY = PublicationEntry(
     document_id="doc-one",

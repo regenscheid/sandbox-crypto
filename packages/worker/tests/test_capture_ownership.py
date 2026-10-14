@@ -281,7 +281,7 @@ def test_corrupt_lease_metadata_refuses_before_large_allocation(
         store.reserve_capture(new_id("pub"), "env1")
         # The parameterized test fixes this identifier; values remain SQL parameters.
         store._db.execute(
-            f"UPDATE artifact_capture_leases SET {column}=?",  # noqa: S608
+            f"UPDATE artifact_capture_leases SET {column}=?",
             ("x" * (20 << 20),),
         )
         tracemalloc.start()

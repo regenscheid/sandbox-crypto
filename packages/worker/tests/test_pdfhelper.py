@@ -275,13 +275,13 @@ def test_the_png_encoder_round_trips() -> None:
 
 def test_the_command_line_prints_json_and_exits_3_on_errors(workspace: Path) -> None:
     env = {"SESSION_WORKSPACE": str(workspace), "PATH": "/usr/bin:/bin"}
-    ok = subprocess.run(  # noqa: S603 - our own helper
+    ok = subprocess.run(
         [sys.executable, "-I", str(HELPER), "pages", "paper.pdf", "--pages", "1"],
         capture_output=True, text=True, env=env, cwd=workspace, check=False,
     )  # fmt: skip
     assert ok.returncode == 0, ok.stderr
     assert json.loads(ok.stdout)["pages"][0]["lines"][0]["text"] == "Preface"
-    bad = subprocess.run(  # noqa: S603 - our own helper
+    bad = subprocess.run(
         [sys.executable, "-I", str(HELPER), "info", "missing.pdf"],
         capture_output=True, text=True, env=env, cwd=workspace, check=False,
     )  # fmt: skip

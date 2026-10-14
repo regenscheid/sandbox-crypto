@@ -313,8 +313,8 @@ def test_byte_reservation_includes_holds_receipts_and_pins(tmp_path: Path) -> No
     inbox = KernelNotices(tmp_path / "bytes.sqlite3")
     run = actor()
     inbox.record(run, observation())
-    with inbox._db() as db:  # type: ignore[reportPrivateUsage]
-        used = inbox._budget(db)  # type: ignore[reportPrivateUsage]
+    with inbox._db() as db:
+        used = inbox._budget(db)
     inbox.limits = KernelNoticeLimits(bytes=max(4096, used))
     assert inbox.hold(run, "unknown_revision").state == "held"
     assert inbox.record(run, observation()).state == "duplicate"
@@ -390,7 +390,7 @@ def test_corrupt_twenty_mib_rows_refuse_before_python_materialization(
         db.execute("DROP TRIGGER kernel_notice_items_no_update")
         data = b"x" * (20 * 1024 * 1024)
         db.execute(
-            f"UPDATE {table} SET {column}=?",  # noqa: S608
+            f"UPDATE {table} SET {column}=?",
             (data.decode() if column == "digest" else data,),
         )
         if column == "lease":
@@ -451,21 +451,21 @@ def test_reserved_hold_and_actual_receipt_bytes_at_exact_full_budget(tmp_path: P
     run = actor()
     for revision in range(2, 12):
         inbox.record(run, observation(revision=revision))
-    with inbox._db() as db:  # type: ignore[reportPrivateUsage]
-        used = inbox._budget(db)  # type: ignore[reportPrivateUsage]
+    with inbox._db() as db:
+        used = inbox._budget(db)
     assert used > 4096
     inbox.limits = KernelNoticeLimits(bytes=used)
     inbox.hold(run, "unknown_revision")
     inbox.record(run, observation(revision=11))
     assert inbox.claim(run) is None  # no space for even an exact claim receipt
     assert inbox.status(run).pending == 10
-    with inbox._db() as db:  # type: ignore[reportPrivateUsage]
-        assert inbox._budget(db) == used  # type: ignore[reportPrivateUsage]
+    with inbox._db() as db:
+        assert inbox._budget(db) == used
     inbox.limits = KernelNoticeLimits(bytes=used + 4096)
     claim = claimed(inbox)
     inbox.acknowledge(run, claim)
-    with inbox._db() as db:  # type: ignore[reportPrivateUsage]
-        assert inbox._budget(db) < used  # type: ignore[reportPrivateUsage]
+    with inbox._db() as db:
+        assert inbox._budget(db) < used
 
 
 def test_corrupt_foreign_hold_is_bounded_and_cannot_bypass_global_quota(

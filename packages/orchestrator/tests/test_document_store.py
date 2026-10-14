@@ -123,8 +123,8 @@ def _statuses(store: DocumentStore, number: int) -> dict[str, str]:
 def _spans(store: DocumentStore, number: int, block_id: str) -> list[tuple[str, str]]:
     revision = store.revision("p1", "ff", number)
     for entry in revision.block_map["blocks"]:  # type: ignore[union-attr]
-        if entry["id"] == block_id:  # type: ignore[index]
-            return [(span["id"], span["status"]) for span in entry["spans"]]  # type: ignore[index]
+        if entry["id"] == block_id:
+            return [(span["id"], span["status"]) for span in entry["spans"]]
     raise AssertionError(f"no block {block_id}")
 
 
@@ -579,7 +579,7 @@ def test_concurrent_writers_in_processes(store: DocumentStore, tmp_path: Path) -
     # Four processes change four blocks; two more change the same block as the first.
     targets = [ids[0], ids[1], ids[2], ids[3], ids[0], ids[0]]
     processes = [
-        subprocess.Popen(  # noqa: S603 - this interpreter, a script of this test
+        subprocess.Popen(
             [sys.executable, "-c", WRITER, str(store.path), block, str(index)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -681,7 +681,7 @@ def test_a_change_and_its_events_commit_together(
     store: DocumentStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ids = _ff(store)
-    original = store._event  # pyright: ignore[reportPrivateUsage]
+    original = store._event
 
     def failing(db: sqlite3.Connection, kind: str, *args: Any) -> None:
         if kind == "document.revision_created":
@@ -902,7 +902,7 @@ def test_a_patch_is_checked_before_the_write_lock_and_again_if_the_document_chan
 ) -> None:
     ids = _ff(store)
     checked: list[int] = []
-    assess = store._assess  # pyright: ignore[reportPrivateUsage]
+    assess = store._assess
 
     def counting(*args: Any) -> Any:
         checked.append(1)
@@ -916,7 +916,7 @@ def test_a_patch_is_checked_before_the_write_lock_and_again_if_the_document_chan
     # Checked once, before the lock; under it, the document was as it had been.
     assert (applied.outcome, len(checked)) == ("applied", 1)
     other = DocumentStore(store.path)
-    prepare = store._prepare_patch  # pyright: ignore[reportPrivateUsage]
+    prepare = store._prepare_patch
 
     def then_another_writer(*args: Any) -> Any:
         prepared = prepare(*args)

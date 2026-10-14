@@ -36,7 +36,7 @@ from sandbox_science.worker.store import Store
 # pyright: reportPrivateUsage=false
 INC = "inc-" + "a" * 24
 VM = ("ss-synthetic-original", "vm-synthetic-original")
-TOKEN = "test-secret-unused-binding"  # noqa: S105 - inert synthetic channel fixture, never connected
+TOKEN = "test-secret-unused-binding"
 
 
 def scope(**changes: str) -> RunKernelScope:
@@ -222,7 +222,7 @@ def test_duplicate_or_substituted_retained_request_refuses(records, store):
     raw = first.model_dump(mode="json")
     raw["operation_id"] = "different"
     store._db.execute("UPDATE run_kernel_bindings SET record=?", (json.dumps(raw),))
-    statement = "UPDATE run_kernel_bindings SET bytes=" + module._CHARGE  # noqa: S608 - fixed internal fragment
+    statement = "UPDATE run_kernel_bindings SET bytes=" + module._CHARGE
     store._db.execute(statement)
     store._db.execute(
         "CREATE TRIGGER run_kernel_bindings_no_update BEFORE UPDATE ON "

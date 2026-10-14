@@ -87,7 +87,7 @@ def test_every_field_is_covered_by_the_hash(
     path: Path, records: list[Record], tamper: Tamper, column: str, value: str
 ) -> None:
     with tamper(path) as db:
-        db.execute(f"UPDATE events SET {column} = ? WHERE seq = 3", (value,))  # noqa: S608
+        db.execute(f"UPDATE events SET {column} = ? WHERE seq = 3", (value,))
     assert "record 3 does not match its hash: it was changed" in messages(verify_store(path))
 
 

@@ -611,7 +611,7 @@ async def test_authenticated_actual_http_no_active_calls_and_exact_pages(fixture
             guard_package_reuse=lambda _: None,
         ),
     )
-    secret = "test-secret-lockfile-diff-project-not-a-credential"  # noqa: S105
+    secret = "test-secret-lockfile-diff-project-not-a-credential"
     clients = (ClientSettings(name="read", token_sha256=token_digest(secret), projects=("p",)),)
     app = create_app(
         manager,

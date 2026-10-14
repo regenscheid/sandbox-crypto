@@ -125,7 +125,7 @@ def corrupt(
         db.execute(sql, parameters)
         # Keep unrelated accounting valid when probing deeper record/raw coherence.
         if recharge:
-            statement = "UPDATE delegation_record_events SET bytes=" + module._CHARGE  # noqa: S608 - fixed internal test fragment
+            statement = "UPDATE delegation_record_events SET bytes=" + module._CHARGE
             db.execute(statement)
         for verb in ("UPDATE", "DELETE"):
             db.execute(

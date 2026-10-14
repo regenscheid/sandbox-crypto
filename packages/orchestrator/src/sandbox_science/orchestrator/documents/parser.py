@@ -819,7 +819,7 @@ def _make(*, documents: bool = True, profile: str = PROFILE) -> MarkdownIt:
             "ss_profile": profile,
         },
     )
-    md.validateLink = _validate_link  # type: ignore[method-assign]
+    md.validateLink = _validate_link
     md.inline.ruler.at("backticks", _backticks)
     if profile == PROFILE:
         md.block.ruler.at(

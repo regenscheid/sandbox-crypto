@@ -113,9 +113,7 @@ def test_corrupt_legacy_generation_is_bounded_and_never_becomes_absent(
             "base": "UPDATE kernels SET base=?",
             "last": "UPDATE kernels SET last=?",
         }[column]
-        store._db.execute(  # pyright: ignore[reportPrivateUsage]
-            query, ("x" * 20_000_000,)
-        )
+        store._db.execute(query, ("x" * 20_000_000,))
         tracemalloc.start()
         with pytest.raises(ValueError, match="retained kernel generation"):
             store.kernel("e1", "s1", "python")

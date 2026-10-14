@@ -48,7 +48,7 @@ def _profile(image: str) -> str | None:
     if docker is None:
         return None
     label = f'{{{{index .Config.Labels "{PROFILE_LABEL}"}}}}'
-    found = subprocess.run(  # noqa: S603 - fixed argv, image named by the tester
+    found = subprocess.run(
         [docker, "image", "inspect", "--format", label, image],
         capture_output=True,
         text=True,
@@ -90,8 +90,8 @@ def image_results() -> Callable[[str], Results]:
         if image not in cache:
             profile = _profile(image)
             assert profile is not None
-            run = subprocess.run(  # noqa: S603 - the repository's own script
-                ["bash", str(TEST_SH), profile, image],  # noqa: S607 - bash from PATH
+            run = subprocess.run(
+                ["bash", str(TEST_SH), profile, image],
                 capture_output=True,
                 text=True,
                 check=False,

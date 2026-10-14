@@ -59,7 +59,7 @@ from sandbox_science.event_store import EventStore, Record, StoreReader
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.approvals import Approvals, RequestKey
 from sandbox_science.policy.store import PolicyStore
-from sandbox_science.policy_middleware.cli import _read_records  # pyright: ignore[reportPrivateUsage]
+from sandbox_science.policy_middleware.cli import _read_records
 from sandbox_science.policy_middleware.cli import main as middleware
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import StoreSink
@@ -194,10 +194,10 @@ class Prefix:
 
 def make_prefix(directory: Path) -> Prefix:
     root = directory / "prefix"
-    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(root)], check=True)  # noqa: S603
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(root)], check=True)
     python = root / "bin" / "python"
     purelib = "import sysconfig; print(sysconfig.get_paths()['purelib'])"
-    site = Path(subprocess.check_output([python, "-c", purelib], text=True).strip())  # noqa: S603
+    site = Path(subprocess.check_output([python, "-c", purelib], text=True).strip())
     (root / "conda-meta").mkdir()
     (root / "conda-meta" / "history").write_text("")
     shutil.copy(FAKE, site / "fakepm.py")
@@ -1310,7 +1310,7 @@ async def test_an_unanswered_permission_request_times_out_denied(make_world: Fac
 async def test_a_restarted_worker_ends_what_it_left(make_world: Factory) -> None:
     world = await make_world(ESCALATE)
     waiting = await world.waiting((await world.provision("op-1", conda=["fpylll"]))["provision_id"])
-    task = world.provisioner._ops[waiting.provision_id].task  # pyright: ignore[reportPrivateUsage]
+    task = world.provisioner._ops[waiting.provision_id].task
     assert task is not None
     task.cancel()  # as a worker that stops
     with pytest.raises(asyncio.CancelledError):
@@ -1332,7 +1332,7 @@ async def test_a_restarted_worker_ends_what_it_left(make_world: Factory) -> None
             "installer_steps": None,  # explicitly model a legacy crash record
         }
     )
-    world.store._db.execute(  # pyright: ignore[reportPrivateUsage]
+    world.store._db.execute(
         "INSERT INTO provisions VALUES (?, ?, ?, ?, 0, 0, ?)",
         (left.provision_id, "p1/left", "x", "env1", left.model_dump_json()),
     )
@@ -1357,7 +1357,7 @@ async def test_a_restarted_worker_ends_what_it_left(make_world: Factory) -> None
     )
     await world.manager.wait(step.execution_id)
     cut = left.model_copy(update={"provision_id": started, "executions": (step.execution_id,)})
-    world.store._db.execute(  # pyright: ignore[reportPrivateUsage]
+    world.store._db.execute(
         "INSERT INTO provisions VALUES (?, ?, ?, ?, 0, 0, ?)",
         (cut.provision_id, "p1/cut", "x", "env1", cut.model_dump_json()),
     )

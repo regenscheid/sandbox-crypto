@@ -327,7 +327,7 @@ def test_declared_subclass_fields_cannot_bypass_prefetch_bounds(monkeypatch, nes
 async def test_existing_api_adds_only_static_pin_and_preserves_auth(
     aiohttp_client, state_dir, static_dir
 ):
-    token = "test-secret-repair-input-login-not-a-credential"  # noqa: S105 - synthetic test
+    token = "test-secret-repair-input-login-not-a-credential"
 
     class Model:
         async def complete(self, messages, tools):

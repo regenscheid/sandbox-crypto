@@ -60,7 +60,7 @@ from sandbox_science.orchestrator.model import (
     ScriptedModel,
     ToolCall,
     ToolSpec,
-    _parse_completion,  # pyright: ignore[reportPrivateUsage]
+    _parse_completion,
 )
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import Toolbox, ToolOutcome, operation_id
@@ -91,7 +91,7 @@ def worker_url(tmp_path: Path) -> Iterator[str]:
     # The host's own kernelspecs (a real SageMath, say) stay out of the tests.
     env = {**os.environ, "JUPYTER_DATA_DIR": str(tmp_path / "jupyter-data")}
     env.pop("JUPYTER_PATH", None)
-    process = subprocess.Popen(  # noqa: S603 - our own command
+    process = subprocess.Popen(
         [str(command), "serve", "--settings", str(tmp_path / "worker.toml")],
         stdout=log,
         stderr=subprocess.STDOUT,
@@ -103,7 +103,7 @@ def worker_url(tmp_path: Path) -> Iterator[str]:
                 break
             if process.poll() is not None:
                 raise AssertionError((tmp_path / "worker.log").read_text())
-            subprocess.run(["sleep", "0.1"], check=True)  # noqa: S607
+            subprocess.run(["sleep", "0.1"], check=True)
         yield f"http://127.0.0.1:{port}"
     finally:
         process.terminate()
@@ -167,7 +167,7 @@ async def test_the_first_slice_through_the_harness(client: WorkerClient) -> None
 async def test_the_client_reads_revisions_and_their_lockfiles(client: WorkerClient) -> None:
     toolbox = Toolbox(client, CONTEXT)
     script = [{"tool_calls": [{"name": "shell", "arguments": {"script": "true"}}]}]
-    (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls  # pyright: ignore[reportPrivateUsage]
+    (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls
     await toolbox.call(call, "op-revisions")
     history = await client.revisions("env1")
     for _ in range(300):  # the worker asks the executor for revision 0's lockfile
@@ -226,7 +226,7 @@ async def test_a_repeated_tool_call_is_one_execution(client: WorkerClient) -> No
         )
         ._turns[0]
         .tool_calls
-    )  # pyright: ignore[reportPrivateUsage]
+    )
     first = json.loads((await toolbox.call(call, "op-repeat")).text)
     second = json.loads((await toolbox.call(call, "op-repeat")).text)
     assert first["attempt_id"] == second["attempt_id"]
@@ -256,7 +256,7 @@ async def test_an_unreachable_worker_runs_nothing(tmp_path: Path) -> None:
     async with WorkerClient(f"http://127.0.0.1:{_free_port()}", TOKEN) as unreachable:
         toolbox = Toolbox(unreachable, CONTEXT)
         script = [{"tool_calls": [{"name": "shell", "arguments": {"script": f"touch {sentinel}"}}]}]
-        (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls  # pyright: ignore[reportPrivateUsage]
+        (call,) = ScriptedModel.from_json(script)._turns[0].tool_calls
         outcome = json.loads((await toolbox.call(call, "op-x")).text)
     assert outcome["error"]["kind"] == "unavailable"
     assert not sentinel.exists()
@@ -311,7 +311,7 @@ async def test_a_record_that_cannot_be_kept_still_reaches_the_transcript(
     }
     transcript = tmp_path / "t.json"
     args = argparse.Namespace(transcript=transcript, state_dir=tmp_path / "state")
-    assert cli._keep(args, fields, 0) == 1  # pyright: ignore[reportPrivateUsage]
+    assert cli._keep(args, fields, 0) == 1
     assert "the run's record could not be kept" in capsys.readouterr().err
     assert json.loads(transcript.read_text())["final_text"] == "done"
     assert store.runs("p1", "s1") == []
@@ -444,7 +444,7 @@ async def test_a_tool_the_environment_lacks_is_refused() -> None:
             )
             ._turns[0]
             .tool_calls
-        )  # pyright: ignore[reportPrivateUsage]
+        )
         outcome = json.loads((await toolbox.call(call, "op-sage")).text)
     assert outcome["error"]["message"] == "there is no tool named 'sage'"
 
@@ -637,7 +637,7 @@ def test_m4_tool_results_are_bounded_as_a_whole() -> None:
             "result": Result(outputs=outputs, error=error, stdout=stdout).model_dump(),
         }
     )
-    text = toolbox._summary(execution)  # pyright: ignore[reportPrivateUsage]
+    text = toolbox._summary(execution)
     assert len(text) <= toolbox.output_chars
     summary = json.loads(text)
     assert summary["outputs"][10] == "[… 19980 outputs omitted …]"
@@ -676,7 +676,7 @@ async def test_m5_inputs_that_crashed_the_harness_are_tool_errors() -> None:
 )
 def test_m5_malformed_completions_are_model_errors(body: object) -> None:
     with pytest.raises(ModelError):
-        _parse_completion(json.dumps(body))  # pyright: ignore[reportPrivateUsage]
+        _parse_completion(json.dumps(body))
 
 
 async def test_m5_one_failing_tool_call_does_not_end_the_task() -> None:
@@ -1036,7 +1036,7 @@ async def test_a_change_to_installed_packages_is_reported_to_the_model() -> None
     from datetime import UTC, datetime
 
     from sandbox_science.contracts import ExecutionState
-    from sandbox_science.orchestrator.tools import _describe  # pyright: ignore[reportPrivateUsage]
+    from sandbox_science.orchestrator.tools import _describe
 
     def execution(before: str, after: str, overlapping: bool = False) -> Execution:
         return Execution(

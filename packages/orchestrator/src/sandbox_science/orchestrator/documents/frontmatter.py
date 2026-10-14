@@ -72,7 +72,7 @@ class _NoAliases(yaml.SafeLoader):
     def compose_node(self, parent: Any, index: Any) -> Any:
         if self.check_event(yaml.AliasEvent):
             raise yaml.YAMLError("aliases are not allowed in front matter")
-        return super().compose_node(parent, index)  # pyright: ignore[reportUnknownMemberType]
+        return super().compose_node(parent, index)
 
 
 @dataclass(frozen=True)

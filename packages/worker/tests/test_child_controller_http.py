@@ -67,7 +67,7 @@ PROFILE = hashlib.sha256(b"explicit scripted composition profile").hexdigest()
 
 class Guest:
     incarnation = INC
-    daemon_token = "test-secret-synthetic-guest"  # noqa: S105
+    daemon_token = "test-secret-synthetic-guest"
     closed = False
     detaching = False
 

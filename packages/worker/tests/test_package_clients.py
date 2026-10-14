@@ -33,7 +33,7 @@ from sandbox_science.contracts import (
 from sandbox_science.policy.package_requests import classify_package_request
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import OpenShellBackend
-from sandbox_science.worker.cli import _environments as cli_environments  # pyright: ignore[reportPrivateUsage]
+from sandbox_science.worker.cli import _environments as cli_environments
 from sandbox_science.worker.cli import main
 from sandbox_science.worker.executor import Executor, Message
 from sandbox_science.worker.manager import ExecutionManager

@@ -41,7 +41,7 @@ from sandbox_science.worker.settings import ClientSettings, token_digest
 from sandbox_science.worker.store import RevisionRecord, Store
 
 NOW = datetime(2026, 10, 13, tzinfo=UTC)
-TOKEN = "test-secret-revision-package-project-not-a-credential"  # noqa: S105
+TOKEN = "test-secret-revision-package-project-not-a-credential"
 BASE = "/v1/environments/env/provisioning/observations/revisions"
 HEADERS = {"Authorization": "Bearer " + TOKEN}
 

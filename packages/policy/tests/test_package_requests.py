@@ -325,7 +325,7 @@ def test_opam_archives_are_the_only_package_files_without_a_name() -> None:
     assert (archive.name, archive.digest) == (None, f"md5:{MD5}")
     for ecosystem in ("pypi", "cargo", "go", "npm", "hackage", "opam"):
         with pytest.raises(ClassificationError, match="named package"):
-            PackageOperation(ecosystem, None, kind="artifact")  # pyright: ignore[reportArgumentType]
+            PackageOperation(ecosystem, None, kind="artifact")
 
 
 @pytest.mark.parametrize(
