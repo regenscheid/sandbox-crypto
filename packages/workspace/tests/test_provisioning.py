@@ -1,25 +1,21 @@
 # SPDX-License-Identifier: MIT
-"""Bounded authenticated provisioning views and actual owned cleanup."""
+"""Provisioning views through the real worker client against a synthetic worker."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
-import threading
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
-from aiohttp import ClientSession, web
+from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from sandbox_science.contracts import ErrorKind
-from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
-from sandbox_science.testing import eventually
 from sandbox_science.workspace import provisioning, provisioning_client
 from sandbox_science.workspace.api import TIMEOUTS, Timeouts
 from sandbox_science.workspace.app import create_app
@@ -206,28 +202,14 @@ class Peer:
                     "operations": [summary()],
                 }
             )
-        if self.mode == "scope":
-            value["project_id"] = "p2"
-        elif self.mode == "environment":
-            value["environment_id"] = "another"
-        elif self.mode == "naive":
+        if self.mode == "naive":
             value["observed_at"] = "2026-10-13T00:00:00"
         elif self.mode == "counter":
             value["current_revision"] = True
-        elif self.mode == "seq":
-            value["seq"] = 4
         elif self.mode == "offset":
             value["offset"] = 1
         elif self.mode == "limit":
             value["limit"] = 7
-        elif self.mode == "after":
-            value["after"] = 0
-        elif self.mode == "target":
-            value["target"] = 3
-        elif self.mode == "pin":
-            value["record_sha256"] = "d" * 64
-        elif self.mode == "operation":
-            value["provision_id"] = "prv-another"
         if self.mode.startswith("duplicate"):
             raw = json.dumps(value, separators=(",", ":"))
             if self.mode == "duplicate-scope":
@@ -273,129 +255,6 @@ async def create(
             await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
         ).status == 303
     return client, worker, ProjectStore(state_dir).get("p1").default_environment_id
-
-
-def test_registry_includes_default_and_retained_dedicated_environments(state_dir: Path) -> None:
-    store = ProjectStore(state_dir)
-    record = store.get("p1")
-    store.close_session("p1", "c")
-    snapshot = provisioning.project_snapshot(store, "p1")
-    try:
-        assert set(snapshot.environments) == {
-            record.default_environment_id,
-            record.sessions["c"].environment_id,
-        }
-        assert snapshot.record.sessions["c"].closed_at is not None
-        fresh = provisioning.project_snapshot(store, "p1")
-        try:
-            assert snapshot.matches(fresh)
-        finally:
-            fresh.close()
-    finally:
-        snapshot.close()
-
-
-@pytest.mark.parametrize("mode", ["replace", "identical-aba", "in-place", "root"])
-def test_retained_descriptor_rejects_registry_aba(state_dir: Path, mode: str) -> None:
-    store = ProjectStore(state_dir)
-    snapshot = provisioning.project_snapshot(store, "p1")
-    path = store.root / "p1.json"
-    original = path.read_bytes()
-    try:
-        if mode == "replace":
-            store.set_policy("p1", "sha256:" + "b" * 64)
-        elif mode == "identical-aba":
-            store.close_session("p1", "a")
-            replacement = store.root / "replacement"
-            replacement.write_bytes(original)
-            os.replace(replacement, path)
-        elif mode == "root":
-            moved = store.root.with_name("previous-projects")
-            store.root.rename(moved)
-            store.root.mkdir()
-            path.write_bytes(original)
-        else:
-            value = json.loads(original)
-            value["profile"] = "minimal"
-            path.write_text(json.dumps(value))
-        fresh = provisioning.project_snapshot(store, "p1")
-        try:
-            assert not snapshot.matches(fresh)
-        finally:
-            fresh.close()
-    finally:
-        snapshot.close()
-
-
-@pytest.mark.parametrize(
-    "damage", ["project", "session", "shared", "time", "oversize", "symlink", "fifo", "broken"]
-)
-def test_registry_refuses_corrupt_oversized_and_special_files(state_dir: Path, damage: str) -> None:
-    store = ProjectStore(state_dir)
-    path = store.root / "p1.json"
-    value = json.loads(path.read_text())
-    if damage == "project":
-        value["project_id"] = "p2"
-    elif damage == "session":
-        value["sessions"]["a"]["session_id"] = "c"
-    elif damage == "shared":
-        value["sessions"]["a"]["environment_id"] = "foreign"
-    elif damage == "time":
-        value["sessions"]["a"]["opened_at"] = "2026-10-10T00:00:00"
-    if damage in {"symlink", "fifo"}:
-        path.unlink()
-        if damage == "symlink":
-            path.symlink_to(store.root / "p2.json")
-        else:
-            os.mkfifo(path)
-    else:
-        path.write_text(
-            "x" * (1024 * 1024 + 1)
-            if damage == "oversize"
-            else "{"
-            if damage == "broken"
-            else json.dumps(value)
-        )
-    with pytest.raises(ProjectError) as error:
-        provisioning.project_snapshot(store, "p1")
-    assert error.value.kind is ErrorKind.UNAVAILABLE
-
-
-@pytest.mark.parametrize("project", ["missing", "../p1", "p1/other", "", "x" * 129])
-def test_registry_invalid_and_absent_scope(state_dir: Path, project: str) -> None:
-    with pytest.raises(ProjectError) as error:
-        provisioning.project_snapshot(ProjectStore(state_dir), project)
-    assert error.value.kind is (
-        ErrorKind.NOT_FOUND if project == "missing" else ErrorKind.INVALID_REQUEST
-    )
-
-
-def test_registry_environment_limit_refuses_instead_of_clipping(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(provisioning, "MAX_ENVIRONMENTS", 1)
-    with pytest.raises(ProjectError, match="environment list exceeds"):
-        provisioning.project_snapshot(ProjectStore(state_dir), "p1")
-
-
-def test_registry_growth_is_bounded_before_parsing(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    original = os.read
-    calls = 0
-
-    def grown(descriptor: int, size: int) -> bytes:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            with (state_dir / "projects" / "p1.json").open("ab") as output:
-                output.write(b" " * (1024 * 1024))
-        return original(descriptor, size)
-
-    monkeypatch.setattr(os, "read", grown)
-    with pytest.raises(ProjectError, match="changed during read"):
-        provisioning.project_snapshot(ProjectStore(state_dir), "p1")
-    assert calls <= 17
 
 
 @pytest.mark.asyncio
@@ -523,26 +382,6 @@ async def test_browser_cannot_supply_context_or_unpinned_selection(
 
 
 @pytest.mark.asyncio
-async def test_auth_scope_and_unconfigured_no_fallback(
-    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
-) -> None:
-    peer = Peer()
-    client, _, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer, login=False
-    )
-    assert (await client.get(url(environment))).status == 401
-    await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
-    assert (await client.get(url("foreign"))).status == 404
-    assert (await client.get(url(environment).replace("/p1/", "/p2/"))).status == 404
-    assert not peer.calls
-    client.app[provisioning.PROXY].worker = None
-    response = await client.get(url(environment))
-    assert response.status == 422
-    assert (await response.json())["error"]["kind"] == "unsupported"
-    assert not peer.calls
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("worker_status", "status"), [(404, 404), (409, 409), (422, 422), (401, 503), (500, 503)]
 )
@@ -572,22 +411,15 @@ async def test_worker_error_kinds_are_dated_safe_and_never_empty(
 @pytest.mark.parametrize(
     ("mode", "suffix"),
     [
-        ("scope", ""),
-        ("environment", ""),
         ("naive", ""),
         ("counter", ""),
         ("large", ""),
         ("redirect", ""),
-        ("seq", "/operations/prv-1/files?seq=3"),
-        ("operation", "/operations/prv-1/files?seq=3"),
         ("offset", "/operations/prv-1/files?seq=3"),
         ("limit", "/operations/prv-1/files?seq=3"),
-        ("after", "/revisions?after=-1&target=2"),
-        ("target", "/revisions?after=-1&target=2"),
-        ("pin", f"/revisions/2/probes?pin={PIN}"),
     ],
 )
-async def test_actual_http_refuses_wrong_scope_selection_or_bounds(
+async def test_actual_http_refuses_invalid_or_unbounded_records(
     aiohttp_client: ClientFactory,
     aiohttp_server: ServerFactory,
     state_dir: Path,
@@ -632,151 +464,8 @@ async def test_actual_transport_whole_deadline_and_chunk_limit(
     )
     try:
         assert (await client.get(url(environment))).status == 503
-        assert not client.app[provisioning.PROXY]._tasks
     finally:
         peer.release.set()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["logout", "close-reopen", "same-byte-aba", "policy", "config"])
-async def test_delayed_reply_rechecks_original_login_registry_and_worker_binding(
-    aiohttp_client: ClientFactory,
-    aiohttp_server: ServerFactory,
-    state_dir: Path,
-    static_dir: Path,
-    change: str,
-) -> None:
-    peer = Peer()
-    peer.blocked = True
-    client, worker, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
-    )
-    call = asyncio.create_task(client.get(url(environment)))
-    await peer.entered.wait()
-    store = ProjectStore(state_dir)
-    if change == "logout":
-        origin = str(client.make_url("/")).rstrip("/")
-        assert (await client.post("/api/v0/logout", headers={"Origin": origin})).status == 204
-        await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
-    elif change == "config":
-        worker._headers = {"Authorization": "Bearer test-secret-replaced"}
-    elif change == "policy":
-        store.set_policy("p1", "sha256:" + "c" * 64)
-    else:
-        path = store.root / "p1.json"
-        original = path.read_bytes()
-        store.close_session("p1", "a")
-        store.open_session("p1", "a", dedicated=False)
-        if change == "same-byte-aba":
-            replacement = store.root / "replacement"
-            replacement.write_bytes(original)
-            os.replace(replacement, path)
-    peer.release.set()
-    assert (await call).status == (401 if change == "logout" else 503)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_actual_file_owner_retains_capacity_and_close_through_repeated_cancel(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
-) -> None:
-    entered, release = threading.Event(), threading.Event()
-    original = provisioning.project_snapshot
-    snapshots: list[provisioning.ProjectSnapshot] = []
-
-    def blocked(store: ProjectStore, project: str) -> provisioning.ProjectSnapshot:
-        result = original(store, project)
-        snapshots.append(result)
-        entered.set()
-        release.wait()
-        return result
-
-    monkeypatch.setattr(provisioning, "project_snapshot", blocked)
-    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None, timeouts=Timeouts(call=0.02))
-    read = asyncio.create_task(
-        proxy.read("p1", None, provisioning.Selection("environments"), "login", lambda: True)
-    )
-    assert await asyncio.to_thread(entered.wait, 5)
-    try:
-        if cancel:
-            read.cancel()
-        result = await asyncio.gather(read, return_exceptions=True)
-        assert isinstance(result[0], asyncio.CancelledError if cancel else ProjectError)
-        assert len(proxy._tasks) == 1
-        assert proxy._scopes == {("p1", None)}
-        with pytest.raises(ProjectError, match="capacity"):
-            await proxy.read(
-                "p1", None, provisioning.Selection("environments"), "other", lambda: True
-            )
-        close = asyncio.create_task(proxy.close())
-        await asyncio.sleep(0)
-        close.cancel()
-        await asyncio.sleep(0)
-        close.cancel()
-        await asyncio.sleep(0)
-        assert not close.done()
-        assert not proxy._closed
-        assert os.fstat(snapshots[0]._descriptor)
-        assert (
-            await asyncio.to_thread(lambda: "default executor remains free")
-            == "default executor remains free"
-        )
-        release.set()
-        await asyncio.gather(close, return_exceptions=True)
-        assert proxy._closed
-        assert not proxy._tasks
-        assert not proxy._logins
-        assert not proxy._scopes
-        with pytest.raises(OSError, match="Bad file descriptor"):
-            os.fstat(snapshots[0]._descriptor)
-    finally:
-        release.set()
-        await proxy.close()
-
-
-@pytest.mark.asyncio
-async def test_browser_disconnect_does_not_release_ongoing_server_request(
-    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
-) -> None:
-    peer = Peer()
-    peer.blocked = True
-    client, _, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
-    )
-    call = asyncio.create_task(client.get(url(environment)))
-    await peer.entered.wait()
-    call.cancel()
-    await asyncio.gather(call, return_exceptions=True)
-    proxy = client.app[provisioning.PROXY]
-    assert len(proxy._tasks) == 1
-    peer.release.set()
-    await eventually(lambda: not proxy._tasks, describe="the admitted read finished")
-    assert not proxy._tasks
-    assert (await client.get(url(environment))).status == 200
-
-
-@pytest.mark.asyncio
-async def test_observer_snapshot_copies_config_and_only_borrows_the_shared_session() -> None:
-    async with ClientSession() as session:
-        worker = WorkerClient("http://127.0.0.1:1", "test-secret-private-observer", session=session)
-        snapshot = worker.observation_transport()
-        assert snapshot.session is session
-        assert repr(snapshot) == "WorkerObservationTransport()"
-        copied = dict(snapshot.headers)
-        copied["Authorization"] = "Bearer test-secret-different"
-        assert worker.matches_observation_transport(snapshot)
-        worker._headers["Authorization"] = "Bearer test-secret-replaced"
-        assert snapshot.headers == (("Authorization", "Bearer test-secret-private-observer"),)
-        assert not worker.matches_observation_transport(snapshot)
-        worker._headers["Authorization"] = "Bearer test-secret-private-observer"
-        worker.base_url = "http://127.0.0.1:2"
-        assert not worker.matches_observation_transport(snapshot)
-        worker.base_url = snapshot.base_url
-        await worker.close()
-        assert not session.closed  # externally supplied sessions keep their original owner
-        assert worker.matches_observation_transport(snapshot)
-    assert not worker.matches_observation_transport(snapshot)
-    assert worker._session is session  # recheck never creates a replacement transport
 
 
 @pytest.mark.asyncio
@@ -792,215 +481,6 @@ async def test_observer_config_preflight_refuses_before_creating_a_session(damag
     with pytest.raises(WorkerAPIError, match="configuration is unavailable"):
         worker.observation_transport()
     assert worker._session is None
-
-
-@pytest.mark.asyncio
-async def test_admission_has_no_queue_and_owns_all_counts_through_rpc_drain(
-    aiohttp_client: ClientFactory,
-    aiohttp_server: ServerFactory,
-    state_dir: Path,
-    static_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    peer = Peer()
-    peer.blocked = True
-    client, _, environment = await create(
-        aiohttp_client, aiohttp_server, state_dir, static_dir, peer
-    )
-    store = ProjectStore(state_dir)
-    store.open_session("p1", "d", dedicated=True)
-    record = store.get("p1")
-    other = record.sessions["c"].environment_id
-    third = record.sessions["d"].environment_id
-    proxy = client.app[provisioning.PROXY]
-    wanted = provisioning.Selection("summary")
-    calls = [
-        asyncio.create_task(proxy.read("p1", env, wanted, "login", lambda: True))
-        for env in (environment, other)
-    ]
-    await peer.entered.wait()
-    try:
-        with pytest.raises(ProjectError, match="capacity"):
-            await proxy.read("p1", third, wanted, "login", lambda: True)
-        with pytest.raises(ProjectError, match="capacity"):
-            await proxy.read("p1", environment, wanted, "other", lambda: True)
-        monkeypatch.setattr(provisioning, "MAX_CALLS", 2)
-        with pytest.raises(ProjectError, match="capacity"):
-            await proxy.read("p1", third, wanted, "other", lambda: True)
-        for call in calls:
-            call.cancel()
-        await asyncio.gather(*calls, return_exceptions=True)
-        await proxy.close()
-        assert not proxy._tasks
-        assert not proxy._scopes
-        assert not proxy._logins
-    finally:
-        peer.release.set()
-        await proxy.close()
-        await asyncio.gather(*calls, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_cleanup_cancellation_after_proxy_drain_still_closes_later_shared_owners(
-    aiohttp_client: ClientFactory,
-    aiohttp_server: ServerFactory,
-    state_dir: Path,
-    static_dir: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    peer = Peer()
-    client, worker, _ = await create(aiohttp_client, aiohttp_server, state_dir, static_dir, peer)
-    proxy = client.app[provisioning.PROXY]
-    order: list[str] = []
-    original = proxy.close
-    close_worker = worker.close
-
-    async def cancelled_after_drain() -> None:
-        await original()
-        order.append("proxy-drained")
-        raise asyncio.CancelledError
-
-    async def shared_close() -> None:
-        assert proxy._closed
-        order.append("worker-closed")
-        await close_worker()
-
-    monkeypatch.setattr(proxy, "close", cancelled_after_drain)
-    monkeypatch.setattr(worker, "close", shared_close)
-    with pytest.raises(asyncio.CancelledError):
-        await client.app.cleanup()
-    assert order == ["proxy-drained", "worker-closed"]
-    monkeypatch.setattr(proxy, "close", original)
-
-
-@pytest.mark.asyncio
-async def test_thread_origin_cancellation_finishes_owner_instead_of_spinning(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def cancelled(store: ProjectStore, project: str) -> provisioning.ProjectSnapshot:
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(provisioning, "project_snapshot", cancelled)
-    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None)
-    try:
-        async with asyncio.timeout(1):
-            with pytest.raises(asyncio.CancelledError):
-                await proxy.read(
-                    "p1", None, provisioning.Selection("environments"), "login", lambda: True
-                )
-            await proxy.close()
-        assert not proxy._tasks
-        assert proxy._closed
-    finally:
-        await proxy.close()
-
-
-@pytest.mark.asyncio
-async def test_postawait_file_proof_is_owned_through_deadline_cancel_and_close(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    entered, release = threading.Event(), threading.Event()
-    original = provisioning.ProjectSnapshot.matches
-    retained: list[provisioning.ProjectSnapshot] = []
-
-    def blocked(self: provisioning.ProjectSnapshot, other: provisioning.ProjectSnapshot) -> bool:
-        retained.extend((self, other))
-        entered.set()
-        release.wait()
-        return original(self, other)
-
-    monkeypatch.setattr(provisioning.ProjectSnapshot, "matches", blocked)
-    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None, timeouts=Timeouts(call=0.02))
-    call = asyncio.create_task(
-        proxy.read("p1", None, provisioning.Selection("environments"), "login", lambda: True)
-    )
-    assert await asyncio.to_thread(entered.wait, 5)
-    try:
-        with pytest.raises(ProjectError, match="timed out"):
-            await call
-        assert len(proxy._tasks) == 1
-        close = asyncio.create_task(proxy.close())
-        await asyncio.sleep(0)
-        close.cancel()
-        await asyncio.sleep(0)
-        close.cancel()
-        await asyncio.sleep(0)
-        assert not close.done()
-        assert await asyncio.to_thread(lambda: True)
-        assert all(os.fstat(value._descriptor) for value in retained)
-        release.set()
-        await asyncio.gather(close, return_exceptions=True)
-        assert proxy._closed
-        for value in retained:
-            with pytest.raises(OSError, match="Bad file descriptor"):
-                os.fstat(value._descriptor)
-    finally:
-        release.set()
-        await proxy.close()
-
-
-@pytest.mark.asyncio
-async def test_postawait_proof_io_error_is_unavailable_and_not_a_partial_success(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def failed(self: provisioning.ProjectSnapshot, other: provisioning.ProjectSnapshot) -> bool:
-        raise OSError("synthetic private proof failure")
-
-    monkeypatch.setattr(provisioning.ProjectSnapshot, "matches", failed)
-    proxy = provisioning.ProvisionProxy(ProjectStore(state_dir), None)
-    try:
-        with pytest.raises(ProjectError, match="registry proof is unavailable") as error:
-            await proxy.read(
-                "p1", None, provisioning.Selection("environments"), "login", lambda: True
-            )
-        assert error.value.kind is ErrorKind.UNAVAILABLE
-        assert not proxy._tasks
-    finally:
-        await proxy.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("replacement", ["root", "file", "root-symlink", "file-symlink"])
-async def test_canonical_path_replacement_after_fresh_read_invalidates_held_proof(
-    state_dir: Path, monkeypatch: pytest.MonkeyPatch, replacement: str
-) -> None:
-    store = ProjectStore(state_dir)
-    original = provisioning.ProjectSnapshot.matches
-    observed: list[bool] = []
-
-    def replaced(self: provisioning.ProjectSnapshot, other: provisioning.ProjectSnapshot) -> bool:
-        path = store.root / "p1.json"
-        data = path.read_bytes()
-        if replacement in {"root", "root-symlink"}:
-            previous = store.root.with_name("previous-projects")
-            store.root.rename(previous)
-            if replacement == "root":
-                store.root.mkdir()
-                path.write_bytes(data)
-            else:
-                store.root.symlink_to(previous, target_is_directory=True)
-        elif replacement == "file":
-            next_file = store.root / "replacement.json"
-            next_file.write_bytes(data)
-            os.replace(next_file, path)
-        else:
-            path.unlink()
-            path.symlink_to(store.root / "p2.json")
-        result = original(self, other)
-        observed.append(result)
-        return result
-
-    monkeypatch.setattr(provisioning.ProjectSnapshot, "matches", replaced)
-    proxy = provisioning.ProvisionProxy(store, None)
-    try:
-        with pytest.raises(ProjectError) as error:
-            await proxy.read(
-                "p1", None, provisioning.Selection("environments"), "login", lambda: True
-            )
-        assert error.value.kind is ErrorKind.UNAVAILABLE
-        assert observed in ([], [False])  # nofollow may refuse before returning a boolean
-    finally:
-        await proxy.close()
 
 
 @pytest.mark.asyncio

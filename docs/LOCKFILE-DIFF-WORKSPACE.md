@@ -31,55 +31,33 @@ metadata. Missing license data, including pip's absent license field, stays
 unknown. The proxy does not infer a license, grant, install, package correctness
 or scientific verification from a comparison.
 
-## Authority and owned reads
+## Authority and reads
 
-This route uses the same [provisioning proxy](PROVISIONING-WORKSPACE.md): original
-workspace-cookie authentication, bounded no-follow canonical project registry,
-retained directory/file descriptors, exact recorded project environment membership
-and the operator-configured borrowed WorkerClient transport. The project is
-server-owned, not an accepted query field. Closed dedicated environments can
-remain recorded history without reopening a session. No lifecycle or filesystem
-lock is held across the HTTP request.
+This route uses the same [provisioning routes](PROVISIONING-WORKSPACE.md): the
+workspace login, the recorded project's environments and the operator-configured
+borrowed WorkerClient transport. The project is server-owned, not an accepted
+query field. Closed dedicated environments can remain recorded history without
+reopening a session. No lock is held across the HTTP request.
 
-After the worker returns, the proxy validates the exact requested scope,
-before/after revision and raw-record pin, offset and limit. The contract checks
-held/complete coherence, header-to-reference hashes/counts, totals, difference
-sides and continuation. Fresh bounded registry reads and canonical pathname/file
-identity proof, original-cookie validity and the original client/configuration/
-shared-session binding are rechecked before returning. A concurrent replacement,
-close/reopen or login change can conservatively invalidate the observation.
-These are receipt-time proofs, not a continuous atomic host/worker snapshot.
-
-The comparison shares immediate admission with ordinary provisioning reads:
-global eight, two per login and one per project/environment. It has no second lane
-or queue. The existing private two-thread registry lane, held descriptors and
-actual request owner remain counted until work really drains, including after
-repeated caller cancellation, timeout or shutdown. The borrowed shared HTTP
-session is never closed by the observer, and proxy cleanup precedes its owner's
-normal client shutdown.
+The contract checks held/complete coherence, header-to-reference hashes/counts,
+totals, difference sides and continuation.
 
 Comparison transport permits nine seconds for the worker's eight-second budget;
-the workspace response budget is ten seconds including registry work. Ordinary
-small observations retain their existing five-second transport and six-second
-response budgets. Every comparison response is still capped at 64 KiB and 256
-chunks before UTF-8/JSON parsing; redirects, compression, duplicate decoded keys
-and nonfinite JSON numbers refuse. The all-or-refuse output cap remains 64 KiB.
-No two raw eight-MiB lockfiles pass through this proxy.
-
-A deadline or browser disconnect cannot forcibly interrupt blocked regular-file
-I/O. Actual file/request tasks and descriptors remain owned until completion;
-shutdown drains them before shared-client closure. No hard I/O liveness guarantee
-or remote cancellation proof is added.
+the workspace response budget is ten seconds. Ordinary small observations retain
+their five-second transport and six-second response budgets. Every comparison
+response is capped at 64 KiB and 256 chunks before UTF-8/JSON parsing; redirects,
+compression, duplicate decoded keys and nonfinite JSON numbers refuse. No two raw
+eight-MiB lockfiles pass through the workspace.
 
 ## Errors and boundaries
 
 Responses and errors are `no-store`. Invalid selection is 400, missing/foreign
 scope is 404, stale source pins are 409, unconfigured/unsupported worker is 422,
-and unavailable/corrupt/oversize or incoherent peer evidence is 503. Errors carry
+and unavailable/corrupt/oversize peer evidence or a timeout is 503. Errors carry
 an observation time and fixed safe messages; worker error text/source bytes are
 not forwarded. A 409 does not select a newer pin or retry automatically.
 
 The tests (`packages/workspace/tests/test_lockfile_diffs.py`) use synthetic HTTP
-peers and temporary files; they cover the route's shape, authority and ownership.
+peers and temporary files; they cover the route's shape, selection and refusals.
 The comparison was checked against a real worker in
 [Lab31](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md).

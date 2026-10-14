@@ -9,6 +9,7 @@ ownership check and the guards.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -279,7 +280,7 @@ async def test_invalid_project_id_is_refused(
 
 
 @pytest.mark.parametrize("route", ROUTES)
-async def test_invalid_session_id_is_not_found(
+async def test_invalid_session_id_is_refused(
     aiohttp_client: ClientFactory,
     aiohttp_server: ServerFactory,
     state_dir: Path,
@@ -288,9 +289,7 @@ async def test_invalid_session_id_is_not_found(
 ) -> None:
     client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
     response = await call(client, route, jobs_path(session="-bad"))
-    # E-02 changes this to 400 invalid_request, as the kernel and plan routes answer
-    # for an invalid session ID: the job routes look the ID up without validating it.
-    await error_of(response, 404, "not_found")
+    await error_of(response, 400, "invalid_request")
     assert worker.calls == []
 
 
@@ -311,6 +310,20 @@ async def test_unreachable_worker_is_unavailable_and_names_no_address(
         response = await call(client, route)
         await error_of(response, 503, "unavailable")
         assert_no_leak(await response.text(), url.removeprefix("http://"), "127.0.0.1")
+
+
+async def test_unreachable_worker_is_logged_with_its_cause(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with refusing_port() as url, caplog.at_level(logging.WARNING, "sandbox_science.workspace"):
+        client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=url)
+        response = await call(client, "list")
+        await error_of(response, 503, "unavailable")
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("worker request failed" in r.getMessage() for r in warnings)
 
 
 @pytest.mark.parametrize("route", ROUTES)
@@ -349,7 +362,7 @@ async def test_worker_refusals_keep_their_status(
 
 
 @pytest.mark.parametrize("route", ROUTES)
-async def test_damaged_project_record_is_an_internal_error(
+async def test_damaged_project_record_is_unavailable(
     aiohttp_client: ClientFactory,
     aiohttp_server: ServerFactory,
     state_dir: Path,
@@ -358,9 +371,9 @@ async def test_damaged_project_record_is_an_internal_error(
 ) -> None:
     client, worker = await connected(aiohttp_client, aiohttp_server, state_dir, static_dir)
     response = await call(client, route, jobs_path(project="broken"))
-    # E-02 changes this to the shared mapping of a damaged record (the kernel, plan
-    # and provisioning routes answer 503 for the same record today).
-    await error_of(response, 500, "internal")
+    await error_of(response, 503, "unavailable")
+    # The store's message names the record's path; the answer does not.
+    assert_no_leak(await response.text(), str(state_dir))
     assert worker.calls == []
 
 

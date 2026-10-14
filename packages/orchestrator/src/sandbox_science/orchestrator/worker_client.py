@@ -201,15 +201,6 @@ class WorkerClient:
             raise WorkerAPIError(ErrorKind.UNAVAILABLE, "worker transport is closed")
         return WorkerObservationTransport(endpoint, headers, session)
 
-    def matches_observation_transport(self, snapshot: WorkerObservationTransport) -> bool:
-        """Recheck original client/config/session identity without creating anything."""
-        return (
-            type(snapshot) is WorkerObservationTransport
-            and self._session is snapshot.session
-            and not snapshot.session.closed
-            and self._observation_configuration() == (snapshot.base_url, snapshot.headers)
-        )
-
     async def _call(
         self,
         method: str,

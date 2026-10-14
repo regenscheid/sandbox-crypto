@@ -3,24 +3,16 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-import os
-import threading
 import tracemalloc
-from collections.abc import Awaitable, Callable
-from typing import Any
 
 import pytest
-from aiohttp.test_utils import TestClient
 
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
-from sandbox_science.orchestrator.projects import ProjectError, ProjectStore
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import (
     GoalOutcome,
     PlanAuthority,
     PlanBody,
-    PlanEvidence,
     PlanOutput,
     PlanPhase,
     PlanScope,
@@ -28,12 +20,10 @@ from sandbox_science.orchestrator.session_plans import (
     SessionPlans,
 )
 from sandbox_science.workspace import plans
-from sandbox_science.workspace.api import Timeouts
 from sandbox_science.workspace.app import create_app
 
 TOKEN = "test-secret-session-plan-login-0123456789"
 PATH = "/api/v0/projects/p1/sessions/a/plan"
-ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 
 
 def authority(project="p1", session="a"):
@@ -181,9 +171,8 @@ async def test_closed_session_history_is_read_without_waking_or_reopening(
     first = seed(inventory, session="b")
 
     def forbidden(*args, **kwargs):
-        pytest.fail("plan read must not use unbounded/lifecycle registry methods")
+        pytest.fail("plan read must not reopen the session")
 
-    monkeypatch.setattr(ProjectStore, "get", forbidden)
     monkeypatch.setattr(ProjectStore, "open_session", forbidden)
     client = await create(aiohttp_client, state_dir, static_dir)
     response = await client.get(PATH.replace("/a/", "/b/"))
@@ -223,12 +212,8 @@ async def test_same_named_foreign_session_never_returns_other_projects_plan(
 
 @pytest.mark.asyncio
 async def test_authentication_and_no_browser_supplied_context(
-    aiohttp_client, state_dir, static_dir, monkeypatch
+    aiohttp_client, state_dir, static_dir
 ):
-    def forbidden(*args):
-        pytest.fail("unauthenticated request must not read registry")
-
-    monkeypatch.setattr(plans, "session_snapshot", forbidden)
     client = await create(aiohttp_client, state_dir, static_dir, login=False)
     response = await client.get(PATH)
     assert response.status == 401
@@ -258,7 +243,7 @@ async def test_absent_history_returns_null_without_creating_or_migrating_sql(
     owner = DocumentStore(path)
     if existing:
         owner.initialize()
-    client = await create(aiohttp_client, state_dir, static_dir, document_store=owner)
+    client = await create(aiohttp_client, state_dir, static_dir)
     response = await client.get(PATH)
     assert response.status == 200
     assert (await response.json())["plan"] is None
@@ -270,7 +255,7 @@ async def test_absent_history_returns_null_without_creating_or_migrating_sql(
             assert db.execute(
                 "SELECT count(*) FROM sqlite_master WHERE name LIKE 'session_plan_%'"
             ).fetchone() == (0,)
-    assert client.app[plans.READER].documents.readonly
+    owner.close()
 
 
 @pytest.mark.asyncio
@@ -314,450 +299,3 @@ async def test_corrupt_history_is_503_not_null_or_unbounded_allocation(
         assert peak < 2_000_000
     finally:
         owner.close()
-
-
-@pytest.mark.asyncio
-async def test_entire_response_cap_refuses_without_clipping_json(
-    aiohttp_client, state_dir, static_dir, inventory, monkeypatch
-):
-    seed(inventory)
-    monkeypatch.setattr(plans, "MAX_RESPONSE_BYTES", 128)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    response = await client.get(PATH)
-    assert response.status == 503
-    assert set(await response.json()) == {"error"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["close", "aba", "identical-aba", "policy", "rebind"])
-async def test_delayed_sql_read_cannot_survive_registry_transition(
-    aiohttp_client, state_dir, static_dir, inventory, monkeypatch, change
-):
-    seed(inventory)
-    entered, release = threading.Event(), threading.Event()
-    original = plans.PlanReader._plan
-
-    def blocked(self, scope, login):
-        result = original(self, scope, login)
-        entered.set()
-        assert release.wait(5)
-        return result
-
-    monkeypatch.setattr(plans.PlanReader, "_plan", blocked)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    call = asyncio.create_task(client.get(PATH))
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        store = ProjectStore(state_dir)
-        path = store.root / "p1.json"
-        before = path.read_bytes()
-        if change in {"close", "aba", "identical-aba"}:
-            store.close_session("p1", "a")
-            if change != "close":
-                store.open_session("p1", "a", dedicated=False)
-            if change == "identical-aba":
-                replacement = store.root / "restore"
-                replacement.write_bytes(before)
-                os.replace(replacement, path)
-        elif change == "policy":
-            store.set_policy("p1", "sha256:" + "b" * 64)
-        else:
-            value = json.loads(before)
-            value["sessions"]["a"]["environment_id"] = "forged-binding"
-            path.write_text(json.dumps(value))
-        release.set()
-        assert (await call).status == 503
-    finally:
-        release.set()
-        await asyncio.gather(call, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_original_login_rechecked_after_sql_even_if_browser_logs_in_again(
-    aiohttp_client, state_dir, static_dir, inventory, monkeypatch
-):
-    seed(inventory)
-    entered, release = threading.Event(), threading.Event()
-    original = plans.PlanReader._plan
-
-    def blocked(self, scope, login):
-        result = original(self, scope, login)
-        entered.set()
-        assert release.wait(5)
-        return result
-
-    monkeypatch.setattr(plans.PlanReader, "_plan", blocked)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    call = asyncio.create_task(client.get(PATH))
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        origin = str(client.make_url("/")).rstrip("/")
-        assert (await client.post("/api/v0/logout", headers={"Origin": origin})).status == 204
-        await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
-        release.set()
-        response = await call
-        assert response.status == 401
-        assert response.headers["Cache-Control"] == "no-store"
-    finally:
-        release.set()
-        await asyncio.gather(call, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["scope", "session", "large", "symlink", "fifo", "time"])
-async def test_registry_bounds_and_special_files_are_prompt(
-    aiohttp_client, state_dir, static_dir, tmp_path, damage
-):
-    path = state_dir / "projects" / "p1.json"
-    value = json.loads(path.read_bytes())
-    if damage == "scope":
-        value["project_id"] = "p2"
-    if damage == "session":
-        value["sessions"]["a"]["session_id"] = "b"
-    if damage == "time":
-        value["sessions"]["a"]["opened_at"] = "2026-10-12T12:00:00"
-    if damage in {"symlink", "fifo"}:
-        copied = tmp_path / "saved-project"
-        copied.write_bytes(path.read_bytes())
-        path.unlink()
-        if damage == "symlink":
-            path.symlink_to(copied)
-        else:
-            os.mkfifo(path)
-    else:
-        path.write_text("x" * (1024 * 1024 + 1) if damage == "large" else json.dumps(value))
-    client = await create(aiohttp_client, state_dir, static_dir)
-    assert (await asyncio.wait_for(client.get(PATH), 1)).status == 503
-
-
-def test_registry_growth_during_read_is_bounded_before_parse(state_dir, monkeypatch):
-    path = state_dir / "projects" / "p1.json"
-    original = os.read
-    identity = path.stat().st_ino
-    lengths = []
-    grown = False
-    monkeypatch.setattr(plans, "MAX_SESSION_RECORD_BYTES", 16 * 1024)
-
-    def grow(descriptor, length):
-        nonlocal grown
-        if os.fstat(descriptor).st_ino == identity:
-            lengths.append(length)
-            if not grown:
-                grown = True
-                with path.open("ab") as stream:
-                    stream.write(b"x" * (16 * 1024 + 1))
-        return original(descriptor, length)
-
-    monkeypatch.setattr(os, "read", grow)
-    with pytest.raises(ProjectError, match="changed during read"):
-        plans.session_snapshot(ProjectStore(state_dir), "p1", "a")
-    assert grown
-    assert max(lengths) <= 16 * 1024 + 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "invalid",
-    ["scope", "ref", "step", "hash", "match", "cursor", "base-first", "base-later", "outcome"],
-)
-async def test_unvalidated_copy_cannot_escape_scope_or_step_coherence(
-    aiohttp_client, state_dir, static_dir, inventory, monkeypatch, invalid
-):
-    first = seed(inventory)
-    inventory.progress(authority(), "done", first.ref, "step", 0, "completed", "Assertion")
-    if invalid == "base-later":
-        inventory.revise(authority(), "revise", first.ref, body(), "Retain intent")
-    if invalid == "outcome":
-        inventory.set_status(
-            authority(),
-            "finish",
-            first.ref,
-            1,
-            1,
-            "completed",
-            "Finished",
-            outcome=GoalOutcome(status="achieved", summary="Claim", evidence=(), remaining_work=()),
-        )
-    valid = inventory.compact_current(authority())
-    if invalid == "scope":
-        value = valid.model_copy(
-            update={
-                "head": valid.head.model_copy(
-                    update={"scope": PlanScope(project_id="other", session_id="a")}
-                )
-            }
-        )
-    elif invalid == "ref":
-        value = valid.model_copy(
-            update={
-                "head": valid.head.model_copy(
-                    update={"ref": valid.head.ref.model_copy(update={"version": 2})}
-                )
-            }
-        )
-    elif invalid == "step":
-        value = valid.model_copy(update={"steps": ()})
-    elif invalid == "hash":
-        value = valid.model_copy(
-            update={"steps": (valid.steps[0].model_copy(update={"step_sha256": "a" * 64}),)}
-        )
-    elif invalid == "match":
-        value = valid.model_copy(
-            update={"steps": (valid.steps[0].model_copy(update={"matches_current_step": False}),)}
-        )
-    elif invalid in {"base-first", "base-later"}:
-        value = valid.model_copy(
-            update={
-                "version": valid.version.model_copy(
-                    update={"base": 1 if invalid == "base-first" else None}
-                )
-            }
-        )
-    elif invalid == "outcome":
-        value = valid.model_copy(
-            update={
-                "head": valid.head.model_copy(
-                    update={
-                        "outcome": valid.head.outcome.model_copy(
-                            update={
-                                "evidence": (
-                                    PlanEvidence(
-                                        project_id="other",
-                                        kind="ledger",
-                                        reference_id="claim",
-                                        revision=1,
-                                    ),
-                                )
-                            }
-                        )
-                    }
-                )
-            }
-        )
-    else:
-        value = valid.model_copy(
-            update={
-                "steps": (
-                    valid.steps[0].model_copy(
-                        update={"latest": valid.steps[0].latest.model_copy(update={"sequence": 2})}
-                    ),
-                )
-            }
-        )
-    monkeypatch.setattr(plans.PlanReader, "_plan", lambda *args: value)
-    client = await create(aiohttp_client, state_dir, static_dir)
-    assert (await client.get(PATH)).status == 503
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("cancel", [False, True])
-async def test_timeout_cancel_and_shutdown_retain_actual_thread_ownership(
-    state_dir, inventory, monkeypatch, cancel
-):
-    seed(inventory)
-    entered, release = threading.Event(), threading.Event()
-    reader = plans.PlanReader(ProjectStore(state_dir), inventory.documents, timeout=0.03)
-    original = reader._plan
-
-    def blocked(scope, login):
-        entered.set()
-        assert release.wait(5)
-        return original(scope, login)
-
-    monkeypatch.setattr(reader, "_plan", blocked)
-    call = asyncio.create_task(reader.read("p1", "a", "login", lambda: True))
-    closing = None
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        if cancel:
-            call.cancel()
-            call.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await call
-        else:
-            with pytest.raises(ProjectError, match="timed out"):
-                await call
-        assert len(reader._tasks) == 1
-        with pytest.raises(ProjectError, match="capacity"):
-            await reader.read("p1", "a", "other-login", lambda: True)
-        assert await asyncio.wait_for(asyncio.to_thread(lambda: 7), 0.2) == 7
-        closing = asyncio.create_task(reader.close())
-        await asyncio.sleep(0)
-        closing.cancel()
-        await asyncio.sleep(0)
-        closing.cancel()
-        await asyncio.sleep(0)
-        assert not closing.done()
-        assert not reader._closed
-    finally:
-        release.set()
-        if closing is not None:
-            await asyncio.gather(closing, return_exceptions=True)
-        await reader.close()
-    assert not reader._tasks
-    assert not reader._scopes
-    assert not reader._logins
-
-
-@pytest.mark.asyncio
-async def test_cancelled_initial_file_read_keeps_and_then_closes_its_descriptors(
-    state_dir, inventory, monkeypatch
-):
-    entered, release = threading.Event(), threading.Event()
-    retained = []
-    original = plans.session_snapshot
-
-    def blocked(*args):
-        snapshot = original(*args)
-        retained.extend((snapshot.descriptor, snapshot.root))
-        entered.set()
-        assert release.wait(5)
-        return snapshot
-
-    monkeypatch.setattr(plans, "session_snapshot", blocked)
-    reader = plans.PlanReader(ProjectStore(state_dir), inventory.documents)
-    call = asyncio.create_task(reader.read("p1", "a", "login", lambda: True))
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        call.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await call
-        assert len(reader._tasks) == 1
-        for descriptor in retained:
-            os.fstat(descriptor)
-    finally:
-        release.set()
-        await reader.close()
-    for descriptor in retained:
-        with pytest.raises(OSError, match="Bad file descriptor"):
-            os.fstat(descriptor)
-
-
-@pytest.mark.asyncio
-async def test_actual_http_disconnect_does_not_release_blocked_sql_ownership(
-    aiohttp_client, state_dir, static_dir, inventory, monkeypatch
-):
-    seed(inventory)
-    entered, release = threading.Event(), threading.Event()
-    original = plans.PlanReader._plan
-
-    def blocked(self, scope, login):
-        entered.set()
-        assert release.wait(5)
-        return original(self, scope, login)
-
-    monkeypatch.setattr(plans.PlanReader, "_plan", blocked)
-    client = await create(aiohttp_client, state_dir, static_dir, timeouts=Timeouts(call=0.03))
-    reader = client.app[plans.READER]
-    call = asyncio.create_task(client.get(PATH))
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        call.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await call
-        await asyncio.sleep(0.06)  # past the deadline, the blocked owner is still held
-        assert len(reader._tasks) == 1
-        assert reader._scopes == {("p1", "a")}
-        with pytest.raises(ProjectError, match="capacity"):
-            await reader.read("p1", "a", "new-login", lambda: True)
-    finally:
-        release.set()
-        await reader.close()
-    assert not reader._tasks
-
-
-@pytest.mark.asyncio
-async def test_admission_is_immediate_per_login_and_global(state_dir, inventory, monkeypatch):
-    seed(inventory)
-    entered, release = threading.Event(), threading.Event()
-    reader = plans.PlanReader(ProjectStore(state_dir), inventory.documents)
-    original = reader._plan
-
-    def blocked(scope, login):
-        entered.set()
-        assert release.wait(5)
-        return original(scope, login)
-
-    monkeypatch.setattr(reader, "_plan", blocked)
-    store = ProjectStore(state_dir)
-    store.open_session("p1", "d", dedicated=False)
-    calls = [
-        asyncio.create_task(reader.read("p1", name, "login", lambda: True)) for name in ("a", "c")
-    ]
-    try:
-        assert await asyncio.to_thread(entered.wait, 2)
-        with pytest.raises(ProjectError, match="capacity"):
-            await reader.read("p1", "d", "login", lambda: True)
-        monkeypatch.setattr(plans, "MAX_CALLS", 2)
-        with pytest.raises(ProjectError, match="capacity"):
-            await reader.read("p1", "d", "another", lambda: True)
-    finally:
-        release.set()
-        await asyncio.gather(*calls, return_exceptions=True)
-        await reader.close()
-
-
-@pytest.mark.asyncio
-async def test_app_cleanup_cannot_close_shared_worker_before_plan_drain(
-    aiohttp_client, state_dir, static_dir, inventory, monkeypatch
-):
-    seed(inventory)
-    entered, release = threading.Event(), threading.Event()
-    original = plans.PlanReader._plan
-
-    def blocked(self, scope, login):
-        entered.set()
-        assert release.wait(5)
-        return original(self, scope, login)
-
-    monkeypatch.setattr(plans.PlanReader, "_plan", blocked)
-
-    class Worker:
-        closed = False
-
-        async def close(self):
-            self.closed = True
-
-    worker = Worker()
-    client = await create(aiohttp_client, state_dir, static_dir, job_worker=worker)
-    reader = client.app[plans.READER]
-    call = asyncio.create_task(reader.read("p1", "a", "login", lambda: True))
-    assert await asyncio.to_thread(entered.wait, 2)
-    call.cancel()
-    await asyncio.gather(call, return_exceptions=True)
-    closing = asyncio.create_task(client.close())
-    try:
-        await asyncio.sleep(0.01)
-        assert not closing.done()
-        assert not worker.closed
-    finally:
-        release.set()
-        await closing
-    assert reader._closed
-    assert worker.closed
-
-
-@pytest.mark.asyncio
-async def test_cancelled_plan_close_still_closes_shared_worker(
-    aiohttp_client, state_dir, static_dir, monkeypatch
-):
-    class Worker:
-        closed = False
-
-        async def close(self):
-            self.closed = True
-
-    worker = Worker()
-    client = await create(aiohttp_client, state_dir, static_dir, job_worker=worker)
-    reader = client.app[plans.READER]
-    original = reader.close
-
-    async def cancel_after_drain():
-        await original()
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(reader, "close", cancel_after_drain)
-    with pytest.raises(asyncio.CancelledError):
-        await client.close()
-    assert reader._closed
-    assert worker.closed

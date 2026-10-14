@@ -139,7 +139,7 @@ async def test_one_run_as_the_harness_recorded_it(
         ("/api/v0/projects/missing", 404, "not_found"),
         ("/api/v0/projects/bad%20id", 400, "invalid_request"),
         ("/api/v0/projects/..", 400, "invalid_request"),
-        ("/api/v0/projects/broken", 500, "internal"),
+        ("/api/v0/projects/broken", 503, "unavailable"),
         ("/api/v0/projects/p1/sessions/missing", 404, "not_found"),
         ("/api/v0/projects/p1/sessions/missing/runs/" + FIRST_RUN, 404, "not_found"),
         ("/api/v0/projects/p2/sessions/a/runs/" + FIRST_RUN, 404, "not_found"),
