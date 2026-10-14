@@ -7,10 +7,12 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import signal
+import sqlite3
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -31,8 +33,8 @@ from sandbox_science.contracts import (
 )
 from sandbox_science.worker import daemon, executor
 from sandbox_science.worker.artifacts import Blobs
-from sandbox_science.worker.backends import LocalBackend, daemon_token
-from sandbox_science.worker.channel import ExecutorChannel
+from sandbox_science.worker.backends import ClosedHandler, LocalBackend, daemon_token
+from sandbox_science.worker.channel import EventHandler, ExecutorChannel
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
@@ -1180,3 +1182,140 @@ async def test_shutdown_exits_even_when_acknowledgement_is_lost(
     assert await asyncio.wait_for(reader.readline(), 3) == b""
     writer.close()
     await writer.wait_closed()
+
+
+def record_channels(worker: Worker, monkeypatch: pytest.MonkeyPatch) -> list[ExecutorChannel]:
+    """The executor channels the backend opens from now on, in order."""
+    opened: list[ExecutorChannel] = []
+    original = worker.backend.open
+
+    async def open_and_record(
+        environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
+    ) -> ExecutorChannel:
+        channel = await original(environment_id, on_event, on_closed)
+        opened.append(channel)
+        return channel
+
+    monkeypatch.setattr(worker.backend, "open", open_and_record)
+    return opened
+
+
+class Records(logging.Handler):
+    """The manager's error records; ``error`` is set by the first."""
+
+    def __init__(self) -> None:
+        super().__init__(logging.ERROR)
+        self.records: list[logging.LogRecord] = []
+        self.error = asyncio.Event()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+        self.error.set()
+
+    def failures(self) -> list[str]:
+        return [str(record.exc_info[1]) for record in self.records if record.exc_info]
+
+
+@pytest.fixture
+def manager_errors() -> Iterator[Records]:
+    records = Records()
+    logger = logging.getLogger("sandbox_science.worker.manager")
+    logger.addHandler(records)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(records)
+
+
+@pytest.mark.asyncio
+async def test_execution_dispatched_during_a_recovery_is_recovered_too(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = record_channels(worker, monkeypatch)
+    first, _ = await worker.manager.submit(request("first", "sleep 1; printf first"))
+    await running(worker.manager, first.execution_id)
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def held_loss_check(_environment: str) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+        return False
+
+    worker.manager.confirmed_daemon_loss = held_loss_check
+    await opened[-1].close()  # the bridge is lost: a recovery starts and waits
+    await asyncio.wait_for(entered.wait(), 10)
+    second, _ = await worker.manager.submit(request("second", "sleep 1; printf second"))
+    await running(worker.manager, second.execution_id)
+    await opened[-1].close()  # the second job's bridge is lost while the recovery runs
+    release.set()
+    for job, text in ((first, "first"), (second, "second")):
+        result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
+        assert result.state is ExecutionState.SUCCEEDED
+        assert result.result is not None
+        assert result.result.stdout is not None
+        assert result.result.stdout.text == text
+
+
+@pytest.mark.asyncio
+async def test_poller_survives_an_unexpected_error_and_logs_it(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
+) -> None:
+    job, _ = await worker.manager.submit(request("poll-error", "sleep 1; printf done"))
+    await running(worker.manager, job.execution_id)
+    original = worker.store.recovery
+    failed = False
+
+    def fail_once(execution_id: str) -> Any:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise sqlite3.OperationalError("synthetic database failure")
+        return original(execution_id)
+
+    monkeypatch.setattr(worker.store, "recovery", fail_once)
+    result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
+    assert result.state is ExecutionState.SUCCEEDED
+    assert "synthetic database failure" in manager_errors.failures()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_recovery_error_is_logged_and_recovery_goes_on(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
+) -> None:
+    opened = record_channels(worker, monkeypatch)
+    job, _ = await worker.manager.submit(request("recovery-error", "sleep 1; printf done"))
+    await running(worker.manager, job.execution_id)
+    calls = 0
+
+    async def failing_loss_check(_environment: str) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("synthetic recovery failure")
+        return False
+
+    worker.manager.confirmed_daemon_loss = failing_loss_check
+    await opened[-1].close()
+    result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
+    assert result.state is ExecutionState.SUCCEEDED
+    assert "synthetic recovery failure" in manager_errors.failures()
+
+
+@pytest.mark.asyncio
+async def test_failed_background_task_is_logged(
+    worker: Worker, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
+) -> None:
+    await worker.manager.capabilities("env1")
+
+    def broken_gate(_environment: str) -> Any:
+        raise sqlite3.OperationalError("synthetic gate failure")
+
+    monkeypatch.setattr(worker.store, "package_gate", broken_gate)
+    worker.manager.refresh_package_gate("env1")
+    await asyncio.wait_for(manager_errors.error.wait(), 10)
+    assert "synthetic gate failure" in manager_errors.failures()
+    monkeypatch.undo()
