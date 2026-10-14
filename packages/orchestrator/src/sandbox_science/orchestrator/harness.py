@@ -49,6 +49,8 @@ from .documents import DocumentError, DocumentStore, DocumentTool
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
+from .ledger import Ledger
+from .ledger.tool import LedgerTool
 from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task, user_cancelled
 from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
@@ -478,6 +480,16 @@ class Harness:
                 connectors=connectors,
             )
         documents = DocumentTool(stores.documents, context, run_id=run_id, alias=alias)
+        # Code in the sandbox has no route to the ledger: the agent imports what it
+        # writes (LG-41), reading the file as its read_file tool does.
+        ledger = LedgerTool(
+            Ledger(stores.documents),
+            context,
+            run_id=run_id,
+            role=admitted.request.role,
+            alias=alias,
+            read=lambda request: self.client.read_file(request),
+        )
         inventory = ArtifactInventory(stores.documents)
         reviews = ReviewController(
             ReviewStore(stores.documents, artifacts=inventory),
@@ -530,6 +542,7 @@ class Harness:
             math_checks=math_checks,
             artifacts=artifacts,
             plans=plans,
+            ledger=ledger,
             check_kernels=True,
             connectors=connectors,
             kernel_run=kernel_run,

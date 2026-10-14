@@ -41,12 +41,16 @@ An entry the same change revises is linked as the change leaves it, so an assump
 
 **Who may change what (LG-13).** The user may make any change; the main agent may create and revise any entry; a delegated agent may create entries, in their first status, but revise none. Other agent roles, the platform, imports and code in the sandbox change nothing; refusals say `not_permitted_for_role`. An agent's session must belong to the project, and an entry of another project is not found.
 
+**The agent's tools.** A run reads with `ledger_list` (by type or current status, a page at a time), `ledger_read` (an entry at a revision, with its links and the links to it) and `ledger_history`, and changes with `ledger_change`, a mutation whose operation ID defaults to the tool call's. The reads are `read` tools; `ledger_change` and `ledger_import` are effects, which the plan fence gates. Every change is the run's: its session, role (`main`, or `delegated` for a delegated run), model, alias and tool call; the arguments name no author.
+
+**Results files (LG-41).** Code in the sandbox has no route to the ledger. It writes a results file, JSON Lines with one mutation per line (its operation ID, reason and changes), at most 256 lines and 1 MiB, and the agent imports it with `ledger_import`, naming its path in the workspace. Every line is checked as a mutation before anything is recorded; the mutations are then applied in one change, all or none, with the agent's authority, and a refusal names its line. Each revision records the file's path, its SHA-256 and the line; a line imported before replays its first result, so importing a file again records nothing.
+
 ## Not built yet
 
 - Statuses a decision sets (`established`, `obstructed`, `refuted`), a decision's own `rejected` and `reversed`, decisions' status changes, evidence links and the gate (LG-4, LG-7, LG-8 to LG-17); published claims and results, which cite their reference through evidence (LG-15).
 - `dominates` links and the frontier (LG-18 to LG-24); flags (LG-27 to LG-29); work records (LG-6).
 - Math checks of statements (LG-1, LD-53).
-- The agent's tools, results files (LG-41), the workspace's routes and views, the pack's import and the export (LG-34 to LG-39).
+- The workspace's routes and views, the pack's import and the export (LG-34 to LG-39); naming the execution that wrote a results file.
 
 ## Tables
 

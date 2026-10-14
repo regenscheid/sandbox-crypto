@@ -50,6 +50,8 @@ from .documents.tool import SPECS as DOCUMENT_SPECS
 from .hooks import Effect, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, JobNotices, JobTools
 from .kernel_check import KernelCheck
+from .ledger.tool import LEDGER_EFFECTS, LedgerTool
+from .ledger.tool import SPECS as LEDGER_SPECS
 from .mathchecks.controller import MathChecks, MathController
 from .model import ToolCall, ToolSpec
 from .plan_tools import SPECS as PLAN_SPECS
@@ -342,6 +344,7 @@ def _harness_tool_names() -> frozenset[str]:
         *annotation_tools.SPECS,
         *AUTHOR_SPECS,
         *PLAN_SPECS,
+        *LEDGER_SPECS,
     )
     return frozenset(spec.name for spec in specs) | {RESTART_KERNEL}
 
@@ -368,6 +371,7 @@ class Toolbox:
         math_checks: MathController | None = None,
         artifacts: ArtifactPublisher | None = None,
         plans: PlanTools | None = None,
+        ledger: LedgerTool | None = None,
         check_kernels: bool = False,
         connectors: Connectors | None = None,
         kernel_run: str | None = None,
@@ -465,6 +469,18 @@ class Toolbox:
                 {spec.name: "plan" for spec in plans.specs},
                 raw=True,
                 whole=True,
+            )
+        if ledger is not None:
+            entries += _group(
+                ledger.specs,
+                lambda name, call: ledger.call(
+                    name,
+                    call.args,
+                    operation=call.operation,
+                    call_id=call.call.id,
+                    model=call.model,
+                ),
+                LEDGER_EFFECTS,
             )
         if connectors is not None:
             # A connector tool is never offered under a name the harness gives a tool of

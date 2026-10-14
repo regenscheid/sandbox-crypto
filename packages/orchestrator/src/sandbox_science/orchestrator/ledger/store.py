@@ -296,10 +296,20 @@ class Ledger:
         ]
         pinned = self._blocks(project, blocks)
         with self.control.write() as tx:
-            return [
-                self._apply(tx.sql, project, mutation, author, role, pinned, provenance)
-                for mutation, provenance in mutations
-            ]
+            results: list[MutationResult] = []
+            for mutation, provenance in mutations:
+                try:
+                    results.append(
+                        self._apply(tx.sql, project, mutation, author, role, pinned, provenance)
+                    )
+                except DocumentError as error:
+                    line = (provenance or {}).get("line")
+                    if line is None:
+                        raise
+                    raise DocumentError(
+                        error.kind, f"line {line}: {error.message}", {**error.details, "line": line}
+                    ) from None
+            return results
 
     def _apply(
         self,
