@@ -3,13 +3,14 @@
   import { api, type JobListing } from '../lib/api';
   import { jobElapsed, jobsPoller } from '../lib/jobs';
   import { initialPoll, type PollState } from '../lib/poller';
+  import { idle, submit } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
   import JobCard from './JobCard.svelte';
   import PollStatus from './PollStatus.svelte';
 
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
   let view = $state<PollState<JobListing>>(initialPoll());
-  let error = $state<unknown>(null);
+  const cancel = $state(idle());
   let cancelling = $state<string | null>(null);
   const data = $derived(view.data);
 
@@ -17,31 +18,28 @@
     const project = projectId,
       session = sessionId;
     view = initialPoll();
-    error = null;
+    cancel.error = null;
     return jobsPoller(project, session, (value) => {
       view = value;
     }).watch();
   });
 
-  async function cancel(job: string): Promise<void> {
+  async function cancelJob(job: string): Promise<void> {
+    if (cancel.busy) return; // one cancellation at a time
     cancelling = job;
-    try {
+    await submit(cancel, async () => {
       await api.cancelJob(projectId, sessionId, job);
       const found = await api.jobs(projectId, sessionId);
       // Spread the state as it is now: the poller may have published during the await.
       view = { ...view, data: found };
-      error = null;
-    } catch (found) {
-      error = found;
-    } finally {
-      cancelling = null;
-    }
+    });
+    cancelling = null;
   }
 </script>
 
 <section aria-label="Background jobs">
   <h2>Background jobs</h2>
-  {#if error}<ErrorMessage {error} />{/if}
+  {#if cancel.error}<ErrorMessage error={cancel.error} />{/if}
   <PollStatus phase={view.phase} hasData={data !== null} what="Job views" />
   {#if data}
     {#each data.waits as wait (wait.run_id)}
@@ -64,7 +62,7 @@
       <JobCard
         {job}
         cancelling={cancelling === job.job_id}
-        oncancel={() => void cancel(job.job_id)}
+        oncancel={() => void cancelJob(job.job_id)}
       />
     {/each}
     {#if data.truncated}<p class="muted">Showing the most recent jobs.</p>{/if}

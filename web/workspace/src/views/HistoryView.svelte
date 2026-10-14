@@ -5,18 +5,20 @@
   patches agents submitted, with their states.
 -->
 <script lang="ts">
-  import { api } from '../lib/api';
+  import { api, type DocumentHistory } from '../lib/api';
   import { describeAuthor, describeChanges } from '../lib/authors';
+  import { Detail, noDetail } from '../lib/detail';
+  import { newestFirst, reviewable } from '../lib/documentHistory';
   import { formatTime } from '../lib/format';
   import { documentHref, projectHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   import PatchReview from './PatchReview.svelte';
 
   let { projectId, documentId }: { projectId: string; documentId: string } = $props();
-  let refresh = $state(0);
-  const loading = $derived.by(() => {
-    refresh;
-    return api.history(projectId, documentId);
+  const shown = $state(noDetail<string, DocumentHistory>());
+  const histories = new Detail(shown, (document) => api.history(projectId, document));
+  $effect(() => {
+    void histories.show(documentId);
   });
 </script>
 
@@ -24,9 +26,12 @@
   <a href="#/">Projects</a> / <a href={projectHref(projectId)}>{projectId}</a> / documents /
 </nav>
 
-{#await loading}
+{#if shown.error}
+  <ErrorMessage error={shown.error} />
+{:else if !shown.value}
   <p class="muted">Loading…</p>
-{:then history}
+{:else}
+  {@const history = shown.value}
   {@const info = history.document}
   <h1>History of {info.title}</h1>
   <p>
@@ -46,7 +51,7 @@
       </tr>
     </thead>
     <tbody>
-      {#each [...history.revisions].reverse() as revision (revision.number)}
+      {#each newestFirst(history.revisions) as revision (revision.number)}
         <tr>
           <td
             ><a href={documentHref(projectId, info.document_id, revision.number)}
@@ -118,7 +123,7 @@
         </tr>
       </thead>
       <tbody>
-        {#each [...history.patches].reverse() as patch (patch.patch_id)}
+        {#each newestFirst(history.patches) as patch (patch.patch_id)}
           <tr>
             <td><code>{patch.patch_id}</code></td>
             <td>{describeAuthor(patch.author)}</td>
@@ -135,12 +140,12 @@
             </td>
             <td
               >{patch.reason}
-              {#if ['conflicted', 'refused', 'suggested'].includes(patch.state)}
+              {#if reviewable(patch)}
                 <PatchReview
                   {projectId}
                   documentId={info.document_id}
                   patchId={patch.patch_id}
-                  refreshed={() => (refresh += 1)}
+                  refreshed={() => void histories.reload()}
                 />
               {/if}
             </td>
@@ -149,6 +154,4 @@
       </tbody>
     </table>
   {/if}
-{:catch error}
-  <ErrorMessage {error} />
-{/await}
+{/if}
