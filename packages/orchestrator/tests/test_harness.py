@@ -167,6 +167,31 @@ async def test_the_first_slice_through_the_harness(client: WorkerClient) -> None
     assert model.requests[-1][-1]["role"] == "tool"
 
 
+async def test_a_delegated_run_works_in_kernels_of_its_own(client: WorkerClient) -> None:
+    """PD-37: main runs share the session's kernel; a delegated run has its own, and
+    reads only its own kernels in its results."""
+
+    def cells(*codes: str) -> ScriptedModel:
+        turns = [{"tool_calls": [{"name": "python", "arguments": {"code": c}}]} for c in codes]
+        return ScriptedModel.from_json([*turns, {"text": "done"}])
+
+    def results(transcript: Any) -> list[dict[str, Any]]:
+        return [json.loads(m["content"]) for m in transcript.messages if m["role"] == "tool"]
+
+    await run_task(cells("x = 'main'"), Toolbox(client, CONTEXT), "go", run_id="main-1")
+    child = await run_task(
+        cells("x", "x = 'child'"), Toolbox(client, CONTEXT, kernel_run="child-1"), "go",
+        run_id="child-1",
+    )  # fmt: skip
+    main = await run_task(cells("x"), Toolbox(client, CONTEXT), "go", run_id="main-2")
+    unset, assigned = results(child)
+    assert "name 'x' is not defined" in unset["error"]["message"]
+    assert [kernel["run"] for kernel in assigned["running_kernels"]] == ["child-1"]
+    (read,) = results(main)
+    assert read["outputs"] == ["'main'"]
+    assert [kernel["run"] for kernel in read["running_kernels"]] == [None]
+
+
 async def test_the_client_reads_revisions_and_their_lockfiles(client: WorkerClient) -> None:
     toolbox = Toolbox(client, CONTEXT)
     script = [{"tool_calls": [{"name": "shell", "arguments": {"script": "true"}}]}]

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
@@ -64,9 +65,11 @@ from .projects import (
 from .runstate import RunState
 from .session_plans import SessionPlans
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
-from .worker_client import WorkerClient
+from .worker_client import WorkerAPIError, WorkerClient
 
 _IDENTIFIER: TypeAdapter[str] = TypeAdapter(Identifier)
+
+_log = logging.getLogger(__name__)
 
 
 def tier_in_effect(location: Location) -> int | None:
@@ -499,6 +502,23 @@ class Harness:
             run_id=run_id,
             alias=alias,
         )
+        # A delegated run's cells run in kernels of its own, which stop when it ends
+        # (PD-37); a main run uses the session's, and closes those its session's earlier
+        # runs left (PD-40): its runs run under it, so none of them is running yet.
+        kernel_run = admitted.run_id if admitted.request.parent is not None else None
+        client = self.client
+        if kernel_run is not None:
+
+            async def stop_kernels() -> None:
+                try:
+                    await client.close_session(context, run=kernel_run)
+                except WorkerAPIError as exc:
+                    # The next main run of the session closes them.
+                    _log.warning("could not stop run %s's kernels: %s", kernel_run, exc)
+
+            on_close(stop_kernels)
+        else:
+            await _close_left_run_kernels(client, context)
         return Toolbox(
             self.client,
             context,
@@ -512,7 +532,19 @@ class Harness:
             plans=plans,
             check_kernels=True,
             connectors=connectors,
+            kernel_run=kernel_run,
         )
+
+
+async def _close_left_run_kernels(client: WorkerClient, context: ExecutionContext) -> None:
+    """Close the kernels of delegated runs that ended without closing them: their
+    harness stopped first (PD-40)."""
+    try:
+        listing = await client.kernel_status(context)
+        for run in sorted({kernel.run for kernel in listing.kernels if kernel.run is not None}):
+            await client.close_session(context, run=run)
+    except Exception as exc:  # a cleanup: it never stops the run
+        _log.warning("could not close the kernels earlier runs left: %s", exc)
 
 
 def closing(

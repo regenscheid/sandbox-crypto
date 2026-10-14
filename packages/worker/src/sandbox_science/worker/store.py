@@ -968,13 +968,26 @@ class Store:
 
     # Kernels.
 
-    def kernel(self, environment_id: str, session_id: str, language: str) -> KernelRecord | None:
-        row = self._db.execute(
+    def kernel(
+        self, environment_id: str, session_id: str, language: str, *, run: str | None = None
+    ) -> KernelRecord | None:
+        """A kernel's generations: the session's kernel of ``language``, or ``run``'s own."""
+        columns = (
             "SELECT substr(incarnation,1,29), CASE WHEN typeof(base)='integer' THEN base END,"
-            " CASE WHEN typeof(last)='integer' THEN last END FROM kernels"
-            " WHERE environment_id = ? AND session_id = ? AND language = ?",
-            (environment_id, session_id, language),
-        ).fetchone()
+            " CASE WHEN typeof(last)='integer' THEN last END"
+        )
+        if run is None:
+            row = self._db.execute(
+                f"{columns} FROM kernels"
+                " WHERE environment_id = ? AND session_id = ? AND language = ?",
+                (environment_id, session_id, language),
+            ).fetchone()
+        else:
+            row = self._db.execute(
+                f"{columns} FROM run_kernels"
+                " WHERE environment_id = ? AND session_id = ? AND run = ? AND language = ?",
+                (environment_id, session_id, run, language),
+            ).fetchone()
         if row is None:
             return None
         incarnation, base, last = row
@@ -989,12 +1002,40 @@ class Store:
         return KernelRecord(incarnation, base, last)
 
     def save_kernel(
-        self, environment_id: str, session_id: str, language: str, record: KernelRecord
+        self,
+        environment_id: str,
+        session_id: str,
+        language: str,
+        record: KernelRecord,
+        *,
+        run: str | None = None,
     ) -> None:
-        self._db.execute(
-            "INSERT OR REPLACE INTO kernels VALUES (?, ?, ?, ?, ?, ?)",
-            (environment_id, session_id, language, record.incarnation, record.base, record.last),
-        )
+        values = (record.incarnation, record.base, record.last)
+        if run is None:
+            self._db.execute(
+                "INSERT OR REPLACE INTO kernels VALUES (?, ?, ?, ?, ?, ?)",
+                (environment_id, session_id, language, *values),
+            )
+        else:
+            self._db.execute(
+                "INSERT OR REPLACE INTO run_kernels VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (environment_id, session_id, run, language, *values),
+            )
+
+    def forget_run_kernels(
+        self, environment_id: str, session_id: str, run: str | None = None
+    ) -> None:
+        """Drop the generations of ``run``'s own kernels, or of all the session's runs."""
+        if run is None:
+            self._db.execute(
+                "DELETE FROM run_kernels WHERE environment_id = ? AND session_id = ?",
+                (environment_id, session_id),
+            )
+        else:
+            self._db.execute(
+                "DELETE FROM run_kernels WHERE environment_id = ? AND session_id = ? AND run = ?",
+                (environment_id, session_id, run),
+            )
 
     # Artifacts.
 

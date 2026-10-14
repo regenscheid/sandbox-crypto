@@ -17,6 +17,7 @@ function observed(): KernelObservation {
         kernel_id: 'kernel-one',
         language: 'python',
         generation: 3,
+        run: null,
         start_revision: 1,
         current_revision: 2,
         revision_status: 'predates',

@@ -79,6 +79,7 @@
           <li>
             <strong>{kernel.language}: {kernel.revision_status}</strong> ·
             <code>{kernel.kernel_id}</code>
+            {#if kernel.run}· run <code>{kernel.run}</code>{/if}
             <p>
               Generation <code>{kernel.generation}</code>; start revision
               <code>{kernel.start_revision ?? 'unknown'}</code>; current revision

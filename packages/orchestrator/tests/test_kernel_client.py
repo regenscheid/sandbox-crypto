@@ -8,7 +8,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import ExecutionContext
-from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.orchestrator.worker_client import (
+    MAX_KERNEL_OBSERVATION_BYTES,
+    WorkerAPIError,
+    WorkerClient,
+)
 from sandbox_science.testing import fake_worker_app
 
 
@@ -98,7 +102,7 @@ async def test_kernel_observation_bounds_chunked_success_and_error_bodies(status
     async def oversized(request: web.Request) -> web.StreamResponse:
         response = web.StreamResponse(status=status)
         await response.prepare(request)
-        await response.write(b" " * (8 * 1024))
+        await response.write(b" " * MAX_KERNEL_OBSERVATION_BYTES)
         await response.write(b"x")
         return response
 
@@ -108,7 +112,7 @@ async def test_kernel_observation_bounds_chunked_success_and_error_bodies(status
         TestServer(app) as server,
         WorkerClient(str(server.make_url("")), "test-secret-kernel-client") as client,
     ):
-        with pytest.raises(WorkerAPIError, match="over 8192 bytes"):
+        with pytest.raises(WorkerAPIError, match=f"over {MAX_KERNEL_OBSERVATION_BYTES} bytes"):
             await client.observe_kernels(context)
 
 

@@ -203,6 +203,28 @@ def test_a_long_session_gets_a_kernel_id_the_worker_can_report(tmp_path: Path) -
     assert long.kernel_id.endswith("-python")
 
 
+def test_a_runs_kernel_has_an_id_of_its_own(tmp_path: Path) -> None:
+    session = executor.Kernel("s1", "python", tmp_path, {}, last_used=0.0)
+    run = executor.Kernel("s1", "python", tmp_path, {}, last_used=0.0, run="r1")
+    # Joining the IDs would give session "s1-r1"'s kernel ID.
+    joined = executor.Kernel("s1-r1", "python", tmp_path, {}, last_used=0.0)
+    assert session.kernel_id == "krn-s1-python"
+    assert len({session.kernel_id, run.kernel_id, joined.kernel_id}) == 3
+    assert run.kernel_id.startswith("krn.r")
+    assert run.kernel_id.endswith("-python")
+    # No session's kernel ID begins as a run's does, whatever the session is called.
+    digest = run.kernel_id.removeprefix("krn.").removesuffix("-python")
+    assert executor.Kernel(digest, "python", tmp_path, {}, last_used=0.0).kernel_id != run.kernel_id
+    assert (
+        len(
+            executor.Kernel(
+                "s" * 128, "python", tmp_path, {}, last_used=0.0, run="r" * 128
+            ).kernel_id
+        )
+        <= 128
+    )
+
+
 class Recorder:
     """An in-process executor whose replies are kept."""
 
@@ -1031,12 +1053,13 @@ async def test_an_idle_kernel_is_stopped_once_it_has_been_unused_long_enough(
         return await seen(_end(execution))
 
     hello = await ask({"id": -2, "op": "hello"})
+    assert hello["run_kernels"] == 1  # kernels per run (worker protocol 4)
     gate = {"incarnation": hello["package_gate"], "generation": 0, "mode": "ready"}
     ready = await ask({"id": -1, "op": "package_gate", **gate, "operation": "", "revision": None})
     assert ready["ok"]
     try:
         assert (await cell(1, "x = 1"))["state"] == "succeeded"
-        kernel = instance.kernels[("s1", "python")]
+        kernel = instance.kernels[("s1", "", "python")]
         reaper = instance.spawn(instance.reap_idle_kernels(10))
         await eventually(lambda: clock.sleepers == 1)
         clock.advance(5)  # the reaper looks, and keeps a kernel used 5 s ago

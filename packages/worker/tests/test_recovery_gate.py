@@ -432,6 +432,7 @@ async def test_restart_launch_is_owned_by_shutdown_and_cannot_outlive_it(
         generation = 0
         stops = 0
         control = asyncio.Lock()
+        retired = False
 
         async def ensure_started(self, launcher: Any) -> None:
             async def work() -> None:
@@ -449,7 +450,7 @@ async def test_restart_launch_is_owned_by_shutdown_and_cannot_outlive_it(
             return {}
 
     kernel = Kernel()
-    guest.executor.kernels[("s1", "python")] = kernel  # pyright: ignore
+    guest.executor.kernels[("s1", "", "python")] = kernel  # pyright: ignore
     monkeypatch.setattr(guest.executor, "kernel", lambda *_: kernel)
     monkeypatch.setattr(sandbox_processes, "end_descendants", lambda: None)
     restart = asyncio.create_task(guest.executor.op_restart({"id": 1, "session": "s1"}))
@@ -482,6 +483,7 @@ async def test_restart_rechecks_original_controller_after_kernel_stop(
     class Kernel:
         manager: object | None = object()
         control = asyncio.Lock()
+        retired = False
         state_lost = False
         starts = 0
 

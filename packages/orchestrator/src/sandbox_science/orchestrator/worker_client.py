@@ -70,6 +70,7 @@ from sandbox_science.contracts.revisions import (
 from sandbox_science.contracts.worker import (
     EVENT_HEARTBEAT_SECONDS,
     MAX_EVENT_BYTES,
+    MAX_SESSION_KERNELS,
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
     Language,
@@ -77,7 +78,8 @@ from sandbox_science.contracts.worker import (
 
 _log = logging.getLogger(__name__)
 _EVENT: Final = TypeAdapter[Event](Event)
-MAX_KERNEL_OBSERVATION_BYTES: Final = 8 * 1024
+MAX_KERNEL_OBSERVATION_BYTES: Final = 1024 + 512 * MAX_SESSION_KERNELS
+"""An observation holds up to ``MAX_SESSION_KERNELS`` kernels, its own and its runs'."""
 KERNEL_OBSERVATION_TIMEOUT: Final = 5.0
 RECONNECT_ATTEMPTS: Final = 5
 RECONNECT_DELAY: Final = 0.5
@@ -546,14 +548,18 @@ class WorkerClient:
         return result
 
     async def restart_kernel(
-        self, context: ExecutionContext, language: Language = "python"
+        self, context: ExecutionContext, language: Language = "python", run: str | None = None
     ) -> KernelInfo:
-        request = KernelRestartRequest(context=context, language=language)
+        """Restart the session's kernel of ``language``, or ``run``'s own."""
+        request = KernelRestartRequest(context=context, language=language, run=run)
         return await self._call("POST", "/v1/kernels/restart", KernelInfo, request)
 
-    async def close_session(self, context: ExecutionContext) -> SessionClosed:
-        """Stop the session's kernels; the next cell starts a new generation."""
-        request = SessionCloseRequest(context=context)
+    async def close_session(
+        self, context: ExecutionContext, run: str | None = None
+    ) -> SessionClosed:
+        """Stop the session's kernels, or only ``run``'s own when it ends; the next cell
+        starts a new generation."""
+        request = SessionCloseRequest(context=context, run=run)
         return await self._call("POST", "/v1/sessions/close", SessionClosed, request)
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:

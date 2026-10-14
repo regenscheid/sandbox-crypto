@@ -370,6 +370,7 @@ class Toolbox:
         plans: PlanTools | None = None,
         check_kernels: bool = False,
         connectors: Connectors | None = None,
+        kernel_run: str | None = None,
     ) -> None:
         self.client = client
         self.context = context
@@ -382,6 +383,9 @@ class Toolbox:
         self.artifacts = artifacts
         self.plans = plans
         self.check_kernels = check_kernels
+        self.kernel_run = kernel_run
+        """A delegated run's own kernels: cells name it (PD-37); ``None`` uses the
+        session's, which main runs share."""
         self.provisioning = ProvisionTools(client, context, output_chars=output_chars)
         worker: dict[str, tuple[Effect, Handler]] = {
             "shell": ("effect", _plain(self._shell)),
@@ -543,7 +547,7 @@ class Toolbox:
         if self.math_checks is not None:
             hooks.append(MathChecks(self.math_checks))
         if self.check_kernels:
-            hooks.append(KernelCheck(self.client, self.context))
+            hooks.append(KernelCheck(self.client, self.context, run=self.kernel_run))
         return tuple(hooks)
 
     async def _call(
@@ -666,6 +670,7 @@ class Toolbox:
                 "operation_id": operation,
                 "context": self.context,
                 "language": language,
+                "run": self.kernel_run,
                 **_known(args, "code", "timeout_seconds"),
             }
         )
@@ -675,7 +680,7 @@ class Toolbox:
         language = args.get("language", self.languages[0] if self.languages else "python")
         if language not in self.languages:
             return _failure(ErrorKind.UNSUPPORTED, f"no {language!r} kernel in this environment")
-        kernel = await self.client.restart_kernel(self.context, language)
+        kernel = await self.client.restart_kernel(self.context, language, self.kernel_run)
         return ToolOutcome(
             dump(
                 {
@@ -695,7 +700,7 @@ class Toolbox:
         """
         limit = self.output_chars // 2
         while True:
-            text = dump(_describe(execution, limit, replayed))
+            text = dump(_describe(execution, limit, replayed, self.kernel_run))
             if len(text) <= self.output_chars or limit <= 64:
                 return text
             limit //= 2
@@ -816,8 +821,14 @@ class Toolbox:
         return ToolOutcome(dump({"published": record}), {"artifact": record})
 
 
-def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any]:
-    """The parts of an execution the model reads, each text within ``limit`` characters."""
+def _describe(
+    execution: Execution, limit: int, replayed: bool, run: str | None = None
+) -> dict[str, Any]:
+    """The parts of an execution the model reads, each text within ``limit`` characters.
+
+    Of the session's running kernels, the run reads only those its cells use: the
+    session's for a main run, its own for a delegated one (``run``).
+    """
     summary: dict[str, Any] = {"state": execution.state.value}
     if replayed:
         summary["replayed"] = (
@@ -853,15 +864,10 @@ def _describe(execution: Execution, limit: int, replayed: bool) -> dict[str, Any
         if result.kernel is not None:
             summary["kernel_generation"] = result.kernel.generation
             summary["kernel"] = result.kernel.model_dump(mode="json")
-        if result.running_kernels:
-            summary["running_kernels"] = [
-                kernel.model_dump(mode="json") for kernel in result.running_kernels
-            ]
-            stale = [
-                kernel.kernel_id
-                for kernel in result.running_kernels
-                if kernel.revision_status == "predates"
-            ]
+        running = [kernel for kernel in result.running_kernels if kernel.run == run]
+        if running:
+            summary["running_kernels"] = [kernel.model_dump(mode="json") for kernel in running]
+            stale = [kernel.kernel_id for kernel in running if kernel.revision_status == "predates"]
             if stale:
                 summary["kernel_revision_notice"] = (
                     "Running kernels predate the current environment revision: "

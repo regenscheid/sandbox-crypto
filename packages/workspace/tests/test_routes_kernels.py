@@ -63,6 +63,7 @@ async def test_observation_has_the_shape_the_page_reads(
             "kernel_id": "k-1",
             "language": "python",
             "generation": 1,
+            "run": None,
             "start_revision": 1,
             "current_revision": 2,
             "revision_status": "predates",
