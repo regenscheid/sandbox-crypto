@@ -425,6 +425,52 @@ async def test_restart_loses_state_and_says_so(worker: Target) -> None:
     assert after["result"]["state_lost"] is True
 
 
+async def test_a_run_has_kernels_of_its_own(worker: Target) -> None:
+    """PD-37: a cell naming a run runs in that run's kernel, which shares no state with
+    the session's or another run's; the session's kernel status lists them all."""
+    await worker.run(kind="cell", code="x = 'session'")
+    await worker.run(kind="cell", code="x = 'a'", run="run-a")
+    in_a = await worker.run(kind="cell", code="x", run="run-a")
+    in_b = await worker.run(kind="cell", code="x", run="run-b")
+    in_session = await worker.run(kind="cell", code="x")
+    assert in_a["result"]["outputs"][0]["data"]["text/plain"] == "'a'"
+    assert in_b["result"]["error"]["name"] == "NameError"
+    assert in_session["result"]["outputs"][0]["data"]["text/plain"] == "'session'"
+    kernels = {
+        execution["result"]["kernel"]["run"]: execution["result"]["kernel"]["kernel_id"]
+        for execution in (in_a, in_b, in_session)
+    }
+    assert len(set(kernels.values())) == 3
+    assert set(kernels) == {"run-a", "run-b", None}
+    status, listing = await worker.post("/v1/kernels/status", {"context": worker.context})
+    assert status == 200, listing
+    assert sorted((k["run"] or "", k["language"]) for k in listing["kernels"]) == [
+        ("", "python"),
+        ("run-a", "python"),
+        ("run-b", "python"),
+    ]
+    # Restarting a run's kernel restarts only that one.
+    status, restarted = await worker.post(
+        "/v1/kernels/restart", {"context": worker.context, "language": "python", "run": "run-a"}
+    )
+    assert status == 200, restarted
+    assert (restarted["run"], restarted["kernel_id"]) == ("run-a", kernels["run-a"])
+    after = await worker.run(kind="cell", code="x", run="run-a")
+    assert after["result"]["error"]["name"] == "NameError"
+    session = await worker.run(kind="cell", code="x")
+    assert session["result"]["outputs"][0]["data"]["text/plain"] == "'session'"
+    # A run that ends stops its own kernels only.
+    status, closed = await worker.post(
+        "/v1/sessions/close", {"context": worker.context, "run": "run-b"}
+    )
+    assert status == 200, closed
+    assert [(k["run"], k["language"]) for k in closed["kernels"]] == [("run-b", "python")]
+    status, listing = await worker.post("/v1/kernels/status", {"context": worker.context})
+    assert sorted(k["run"] or "" for k in listing["kernels"]) == ["", "run-a"]
+    session = await worker.run(kind="cell", code="x")
+    assert session["result"]["outputs"][0]["data"]["text/plain"] == "'session'"
+
+
 async def test_kernel_death_is_reported(worker: Target) -> None:
     before = await worker.run(kind="cell", code="x = 41")
     died = await worker.run(kind="cell", code="import os\nos._exit(1)")

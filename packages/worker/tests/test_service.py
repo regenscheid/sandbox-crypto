@@ -145,6 +145,7 @@ async def test_a_sage_kernel_is_offered_when_its_kernelspec_exists(
             "kernel_id": "krn-s1-sage",
             "language": "sage",
             "generation": 1,
+            "run": None,
             "start_revision": 0,
             "current_revision": 0,
             "revision_status": "current",

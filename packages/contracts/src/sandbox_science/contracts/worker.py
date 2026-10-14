@@ -17,7 +17,7 @@ from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, mo
 from .context import ExecutionContext
 from .model import Contract, Counter, Identifier, Sha256
 
-PROTOCOL_VERSION: Final = 3
+PROTOCOL_VERSION: Final = 4
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
 any change to what the worker or its clients send, and each side refuses another version."""
 PROTOCOL_HEADER: Final = "X-Worker-Protocol"
@@ -69,6 +69,11 @@ Language = Literal["python", "sage"]
 """Kernel languages, all through the Jupyter protocol (D41): Python, and SageMath's own
 kernel, which preparses Sage syntax. R joins the same way."""
 LANGUAGES: Final[tuple[Language, ...]] = ("python", "sage")
+MAX_RUN_KERNELS: Final = 63
+"""The most delegated runs of one session that have kernels of their own at once."""
+MAX_SESSION_KERNELS: Final = (1 + MAX_RUN_KERNELS) * len(LANGUAGES)
+"""The most kernels a session's listing holds: its own, one per language, and its runs'
+(plans-and-delegation spec, PD-37)."""
 
 
 def _no_nul(text: str, what: str) -> None:
@@ -138,13 +143,17 @@ class JobRequest(Contract):
 
 
 class CellRequest(Contract):
-    """A cell for the session's kernel of ``language``."""
+    """A cell for the session's kernel of ``language``, or a run's own (``run``)."""
 
     kind: Literal["cell"] = "cell"
     operation_id: Identifier
     context: ExecutionContext
     language: Language = "python"
     code: str
+    run: Identifier | None = None
+    """The run whose own kernel runs the cell: a delegated run's, which no other run
+    shares (plans-and-delegation spec, PD-37). ``None`` is the session's kernel, which
+    its main runs share."""
     timeout_seconds: Timeout = DEFAULT_TIMEOUT_SECONDS
     output_limit_bytes: OutputLimit = DEFAULT_OUTPUT_LIMIT
 
@@ -285,6 +294,8 @@ class KernelInfo(Contract):
     kernel_id: Identifier
     language: Language
     generation: Annotated[int, Field(ge=1)]
+    run: Identifier | None = None
+    """The run whose own kernel it is; ``None`` for the session's."""
     start_revision: Counter | None = None
     """Revision observed at this kernel's birth, never inferred from a later cell."""
     current_revision: Counter | None = None
@@ -309,17 +320,18 @@ class KernelStatusRequest(Contract):
 
 
 class KernelListing(Contract):
-    """A bounded, session-scoped observation of running kernels."""
+    """A bounded, session-scoped observation of running kernels: the session's, and those
+    of its delegated runs, one a language each."""
 
     environment_id: Identifier
     session_id: Identifier
     current_revision: Counter | None = None
-    kernels: tuple[KernelInfo, ...] = Field(default=(), max_length=2)
+    kernels: tuple[KernelInfo, ...] = Field(default=(), max_length=MAX_SESSION_KERNELS)
 
     @model_validator(mode="after")
     def _coherent(self) -> Self:
-        if len({kernel.language for kernel in self.kernels}) != len(self.kernels):
-            raise ValueError("kernel listing repeats a language")
+        if len({(kernel.run, kernel.language) for kernel in self.kernels}) != len(self.kernels):
+            raise ValueError("kernel listing repeats a run's language")
         if any(kernel.current_revision != self.current_revision for kernel in self.kernels):
             raise ValueError("kernel listing has inconsistent current revisions")
         return self
@@ -412,7 +424,7 @@ class Result(Contract):
     outputs: tuple[RichOutput, ...] = ()
     error: ErrorInfo | None = None
     kernel: KernelInfo | None = None
-    running_kernels: tuple[KernelInfo, ...] = Field(default=(), max_length=2)
+    running_kernels: tuple[KernelInfo, ...] = Field(default=(), max_length=MAX_SESSION_KERNELS)
     """This session's running kernels as observed at completion; no live broadcast."""
     state_lost: bool = False
     """The kernel restarted before this cell, so earlier state is gone."""
@@ -494,14 +506,22 @@ class JobStatus(Contract):
 
 
 class KernelRestartRequest(Contract):
+    """Restart the session's kernel of ``language``, or a run's own (``run``)."""
+
     context: ExecutionContext
     language: Language = "python"
+    run: Identifier | None = None
+    """The delegated run whose own kernel restarts (PD-37); ``None`` is the session's."""
 
 
 class SessionCloseRequest(Contract):
-    """Stop a session's kernels and jobs in one environment. Files and foreground calls stay."""
+    """Stop a session's kernels and jobs in one environment. Files and foreground calls stay.
+
+    With ``run``, stop only that delegated run's own kernels, when the run ends (PD-37);
+    the session's kernels and its jobs stay."""
 
     context: ExecutionContext
+    run: Identifier | None = None
 
 
 class SessionClosed(Contract):

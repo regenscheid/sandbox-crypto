@@ -217,7 +217,24 @@ def _nul_checks_and_clears(db: sqlite3.Connection) -> None:
     )
 
 
-MIGRATIONS: list[Migration] = [_admission_checks, _nul_checks_and_clears]
+def _run_kernels(db: sqlite3.Connection) -> None:
+    """Version 4: the kernel generations of delegated runs, which have kernels of their
+    own beside their session's (worker protocol 4)."""
+    db.execute(
+        f"""CREATE TABLE run_kernels (
+    environment_id TEXT NOT NULL CHECK {_identifier("environment_id", nul=True)},
+    session_id TEXT NOT NULL CHECK {_identifier("session_id", nul=True)},
+    run TEXT NOT NULL CHECK {_identifier("run", nul=True)},
+    language TEXT NOT NULL CHECK {_identifier("language", nul=True)},
+    incarnation TEXT NOT NULL CHECK {_prefixed("incarnation", "inc", nul=True)},
+    base INTEGER NOT NULL CHECK (base {_COUNT}),
+    last INTEGER NOT NULL CHECK (last {_COUNT} AND base < last),
+    PRIMARY KEY (environment_id, session_id, run, language)
+) STRICT"""
+    )
+
+
+MIGRATIONS: list[Migration] = [_admission_checks, _nul_checks_and_clears, _run_kernels]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 
 _STATE: Final = (

@@ -129,6 +129,8 @@ MAX_LOCKFILE_EVENT = MAX_LINE // 2
 """A ``revision`` event carries its lockfile only below this many bytes of JSON."""
 MAX_OWNERS = 4096
 MAX_RUNS = 64
+MAX_RUN_KERNELS = 63
+"""Delegated runs of one session with kernels of their own at once (contracts' bound)."""
 """Attempts remembered per call or kernel, to tell which one ran a package command."""
 MAX_COMMANDS = 8
 """Package commands a ``revision`` event names: the last of its change."""
@@ -320,7 +322,8 @@ class Running:
 
 @dataclass
 class Kernel:
-    """A session's kernel for one language; its generation grows on every restart."""
+    """A session's kernel for one language, or a run's own (``run``); its generation
+    grows on every restart."""
 
     session: str
     language: str
@@ -343,9 +346,16 @@ class Kernel:
     last_used: float = field(kw_only=True)
     """When a cell last started or ended, by the executor's clock, for stopping idle
     kernels."""
+    run: str | None = field(default=None, kw_only=True)
+    """The run whose own kernel this is; ``None`` for the session's."""
 
     @property
     def kernel_id(self) -> str:
+        if self.run is not None:
+            # Named by a digest, since joining a session and a run ID could repeat another
+            # session's kernel ID.
+            parts = f"{self.session}\0{self.run}\0{self.language}"
+            return f"krn-r{hashlib.sha256(parts.encode()).hexdigest()[:24]}-{self.language}"
         name = f"krn-{self.session}-{self.language}"
         if len(name) <= 128:
             return name
@@ -358,6 +368,7 @@ class Kernel:
             "kernel_id": self.kernel_id,
             "language": self.language,
             "generation": self.generation,
+            "run": self.run,
             "birth_id": self.birth_id,
             "start_environment": self.start_environment,
             "start_execution": self.start_execution,
@@ -632,7 +643,8 @@ class Executor:
         self.protected = protected
         """Whether this process adopts orphans, so leftovers are found below it."""
         self.running: dict[str, Running] = {}
-        self.kernels: dict[tuple[str, str], Kernel] = {}
+        self.kernels: dict[tuple[str, str, str], Kernel] = {}
+        """By session, run (empty for the session's own) and language."""
         self.tasks: set[asyncio.Task[None]] = set()
         self.launch_controls: set[asyncio.Task[Any]] = set()
         self.configured: dict[str, str] = {}
@@ -1633,11 +1645,19 @@ class Executor:
         holder = (self.packages.holding() or {}).get("pid")
         return left, isinstance(holder, int) and any(info.pid == holder for info in left)
 
-    def kernel(self, session: str, language: str) -> Kernel:
+    def kernel(self, session: str, language: str, run: str | None = None) -> Kernel:
+        """The session's kernel of ``language``, or the run's own, made on first use."""
         if language not in KERNEL_NAMES:
             raise ToolError("unsupported", f"no {language!r} kernel here")
-        key = (session, language)
+        key = (session, run or "", language)
         if key not in self.kernels:
+            runs = {k[1] for k in self.kernels if k[0] == session and k[1] and k[1] != run}
+            if run is not None and len(runs) >= MAX_RUN_KERNELS:
+                raise ToolError(
+                    "unavailable",
+                    f"{MAX_RUN_KERNELS} runs of this session have kernels of their own; "
+                    "one must end first",
+                )
             cwd = self.directory(session, ".")
             kernel = Kernel(
                 session,
@@ -1645,13 +1665,25 @@ class Executor:
                 cwd,
                 self.environment(session),
                 last_used=self.clock.monotonic(),
+                run=run,
             )
             self.kernels[key] = kernel
         return self.kernels[key]
 
+    def run_name(self, request: Message) -> str | None:
+        """The run a request names for its own kernel; ``None`` for the session's."""
+        run = request.get("run")
+        if run is None:
+            return None
+        if not isinstance(run, str) or not _SESSION_RE.fullmatch(run):
+            raise ToolError("invalid_request", f"invalid run {run!r}")
+        return run
+
     async def op_cell(self, request: Message) -> None:
         session = self.session(request)
-        kernel = self.kernel(session, str(request.get("language", "python")))
+        kernel = self.kernel(
+            session, str(request.get("language", "python")), self.run_name(request)
+        )
         code = request.get("code")
         if not isinstance(code, str):
             raise ToolError("invalid_request", "code must be a string")
@@ -1880,7 +1912,9 @@ class Executor:
 
     async def restart_request(self, request: Message) -> None:
         session = self.session(request)
-        kernel = self.kernel(session, str(request.get("language", "python")))
+        kernel = self.kernel(
+            session, str(request.get("language", "python")), self.run_name(request)
+        )
         restart = Running("restart", "restart")
         restart.kernel = kernel
         guard = request.get("_admission_guard")
@@ -1942,14 +1976,17 @@ class Executor:
 
         Its running cells end cancelled and its queued ones never start. Each kernel
         keeps its generation, so the session's next cell starts a new one and reports
-        that earlier state is gone. Shell calls are not affected.
+        that earlier state is gone. Shell calls are not affected. A request naming a
+        run stops only that run's own kernels and forgets them, since the run has ended;
+        the session's jobs stay.
         """
         session = self.session(request)
+        run = self.run_name(request)
         stopped: list[Message] = []
         jobs = [
             running
             for running in self.running.values()
-            if running.kind == "job" and running.session == session
+            if running.kind == "job" and running.session == session and run is None
         ]
         for running in jobs:
             running.cancel_requested = True
@@ -1959,8 +1996,8 @@ class Executor:
         await asyncio.gather(
             *(running.task for running in jobs if running.task is not None), return_exceptions=True
         )
-        for kernel in list(self.kernels.values()):
-            if kernel.session != session:
+        for key, kernel in list(self.kernels.items()):
+            if kernel.session != session or (run is not None and kernel.run != run):
                 continue
             for running in self.running.values():
                 if running.kernel is kernel:
@@ -1972,14 +2009,22 @@ class Executor:
                     stopped.append(kernel.info())
                     await kernel.stop()
                     kernel.state_lost = True
+                if run is not None:
+                    self.kernels.pop(key, None)
         await self.reply(request, kernels=stopped)
 
     async def session_kernels(self, session: str) -> list[Message]:
-        """Only this session's live kernels, in the fixed supported-language order."""
+        """Only this session's live kernels, its own and its runs', in the order of their
+        runs and then the fixed supported-language order."""
         found: list[Message] = []
-        for language in KERNEL_NAMES:
-            kernel = self.kernels.get((session, language))
-            if kernel is not None and await kernel.alive():
+        order = {language: number for number, language in enumerate(KERNEL_NAMES)}
+        keys = sorted(
+            (key for key in self.kernels if key[0] == session),
+            key=lambda key: (key[1], order.get(key[2], len(order))),
+        )
+        for key in keys:
+            kernel = self.kernels[key]
+            if await kernel.alive():
                 found.append(kernel.info())
         return found
 

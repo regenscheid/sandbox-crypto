@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -32,7 +33,7 @@ from sandbox_science.contracts import (
     SessionClosed,
     SessionCloseRequest,
 )
-from sandbox_science.contracts.worker import LANGUAGES
+from sandbox_science.contracts.worker import LANGUAGES, MAX_SESSION_KERNELS
 
 from .channel import ExecutorChannel
 from .connections import Connection, EnvironmentConnections
@@ -47,6 +48,7 @@ from .usability import Usability
 
 MAX_KERNEL_OBSERVATIONS = 8
 """No queued observers, and at most one in flight for each environment."""
+_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 @dataclass
@@ -111,15 +113,20 @@ class KernelRegistry:
         raw = cast(dict[str, Any], raw)
         language = raw.get("language", "python")
         generation = integer(raw.get("generation", 1), 1, 2**31 - 1)
+        run = raw.get("run")
         if language not in LANGUAGES or generation is None:
             return None, state_lost
+        if run is not None and (not isinstance(run, str) or not _RUN.fullmatch(run)):
+            return None, state_lost
+        if run is not None:
+            project_id = None  # a run's own kernel records no birth: births are the session's
         environment = self.connections.get(environment_id)
         channel = environment.channel if environment is not None else None
         if expected_channel is not None and channel is not expected_channel:
             return None, state_lost  # old bridge cannot rebind a replacement's kernel
         incarnation = channel.incarnation if channel is not None else "unknown"
         try:
-            record = self.store.kernel(environment_id, session_id, language)
+            record = self.store.kernel(environment_id, session_id, language, run=run)
         except ValueError:
             return None, state_lost  # damaged derived metadata cannot fail a shell result
         if record is None:
@@ -139,18 +146,22 @@ class KernelRegistry:
                 KernelRecord(
                     incarnation, base, max(base + generation, record.last if record else 0)
                 ),
+                run=run,
             )
         info = {
             "kernel_id": raw.get("kernel_id"),
             "language": language,
             "generation": base + generation,
+            "run": run,
         }
         try:
             kernel = KernelInfo.model_validate(info)
         except ValidationError:
             # Not an identifier the worker can report: name the kernel after its session.
-            digest = hashlib.sha256(f"{session_id}\0{language}".encode()).hexdigest()[:24]
-            kernel = KernelInfo.model_validate({**info, "kernel_id": f"krn-{digest}"})
+            parts = (session_id, language) if run is None else (session_id, run, language)
+            digest = hashlib.sha256("\0".join(parts).encode()).hexdigest()[:24]
+            prefix = "krn-" if run is None else "krn-r"
+            kernel = KernelInfo.model_validate({**info, "kernel_id": f"{prefix}{digest}"})
         current = self.store.kernel_starts.current(environment_id)
         revision = current[0] if current is not None else None
         kernel = kernel.model_copy(update={"current_revision": revision})
@@ -213,9 +224,9 @@ class KernelRegistry:
         if not isinstance(raw, list):
             return ()
         raw = cast(list[object], raw)
-        if len(raw) > len(LANGUAGES):
+        if len(raw) > MAX_SESSION_KERNELS:
             return ()
-        found: dict[str, KernelInfo] = {}
+        found: dict[tuple[str | None, str], KernelInfo] = {}
         for item in raw:
             kernel, _ = self.kernel(
                 context.environment_id,
@@ -227,11 +238,12 @@ class KernelRegistry:
                 remember=False,
             )
             if kernel is not None:
-                found[kernel.language] = kernel
+                found[kernel.run, kernel.language] = kernel
         return tuple(found.values())
 
     async def restart(self, request: KernelRestartRequest) -> KernelInfo:
-        """Restart the session's kernel of a language, fenced by the package gate."""
+        """Restart the session's kernel of a language, or a run's own, fenced by the
+        package gate."""
         context = request.context
         self.admission.admission(context.environment_id)
         async with self.connections.using(context.environment_id) as channel:
@@ -240,9 +252,10 @@ class KernelRegistry:
                     ErrorKind.UNAVAILABLE, "legacy executor cannot fence kernel restart"
                 )
             self.admission.admission(context.environment_id)
-            reply = await channel.request(
-                "restart", session=context.session_id, language=request.language, reply_timeout=180
-            )
+            fields: dict[str, Any] = {"session": context.session_id, "language": request.language}
+            if request.run is not None:
+                fields["run"] = request.run
+            reply = await channel.request("restart", **fields, reply_timeout=180)
             kernel, _ = self.kernel(
                 context.environment_id,
                 context.session_id,
@@ -273,7 +286,7 @@ class KernelRegistry:
     def _listing(
         self, context: ExecutionContext, channel: ExecutorChannel, raw: object
     ) -> KernelListing:
-        if not isinstance(raw, list) or len(cast(list[object], raw)) > len(LANGUAGES):
+        if not isinstance(raw, list) or len(cast(list[object], raw)) > MAX_SESSION_KERNELS:
             raise WorkerError(ErrorKind.UNAVAILABLE, "executor sent invalid kernel status")
         for item in cast(list[object], raw):
             if not isinstance(item, dict):
@@ -383,27 +396,29 @@ class KernelRegistry:
             self._observations.pop(environment_id)
 
     async def close_session(self, request: SessionCloseRequest) -> SessionClosed:
-        """Stop the session's kernels in its environment's executor, if one runs."""
+        """Stop the session's kernels in its environment's executor, if one runs, or only
+        a run's own."""
         context = request.context
         environment = self.connections.get(context.environment_id)
         channel = environment.channel if environment is not None else None
         if environment is None or channel is None or channel.closed:
             return SessionClosed()
         environment.requests += 1
+        fields: dict[str, Any] = {"session": context.session_id}
+        if request.run is not None:
+            fields["run"] = request.run
         try:
-            reply = await channel.request(
-                "close_session", session=context.session_id, reply_timeout=180
-            )
+            reply = await channel.request("close_session", **fields, reply_timeout=180)
         finally:
             environment.requests -= 1
             environment.last_used = self.clock.monotonic()
         raw: object = reply.get("kernels")
         items = cast(list[object], raw) if isinstance(raw, list) else []
-        if len(items) > len(LANGUAGES):
+        if len(items) > MAX_SESSION_KERNELS:
             items = []  # bounded like every kernel list an executor sends
-        stopped: dict[str, KernelInfo] = {}
+        stopped: dict[tuple[str | None, str], KernelInfo] = {}
         for item in items:
             kernel, _ = self.kernel(context.environment_id, context.session_id, item, False)
             if kernel is not None:
-                stopped[kernel.language] = kernel
+                stopped[kernel.run, kernel.language] = kernel
         return SessionClosed(kernels=tuple(stopped.values()))

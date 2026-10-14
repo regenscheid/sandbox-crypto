@@ -144,6 +144,7 @@ export interface KernelInfo {
   kernel_id: string;
   language: "python" | "sage";
   generation: number;
+  run: string | null;
   start_revision: number | null;
   current_revision: number | null;
   revision_status: "current" | "predates" | "unknown";

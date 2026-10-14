@@ -312,6 +312,8 @@ class Dispatcher:
             )
         else:
             fields.update(language=request.language, code=request.code)
+            if request.run is not None:
+                fields["run"] = request.run
         channel = environment.channel
         if channel is None:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")

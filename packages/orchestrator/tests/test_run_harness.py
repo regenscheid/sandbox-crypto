@@ -163,3 +163,35 @@ async def test_a_run_without_stores_uses_its_environment_and_keeps_nothing(
     assert transcript.exists()
     with pytest.raises(ValueError, match="names its environment"):
         await harness.run(RunRequest("p", "s", "Go"), Sink())
+
+
+async def test_a_delegated_runs_kernels_stop_when_it_ends(tmp_path: Path) -> None:
+    """PD-37: a delegated run's own kernels stop with it; a main run's are the session's."""
+
+    class Closing(Worker):
+        def __init__(self) -> None:
+            self.closed: list[str | None] = []
+
+        async def close_session(self, context: object, run: str | None = None) -> None:
+            self.closed.append(run)
+
+    projects = ProjectStore(tmp_path)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    documents = DocumentStore(store_path(tmp_path), producer="harness")
+    worker = Closing()
+    harness = Harness(
+        cast(WorkerClient, worker),
+        main("Answered.", "Answered."),
+        stores=Stores(projects, documents, JobState(tmp_path), RunState(projects.control)),
+        settings=Settings(min_isolation_tier=None),
+    )
+    try:
+        await harness.run(RunRequest("p", "s", "Go", run_id="run-1"), Sink())
+        assert worker.closed == []
+        delegated = RunRequest(
+            "p", "s", "Look.", run_id="run-2", parent="run-1", delegation="dlg-1"
+        )
+        await harness.run(delegated, Sink())
+    finally:
+        documents.close()
+    assert worker.closed == ["run-2"]

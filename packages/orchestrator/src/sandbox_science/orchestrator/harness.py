@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
@@ -64,9 +65,11 @@ from .projects import (
 from .runstate import RunState
 from .session_plans import SessionPlans
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
-from .worker_client import WorkerClient
+from .worker_client import WorkerAPIError, WorkerClient
 
 _IDENTIFIER: TypeAdapter[str] = TypeAdapter(Identifier)
+
+_log = logging.getLogger(__name__)
 
 
 def tier_in_effect(location: Location) -> int | None:
@@ -499,6 +502,20 @@ class Harness:
             run_id=run_id,
             alias=alias,
         )
+        # A delegated run's cells run in kernels of its own, which stop when it ends
+        # (PD-37); a main run uses the session's.
+        kernel_run = admitted.run_id if admitted.request.parent is not None else None
+        if kernel_run is not None:
+            client = self.client
+
+            async def stop_kernels() -> None:
+                try:
+                    await client.close_session(context, run=kernel_run)
+                except WorkerAPIError as exc:
+                    # The worker's idle reaper stops them later.
+                    _log.warning("could not stop run %s's kernels: %s", kernel_run, exc)
+
+            on_close(stop_kernels)
         return Toolbox(
             self.client,
             context,
@@ -512,6 +529,7 @@ class Harness:
             plans=plans,
             check_kernels=True,
             connectors=connectors,
+            kernel_run=kernel_run,
         )
 
 

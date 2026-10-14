@@ -546,14 +546,18 @@ class WorkerClient:
         return result
 
     async def restart_kernel(
-        self, context: ExecutionContext, language: Language = "python"
+        self, context: ExecutionContext, language: Language = "python", run: str | None = None
     ) -> KernelInfo:
-        request = KernelRestartRequest(context=context, language=language)
+        """Restart the session's kernel of ``language``, or ``run``'s own."""
+        request = KernelRestartRequest(context=context, language=language, run=run)
         return await self._call("POST", "/v1/kernels/restart", KernelInfo, request)
 
-    async def close_session(self, context: ExecutionContext) -> SessionClosed:
-        """Stop the session's kernels; the next cell starts a new generation."""
-        request = SessionCloseRequest(context=context)
+    async def close_session(
+        self, context: ExecutionContext, run: str | None = None
+    ) -> SessionClosed:
+        """Stop the session's kernels, or only ``run``'s own when it ends; the next cell
+        starts a new generation."""
+        request = SessionCloseRequest(context=context, run=run)
         return await self._call("POST", "/v1/sessions/close", SessionClosed, request)
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:

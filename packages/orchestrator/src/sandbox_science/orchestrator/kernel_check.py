@@ -34,8 +34,13 @@ class KernelCheck(TurnHook):
 
     name = "kernels"
 
-    def __init__(self, client: KernelObserver, context: ExecutionContext) -> None:
+    def __init__(
+        self, client: KernelObserver, context: ExecutionContext, *, run: str | None = None
+    ) -> None:
         self.client, self.context = client, context
+        self.run = run
+        """The kernels the run's cells use: the session's (``None``) or a delegated run's
+        own; it is told only about those."""
         self.told: set[str] = set()
 
     async def notices(self, point: Point, run: RunView) -> Sequence[Notice]:
@@ -58,7 +63,7 @@ class KernelCheck(TurnHook):
                 "current_revision": kernel.current_revision,
             }
             for kernel in observed.kernels
-            if kernel.revision_status == "predates"
+            if kernel.revision_status == "predates" and kernel.run == self.run
         ]
         new = [entry for entry in stale if entry["notice_id"] not in self.told]
         if not new:

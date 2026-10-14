@@ -203,6 +203,25 @@ def test_a_long_session_gets_a_kernel_id_the_worker_can_report(tmp_path: Path) -
     assert long.kernel_id.endswith("-python")
 
 
+def test_a_runs_kernel_has_an_id_of_its_own(tmp_path: Path) -> None:
+    session = executor.Kernel("s1", "python", tmp_path, {}, last_used=0.0)
+    run = executor.Kernel("s1", "python", tmp_path, {}, last_used=0.0, run="r1")
+    # Joining the IDs would give session "s1-r1"'s kernel ID.
+    joined = executor.Kernel("s1-r1", "python", tmp_path, {}, last_used=0.0)
+    assert session.kernel_id == "krn-s1-python"
+    assert len({session.kernel_id, run.kernel_id, joined.kernel_id}) == 3
+    assert run.kernel_id.startswith("krn-r")
+    assert run.kernel_id.endswith("-python")
+    assert (
+        len(
+            executor.Kernel(
+                "s" * 128, "python", tmp_path, {}, last_used=0.0, run="r" * 128
+            ).kernel_id
+        )
+        <= 128
+    )
+
+
 class Recorder:
     """An in-process executor whose replies are kept."""
 
@@ -1036,7 +1055,7 @@ async def test_an_idle_kernel_is_stopped_once_it_has_been_unused_long_enough(
     assert ready["ok"]
     try:
         assert (await cell(1, "x = 1"))["state"] == "succeeded"
-        kernel = instance.kernels[("s1", "python")]
+        kernel = instance.kernels[("s1", "", "python")]
         reaper = instance.spawn(instance.reap_idle_kernels(10))
         await eventually(lambda: clock.sleepers == 1)
         clock.advance(5)  # the reaper looks, and keeps a kernel used 5 s ago
@@ -1050,3 +1069,21 @@ async def test_an_idle_kernel_is_stopped_once_it_has_been_unused_long_enough(
         reaper.cancel()
     finally:
         await instance.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_session_has_a_bounded_number_of_runs_with_kernels(tmp_path: Path) -> None:
+    recorder = Recorder(tmp_path)
+    for number in range(executor.MAX_RUN_KERNELS):
+        recorder.executor.kernel("s1", "python", f"r{number}")
+    recorder.executor.kernel("s1", "sage", "r0")  # another language of a run that has one
+    recorder.executor.kernel("s1", "python")  # the session's own
+    recorder.executor.kernel("s2", "python", "r-other")  # another session's run
+    with pytest.raises(executor.ToolError, match="must end first"):
+        recorder.executor.kernel("s1", "python", "one-too-many")
+    # A run that ends gives its place up; the session's kernels stay.
+    reply = await recorder.ask({"id": 1, "op": "close_session", "session": "s1", "run": "r0"})
+    assert reply["ok"] is True
+    recorder.executor.kernel("s1", "python", "one-too-many")
+    assert ("s1", "", "python") in recorder.executor.kernels
+    assert not any(key[1] == "r0" for key in recorder.executor.kernels)

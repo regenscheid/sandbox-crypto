@@ -23,11 +23,19 @@ CONTEXT = ExecutionContext(project_id="p", session_id="a", environment_id="env")
 
 
 class Worker:
-    """The worker's kernel observation: Python started at revision 1, Sage unknown."""
+    """The worker's kernel observation: Python started at revision 1, Sage unknown, and a
+    delegated run's own Python kernel started at revision 1 too."""
 
     def __init__(self) -> None:
         self.current: int | None = 1
         self.observed = 0
+        self.restarted: list[tuple[str, str | None]] = []
+
+    async def restart_kernel(
+        self, context: ExecutionContext, language: str = "python", run: str | None = None
+    ) -> KernelInfo:
+        self.restarted.append((language, run))
+        return KernelInfo(kernel_id="kernel-restarted", language="python", generation=3, run=run)
 
     async def observe_kernels(self, context: ExecutionContext) -> KernelObservation:
         self.observed += 1
@@ -44,12 +52,13 @@ class Worker:
         sage = KernelInfo(
             kernel_id="kernel-sage", language="sage", generation=1, current_revision=self.current
         )
+        delegated = python.model_copy(update={"kernel_id": "kernel-child", "run": "child"})
         return KernelObservation(
             environment_id=context.environment_id,
             session_id=context.session_id,
             current_revision=self.current,
             observed_at=datetime.now(UTC),
-            kernels=(python, sage),
+            kernels=(python, sage, delegated),
         )
 
 
@@ -112,3 +121,27 @@ async def test_runs_without_the_check_observe_no_kernels() -> None:
     box = Toolbox(cast(WorkerClient, worker), CONTEXT)
     await run_task(ScriptedModel([ModelTurn("done")]), box, "go", run_id="r")
     assert worker.observed == 0
+
+
+async def test_a_run_is_told_only_about_the_kernels_its_cells_use() -> None:
+    """PD-37: a main run uses the session's kernels, a delegated run its own."""
+    told: dict[str | None, list[object]] = {}
+    for run in (None, "child"):
+        worker = Worker()
+        worker.current = 2
+        box = Toolbox(cast(WorkerClient, worker), CONTEXT, check_kernels=True, kernel_run=run)
+        transcript = await run_task(ScriptedModel([ModelTurn("done")]), box, "go", run_id="r")
+        told[run] = [
+            n["kernel_id"] for notice in kernel_notices(transcript.messages) for n in notice
+        ]
+    assert told == {None: ["kernel-python"], "child": ["kernel-child"]}
+
+
+async def test_a_delegated_run_restarts_its_own_kernel() -> None:
+    worker = Worker()
+    box = Toolbox(cast(WorkerClient, worker), CONTEXT, kernel_run="child")
+    model = ScriptedModel(
+        [ModelTurn(None, (ToolCall("c", "restart_kernel", "{}"),)), ModelTurn("done")]
+    )
+    await run_task(model, box, "go", run_id="r")
+    assert worker.restarted == [("python", "child")]
