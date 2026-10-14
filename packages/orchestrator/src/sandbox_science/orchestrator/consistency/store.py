@@ -144,7 +144,8 @@ RECEIPTS: Final = Receipts("review", "operation ID already names another finding
 
 
 def _length(value: object) -> int | None:
-    """A JSON array's length, or None for anything else (as SQLite's json_array_length)."""
+    """The length of a revision event's ``structural_added`` list, or None when the event
+    has none (an event that is not a revision's)."""
     return len(cast(list[object], value)) if isinstance(value, list) else None
 
 
