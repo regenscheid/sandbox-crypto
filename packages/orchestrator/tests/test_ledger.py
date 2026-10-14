@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """The project ledger's store (docs/specs/ledger.md): entries of the seven types with
-their handles and revisions (LG-1, LG-2), mutations that commit all or nothing under an
-operation ID (LG-30, LG-31), their events (LG-33), and who may change what (LG-13)."""
+their handles, revisions and links (LG-1, LG-2, LG-5), mutations that commit all or
+nothing under an operation ID (LG-30, LG-31), their events (LG-33), and who may change
+what (LG-13)."""
 
 from __future__ import annotations
 
@@ -144,16 +145,111 @@ def test_a_mutation_commits_all_or_nothing(ledger: Ledger) -> None:
     with pytest.raises(DocumentError, match="a new task starts todo"):
         change(ledger, NEW["issue"], {**NEW["task"], "status": "done"})
     change(ledger, NEW["task"], op="op-2")
-    with pytest.raises(DocumentError, match="no entry T-9"):
+    with pytest.raises(DocumentError, match="a issue holds no answers"):
         change(
             ledger,
             {"entry": "T-1", "expected": 1, "status": "done"},
-            {"entry": "T-9", "expected": 1, "status": "done"},
+            {**NEW["issue"], "links": [{"kind": "answers", "entry": "T-1"}]},
             op="op-3",
         )
     assert [e.handle for e in ledger.entries("p").entries] == ["T-1"]
     assert ledger.entry("p", "T-1").status == "todo"
     assert [kind for kind, _ in events(ledger)] == ["ledger.entry_created"]
+
+
+def test_links_are_typed_pinned_and_seen_from_their_target(ledger: Ledger) -> None:
+    change(ledger, NEW["issue"], NEW["assumption"])
+    made = change(
+        ledger,
+        {
+            **NEW["claim"],
+            "key": "c",
+            "links": [
+                {"kind": "answers", "entry": "I-1"},
+                {"kind": "assumes", "entry": "A-1"},
+            ],
+        },
+        {**NEW["result"], "links": [{"kind": "builds_on", "entry": "new:c"}]},
+        op="op-2",
+    )
+    assert [e["handle"] for e in made["entries"]] == ["C-1", "R-1"]
+    claim = ledger.entry("p", "C-1")
+    assert [(link.kind, link.handle, link.revision) for link in claim.links] == [
+        ("answers", "I-1", None),
+        ("assumes", "A-1", 1),
+    ]
+    issue = ledger.entry("p", "I-1")
+    assert [(link.kind, link.handle) for link in issue.incoming] == [("answers", "C-1")]
+    assert [(link.kind, link.handle) for link in ledger.entry("p", "C-1").incoming] == [
+        ("builds_on", "R-1")
+    ]
+    for n, (bad, message) in enumerate(
+        (
+            ({"kind": "answers", "entry": "A-1"}, "points to no assumption"),
+            ({"kind": "split_into", "entry": "I-1"}, "a claim holds no split_into"),
+            ({"kind": "compares_to", "entry": "R-1"}, "a claim holds no compares_to"),
+            ({"kind": "answers", "entry": "I-9"}, "no entry I-9"),
+            ({"kind": "assumes", "entry": "A-1", "revision": 2}, "A-1 has no revision 2"),
+            ({"kind": "concerns", "finding": "finding-" + "0" * 24}, "a claim holds no concerns"),
+        )
+    ):
+        with pytest.raises(DocumentError, match=message):
+            change(ledger, {"entry": "C-1", "expected": 1, "links": [bad]}, op=f"bad-{n}")
+
+
+def test_an_issue_concerns_findings_and_document_blocks_that_exist(ledger: Ledger) -> None:
+    documents = ledger.documents
+    doc = documents.create("p", name="ff", title="FF", text="# Fields\n\nText.\n", author=USER)
+    block = documents.mapped("p", doc.document_id, 1).block_ids[0]
+    change(
+        ledger,
+        {
+            **NEW["issue"],
+            "links": [
+                {"kind": "concerns", "document": doc.document_id, "revision": 1, "block": block}
+            ],
+        },
+    )
+    (link,) = ledger.entry("p", "I-1").links
+    assert (link.target, link.target_id, link.revision, link.block) == (
+        "block",
+        doc.document_id,
+        1,
+        block,
+    )
+    with pytest.raises(DocumentError, match="has no block"):
+        change(
+            ledger,
+            {
+                **NEW["issue"],
+                "links": [
+                    {"kind": "concerns", "document": doc.document_id, "revision": 1, "block": "b99"}
+                ],
+            },
+            op="op-2",
+        )
+    with pytest.raises(DocumentError, match="no finding"):
+        change(
+            ledger,
+            {**NEW["issue"], "links": [{"kind": "concerns", "finding": "finding-" + "0" * 24}]},
+            op="op-3",
+        )
+
+
+def test_a_supersedes_link_and_its_target_becoming_superseded_commit_together(
+    ledger: Ledger,
+) -> None:
+    change(ledger, NEW["claim"])
+    corrected = {**NEW["claim"], "links": [{"kind": "supersedes", "entry": "C-1"}]}
+    with pytest.raises(DocumentError, match="becomes superseded in the change"):
+        change(ledger, corrected, op="op-2")
+    with pytest.raises(DocumentError, match="superseded by an entry that supersedes it"):
+        change(ledger, {"entry": "C-1", "expected": 1, "status": "superseded"}, op="op-3")
+    change(ledger, corrected, {"entry": "C-1", "expected": 1, "status": "superseded"}, op="op-4")
+    assert ledger.entry("p", "C-1").status == "superseded"
+    assert [(link.kind, link.handle) for link in ledger.entry("p", "C-2").links] == [
+        ("supersedes", "C-1")
+    ]
 
 
 def test_statuses_follow_their_type_and_decisions(ledger: Ledger) -> None:
@@ -168,9 +264,20 @@ def test_statuses_follow_their_type_and_decisions(ledger: Ledger) -> None:
             change(ledger, {"entry": "C-1", "expected": 1, "status": status}, op=status)
     with pytest.raises(DocumentError, match="only a decision in effect"):
         change(ledger, {"entry": "I-1", "expected": 1, "status": "obstructed"}, op="obstructed")
-    for entry, status in (("I-1", "split"), ("C-1", "superseded")):
-        with pytest.raises(DocumentError, match=f"becomes {status} with its links"):
-            change(ledger, {"entry": entry, "expected": 1, "status": status}, op=status)
+    with pytest.raises(DocumentError, match="names the issues it is split into"):
+        change(ledger, {"entry": "I-1", "expected": 1, "status": "split"}, op="split")
+    change(
+        ledger,
+        {**NEW["issue"], "key": "part"},
+        {
+            "entry": "I-1",
+            "expected": 1,
+            "status": "split",
+            "links": [{"kind": "split_into", "entry": "new:part"}],
+        },
+        op="split-2",
+    )
+    assert ledger.entry("p", "I-1").status == "split"
     change(ledger, {"entry": "C-1", "expected": 1, "status": "disputed"}, op="disputed")
     assert ledger.entry("p", "C-1").status == "disputed"
 

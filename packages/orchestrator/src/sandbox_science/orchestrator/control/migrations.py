@@ -1411,6 +1411,42 @@ BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
         schema.execute(statement)
 
 
+_LINKS: Final = (
+    "'answers','assumes','builds_on','restates','compares_to','supersedes','dominates',"
+    "'split_into','affects','concerns'"
+)
+
+
+def _ledger_links(schema: Schema) -> None:
+    """Version 18: the links each ledger revision holds (docs/specs/ledger.md, LG-5): in
+    order, each with its kind and its target, an entry, a review finding or a document
+    block at a revision, and the revision it pins. Written once, with the revision."""
+    for statement in (
+        f"""CREATE TABLE ledger_links (
+    entry_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 1 AND 64),
+    kind TEXT NOT NULL CHECK (kind IN ({_LINKS})),
+    target TEXT NOT NULL CHECK (target IN ('entry', 'finding', 'block')),
+    target_id TEXT NOT NULL CHECK (length(CAST(target_id AS BLOB)) BETWEEN 1 AND 128),
+    target_revision INTEGER
+        CHECK (target_revision IS NULL OR target_revision BETWEEN 1 AND 999999999),
+    block TEXT CHECK (block IS NULL OR length(CAST(block AS BLOB)) BETWEEN 1 AND 128),
+    note TEXT CHECK (note IS NULL OR length(CAST(note AS BLOB)) BETWEEN 1 AND 16384),
+    CHECK ((target = 'block') = (block IS NOT NULL)),
+    CHECK (target != 'block' OR target_revision IS NOT NULL),
+    PRIMARY KEY (entry_id, revision, ordinal),
+    FOREIGN KEY (entry_id, revision) REFERENCES ledger_revisions(entry_id, revision)
+) STRICT""",
+        "CREATE INDEX ledger_links_targets ON ledger_links(target,target_id)",
+        """CREATE TRIGGER ledger_links_no_update BEFORE UPDATE ON ledger_links
+BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
+        """CREATE TRIGGER ledger_links_no_delete BEFORE DELETE ON ledger_links
+BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1428,6 +1464,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _text_revisions,
     _text_math,
     _ledger,
+    _ledger_links,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

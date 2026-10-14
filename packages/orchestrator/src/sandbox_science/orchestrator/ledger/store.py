@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The project ledger's entries and revisions in the control store
+"""The project ledger's entries, revisions and links in the control store
 (docs/specs/ledger.md).
 
 A mutation creates or revises one or more entries, all or nothing, under an operation
@@ -8,8 +8,8 @@ expected revision it follows; a stale one is a conflict naming the current revis
 and nothing is rebased. Each change commits with its event (LG-33). Who may change
 what follows LG-13: the user anything, the main agent any entry, a delegated agent
 only new entries in their first status; code in the sandbox nothing. Statuses that
-only a decision sets (LG-4), the statuses that need links, and published entries,
-which need evidence, are refused until those are built.
+only a decision sets (LG-4) and the links and published entries that need evidence
+or the frontier are refused until those are built.
 """
 
 from __future__ import annotations
@@ -45,6 +45,7 @@ from sandbox_science.orchestrator.projects import ProjectError, recorded
 from .models import (
     DECIDED,
     FIELDS,
+    LINKS,
     PREFIXES,
     STATUSES,
     ChangedEntry,
@@ -53,6 +54,8 @@ from .models import (
     EntryPage,
     EntrySummary,
     EntryView,
+    Link,
+    LinkInput,
     Mutation,
     MutationResult,
     ReferenceFields,
@@ -119,6 +122,10 @@ class _Planned:
     status: str = ""
     status_before: str | None = None
     fields: Json = field(default_factory=dict[str, Any])
+    links: list[Link] | None = None
+    """The new revision's links; None keeps the revision before's."""
+    previous: list[Link] = field(default_factory=list[Link])
+    """The links of the revision before."""
     changed: list[str] = field(default_factory=list[str])
 
 
@@ -147,6 +154,8 @@ class Ledger:
                 **self._summary(row, found),
                 statement=text["body"],
                 fields=json.loads(found[4]),
+                links=self._links(db, row.entry_id, number),
+                incoming=self._incoming(db, project, row.entry_id) if number == row.head else [],
                 head=row.head,
                 author=json.loads(found[5]),
                 reason=found[6],
@@ -250,9 +259,17 @@ class Ledger:
         operation ID and receipt. ``provenance`` names where a mutation came from, such
         as the line of a results file (LG-41)."""
         role = self._authority(project, author)
+        blocks = [
+            link
+            for mutation, _ in mutations
+            for change in mutation.changes
+            for link in change.links or ()
+            if link.document is not None
+        ]
+        pinned = self._blocks(project, blocks)
         with self.control.write() as tx:
             return [
-                self._apply(tx.sql, project, mutation, author, role, provenance)
+                self._apply(tx.sql, project, mutation, author, role, pinned, provenance)
                 for mutation, provenance in mutations
             ]
 
@@ -263,6 +280,7 @@ class Ledger:
         mutation: Mutation,
         author: Author,
         role: str,
+        pinned: dict[tuple[str, int, str], str],
         provenance: Json | None,
     ) -> MutationResult:
         digest = fingerprint(mutation)
@@ -271,9 +289,18 @@ class Ledger:
             return MutationResult.model_validate({**replay, "replayed": True})
         numbers: dict[str, int] = {}
         planned = [self._plan(db, project, change, role, numbers) for change in mutation.changes]
+        keys = {p.change.key: p.row for p in planned if p.created and p.change.key}
+        if len(keys) != sum(1 for p in planned if p.created and p.change.key):
+            raise DocumentError(INVALID_REQUEST, "two created entries share a key")
         ids = [p.row.entry_id for p in planned]
         if len(set(ids)) != len(ids):
             raise DocumentError(INVALID_REQUEST, "a mutation changes an entry once")
+        for p in planned:
+            if p.change.links is not None:
+                p.links = [
+                    self._link(db, project, p, link, keys, pinned) for link in p.change.links
+                ]
+        _check_together(planned)
         now = self.clock()
         changed: list[ChangedEntry] = []
         for p in planned:
@@ -308,7 +335,7 @@ class Ledger:
     ) -> _Planned:
         if change.entry is None:
             return self._plan_create(db, project, change, numbers)
-        if change.type is not None or change.origin is not None:
+        if change.type is not None or change.origin is not None or change.key is not None:
             raise DocumentError(INVALID_REQUEST, "a revision keeps the entry's type and origin")
         if change.expected is None:
             raise DocumentError(INVALID_REQUEST, "a revision names the revision it expects")
@@ -346,6 +373,9 @@ class Ledger:
         if change.status is not None and change.status != current[2]:
             planned.status = _status(row, change.status)
             planned.changed = [*planned.changed, "status"]
+        if change.links is not None:
+            planned.previous = self._links(db, row.entry_id, row.head)
+            planned.changed = [*planned.changed, "links"]
         if not planned.changed:
             raise DocumentError(INVALID_REQUEST, f"the change to {row.handle} changes nothing")
         return planned
@@ -388,6 +418,81 @@ class Ledger:
             statement=_normalized(change.statement),
             status=status,
             fields=_check_pdf(db, project, _fields(kind, change.fields or {})),
+            links=[] if change.links is None else None,
+        )
+
+    def _link(
+        self,
+        db: sqlite3.Connection,
+        project: str,
+        planned: _Planned,
+        link: LinkInput,
+        keys: dict[str, _Row],
+        pinned: dict[tuple[str, int, str], str],
+    ) -> Link:
+        holders, targets = LINKS[link.kind]
+        if planned.row.type not in holders:
+            raise DocumentError(INVALID_REQUEST, f"a {planned.row.type} holds no {link.kind} link")
+        if link.kind == "dominates":
+            raise DocumentError(INVALID_REQUEST, "dominates links come with the frontier")
+        if link.kind == "compares_to" and link.note is None:
+            raise DocumentError(INVALID_REQUEST, "a compares_to link states the difference")
+        named = [link.entry, link.finding, link.document]
+        if sum(value is not None for value in named) != 1:
+            raise DocumentError(INVALID_REQUEST, "a link names one entry, finding or block")
+        if link.finding is not None:
+            if "finding" not in targets or link.revision is not None or link.block is not None:
+                raise DocumentError(INVALID_REQUEST, f"a {link.kind} link names no finding")
+            if (
+                db.execute(
+                    "SELECT 1 FROM review_findings WHERE finding_id=? AND project=?",
+                    (link.finding, project),
+                ).fetchone()
+                is None
+            ):
+                raise DocumentError(NOT_FOUND, f"no finding {link.finding} in this project")
+            return Link(kind=link.kind, target="finding", target_id=link.finding, note=link.note)
+        if link.document is not None:
+            if "block" not in targets or link.block is None or link.revision is None:
+                raise DocumentError(
+                    INVALID_REQUEST, f"a {link.kind} link names no document block, or no revision"
+                )
+            assert (link.document, link.revision, link.block) in pinned  # noqa: S101 - checked before
+            return Link(
+                kind=link.kind,
+                target="block",
+                target_id=link.document,
+                revision=link.revision,
+                block=link.block,
+                note=link.note,
+            )
+        assert link.entry is not None  # noqa: S101 - one of the three is named
+        if link.block is not None:
+            raise DocumentError(INVALID_REQUEST, "an entry link names no block")
+        if link.entry.startswith("new:"):
+            target = keys.get(link.entry.removeprefix("new:"))
+            if target is None:
+                raise DocumentError(INVALID_REQUEST, f"no new entry is keyed {link.entry}")
+            head = 1
+        else:
+            target = self._find(db, project, link.entry)
+            head = target.head
+        if target.entry_id == planned.row.entry_id:
+            raise DocumentError(INVALID_REQUEST, "an entry does not link to itself")
+        if target.type not in targets:
+            raise DocumentError(INVALID_REQUEST, f"a {link.kind} link points to no {target.type}")
+        revision = link.revision
+        if revision is not None and not 1 <= revision <= head:
+            raise DocumentError(NOT_FOUND, f"{target.handle} has no revision {revision}")
+        if link.kind == "assumes" and revision is None:
+            revision = head  # pinned to the assumption as it reads now (LG-27)
+        return Link(
+            kind=link.kind,
+            target="entry",
+            target_id=target.entry_id,
+            revision=revision,
+            note=link.note,
+            handle=target.handle,
         )
 
     def _write(
@@ -410,6 +515,7 @@ class Ledger:
             )
         else:
             db.execute("UPDATE ledger_entries SET head=head+1 WHERE entry_id=?", (row.entry_id,))
+        before = row.head
         row.head += 1
         statement = self._statement(db, row, p.statement, author)
         db.execute(
@@ -429,6 +535,25 @@ class Ledger:
                 now.isoformat(),
             ),
         )
+        links = p.links
+        if links is None:  # kept from the revision before
+            links = self._links(db, row.entry_id, before)
+        for ordinal, link in enumerate(links, 1):
+            db.execute(
+                "INSERT INTO ledger_links(entry_id,revision,ordinal,kind,target,target_id,"
+                "target_revision,block,note) VALUES(?,?,?,?,?,?,?,?,?)",
+                (
+                    row.entry_id,
+                    row.head,
+                    ordinal,
+                    link.kind,
+                    link.target,
+                    link.target_id,
+                    link.revision,
+                    link.block,
+                    link.note,
+                ),
+            )
         payload: Json = {
             "entry": row.entry_id,
             "handle": row.handle,
@@ -484,6 +609,24 @@ class Ledger:
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", project) is None:
             raise DocumentError(INVALID_REQUEST, "invalid ledger project")
 
+    def _blocks(self, project: str, links: list[LinkInput]) -> dict[tuple[str, int, str], str]:
+        """The document blocks links pin, each checked to exist at its revision; read
+        before the change, since document revisions do not change."""
+        found: dict[tuple[str, int, str], str] = {}
+        for link in links:
+            if link.document is None or link.revision is None or link.block is None:
+                continue
+            key = (link.document, link.revision, link.block)
+            if key in found:
+                continue
+            mapped = self.documents.mapped(project, link.document, link.revision)
+            if link.block not in mapped.block_ids:
+                raise DocumentError(
+                    NOT_FOUND, f"{link.document} has no block {link.block} at r{link.revision}"
+                )
+            found[key] = link.block
+        return found
+
     @staticmethod
     def _find(db: sqlite3.Connection, project: str, reference: str) -> _Row:
         if _ID.fullmatch(reference):
@@ -518,6 +661,57 @@ class Ledger:
             "status": revision[2],
             "updated": revision[7],
         }
+
+    @staticmethod
+    def _links(db: sqlite3.Connection, entry: str, revision: int) -> list[Link]:
+        return [
+            _stored(db, row)
+            for row in db.execute(
+                "SELECT kind,target,target_id,target_revision,block,note FROM ledger_links "
+                "WHERE entry_id=? AND revision=? ORDER BY ordinal",
+                (entry, revision),
+            ).fetchall()
+        ]
+
+    @staticmethod
+    def _incoming(db: sqlite3.Connection, project: str, entry: str) -> list[Link]:
+        """The links other entries' current revisions hold to ``entry``."""
+        return [
+            Link(
+                kind=kind,
+                target="entry",
+                target_id=source,
+                revision=revision,
+                note=note,
+                handle=f"{PREFIXES[source_type]}-{number}",
+            )
+            for kind, source, revision, note, source_type, number in db.execute(
+                "SELECT l.kind,l.entry_id,l.target_revision,l.note,e.type,e.number "
+                "FROM ledger_links l JOIN ledger_entries e ON e.entry_id=l.entry_id "
+                "AND l.revision=e.head WHERE l.target='entry' AND l.target_id=? "
+                "AND e.project=? ORDER BY e.position,l.ordinal LIMIT 200",
+                (entry, project),
+            ).fetchall()
+        ]
+
+
+def _stored(db: sqlite3.Connection, row: tuple[Any, ...]) -> Link:
+    kind, target, target_id, revision, block, note = row
+    handle = None
+    if target == "entry":
+        found = db.execute(
+            "SELECT type,number FROM ledger_entries WHERE entry_id=?", (target_id,)
+        ).fetchone()
+        handle = f"{PREFIXES[found[0]]}-{found[1]}"
+    return Link(
+        kind=kind,
+        target=target,
+        target_id=target_id,
+        revision=revision,
+        block=block,
+        note=note,
+        handle=handle,
+    )
 
 
 def _normalized(text: str) -> str:
@@ -593,10 +787,44 @@ def _status(row: _Row, status: str) -> str:
         raise DocumentError(INVALID_REQUEST, "only a published entry is recorded")
     if status == "proposed" and row.origin == "published":
         raise DocumentError(INVALID_REQUEST, "a published entry is recorded, not proposed")
-    if status in ("superseded", "split"):
-        # LG-5, LG-30: these commit with the links that make them, built next.
-        raise DocumentError(INVALID_REQUEST, f"an entry becomes {status} with its links")
     return status
+
+
+def _added(p: _Planned, kind: str) -> list[Link]:
+    """The links of ``kind`` the change's new revision holds that the one before did not."""
+    before = {(link.target, link.target_id) for link in p.previous if link.kind == kind}
+    return [
+        link
+        for link in p.links or ()
+        if link.kind == kind and (link.target, link.target_id) not in before
+    ]
+
+
+def _check_together(planned: list[_Planned]) -> None:
+    """What commits together (LG-30): a new supersedes link and its target becoming
+    superseded, each needing the other; a split issue and the issues it split into."""
+    by_id = {p.row.entry_id: p for p in planned}
+    superseded: set[str] = set()
+    for p in planned:
+        for link in _added(p, "supersedes"):
+            target = by_id.get(link.target_id)
+            if target is None or target.status != "superseded" or "status" not in target.changed:
+                raise DocumentError(
+                    INVALID_REQUEST,
+                    f"{link.handle} becomes superseded in the change that supersedes it",
+                )
+            superseded.add(link.target_id)
+    for p in planned:
+        if "status" not in p.changed:
+            continue
+        if p.status == "superseded" and p.row.entry_id not in superseded:
+            raise DocumentError(
+                INVALID_REQUEST, f"{p.row.handle} is superseded by an entry that supersedes it"
+            )
+        if p.status == "split" and not _added(p, "split_into"):
+            raise DocumentError(
+                INVALID_REQUEST, f"{p.row.handle} names the issues it is split into"
+            )
 
 
 def _first_error(error: ValidationError) -> str:

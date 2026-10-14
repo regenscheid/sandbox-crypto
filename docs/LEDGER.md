@@ -4,7 +4,7 @@ The project ledger as built, against its specification, [the ledger spec](specs/
 
 ## What is built
 
-**Entries (LG-1, LG-2).** An entry has an ID (`entry-…`), a type, a handle unique in its project (`I-3`, `C-12`, `REF-2`: one counter per project and type), and, for claims and results, its origin (`project` or `published`). The type, handle and origin never change. Each revision holds the title, the status, the statement and the type's own fields, with who made it, the reason, the operation ID, and where it came from when it was imported (LG-41). The seven types and their statuses:
+**Entries (LG-1, LG-2).** An entry has an ID (`entry-…`), a type, a handle unique in its project (`I-3`, `C-12`, `REF-2`: one counter per project and type), and, for claims and results, its origin (`project` or `published`). The type, handle and origin never change. Each revision holds the title, the status, the statement, the type's own fields and the outgoing links, with who made it, the reason, the operation ID, and where it came from when it was imported (LG-41). The seven types and their statuses:
 
 | Type | Handle | Statuses | Fields |
 | --- | --- | --- | --- |
@@ -20,7 +20,21 @@ A new entry starts in its type's first status: `proposed` for a project claim or
 
 **Statements.** A statement is Markdown with LaTeX, saved in the dollar form (LD-42). Its revisions are `text_revisions` of kind `statement` under the entry's ID, with their block map and block owners, as comment bodies and explanations keep theirs; an entry revision names the statement's text revision, and a revision that leaves the statement unchanged names the same one.
 
-**Mutations (LG-30, LG-31).** A change names an operation ID, a reason, and up to 32 entry changes, each creating an entry (its type, title, statement and fields) or revising one (its ID or handle and the revision it expects). All of it commits, with its events and its receipt, or none of it does. A stale expected revision is a conflict that names the current one; nothing is rebased. The same operation ID with the same change returns the first result (`replayed`), and with another change is refused; a change is compared by a digest of its JSON without the fields it leaves unset, so a field a later version adds does not turn a retry into a conflict.
+**Links (LG-5).** A revision's links replace the revision before's when a change gives them, and are kept otherwise. Each kind has the types that may hold it and the targets it may name:
+
+| Kind | Held by | Points to |
+| --- | --- | --- |
+| `answers` | claim, result | issue |
+| `assumes` | claim, result, decision | assumption, pinned to a revision (its current one when none is named) |
+| `builds_on`, `restates`, `supersedes` | claim, result | claim, result |
+| `compares_to` | result | result, with the stated difference |
+| `split_into` | issue | issue |
+| `affects` | decision | any entry |
+| `concerns` | issue | any entry, a review finding of the project, or a document block at a revision |
+
+An entry's current revision also shows the links other entries' current revisions hold to it.
+
+**Mutations (LG-30, LG-31).** A change names an operation ID, a reason, and up to 32 entry changes, each creating an entry (its type, title, statement, fields and links) or revising one (its ID or handle and the revision it expects). Entries the same change creates are named `new:<key>`. All of it commits, with its events and its receipt, or none of it does. A stale expected revision is a conflict that names the current one; nothing is rebased. The same operation ID with the same change returns the first result (`replayed`), and with another change is refused; a change is compared by a digest of its JSON without the fields it leaves unset, so a field a later version adds does not turn a retry into a conflict. A supersedes link and its target becoming `superseded` commit together, each needing the other; a split issue names the issues it was split into in the same change.
 
 **Events (LG-33).** Each new revision records `ledger.entry_created` or `ledger.entry_revised` (with the status before and the parts changed) in the control store's event log, under the entry.
 
@@ -28,7 +42,6 @@ A new entry starts in its type's first status: `proposed` for a project claim or
 
 ## Not built yet
 
-- Links between entries, and to findings and document blocks (LG-5), with the statuses that come with them (`superseded`, `split`).
 - Statuses a decision sets (`established`, `obstructed`, `refuted`), a decision's own `rejected` and `reversed`, decisions' status changes, evidence links and the gate (LG-4, LG-7, LG-8 to LG-17); published claims and results, which cite their reference through evidence (LG-15).
 - `dominates` links and the frontier (LG-18 to LG-24); flags (LG-27 to LG-29); work records (LG-6).
 - Math checks of statements (LG-1, LD-53).
@@ -40,3 +53,4 @@ A new entry starts in its type's first status: `proposed` for a project claim or
 | --- | --- |
 | `ledger_entries` | Each entry's ID, project, type, handle number, origin, current revision, and its position in the order entries were made |
 | `ledger_revisions` | Every revision: title, status, statement's text revision, fields, author, reason, operation ID, provenance and time; written once |
+| `ledger_links` | Each revision's outgoing links, in order: kind, target (an entry, a finding or a document block), pinned revision, block and note; written once |
