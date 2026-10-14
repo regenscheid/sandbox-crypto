@@ -57,11 +57,13 @@ from sandbox_science.contracts import Identifier
 
 from .chat import session_lease
 from .cli_documents import add_parsers, document, project, read_secret, session
+from .connectors import ProxyClient
 from .documents import DocumentError, DocumentStore, store_path
 from .harness import (
     Finished,
     Harness,
     IsolationRefusedError,
+    McpAccess,
     Role,
     RunRequest,
     Settings,
@@ -250,6 +252,11 @@ def _harness(
             lambda: _gateway(args, args.reviewer_model, max_tokens=2048, max_response_bytes=65536),
         )
         closing(stack, interruption, lambda: _close(reviewer.model))
+    mcp = None
+    if args.mcp_proxy is not None:
+        proxy = ProxyClient(args.mcp_proxy, read_secret(args.mcp_token_file))
+        closing(stack, interruption, proxy.close)
+        mcp = McpAccess(proxy, tuple(args.mcp_server))
     return Harness(
         client,
         main,
@@ -269,6 +276,7 @@ def _harness(
             watcher_first_check=args.watcher_first_check,
             watcher_interval=args.watcher_interval,
         ),
+        mcp=mcp,
     )
 
 
@@ -357,6 +365,18 @@ def _agent_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument(
         "--math-bundle", type=Path, help="operator-configured built math checker bundle"
     )
+    command.add_argument(
+        "--mcp-proxy", help="the MCP proxy's address; agents get its servers' tools (D-08)"
+    )
+    command.add_argument(
+        "--mcp-token-file", type=Path, help="the harness's caller token for the MCP proxy"
+    )
+    command.add_argument(
+        "--mcp-server",
+        action="append",
+        default=[],
+        help="an MCP server behind the proxy whose tools runs get; repeat for more",
+    )
     command.add_argument("--reviewer-model", help="separate consistency reviewer model alias")
     command.add_argument(
         "--reviewer-script", type=Path, help="scripted reviewer replies for validation"
@@ -399,6 +419,12 @@ def _check_agent(parser: argparse.ArgumentParser, args: argparse.Namespace) -> N
         parser.error("--model-url needs --api-key-file")
     if args.max_input_chars < 1:
         parser.error("--max-input-chars must be at least 1")
+    if (args.mcp_proxy is None) != (args.mcp_token_file is None) or (
+        args.mcp_proxy is None and args.mcp_server
+    ):
+        parser.error("--mcp-proxy, --mcp-token-file and --mcp-server go together")
+    if args.mcp_proxy is not None and not args.mcp_server:
+        parser.error("--mcp-proxy needs at least one --mcp-server")
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -41,6 +41,7 @@ from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .chat import EventLog, RunChat, UserMessages
+from .connectors import Connectors, ProxyClient
 from .consistency.controller import ReviewController
 from .consistency.store import ReviewStore
 from .documents import DocumentError, DocumentStore, DocumentTool
@@ -140,6 +141,14 @@ class RunRequest:
     message_ids: tuple[str, ...] = ()
     """The queued messages the run is started for (RS-6): its conversation begins with
     them, and ``task`` only names them in the record."""
+
+
+@dataclass(frozen=True)
+class McpAccess:
+    """The MCP proxy the harness calls, and the servers whose tools a run gets (D-08)."""
+
+    client: ProxyClient
+    servers: tuple[str, ...]
 
 
 class RunSink(Protocol):
@@ -293,6 +302,7 @@ class Harness:
         checker: Checker | None = None,
         settings: Settings | None = None,
         clock: Clock = SYSTEM_CLOCK,
+        mcp: McpAccess | None = None,
     ) -> None:
         """``checker`` is the configured math checker; without it, math checks report
         the renderer unavailable. A reviewer and a checker need stores."""
@@ -302,6 +312,8 @@ class Harness:
         self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
         self.settings = settings or Settings()
         self.clock = clock
+        self.mcp = mcp
+        """The MCP proxy and the servers behind it whose tools runs are offered."""
         """The time the run's messages and leases are read in."""
 
     async def run(self, request: RunRequest, sink: RunSink) -> Finished:
@@ -415,8 +427,20 @@ class Harness:
             wake=chat.arrived if chat is not None else None,
             on_wait=chat.waiting if chat is not None else None,
         )
+        connectors = None
+        if self.mcp is not None:
+            # Listed at the run's start: a server added later is offered to the next run.
+            connectors = Connectors(self.mcp.client, self.mcp.servers, session=context.session_id)
+            await connectors.load()
         if stores is None:
-            return Toolbox(self.client, context, languages=languages, features=features, jobs=jobs)
+            return Toolbox(
+                self.client,
+                context,
+                languages=languages,
+                features=features,
+                jobs=jobs,
+                connectors=connectors,
+            )
         documents = DocumentTool(stores.documents, context, run_id=run_id, alias=alias)
         inventory = ArtifactInventory(stores.documents)
         reviews = ReviewController(
@@ -454,6 +478,7 @@ class Harness:
             artifacts=artifacts,
             plans=plans,
             check_kernels=True,
+            connectors=connectors,
         )
 
 

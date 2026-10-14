@@ -8,6 +8,7 @@ license = "MIT"
 dependencies = [
     "sandbox-science-contracts",
     "aiohttp>=3.10",
+    "cryptography>=43",
 ]
 
 [tool.uv.sources]

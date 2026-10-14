@@ -206,9 +206,27 @@ systemctl --user daemon-reload
 systemctl --user enable --now sandbox-science-mcp-proxy-forward@mcp-proxy.service
 ```
 
+### The harness's client
+
+Agents use connectors through the harness, a caller of kind `orchestrator` (`orchestrator/connectors.py`, D-08). `run` and `serve` take the proxy's address, a file holding the harness's caller token, and the servers whose tools runs get:
+
+```bash
+sandbox-science-harness run ... --mcp-proxy http://127.0.0.1:8080 \
+  --mcp-token-file mcp-proxy.token --mcp-server crypto-research-mcp "task"
+```
+
+- At a run's start, the harness lists each server's tools through the proxy and offers them to MAIN under the names the server lists; a portal's names carry its prefix. A name a model cannot call (letters, digits, `_` and `-`, at most 64), or one another tool already has, is left out and logged. A server that cannot be listed offers nothing, and the run goes on.
+- Every connector tool has the effect class `effect`, since the policy marks none read-only, so the plan fence applies to it.
+- A server's description of a tool is untrusted: it is bounded and framed as the server's, and an input schema larger than 16 KiB, or not an object, is replaced by an empty object schema.
+- Each call names the run's session in `Sandbox-Science-Session`, which the proxy records with the call. The harness keeps one MCP session per server and starts it again once if the proxy no longer knows it.
+- A refusal is the tool's error, with the proxy's reason. A call held for approval comes back as `approval_required`, naming the permission request; the operator answers it with `pending` and `approve` (owner decision 1), and the agent calls again. Approved tools are not compiled into the proxy sandbox's fence yet, so its fence has to admit escalated tools for an approval to take effect (above).
+- Results are the text the server returned, bounded as any tool result; the proxy withholds binary content.
+
+Tested against the proxy and its fake server in one process (`packages/orchestrator/tests/test_connectors.py`), with synthetic tokens.
+
 ### Not built yet
 
-- A harness MCP client. The orchestrator does not call the proxy, so agents cannot use connectors; only code in research sandboxes can, where the policy grants `worker_access`. Nothing issues proxy tokens to callers either: an operator writes them into the settings.
+- Issuing proxy tokens to callers: an operator writes them into the proxy's settings, and gives the harness its own in a file ([the harness's client](#the-harnesss-client)).
 - A product command for the proxy's sandbox. `compile_mcp_proxy()` is a library function that only the example renderer and the lab scripts call, and the operator steps above are manual.
 - Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
 - The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand. crypto-research-mcp does not need it.

@@ -1736,12 +1736,14 @@ version = "0.1.0"
 source = { editable = "packages/testing" }
 dependencies = [
     { name = "aiohttp" },
+    { name = "cryptography" },
     { name = "sandbox-science-contracts" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
+    { name = "cryptography", specifier = ">=43" },
     { name = "sandbox-science-contracts", editable = "packages/contracts" },
 ]
 

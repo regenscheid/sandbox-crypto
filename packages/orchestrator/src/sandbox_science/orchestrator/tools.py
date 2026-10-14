@@ -41,6 +41,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.worker import Language
 
 from .artifact_publisher import ArtifactPublisher
+from .connectors import Connectors
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .documents.errors import DocumentError
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
@@ -340,6 +341,7 @@ class Toolbox:
         artifacts: ArtifactPublisher | None = None,
         plans: PlanTools | None = None,
         check_kernels: bool = False,
+        connectors: Connectors | None = None,
     ) -> None:
         self.client = client
         self.context = context
@@ -432,6 +434,21 @@ class Toolbox:
                 raw=True,
                 whole=True,
             )
+        if connectors is not None:
+            # A connector tool whose name a tool of the harness has is not offered.
+            names = {entry.spec.name for entry in entries}
+            for entry in _group(
+                connectors.specs,
+                lambda name, call: connectors.call(name, call.args),
+                {},
+                bound=True,
+            ):
+                if entry.spec.name in names:
+                    _log.warning(
+                        "connector tool %s is not offered: its name is taken", entry.spec.name
+                    )
+                else:
+                    entries.append(entry)
         self.entries = {entry.spec.name: entry for entry in entries}
         if len(self.entries) != len(entries):
             names = [entry.spec.name for entry in entries]
