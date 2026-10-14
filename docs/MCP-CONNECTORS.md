@@ -1,13 +1,15 @@
 # MCP connectors and authentication
 
-Confirmed: D64, and D66 and D67 with the design this page proposes. The MCP proxy is built ([as built](#the-mcp-proxy-as-built)); the connector auth service is not. The user's requirements:
+Confirmed: D64, and D66 and D67 with the design this page proposes. The MCP proxy is built ([as built](#the-mcp-proxy-as-built)); the connector auth service is not, and M2 does not need it. The user's requirements:
 
 - crypto-research-mcp is the phase 1 connector; others are added later.
 - MCP services authenticate mainly with OAuth.
 - `Authorization` and custom-header authentication should also be supported.
 - A secrets manager should keep raw credentials away from agents.
 
-Sources: the [MCP authorization specification, 2025-11-25](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/basic/authorization.mdx) and the OpenShell v0.1.3 [providers](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx) and [profiles](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/profiles.mdx) documentation. The MCP proxy is tested against a fake server, and it and its compiled policy were run under OpenShell on babbage (labs 2, 13, 15 and 17). The connector auth service, the OAuth flow and the checks for the spike below are not built or tested.
+**crypto-research-mcp uses a Cloudflare Access service token, not OAuth** (agreed by the owner, 2026-10-14). It is a `headers` server: its two header values reference two credentials of one OpenShell provider, which the owner creates. No secret passes through an agent, the harness or this repository ([below](#crypto-research-mcp-a-cloudflare-access-service-token)). The connector auth service and the OAuth flow stay the design for later OAuth servers, off M2's path.
+
+Sources: the [MCP authorization specification, 2025-11-25](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/basic/authorization.mdx) and the OpenShell v0.1.3 [providers](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/overview.mdx) and [profiles](https://github.com/NVIDIA/OpenShell/blob/v0.1.3/docs/how-it-works/providers/profiles.mdx) documentation. The MCP proxy is tested against a fake server, and it and its compiled policy were run under OpenShell on babbage (labs 2, 13, 15 and 17). The connector auth service, the OAuth flow and the checks for the spike below are not built or tested, and nothing has called crypto-research-mcp with the service token yet.
 
 ## Goals
 
@@ -20,7 +22,7 @@ Sources: the [MCP authorization specification, 2025-11-25](https://github.com/mo
 
 | Component | Zone | Role |
 | --- | --- | --- |
-| Connector auth service | Z1 (trusted) | Runs the interactive OAuth flow with the user, registers clients, stores tokens in OpenShell providers, and performs refreshes when the gateway cannot (below). Python, MIT, built on the MCP Python SDK's OAuth client support where it fits |
+| Connector auth service (later; not for crypto-research-mcp) | Z1 (trusted) | Runs the interactive OAuth flow with the user, registers clients, stores tokens in OpenShell providers, and performs refreshes when the gateway cannot (below). Python, MIT, built on the MCP Python SDK's OAuth client support where it fits. Needed only for OAuth servers; crypto-research-mcp uses a service token the owner registers |
 | **MCP proxy** | Runs **inside its own OpenShell sandbox** | The only MCP endpoint that the orchestrator and workers can reach. It authenticates each caller, applies the project's tool policy, and forwards to remote MCP servers through the OpenShell proxy, which injects credentials and enforces `protocol: mcp` rules again on the way out. It holds only placeholders |
 | OpenShell gateway and providers | Z1 | Credential storage (encrypted database, Kubernetes Secrets or OpenBao), placeholder resolution, gateway-managed refresh where possible |
 | Harness MCP client and worker MCP clients | Z2 / Z3 | Talk only to the MCP proxy; their configuration contains no secrets |
@@ -138,8 +140,11 @@ session_idle = "1h"
 upstream_timeout = "5m"            # one call to a server, from start to end
 
 [credentials]   # environment variables that hold OpenShell placeholders
-crypto-research-mcp = "CRYPTO_RESEARCH_MCP_TOKEN"     # bearer and oauth: the provider's token
-"example-header-server.API_KEY" = "EXAMPLE_API_KEY"   # headers: a ${provider:...} reference
+# headers: one per ${provider:NAME.KEY} reference; the variable is the credential's key
+"crypto-research-mcp.CF_ACCESS_CLIENT_ID" = "CF_ACCESS_CLIENT_ID"
+"crypto-research-mcp.CF_ACCESS_CLIENT_SECRET" = "CF_ACCESS_CLIENT_SECRET"
+# bearer and oauth servers: the provider's token
+# example-oauth-server = "EXAMPLE_OAUTH_SERVER_TOKEN"
 
 [[callers]]
 name = "orchestrator"
@@ -206,7 +211,7 @@ systemctl --user enable --now sandbox-science-mcp-proxy-forward@mcp-proxy.servic
 - A harness MCP client. The orchestrator does not call the proxy, so agents cannot use connectors; only code in research sandboxes can, where the policy grants `worker_access`. Nothing issues proxy tokens to callers either: an operator writes them into the settings.
 - A product command for the proxy's sandbox. `compile_mcp_proxy()` is a library function that only the example renderer and the lab scripts call, and the operator steps above are manual.
 - Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
-- The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand.
+- The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand. crypto-research-mcp does not need it.
 - Binary results as artifact references; they are withheld for now.
 - Rate and spend limits per project and server.
 - MCP 2026-07-28, which the policy library knows: it has no sessions, carries metadata in every request, mirrors names in `Mcp-Method` and `Mcp-Name` headers and embeds server requests in results. The proxy refuses servers pinned to it, and the policy's list of protocol methods needs it too.
@@ -214,7 +219,7 @@ systemctl --user enable --now sandbox-science-mcp-proxy-forward@mcp-proxy.servic
 - Caller identity from the platform rather than per-sandbox tokens, since the middleware knows which sandbox sent a request, and `process`-level attribution.
 - Approved tools are not compiled into the proxy sandbox's fence, so OpenShell still refuses an escalated tool there; until they are, the fence has to allow escalated tools for approvals to take effect (backlog).
 - `Basic` credentials in `headers` servers: how OpenShell expects a placeholder inside one is unchecked.
-- A test against crypto-research-mcp, which needs OAuth.
+- A test against crypto-research-mcp, which needs the owner's service token in its provider ([below](#crypto-research-mcp-a-cloudflare-access-service-token)).
 
 ## Authentication modes
 
@@ -224,13 +229,66 @@ Each server entry declares one mode:
 | --- | --- | --- |
 | `oauth` (primary) | Servers that follow MCP authorization | The access token is stored as an OpenShell provider credential with `auth_style: bearer`. The MCP proxy sends `Authorization: Bearer <placeholder>`, and the OpenShell proxy substitutes the real token on every request (the spec requires the header on every request and forbids tokens in query strings) |
 | `bearer` | Static API tokens | Provider credential; `Authorization: Bearer <placeholder>` |
-| `headers` | Custom header schemes (`X-Api-Key`, `Authorization: Basic …`, several headers) | One provider credential per secret value. Header values in the server entry reference them, and the MCP proxy places the placeholders. OpenShell resolves placeholders in any header value, including Basic auth. The roadmap's "profile-driven placement" is not needed, because the MCP proxy places the placeholder |
+| `headers` | Custom header schemes (`X-Api-Key`, `Authorization: Basic …`, several headers), such as crypto-research-mcp's Cloudflare Access service token | One provider credential per secret value, all in one provider (OpenShell binds one provider per endpoint). Header values in the server entry reference them, and the MCP proxy places the placeholders. OpenShell resolves placeholders in any header value, including Basic auth. The roadmap's "profile-driven placement" is not needed, because the MCP proxy places the placeholder |
 | `none` | Public servers | No credential |
 
 Checked on babbage ([lab 2](../.agents/docs/agent-reports/babbage-openshell-lab-2-2026-10-10.md)):
 - A provider named by `credential_binding` must be attached to the MCP proxy's sandbox, and its profile must declare no endpoints.
 - OpenShell substitutes placeholders in headers, never in a JSON-RPC body, which it forwards unchanged.
 - After `initialize`, the proxy must send `MCP-Protocol-Version` on every request. Without it, OpenShell assumes 2025-03-26 and refuses requests that a policy limits to later revisions.
+
+## crypto-research-mcp: a Cloudflare Access service token
+
+crypto-research-mcp sits behind Cloudflare Access. A request passes Access when it carries a service token's two values in the headers `CF-Access-Client-Id` and `CF-Access-Client-Secret`, and Access then forwards it to the server. The server entry is therefore a `headers` server whose two values reference two credentials of one OpenShell provider, `crypto-research-mcp`:
+
+```yaml
+crypto-research-mcp:
+  url: https://…/mcp                     # the Access-protected address of the server
+  revision: "2025-11-25"
+  auth:
+    mode: headers
+    headers:
+      CF-Access-Client-Id: "${provider:crypto-research-mcp.CF_ACCESS_CLIENT_ID}"
+      CF-Access-Client-Secret: "${provider:crypto-research-mcp.CF_ACCESS_CLIENT_SECRET}"
+```
+
+The policy compiler binds the server's endpoint to that one provider (`credential_binding`), and the MCP proxy, in its sandbox, reads the two placeholders from `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` (its settings' `[credentials]`, [above](#running-it)) and sends them as the two headers. OpenShell substitutes the values as the request leaves, only toward the bound host. The proxy holds placeholders only, and nothing an agent or a worker can reach holds the token.
+
+**What the owner does.** The owner creates the token and the Access policy, and registers the secrets with OpenShell, on babbage. No secret passes through an agent, a chat, this repository or a command line:
+
+1. In Cloudflare Zero Trust, create a service token for the harness (Access → Service credentials → Service Tokens), and keep its Client ID and Client Secret until step 4: Cloudflare shows the secret only once. Choose its duration, and note when it expires.
+2. In the Access application that protects crypto-research-mcp, add a policy with the action **Service Auth** that includes this service token. A **Service Auth** policy admits a request with the token's headers and no user login.
+3. Import the provider profile, which declares the two credentials and no endpoints (OpenShell refuses a `credential_binding` to a provider whose profile has endpoints, lab 2). Profiles are read from the gateway, so this needs the running gateway; `lint` checks the file first:
+
+   ```bash
+   openshell provider profile lint -f examples/openshell/profiles/cloudflare-access.yaml
+   openshell provider profile import -f examples/openshell/profiles/cloudflare-access.yaml
+   ```
+4. Create the provider from environment variables, read without echo, so the values appear in no command line or shell history. `--credential KEY` without `=VALUE` takes the value from the environment variable `KEY` (OpenShell 0.1.3, `openshell provider create --help` on babbage, 2026-10-14):
+
+   ```bash
+   read -rs -p "Client ID: " CF_ACCESS_CLIENT_ID; echo; export CF_ACCESS_CLIENT_ID
+   read -rs -p "Client Secret: " CF_ACCESS_CLIENT_SECRET; echo; export CF_ACCESS_CLIENT_SECRET
+   openshell provider create --name crypto-research-mcp --type cloudflare-access \
+     --credential CF_ACCESS_CLIENT_ID --credential CF_ACCESS_CLIENT_SECRET
+   unset CF_ACCESS_CLIENT_ID CF_ACCESS_CLIENT_SECRET
+   ```
+5. Attach the provider to the MCP proxy's sandbox (`--provider crypto-research-mcp` when it is created, [above](#running-it)), and put the URL of the server in the project policy's entry.
+
+**Rotation.** A new token goes in the same way with `openshell provider update crypto-research-mcp --credential CF_ACCESS_CLIENT_ID --credential CF_ACCESS_CLIENT_SECRET --wait`. A running process keeps the placeholder of the credential's revision it started with, so the MCP proxy's sandbox is restarted after the update ([refresh](#oauth-flow-mcp-2025-11-25), the same rule). Revoking the token in Cloudflare stops access at once; deleting the provider (`openshell provider delete crypto-research-mcp`) stops the proxy from sending it.
+
+**Checked on babbage, 2026-10-14:** the `openshell provider create`, `update` and `profile` commands and flags above, from the installed 0.1.3's `--help`; no provider, profile or sandbox was created. The profile's fields follow OpenShell 0.1.3's profile documentation (`auth_style: header` with `header_name`); its `lint` needs the gateway and has not run. Not checked: a request through Access with a service token, which needs the owner's token.
+
+### What the harness MCP client still needs decided (D-08)
+
+The proxy side is built; the orchestrator calls no MCP server. Before the harness's client is built:
+
+1. **How agents see connector tools.** *Recommended:* the proxy's tools of each server the project's policy allows, listed at a run's start, offered to MAIN under their prefixed names, with their effect class `effect` unless the policy marks them read-only, so the plan fence applies.
+2. **The orchestrator's proxy token.** Today an operator writes caller tokens into the proxy's settings. *Recommended:* the orchestrator's token goes in a file only the harness reads, like the worker token, until callers are identified by the platform (backlog).
+3. **Escalated tools.** An escalated call returns `approval_required` and waits for `sandbox-science-mcp-proxy approve`; approved tools are not compiled into the proxy's fence yet, so an approval cannot take effect (above). *Recommended:* compile approved tools into the fence before agents use escalated tools, or deny escalated tools to agents until then.
+4. **Results.** Binary results are withheld; large text results are bounded. *Recommended:* text results bounded as tool results are now; binary results as artifact references once that is built.
+5. **A product command for the proxy's sandbox**, replacing the lab script and the manual steps above (D-08, step 3).
+6. **Whether the origin accepts Access alone.** If crypto-research-mcp also checks its own OAuth bearer behind Access, the service token is not enough; the owner confirms the origin trusts Access (for instance by its `Cf-Access-Jwt-Assertion`) before the first call.
 
 ## OAuth flow (MCP 2025-11-25)
 
@@ -266,7 +324,7 @@ The connector auth service performs the client side of MCP authorization when th
 ```yaml
 mcp:
   servers:
-    crypto-research-mcp:
+    example-oauth-server:                # later phase; crypto-research-mcp is a headers server (above)
       url: https://…/mcp                 # canonical URI, used as the OAuth resource
       revision: "2025-11-25"             # MCP protocol revisions allowed
       auth:
@@ -297,7 +355,8 @@ mcp:
 
 | Check | Required evidence |
 | --- | --- |
-| OAuth connect to crypto-research-mcp | Discovery, registration, PKCE and `resource` parameter recorded; tokens stored only in the provider/credential driver |
+| crypto-research-mcp through Access | With the owner's provider attached, a `tools/list` and an allowed tool call through the proxy succeed; the proxy's sandbox holds placeholders only; a call without the provider is refused by Access |
+| OAuth connect (a later OAuth server) | Discovery, registration, PKCE and `resource` parameter recorded; tokens stored only in the provider/credential driver |
 | Placeholder injection | The proxy and sandbox environment hold placeholders only; requests reach the server with a valid bearer token |
 | Refresh | Gateway-managed refresh succeeds across several expiries without restarting the proxy, or a server rejection without `resource` is observed and external refresh succeeds. With external refresh, calls continue across token expiry through the upstream-worker swap with no failed calls beyond the documented read retry, and an old worker's placeholder is confirmed stale after the update. Rotated refresh tokens persist |
 | Custom headers | A fixture server requiring `X-Api-Key` and one requiring Basic auth both accept placeholder-injected values; the unbound host gets `credential_endpoint_mismatch` |

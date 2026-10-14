@@ -117,14 +117,13 @@ mcp:
     binary_results: artifact   # store as artifact references, not inline base64
   servers:
     crypto-research-mcp:
-      url: https://mcp.example.invalid/crypto-research   # placeholder; canonical URI = OAuth resource
+      url: https://mcp.example.invalid/crypto-research   # placeholder: the Access-protected address
       revision: "2025-11-25"
       auth:                                               # see docs/MCP-CONNECTORS.md
-        mode: oauth                                       # oauth | bearer | headers | none
-        registration: dcr                                 # confirmed: crypto-research-mcp supports DCR
-        scopes: []                                        # empty = use WWW-Authenticate / scopes_supported
-        refresh: gateway                                  # gateway | external
-        provider: crypto-research-mcp                     # OpenShell provider holding the tokens
+        mode: headers                                     # oauth | bearer | headers | none
+        headers:                                          # a Cloudflare Access service token (owner, 2026-10-14)
+          CF-Access-Client-Id: "${provider:crypto-research-mcp.CF_ACCESS_CLIENT_ID}"
+          CF-Access-Client-Secret: "${provider:crypto-research-mcp.CF_ACCESS_CLIENT_SECRET}"
       # The portal prefixes every tool name; patterns match the rest, so a pattern
       # cannot match the prefix ("research" contains "search").
       tool_prefix: crypto_research_mcp-

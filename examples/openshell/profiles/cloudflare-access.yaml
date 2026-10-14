@@ -1,0 +1,36 @@
+# OpenShell v0.1.3 provider profile for a Cloudflare Access service token, such as the
+# one crypto-research-mcp's Access application admits (docs/MCP-CONNECTORS.md).
+#
+# It has no endpoints: the project policy's MCP server entry names the host, and the
+# MCP proxy's compiled policy binds the provider there with credential_binding, which
+# OpenShell refuses for a provider whose profile has endpoints (lab 2). The MCP proxy
+# places the two placeholders in the headers itself (mode: headers), so the
+# placement fields below are descriptive; OpenShell substitutes the values as the
+# request leaves toward the bound host. The owner imports it and creates the
+# provider from the token, read into the environment without echo:
+#
+#   openshell provider profile lint -f examples/openshell/profiles/cloudflare-access.yaml
+#   openshell provider profile import -f examples/openshell/profiles/cloudflare-access.yaml
+#   openshell provider create --name crypto-research-mcp --type cloudflare-access \
+#     --credential CF_ACCESS_CLIENT_ID --credential CF_ACCESS_CLIENT_SECRET
+#
+# The proxy's sandbox sees only placeholders, under CF_ACCESS_CLIENT_ID and
+# CF_ACCESS_CLIENT_SECRET.
+
+id: cloudflare-access
+display_name: Cloudflare Access service token
+description: A Cloudflare Access service token, bound to its host by the compiled MCP proxy policy
+category: other
+credentials:
+  - name: client_id
+    description: The service token's Client ID
+    env_vars: [CF_ACCESS_CLIENT_ID]
+    required: true
+    auth_style: header
+    header_name: cf-access-client-id
+  - name: client_secret
+    description: The service token's Client Secret
+    env_vars: [CF_ACCESS_CLIENT_SECRET]
+    required: true
+    auth_style: header
+    header_name: cf-access-client-secret
