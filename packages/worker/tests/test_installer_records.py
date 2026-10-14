@@ -591,3 +591,15 @@ def test_copied_admitted_pin_subclasses_refuse_before_equality(name: str):
     with pytest.raises(logs.InstallerLogError):
         logs.prepare(operation, execution, "install-conda")
     assert visits == []
+
+
+def test_scan_bound_cannot_promote_a_partial_line_to_fixed_whole_message():
+    message = "Transaction finished"
+    text = (
+        "X" * (logs.MAX_SCAN_CHARS - len(message) - 1) + "\n" + message + " actual continuation\n"
+    )
+    prepared = logs.prepare(*fixture_step(stdout=text), "install-conda")
+    stream = json.loads(prepared.raw)["streams"]["stdout"]
+    assert stream["fixed_messages"] == []
+    assert stream["omitted_scanned_lines"] == 2
+    assert stream["unscanned_characters"] > 0
