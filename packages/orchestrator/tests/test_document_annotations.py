@@ -908,3 +908,74 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
     assert (
         annotations.pending("p", "a", "next", seen=set())[0]["request_id"] == second["request_id"]
     )
+
+
+def test_comment_times_come_from_the_injected_clock(store: DocumentStore) -> None:
+    annotations = Annotations(store, clock=lambda: 1234.5)
+    made = annotations.change(
+        "p",
+        "ff",
+        {
+            "action": "create",
+            "anchor": {"revision": 1, "block": "b2"},
+            "body": "Explain $a$.",
+            "operation_id": "clocked",
+        },
+        USER,
+    )
+    thread = annotations.read_thread("p", "ff", made["thread_id"])
+    assert thread["created_at"] == 1234.5
+    assert [entry["created_at"] for entry in thread["entries"]] == [1234.5]
+
+
+DELEGATED = Author(kind="agent", session_id="a", run_id="run-d", role="delegated", model="m")
+
+
+@pytest.mark.parametrize(
+    ("action", "extra", "opener", "actor", "match"),
+    [
+        # The opener rule, in the write: only the opener (or the user) resolves.
+        ("resolve", {}, USER, AGENT, "only threads they opened"),
+        # The body authority, before the write, refuses these edits first.
+        ("edit", {"body": "Changed."}, USER, AGENT, "cannot revise that original comment body"),
+        ("edit", {"body": "Changed."}, AGENT, USER, "cannot revise that original comment body"),
+        # The main agent may revise its session's delegated agent's body, but the opener
+        # rule, in the write, still keeps the opening comment to its opener.
+        ("edit", {"body": "Changed."}, DELEGATED, AGENT, "only threads they opened"),
+    ],
+    ids=["resolve-user-thread", "edit-user-body", "user-edits-agent-body", "main-edits-delegated"],
+)
+def test_each_change_kind_keeps_its_authority_rule(
+    store: DocumentStore,
+    action: str,
+    extra: dict[str, Any],
+    opener: Author,
+    actor: Author,
+    match: str,
+) -> None:
+    """Characterization of who may resolve or edit a thread: the body authority checked
+    while the change is prepared, and the opener rule checked in its write."""
+    opened = Annotations(store).change(
+        "p",
+        "ff",
+        {
+            "action": "create",
+            "anchor": {"revision": 1, "block": "b2"},
+            "body": "Explain $a$.",
+            "operation_id": "opened",
+        },
+        opener,
+    )
+    with pytest.raises(DocumentError, match=match):
+        Annotations(store).change(
+            "p",
+            "ff",
+            {
+                "action": action,
+                "thread": opened["thread_id"],
+                "expected": 1,
+                "operation_id": f"{action}-{actor.kind}",
+                **extra,
+            },
+            actor,
+        )
