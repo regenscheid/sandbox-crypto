@@ -48,6 +48,7 @@ from sandbox_science.contracts import (
     Lockfile,
     ProvisioningQueue,
     ProvisionOperation,
+    ProvisionOutcome,
     ProvisionState,
     ReadFileRequest,
     ResolvedFile,
@@ -1601,3 +1602,177 @@ async def test_clients_limited_to_projects_reach_only_their_operations(make_worl
             "/v1/environments/env1/provisioning", params={"project_id": project_id}, headers=AUTH
         )
         assert response.status == expected, project_id
+
+
+@pytest.mark.asyncio
+async def test_explicit_conda_upgrade_uses_update_records_revision_and_replays_without_effect(
+    make_world: Factory,
+) -> None:
+    world = await make_world()
+    first = await world.finished(
+        (await world.provision("install-original", conda=["fpylll"]))["provision_id"]
+    )
+    assert first.outcome is ProvisionOutcome.COMPLETED
+    index_path = world.prefix.root.parent / "index.json"
+    index = json.loads(index_path.read_text())
+    index["conda"]["fpylll"]["version"] = "0.6.2"
+    index_path.write_text(json.dumps(index))
+    original = await world.provision("upgrade-original", conda=["fpylll"], action="upgrade")
+    done = await world.finished(original["provision_id"])
+    assert done.request.action == "upgrade"
+    assert done.outcome is ProvisionOutcome.COMPLETED
+    assert done.revision_before == first.revision_after
+    assert done.revision_after == (first.revision_after or 0) + 1
+    assert done.revision_after is not None
+    assert any(
+        change.before == "0.6.1" and change.after == "0.6.2" and change.name == "fpylll"
+        for change in done.changes
+    )
+    history = await world.revisions()
+    assert history.revisions[-1].commands[0].argv[:2] == ("micromamba", "update")
+    assert [
+        p.version for p in (await world.lockfile(done.revision_after)).conda if p.name == "fpylll"
+    ] == ["0.6.2"]
+    assert done.installer_steps is not None
+    assert [s.label for s in done.installer_steps] == [
+        "version-conda",
+        "resolve-conda",
+        "install-conda",
+    ]
+    assert all(s.log_status == "stored" for s in done.installer_steps)
+    before = world.prefix.log.read_bytes()
+    replay = await world.provision(
+        "upgrade-original", conda=["fpylll"], action="upgrade", expected=200
+    )
+    assert replay["provision_id"] == done.provision_id
+    assert world.prefix.log.read_bytes() == before
+    await world.provision("upgrade-original", conda=["fpylll"], expected=409)
+    assert world.prefix.log.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_upgrade_of_absent_target_refuses_before_resolve_or_install(
+    make_world: Factory,
+) -> None:
+    world = await make_world()
+    done = await world.finished(
+        (await world.provision("missing-upgrade", conda=["fpylll"], action="upgrade"))[
+            "provision_id"
+        ]
+    )
+    assert done.outcome is ProvisionOutcome.FAILED
+    assert done.reason == "resolve_failed"
+    assert done.installer_steps is not None
+    assert [s.label for s in done.installer_steps] == ["version-conda"]
+    assert world.cache.artifacts() == []
+    assert not world.prefix.log.exists()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_already_current_records_checks_without_an_install(
+    make_world: Factory,
+) -> None:
+    world = await make_world()
+    await world.finished(
+        (await world.provision("initial-current", conda=["fpylll"]))["provision_id"]
+    )
+    before = world.prefix.log.read_bytes()
+    done = await world.finished(
+        (await world.provision("already-current", conda=["fpylll"], action="upgrade"))[
+            "provision_id"
+        ]
+    )
+    assert done.outcome is ProvisionOutcome.ALREADY_SATISFIED
+    assert done.revision_before == done.revision_after
+    assert done.probes
+    assert all(p.kind == "import_check" for p in done.probes)
+    assert world.prefix.log.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_upgrade_preserves_agpl_refusal_before_download(make_world: Factory) -> None:
+    world = await make_world()
+    await world.finished(
+        (await world.provision("initial-permitted", conda=["fpylll"]))["provision_id"]
+    )
+    before = world.prefix.log.read_bytes()
+    fetched = len(world.cache.artifacts())
+    index_path = world.prefix.root.parent / "index.json"
+    index = json.loads(index_path.read_text())
+    index["conda"]["fpylll"].update(version="0.6.2", license="AGPL-3.0-only")
+    index_path.write_text(json.dumps(index))
+    done = await world.finished(
+        (await world.provision("refused-upgrade", conda=["fpylll"], action="upgrade"))[
+            "provision_id"
+        ]
+    )
+    assert done.outcome is ProvisionOutcome.DENIED
+    assert done.reason == "agpl_license"
+    assert len(world.cache.artifacts()) == fetched
+    assert world.prefix.log.read_bytes() == before
+
+
+@pytest.mark.parametrize("action", [None, True, "remove", "restore", "upgrade-all"])
+@pytest.mark.asyncio
+async def test_unknown_upgrade_action_refuses_at_request_boundary(
+    make_world: Factory, action: object
+) -> None:
+    world = await make_world()
+    await world.provision("unknown-action", conda=["fpylll"], action=action, expected=400)
+    assert world.store._db.execute("SELECT count(*) FROM provisions").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_upgrade_escalation_denial_keeps_original_prefix(make_world: Factory) -> None:
+    world = await make_world()
+    await world.finished(
+        (await world.provision("installed-before-denial", conda=["fpylll"]))["provision_id"]
+    )
+    before = world.prefix.log.read_bytes()
+    index_path = world.prefix.root.parent / "index.json"
+    index = json.loads(index_path.read_text())
+    index["conda"]["fpylll"]["version"] = "0.6.2"
+    index_path.write_text(json.dumps(index))
+    world.use(ESCALATE)
+    operation = await world.provision("upgrade-needs-answer", conda=["fpylll"], action="upgrade")
+    pending = await world.waiting(operation["provision_id"])
+    assert pending.permission_request is not None
+    assert pending.files
+    world.answer("deny", pending.permission_request)
+    done = await world.finished(operation["provision_id"])
+    assert done.outcome is ProvisionOutcome.DENIED
+    assert done.reason == "permission_denied"
+    assert world.prefix.log.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_cancelled_changed_upgrade_keeps_cp13_recovery_hold(make_world: Factory) -> None:
+    world = await make_world()
+    first = await world.finished(
+        (await world.provision("installed-before-cancel", conda=["fpylll"]))["provision_id"]
+    )
+    index_path = world.prefix.root.parent / "index.json"
+    index = json.loads(index_path.read_text())
+    index["conda"]["fpylll"].update(version="0.6.2", postlink="slow")
+    index_path.write_text(json.dumps(index))
+    operation = await world.provision("upgrade-cancelled", conda=["fpylll"], action="upgrade")
+    deadline = time.monotonic() + 10
+    while "postlink fpylll" not in world.prefix.log.read_text():
+        assert time.monotonic() < deadline, "the update did not link"
+        await asyncio.sleep(0.02)
+    assert (
+        await world.client.post(
+            f"/v1/provisioning/{operation['provision_id']}/cancel", headers=AUTH
+        )
+    ).status == 200
+    done = await world.finished(operation["provision_id"])
+    assert done.outcome is ProvisionOutcome.NEEDS_RECOVERY
+    assert done.reason == "environment_changed"
+    assert done.revision_before == first.revision_after
+    assert (await world.queue()).status == "needs_recovery"
+    before = world.prefix.log.read_bytes()
+    refused = await world.provision(
+        "no-retry-after-unknown", conda=["fpylll"], action="upgrade", expected=503
+    )
+    assert refused["error"]["kind"] == "unavailable"
+    assert world.prefix.log.read_bytes() == before

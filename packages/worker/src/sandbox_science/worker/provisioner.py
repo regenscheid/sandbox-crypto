@@ -267,6 +267,14 @@ class Provisioner:
 
     async def submit(self, request: ProvisionRequest) -> tuple[ProvisionOperation, bool]:
         """The operation for ``request.operation_id``, created and queued if it is new."""
+        # Refuse copied/constructed unknown actions before encoding or replay;
+        # an unrecognized action can never silently take the install path.
+        if type(request.action) is not str or request.action not in ("install", "upgrade"):
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "unsupported provisioning action")
+        if request.action == "upgrade" and (
+            not request.conda or request.pip or request.system or request.capability is not None
+        ):
+            raise WorkerError(ErrorKind.INVALID_REQUEST, "upgrade requires named Conda specs only")
         environment_id = request.context.environment_id
         if request.capability is not None and self.catalog.get(request.capability) is None:
             names = ", ".join(sorted(self.catalog.capabilities))
@@ -919,10 +927,14 @@ class Provisioner:
         resolved: list[Resolved] = []
         if conda or pip:
             await self._installer_version(op, bool(conda))
+        if op.record.request.action == "upgrade":
+            await self._upgrade_targets(op, conda)
         steps = [
             (
                 "resolve-conda",
-                resolution.conda_dry_run(conda),
+                resolution.conda_upgrade_dry_run(conda)
+                if op.record.request.action == "upgrade"
+                else resolution.conda_dry_run(conda),
                 resolution.parse_conda_dry_run,
                 conda,
             ),
@@ -985,6 +997,37 @@ class Provisioner:
                 next_step="Ask for fewer packages at a time.",
             )
         return resolved
+
+    async def _upgrade_targets(self, op: _Op, specs: Sequence[str]) -> None:
+        """An upgrade names already installed targets; unknown history is no fallback."""
+        environment = op.record.request.context.environment_id
+        current = self.store.revision(environment)
+        lockfile, interrupted = await installer_records.owned(
+            asyncio.create_task(
+                self._lockfile(environment, current.revision if current is not None else None)
+            )
+        )
+        if interrupted is not None:
+            raise interrupted
+        installed: set[str] = (
+            {package.name for package in lockfile.conda} if lockfile is not None else set()
+        )
+        if (
+            current is None
+            or lockfile is None
+            or self.store.revision(environment) != current
+            or any(resolution.spec_name(spec)[1] not in installed for spec in specs)
+        ):
+            raise _Stop(
+                ProvisionOutcome.FAILED,
+                "resolve_failed",
+                "resolve",
+                ErrorInfo(
+                    kind=ErrorKind.UNAVAILABLE,
+                    message="Upgrade targets are absent from the current retained Conda lockfile "
+                    "or that revision is unknown/changed; no update was dispatched.",
+                ),
+            )
 
     async def _nothing_to_install(
         self, op: _Op, request: ProvisionRequest, capability: CapabilitySpec | None
@@ -1274,7 +1317,12 @@ class Provisioner:
         conda_files = [file for file in decided.files if file.ecosystem == "conda"]
         try:
             if conda_files:
-                label, argv = "install-conda", resolution.conda_install(conda, conda_files)
+                label = "install-conda"
+                argv = (
+                    resolution.conda_upgrade(conda, conda_files)
+                    if op.record.request.action == "upgrade"
+                    else resolution.conda_install(conda, conda_files)
+                )
             else:
                 pip_files = [file for file in decided.files if file.ecosystem == "pypi"]
                 label, argv = "install-pip", resolution.pip_install(pip_files)

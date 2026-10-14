@@ -405,7 +405,7 @@ reviewed original isolated root setup and source bindings; it is not a retry or
 arbitrary-command interface. [Lab35](../docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md)
 passed at runtime `d236b6b`/helper `fbbe3b61` in52.285s, with17 checked public
 records and independently verified complete teardown. Source/gates and actual
-runtime evidence remain pinned separately; fresh CI/delivery are pending.
+runtime evidence remain pinned separately. PR #121 is delivered at `d2fe8fa` after all four fresh checks passed (run `38510468628`).
 
 One original minimal VM and actual worker/client composition run scalar35 before
 python-flint and wheel-only ecdsa0.19.1, under the existing policy/cache. The helper
@@ -423,3 +423,22 @@ literal in memory, then exports checked records and performs exact held-FD owned
 teardown. Private settings/provider contents and raw execution output are never
 exported or hashed. The helper is intentionally tied to its recorded product
 inputs; a later changed product tree requires separate review and repinning.
+
+
+## Lab36 — explicit named Conda upgrade
+
+The root-only helper `.agents/labs/provisioning_upgrades.py` is source-admitted
+after independent typed-helper and admission review. Its default only describes
+the finite plan. Root owns the separately reviewed startup, run, exact public
+export and original-state cleanup adapters; source and helper remain frozen until
+complete independent teardown. [The first actual Lab36 run](../docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md) passed EXIT0/57.266s, nine canonical executions and23 public records; complete owned teardown was independently cleared at2026-10-14T04:49:51.949614Z. Fresh publication CI/delivery remain separate.
+
+The bounds are one VM, at most16 accepted executions, two unique provisioning
+operations (one install and one update) and one known terminal replay. A scalar
+pilot precedes SymPy1.13.3; the existing MAIN provisioning handler requests the
+explicit1.14.0 upgrade. Fresh guest Python checks each version and a small symbolic
+factor/expand identity, avoiding a stale imported module. The fixed public
+Conda-forge metadata receipt only establishes historical candidate availability.
+The production selected-file policy, AGPL and permission checks still decide work.
+No model/provider call, automatic approval, rollback or disk-quota enforcement is
+claimed. Preserve original failures, identities and owners before any retry.
