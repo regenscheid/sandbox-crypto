@@ -1,46 +1,36 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { api } from '../lib/api';
   import { formatTime } from '../lib/format';
-  import { KernelPoller, onKernelLogout, type KernelPollState } from '../lib/kernels';
+  import { readKernels, type KernelObservation } from '../lib/kernels';
+  import { initialPoll, Poller, type PollState } from '../lib/poller';
   let {
     projectId,
     sessionId,
     environmentId,
-    initialState = { phase: 'loading', data: null },
+    initialState = initialPoll(),
   }: {
     projectId: string;
     sessionId: string;
     environmentId: string;
-    initialState?: KernelPollState;
+    initialState?: PollState<KernelObservation>;
   } = $props();
-  let viewState = $state<KernelPollState>(untrack(() => initialState));
+  let viewState = $state<PollState<KernelObservation>>(untrack(() => initialState));
   let mounted = $state(false);
   onMount(() => {
     mounted = true;
   });
   $effect(() => {
     if (!mounted) return;
-    const project = projectId,
-      session = sessionId,
-      environment = environmentId;
-    viewState = { phase: 'loading', data: null };
-    const poller = new KernelPoller(
-      (signal) => api.kernels(project, session, environment, signal),
+    const scope = { projectId, sessionId, environmentId };
+    viewState = initialPoll();
+    const poller = new Poller(
+      (signal) => readKernels(scope, signal),
       (value) => {
         viewState = value;
       },
     );
-    const visibility = () => poller.setVisible(document.visibilityState === 'visible');
-    const offLogout = onKernelLogout(() => poller.logout());
-    document.addEventListener('visibilitychange', visibility);
-    visibility();
-    return () => {
-      poller.stop();
-      offLogout();
-      document.removeEventListener('visibilitychange', visibility);
-    };
+    return poller.watch();
   });
 </script>
 
@@ -57,7 +47,7 @@
     <p role="status">Kernel observations stopped for sign-out. Reload after signing in.</p>
   {:else if viewState.phase === 'missing'}
     <p role="status">This session is absent or closed. Kernel observations stopped.</p>
-  {:else if viewState.phase === 'unconfigured'}
+  {:else if viewState.phase === 'unsupported'}
     <p role="status">
       Kernel observations unavailable: the worker is unconfigured or does not support passive
       observations.

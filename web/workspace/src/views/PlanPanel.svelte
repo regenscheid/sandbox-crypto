@@ -3,27 +3,26 @@
   import { onMount, untrack } from 'svelte';
   import { formatTime } from '../lib/format';
   import {
-    PlanPoller,
     readSessionPlan,
-    onPlanLogout,
     currentStepStatus,
     planCounts,
     authorLabel,
-    type PlanPollState,
+    type PlanObservation,
   } from '../lib/plans';
+  import { initialPoll, Poller, type PollState } from '../lib/poller';
   import PlanEditor from './PlanEditor.svelte';
   let {
     projectId,
     sessionId,
     closed = false,
-    initialState = { phase: 'loading', data: null },
+    initialState = initialPoll(),
   }: {
     projectId: string;
     sessionId: string;
     closed?: boolean;
-    initialState?: PlanPollState;
+    initialState?: PollState<PlanObservation>;
   } = $props();
-  let viewState = $state<PlanPollState>(untrack(() => initialState));
+  let viewState = $state<PollState<PlanObservation>>(untrack(() => initialState));
   let mounted = $state(false);
   let refreshTick = $state(0);
   const data = $derived(
@@ -45,23 +44,17 @@
       phase: 'loading',
       data:
         previous?.project_id === projectId && previous.session_id === sessionId ? previous : null,
+      busy: false,
     };
-    const poller = new PlanPoller(
+    // A closed session's plan is read once; an open one until it is seen closed.
+    const poller = new Poller(
       (signal) => readSessionPlan(scope, signal),
       (value) => {
         viewState = value;
       },
-      closed,
+      { once: closed, done: (found) => found.session_closed_at !== null },
     );
-    const visibility = () => poller.setVisible(document.visibilityState === 'visible');
-    const offLogout = onPlanLogout(() => poller.logout());
-    document.addEventListener('visibilitychange', visibility);
-    visibility();
-    return () => {
-      poller.stop();
-      offLogout();
-      document.removeEventListener('visibilitychange', visibility);
-    };
+    return poller.watch();
   });
 </script>
 

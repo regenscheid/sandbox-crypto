@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { authorLabel, onPlanLogout, type PlanObservation } from '../lib/plans';
+  import { authorLabel, type PlanObservation } from '../lib/plans';
+  import { onSignOut } from '../lib/session';
   import { PlanEditSession, textFields, sameRef, type EditorView } from '../lib/planEdits';
   let {
     projectId,
@@ -36,7 +37,7 @@
       refresh,
     );
     editor = session;
-    const off = onPlanLogout(() => session.logout());
+    const off = onSignOut(() => session.logout());
     return () => {
       off();
       session.stop();

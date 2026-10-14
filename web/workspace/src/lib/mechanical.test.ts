@@ -104,7 +104,9 @@ it('uses scoped read-only mechanical evidence routes and preserves explicit unav
     ],
     next_after: null,
   };
-  const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => body });
+  const fetch = vi.fn(
+    async (_path: string, _init?: RequestInit) => new Response(JSON.stringify(body)),
+  );
   vi.stubGlobal('fetch', fetch);
   const result = await reviews.math('project/one', 'session/two');
   expect(result.queue[0]?.running).toBe(1);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 /** Review text and pinned evidence are untrusted data, never browser HTML. */
-import { get, post, type Json, type MacroContext } from './api';
+import type { Json, MacroContext } from './api';
+import { get, post } from './http';
 export interface Review {
   review_id: string;
   kind: string;

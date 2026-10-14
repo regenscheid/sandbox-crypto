@@ -69,14 +69,12 @@ requests remain available.
 
 ## Request lifetime and limits
 
-One physical write owns a project/session until headers, body and cancellation
-actually settle, including fetch implementations that ignore abort. Different
-plan IDs do not bypass that ownership; another session remains independent.
-The request has an eight-second abort deadline, a bounded 8-KiB streamed response
-and at most 128 body chunks. Arbitrary non-conflict error bodies are cancelled
-without parsing or exposing their text. Late unmount, scope and logout responses
-cannot apply to a replacement editor. The existing sticky logout fence also
-refuses newly mounted editor writes during pending sign-out.
+One write at a time per project and session: a second save waits until the
+first request settles, while another session stays independent. The request goes
+through the workspace's shared request function with an eight-second deadline and
+an 8-KiB answer limit. A 409 carries the current plan reference; other refusals
+keep their status. Late unmount, scope and sign-out responses cannot apply to a
+replacement editor, and after sign-out no editor writes.
 
 Abort is not proof of server cancellation. The server checks logical session
 openness at admission and commit; this route provides no opaque cross-request
@@ -86,6 +84,6 @@ that a retained retry belongs to an earlier open lifetime.
 The tests in `web/workspace/src/lib/planEdits.test.ts` cover reference
 preservation, invalid drafts, changed structure and reload, refresh after an
 acknowledged save, conflict and uncertainty, new intent after explicit
-reconciliation, storage failure, request ownership per session, streamed response
-limits, logout, read-only scopes and escaped server-side rendering. A browser run
+reconciliation, storage failure, one write per session, response limits,
+sign-out, read-only scopes and escaped server-side rendering. A browser run
 with a withheld response is in the [acceptance report](../.agents/docs/agent-reports/user-plan-editing-2026-10-13.md).

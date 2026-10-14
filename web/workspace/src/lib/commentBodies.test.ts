@@ -133,7 +133,7 @@ it('renders immutable original and correcting actor while exposing USER-own body
 });
 
 it('submits corrections through the existing authenticated same-origin route with explicit source CAS', async () => {
-  const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ revision: 7 }) });
+  const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ revision: 7 })));
   vi.stubGlobal('fetch', fetch);
   await api.changeComment('p', 'doc', {
     action: 'edit_body',

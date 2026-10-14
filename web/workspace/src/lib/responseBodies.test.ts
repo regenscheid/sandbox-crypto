@@ -29,7 +29,7 @@ it('shows original versus corrected MAIN source independently of scientific hist
   expect(html).not.toContain('<textarea');
 });
 it('uses a scoped read-only original-response/body-revision route', async () => {
-  const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ revision: 1 }) });
+  const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ revision: 1 })));
   vi.stubGlobal('fetch', fetch);
   await reviews.responseBody('p/one', 's/two', 'finding/exact', 3, 1);
   expect(fetch.mock.calls[0]?.[0]).toBe(

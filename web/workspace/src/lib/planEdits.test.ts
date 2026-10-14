@@ -429,27 +429,12 @@ describe('bounded owned write transport', () => {
       '/api/v0/projects/p/sessions/s/plan/changes',
       {
         method: 'POST',
-        credentials: 'same-origin',
         redirect: 'error',
         cache: 'no-store',
         body: JSON.stringify(r),
       },
     ]);
   });
-  it.each(['redirected', 'opaqueredirect'])(
-    'refuses %s responses even when a fetch ignores redirect policy',
-    async (kind) => {
-      const r = request(),
-        v = response(r);
-      Object.defineProperty(v, kind === 'redirected' ? 'redirected' : 'type', {
-        value: kind === 'redirected' ? true : kind,
-      });
-      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(v));
-      await expect(writePlanChange(scope, r, new AbortController().signal)).rejects.toMatchObject({
-        status: 0,
-      });
-    },
-  );
   it.each(['scope', 'operation', 'version', 'unsafe'])('refuses wrong %s receipt', async (kind) => {
     const r = request(),
       v = { project_id: 'p', session_id: 's', receipt: ack(r) };
@@ -487,39 +472,20 @@ describe('bounded owned write transport', () => {
       writePlanChange(scope, replacement, new AbortController().signal),
     ).resolves.toEqual(ack(replacement));
   });
-  it('owns stalled body cancellation until actual drain', async () => {
-    vi.useFakeTimers();
-    const r = request(),
-      draining = deferred<void>(),
-      cancel = vi.fn().mockReturnValue(draining.promise);
+  it.each([403, 404, 413, 503])('keeps the status of a %i refusal', async (status) => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(new Response(new ReadableStream<Uint8Array>({ cancel }))),
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: { kind: 'x', message: 'private' } }), { status }),
+        ),
     );
-    const first = writePlanChange(scope, r, new AbortController().signal).catch((e) => e);
-    await vi.advanceTimersByTimeAsync(EDIT_DEADLINE_MS);
-    expect(cancel).toHaveBeenCalledOnce();
     await expect(
       writePlanChange(scope, request(), new AbortController().signal),
-    ).rejects.toMatchObject({ status: 0 });
-    draining.resolve();
-    expect(await first).toBeInstanceOf(PlanWriteError);
+    ).rejects.toMatchObject({ status, message: 'Plan text save unavailable' });
   });
-  it.each([401, 403, 404, 413, 503])(
-    'cancels arbitrary %i body without exposing it',
-    async (status) => {
-      const cancel = vi.fn();
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue(new Response(new ReadableStream({ cancel }), { status })),
-      );
-      await expect(
-        writePlanChange(scope, request(), new AbortController().signal),
-      ).rejects.toMatchObject({ status, message: 'Plan text save unavailable' });
-      expect(cancel).toHaveBeenCalledOnce();
-    },
-  );
-  it.each(['declared', 'streamed', 'chunks', 'utf8'])('bounds %s response', async (kind) => {
+  it.each(['declared', 'streamed', 'utf8'])('bounds %s response', async (kind) => {
     const stream = new ReadableStream<Uint8Array>({
       pull(c) {
         c.enqueue(
@@ -600,7 +566,11 @@ describe('plain structured projection', () => {
     v.session_closed_at = at;
     v.plan!.version.reason = 'USER reason <script>synthetic</script>';
     const html = render(PlanPanel, {
-      props: { projectId: 'p', sessionId: 's', initialState: { phase: 'observed', data: v } },
+      props: {
+        projectId: 'p',
+        sessionId: 's',
+        initialState: { phase: 'observed', data: v, busy: false },
+      },
     }).body;
     expect(html).toContain('Edit plan text');
     expect(html).toContain('This recorded plan is read-only');
@@ -609,14 +579,22 @@ describe('plain structured projection', () => {
     v.plan = null;
     expect(
       render(PlanPanel, {
-        props: { projectId: 'p', sessionId: 's', initialState: { phase: 'observed', data: v } },
+        props: {
+          projectId: 'p',
+          sessionId: 's',
+          initialState: { phase: 'observed', data: v, busy: false },
+        },
       }).body,
     ).not.toContain('Edit plan text');
   });
   it('does not mount an editor or display prior data under a changed scope', () => {
     const v = observed();
     const html = render(PlanPanel, {
-      props: { projectId: 'other', sessionId: 's', initialState: { phase: 'observed', data: v } },
+      props: {
+        projectId: 'other',
+        sessionId: 's',
+        initialState: { phase: 'observed', data: v, busy: false },
+      },
     }).body;
     expect(html).not.toContain('Study evidence');
     expect(html).not.toContain('Edit plan text');
@@ -624,12 +602,12 @@ describe('plain structured projection', () => {
   it('sticky logout invalidates delayed results and prevents new editor writes', async () => {
     vi.resetModules();
     const m = await import('./planEdits'),
-      kernels = await import('./kernels'),
+      session = await import('./session'),
       r = request(),
       pending = deferred<Response>();
     vi.stubGlobal('fetch', vi.fn().mockReturnValue(pending.promise));
     const first = m.writePlanChange(scope, r, new AbortController().signal).catch((e) => e);
-    kernels.stopKernelReadsForLogout();
+    session.signOut();
     pending.resolve(response(r));
     expect(await first).toBeInstanceOf(m.PlanWriteError);
     await expect(
