@@ -1,8 +1,10 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Original run/kernel binding prerequisite
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/delegation-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 This internal prerequisite records a controller-attributed child run's original
-managed endpoint. It prepares for [D81](DECISIONS.md): children are runs in their
+managed endpoint. It prepares for [D81](../../../docs/DECISIONS.md): children are runs in their
 existing session, using its environment, workspace and grants, with kernels of
 their own. It does not route a cell, start a child or kernel, or complete D81.
 
@@ -13,7 +15,7 @@ The draft delegation concurrency/depth and role defaults remain separate.
 
 ## Attribution and original identity
 
-[`RunKernelScope`](../packages/contracts/src/sandbox_science/contracts/run_kernels.py)
+`RunKernelScope`
 contains the explicit project, session, environment, original parent run,
 delegation and child run IDs. Parent and child must be distinct and cannot
 impersonate USER. All identifiers are bounded ASCII. The future caller must
@@ -38,7 +40,7 @@ fields and model/scalar subclasses are refused before their callbacks.
 
 ## Internal methods and proof
 
-[`ExecutionManager.enroll_run_kernel(scope, operation_id, initialize=False)`](../packages/worker/src/sandbox_science/worker/manager.py)
+[`ExecutionManager.enroll_run_kernel(scope, operation_id, initialize=False)`](../../../packages/worker/src/sandbox_science/worker/manager.py)
 is synchronous and internal. Its new method is not called by existing APIs.
 It requires an already connected, unfenced, unlocked, nonclosed/nondetaching
 channel and an explicitly configured trusted managed VM identity. The single
@@ -60,7 +62,7 @@ ordinary CP-13 and controller/session admission before actual launch. Receipt
 time is a trusted host observation, not an atomic external VM-health or
 filesystem snapshot and not an opaque session-open lifetime.
 
-[`RunKernelBindings`](../packages/worker/src/sandbox_science/worker/run_kernels.py)
+`RunKernelBindings`
 borrows the canonical worker `Store` connection and transaction seam. Its lower
 level `enroll(binding, operation_id, initialize=False, validate=None)` stores
 explicit trusted attribution. It cannot authenticate endpoints by itself;
@@ -122,7 +124,7 @@ ownership or cross-request session-lifetime guarantee is implemented here.
 The [internal child-kernel dispatcher](RUN-KERNEL-DISPATCH.md) has independently
 reviewed source `28008e1`, integrated at `7619a4b`, with fresh 11,133 Python and
 required static/locked/license/protocol gates passed. Its root-owned
-[Lab33 acceptance](../.agents/docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md)
+[Lab33 acceptance](../../docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md)
 and complete independent cleanup are clear; final delivery/fresh CI remain
 separate. This enrollment prerequisite alone still performs no dispatch. Its
 companion implements these run-aware paths together:

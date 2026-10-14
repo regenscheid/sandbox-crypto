@@ -1,5 +1,7 @@
 # Document export inputs
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/document-sync-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 Living documents remain Markdown containing LaTeX mathematics. The internal
 export-input snapshot is a prerequisite for LD-35–38, not a `.tex` editor,
 converter, PDF exporter or worker-staging implementation. The existing

@@ -43,7 +43,7 @@ installed prompt library:
 | Offered tool descriptions/schemas | [tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/tools.py):64–235, `Toolbox` at274; [documents/tool.py](../packages/orchestrator/src/sandbox_science/orchestrator/documents/tool.py); [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py):54 | Descriptions and JSON schemas are sent with each model call by `model.py:102`. They are executable product guidance and need the same review as system text. `start_job` still claims worker restarts lose jobs until a daemon exists, although daemon recovery is implemented. Correct the description without promising survival after actual VM/daemon loss. |
 | Platform notice templates | [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py):91–137,150–178,191–258 | Work requests, job completions, reviewer findings/counts and closing mechanical findings enter model context. Successfully delivered IDs are tracked separately from fetched/input-only notices. No plan-change notice exists. Kernel inbox prerequisites remain separate from delivery wiring. |
 | Background watcher | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py):34,540–575 | Tool-free bounded JSON progress assessment; failure wakes the waiting MAIN agent. It cannot cancel a job or determine scientific correctness. Its call reservations/model usage are retained. |
-| Consistency reviewer | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py):4–6; [runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py):279–310,388 | Versioned original rubric, pinned snapshot, read-only evidence tools, strict finish/decision handling, bounds and confirmation read/CAS guards. This is the actual runner. `reviews.py:4` is a historical trigger helper with a stale not-built docstring, not the current reviewer prompt. |
+| Consistency reviewer | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py):4–6; [runner.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/runner.py):279–310,388 | Versioned original rubric, pinned snapshot, read-only evidence tools, strict finish/decision handling, bounds and confirmation read/CAS guards. This is the actual runner. |
 | Display math repair | [workspace/mathrepair.py](../packages/workspace/src/sandbox_science/workspace/mathrepair.py):47–60,225–230,338 | Separate no-tool model call for one expression, bounded and sanitized. Existing file records a permitted MIT adaptation from the user's own wrapper; this document copies none of that prompt text. Repair is display assistance, never a stored source change, mathematical proof or mechanical finding confirmation. |
 | Model adapter | [model.py](../packages/orchestrator/src/sandbox_science/orchestrator/model.py):50,69–141 | Provider-neutral protocol and OpenAI-compatible tool calls; optional token limit and bounded response. No general role prompt catalog, prompt-bundle provenance, planning router or automatic compactor. MAIN has no implemented generic context budget/compaction threshold. |
 | Retained run/audit | [projects.py](../packages/orchestrator/src/sandbox_science/orchestrator/projects.py):153,432; [cli.py](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py):341 | Saved messages retain rendered prompt text; fixed failed-run metadata and partial outcomes survive ordinary failures. Save/fsync precedes notice ACK. This is not a durable running-plan or delegated-run scheduler. |
@@ -72,8 +72,9 @@ A separate child of the initial design freeze corrects only three existing text
 inputs: MAIN now distinguishes configured-worker research execution from control
 bookkeeping and requires actual location/isolation evidence; `start_job` qualifies
 worker/bridge recovery on original daemon/sandbox continuity and preserves lost
-outcomes without automatic resubmission; the historical `reviews.py` docstring
-points to the implemented reviewer. The inventory above records the earlier audit
+outcomes without automatic resubmission; the reviewer docstring points to the
+implemented reviewer in `consistency/` (the historical `reviews.py` helper has
+since been removed). The inventory above records the earlier audit
 and its findings. No tool schema, whitelist, policy, dispatch, closing or model-call
 behavior changes in that correction slice. The later planning and narrow MAIN
 input-provenance integrations are separate. The wider catalog and delegation
@@ -623,6 +624,8 @@ The [explicit stateful MAIN kernel consumer](KERNEL-NOTICE-DELIVERY.md) adds at 
 4. **Delegated tracks:** add fresh scoped child runs, exact track authority/kernels,
    immutable outcomes, routing/cancel/restart ownership and bounded role settings.
    Resolve draft PD limits/default questions explicitly before enabling them.
+   An earlier unwired prototype is kept on the tag `archive/delegation-2026-10`;
+   delegation will be rebuilt as a role of the one loop ([refactoring plan](../.agents/refactor-plan/PLAN.md), Phase 4 item 7).
 5. **Skills and context lifecycle:** catalog/load provenance and worker helper rules,
    then bounded compaction/resume with retained source. Separate later live-model
    evaluations test whether the original stock prompts improve research behavior.

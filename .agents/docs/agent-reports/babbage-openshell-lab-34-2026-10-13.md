@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 # OpenShell Lab34: restricted child controllers through authenticated HTTP
 
-The corrected finite run passed on signed clean source 7fa004743a32888e502e2fd5c50d3d6d785006b1, with helper SHA256 4e2524fc6381ec7b1c33188131ebeef9f87cbdf38cb959d3b05c1b4ebe82fa18. This joins the explicitly configured [child controller](../../../docs/DELEGATED-CHILD-CONTROLLER.md), original prompt and positive toolbox, canonical attempt journal and [selected-worker HTTP transport](../../../docs/DELEGATED-RUN-TRANSPORT.md). A scripted ChatModel supplied finite calls; the actual controller, stores, client, HTTP app, dispatcher, daemon and OpenShell guest performed the work.
+The corrected finite run passed on signed clean source 7fa004743a32888e502e2fd5c50d3d6d785006b1, with helper SHA256 4e2524fc6381ec7b1c33188131ebeef9f87cbdf38cb959d3b05c1b4ebe82fa18. This joins the explicitly configured [child controller](../archive/DELEGATED-CHILD-CONTROLLER.md), original prompt and positive toolbox, canonical attempt journal and [selected-worker HTTP transport](../archive/DELEGATED-RUN-TRANSPORT.md). A scripted ChatModel supplied finite calls; the actual controller, stores, client, HTTP app, dispatcher, daemon and OpenShell guest performed the work.
 
 ## Actual acceptance
 

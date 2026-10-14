@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Internal child turn journal
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/delegation-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 `child_attempts.py` retains a canonical child's explicitly supplied input and
 bounded partial conversation before the explicitly configured
 [child controller](DELEGATED-CHILD-CONTROLLER.md) performs work. This module adds

@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Explicit restricted child conversations
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/delegation-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 This internal callable connects the original [delegation records](DELEGATION-RECORDS.md),
 [child-attempt journal](CHILD-ATTEMPTS.md), [own-track adapter](DELEGATED-PLAN-PROGRESS.md)
 and authenticated selected-run transport. It installs no launcher, parent/child tool,

@@ -1,12 +1,14 @@
 # Internal delegation briefs and handbacks
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/delegation-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 Date: 2026-10-13. This records-only prerequisite supports the queued W4/D86
-delegation work and confirmed [D81](DECISIONS.md). It installs no launcher,
+delegation work and confirmed [D81](../../../docs/DECISIONS.md). It installs no launcher,
 model tool, prompt, route, worker action, approval or grant. A prepared record
 does not prove dispatch or a running child. An unfinished intent retains an
 unknown terminal outcome; replay does not authorize repeating possible effects.
 
-The [plans/delegation specification](specs/plans-and-delegation.md) remains a
+The [plans/delegation specification](../../../docs/specs/plans-and-delegation.md) remains a
 draft beyond its confirmed requirements. The record vocabulary below is an
 explicit engineering increment, not adoption of all PD-11–22 defaults. No
 concurrency/depth, one-correction-call, model fallback, cost, approval, question
@@ -14,7 +16,7 @@ or resume policy is enabled.
 
 ## Identity and authority
 
-[`DelegationRecords`](../packages/orchestrator/src/sandbox_science/orchestrator/delegation_records.py)
+`DelegationRecords`
 borrows an existing canonical `DocumentStore`. Every operation has separate
 trusted attribution. `ParentAuthority` binds project, session, environment and
 original parent run. `HandbackAuthority` additionally binds the original

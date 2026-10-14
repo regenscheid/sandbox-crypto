@@ -369,33 +369,11 @@ worker/progress ordering. See
 
 ## Lab33: internal child-kernel dispatcher
 
-[`run_kernel_dispatch.py`](run_kernel_dispatch.py) defaults to a description with
-no production import or runtime effect. Active `prepare`, `run` and read-only
-`inspect` require `--head <exact-signed-clean-runtime-head> --admit`, a fixed
-owned lab and explicit root coordination. Corrected helper-only `91125f4` is integrated at
-`24eac09`, with independent helper/setup/collector source clearance and exact
-original/ready/done producer-to-collector checks. That is the historical source-readiness checkpoint. Later actual acceptance and complete teardown passed; exact runtime pins and limits are retained in [the Lab33 report](../docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md).
+The helper `run_kernel_dispatch.py` and the dispatcher it exercised were removed from main and are kept on the tag `archive/delegation-2026-10`. Results: [the Lab33 report](../docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md).
 
-Root freezes source/helper, starts only the normal gateway/cache/middleware and
-registers the documented endpoint-free profile with a visibly synthetic provider.
-Use fixed private settings with no token files, clients, worker HTTP server or
-automatic suspender. Helper processes themselves require a fresh explicit
-allowlist environment; backend child environment configuration alone does not
-strip inherited model/provider credentials. Actual CLI/app lifecycle assembly
-uses one manager/dispatcher and drains borrowed owners before stores close.
+## Lab34: restricted child controller
 
-The fixed fixture uses two canonical shared sessions and three actual generated
-child records, at most 20 Python cells, eight child controls, one session close
-and one original managed VM. Root must supply fresh safe gateway proofs through
-the fixed stopped-ready/before/reads-done/after handshake, bound to the exact
-source/helper/run/original VM. Thirty no-wake reads use the same initialized
-owner, actual retired endpoint and unchanged existing stores. Bracketing gateway
-observations prove two observed phases, not continuous VM state. Preserve unknown
-original intents for inspection; never repeat a whole run or reseed lost history.
-Export only bounded public evidence, scan the synthetic literal in memory and
-verify complete owned VM/unit/process/listener/private-state teardown independently.
-This fixture proves no authenticated delegation controller, model launcher, grant,
-inter-kernel filesystem isolation or scientific result.
+The helper `delegated_child.py` and the controller it exercised were removed from main and are kept on the tag `archive/delegation-2026-10`. Results: [the Lab34 report](../docs/agent-reports/babbage-openshell-lab-34-2026-10-13.md).
 
 ## Lab35: installer observations and provisioning events
 

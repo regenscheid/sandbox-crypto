@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Controller-only selected-run transport
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/delegation-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 This source slice connects authenticated HTTP/client calls to the existing internal
 child dispatcher. It enables no launcher, model, model tool, default profile,
 approval, concurrency/depth/spend policy or automatic child activation. Actual

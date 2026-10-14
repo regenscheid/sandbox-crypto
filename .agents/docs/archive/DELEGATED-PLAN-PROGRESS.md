@@ -1,9 +1,11 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Internal delegated own-track progress
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/delegation-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 `delegated_plan_tools.py` supplies an internal adapter for an explicitly granted
 child to read its current track and append progress through the canonical
-[session-plan store](SESSION-PLANS.md). It does not register a model tool or launch
+[session-plan store](../../../docs/SESSION-PLANS.md). It does not register a model tool or launch
 a child. The [delegation records](DELEGATION-RECORDS.md) remain the sole source of
 prepared parent/delegation/child identity and handback history. Kernel routing,
 model configuration and a controller-owned delegated run loop remain separate.

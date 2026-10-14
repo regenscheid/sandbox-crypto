@@ -1,5 +1,7 @@
 # Internal worker document source adapter
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/document-sync-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 The control-side prerequisite for LD-50 is implemented in
 `documents.worker_source.WorkerSourceAdapter`. It converts an attested immutable capture
 to named document operations, or retains its exact rejected bytes. It is an internal
@@ -99,7 +101,7 @@ No arbitrary filesystem path is read.
 
 The source event sequence is a durable reference; it is not a catalog sequence. An
 applied receipt says publication is pending, and never invents a transport acknowledgement.
-The central SQL [publication hook](LIVING-DOCUMENTS.md#publication-outbox-prerequisite)
+The central SQL [publication hook](../../../docs/LIVING-DOCUMENTS.md)
 executes inside the same document transaction; this adapter neither implements nor
 imports it. Integration checks inject a failure after the hook's append and verify
 rollback of source, raw capture, receipt and publication cursor, followed by one exact

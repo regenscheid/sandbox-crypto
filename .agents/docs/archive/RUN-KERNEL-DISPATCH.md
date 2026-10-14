@@ -1,19 +1,21 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Internal child-kernel dispatcher
 
+> **Archived.** This code was removed from main; it is preserved on the tag `archive/delegation-2026-10`. See the [refactoring plan](../../refactor-plan/PLAN.md), decision 2.
+
 The internal source is independently reviewed at signed `28008e1`, integrated
 with actual main at signed source-gate union `7619a4b`. Fresh combined gates pass
 11,133 Python tests, 43 opt-in skips and two existing warnings in 388.54s, with all
 required static, locked dependency, license and protocol checks. Existing 803
 web/24 math checks and 76 accepted build files are explicitly reused through exact
 inputs. Original failures and the interrupted predecessor full run remain
-unsuccessful evidence. Root-owned [OpenShell Lab33](../.agents/docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md)
+unsuccessful evidence. Root-owned [OpenShell Lab33](../../docs/agent-reports/babbage-openshell-lab-33-2026-10-13.md)
 passed on frozen signed `0961999` / helper `a3fa2086`, with independent runtime
 and complete owned-cleanup clearance. Final delivery review and fresh PR checks
 remain separate.
 
 The dispatcher extends the [original binding prerequisite](RUN-KERNELS.md) for
-[D81](DECISIONS.md). A child uses its canonical session's existing environment
+[D81](../../../docs/DECISIONS.md). A child uses its canonical session's existing environment
 and workspace, with a separate Python or Sage interpreter. It shares the guest
 UID and files with MAIN and other children. Interpreter separation provides
 neither filesystem isolation nor a security boundary between researchers.
