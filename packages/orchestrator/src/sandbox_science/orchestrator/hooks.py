@@ -1,20 +1,25 @@
 # SPDX-License-Identifier: MIT
 """Turn hooks: how a subsystem takes part in a run of the tool loop.
 
-A hook offers notices at the loop's safe points, may ask for another turn when the
-model answers, and acknowledges what a saved run record says was delivered. The loop
-alone applies the delivery rules:
+A hook offers notices at the loop's safe points, sees each tool result, has its say on
+a closing answer, and acknowledges what a saved run record says was delivered. The
+loop alone applies the delivery rules:
 
 - A notice's IDs count as delivered only after a model call that saw it returns.
 - The run's record is saved, naming each source's delivered IDs in
-  ``RunRecord.delivered``, before any hook acknowledges them. A hook that fails to
-  acknowledge does not stop the others.
-- A closing hook gets another turn only while turns remain, and only with notices.
+  ``RunRecord.delivered`` and its summary in ``RunRecord.summaries``, before any hook
+  acknowledges them. A hook that fails to acknowledge does not stop the others.
+- At a closing answer, a hook gets another turn only while turns remain, and a
+  response round only while response rounds remain, and either only with notices.
+  Hooks check this too, before doing work for a turn that cannot come.
 - Notices at the ``tool`` point ride on the tool result, bounded with it, each under
   a key of its own. A hook that fails there, or a notice whose key is taken or that is
   too long, offers nothing: the result stands and the notice waits.
 
-Hooks run in a fixed order, which is the order their notices reach the model.
+Hooks run in a fixed order, which is the order their notices reach the model. A veto
+hook is asked about a closing answer first, and again after every hook accepted it.
+Leases are taken in hook order and released in reverse; each lease releases what it
+holds whatever happened to the others.
 """
 
 from __future__ import annotations
@@ -22,14 +27,18 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 if TYPE_CHECKING:
+    from .model import Message
     from .projects import RunRecord
 
 Point = Literal["start", "turn", "tool"]
 """``start``: once, before the first turn. ``turn``: before each model call.
 ``tool``: after each tool call, on its result."""
+
+RESPONSE_ROUNDS: Final = 2
+"""Closing answers a run may take back to respond to findings, whatever their source."""
 
 
 @dataclass(frozen=True)
@@ -48,17 +57,39 @@ class Notice:
 
 @dataclass(frozen=True)
 class Closing:
-    """A hook's view of a closing answer: accept it, or continue with ``notices``."""
+    """A hook's view of a closing answer. Its notices are added in every case.
 
-    action: Literal["accept", "continue"] = "accept"
+    - ``accept``: the answer may stand.
+    - ``continue``: the notices are new input; the run takes another turn.
+    - ``respond``: the notices are findings to answer; the run takes a response round,
+      one for every hook that asks in this closing.
+    - ``retry``: the answer cannot stand; another turn, or the run stops as ``stopped``.
+    - ``stop``: the run ends without an answer, as ``stopped``.
+    """
+
+    action: Literal["accept", "continue", "respond", "retry", "stop"] = "accept"
     notices: tuple[Notice, ...] = ()
+    stopped: str = "user_message"
 
 
 class RunView(Protocol):
     """What a hook may read of the run in progress."""
 
     @property
+    def messages(self) -> Sequence[Message]: ...
+
+    @property
     def turns_left(self) -> int: ...
+
+    @property
+    def response_rounds(self) -> int:
+        """Response rounds the run has taken."""
+        ...
+
+    @property
+    def can_respond(self) -> bool:
+        """Whether a turn and a response round remain."""
+        ...
 
     def delivered_ids(self, source: str) -> frozenset[str]: ...
 
@@ -67,6 +98,8 @@ class TurnHook:
     """One subsystem's part in a run. Every method has a default that does nothing."""
 
     name: str = "hook"
+    veto: bool = False
+    """Asked about a closing answer before the others, and again once they accept it."""
 
     def lease(self) -> AbstractAsyncContextManager[None]:
         """Held for the whole run, around every turn."""
@@ -78,8 +111,18 @@ class TurnHook:
     async def model_returned(self, run: RunView) -> None:
         """After each successful model call, once the loop has counted its deliveries."""
 
+    async def observe_tool(self, run: RunView, record: dict[str, Any]) -> None:
+        """After each tool call, with the outcome the transcript keeps."""
+
     async def closing(self, run: RunView, answer: str | None) -> Closing:
         return Closing()
+
+    async def accept(self, run: RunView) -> None:
+        """Every hook accepted the closing answer and no response round follows."""
+
+    def summary(self) -> object | None:
+        """What the run's record keeps for this source at the end, if anything."""
+        return None
 
     async def acknowledge(self, record: RunRecord) -> None:
         """After the record is saved: settle what it names as delivered."""

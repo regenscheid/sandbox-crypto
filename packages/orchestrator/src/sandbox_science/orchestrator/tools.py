@@ -41,9 +41,9 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.worker import Language
 
 from .artifact_publisher import ArtifactPublisher
-from .consistency.controller import AUTHOR_NAMES, ReviewController
+from .consistency.controller import AUTHOR_NAMES, ReviewController, Reviews
 from .documents.errors import DocumentError
-from .documents.mathcontroller import MathController
+from .documents.mathcontroller import MathChecks, MathController
 from .documents.tool import NAMES as DOCUMENT_TOOLS
 from .documents.tool import DocumentTool, WorkRequests, with_notices
 from .hooks import TurnHook
@@ -51,7 +51,7 @@ from .jobs import BACKGROUND, JOB_SPECS, JobNotices, JobTools
 from .kernel_delivery import KernelDeliveryController
 from .model import ToolCall, ToolSpec
 from .plan_tools import NAMES as PLAN_TOOLS
-from .plan_tools import PlanTools
+from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools
 from .worker_client import WorkerAPIError, WorkerClient, dump
 
@@ -379,6 +379,12 @@ class Toolbox:
             hooks.append(WorkRequests(self.documents))
         if self.jobs is not None:
             hooks.append(JobNotices(self.jobs, max_chars=self.output_chars // 4))
+        if self.plans is not None:
+            hooks.append(Plans(self.plans))
+        if self.reviews is not None:
+            hooks.append(Reviews(self.reviews))
+        if self.math_checks is not None:
+            hooks.append(MathChecks(self.math_checks))
         return tuple(hooks)
 
     async def _call(self, call: ToolCall, operation: str, model: str | None) -> ToolOutcome:

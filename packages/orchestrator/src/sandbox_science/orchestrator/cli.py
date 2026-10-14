@@ -48,7 +48,6 @@ import json
 import math
 import sqlite3
 import sys
-import threading
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,8 +61,6 @@ from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .consistency.controller import ReviewController
-from .consistency.mathnotices import MathNotices
-from .consistency.notices import FindingNotices
 from .consistency.store import ReviewStore
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
 from .documents.errors import CONFLICT
@@ -427,13 +424,7 @@ async def _save(
     if owner is None:
         status = _keep(args, fields, status, saved=saved.append)
     else:
-        cancelled = threading.Event()
-        status = await owner.save(
-            lambda: _keep(
-                args, fields, status, saved=saved.append, may_ack=lambda: not cancelled.is_set()
-            ),
-            cancelled=cancelled,
-        )
+        status = await owner.save(lambda: _keep(args, fields, status, saved=saved.append))
     if not saved:
         return status
     for hook in hooks:
@@ -458,7 +449,6 @@ def _keep(
     status: int,
     *,
     saved: Callable[[RunRecord], None] | None = None,
-    may_ack: Callable[[], bool] | None = None,
 ) -> int:
     """Write the run's transcript, then keep its record in the project's; ``status``
     unless either fails.
@@ -485,32 +475,6 @@ def _keep(
             ProjectStore(args.state_dir).save_run(record)
             if saved is not None:
                 saved(record)
-            if may_ack is not None and not may_ack():
-                return status
-            # Save first: a crash before this acknowledgement safely repeats notices.
-            if review_ids := record.delivered.get("reviews"):
-                review_documents = DocumentStore(store_path(args.state_dir), producer="harness")
-                try:
-                    FindingNotices(ReviewStore(review_documents)).acknowledge(
-                        record.context.project_id,
-                        record.context.session_id,
-                        record.run_id,
-                        review_ids,
-                    )
-                finally:
-                    review_documents.close()
-            if math_ids := record.delivered.get("math"):
-                math_documents = DocumentStore(store_path(args.state_dir), producer="harness")
-                try:
-                    MathNotices(ReviewStore(math_documents)).acknowledge(
-                        record.context.project_id,
-                        record.context.session_id,
-                        record.run_id,
-                        math_ids,
-                        finalize=record.failure is None,
-                    )
-                finally:
-                    math_documents.close()
         except (
             ProjectError,
             DocumentError,

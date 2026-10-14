@@ -187,3 +187,55 @@ def test_a_legacy_record_reads_into_delivered_and_summaries() -> None:
     # The workspace reads the review and math summaries by their own names.
     assert (dumped["review_summary"], dumped["math_summary"]) == ({"outcome": "findings"}, {})
     assert RunRecord.model_validate(dumped) == record
+
+
+class Responds(TurnHook):
+    """Asks for a response round at every closing answer, and counts its accepts."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.closings = self.accepted = 0
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings += 1
+        notice = Notice(self.name, (f"{self.name}-{self.closings}",), "Finding: ", [1])
+        return Closing("respond", (notice,))
+
+    async def accept(self, run: RunView) -> None:
+        self.accepted += 1
+
+    def summary(self) -> object | None:
+        return {"closings": self.closings}
+
+
+async def test_hooks_share_response_rounds_and_the_last_answer_stands() -> None:
+    first, second = Responds("first"), Responds("second")
+    model = ScriptedModel([ModelTurn("a"), ModelTurn("b"), ModelTurn("c")])
+    transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[first, second])
+    # Two rounds, each answering both hooks' findings; then the answer stands.
+    assert (transcript.stopped, transcript.final_text) == ("answered", "c")
+    assert (transcript.response_rounds, first.accepted, second.accepted) == (2, 1, 1)
+    assert transcript.delivered_ids("first") == {"first-1", "first-2"}
+    assert transcript.summaries == {"first": {"closings": 3}, "second": {"closings": 3}}
+
+
+class Vetoes(TurnHook):
+    """Refuses every closing answer once, then stops the run."""
+
+    name = "veto"
+    veto = True
+
+    def __init__(self) -> None:
+        self.closings = 0
+
+    async def closing(self, run: RunView, answer: str | None) -> Closing:
+        self.closings += 1
+        return Closing("retry" if self.closings == 1 else "stop", stopped="user_message")
+
+
+async def test_a_veto_is_asked_first_and_can_stop_the_run_without_an_answer() -> None:
+    veto, later = Vetoes(), Continues("later", notices=True)
+    model = ScriptedModel([ModelTurn("a"), ModelTurn("b")])
+    transcript = await run_task(model, toolbox(), "go", run_id="r", hooks=[later, veto])
+    assert (transcript.stopped, transcript.final_text) == ("user_message", None)
+    assert (veto.closings, later.asked) == (2, 0)

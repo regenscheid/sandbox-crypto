@@ -24,7 +24,7 @@ IDs are the version strings in the code.
 | Research templates | `sandbox-stock-intake-1`, `sandbox-stock-literature-1`, `sandbox-stock-experiment-1`, `sandbox-stock-proof-audit-1`, `sandbox-stock-report-1` | [stock_prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/stock_prompts.py) | Only with `--research-template` ([research framing](STOCK-RESEARCH-PROMPTS.md)) |
 | MAIN assembly | `sandbox-main-bundle-1`, or `sandbox-main-bundle-2` with a template | [prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompt_bundle.py) `assemble_main` | Provenance of every MAIN run ([MAIN provenance](MAIN-PROMPT-PROVENANCE.md)) |
 | Offered tool descriptions and schemas | Pinned by hash, not versioned | `tools.py` `SPECS`, `SAGE`, `PDF_SPECS`, `ADMIT_HOSTS` and `Toolbox` (`restart_kernel`); `jobs.py` `JOB_SPECS`; `provision.py` `PROVISION_SPECS`; `documents/tool.py` and `documents/annotation_tools.py` `SPECS`; `consistency/controller.py` `AUTHOR_SPECS`; `plan_tools.py` `SPECS` | Every model call, filtered by the worker's features and the run's capabilities |
-| Platform notices | Not versioned | `documents/tool.py` `REQUEST_FRAMING`; `jobs.py` `NOTICE_FRAMING` and `ATTACHED_FRAMING`; `loop.py` `_reviews`, `_plans` and `_run_task` | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements and closing math findings; job completions also ride on tool results |
+| Platform notices | Not versioned | The turn hooks' framings: `documents/tool.py` `REQUEST_FRAMING`; `jobs.py` `NOTICE_FRAMING` and `ATTACHED_FRAMING`; `consistency/controller.py` `FINDINGS_FRAMING` and `COUNTS_FRAMING`; `plan_tools.py` and `documents/mathcontroller.py` `FRAMING` | User-role messages for document work requests, job completions, reviewer findings and counts, plan reread requirements and closing math findings; job completions also ride on tool results |
 | Kernel package notice | Receipt version 1 | [kernel_notice_receipts.py](../packages/orchestrator/src/sandbox_science/orchestrator/kernel_notice_receipts.py) `NOTICE_PROSE_V1` | At most one per stateful MAIN run ([kernel-notice delivery](KERNEL-NOTICE-DELIVERY.md)) |
 | Job watcher | `sandbox-job-watcher-1` | [jobs.py](../packages/orchestrator/src/sandbox_science/orchestrator/jobs.py) `WATCHER_PROMPT`; `watcher_prompt.py` | Each due check-in when a watcher alias is configured ([background jobs](BACKGROUND-JOBS.md), [watcher provenance](WATCHER-PROMPT-PROVENANCE.md)) |
 | Consistency reviewer | Rubric `sandbox-consistency-1`; assembly `sandbox-reviewer-bundle-1` | [consistency/rubric.py](../packages/orchestrator/src/sandbox_science/orchestrator/consistency/rubric.py) `RUBRIC`; `consistency/runner.py` `SPECS` (five read-only review tools) | Each reviewer call ([consistency review](CONSISTENCY-REVIEW.md), [reviewer provenance](REVIEWER-PROMPT-PROVENANCE.md)) |
@@ -138,9 +138,11 @@ eight items and shrinks the page to fit the response while keeping its target
 cursor. A read that cannot fit refuses rather than omitting steps or clearing the
 reread requirement.
 
-**Loop.** [The loop](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
-checks plan state before each model call and immediately before accepting a final
-answer, including after closing review and math awaits. A pending reread allows at
+**Loop.** The plans turn hook (`Plans` in
+[plan_tools.py](../packages/orchestrator/src/sandbox_science/orchestrator/plan_tools.py))
+checks plan state before each model call and, as a veto on a closing answer, before
+the other hooks and again immediately before the loop accepts the answer, after
+closing review and math awaits. A pending reread allows at
 most one more turn within the remaining budget, then stops with `user_message` and
 no stale final answer. It adds no reviewer or math response rounds. Plan commits are
 durable during the run, independent of a later model failure, cancellation or
