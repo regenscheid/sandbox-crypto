@@ -217,6 +217,48 @@ class ManagerView:
         """Replace how an attempt is ended once the executor reported its outcome."""
         patch.setattr(self.manager._dispatcher, "_complete", complete)
 
+    def wrap_package_gate_sync(
+        self,
+        patch: pytest.MonkeyPatch,
+        wrapper: Callable[
+            [Callable[[str, ExecutorChannel], Awaitable[bool]], str, ExecutorChannel],
+            Awaitable[bool],
+        ],
+    ) -> None:
+        """Route every package gate acknowledgement through ``wrapper``."""
+        admission = self.manager._admission
+        original = admission.sync
+
+        async def wrapped(environment_id: str, channel: ExecutorChannel) -> bool:
+            return await wrapper(original, environment_id, channel)
+
+        patch.setattr(admission, "sync", wrapped)
+
+    def wrap_shared_sync(
+        self,
+        patch: pytest.MonkeyPatch,
+        wrapper: Callable[..., Awaitable[list[str]]],
+    ) -> None:
+        """Route every step of the shared files' sync around a call through ``wrapper``,
+        which gets the original, the step, the context and the channel."""
+        files = self.manager._files
+        original = files.sync
+
+        async def wrapped(
+            step: Any, context: ExecutionContext, channel: ExecutorChannel
+        ) -> list[str]:
+            return await wrapper(original, step, context, channel)
+
+        patch.setattr(files, "sync", wrapped)
+
+    def lose(self, execution_id: str, what: str) -> None:
+        """End an execution as lost, as when its executor goes away."""
+        self.manager._dispatcher.lose(self.manager._journal.live[execution_id], what)
+
+    def tell(self, context: ExecutionContext, notices: list[str]) -> None:
+        """Pass on what a shared-files sync for a file request found, as it would."""
+        self.manager._files.tell(context, notices)
+
     def wrap_on_event(
         self,
         patch: pytest.MonkeyPatch,
