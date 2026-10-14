@@ -19,7 +19,9 @@ _log = logging.getLogger(__name__)
 async def held[T](work: Awaitable[T]) -> tuple[T, bool]:
     """``work``'s result, waited for through repeated caller cancellation, and whether the
     caller was cancelled meanwhile: a caller that must clean up what ``work`` returned
-    (a process to reap) does so, then raises ``CancelledError`` itself."""
+    (a process to reap) does so, then raises ``CancelledError`` itself. When ``work``
+    fails, its exception is raised, even if the caller was cancelled meanwhile: the
+    failure wins over the cancellation."""
     task = asyncio.ensure_future(work)
     cancelled = False
     while True:
@@ -83,6 +85,7 @@ class OwnedExecutor:
         self.max_pending = max_pending
         self._threads = ThreadPoolExecutor(max_workers=1, thread_name_prefix=name)
         self._work: set[asyncio.Task[Any]] = set()
+        self._detached: set[asyncio.Task[Any]] = set()
         self._closing = False
         self._close_task: asyncio.Task[None] | None = None
 
@@ -99,14 +102,29 @@ class OwnedExecutor:
         task = asyncio.create_task(work)
         self._work.add(task)
         task.add_done_callback(self._finished)
-        return await asyncio.shield(task)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.done():
+                self._detached.add(task)  # nobody awaits it now; _finished reports it
+            raise
+
+    @property
+    def pending(self) -> int:
+        """Admitted work not finished yet."""
+        return len(self._work)
 
     def _finished(self, task: asyncio.Task[Any]) -> None:
         self._work.discard(task)
-        if not task.cancelled():
-            # A detached caller may never retrieve a later exception; taking it here
-            # does not change what a caller still awaiting gets.
-            task.exception()
+        detached = task in self._detached
+        self._detached.discard(task)
+        if task.cancelled():
+            return
+        # A caller still awaiting gets the exception; a detached one never would, so
+        # it is logged here instead of being lost.
+        failure = task.exception()
+        if failure is not None and detached:
+            _log.error("owned work failed after its caller left", exc_info=failure)
 
     async def thread[T](self, call: Callable[[], T]) -> T:
         """``call`` in this executor's one thread."""

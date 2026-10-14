@@ -5,6 +5,7 @@ executor whose admitted work outlives its callers."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 
 import pytest
@@ -106,7 +107,9 @@ async def test_the_executor_bounds_admission_and_drains_detached_work() -> None:
     assert not executor.admits
 
 
-async def test_a_detached_callers_later_failure_is_taken() -> None:
+async def test_a_detached_callers_later_failure_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     executor = OwnedExecutor(1, "test")
     release = asyncio.Event()
 
@@ -114,9 +117,56 @@ async def test_a_detached_callers_later_failure_is_taken() -> None:
         await release.wait()
         raise RuntimeError("the work fails after its caller left")
 
+    caplog.set_level(logging.ERROR)
     caller = asyncio.create_task(executor.submit(failing()))
     await asyncio.sleep(0)
     caller.cancel()
     await asyncio.gather(caller, return_exceptions=True)
     release.set()
-    await executor.aclose()  # no "exception was never retrieved" for the work
+    await executor.aclose()
+    (record,) = [r for r in caplog.records if r.exc_info]
+    assert "after its caller left" in record.getMessage()
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == "the work fails after its caller left"
+    assert executor.pending == 0
+
+
+async def test_an_awaited_failure_reaches_its_caller_and_is_not_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    executor = OwnedExecutor(1, "test")
+
+    async def failing() -> None:
+        raise RuntimeError("the caller sees this")
+
+    caplog.set_level(logging.ERROR)
+    with pytest.raises(RuntimeError, match="caller sees this"):
+        await executor.submit(failing())
+    await executor.aclose()
+    assert not [r for r in caplog.records if r.exc_info]
+
+
+async def test_no_work_is_left_after_close() -> None:
+    executor = OwnedExecutor(3, "test")
+    release = asyncio.Event()
+
+    async def work(n: int) -> int:
+        await release.wait()
+        return await executor.thread(lambda: n)
+
+    callers = [asyncio.create_task(executor.submit(work(n))) for n in range(3)]
+    await asyncio.sleep(0)
+    assert executor.pending == 3
+    callers[0].cancel()
+    await asyncio.sleep(0)
+    closing = asyncio.create_task(executor.aclose())
+    for _ in range(3):
+        await asyncio.sleep(0)
+        closing.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert [await callers[1], await callers[2]] == [1, 2]
+    await asyncio.sleep(0)
+    assert executor.pending == 0
+    assert not asyncio.all_tasks() - {asyncio.current_task()}
