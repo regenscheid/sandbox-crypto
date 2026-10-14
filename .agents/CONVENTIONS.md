@@ -55,7 +55,7 @@ Libraries must not import deployable members. Deployable members may import libr
 - **pyright** in strict mode for `packages/*/src`.
 - **pytest** for tests.
 - **pydantic v2** for every external schema (policy files, API messages, events). Models use `extra="forbid"` and are frozen unless mutation is essential.
-- **Browser apps** (D80) are Svelte 5 with TypeScript in strict mode, built by Vite, tested with vitest and checked with svelte-check and tsc. npm packages are untrusted downloads: exact versions, a committed `package-lock.json`, installs only with `--ignore-scripts` (the app's `.npmrc` says so too), `node_modules` inside the app's directory, and no `npx` for anything that is not a declared dependency.
+- **Browser apps** (D80) are Svelte 5 with TypeScript in strict mode, built by Vite, tested with vitest, checked with svelte-check and tsc, and formatted with prettier (`npm run format`; settings in the app's `package.json`). npm packages are untrusted downloads: exact versions, a committed `package-lock.json`, installs only with `--ignore-scripts` (the app's `.npmrc` says so too), `node_modules` inside the app's directory, and no `npx` for anything that is not a declared dependency.
 
 Run before every push:
 
@@ -75,6 +75,7 @@ and, in `web/workspace/`:
 python3 ../../scripts/check_licenses.py --npm package-lock.json
 npm ci --ignore-scripts
 python3 ../../scripts/check_licenses.py --npm package-lock.json --installed
+npm run format:check
 npm run check
 npm test
 npm run build

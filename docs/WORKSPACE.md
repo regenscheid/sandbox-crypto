@@ -370,6 +370,7 @@ cd web/workspace
 python3 ../../scripts/check_licenses.py --npm package-lock.json
 npm ci --ignore-scripts
 python3 ../../scripts/check_licenses.py --npm package-lock.json --installed
+npm run format:check    # prettier; npm run format rewrites src
 npm run check    # svelte-check and tsc
 npm test         # vitest
 npm run build
