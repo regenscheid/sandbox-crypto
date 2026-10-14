@@ -699,6 +699,50 @@ async def test_kernel_cancels_and_restarts_say_what_happened(tmp_path: Path) -> 
         await stdio.close()
 
 
+@pytest.mark.asyncio
+async def test_kernels_started_together_each_get_their_own_unix_socket_names(
+    tmp_path: Path,
+) -> None:
+    # Over TCP, Jupyter picks free ports that the kernel binds later, and kernels started
+    # together could take each other's: one died (EADDRINUSE) or never answered.
+    stdio = await Stdio.start(tmp_path)
+    code = (
+        "from ipykernel.connect import get_connection_info\n"
+        "info = get_connection_info(unpack=True)\n"
+        "print(info['transport'], info['ip'])"
+    )
+    sessions = [f"s{number}" for number in range(6)]
+    try:
+        stdio.send(
+            *(
+                {
+                    "id": number,
+                    "op": "cell",
+                    "session": session,
+                    "execution": f"exe-{session}",
+                    "timeout": 60,
+                    "limit": 65536,
+                    "code": code,
+                }
+                for number, session in enumerate(sessions)
+            )
+        )
+        ends: dict[str, dict[str, Any]] = {}
+        while len(ends) < len(sessions):
+            message = await stdio.until(lambda item: item.get("event") == "end")
+            ends[message["execution"]] = message
+        addresses = set[str]()
+        for end in ends.values():
+            assert end["state"] == "succeeded", end
+            transport, address = end["result"]["stdout"]["text"].split()
+            assert transport == "ipc"
+            assert address.startswith("@ss-kernel-")
+            addresses.add(address)
+        assert len(addresses) == len(sessions)
+    finally:
+        await stdio.close()
+
+
 def test_capture_keeps_head_and_tail() -> None:
     capture = executor.Capture("stdout", 10)
     live = capture.feed(b"abcdefghij0123456789")
@@ -819,8 +863,20 @@ def test_a_refused_prctl_leaves_the_executor_unprotected(monkeypatch: pytest.Mon
     assert executor.protect_process() is False
 
 
-def test_loopback_sockets_work_here() -> None:
+def test_unix_sockets_work_here() -> None:
     assert executor._sockets_work()
+
+
+@pytest.mark.parametrize("call", ["bind", "listen", "connect", "accept"])
+def test_a_refused_socket_call_makes_the_probe_say_no(
+    monkeypatch: pytest.MonkeyPatch, call: str
+) -> None:
+    # A sandbox may refuse any of the calls a kernel's client makes, not only bind.
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(socket.socket, call, refuse)
+    assert executor._sockets_work() is False
 
 
 def test_pdf_requests_become_the_helpers_command_line() -> None:
