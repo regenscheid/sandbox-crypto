@@ -60,6 +60,7 @@ from sandbox_science.worker.cli import (
     _confirmed_daemon_loss as confirmed_daemon_loss,
 )
 from sandbox_science.worker.cli import main
+from sandbox_science.worker.connections import Activity
 from sandbox_science.worker.environments import (
     MAX_RECORDED,
     Admission,
@@ -68,7 +69,7 @@ from sandbox_science.worker.environments import (
     new_sandbox_name,
 )
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.manager import Activity, ExecutionManager
+from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.provisioner import Provisioner, _Op
 from sandbox_science.worker.settings import (
     ClientSettings,
