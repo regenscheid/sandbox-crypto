@@ -23,6 +23,7 @@ from sandbox_science.contracts import new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.orchestrator.artifacts import ArtifactInventory
 from sandbox_science.orchestrator.control import EventLog, Receipts
+from sandbox_science.orchestrator.control.feeds import FeedCursor
 from sandbox_science.orchestrator.documents import DocumentStore
 from sandbox_science.orchestrator.documents.blocks import check_text
 from sandbox_science.orchestrator.documents.errors import (
@@ -141,6 +142,9 @@ class _Plan:
 
 RECEIPTS: Final = Receipts("review", "operation ID already names another finding mutation")
 """The receipts of the findings' and the responses' changes, which share one scope."""
+
+DOCUMENT_FEED: Final = FeedCursor("document")
+"""How far each session's reviewer has read the project's document events."""
 
 
 def _length(value: object) -> int | None:
@@ -392,6 +396,7 @@ class ReviewStore:
             after, rows = self._document_page(project, session, target)
             if not rows:
                 break
+            read = after
             observations = [
                 (self._document_observation(project, document, number), chars, structural)
                 for _seq, document, owner, kind, author, number, chars, structural in rows
@@ -399,9 +404,11 @@ class ReviewStore:
                 and owner == session
                 and author in ("agent", "worker")
             ]
-            after = rows[-1][0]
+            end = rows[-1][0]
             with self.documents.control.write() as tx:
                 db = tx.sql
+                if not DOCUMENT_FEED.advance(db, project, session, read, end):
+                    continue  # another ingestor read this page; read the next one
                 for (key, locator, payload), chars, structural in observations:
                     self.record_observation(
                         db,
@@ -416,11 +423,7 @@ class ReviewStore:
                         effects=True,
                     )
                 self._window(db, project, session)
-                db.execute(
-                    "UPDATE review_windows SET document_cursor=max(document_cursor,?) "
-                    "WHERE project=? AND session=?",
-                    (after, project, session),
-                )
+            after = end
             if after >= target:
                 break
         return {"cursor": after, "target": target, "complete": after >= target}
@@ -431,11 +434,7 @@ class ReviewStore:
         """The session's document cursor and the next 200 project events up to ``target``."""
         with self.documents.control.read() as tx:
             db = tx.sql
-            current = db.execute(
-                "SELECT document_cursor FROM review_windows WHERE project=? AND session=?",
-                (project, session),
-            ).fetchone()
-            after = current[0] if current else 0
+            after = DOCUMENT_FEED.position(db, project, session)
             events = self.documents.event_log.page(db, project, after, 200, through=target)
         return after, [
             (

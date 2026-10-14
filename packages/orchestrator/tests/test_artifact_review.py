@@ -294,7 +294,7 @@ def test_source_cursor_and_feed_rollback_atomically(state, monkeypatch) -> None:
     with reviews.documents.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT count(*) FROM review_feed").fetchone()[0] == 0
-        assert db.execute("SELECT count(*) FROM review_artifact_cursors").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM feed_cursors").fetchone()[0] == 0
     monkeypatch.setattr(reviews, "record_observation", original)
     assert ingest_artifacts(reviews, "p", "s")["complete"]
 
