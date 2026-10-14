@@ -51,8 +51,8 @@ database, migrates a schema or initializes a writer.
 
 Closed sessions remain readable as recorded history and return their closure
 time. The read neither reopens them nor changes activity time. A missing
-project/session is 404. A store not yet made, or a scope with no retained plan
-rows, yields 200 with `plan: null`. Damaged canonical rows, or
+project/session is 404. A session with no retained plan
+rows yields 200 with `plan: null`. Damaged canonical rows, or
 retained scoped history without its current pointer is unavailable (503), rather
 than an apparently empty plan; so is a damaged project record. A missing login is
 401; invalid request scope, query or body is 400. Success and errors for this GET

@@ -2,7 +2,7 @@
 
 > **Baseline after the history rewrite.** These reviews ran on main `fa456bc`. On 2026-10-14 raw lab evidence was removed from all history, so that commit is now `6e9608a`. The rewrite changed no code, so every `file:line` cited here still holds.
 
-**Status:** draft for the owner, 2026-10-14. Baseline: main at `fa456bc`. Another agent holds the editing token; nothing here is applied until the owner returns it, and the plan is re-checked against the main of that day first.
+**Status:** adopted on 2026-10-14; the owner answered decisions 1–3 and 11 and asked for the rest of the recommendations to be adopted ([plan changes](../PLAN-CHANGES.md)). Baseline: main at `fa456bc`. Progress is tracked [below](#progress).
 
 **Sources:** six read-only reviews run in parallel on the baseline ([brief](REVIEW-BRIEF.md)), with 97 findings in [`notes/`](notes/):
 - A, the orchestrator core: 14 findings;
@@ -13,6 +13,19 @@
 - F, tests, CI, repository hygiene and docs: 13.
 
 Each finding there has its evidence with `file:line`, a concrete proposal, effort, risk and verification; this plan orders them and refers to them by ID.
+
+## Progress
+
+Findings done, by phase, with their PRs (main `96380a4`). Leftovers of a done finding are in [BACKLOG](../BACKLOG.md#repository); decisions that refined the plan on the way are in [PLAN-CHANGES](../PLAN-CHANGES.md).
+
+- **Phase 0, done:** A-01, A-10 (#125); E-02's 503 (#124); C-01, C-10, C-11, C-15 (#133); A-03, C-05, D-10, B-11, C-18, F-07 and `reviews.py` removed (#129, #138); F-01 (#123); F-02 (#126); F-10 (#126); F-12 and CI guards (#128); E-16 (#127). Pulled forward from later phases: the reference docs synced with the code, with inventory and link checks, which covers C-17, F-08 and most of F-09 (#131, #135, #136, #140).
+- **Phase 1, done apart from F-03:** F-04 steps 1–3 and F-06 (#137, #139, #144); C-13 (#141); F-05 for the loop (#134), the workspace routes (#132) and the worker manager (#141); C-14 (#146); C-12 (#144). **Open:** F-03's tiers, after the kernel-start flake and the leaked test daemons are fixed.
+- **Phase 2, lane O:** A-02 (#143, #149, #150), A-11 (#151), A-12 (#149), A-04 (#156), A-05 (#158). **Open:** A-08 (#165), A-13 and A-14 (#166).
+- **Phase 2, lane S:** B-01 (#145), B-02 (#152, #159), A-07 (#160). **Next:** B-14, B-17/E-12, then B-10, B-05, B-03, B-12, B-15, B-06 to B-09.
+- **Phase 2, lane W:** C-04 (#153), C-03 stage 1 (#155). **Open:** C-03 stages 2 and 3 (#163, #164). **Next:** C-03's remaining stages, C-06 to C-09, C-02, C-16.
+- **Phase 2, lane C, done:** D-01 (#148), D-02, D-07, D-11 (#161).
+- **Phase 2, lane G:** E-01, E-02 (#147), E-03 (#154), E-04 (#154, #157), E-13 (#157), E-05 (#162). **Next:** E-14, E-15, E-17, E-19, E-20.
+- **Phase 2's exit so far:** `_run_task` is 57 lines with no subsystem checks; no source file disables private-usage checks; the control store has one schema version (3); `manager.py` is 3,059 lines; the workspace has one handler pattern.
 
 ## The state of the code
 

@@ -6,6 +6,19 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 The owner asked for autonomous work through the [refactoring plan](refactor-plan/PLAN.md), with its recommendations adopted. Each item marked *adopted* was adopted on 2026-10-14 under that instruction.
 
+Decisions made while carrying out Phase 1 and Phase 2 (PRs #141–#162):
+
+- **Save pattern (#162, E-05):** a browser save keeps its operation ID after every failure, a 401 or sign-out included, and forgets it only after a result, so a save whose outcome was lost is never applied twice.
+- **Project lock files stay (#160, A-07)** until a plan edit checks its session in the plan's own transaction (B-17); then they go.
+- **Control store re-baselined (#152, B-02; decision 6):** one migration list from a baseline at version 2, with `application_id` `0x53536373`. Stores from before it are refused, never changed, with the export path in [living documents](../docs/LIVING-DOCUMENTS.md). Project JSON files are not imported (#160).
+- **Worker protocol (#148, #161; decision 8):** protocol 2 with D-01's check, then 3. Any change to what crosses the worker API raises `PROTOCOL_VERSION` ([compatibility](../docs/COMPATIBILITY.md)).
+- **Kernel check (#156, A-04; decision 4):** the check keeps nothing between runs, so each run is told again about every kernel that still predates the packages.
+- **Worker usability (#153, C-04):** one record per environment with each fact as its own field, not the notes' single state enum, since recovery, fencing and releases overlap.
+- **No deep re-validation in the browser (#154, #157, E-04; decision 3):** the server's answers are checked only for scope; their types come from the server's models through `scripts/generate_api_types.py`.
+- **No user-message hook yet (#150, A-02):** nothing writes messages during a run until the run service (A-06), so the hook waits for it (rule 1).
+- **Run records (#143, #149, A-02):** `RunRecord.delivered` (notice IDs by source) and `RunRecord.summaries` (by hook) replace the per-source fields; older records load through a validator.
+- **Test support (#141, C-13):** `WorkerApi`, the worker API as tests use it, lives in `packages/testing` ([CONVENTIONS](CONVENTIONS.md#repository-layout)).
+
 - **Convention: an injected clock and one test-support package** (#137, plan Phase 1). Components with timing take a `Clock` (`contracts/clock.py`) and their timeouts as constructor parameters, defaulting to `SystemClock` and today's values; tests use `FakeClock` and `eventually()` from the dev-only member `packages/testing` instead of sleeps and patched constants.
 - **Confirmed (adopted):** D84 (provisioning operations), D85 (the SQLite control store), D59 (pdf_oxide) and D43 (isolation tiers and the probe rule); PSF-2.0 and MIT-0 in tier 1 (D45). Plan decision 12.
 - **Specs approved as drafted (adopted):** [tools](../docs/specs/tools.md) and [PDF sources](../docs/specs/pdf-sources.md), with their proposed answers. This settles D83's details: jobs run 24 hours by default and 7 days at most, 4 at once in a session and 8 in an environment, and closing a session cancels its jobs.

@@ -101,8 +101,8 @@ by self-checksums. The record is an audit observation, not a permission grant or
 cryptographic attestation of a provider's behavior.
 
 The [harness](../packages/orchestrator/src/sandbox_science/orchestrator/harness.py) carries the
-metadata unchanged into ordinary and safely retained failed runs. The existing
-file+directory fsync still precedes notice ACK. Metadata creates no new ACK path,
+metadata unchanged into ordinary and safely retained failed runs. The run's
+record is saved in the control store before any hook acknowledges its notices. Metadata creates no new ACK path,
 closing round or scientific state transition. Setup refusal before a transcript
 and cancellation still do not manufacture a retained run. A custom unavailable
 pin does not turn partial observations into a completed answer.
@@ -113,7 +113,7 @@ Scripted actual-input tests exercise conditional MAIN planning, ordinary control
 tool data, capability-filtered schemas, fresh per-call copies and exact retained
 system/component pins. They include Unicode/custom inputs, legacy reads,
 malformed/large/deep/cyclic schemas, encoding expansion refused before JSON,
-successful/failed CLI retention, save failure before ACK and cancellation.
+successful and failed run saving, save failure before ACK and cancellation.
 No live model or service is used.
 
 This does not version dynamic platform notices or the whole conversation, retain
