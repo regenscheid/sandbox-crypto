@@ -157,60 +157,15 @@ class Store:
         self._db.close()
 
     def capture_leases(self) -> tuple[CaptureLease, ...]:
-        """Read at most four bounded lease records; corrupt state holds all admission."""
+        """Every capture lease: at most four, as admission allows. The table checks each
+        lease's values when it is written."""
         rows = self._db.execute(
-            "SELECT substr(publication_id,1,29), substr(environment_id,1,129),"
-            " substr(incarnation,1,29), substr(capture_id,1,29), substr(phase,1,7),"
-            " CASE WHEN typeof(guest_clean)='integer' THEN guest_clean ELSE NULL END,"
-            " substr(sandbox,1,129), substr(sandbox_id,1,129)"
-            " FROM artifact_capture_leases LIMIT 5"
+            "SELECT publication_id, environment_id, incarnation, capture_id, phase,"
+            " guest_clean, sandbox, sandbox_id FROM artifact_capture_leases LIMIT 5"
         ).fetchall()
         if len(rows) > 4:
             raise ValueError("capture admission state exceeds its bound; cleanup is unknown")
-        leases: list[CaptureLease] = []
-        for row in rows:
-            publication, environment, incarnation, capture_id, phase, clean, sandbox, sandbox_id = (
-                row
-            )
-            if (
-                not isinstance(publication, str)
-                or re.fullmatch(r"pub-[0-9a-f]{24}", publication) is None
-                or not isinstance(environment, str)
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", environment) is None
-                or not isinstance(incarnation, str)
-                or (incarnation != "" and re.fullmatch(r"inc-[0-9a-f]{24}", incarnation) is None)
-                or not isinstance(capture_id, str)
-                or (capture_id != "" and re.fullmatch(r"cap-[0-9a-f]{24}", capture_id) is None)
-                or bool(incarnation) != bool(capture_id)
-                or phase not in ("active", "held")
-                or type(clean) is not int
-                or clean not in (0, 1)
-                or not isinstance(sandbox, str)
-                or not isinstance(sandbox_id, str)
-                or bool(sandbox) != bool(sandbox_id)
-                or (
-                    sandbox != ""
-                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", sandbox) is None
-                )
-                or (
-                    sandbox_id != ""
-                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", sandbox_id) is None
-                )
-            ):
-                raise ValueError("capture admission state is corrupt; cleanup is unknown")
-            leases.append(
-                CaptureLease(
-                    publication,
-                    environment,
-                    incarnation,
-                    capture_id,
-                    phase,
-                    clean,
-                    sandbox,
-                    sandbox_id,
-                )
-            )
-        return tuple(leases)
+        return tuple(CaptureLease(*row) for row in rows)
 
     def reserve_capture(self, publication_id: str, environment_id: str) -> CaptureLease:
         """Atomically count durable admission across connections, before any dispatch await."""
@@ -1128,19 +1083,11 @@ class Store:
 
     def package_gate(self, environment_id: str) -> PackageGate:
         row = self._db.execute(
-            "SELECT generation,substr(CAST(mode AS BLOB),1,32),"
-            "coalesce(substr(CAST(operation AS BLOB),1,130),X''),revision"
+            "SELECT generation, mode, operation, revision"
             " FROM package_execution_gates WHERE environment_id=?",
             (environment_id,),
         ).fetchone()
-        try:
-            gate = (
-                PackageGate()
-                if row is None
-                else checked(row[0], bytes(row[1]).decode(), bytes(row[2]).decode(), row[3])
-            )
-        except (UnicodeError, TypeError):
-            return checked(None, None, None, None)
+        gate = PackageGate() if row is None else PackageGate(*row)
         marked = self.package_status(environment_id)
         if marked is not None and (gate.mode, gate.operation, gate.revision) != marked:
             if not self._db.in_transaction:
@@ -1166,13 +1113,10 @@ class Store:
                     ErrorKind.UNAVAILABLE, "invalid package sandbox binding"
                 ) from None
         row = self._db.execute(
-            "SELECT typeof(binding),coalesce(substr(CAST(binding AS BLOB),1,4097),X'')"
-            " FROM package_execution_gates WHERE environment_id=?",
+            "SELECT binding FROM package_execution_gates WHERE environment_id=?",
             (environment_id,),
         ).fetchone()
-        retained = b"" if row is None else row[1]
-        if row is not None and (row[0] != "text" or len(retained) > 4096):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "invalid retained package sandbox binding")
+        retained = b"" if row is None else str(row[0]).encode("utf-8")
         if retained:
             if encoded is None or retained != encoded:
                 raise WorkerError(
@@ -1276,11 +1220,10 @@ class Store:
 
     def provision_step(self, provision_id: str, operation_id: str) -> str | None:
         row = self._db.execute(
-            "SELECT substr(CAST(request_digest AS BLOB),1,65) FROM provision_steps"
-            " WHERE provision_id=? AND operation_id=?",
+            "SELECT request_digest FROM provision_steps WHERE provision_id=? AND operation_id=?",
             (provision_id, operation_id),
         ).fetchone()
-        return bytes(row[0]).decode("ascii", "replace") if row else None
+        return str(row[0]) if row else None
 
     def authorize_provision_step(self, provision_id: str, operation_id: str, digest: str) -> None:
         """Only the internal provisioner registers an exact saved step; no RPC exposes this."""
@@ -1308,19 +1251,10 @@ class Store:
         """An environment's package status other than ``ready``: the status, the operation
         that left it so, and the last revision known good before it."""
         row = self._db.execute(
-            "SELECT substr(CAST(status AS BLOB),1,32),"
-            "coalesce(substr(CAST(provision_id AS BLOB),1,130),X''),revision"
-            " FROM package_status WHERE environment_id = ?",
+            "SELECT status, provision_id, revision FROM package_status WHERE environment_id=?",
             (environment_id,),
         ).fetchone()
-        if row is None:
-            return None
-        mode = bytes(row[0]).decode("ascii", "replace") if row[0] is not None else ""
-        operation = bytes(row[1]).decode("ascii", "replace")
-        checked(0, mode, operation, row[2])
-        if mode != "needs_recovery":
-            raise WorkerError(ErrorKind.UNAVAILABLE, "invalid retained package recovery status")
-        return mode, operation, row[2]
+        return None if row is None else (str(row[0]), str(row[1]), row[2])
 
     def set_package_status(
         self, environment_id: str, status: str, provision_id: str, revision: int | None

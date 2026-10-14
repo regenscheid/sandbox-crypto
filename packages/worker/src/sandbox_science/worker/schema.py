@@ -17,7 +17,11 @@ worker keeps their daemons' endpoints there (docs/WORKER.md).
 
 To change the schema, append a step to ``MIGRATIONS``. Never edit a step that has
 shipped, or ``baseline.sql``: stores made with them keep them. A step gets the
-connection inside the transaction, and must not commit or roll back.
+connection inside the transaction, and must not commit or roll back. A step that adds
+constraints to a small table rebuilds it (``rebuild``); a row the new definition
+refuses leaves the store at its version with a message that names the table. A large
+table, such as one of events or blobs, is not copied: its writes are checked by a
+trigger instead.
 """
 
 from __future__ import annotations
@@ -42,7 +46,116 @@ APPLICATION_ID: Final = 0x53537773
 
 type Migration = Callable[[sqlite3.Connection], None]
 
-MIGRATIONS: list[Migration] = []
+
+class RefusedRowError(Exception):
+    """A row of the store that a migration step's new definition refuses."""
+
+
+def rebuild(db: sqlite3.Connection, table: str, create: str) -> None:
+    """Make ``table`` again as ``create`` defines it, with its rows and rowids and its
+    indexes: SQLite cannot add a constraint to a table. Only for small tables: the rows are
+    copied. A row the new definition refuses fails the step with ``RefusedRowError``."""
+    if not create.startswith(f"CREATE TABLE {table} ("):
+        raise WorkerError(ErrorKind.INTERNAL, f"a rebuild of {table} needs its CREATE TABLE")
+    indexes = [
+        str(sql)
+        for (sql,) in db.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name=? AND type='index' AND sql IS NOT NULL"
+            " ORDER BY rowid",
+            (table,),
+        )
+    ]
+    columns = ", ".join(str(row[1]) for row in db.execute(f"PRAGMA table_info({table})"))
+    db.execute(create.replace(f"CREATE TABLE {table} (", f"CREATE TABLE {table}__new (", 1))
+    try:
+        db.execute(
+            f"INSERT INTO {table}__new (rowid, {columns}) "  # noqa: S608 - the store's own names
+            f"SELECT rowid, {columns} FROM {table} ORDER BY rowid"
+        )
+    except sqlite3.IntegrityError as error:
+        raise RefusedRowError(f"a row of {table} fails its check ({error})") from None
+    db.execute(f"DROP TABLE {table}")
+    db.execute(f"ALTER TABLE {table}__new RENAME TO {table}")
+    for sql in indexes:
+        db.execute(sql)
+
+
+def _identifier(column: str) -> str:
+    """SQL for an identifier like ``[A-Za-z0-9][A-Za-z0-9._-]{0,127}``."""
+    return (
+        f"(length({column}) BETWEEN 1 AND 128 AND {column} NOT GLOB '*[^A-Za-z0-9._-]*'"
+        f" AND {column} NOT GLOB '[._-]*')"
+    )
+
+
+def _prefixed(column: str, prefix: str) -> str:
+    """SQL for an ID like ``pub-`` and 24 lower-case hex digits."""
+    return (
+        f"(length({column}) = 28 AND {column} GLOB '{prefix}-*'"
+        f" AND substr({column}, 5) NOT GLOB '*[^0-9a-f]*')"
+    )
+
+
+_COUNT: Final = "BETWEEN 0 AND 4611686018427387903"
+"""A generation or revision: from 0 below 2**62."""
+
+
+def _admission_checks(db: sqlite3.Connection) -> None:
+    """Version 2: capture leases, package gates, recovery marks and provisioning steps
+    check their values when they are written, so reads take them as they are."""
+    for table, create in (
+        (
+            "artifact_capture_leases",
+            f"""CREATE TABLE artifact_capture_leases (
+    publication_id TEXT PRIMARY KEY CHECK {_prefixed("publication_id", "pub")},
+    environment_id TEXT NOT NULL CHECK {_identifier("environment_id")},
+    incarnation TEXT NOT NULL CHECK (incarnation = '' OR {_prefixed("incarnation", "inc")}),
+    capture_id TEXT NOT NULL CHECK (capture_id = '' OR {_prefixed("capture_id", "cap")}),
+    phase TEXT NOT NULL CHECK (phase IN ('active', 'held')),
+    guest_clean INTEGER NOT NULL CHECK (guest_clean IN (0, 1)),
+    sandbox TEXT NOT NULL CHECK (sandbox = '' OR {_identifier("sandbox")}),
+    sandbox_id TEXT NOT NULL CHECK (sandbox_id = '' OR {_identifier("sandbox_id")}),
+    CHECK ((incarnation = '') = (capture_id = '')),
+    CHECK ((sandbox = '') = (sandbox_id = ''))
+) STRICT""",
+        ),
+        (
+            "package_execution_gates",
+            f"""CREATE TABLE package_execution_gates (
+    environment_id TEXT PRIMARY KEY,
+    generation INTEGER NOT NULL CHECK (generation {_COUNT}),
+    mode TEXT NOT NULL CHECK (mode IN ('ready', 'hold', 'needs_recovery')),
+    operation TEXT NOT NULL CHECK (operation = '' OR {_identifier("operation")}),
+    revision INTEGER CHECK (revision IS NULL OR revision {_COUNT}),
+    binding TEXT NOT NULL DEFAULT '' CHECK (length(CAST(binding AS BLOB)) <= 4096),
+    CHECK (mode != 'ready' OR operation = ''),
+    CHECK (mode != 'needs_recovery' OR operation != '')
+) STRICT""",
+        ),
+        (
+            "package_status",
+            f"""CREATE TABLE package_status (
+    environment_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status = 'needs_recovery'),
+    provision_id TEXT NOT NULL CHECK {_identifier("provision_id")},
+    revision INTEGER CHECK (revision IS NULL OR revision {_COUNT})
+) STRICT""",
+        ),
+        (
+            "provision_steps",
+            """CREATE TABLE provision_steps (
+    provision_id TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL
+        CHECK (length(request_digest) = 64 AND request_digest NOT GLOB '*[^0-9a-f]*'),
+    PRIMARY KEY (provision_id, operation_id)
+) STRICT""",
+        ),
+    ):
+        rebuild(db, table, create)
+
+
+MIGRATIONS: list[Migration] = [_admission_checks]
 """Steps after the baseline: the one at index ``i`` takes a store to ``BASELINE + i + 1``."""
 
 _STATE: Final = (
@@ -155,8 +268,17 @@ def prepare(path: Path, db: sqlite3.Connection) -> None:
                 _baseline(db)
                 db.execute(f"PRAGMA application_id={APPLICATION_ID}")
                 version = BASELINE
-            for step in MIGRATIONS[version - BASELINE :]:
-                step(db)
+            for number, step in enumerate(MIGRATIONS[version - BASELINE :], version + 1):
+                try:
+                    step(db)
+                except RefusedRowError as refused:
+                    raise WorkerError(
+                        ErrorKind.UNAVAILABLE,
+                        f"{path} stays at version {version}: version {number} refuses it, as "
+                        f"{refused}. Release or recycle its sandboxes and discard the state "
+                        "directory, or use the worker that made it",
+                    ) from None
+                version = number
             db.execute(f"PRAGMA user_version={latest()}")
     except BaseException:
         db.execute("ROLLBACK")

@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 import threading
-import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -294,27 +293,23 @@ async def test_reconnect_ack_requires_exact_helper_and_explicit_cleanup(
 
 
 @pytest.mark.parametrize("column", ["guest_clean", "phase", "environment_id", "sandbox_id"])
-def test_corrupt_lease_metadata_refuses_before_large_allocation(
-    tmp_path: Path, column: str
-) -> None:
+def test_corrupt_lease_metadata_is_refused_when_written(tmp_path: Path, column: str) -> None:
+    # Changed by C-08: a lease's values are checked when they are written (decision 3), so
+    # a corrupt one never reaches a read, and admission still counts the lease.
     store = Store(tmp_path / "worker.sqlite3")
     try:
         store.reserve_capture(new_id("pub"), "env1")
+        before = store.capture_leases()
         # The parameterized test fixes this identifier; values remain SQL parameters.
-        store._db.execute(
-            f"UPDATE artifact_capture_leases SET {column}=?",
-            ("x" * (20 << 20),),
-        )
-        tracemalloc.start()
-        try:
-            with pytest.raises(ValueError, match="corrupt"):
-                store.capture_leases()
-            _, peak = tracemalloc.get_traced_memory()
-        finally:
-            tracemalloc.stop()
-        assert peak < 64 << 10
-        with pytest.raises(ValueError, match="corrupt"):
-            store.reserve_capture(new_id("pub"), "env2")
+        with pytest.raises(sqlite3.IntegrityError, match=r"CHECK constraint failed|cannot store"):
+            store._db.execute(
+                f"UPDATE artifact_capture_leases SET {column}=?",
+                ("x" * (20 << 20),),
+            )
+        assert store.capture_leases() == before
+        store.reserve_capture(new_id("pub"), "env1")
+        with pytest.raises(ValueError, match="limit reached"):
+            store.reserve_capture(new_id("pub"), "env1")
     finally:
         store.close()
 

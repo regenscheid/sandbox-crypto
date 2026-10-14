@@ -183,3 +183,25 @@ def test_a_migration_runs_once_when_two_workers_open_the_store_together(
     with raw(path) as db:
         assert db.execute("SELECT count(*) FROM runs").fetchone()[0] == 1
     assert pragmas(path)[0] == schema.latest() + 1
+
+
+def test_a_row_the_checks_refuse_leaves_the_store_at_its_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Version 2 checks the admission tables' values; a store holding a row they refuse
+    stays at version 1, and the message names the table."""
+    path = tmp_path / "worker.sqlite3"
+    shipped = list(schema.MIGRATIONS)
+    monkeypatch.setattr(schema, "MIGRATIONS", [])
+    Store(path).close()
+    with raw(path) as db:
+        db.execute(
+            "INSERT INTO package_execution_gates VALUES ('env1', 1, 'sideways', '', NULL, '')"
+        )
+        before = list(db.iterdump())
+    monkeypatch.setattr(schema, "MIGRATIONS", shipped)
+    with pytest.raises(WorkerError, match=r"stays at version 1.*package_execution_gates"):
+        Store(path)
+    with raw(path) as db:
+        assert list(db.iterdump()) == before
+    assert pragmas(path) == (schema.BASELINE, schema.APPLICATION_ID)
