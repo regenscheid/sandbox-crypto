@@ -189,6 +189,57 @@ def test_document_snapshot_reads_exact_revision_after_head_changes(store) -> Non
     )
 
 
+def agent_documents(documents: DocumentStore, count: int) -> None:
+    for n in range(count):
+        documents.create(
+            "p", name=f"d{n}", title="D", text=f"Value {n}.\n", author=MAIN, session_id="s"
+        )
+
+
+def feed(reviews: ReviewStore) -> list[str]:
+    with reviews.documents.control.read() as tx:
+        rows = tx.sql.execute("SELECT source_key FROM review_feed ORDER BY seq").fetchall()
+    return [row[0] for row in rows]
+
+
+def test_a_document_page_and_its_cursor_commit_together(store, monkeypatch) -> None:
+    reviews, documents, _ = store
+    agent_documents(documents, 3)
+    recorded = reviews.record_observation
+    calls: list[str] = []
+
+    def failing_third(*args: Any, **kwargs: Any) -> int:
+        calls.append(args[3])
+        if len(calls) == 3:
+            raise RuntimeError("the store fails on the third observation")
+        return recorded(*args, **kwargs)
+
+    monkeypatch.setattr(reviews, "record_observation", failing_third)
+    with pytest.raises(RuntimeError, match="third observation"):
+        reviews.ingest_documents("p", "s")
+    assert feed(reviews) == []  # neither the first two observations nor the cursor
+    monkeypatch.undo()
+    result = reviews.ingest_documents("p", "s")
+    assert result["complete"]
+    assert len(feed(reviews)) == 3
+
+
+def test_a_document_ingest_checks_its_scope_once(store, monkeypatch) -> None:
+    reviews, documents, _ = store
+    agent_documents(documents, 5)
+    scope = reviews.scope
+    checks: list[tuple[str, str]] = []
+
+    def counted(project: str, session: str) -> None:
+        checks.append((project, session))
+        scope(project, session)
+
+    monkeypatch.setattr(reviews, "scope", counted)
+    assert reviews.ingest_documents("p", "s", drain=True)["complete"]
+    assert checks == [("p", "s")]
+    assert len(feed(reviews)) == 5
+
+
 def test_oversized_finding_group_stays_explicitly_omitted(store, monkeypatch) -> None:
     reviews, _, _ = store
     claim(reviews)
