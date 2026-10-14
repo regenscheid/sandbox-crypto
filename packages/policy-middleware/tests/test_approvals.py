@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.event_store import EventStore, StoreReader, verify_store
-from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
+from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling, reasons
 from sandbox_science.policy.approvals import APPROVAL, DENIAL, Approvals, RequestKey
 from sandbox_science.policy_middleware import evaluator
 from sandbox_science.policy_middleware.cli import _read_records, main
@@ -121,10 +121,10 @@ def test_a_retry_waits_on_the_same_request(
     middleware: PolicyMiddleware, facts: FactsFactory, events: EventStore
 ) -> None:
     first = middleware.evaluate_http(facts())
-    assert first.reason_code == evaluator.APPROVAL_REQUIRED
+    assert first.reason_code == reasons.APPROVAL_REQUIRED
     seq = request_number(first.reason)
     again = middleware.evaluate_http(facts(request_id="req-2"))
-    assert again.reason_code == evaluator.APPROVAL_REQUIRED
+    assert again.reason_code == reasons.APPROVAL_REQUIRED
     assert f"permission request {seq}, still waiting" in again.reason
     assert kinds(events) == ["escalation"]
 
@@ -145,7 +145,7 @@ def test_an_approval_lets_retries_through_and_is_recorded(
     assert [finding.type for finding in allowed.findings] == ["policy_approval"]
     # Another path on the host is another request: this approval covers the request only.
     other = middleware.evaluate_http(facts(path="/v1/other"))
-    assert other.reason_code == evaluator.APPROVAL_REQUIRED
+    assert other.reason_code == reasons.APPROVAL_REQUIRED
     assert kinds(events) == ["escalation", APPROVAL, "approved", "escalation"]
     assert main(["pending", "--settings", str(settings)]) == 0
     assert seq not in listed(capsys.readouterr().out)
@@ -163,7 +163,7 @@ def test_a_host_wide_approval_covers_other_paths_with_the_same_method(
     assert middleware.evaluate_http(facts(path="/v1/other")).allowed
     # Not for another host (or another sandbox: see below).
     elsewhere = middleware.evaluate_http(facts(host="other.example.org"))
-    assert elsewhere.reason_code == evaluator.APPROVAL_REQUIRED
+    assert elsewhere.reason_code == reasons.APPROVAL_REQUIRED
 
 
 def test_a_denial_refuses_retries(
@@ -172,7 +172,7 @@ def test_a_denial_refuses_retries(
     seq = request_number(middleware.evaluate_http(facts()).reason)
     assert main(["deny", "--settings", str(settings), "--request", str(seq)]) == 0
     denied = middleware.evaluate_http(facts(request_id="req-2"))
-    assert denied.reason_code == evaluator.APPROVAL_DENIED
+    assert denied.reason_code == reasons.APPROVAL_DENIED
     assert f"permission request {seq} was denied" in denied.reason
 
 
@@ -182,7 +182,7 @@ def test_the_latest_answer_decides(
     seq = request_number(middleware.evaluate_http(facts()).reason)
     assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 0
     assert main(["deny", "--settings", str(settings), "--request", str(seq)]) == 0
-    assert middleware.evaluate_http(facts()).reason_code == evaluator.APPROVAL_DENIED
+    assert middleware.evaluate_http(facts()).reason_code == reasons.APPROVAL_DENIED
 
 
 def test_an_approval_expires(
@@ -193,7 +193,7 @@ def test_an_approval_expires(
     assert middleware.evaluate_http(facts()).allowed
     clock.offset = timedelta(hours=2)
     # The approval is over; the request itself has timed out, and writes time out to deny.
-    assert middleware.evaluate_http(facts()).reason_code == evaluator.ESCALATION_TIMED_OUT
+    assert middleware.evaluate_http(facts()).reason_code == reasons.ESCALATION_TIMED_OUT
 
 
 def test_an_unanswered_write_times_out_to_deny(
@@ -202,7 +202,7 @@ def test_an_unanswered_write_times_out_to_deny(
     seq = request_number(middleware.evaluate_http(facts()).reason)
     clock.offset = timedelta(minutes=31)
     late = middleware.evaluate_http(facts(request_id="req-2"))
-    assert late.reason_code == evaluator.ESCALATION_TIMED_OUT
+    assert late.reason_code == reasons.ESCALATION_TIMED_OUT
     assert f"permission request {seq} was not answered within 30 minutes" in late.reason
 
 
@@ -211,7 +211,7 @@ def test_an_unanswered_read_proceeds_as_an_alert_after_its_timeout(
 ) -> None:
     read = partial(facts, method="GET", host="reads.example.org", path="/paper.pdf")
     seq = request_number(middleware.evaluate_http(read()).reason)
-    assert middleware.evaluate_http(read()).reason_code == evaluator.APPROVAL_REQUIRED
+    assert middleware.evaluate_http(read()).reason_code == reasons.APPROVAL_REQUIRED
     clock.offset = timedelta(minutes=6)
     late = middleware.evaluate_http(read(request_id="req-3"))
     assert late.allowed
@@ -236,7 +236,7 @@ def test_requests_belong_to_their_sandbox(
     )
     store.bind("sbx-0002", loaded.digest)
     other = middleware.evaluate_http(facts(sandbox_id="sbx-0002"))
-    assert other.reason_code == evaluator.APPROVAL_REQUIRED
+    assert other.reason_code == reasons.APPROVAL_REQUIRED
     assert request_number(other.reason) != seq
 
 
@@ -369,7 +369,7 @@ def test_an_approved_file_set_downloads_and_nothing_else(
     assert [line.strip() for line in shown[4:]] == sorted([PARI, GMP])
     assert main(["pending", "--settings", str(settings), "--request", "999"]) == 1
     # Unanswered, its files wait like any escalated download; index reads go on.
-    assert fetch(PARI).reason_code == evaluator.APPROVAL_REQUIRED
+    assert fetch(PARI).reason_code == reasons.APPROVAL_REQUIRED
     assert fetch("/conda/conda-forge/linux-64/repodata.json").allowed
     assert main(["approve", "--settings", str(settings), "--request", str(seq)]) == 0
     for path in (PARI, GMP):
@@ -381,10 +381,10 @@ def test_an_approved_file_set_downloads_and_nothing_else(
     assert [record.data()["grant"] for record in approved] == ["packages", "packages"]
     assert {record.data()["request_seq"] for record in approved} == {seq}
     # Nothing else: another file, another sandbox, or once a denial withdraws the set.
-    assert fetch(FLINT).reason_code == evaluator.APPROVAL_REQUIRED
-    assert fetch(PARI, "sbx-0002").reason_code == evaluator.APPROVAL_REQUIRED
+    assert fetch(FLINT).reason_code == reasons.APPROVAL_REQUIRED
+    assert fetch(PARI, "sbx-0002").reason_code == reasons.APPROVAL_REQUIRED
     assert main(["deny", "--settings", str(settings), "--request", str(seq)]) == 0
-    assert fetch(GMP).reason_code == evaluator.APPROVAL_REQUIRED
+    assert fetch(GMP).reason_code == reasons.APPROVAL_REQUIRED
     # And not once the approval expires.
     second = RequestKey.packages(sandbox_id, policy.digest, "prv-2", [FLINT])
     payload = {**payload, "target": second.payload(), "files": [{"path": FLINT}]}
@@ -406,7 +406,7 @@ def test_a_later_answer_to_the_download_itself_decides_it(
     assert fetch(PARI).allowed
     # Denied afterwards, that download is refused: the newest answer decides.
     assert main(["deny", "--settings", str(settings), "--request", str(direct)]) == 0
-    assert fetch(PARI).reason_code == evaluator.APPROVAL_DENIED
+    assert fetch(PARI).reason_code == reasons.APPROVAL_DENIED
     assert fetch(GMP).allowed
     # A set approved later still decides it again.
     seq = packages_request(events, sandbox_id, policy, "prv-2", [PARI])

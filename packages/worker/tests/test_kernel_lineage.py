@@ -17,10 +17,11 @@ from sandbox_science.contracts import (
     CellRequest,
     KernelLineageIdentity,
     KernelRestartRequest,
+    KernelStatusRequest,
     SessionCloseRequest,
     kernel_lineage_sha256,
 )
-from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.orchestrator.worker_client import WorkerClient
 from sandbox_science.testing import eventually
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
@@ -44,13 +45,13 @@ async def lineage(tmp_path: Path) -> AsyncIterator[Harness]:
         await worker.close()
 
 
-async def test_actual_http_client_exact_birth_and_stale_pin_are_readonly(lineage: Harness) -> None:
+async def test_exact_birth_and_stale_pin_are_readonly(lineage: Harness) -> None:
     manager = lineage.manager
     async with WorkerClient(
         str(lineage.client.make_url("")), TOKEN, session=lineage.client.session
     ) as client:
-        with pytest.raises(WorkerAPIError) as error:
-            await client.observe_kernel_lineage(REQUEST.context)
+        with pytest.raises(WorkerError) as error:
+            await manager.observe_kernel_lineage(REQUEST)
         assert error.value.kind == "unavailable"
         assert view(manager).connected() == set()
         await lineage.run("lineage-seed", kind="cell", code="lineage_value = 1729")
@@ -59,7 +60,7 @@ async def test_actual_http_client_exact_birth_and_stale_pin_are_readonly(lineage
         environment = view(manager).connection("env1")
         environment.last_used = before = time.monotonic() - 60
         rows = list(manager.store._db.iterdump())
-        observed = await client.observe_kernel_lineage(REQUEST.context)
+        observed = await manager.observe_kernel_lineage(REQUEST)
         item = observed.kernels[0]
         assert item.lineage_status == "proved"
         assert item.birth is not None
@@ -73,8 +74,8 @@ async def test_actual_http_client_exact_birth_and_stale_pin_are_readonly(lineage
         assert environment.last_used == before
         assert environment.requests == 0
         assert list(manager.store._db.iterdump()) == rows
-        other = await client.observe_kernel_lineage(
-            REQUEST.context.model_copy(update={"session_id": "other"})
+        other = await manager.observe_kernel_lineage(
+            KernelStatusRequest(context=REQUEST.context.model_copy(update={"session_id": "other"}))
         )
         assert other.kernels == ()
         # Existing GUI transport remains unchanged.
@@ -326,7 +327,7 @@ async def test_lineage_refuses_duplicate_live_kernel_ids_as_unavailable(
         return await original(channel, op, **fields)
 
     monkeypatch.setattr(ExecutorChannel, "request", duplicate)
-    status, body = await lineage.post("/v1/kernels/lineage", {"context": CONTEXT})
-    assert status == 503
-    assert body["error"]["kind"] == "unavailable"
+    with pytest.raises(WorkerError) as error:
+        await lineage.manager.observe_kernel_lineage(REQUEST)
+    assert error.value.kind == "unavailable"
     assert lineage.view.observations() == {}

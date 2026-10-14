@@ -15,8 +15,7 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import Field, StringConstraints, TypeAdapter, field_validator, model_validator
 
-from .artifacts import Sha256
-from .model import Contract, Identifier
+from .model import Contract, Counter, Identifier, Revision, Sha256
 
 MAX_DOCUMENT_BYTES: Final = 1024 * 1024
 MAX_CATALOG_ENTRIES: Final = 10_000
@@ -26,8 +25,6 @@ MAX_CATALOG_PAGE_BYTES: Final = 65_536
 MAX_CONTENT_CHUNK: Final = 262_144
 MAX_CONTENT_BODY: Final = 360_448
 MAX_ENTRY_BYTES: Final = 2048
-Counter = Annotated[int, Field(strict=True, ge=0, le=2**63 - 1)]
-Revision = Annotated[int, Field(strict=True, ge=1, le=2**63 - 1)]
 DocumentName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
 _COUNTER = TypeAdapter[Counter](Counter)
 _IDENTIFIER = TypeAdapter[str](Identifier)

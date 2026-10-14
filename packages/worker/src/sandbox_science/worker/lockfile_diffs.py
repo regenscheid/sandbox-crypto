@@ -27,10 +27,11 @@ from sandbox_science.contracts.lockfile_diffs import (
 )
 from sandbox_science.contracts.revision_packages import RevisionPackage
 from sandbox_science.contracts.revisions import CondaPackage, LockfileRef, PipDistribution
+from sandbox_science.policy.names import pep503
 
 from .errors import WorkerError
 from .provisioning import canonical_channel, canonical_url
-from .resolution import is_agpl, normalize_pypi
+from .resolution import is_agpl
 
 MAX_RAW = 8 * 1024 * 1024
 MAX_INDEX = 16 * 1024 * 1024
@@ -328,7 +329,7 @@ def _scan(
                     counts[key] += 1
                     if counts[key] > MAX_SECTION:
                         raise _HeldError("input_limit")
-                    name = package.name if key == "conda" else normalize_pypi(package.name)
+                    name = package.name if key == "conda" else pep503(package.name)
                     location = package.location if isinstance(package, PipDistribution) else ""
                     identity = (key, location, name)
                     if identity in index or (key == "conda" and name.casefold() in conda_names):

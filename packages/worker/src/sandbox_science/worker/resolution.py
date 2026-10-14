@@ -39,6 +39,8 @@ from sandbox_science.policy import (
     classify_package_request,
     evaluate,
 )
+from sandbox_science.policy.names import pep503
+from sandbox_science.policy.reasons import APPROVAL_REQUIRED
 
 from . import provisioning
 
@@ -188,11 +190,7 @@ def pip_name(spec: str) -> str:
     match = _PIP_NAME.match(spec)
     if match is None:
         raise ValueError(f"not a pip requirement: {spec!r}")
-    return normalize_pypi(match.group())
-
-
-def normalize_pypi(name: str) -> str:
-    return re.sub(r"[-_.]+", "-", name).lower()
+    return pep503(match.group())
 
 
 # Dry runs.
@@ -402,7 +400,7 @@ def parse_pip_report(stdout: str, cache: str | None) -> list[Resolved]:
             if (
                 len(parts) < 7
                 or parts[1:3] != ["pypi", "files"]
-                or parts[3] != normalize_pypi(record.name)
+                or parts[3] != pep503(record.name)
                 or parts[4] != record.sha256
                 or urllib.parse.unquote(parts[-1]) != record.file
             ):
@@ -476,7 +474,7 @@ def _names(operation: PackageOperation, file: ResolvedFile) -> bool:
         return False
     if file.ecosystem == "conda":
         return (operation.channel, operation.name) == (file.channel, file.name)
-    return operation.name == normalize_pypi(file.name)
+    return operation.name == pep503(file.name)
 
 
 def index_refusal(
@@ -519,7 +517,7 @@ def agpl_refused(files: Iterable[ResolvedFile], policy: LoadedPolicy) -> list[Re
             continue
         if file.ecosystem == "conda" and file.name in allowed.conda:
             continue
-        if file.ecosystem == "pypi" and normalize_pypi(file.name) in allowed.pypi:
+        if file.ecosystem == "pypi" and pep503(file.name) in allowed.pypi:
             continue
         refused.append(file)
     return refused
@@ -540,7 +538,7 @@ def failure_stage(text: str, changed: bool) -> Stage:
         return "post-link"
     if changed:
         return "link"
-    refused = "403" in lowered or "approval_required" in lowered
+    refused = "403" in lowered or APPROVAL_REQUIRED in lowered
     if not refused and any(word in lowered for word in _SOLVE_WORDS):
         return "resolve"
     return "download"
@@ -565,10 +563,8 @@ def package_changes(before: Lockfile | None, after: Lockfile) -> list[PackageCha
                 build_after=b.build if b else None,
             )
         )
-    old_pip = (
-        {normalize_pypi(d.name): d for d in before.pip if d.location == "prefix"} if before else {}
-    )
-    new_pip = {normalize_pypi(d.name): d for d in after.pip if d.location == "prefix"}
+    old_pip = {pep503(d.name): d for d in before.pip if d.location == "prefix"} if before else {}
+    new_pip = {pep503(d.name): d for d in after.pip if d.location == "prefix"}
     for name in sorted(old_pip.keys() | new_pip.keys()):
         a, b = old_pip.get(name), new_pip.get(name)
         if a is not None and b is not None and a.version == b.version:
@@ -595,14 +591,14 @@ def unplanned(
     2.9 keeps a pin to its name, version and build but not to its channel."""
     decided = list(files)
     conda = {f.name: f for f in decided if f.ecosystem == "conda"}
-    pip = {(normalize_pypi(f.name), f.version) for f in decided if f.ecosystem == "pypi"}
+    pip = {(pep503(f.name), f.version) for f in decided if f.ecosystem == "pypi"}
     channels = {p.name: p.channel for p in lockfile.conda} if lockfile is not None else {}
     found: list[str] = []
     for change in changes:
         if change.after is None:
             continue
         if change.ecosystem == "pypi":
-            if (normalize_pypi(change.name), change.after) not in pip:
+            if (pep503(change.name), change.after) not in pip:
                 found.append(f"pypi:{change.name} {change.after}")
             continue
         file = conda.get(change.name)
@@ -638,10 +634,10 @@ def installed_version(lockfile: Lockfile, kind: Kind, name: str) -> str | None:
                 return f"{package.version} {package.build}"
         return None
     for distribution in lockfile.pip:
-        if normalize_pypi(distribution.name) == name:
+        if pep503(distribution.name) == name:
             return distribution.version
     # A distribution a Conda package installed is the Conda package's, in the lockfile.
     for package in lockfile.conda:
-        if normalize_pypi(package.name) == name:
+        if pep503(package.name) == name:
             return f"{package.version} (the Conda package {package.name})"
     return None

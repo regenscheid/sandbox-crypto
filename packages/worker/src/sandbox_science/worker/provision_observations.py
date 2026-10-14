@@ -16,6 +16,7 @@ from typing import cast
 from pydantic import BaseModel, TypeAdapter
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier
+from sandbox_science.contracts.jsonio import strict_loads
 from sandbox_science.contracts.provision_observations import (
     MAX_OBSERVATION_BYTES,
     AdmissionSummary,
@@ -93,15 +94,6 @@ def _parameters(*values: tuple[object, int, int]) -> None:
         raise WorkerError(ErrorKind.INVALID_REQUEST, "invalid observation selection")
 
 
-def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in pairs:
-        if key in result:
-            raise _unavailable()
-        result[key] = value
-    return result
-
-
 class ProvisionObservations:
     """Borrow a Store connection for synchronous bounded read snapshots; own no resources."""
 
@@ -163,7 +155,7 @@ class ProvisionObservations:
         ).fetchone()
         if raw is None or type(raw[0]) is not bytes or len(raw[0]) > cap:
             raise _unavailable()
-        parsed: object = json.loads(raw[0], object_pairs_hook=_unique_object)
+        parsed: object = strict_loads(raw[0])
         if type(parsed) is not dict:
             raise _unavailable()
         return cast(dict[str, object], parsed)
@@ -440,7 +432,7 @@ class ProvisionObservations:
                 raise _unavailable()
             # The original element type and clipped bytes are checked before parsing.
             # Reject duplicates recursively, then retain strict JSON date/enum validation.
-            json.loads(raw, object_pairs_hook=_unique_object)
+            strict_loads(raw)
             item = model.model_validate_json(raw, strict=True)
             encoded = item.model_dump_json().encode("utf-8")
             if budget + len(encoded) + 1 > MAX_OBSERVATION_BYTES:

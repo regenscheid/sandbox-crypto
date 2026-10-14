@@ -8,8 +8,7 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.event_store import EventStore, StoreReader, verify_store
-from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
-from sandbox_science.policy_middleware import evaluator
+from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling, reasons
 from sandbox_science.policy_middleware.cli import main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import SOURCE, StoreSink
@@ -77,7 +76,7 @@ def test_escalations_alerts_and_monitor_findings_are_stored(
     escalated = recording.evaluate_http(
         facts(method="POST", path="/v1/items", query=PRIVATE_QUERY, body=PRIVATE_BODY)
     )
-    assert escalated.reason_code == evaluator.APPROVAL_REQUIRED
+    assert escalated.reason_code == reasons.APPROVAL_REQUIRED
     # Allowed with an alert; its 200-byte path also crosses the monitor's threshold.
     alerted = recording.evaluate_http(facts(host="watched.example.org", path="/" + "a" * 200))
     assert alerted.allowed
@@ -149,9 +148,9 @@ def test_an_alert_that_cannot_be_stored_is_denied(
         blocker.execute("BEGIN IMMEDIATE")
         alert = recording.evaluate_http(facts(host="watched.example.org"))
         assert not alert.allowed
-        assert alert.reason_code == evaluator.AUDIT_UNAVAILABLE
+        assert alert.reason_code == reasons.AUDIT_UNAVAILABLE
         escalation = recording.evaluate_http(facts(method="POST"))
-        assert escalation.reason_code == evaluator.AUDIT_UNAVAILABLE
+        assert escalation.reason_code == reasons.AUDIT_UNAVAILABLE
         # Requests that need no record are unaffected, monitors included.
         allowed = recording.evaluate_http(facts(path="/" + "a" * 200))
         assert allowed.allowed
@@ -169,7 +168,7 @@ def test_an_alert_is_denied_once_the_store_is_closed(
 ) -> None:
     events.close()
     verdict = recording.evaluate_http(facts(host="watched.example.org"))
-    assert verdict.reason_code == evaluator.AUDIT_UNAVAILABLE
+    assert verdict.reason_code == reasons.AUDIT_UNAVAILABLE
 
 
 def test_serve_refuses_a_file_that_is_not_an_event_store(

@@ -21,11 +21,12 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import AfterValidator, Field, StringConstraints, model_validator
 
-from .artifacts import ArtifactRef, Sha256
+from .artifacts import ArtifactRef
 from .context import ExecutionContext
 from .environments import PolicyRevision
-from .model import Contract, Identifier
+from .model import Contract, Identifier, Sha256
 from .revisions import (
+    MAX_PROBES,
     Build,
     CapabilityName,
     Channel,
@@ -41,6 +42,13 @@ from .worker import TERMINAL_STATES, ErrorInfo, ExecutionState
 MAX_SPECS: Final = 32
 """Specs of each kind one request may name."""
 MAX_FILES: Final = 2000
+"""Resolved files one operation may record."""
+MAX_CHANGES: Final = 2 * MAX_FILES
+MAX_NOTES: Final = 32
+MAX_EXECUTIONS: Final = 128
+"""Executions one operation may run: its steps, probes and looks."""
+MAX_QUEUED: Final = 32
+"""Provisioning operations waiting in one environment."""
 """Resolved package files one operation may install."""
 MAX_TEXT: Final = 2000
 """Characters of a purpose, reason or next step."""
@@ -314,7 +322,7 @@ class ProvisionOperation(Contract):
     error: ErrorInfo | None = None
     next_step: Text | None = None
     """What the agent, or the user, can do next."""
-    notes: tuple[Text, ...] = Field(default=(), max_length=32)
+    notes: tuple[Text, ...] = Field(default=(), max_length=MAX_NOTES)
     """What else the records show, such as a package the install linked that the decision
     did not see."""
     catalog: CatalogRef | None = None
@@ -330,9 +338,9 @@ class ProvisionOperation(Contract):
     permission_request: Annotated[int, Field(ge=1)] | None = None
     """The permission request it made, by its sequence number in the event store: the
     operator's ``approve --request`` names it."""
-    changes: tuple[PackageChange, ...] = Field(default=(), max_length=2 * MAX_FILES)
-    probes: tuple[ProbeResult, ...] = Field(default=(), max_length=64)
-    executions: tuple[Identifier, ...] = Field(default=(), max_length=128)
+    changes: tuple[PackageChange, ...] = Field(default=(), max_length=MAX_CHANGES)
+    probes: tuple[ProbeResult, ...] = Field(default=(), max_length=MAX_PROBES)
+    executions: tuple[Identifier, ...] = Field(default=(), max_length=MAX_EXECUTIONS)
     """The executions it ran, in order: probes, dry runs, installs. Each can be read, and
     cancelled, like any other."""
     installer_steps: tuple[InstallerStep, ...] | None = Field(default=None, max_length=8)

@@ -29,6 +29,7 @@ from sandbox_science.contracts import (
     ProvisionOperation,
     ProvisionState,
 )
+from sandbox_science.contracts.jsonio import strict_loads
 from sandbox_science.contracts.output_observations import Gap, OutputPage, OutputReport, OutputScope
 
 from .errors import WorkerError
@@ -1182,16 +1183,7 @@ class Store:
             ):
                 raise ValueError("retained installer artifact exceeds bounds")
             try:
-
-                def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
-                    result: dict[str, object] = {}
-                    for key, value in items:
-                        if key in result:
-                            raise ValueError("duplicate artifact key")
-                        result[key] = value
-                    return result
-
-                json.loads(row[2], object_pairs_hook=pairs)
+                strict_loads(row[2])
                 value = ArtifactRef.model_validate_json(row[2], strict=True)
             except (ValueError, TypeError, RecursionError):
                 raise ValueError("retained installer artifact invalid") from None

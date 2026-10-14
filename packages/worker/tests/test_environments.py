@@ -1566,7 +1566,7 @@ async def test_a_client_acts_for_its_own_projects_only(api: Api) -> None:
     # Observation inherits exact project/environment scope, before any channel lookup.
     observation = {"context": context_a}
     foreign = {"context": {**context_a, "project_id": "p2"}}
-    for route in ("/v1/kernels/observe", "/v1/kernels/lineage"):
+    for route in ("/v1/kernels/observe",):
         assert await api.refused("POST", route, B_TOKEN, observation) == (
             403,
             "policy_denied",

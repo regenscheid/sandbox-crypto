@@ -9,7 +9,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import AwareDatetime, Field, StringConstraints, field_validator, model_validator
 
-from .model import Contract, Identifier
+from .model import Contract, Counter, Identifier
 from .worker import KernelInfo, Language
 
 BirthId = Annotated[str, StringConstraints(pattern=r"^birth-[0-9a-f]{24}$")]
@@ -31,7 +31,7 @@ class KernelBirthPin(Contract):
     generation: Annotated[int, Field(strict=True, ge=1, le=2**31 - 1)]
     """Executor-local generation; distinct from the worker's monotonic generation."""
     birth_id: BirthId
-    start_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
+    start_revision: Counter | None = None
 
     @model_validator(mode="after")
     def _binding(self) -> Self:
@@ -120,7 +120,7 @@ class KernelLineageObservation(Contract):
     project_id: Identifier
     environment_id: Identifier
     session_id: Identifier
-    current_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
+    current_revision: Counter | None = None
     kernels: tuple[KernelLineageEntry, ...] = Field(default=(), max_length=2)
     observed_at: AwareDatetime = Field(strict=True)
 

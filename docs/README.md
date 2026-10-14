@@ -22,7 +22,6 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Background jobs](BACKGROUND-JOBS.md) | Job tools, waits, watcher check-ins, notices and limits |
 | [Artifacts](ARTIFACTS.md) | The artifact inventory, bounded capture and output observations |
 | [Kernel revisions](KERNEL-REVISIONS.md) | A kernel's start revision compared with its environment's package revision |
-| [Kernel notice lineage](KERNEL-NOTICE-LINEAGE.md) | The worker route reporting a kernel's original birth |
 | [Provisioning observations](PROVISIONING-OBSERVATIONS.md) | The worker's read-only provisioning observation routes |
 | [Explicit Conda upgrades](PROVISIONING-UPGRADES.md) | The `upgrade` provisioning action |
 | [Recovery fence](RECOVERY-FENCE.md) | Refusing new work after an install leaves packages uncertain (CP-13) |

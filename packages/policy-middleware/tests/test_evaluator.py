@@ -9,7 +9,14 @@ from typing import Protocol, cast
 
 import pytest
 
-from sandbox_science.policy import Action, HardFloor, LoadedPolicy, PoolCeiling, parse_ceiling
+from sandbox_science.policy import (
+    Action,
+    HardFloor,
+    LoadedPolicy,
+    PoolCeiling,
+    parse_ceiling,
+    reasons,
+)
 from sandbox_science.policy.package_requests import SANDBOX_HEADER
 from sandbox_science.policy_middleware import evaluator, service
 from sandbox_science.policy_middleware.evaluator import (
@@ -94,7 +101,7 @@ def test_an_escalation_is_denied_as_approval_required_and_recorded(
         make_facts(method="POST", path="/v1/items", query="token=secret-ish", body=b"{}")
     )
     assert not verdict.allowed
-    assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
+    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
     events = sink.events
     assert len(events) == 1
     kind, event = events[0]
@@ -119,7 +126,7 @@ def test_an_unmatched_request_follows_the_default(
     middleware: PolicyMiddleware, make_facts: FactsFactory
 ) -> None:
     verdict = middleware.evaluate_http(make_facts(method="OPTIONS"))
-    assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
+    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
     assert verdict.decision is not None
     assert verdict.decision.layer == "default"
 
@@ -155,7 +162,7 @@ def test_the_pool_ceiling_applies(
     )
     middleware = PolicyMiddleware(store, ceiling=ceiling, floor=HardFloor(), events=_NullSink())
     verdict = middleware.evaluate_http(make_facts(host="blocked.example.org"))
-    assert verdict.reason_code == evaluator.POOL_CEILING_DENIED
+    assert verdict.reason_code == reasons.POOL_CEILING_DENIED
 
 
 def test_the_deployment_floor_applies(
@@ -169,7 +176,7 @@ def test_the_deployment_floor_applies(
         events=_NullSink(),
     )
     verdict = middleware.evaluate_http(make_facts(host="gateway.example.org"))
-    assert verdict.reason_code == evaluator.DESTINATION_FORBIDDEN
+    assert verdict.reason_code == reasons.DESTINATION_FORBIDDEN
 
 
 # --- Classification --------------------------------------------------------------------------
@@ -205,7 +212,7 @@ def test_unclassifiable_requests_are_denied(
 ) -> None:
     verdict = middleware.evaluate_http(make_facts(**overrides))
     assert not verdict.allowed
-    assert verdict.reason_code == evaluator.REQUEST_UNCLASSIFIABLE
+    assert verdict.reason_code == reasons.REQUEST_UNCLASSIFIABLE
 
 
 def test_repeated_content_type_headers_are_ambiguous(
@@ -219,7 +226,7 @@ def test_repeated_content_type_headers_are_ambiguous(
         body=facts.body,
         headers=(("content-type", GIT_FETCH_TYPE), ("content-type", "application/json")),
     )
-    assert middleware.evaluate_http(facts).reason_code == evaluator.REQUEST_UNCLASSIFIABLE
+    assert middleware.evaluate_http(facts).reason_code == reasons.REQUEST_UNCLASSIFIABLE
 
 
 def test_ipv6_literals_are_bracketed_for_classification(
@@ -232,7 +239,7 @@ def test_ipv6_literals_are_bracketed_for_classification(
 def test_non_default_ports_are_kept(middleware: PolicyMiddleware, make_facts: FactsFactory) -> None:
     # read-only-web lists no ports, so it covers 443 only and port 8443 falls to the default.
     verdict = middleware.evaluate_http(make_facts(port=8443))
-    assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
+    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
     assert verdict.decision is not None
     assert verdict.decision.layer == "default"
 
@@ -271,7 +278,7 @@ def test_the_port_decides_the_scheme_on_default_ports(
     verdict = middleware.evaluate_http(
         make_facts(host="evil.example.org", scheme=scheme, port=port, config=policy_config(loaded))
     )
-    assert verdict.reason_code == evaluator.POLICY_DENIED
+    assert verdict.reason_code == reasons.POLICY_DENIED
 
 
 def test_rules_without_ports_do_not_cover_other_ports(
@@ -364,7 +371,7 @@ def test_a_push_is_escalated_without_inspecting_its_body(
             body=b"0000PACK...",
         )
     )
-    assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
+    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
 
 
 # --- Policy selection ------------------------------------------------------------------------
@@ -432,7 +439,7 @@ def test_a_missing_policy_file_is_denied(
         floor=HardFloor(),
         events=_NullSink(),
     ).evaluate_http(make_facts())
-    assert verdict.reason_code == evaluator.POLICY_UNAVAILABLE
+    assert verdict.reason_code == reasons.POLICY_UNAVAILABLE
 
 
 def test_validate_config(middleware: PolicyMiddleware, example: LoadedPolicy) -> None:
@@ -489,7 +496,7 @@ def test_an_alert_that_cannot_be_recorded_is_denied(
     verdict = middleware.evaluate_http(
         make_facts(host="watched.example.org", config=policy_config(loaded))
     )
-    assert verdict.reason_code == evaluator.AUDIT_UNAVAILABLE
+    assert verdict.reason_code == reasons.AUDIT_UNAVAILABLE
 
 
 def test_an_escalation_that_cannot_be_recorded_is_denied_without_awaiting_approval(
@@ -499,7 +506,7 @@ def test_an_escalation_that_cannot_be_recorded_is_denied_without_awaiting_approv
     sink.fail = True
     verdict = middleware.evaluate_http(make_facts(method="DELETE"))
     assert not verdict.allowed
-    assert verdict.reason_code == evaluator.AUDIT_UNAVAILABLE
+    assert verdict.reason_code == reasons.AUDIT_UNAVAILABLE
 
 
 READ_ESCALATION = """\
@@ -561,7 +568,7 @@ def test_requests_to_hosts_with_a_bound_credential_count_as_credentialed(
     )
     facts = make_facts(config=policy_config(loaded), host=host, port=port)
     verdict = middleware.evaluate_http(facts)
-    assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
+    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
     assert sink.events[0][1]["escalation"] == {"timeout_seconds": 1800, "on_timeout": on_timeout}
 
 
@@ -594,7 +601,7 @@ def test_plain_http_to_a_credential_port_is_refused(
     facts = make_facts(config=policy_config(loaded), scheme=scheme, host=host, port=port)
     verdict = middleware.evaluate_http(facts)
     assert not verdict.allowed
-    expected = evaluator.CREDENTIAL_UNENCRYPTED if refused else evaluator.APPROVAL_REQUIRED
+    expected = evaluator.CREDENTIAL_UNENCRYPTED if refused else reasons.APPROVAL_REQUIRED
     assert verdict.reason_code == expected
 
 
@@ -664,7 +671,7 @@ def test_denied_requests_do_not_count_as_egress(
     )
     config = policy_config(loaded)
     denied = middleware.evaluate_http(make_facts(method="POST", body=b"x" * 500, config=config))
-    assert denied.reason_code == evaluator.POLICY_DENIED
+    assert denied.reason_code == reasons.POLICY_DENIED
     allowed = middleware.evaluate_http(make_facts(host="ok.example.org", config=config))
     assert allowed.allowed
     assert allowed.findings == ()
@@ -675,16 +682,16 @@ def test_denied_requests_do_not_count_as_egress(
 
 def test_every_reason_code_has_openshells_format() -> None:
     codes = [
-        evaluator.APPROVAL_REQUIRED,
-        evaluator.POLICY_DENIED,
-        evaluator.POOL_CEILING_DENIED,
-        evaluator.DESTINATION_FORBIDDEN,
-        evaluator.REQUEST_UNCLASSIFIABLE,
+        reasons.APPROVAL_REQUIRED,
+        reasons.POLICY_DENIED,
+        reasons.POOL_CEILING_DENIED,
+        reasons.DESTINATION_FORBIDDEN,
+        reasons.REQUEST_UNCLASSIFIABLE,
         evaluator.GIT_REQUEST_INVALID,
-        evaluator.AUDIT_UNAVAILABLE,
+        reasons.AUDIT_UNAVAILABLE,
         evaluator.SANDBOX_UNBOUND,
         evaluator.POLICY_STALE,
-        evaluator.POLICY_UNAVAILABLE,
+        reasons.POLICY_UNAVAILABLE,
         evaluator.CONFIG_INVALID,
         service.WEBSOCKET_DENIED,
     ]
@@ -798,7 +805,7 @@ def test_other_requests_to_the_package_cache_are_refused(
 ) -> None:
     path = cast("str", overrides.pop("path"))
     verdict = middleware.evaluate_http(cache_facts(make_facts, example, path, **overrides))
-    assert verdict.reason_code == evaluator.REQUEST_UNCLASSIFIABLE
+    assert verdict.reason_code == reasons.REQUEST_UNCLASSIFIABLE
 
 
 @pytest.mark.parametrize(
@@ -845,7 +852,7 @@ def test_only_the_cache_port_is_the_package_cache(
     verdict = middleware.evaluate_http(
         cache_facts(make_facts, example, "/pypi/simple/numpy/", port=8091)
     )
-    assert verdict.reason_code == evaluator.DESTINATION_FORBIDDEN
+    assert verdict.reason_code == reasons.DESTINATION_FORBIDDEN
 
 
 def test_package_escalations_ask_for_the_install_not_the_lookup(
@@ -869,10 +876,10 @@ def test_package_escalations_ask_for_the_install_not_the_lookup(
     download = middleware.evaluate_http(
         cache_facts(make_facts, loaded, f"/cargo/dl/serde/1.0.200/{'a' * 64}", config=config)
     )
-    assert download.reason_code == evaluator.APPROVAL_REQUIRED
+    assert download.reason_code == reasons.APPROVAL_REQUIRED
     assert sink.events[-1][1]["rule"] == "packages.cargo"
     denied = middleware.evaluate_http(cache_facts(make_facts, loaded, "/npm/lodash", config=config))
-    assert denied.reason_code == evaluator.POLICY_DENIED
+    assert denied.reason_code == reasons.POLICY_DENIED
 
 
 OCAMLFIND_MD5 = "ca770e5806032a96131b670f6e07f146"
@@ -972,7 +979,7 @@ def test_an_opam_archive_escalation_is_recorded_whatever_the_cache_says(
     verdict = middleware.evaluate_http(
         cache_facts(make_facts, loaded, OCAMLFIND_ARCHIVE, config=config)
     )
-    assert verdict.reason_code == evaluator.APPROVAL_REQUIRED
+    assert verdict.reason_code == reasons.APPROVAL_REQUIRED
     assert sink.events[-1][1]["opam_archive"] == {"digest": f"md5:{OCAMLFIND_MD5}", **expected}
 
 
@@ -999,7 +1006,7 @@ def test_the_cache_is_asked_only_about_recorded_opam_archives(
     write = middleware.evaluate_http(
         make_facts(method="POST", path="/v1/items", body=b"{}", config=config)
     )
-    assert write.reason_code == evaluator.APPROVAL_REQUIRED
+    assert write.reason_code == reasons.APPROVAL_REQUIRED
     assert archives.asked == []
     ((kind, payload),) = sink.events
     assert kind == "escalation"
@@ -1087,7 +1094,7 @@ def test_worker_access_false_keeps_worker_code_from_the_mcp_proxy(
         body=b"{}",
         config=with_services(policy_config(loaded)),
     )
-    assert middleware.evaluate_http(facts).reason_code == evaluator.POLICY_DENIED
+    assert middleware.evaluate_http(facts).reason_code == reasons.POLICY_DENIED
 
 
 @pytest.mark.parametrize(
@@ -1117,7 +1124,7 @@ def test_websocket_requests_to_the_cache_are_refused(
     overrides: dict[str, object],
 ) -> None:
     verdict = middleware.evaluate_http(cache_facts(make_facts, example, "/npm/lodash", **overrides))
-    assert verdict.reason_code == evaluator.REQUEST_UNCLASSIFIABLE
+    assert verdict.reason_code == reasons.REQUEST_UNCLASSIFIABLE
 
 
 def test_malformed_service_hosts_are_rejected(example: LoadedPolicy) -> None:

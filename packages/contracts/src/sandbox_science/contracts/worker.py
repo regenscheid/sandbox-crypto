@@ -14,9 +14,8 @@ from typing import Annotated, Final, Literal, Self
 
 from pydantic import AfterValidator, AwareDatetime, Field, StringConstraints, model_validator
 
-from .artifacts import Sha256
 from .context import ExecutionContext
-from .model import Contract, Identifier
+from .model import Contract, Counter, Identifier, Sha256
 
 PROTOCOL_VERSION: Final = 2
 """The worker API's version. Releases are lockstep (docs/COMPATIBILITY.md): it changes with
@@ -77,6 +76,21 @@ def _no_nul(text: str, what: str) -> None:
         raise ValueError(f"{what} must not contain NUL characters")
 
 
+def _check_command(script: str | None, argv: tuple[str, ...] | None) -> None:
+    """Exactly one of a non-blank ``script`` and an ``argv`` naming a program; no NULs."""
+    if (script is None) == (argv is None):
+        raise ValueError("give exactly one of script and argv")
+    if script is not None:
+        if not script.strip():
+            raise ValueError("script must not be empty")
+        _no_nul(script, "script")
+    if argv is not None:
+        if not argv or not argv[0]:
+            raise ValueError("argv must name a program")
+        for argument in argv:
+            _no_nul(argument, "argv")
+
+
 class ShellRequest(Contract):
     """A shell call: a ``script`` for ``bash -c``, or an ``argv`` run without a shell."""
 
@@ -91,17 +105,7 @@ class ShellRequest(Contract):
 
     @model_validator(mode="after")
     def _one_command(self) -> Self:
-        if (self.script is None) == (self.argv is None):
-            raise ValueError("give exactly one of script and argv")
-        if self.script is not None:
-            if not self.script.strip():
-                raise ValueError("script must not be empty")
-            _no_nul(self.script, "script")
-        if self.argv is not None:
-            if not self.argv or not self.argv[0]:
-                raise ValueError("argv must name a program")
-            for argument in self.argv:
-                _no_nul(argument, "argv")
+        _check_command(self.script, self.argv)
         return self
 
 
@@ -129,17 +133,7 @@ class JobRequest(Contract):
             raise ValueError("purpose and expected_progress must not be blank")
         _no_nul(self.purpose, "purpose")
         _no_nul(self.expected_progress, "expected_progress")
-        if (self.script is None) == (self.argv is None):
-            raise ValueError("give exactly one of script and argv")
-        if self.script is not None:
-            if not self.script.strip():
-                raise ValueError("script must not be empty")
-            _no_nul(self.script, "script")
-        if self.argv is not None:
-            if not self.argv or not self.argv[0]:
-                raise ValueError("argv must name a program")
-            for argument in self.argv:
-                _no_nul(argument, "argv")
+        _check_command(self.script, self.argv)
         return self
 
 
@@ -291,9 +285,9 @@ class KernelInfo(Contract):
     kernel_id: Identifier
     language: Language
     generation: Annotated[int, Field(ge=1)]
-    start_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
+    start_revision: Counter | None = None
     """Revision observed at this kernel's birth, never inferred from a later cell."""
-    current_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
+    current_revision: Counter | None = None
     revision_status: Literal["current", "predates", "unknown"] = "unknown"
 
     @model_validator(mode="after")
@@ -319,7 +313,7 @@ class KernelListing(Contract):
 
     environment_id: Identifier
     session_id: Identifier
-    current_revision: Annotated[int, Field(strict=True, ge=0, le=2**62)] | None = None
+    current_revision: Counter | None = None
     kernels: tuple[KernelInfo, ...] = Field(default=(), max_length=2)
 
     @model_validator(mode="after")

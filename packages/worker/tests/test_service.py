@@ -354,9 +354,7 @@ async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker
     assert after["result"]["error"]["name"] == "NameError"
 
 
-@pytest.mark.parametrize(
-    "route", ["/v1/kernels/status", "/v1/kernels/observe", "/v1/kernels/lineage"]
-)
+@pytest.mark.parametrize("route", ["/v1/kernels/status", "/v1/kernels/observe"])
 async def test_status_before_start_and_failed_birth_commit_do_not_consume_kernel_identity(
     worker: Harness, monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
@@ -387,7 +385,7 @@ async def test_status_before_start_and_failed_birth_commit_do_not_consume_kernel
     status, listing = await worker.post(route, {"context": CONTEXT})
     assert status == 200, listing
     kernel = listing["kernels"][0]
-    assert (kernel["kernel"] if route.endswith("/lineage") else kernel)["start_revision"] is None
+    assert kernel["start_revision"] is None
     assert manager.store.kernel("env1", "s1", "python") == before
 
     observe = manager.store.kernel_starts.observe

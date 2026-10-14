@@ -13,23 +13,27 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Final
 
-from sandbox_science.policy import Layer
+from sandbox_science.policy import reasons as policy
 
 REFUSED: Final = -31001
 """JSON-RPC error code: the proxy refused the request, and nothing was sent to the server."""
 UPSTREAM_FAILED: Final = -31002
 """JSON-RPC error code: the request was sent and may have had effects, but no usable answer came."""
 
-# Decisions of the policy library.
-APPROVAL_REQUIRED: Final = "approval_required"
-APPROVAL_DENIED: Final = "approval_denied"
-ESCALATION_TIMED_OUT: Final = "escalation_timed_out"
-POLICY_DENIED: Final = "policy_denied"
-POOL_CEILING_DENIED: Final = "pool_ceiling_denied"
-DESTINATION_FORBIDDEN: Final = "destination_forbidden"
-REQUEST_UNCLASSIFIABLE: Final = "request_unclassifiable"
-AUDIT_UNAVAILABLE: Final = "audit_unavailable"
-POLICY_UNAVAILABLE: Final = "policy_unavailable"
+# Decisions of the policy library, defined in policy/reasons.py.
+APPROVAL_REQUIRED: Final = policy.APPROVAL_REQUIRED
+APPROVAL_DENIED: Final = policy.APPROVAL_DENIED
+ESCALATION_TIMED_OUT: Final = policy.ESCALATION_TIMED_OUT
+POLICY_DENIED: Final = policy.POLICY_DENIED
+POOL_CEILING_DENIED: Final = policy.POOL_CEILING_DENIED
+DESTINATION_FORBIDDEN: Final = policy.DESTINATION_FORBIDDEN
+REQUEST_UNCLASSIFIABLE: Final = policy.REQUEST_UNCLASSIFIABLE
+AUDIT_UNAVAILABLE: Final = policy.AUDIT_UNAVAILABLE
+POLICY_UNAVAILABLE: Final = policy.POLICY_UNAVAILABLE
+LAYER_CODES: Final = policy.LAYER_CODES
+"""The reason code of a denial, by the layer of the policy library that decided it."""
+
+# The project's binding to a policy revision.
 PROJECT_UNBOUND: Final = "project_unbound"
 
 # The proxy's own checks.
@@ -52,15 +56,6 @@ RESULT_TOO_LARGE: Final = "result_too_large"
 UPSTREAM_ERROR: Final = "upstream_error"
 UPSTREAM_UNAUTHORIZED: Final = "upstream_unauthorized"
 UPSTREAM_UNAVAILABLE: Final = "upstream_unavailable"
-
-LAYER_CODES: Final[Mapping[Layer, str]] = {
-    "classification": REQUEST_UNCLASSIFIABLE,
-    "floor": DESTINATION_FORBIDDEN,
-    "ceiling": POOL_CEILING_DENIED,
-    "policy": POLICY_DENIED,
-    "default": POLICY_DENIED,
-}
-"""The reason code of a denial, by the layer of the policy library that decided it."""
 
 MESSAGES: Final[Mapping[str, str]] = {
     APPROVAL_REQUIRED: "this call needs the user's approval; it is recorded as a pending request",
