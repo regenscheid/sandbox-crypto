@@ -38,7 +38,7 @@ from sandbox_science.worker.channel import (
     ExecutorChannel,
     Message,
 )
-from sandbox_science.worker.connections import Connection
+from sandbox_science.worker.connections import Connection, EnvironmentConnections
 from sandbox_science.worker.kernels import _Observer
 from sandbox_science.worker.live import Live
 from sandbox_science.worker.manager import ExecutionManager
@@ -68,6 +68,10 @@ class ManagerView:
         self.manager = manager
 
     # Environment connections.
+
+    def connections(self) -> EnvironmentConnections:
+        """The manager's connections, for a part built beside it in a test."""
+        return self.manager._connections
 
     def connected(self) -> set[str]:
         """The environments the manager holds a connection record for."""
@@ -151,7 +155,7 @@ class ManagerView:
 
     async def deliver(self, environment_id: str, message: Message) -> None:
         """Hand the manager a message as if the environment's executor had sent it."""
-        await self.manager._on_event(environment_id, message)
+        await self.manager._dispatcher.on_event(environment_id, message)
 
     async def recover(self, environment_id: str, *, startup: bool = False) -> None:
         """Run the daemon recovery of an environment now."""
@@ -202,10 +206,16 @@ class ManagerView:
         wrapper: Callable[[Callable[[Live, str, Message], None], Live, str, Message], None],
     ) -> None:
         """Route every executor message the manager applies through ``wrapper``."""
-        original = self.manager._apply
+        original = self.manager._dispatcher._apply
         patch.setattr(
-            self.manager, "_apply", lambda live, env, message: wrapper(original, live, env, message)
+            self.manager._dispatcher,
+            "_apply",
+            lambda live, env, message: wrapper(original, live, env, message),
         )
+
+    def replace_completion(self, patch: pytest.MonkeyPatch, complete: Callable[..., None]) -> None:
+        """Replace how an attempt is ended once the executor reported its outcome."""
+        patch.setattr(self.manager._dispatcher, "_complete", complete)
 
     def wrap_on_event(
         self,
@@ -218,12 +228,12 @@ class ManagerView:
 
         Returns the manager's own handler, which applies a message without the wrapper.
         """
-        original = self.manager._on_event
+        original = self.manager._dispatcher.on_event
 
         async def wrapped(environment_id: str, message: Message) -> None:
             await wrapper(original, environment_id, message)
 
-        patch.setattr(self.manager, "_on_event", wrapped)
+        patch.setattr(self.manager._dispatcher, "on_event", wrapped)
         return original
 
     def watch_connects(self, patch: pytest.MonkeyPatch) -> list[str]:
