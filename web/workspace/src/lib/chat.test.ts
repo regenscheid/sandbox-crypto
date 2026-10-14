@@ -6,6 +6,8 @@ import {
   ChatFeed,
   forgetMessage,
   MAX_MESSAGE_BYTES,
+  HELD_EVERY,
+  INTERRUPTED_POLLS,
   MAX_RUNS,
   messageBytes,
   chatEntries,
@@ -20,10 +22,14 @@ import {
   type RunEvent,
 } from './chat';
 
+/**
+ * A message as the server lists it, seen by run `seen`: `run` names the run that delivered
+ * it, and `offered` the one that last offered it, so a held or queued message has no `run`.
+ */
 const message = (
   number: number,
   state: ChatMessage['state'],
-  run: string | null = null,
+  seen: string | null = null,
 ): ChatMessage => ({
   message_id: `m${number}`,
   number,
@@ -31,7 +37,8 @@ const message = (
   author: 'user',
   created_at: '2026-10-14T12:00:00Z',
   state,
-  run,
+  run: state === 'delivered' ? seen : null,
+  offered: state === 'refused' ? null : seen,
   reason: null,
 });
 const event = (
@@ -212,19 +219,16 @@ describe("a session's chat, polled", () => {
     );
   });
 
-  it('asks no more of a run that no longer holds the session without ending', async () => {
+  it('stops asking, a few polls later, of a run that lost its lease without ending', async () => {
     const { state, asked, feed } = server();
+    state.messages = [message(1, 'queued', 'r1')];
     state.lease = 'r1';
     state.events.set('r1', [event(1, 'started')]);
     await feed.read();
     state.lease = null;
     state.runState.set('r1', 'interrupted');
-    await feed.read();
-    await feed.read();
-    expect(asked.filter((item) => item.startsWith('events'))).toEqual([
-      'events r1 0',
-      'events r1 1',
-    ]);
+    for (let poll = 0; poll < INTERRUPTED_POLLS + 2; poll++) await feed.read();
+    expect(asked.filter((item) => item.startsWith('events'))).toHaveLength(1 + INTERRUPTED_POLLS);
   });
 
   it('does not keep reading held messages, until asked to after a resume or a message', async () => {
@@ -241,6 +245,80 @@ describe("a session's chat, polled", () => {
       'messages 2',
       'messages 0',
     ]);
+  });
+
+  it('shows the same newest runs on every poll, without reading older ones again', async () => {
+    const { state, asked, feed } = server();
+    for (let n = 1; n <= MAX_RUNS + 2; n++) {
+      state.messages.push(message(n, 'delivered', `r${n}`));
+      state.events.set(`r${n}`, [
+        event(1, 'started'),
+        event(2, 'stopped', { stopped: 'answered' }),
+      ]);
+      state.runState.set(`r${n}`, 'ended');
+    }
+    state.lease = null;
+    const newest = Array.from({ length: MAX_RUNS }, (_, index) => `r${index + 3}`);
+    for (let poll = 0; poll < 4; poll++)
+      expect((await feed.read()).runs.map((run) => run.run)).toEqual(newest);
+    // Each shown run was read once, to its end; the two older ones never.
+    expect(asked.filter((item) => item.startsWith('events')).sort()).toEqual(
+      newest.map((run) => `events ${run} 0`).sort(),
+    );
+  });
+
+  it('keeps the active run in the window, with its Cancel and thinking, beside older runs', async () => {
+    const { state, feed } = server();
+    for (let n = 1; n <= MAX_RUNS + 1; n++) {
+      state.messages.push(message(n, 'delivered', `r${n}`));
+      state.runState.set(`r${n}`, 'ended');
+    }
+    state.messages.push(message(MAX_RUNS + 2, 'queued', 'live'));
+    state.lease = 'live';
+    state.events.set('live', [event(1, 'started'), event(2, 'model', { turn: 1 })]);
+    for (let poll = 0; poll < 3; poll++) {
+      const view = await feed.read();
+      expect(view.runs.at(-1)?.run).toBe('live');
+      expect(thinking(view.runs.at(-1))).toBe(true);
+    }
+  });
+
+  it('after a reload, shows a run that was cancelled before answering, from what it was offered', async () => {
+    const { state, feed } = server();
+    state.messages = [message(1, 'delivered', 'r1'), message(2, 'held', 'r2')];
+    state.events.set('r1', [event(1, 'started'), event(2, 'stopped', { stopped: 'answered' })]);
+    state.events.set('r2', [event(1, 'started'), event(2, 'stopped', { stopped: 'cancelled' })]);
+    state.runState.set('r1', 'ended');
+    state.runState.set('r2', 'ended');
+    const view = await feed.read(); // a fresh feed, as after a reload
+    expect(view.runs.map((run) => run.run)).toEqual(['r1', 'r2']);
+  });
+
+  it("reads the stopped event the service writes after a dead run's lease expires", async () => {
+    const { state, feed } = server();
+    state.messages = [message(1, 'queued', 'r1')];
+    state.lease = 'r1';
+    state.events.set('r1', [event(1, 'started'), event(2, 'model')]);
+    await feed.read();
+    state.lease = null;
+    state.runState.set('r1', 'interrupted');
+    await feed.read();
+    state.events.get('r1')!.push(event(3, 'stopped', { stopped: 'interrupted' }));
+    state.runState.set('r1', 'ended');
+    state.messages = [message(1, 'held', 'r1')];
+    const view = await feed.read();
+    expect(view.runs[0]?.events.at(-1)?.kind).toBe('stopped');
+  });
+
+  it('sees, after a while, a held message another tab resumed', async () => {
+    const { state, feed } = server();
+    state.messages = [message(1, 'held', 'r1')];
+    state.runState.set('r1', 'ended');
+    await feed.read();
+    state.messages = [message(1, 'queued', 'r1')]; // resumed elsewhere
+    let view = await feed.read();
+    for (let poll = 2; poll <= HELD_EVERY; poll++) view = await feed.read();
+    expect(view.messages[0]?.state).toBe('queued');
   });
 
   it('moves to a new run once it holds the session', async () => {
@@ -335,8 +413,8 @@ describe('the transcript of a run', () => {
     expect(messageState(message(1, 'held', 'r1'))).toBe(
       'Held: its run was cancelled or interrupted before answering it. Resume, or write again, to queue it once more',
     );
-    expect(messageState({ ...message(1, 'held', 'r1'), reason: 'failed' })).toMatch(
-      /^Held: this session's runs failed several times in a row\. Resume, or write again/,
+    expect(messageState({ ...message(1, 'held', 'r1'), reason: '5 runs failed in a row' })).toBe(
+      'Held: 5 runs failed in a row. Resume, or write again, to queue it once more',
     );
   });
 });

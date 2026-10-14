@@ -104,6 +104,11 @@ export interface ChatReads {
 /** The most runs the panel shows; earlier ones are in the session's run list. */
 export const MAX_RUNS = 5;
 
+/** Every this many polls, held messages are read again (another tab may resume them). */
+export const HELD_EVERY = 10;
+/** Polls a run that lost its lease without ending is still read, for its `stopped` event. */
+export const INTERRUPTED_POLLS = 3;
+
 /** A message no run will change by itself: delivered, refused, or held until resumed. */
 const settled = (message: ChatMessage) => message.state !== 'queued';
 
@@ -121,10 +126,14 @@ export class ChatFeed {
   #runs = new Map<string, WatchedRun>();
   /** Runs whose events are all read and that will write no more. */
   #finished = new Set<string>();
+  /** Polls left for a run that lost its lease without ending: the service writes its
+   * `stopped` event once it reaps the run. */
+  #grace = new Map<string, number>();
   #lease: RunLease | null = null;
   #service = false;
   /** Read held messages again: a resume, or a new message, queues them. */
   #recheck = false;
+  #polls = 0;
 
   constructor(private readonly reads: ChatReads) {}
 
@@ -134,6 +143,8 @@ export class ChatFeed {
   }
 
   async read(signal?: AbortSignal): Promise<ChatView> {
+    // Held messages are read again now and then too: another tab may have resumed them.
+    if (++this.#polls % HELD_EVERY === 0) this.#recheck = true;
     let after = this.#messageCursor();
     this.#recheck = false;
     for (let page = 0; page < PAGES_PER_READ; page++) {
@@ -160,9 +171,7 @@ export class ChatFeed {
         run.state = found.state;
         run.events = [...run.events, ...found.events];
         if (found.events.length < PAGE) {
-          const holding = this.#lease?.run === run.run;
-          if (found.state === 'ended' || (found.state === 'interrupted' && !holding))
-            this.#finished.add(run.run);
+          this.#settle(run);
           break;
         }
       }
@@ -170,20 +179,39 @@ export class ChatFeed {
     return this.#view();
   }
 
-  /** Add the runs the messages and the lease name, in the order they first appear. */
+  /** Whether a run caught up with will write more: not once ended, nor some polls after it
+   * lost its lease without ending. */
+  #settle(run: WatchedRun): void {
+    if (run.state === 'ended') this.#finished.add(run.run);
+    else if (run.state === 'interrupted' && this.#lease?.run !== run.run) {
+      const left = (this.#grace.get(run.run) ?? INTERRUPTED_POLLS) - 1;
+      this.#grace.set(run.run, left);
+      if (left <= 0) this.#finished.add(run.run);
+    } else this.#grace.delete(run.run);
+  }
+
+  /**
+   * The runs to show, rebuilt each poll: the newest `MAX_RUNS` of those the messages name
+   * (the run that delivered each, or else the one that last offered it), in the order of
+   * their first message, then the run holding the session. A run kept keeps its events;
+   * one older than the window is not shown again.
+   */
   #follow(): void {
-    const named = [...this.#messages.values()]
-      .sort((a, b) => a.number - b.number)
-      .map((message) => message.run)
-      .filter((run): run is string => run !== null);
-    if (this.#lease) named.push(this.#lease.run);
-    for (const run of named)
-      if (!this.#runs.has(run)) this.#runs.set(run, { run, state: 'active', events: [] });
-    while (this.#runs.size > MAX_RUNS) {
-      const oldest = this.#runs.keys().next().value!;
-      this.#runs.delete(oldest);
-      this.#finished.delete(oldest);
+    const named: string[] = [];
+    for (const message of [...this.#messages.values()].sort((a, b) => a.number - b.number)) {
+      const run = message.run ?? message.offered;
+      if (run !== null && !named.includes(run)) named.push(run);
     }
+    if (this.#lease && !named.includes(this.#lease.run)) named.push(this.#lease.run);
+    const shown = new Map<string, WatchedRun>();
+    for (const run of named.slice(-MAX_RUNS))
+      shown.set(run, this.#runs.get(run) ?? { run, state: 'active', events: [] });
+    for (const run of this.#runs.keys())
+      if (!shown.has(run)) {
+        this.#finished.delete(run);
+        this.#grace.delete(run);
+      }
+    this.#runs = shown;
   }
 
   /** From the oldest queued message (or held one, when asked to recheck them). */
@@ -370,12 +398,8 @@ export function messageState(message: ChatMessage): string {
     case 'delivered':
       return `Delivered to ${message.run ?? 'a run'}`;
     case 'held': {
-      const why =
-        message.reason === null
-          ? 'its run was cancelled or interrupted before answering it'
-          : message.reason === 'failed'
-            ? "this session's runs failed several times in a row"
-            : message.reason;
+      // The service gives a reason only when runs keep failing ("5 runs failed in a row").
+      const why = message.reason ?? 'its run was cancelled or interrupted before answering it';
       return `Held: ${why}. Resume, or write again, to queue it once more`;
     }
     case 'refused':

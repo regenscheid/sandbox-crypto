@@ -34,6 +34,7 @@ export interface ChatMessage {
   state: "queued" | "delivered" | "refused" | "held";
   run: string | null;
   reason: string | null;
+  offered: string | null;
 }
 
 export interface CompactPlan {

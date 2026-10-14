@@ -120,7 +120,10 @@ def test_a_run_offers_delivers_and_writes_only_while_it_holds_the_session(
     assert not state.known("p", "s", "run-a")
     state.acquire("p", "s", "run-a", "holder-a")
     assert state.known("p", "s", "run-a")
+    assert state.messages("p", "s")[0].offered is None
     state.offer("p", "s", ["m-1"], "run-a")
+    # The run that saw it, named even while it is still queued, or once it is held.
+    assert state.messages("p", "s")[0].offered == "run-a"
     assert state.append("p", "s", "run-a", "model", {"turn": 1}, holding=True) == 1
     state.deliver("p", "s", ["m-1"], "run-a", holding=True)
     assert [m.state for m in state.messages("p", "s")] == ["delivered"]
