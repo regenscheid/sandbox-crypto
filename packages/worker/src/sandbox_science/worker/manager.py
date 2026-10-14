@@ -230,6 +230,7 @@ class ExecutionManager:
             self._usability,
             connect=lambda environment_id: self._environment(environment_id),
             spawn=lambda coroutine: self._spawn(coroutine),
+            sync=lambda environment_id: self.sync_package_gate(environment_id),
             daemon_identity=lambda: self.daemon_identity,
         )
         self._kernels = KernelRegistry(

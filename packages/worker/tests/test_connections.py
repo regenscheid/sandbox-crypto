@@ -215,3 +215,20 @@ async def test_a_hook_replaced_on_the_manager_after_start_is_used_on_open(
             KernelStatusRequest(context=ExecutionContext.model_validate(CONTEXT))
         )
         assert synced == [view(worker.manager).channel("env1")]
+
+
+async def test_a_package_gate_retry_syncs_through_the_managers_public_method(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounded retry after a release or classification goes through
+    ``sync_package_gate``, so replacing it on the manager intercepts the retry too."""
+    async with await Harness.start(tmp_path) as worker:
+        synced = asyncio.Event()
+
+        async def watched(environment_id: str) -> None:
+            assert environment_id == "env1"
+            synced.set()
+
+        monkeypatch.setattr(worker.manager, "sync_package_gate", watched)
+        worker.manager.refresh_package_gate("env1")
+        await asyncio.wait_for(synced.wait(), 5)

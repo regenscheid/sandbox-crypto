@@ -1167,13 +1167,18 @@ class Records(logging.Handler):
 @pytest.fixture
 def manager_errors() -> Iterator[Records]:
     records = Records()
-    # The manager and the parts behind it (recovery among them) log under the package.
-    logger = logging.getLogger("sandbox_science.worker")
-    logger.addHandler(records)
+    # The manager logs its own failures; daemon recovery logs under its own module.
+    loggers = [
+        logging.getLogger("sandbox_science.worker.manager"),
+        logging.getLogger("sandbox_science.worker.recovery"),
+    ]
+    for logger in loggers:
+        logger.addHandler(records)
     try:
         yield records
     finally:
-        logger.removeHandler(records)
+        for logger in loggers:
+            logger.removeHandler(records)
 
 
 @pytest.mark.asyncio
