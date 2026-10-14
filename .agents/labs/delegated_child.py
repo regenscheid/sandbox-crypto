@@ -32,7 +32,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-ADMISSION_READY = False
+ADMISSION_READY = True
 SOURCE = Path(__file__).resolve().parents[2]
 LAB = Path.home() / ".local/state/openshell-lab"
 PROJECT = "lab34"
