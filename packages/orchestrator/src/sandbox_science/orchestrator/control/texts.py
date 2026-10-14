@@ -52,7 +52,7 @@ class NewRevision:
 class TextRevisions:
     """The revisions of one kind of text."""
 
-    SUBJECTS: Final = ("comment", "response")
+    SUBJECTS: Final = ("comment", "response", "statement")
 
     def __init__(self, subject_type: str) -> None:
         if subject_type not in self.SUBJECTS:

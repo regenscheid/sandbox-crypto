@@ -1356,6 +1356,58 @@ def _text_math(schema: Schema) -> None:
     schema.execute(_TEXT_CHECKS)
 
 
+_TYPES: Final = "'issue','claim','result','assumption','decision','task','reference'"
+
+
+def _ledger(schema: Schema) -> None:
+    """Version 17: the project ledger's entries and their revisions (docs/specs/ledger.md,
+    LG-1, LG-2). An entry keeps its identity, type, handle number and origin; its head
+    moves one revision at a time; revisions are written once. A revision's statement is
+    a text revision of kind ``statement`` under the entry's ID."""
+    for statement in (
+        f"""CREATE TABLE ledger_entries (
+    entry_id TEXT PRIMARY KEY
+        CHECK (length(entry_id) = 30 AND entry_id GLOB 'entry-*'
+        AND substr(entry_id, 7) NOT GLOB '*[^0-9a-f]*'),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    type TEXT NOT NULL CHECK (type IN ({_TYPES})),
+    number INTEGER NOT NULL CHECK (number BETWEEN 1 AND 999999999),
+    origin TEXT CHECK (origin IS NULL OR origin IN ('published', 'project')),
+    head INTEGER NOT NULL CHECK (head BETWEEN 1 AND 999999999),
+    CHECK ((type IN ('claim', 'result')) = (origin IS NOT NULL)),
+    UNIQUE (project, type, number)
+) STRICT""",
+        """CREATE TRIGGER ledger_entries_kept BEFORE UPDATE OF entry_id,project,type,number,origin
+ON ledger_entries BEGIN SELECT RAISE(ABORT, 'a ledger entry keeps its identity'); END""",
+        """CREATE TRIGGER ledger_entries_head BEFORE UPDATE OF head ON ledger_entries
+WHEN NEW.head != OLD.head + 1
+BEGIN SELECT RAISE(ABORT, 'a ledger entry moves one revision at a time'); END""",
+        """CREATE TRIGGER ledger_entries_no_delete BEFORE DELETE ON ledger_entries
+BEGIN SELECT RAISE(ABORT, 'ledger entries are kept'); END""",
+        """CREATE TABLE ledger_revisions (
+    entry_id TEXT NOT NULL REFERENCES ledger_entries(entry_id),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    title TEXT NOT NULL CHECK (length(CAST(title AS BLOB)) BETWEEN 1 AND 2048),
+    status TEXT NOT NULL CHECK (length(status) BETWEEN 1 AND 32 AND status NOT GLOB '*[^a-z_]*'),
+    statement INTEGER NOT NULL CHECK (statement BETWEEN 1 AND 999999999),
+    fields TEXT NOT NULL CHECK (json_valid(fields) AND json_type(fields) = 'object'
+        AND length(CAST(fields AS BLOB)) <= 65536),
+    author TEXT NOT NULL CHECK (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192),
+    reason TEXT NOT NULL CHECK (length(CAST(reason AS BLOB)) BETWEEN 1 AND 16384),
+    operation_id TEXT NOT NULL CHECK (length(CAST(operation_id AS BLOB)) BETWEEN 1 AND 128),
+    provenance TEXT CHECK (provenance IS NULL OR (json_valid(provenance)
+        AND json_type(provenance) = 'object' AND length(CAST(provenance AS BLOB)) <= 4096)),
+    created TEXT NOT NULL CHECK (length(created) BETWEEN 1 AND 64),
+    PRIMARY KEY (entry_id, revision)
+) STRICT""",
+        """CREATE TRIGGER ledger_revisions_no_update BEFORE UPDATE ON ledger_revisions
+BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
+        """CREATE TRIGGER ledger_revisions_no_delete BEFORE DELETE ON ledger_revisions
+BEGIN SELECT RAISE(ABORT, 'ledger revisions are immutable'); END""",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -1372,6 +1424,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _feed_cursors,
     _text_revisions,
     _text_math,
+    _ledger,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
