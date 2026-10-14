@@ -58,6 +58,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 
+from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .consistency.controller import ReviewController
@@ -67,7 +68,6 @@ from .consistency.store import ReviewStore
 from .documents import USER, Author, DocumentError, DocumentStore, DocumentTool, store_path
 from .documents.errors import CONFLICT
 from .documents.mathcontroller import MathController
-from .documents.mathjobs import threaded
 from .documents.tool import view_blocks
 from .hooks import TurnHook
 from .jobs import JobTools
@@ -404,12 +404,8 @@ async def _run_main(args: argparse.Namespace, notice_owners: list[KernelDelivery
         # dumping first could hide undeclared fields on copied host metadata.
         "kernel_notice_delivery": transcript.kernel_notice_delivery,
         "tools": transcript.tool_records,
-        "job_notice_ids": transcript.job_notice_ids,
-        "work_request_ids": transcript.work_request_ids,
-        "review_notice_ids": transcript.review_notice_ids,
-        "review_summary": transcript.review_summary,
-        "math_notice_ids": transcript.math_notice_ids,
-        "math_summary": transcript.math_summary,
+        "delivered": {source: sorted(ids) for source, ids in transcript.delivered.items() if ids},
+        "summaries": transcript.summaries,
     }
     status = 1 if transcript.failure is not None else 0 if transcript.stopped == "answered" else 3
     return await _save(args, fields, status, hooks, notice_owners[0] if notice_owners else None)
@@ -424,7 +420,8 @@ async def _save(
 ) -> int:
     """Keep the run's record, then let each hook acknowledge what the saved record names.
 
-    A crash between the save and an acknowledgement safely repeats those notices.
+    A crash between the save and an acknowledgement safely repeats those notices. A hook
+    that fails to acknowledge is reported; the others still acknowledge theirs.
     """
     saved: list[RunRecord] = []
     if owner is None:
@@ -442,15 +439,16 @@ async def _save(
     for hook in hooks:
         try:
             await hook.acknowledge(saved[0])
-        except (DocumentError, OSError, ValueError, sqlite3.Error) as exc:
+        except Exception as exc:
             print(f"error: the run's {hook.name} could not be acknowledged: {exc}", file=sys.stderr)
             status = 1
-    if (
-        owner is not None
-        and saved[0].kernel_notice_delivery is not None
-        and not await owner.acknowledge_saved()
-    ):
-        print("kernel notices: saved delivery remains unresolved", file=sys.stderr)
+    if owner is not None and saved[0].kernel_notice_delivery is not None:
+        try:
+            acknowledged = await owner.acknowledge_saved()
+        except Exception:
+            acknowledged = False
+        if not acknowledged:
+            print("kernel notices: saved delivery remains unresolved", file=sys.stderr)
     return status
 
 
@@ -490,25 +488,25 @@ def _keep(
             if may_ack is not None and not may_ack():
                 return status
             # Save first: a crash before this acknowledgement safely repeats notices.
-            if record.review_notice_ids:
+            if review_ids := record.delivered.get("reviews"):
                 review_documents = DocumentStore(store_path(args.state_dir), producer="harness")
                 try:
                     FindingNotices(ReviewStore(review_documents)).acknowledge(
                         record.context.project_id,
                         record.context.session_id,
                         record.run_id,
-                        record.review_notice_ids,
+                        review_ids,
                     )
                 finally:
                     review_documents.close()
-            if record.math_notice_ids:
+            if math_ids := record.delivered.get("math"):
                 math_documents = DocumentStore(store_path(args.state_dir), producer="harness")
                 try:
                     MathNotices(ReviewStore(math_documents)).acknowledge(
                         record.context.project_id,
                         record.context.session_id,
                         record.run_id,
-                        record.math_notice_ids,
+                        math_ids,
                         finalize=record.failure is None,
                     )
                 finally:

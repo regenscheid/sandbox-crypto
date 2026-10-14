@@ -286,7 +286,7 @@ async def test_selected_history_is_exact_after_catalog_changes_and_safe_failed_s
         async def acknowledge(self, record):
             (entry,) = projects.runs("p", "s")
             assert projects.run("p", "s", entry.name).prompt_provenance == expected
-            observed.append(record.job_notice_ids)
+            observed.append(record.delivered.get("jobs", []))
 
     args = argparse.Namespace(transcript=None, state_dir=tmp_path)
     fields = record.model_dump(mode="json")
@@ -490,9 +490,9 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
     assert isinstance(record.prompt_provenance, SelectedProvenance)
     assert record.failure == ("model" if failure else None)
     assert record.final_text == (None if failure else "Observed")
-    assert not record.job_notice_ids
-    assert not record.work_request_ids
-    assert not record.review_notice_ids
-    assert not record.math_notice_ids
+    assert not record.delivered.get("jobs", [])
+    assert not record.delivered.get("requests", [])
+    assert not record.delivered.get("reviews", [])
+    assert not record.delivered.get("math", [])
     assert HOSTILE not in record.to_json()
     assert "test-secret-unused" not in record.to_json()

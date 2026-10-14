@@ -56,14 +56,8 @@ SOURCES = ("requests", "jobs", "reviews", "math", "kernels")
 def delivered(record: RunRecord, source: str) -> list[str]:
     """The notice IDs a saved run reports as delivered for one source."""
     match source:
-        case "requests":
-            return list(record.work_request_ids)
-        case "jobs":
-            return list(record.job_notice_ids)
-        case "reviews":
-            return list(record.review_notice_ids)
-        case "math":
-            return list(record.math_notice_ids)
+        case "requests" | "jobs" | "reviews" | "math":
+            return list(record.delivered.get(source, []))
         case "kernels":
             # A-04 changes this: kernel notices become a stateless pre-turn check
             # and the record keeps no inbox claim.
@@ -75,7 +69,8 @@ def delivered(record: RunRecord, source: str) -> list[str]:
 
 def summary(record: RunRecord, source: str) -> Json:
     """The closing summary a saved run reports for reviews or math."""
-    return dict(record.review_summary if source == "reviews" else record.math_summary)
+    found = record.summaries.get(source)
+    return dict(found) if isinstance(found, dict) else {}
 
 
 def all_delivered(record: RunRecord) -> dict[str, list[str]]:

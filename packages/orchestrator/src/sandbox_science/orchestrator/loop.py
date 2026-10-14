@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator, Awaitable, Callable, Generator, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
@@ -14,7 +15,7 @@ from contextlib import (
 from dataclasses import dataclass, field
 from typing import Any, Final, TypeVar, cast
 
-from .documents.mathjobs import threaded
+from .aio import threaded
 from .hooks import Notice, Point, TurnHook
 from .kernel_notice_receipts import KernelNoticeDelivery
 from .model import ChatModel, Message
@@ -60,6 +61,7 @@ SYSTEM_PROMPT: Final = (
 
 
 _T = TypeVar("_T")
+_log = logging.getLogger(__name__)
 
 
 class Interruption:
@@ -91,11 +93,9 @@ class Transcript:
     kernel_notice_delivery: KernelNoticeDelivery | None = None
     tool_records: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     delivered: dict[str, set[str]] = field(default_factory=dict[str, set[str]])
-    """Each hook source's notice IDs that a successful model call saw."""
-    math_notice_ids: list[str] = field(default_factory=list[str])
-    math_summary: dict[str, Any] = field(default_factory=dict[str, Any])
-    review_notice_ids: list[str] = field(default_factory=list[str])
-    review_summary: dict[str, Any] = field(default_factory=dict[str, Any])
+    """Each notice source's IDs that a successful model call saw."""
+    summaries: dict[str, Any] = field(default_factory=dict[str, Any])
+    """What each source reports at the run's end, such as a review's outcome."""
     final_text: str | None = None
     turns: int = 0
     max_turns: int = 30
@@ -111,14 +111,6 @@ class Transcript:
 
     def delivered_ids(self, source: str) -> frozenset[str]:
         return frozenset(self.delivered.get(source, ()))
-
-    @property
-    def job_notice_ids(self) -> list[str]:
-        return sorted(self.delivered_ids("jobs"))
-
-    @property
-    def work_request_ids(self) -> list[str]:
-        return sorted(self.delivered_ids("requests"))
 
     def fail(self, phase: FailurePhase) -> None:
         """Keep the first failure classification without retaining exception data."""
@@ -199,10 +191,13 @@ async def _model_returned(hooks: Sequence[TurnHook], transcript: Transcript) -> 
 
 
 async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: str | None) -> bool:
-    """Whether a hook continues the run past this answer, which it may while turns remain."""
+    """Whether a hook continues the run past this answer, which it may while turns remain.
+
+    A continue without notices gives the model nothing new, so it counts as an accept.
+    """
     for hook in hooks:
         closing = await hook.closing(transcript, answer)
-        if closing.action == "continue" and transcript.turns_left > 0:
+        if closing.action == "continue" and closing.notices and transcript.turns_left > 0:
             return _offer(transcript, closing.notices)
     return False
 
@@ -210,15 +205,31 @@ async def _closing(hooks: Sequence[TurnHook], transcript: Transcript, answer: st
 async def _attach(
     hooks: Sequence[TurnHook], transcript: Transcript, outcome: ToolOutcome, limit: int
 ) -> None:
-    """Notices at the tool point ride on its result, which keeps its head and tail."""
+    """Notices at the tool point ride on its result, which keeps its head and tail.
+
+    Each notice has a key of its own beside ``tool_result``, and together they take at
+    most half of ``limit``. A notice that fails these, or a hook that fails here, offers
+    nothing: its notices wait for a later safe point or run, and the result stands.
+    """
     if outcome.whole:
         return
     found: list[Notice] = []
     for hook in hooks:
-        found.extend(await hook.notices("tool", transcript))
-    if not found:
+        try:
+            found.extend(await hook.notices("tool", transcript))
+        except Exception:
+            _log.exception("the %s notices failed; they wait for a later safe point", hook.name)
+    extra: dict[str, object] = {}
+    for notice in found:
+        if notice.framing in extra or notice.framing in {"tool_result", *outcome.record}:
+            _log.error("a %s notice's key %r is taken; not attached", notice.source, notice.framing)
+        elif len(dump({**extra, notice.framing: notice.payload})) > limit // 2:
+            _log.warning("a %s notice is too long to attach; not attached", notice.source)
+        else:
+            extra[notice.framing] = notice.payload
+            transcript.offered.setdefault(notice.source, set()).update(notice.ids)
+    if not extra:
         return
-    extra = {notice.framing: notice.payload for notice in found}
     text, size = outcome.text, len(outcome.text)
     combined = dump({"tool_result": text, **extra})
     while len(combined) > limit and size > 100:
@@ -227,8 +238,6 @@ async def _attach(
         combined = dump({"tool_result": text, **extra})
     outcome.text = combined
     outcome.record.update(extra)
-    for notice in found:
-        transcript.offered.setdefault(notice.source, set()).update(notice.ids)
 
 
 async def _run_task(
@@ -298,17 +307,17 @@ async def _run_task(
             review_response = False
             math_response = False
             if toolbox.reviews is not None:
-                transcript.review_summary = cast(
+                transcript.summaries["reviews"] = cast(
                     dict[str, Any], await toolbox.reviews.terminal(transcript.messages, reply.text)
                 )
-                if "user_message" in transcript.review_summary:
+                if "user_message" in transcript.summaries["reviews"]:
                     transcript.stopped = "user_message"
                     return transcript
                 configuration, _ = toolbox.reviews.store.config(toolbox.context.project_id)
                 if can_respond and response_rounds < configuration.response_rounds:
                     review_response = await _reviews(toolbox, transcript)
             if toolbox.math_checks is not None:
-                transcript.math_summary = await toolbox.math_checks.closing()
+                transcript.summaries["math"] = await toolbox.math_checks.closing()
                 if can_respond:
                     notices = await toolbox.math_checks.notices()
                     if notices:
@@ -330,7 +339,7 @@ async def _run_task(
                 response_rounds += 1
                 continue
             if toolbox.reviews is not None:
-                counts = transcript.review_summary.get("counts", {})
+                counts = transcript.summaries["reviews"].get("counts", {})
                 if toolbox.reviews.delivered and any(str(key).endswith(":open") for key in counts):
                     await asyncio.to_thread(
                         toolbox.reviews.findings.bound,
@@ -338,7 +347,7 @@ async def _run_task(
                         "The bounded author response rounds ended; no fix was confirmed.",
                         notices=toolbox.reviews.delivered,
                     )
-                    transcript.review_summary["counts"] = await asyncio.to_thread(
+                    transcript.summaries["reviews"]["counts"] = await asyncio.to_thread(
                         toolbox.reviews.notice_store.counts, *toolbox.reviews.scope
                     )
             if toolbox.math_checks is not None and toolbox.math_checks.delivered:
@@ -349,7 +358,7 @@ async def _run_task(
                     toolbox.math_checks.run,
                     toolbox.math_checks.delivered,
                 )
-                transcript.math_summary["counts"] = await threaded(
+                transcript.summaries["math"]["counts"] = await threaded(
                     toolbox.math_checks.notice_store.counts,
                     toolbox.math_checks.project,
                     toolbox.math_checks.session,
@@ -456,9 +465,9 @@ async def run_task(
                     # until the caller durably saves this partial record, then ACKs them.
                     transcript.fail(transcript.phase)
                 if toolbox.reviews is not None:
-                    transcript.review_notice_ids = sorted(toolbox.reviews.delivered)
+                    transcript.delivered["reviews"] = set(toolbox.reviews.delivered)
                 if toolbox.math_checks is not None:
-                    transcript.math_notice_ids = sorted(toolbox.math_checks.delivered)
+                    transcript.delivered["math"] = set(toolbox.math_checks.delivered)
     except BaseException as error:
         if interruption.error is not None:
             raise interruption.error from None

@@ -284,7 +284,7 @@ async def test_retention_legacy_and_save_before_ack(tmp_path, monkeypatch, failu
             assert (
                 projects.run("p", "s", entries[0].name).prompt_provenance == kept.prompt_provenance
             )
-            acknowledged.append(record.job_notice_ids)
+            acknowledged.append(record.delivered.get("jobs", []))
 
     args = argparse.Namespace(transcript=None, state_dir=tmp_path)
     fields = kept.model_dump(mode="json")

@@ -78,7 +78,7 @@ next run receives the notice. Each completion
 states the outcome, exit code, elapsed time and output tail. After a tool call,
 the notices ride on its result; a long result keeps its head and tail. Fetch failures
 do not mark any undelivered notice seen. Notices a successful model call saw enter the run's
-`job_notice_ids`, and are acknowledged only after the CLI saves that run's
+`delivered["jobs"]`, and are acknowledged only after the CLI saves that run's
 transcript, including a synced directory entry. A failed turn or save can
 repeat a notice; it cannot consume it silently. Jobs completed while the
 harness was disconnected are found at the next safe point or turn.

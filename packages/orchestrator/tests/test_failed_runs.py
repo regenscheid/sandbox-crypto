@@ -44,10 +44,7 @@ def record(transcript: Transcript, *, context: ExecutionContext = CONTEXT) -> Ru
         final_text=transcript.final_text,
         messages=transcript.messages,
         tools=transcript.tool_records,
-        job_notice_ids=transcript.job_notice_ids,
-        work_request_ids=transcript.work_request_ids,
-        review_notice_ids=transcript.review_notice_ids,
-        math_notice_ids=transcript.math_notice_ids,
+        delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     )
 
 
@@ -137,7 +134,7 @@ async def test_job_delivery_snapshot_excludes_failing_model_call_and_cleanup_pre
         monkeypatch.setattr(toolbox, "jobs", Jobs())
         transcript = await run_task(Model(), toolbox, "Continue", run_id="failed")
     assert transcript.failure == "model"
-    assert transcript.job_notice_ids == ["exe-1"]
+    assert sorted(transcript.delivered_ids("jobs")) == ["exe-1"]
     assert "exe-2" in json.dumps(transcript.messages)
     assert HOSTILE not in record(transcript).to_json()
 

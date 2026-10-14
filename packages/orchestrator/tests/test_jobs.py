@@ -157,7 +157,7 @@ async def test_wait_calls_no_main_model_until_job_ends(tmp_path: Path) -> None:
     transcript = await asyncio.wait_for(task, 5)
     assert transcript.final_text == "done"
     assert len(model.requests) == 2
-    assert transcript.job_notice_ids == ["exe-1"]
+    assert sorted(transcript.delivered_ids("jobs")) == ["exe-1"]
     assert waits(jobs) == []
     assert worker.cancelled == []
 
@@ -293,7 +293,7 @@ async def test_last_turn_job_notice_keeps_answer_and_waits_for_next_run(tmp_path
     assert transcript.stopped == "answered"
     assert transcript.final_text == "final answer"
     assert transcript.messages[-1] == {"role": "assistant", "content": "final answer"}
-    assert transcript.job_notice_ids == []
+    assert sorted(transcript.delivered_ids("jobs")) == []
     # Nothing acknowledged the notice, so the next run delivers it.
     notices = await tools(worker, tmp_path).notices()
     assert [notice["job_id"] for notice in notices] == ["exe-1"]

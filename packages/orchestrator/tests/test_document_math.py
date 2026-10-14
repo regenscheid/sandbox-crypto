@@ -676,7 +676,7 @@ async def test_closing_only_delivery_success_and_final_turn_pending(stores) -> N
             run_id="final",
             max_turns=1,
         )
-        assert transcript.math_notice_ids == []
+        assert sorted(transcript.delivered_ids("math")) == []
         assert not any(
             "Mechanical math findings" in str(m.get("content")) for m in transcript.messages
         )
@@ -693,7 +693,7 @@ async def test_closing_only_delivery_success_and_final_turn_pending(stores) -> N
             max_turns=3,
         )
     assert transcript.turns == 2
-    assert len(transcript.math_notice_ids) == 1
+    assert len(sorted(transcript.delivered_ids("math"))) == 1
     assert get(reviews)[0]["status"] == "open"
     assert get(reviews)[0]["reflags"] == 0
     # Delivered is not acknowledged before a durable save.
@@ -739,7 +739,7 @@ async def test_failed_model_after_closing_notice_releases_it_unacknowledged(stor
             run_id="failed",
             max_turns=3,
         )
-    assert (transcript.stopped, transcript.failure, transcript.math_notice_ids) == (
+    assert (transcript.stopped, transcript.failure, sorted(transcript.delivered_ids("math"))) == (
         "error",
         "model",
         [],
@@ -889,8 +889,8 @@ async def test_terminal_review_and_math_share_one_closing_model_handoff(
             max_turns=4,
         )
     assert model.calls == 2
-    assert len(transcript.review_notice_ids) == 1
-    assert len(transcript.math_notice_ids) == 1
+    assert len(sorted(transcript.delivered_ids("reviews"))) == 1
+    assert len(sorted(transcript.delivered_ids("math"))) == 1
 
 
 @pytest.mark.asyncio
@@ -924,7 +924,7 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
             run_id="saved",
             max_turns=3,
         )
-    assert len(transcript.math_notice_ids) == 1
+    assert len(sorted(transcript.delivered_ids("math"))) == 1
     assert get(reviews)[0]["status"] == "open"
     now = datetime.now(UTC)
     fields = {
@@ -938,7 +938,7 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
         "final_text": None if failure else "Read warning.",
         "messages": transcript.messages,
         "tools": [],
-        "math_notice_ids": transcript.math_notice_ids,
+        "math_notice_ids": sorted(transcript.delivered_ids("math")),
     }
     original = ProjectStore.save_run
 
@@ -958,12 +958,9 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
     with docs.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] == "saved"
-    assert (
-        ProjectStore(docs.path.parent)
-        .run("p", "s", ProjectStore(docs.path.parent).runs("p", "s")[0].name)
-        .math_notice_ids
-        == transcript.math_notice_ids
-    )
+    assert ProjectStore(docs.path.parent).run(
+        "p", "s", ProjectStore(docs.path.parent).runs("p", "s")[0].name
+    ).delivered["math"] == sorted(transcript.delivered_ids("math"))
 
 
 @pytest.mark.asyncio
@@ -1232,8 +1229,8 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
         "failure": transcript.failure,
         "messages": transcript.messages,
         "tools": transcript.tool_records,
-        "review_notice_ids": transcript.review_notice_ids,
-        "math_notice_ids": transcript.math_notice_ids,
+        "review_notice_ids": sorted(transcript.delivered_ids("reviews")),
+        "math_notice_ids": sorted(transcript.delivered_ids("math")),
     }
     assert (
         cli._keep(argparse.Namespace(state_dir=docs.path.parent, transcript=None), fields, 1) == 1

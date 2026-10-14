@@ -38,13 +38,14 @@ import tempfile
 from collections.abc import Generator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final, Literal, cast
 
 from pydantic import (
     Field,
     JsonValue,
     TypeAdapter,
     ValidationError,
+    computed_field,
     field_validator,
     model_validator,
 )
@@ -181,6 +182,18 @@ class SessionSnapshot:
 FailurePhase = Literal["model", "tool", "harness", "cleanup"]
 """A fixed local classification, never exception text or a provider response."""
 
+_LEGACY_DELIVERED: Final = {
+    "work_request_ids": "requests",
+    "job_notice_ids": "jobs",
+    "review_notice_ids": "reviews",
+    "math_notice_ids": "math",
+}
+_LEGACY_SUMMARIES: Final = {"review_summary": "reviews", "math_summary": "math"}
+
+
+def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
+    return cast(dict[str, JsonValue], value) if isinstance(value, dict) else {}
+
 
 class RunRecord(Contract):
     """One run of the harness: what ``run --transcript`` writes, and what a session keeps."""
@@ -199,20 +212,52 @@ class RunRecord(Contract):
     """``answered``, ``turn_limit``, ``user_message``, or ``error``."""
     failure: FailurePhase | None = None
     """Failed phase; old records omit it. Partial messages are observations, not an answer."""
-    job_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
-    """Completion notices represented by this durable run; acknowledged only after save."""
-    work_request_ids: list[Identifier] = Field(default_factory=list[Identifier])
-    """User work requests represented in this saved transcript, acknowledged after save."""
-    review_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
-    """Finding notices sent to a successful model call and acknowledged after save."""
-    math_notice_ids: list[Identifier] = Field(default_factory=list[Identifier])
-    math_summary: dict[str, JsonValue] = Field(default_factory=dict[str, JsonValue])
-    review_summary: dict[str, JsonValue] = Field(default_factory=dict[str, JsonValue])
+    delivered: dict[Identifier, list[Identifier]] = Field(
+        default_factory=dict[Identifier, list[Identifier]]
+    )
+    """Each notice source's IDs that a successful model call saw, such as ``jobs`` or
+    ``requests``. The source's hook acknowledges them only after this record is saved."""
+    summaries: dict[Identifier, JsonValue] = Field(default_factory=dict[Identifier, JsonValue])
+    """What a source reported at the run's end, such as the consistency review's outcome."""
     final_text: str | None = None
     messages: list[dict[str, JsonValue]]
     """The conversation in the OpenAI chat format the harness uses, system prompt first."""
     tools: list[dict[str, JsonValue]]
     """One record per tool call, in order: its name, arguments and outcome."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_sources(cls, data: object) -> object:
+        """Older records, and the summaries this one emits, name each source's field."""
+        if not isinstance(data, dict):
+            return data
+        fields = dict(cast(dict[str, object], data))
+        delivered, summaries = fields.get("delivered", {}), fields.get("summaries", {})
+        if not isinstance(delivered, dict) or not isinstance(summaries, dict):
+            return fields
+        delivered = dict(cast(dict[str, object], delivered))
+        summaries = dict(cast(dict[str, object], summaries))
+        for name, source in _LEGACY_DELIVERED.items():
+            ids = fields.pop(name, None)
+            if ids:
+                delivered.setdefault(source, ids)
+        for name, source in _LEGACY_SUMMARIES.items():
+            summary = fields.pop(name, None)
+            if summary:
+                summaries.setdefault(source, summary)
+        return {**fields, "delivered": delivered, "summaries": summaries}
+
+    @computed_field
+    @property
+    def review_summary(self) -> dict[str, JsonValue]:
+        """The consistency review's summary, which the workspace shows."""
+        return _summary(self.summaries.get("reviews"))
+
+    @computed_field
+    @property
+    def math_summary(self) -> dict[str, JsonValue]:
+        """The document math checks' summary, which the workspace shows."""
+        return _summary(self.summaries.get("math"))
 
     @field_validator("kernel_notice_delivery", mode="before")
     @classmethod

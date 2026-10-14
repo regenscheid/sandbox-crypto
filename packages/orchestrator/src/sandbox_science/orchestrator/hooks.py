@@ -6,9 +6,13 @@ model answers, and acknowledges what a saved run record says was delivered. The 
 alone applies the delivery rules:
 
 - A notice's IDs count as delivered only after a model call that saw it returns.
-- The run's record is saved before any hook acknowledges its delivered IDs.
-- A closing hook gets another turn only while turns remain.
-- Notices at the ``tool`` point ride on the tool result, bounded with it.
+- The run's record is saved, naming each source's delivered IDs in
+  ``RunRecord.delivered``, before any hook acknowledges them. A hook that fails to
+  acknowledge does not stop the others.
+- A closing hook gets another turn only while turns remain, and only with notices.
+- Notices at the ``tool`` point ride on the tool result, bounded with it, each under
+  a key of its own. A hook that fails there, or a notice whose key is taken or that is
+  too long, offers nothing: the result stands and the notice waits.
 
 Hooks run in a fixed order, which is the order their notices reach the model.
 """

@@ -15,8 +15,8 @@ from pydantic import Field, ValidationError
 
 from sandbox_science.contracts import ExecutionContext, Identifier
 
+from .aio import threaded
 from .documents.errors import CONFLICT, INVALID_REQUEST, POLICY_DENIED, DocumentError
-from .documents.mathjobs import threaded
 from .model import ToolSpec
 from .projects import ProjectError, ProjectStore, SessionSnapshot
 from .session_plans import (
