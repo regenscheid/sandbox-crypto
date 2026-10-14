@@ -14,6 +14,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, KernelInfo, KernelObservation
+from sandbox_science.contracts.worker import PROTOCOL_HEADER
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 from sandbox_science.testing import fake_worker_app
@@ -218,3 +219,23 @@ async def test_real_worker_client_http_composition(
         result = kernels.WorkspaceObservation.model_validate(await response.json())
         assert result.kernels[0].revision_status == "predates"
         assert "test-secret" not in await response.text()
+
+
+@pytest.mark.asyncio
+async def test_a_worker_of_another_version_is_named_with_the_upgrade_hint(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    async def old(request: web.Request) -> web.Response:
+        return web.json_response({}, headers={PROTOCOL_HEADER: "1"})
+
+    app = web.Application()
+    app.router.add_post("/v1/kernels/observe", old)
+    server = await aiohttp_server(app)
+    worker = WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-observer-worker")
+    client = await create(aiohttp_client, state_dir, static_dir, worker)
+    response = await client.get(PATH)
+    assert response.status == 422
+    error = (await response.json())["error"]
+    assert error["kind"] == "unsupported"
+    assert "version mismatch" in error["message"]
+    assert "upgrade the orchestrator, workspace and worker together" in error["message"]

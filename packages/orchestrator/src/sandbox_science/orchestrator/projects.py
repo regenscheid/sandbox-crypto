@@ -62,7 +62,7 @@ from sandbox_science.contracts import (
 from sandbox_science.contracts.model import Contract
 
 from .prompt_bundle import PromptProvenance, verify_retained
-from .worker_client import WorkerAPIError, WorkerClient
+from .worker_client import WorkerAPIError, WorkerClient, WorkerProtocolError
 
 _MAX_ID: Final = 128
 _IDENTIFIER: Final = TypeAdapter(Identifier)
@@ -647,7 +647,8 @@ async def ensure_environment(
     try:
         info: EnvironmentInfo | None = await client.environment(environment_id)
     except WorkerAPIError as error:
-        if error.kind is ErrorKind.UNSUPPORTED:
+        # A worker of another version manages environments as well; never skip the policy.
+        if error.kind is ErrorKind.UNSUPPORTED and not isinstance(error, WorkerProtocolError):
             return None
         if error.kind is not ErrorKind.NOT_FOUND:
             raise

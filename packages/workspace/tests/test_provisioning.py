@@ -535,3 +535,27 @@ async def test_observer_refuses_a_worker_of_another_protocol_version(
         assert seen == [str(PROTOCOL_VERSION)]
     finally:
         await worker.close()
+
+
+@pytest.mark.asyncio
+async def test_the_view_names_a_worker_of_another_version_with_the_upgrade_hint(
+    aiohttp_client: ClientFactory, aiohttp_server: ServerFactory, state_dir: Path, static_dir: Path
+) -> None:
+    async def old(request: web.Request) -> web.Response:
+        return web.json_response({}, headers={PROTOCOL_HEADER: "1"})
+
+    application = web.Application()
+    application.router.add_get("/v1/{tail:.*}", old)
+    server = await aiohttp_server(application)
+    worker = WorkerClient(str(server.make_url("/")).rstrip("/"), "test-secret-provisioning-peer")
+    client = await aiohttp_client(
+        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, job_worker=worker)
+    )
+    assert (
+        await client.get("/login", params={"token": TOKEN}, allow_redirects=False)
+    ).status == 303
+    response = await client.get(url(ProjectStore(state_dir).get("p1").default_environment_id))
+    assert response.status == 422
+    error = (await response.json())["error"]
+    assert error["kind"] == "unsupported"
+    assert "upgrade the orchestrator, workspace and worker together" in error["message"]

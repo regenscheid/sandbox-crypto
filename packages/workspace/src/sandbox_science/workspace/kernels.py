@@ -15,7 +15,7 @@ from aiohttp import web
 
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, KernelObservation
 from sandbox_science.orchestrator.projects import ProjectError
-from sandbox_science.orchestrator.worker_client import WorkerAPIError
+from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerProtocolError
 
 from .context import CONTEXT, identifier, json_answer, no_query, session_record
 from .errors import log_worker_failure
@@ -48,6 +48,8 @@ async def observed(request: web.Request) -> web.Response:
     try:
         async with asyncio.timeout(context.timeouts.call):
             observation = await context.worker.observe_kernels(scope)
+    except WorkerProtocolError as error:
+        raise ProjectError(error.kind, error.message) from error
     except WorkerAPIError as error:
         unsupported = error.kind is ErrorKind.UNSUPPORTED
         if not unsupported:

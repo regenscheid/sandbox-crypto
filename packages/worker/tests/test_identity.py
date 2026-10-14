@@ -135,6 +135,21 @@ def test_a_digest_stored_before_protocol_2_still_identifies_its_request(name: st
     assert not same_execution(None, request)
 
 
+class LaterJobRequest(JobRequest):
+    """``JobRequest`` once a release has added a field with a default."""
+
+    note: str | None = None
+
+
+def test_a_field_added_later_keeps_old_digests_replaying() -> None:
+    later = LaterJobRequest.model_validate(REQUESTS["job"])
+    assert same_execution(sha256(LEGACY["job"]), later)
+    assert execution_digest(later) == GOLDEN["job"]
+    # A request that sets the new field is not the old request.
+    noted = later.model_copy(update={"note": "n"})
+    assert not same_execution(sha256(LEGACY["job"]), noted)
+
+
 def test_an_explicit_policy_default_is_another_request() -> None:
     unset = _REQUEST.validate_python(REQUESTS["job"])
     assert isinstance(unset, JobRequest)

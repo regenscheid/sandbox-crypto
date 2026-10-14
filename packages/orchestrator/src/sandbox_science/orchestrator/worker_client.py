@@ -106,6 +106,11 @@ class WorkerAPIError(Exception):
         self.status = status
 
 
+class WorkerProtocolError(WorkerAPIError):
+    """The worker speaks another protocol version (``unsupported``). Releases are lockstep,
+    so no caller may read it as a missing feature, fall back, or retry."""
+
+
 @dataclass(frozen=True)
 class WorkerObservationTransport:
     """Private in-memory observer binding; the shared session is borrowed, never owned.
@@ -245,7 +250,7 @@ class WorkerClient:
                 ),
                 allow_redirects=allow_redirects,
             ) as response:
-                check_protocol(response)
+                await check_protocol(response)
                 if max_bytes is None:
                     payload = await response.read()
                 else:
@@ -403,7 +408,7 @@ class WorkerClient:
                         total=None, sock_connect=10, sock_read=self.stream_timeout
                     ),
                 ) as response:
-                    check_protocol(response)
+                    await check_protocol(response)
                     if response.status >= 400:
                         raise _error(await response.read(), response.status)
                     async for line in _lines(response.content, MAX_EVENT_BYTES):
@@ -596,7 +601,7 @@ class WorkerClient:
                 timeout=aiohttp.ClientTimeout(total=self.transfer_timeout),
                 allow_redirects=False,
             ) as response:
-                check_protocol(response)
+                await check_protocol(response)
                 payload = await _bounded_body(
                     response.content, 16 * 1024 if response.status == 201 else 8192
                 )
@@ -644,7 +649,7 @@ class WorkerClient:
                 allow_redirects=False,
                 auto_decompress=False,
             ) as response:
-                check_protocol(response)
+                await check_protocol(response)
                 if response.status >= 400:
                     raise _error(await _bounded_body(response.content, 8192), response.status)
                 if response.status != 200:
@@ -679,7 +684,7 @@ class WorkerClient:
                 headers={**self._headers, **PROTOCOL},
                 timeout=aiohttp.ClientTimeout(sock_connect=10, sock_read=CALL_TIMEOUT),
             ) as response:
-                check_protocol(response)
+                await check_protocol(response)
                 if response.status >= 400:
                     raise _error(await response.read(), response.status)
                 return await response.read()
@@ -722,21 +727,28 @@ async def _lines(content: aiohttp.StreamReader, limit: int) -> AsyncIterator[byt
         yield bytes(buffer)
 
 
-def check_protocol(response: aiohttp.ClientResponse) -> None:
+async def check_protocol(response: aiohttp.ClientResponse) -> None:
     """Refuse a response from a worker of another protocol version (docs/COMPATIBILITY.md).
 
     Releases are lockstep, so there is nothing to negotiate: the orchestrator, the
-    workspace and the worker are upgraded together.
+    workspace and the worker are upgraded together. An error without the header did not
+    come from the worker's application (a proxy or TLS terminator in front of it, or the
+    HTTP parser), so it is reported as that error, not as a version mismatch.
     """
     spoken = response.headers.get(PROTOCOL_HEADER)
-    if spoken != str(PROTOCOL_VERSION):
-        found = "no protocol version" if spoken is None else f"protocol {spoken[:16]!r}"
-        raise WorkerAPIError(
-            ErrorKind.UNSUPPORTED,
-            f"version mismatch: the worker reports {found}, this client speaks protocol "
-            f"{PROTOCOL_VERSION}; upgrade the orchestrator, workspace and worker together",
-            response.status,
-        )
+    if spoken == str(PROTOCOL_VERSION):
+        return
+    if spoken is None and response.status >= 400:
+        text = (await response.content.read(200)).decode("utf-8", "replace")
+        kind = ErrorKind.UNAVAILABLE if response.status in (502, 503, 504) else ErrorKind.INTERNAL
+        raise WorkerAPIError(kind, f"worker returned {response.status}: {text}", response.status)
+    found = "no protocol version" if spoken is None else f"protocol {spoken[:16]!r}"
+    raise WorkerProtocolError(
+        ErrorKind.UNSUPPORTED,
+        f"version mismatch: the worker reports {found}, this client speaks protocol "
+        f"{PROTOCOL_VERSION}; upgrade the orchestrator, workspace and worker together",
+        response.status,
+    )
 
 
 def _project(project_id: str | None) -> dict[str, str]:

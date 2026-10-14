@@ -3,13 +3,20 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.worker import PROTOCOL_HEADER, PROTOCOL_VERSION
-from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
+from sandbox_science.orchestrator.projects import ProjectStore, ensure_environment
+from sandbox_science.orchestrator.worker_client import (
+    WorkerAPIError,
+    WorkerClient,
+    WorkerProtocolError,
+)
 
 TOKEN = "test-secret-protocol-client"
 CAPABILITIES = {
@@ -70,3 +77,77 @@ async def test_the_same_version_is_served() -> None:
     ):
         assert (await client.capabilities("env1")).protocol == PROTOCOL_VERSION
     assert seen == [str(PROTOCOL_VERSION)]
+
+
+def gateway(status: int) -> web.Application:
+    """A proxy or TLS terminator in front of the worker, answering on its behalf."""
+
+    async def answer(request: web.Request) -> web.Response:
+        return web.Response(status=status, text="<html>upstream connect error</html>")
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", answer)
+    return app
+
+
+def old_worker() -> web.Application:
+    """A protocol-1 worker that does not know the environment."""
+
+    async def answer(request: web.Request) -> web.Response:
+        body = {"error": {"kind": "not_found", "message": "no environment"}}
+        return web.json_response(body, status=404, headers={PROTOCOL_HEADER: "1"})
+
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", answer)
+    return app
+
+
+@pytest.mark.parametrize(
+    ("status", "kind"),
+    [
+        (502, ErrorKind.UNAVAILABLE),
+        (503, ErrorKind.UNAVAILABLE),
+        (504, ErrorKind.UNAVAILABLE),
+        (403, ErrorKind.INTERNAL),
+        (400, ErrorKind.INTERNAL),
+    ],
+)
+async def test_an_error_from_in_front_of_the_worker_keeps_its_status(
+    status: int, kind: ErrorKind
+) -> None:
+    async with (
+        TestServer(gateway(status)) as server,
+        WorkerClient(str(server.make_url("")), TOKEN) as client,
+    ):
+        with pytest.raises(WorkerAPIError) as error:
+            await client.capabilities("env1")
+    assert not isinstance(error.value, WorkerProtocolError)
+    assert (error.value.kind, error.value.status) == (kind, status)
+    assert f"worker returned {status}: <html>upstream" in error.value.message
+
+
+async def test_an_error_from_a_worker_of_another_version_is_a_mismatch() -> None:
+    async with (
+        TestServer(old_worker()) as server,
+        WorkerClient(str(server.make_url("")), TOKEN) as client,
+    ):
+        with pytest.raises(WorkerProtocolError) as error:
+            await client.environment("env1")
+    assert error.value.kind is ErrorKind.UNSUPPORTED
+
+
+@pytest.mark.parametrize("peer", ["old", "gateway"])
+async def test_ensure_environment_never_skips_the_policy_for_a_mismatch_or_a_gateway(
+    tmp_path: Path, peer: str
+) -> None:
+    project, _ = ProjectStore(tmp_path).create("p1", "minimal", "sha256:" + "a" * 64)
+    app = old_worker() if peer == "old" else gateway(502)
+    async with (
+        TestServer(app) as server,
+        WorkerClient(str(server.make_url("")), TOKEN) as client,
+    ):
+        # Both used to read as "the worker does not manage environments" (None), so a run
+        # started without the project's policy applied.
+        with pytest.raises(WorkerAPIError) as error:
+            await ensure_environment(client, project, "env1")
+    assert isinstance(error.value, WorkerProtocolError) == (peer == "old")

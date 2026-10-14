@@ -74,7 +74,7 @@ class ProvisionObserver:
                 read_bufsize=8192,
                 timeout=aiohttp.ClientTimeout(total=timeout),
             ) as response:
-                check_protocol(response)
+                await check_protocol(response)
                 # A claimed length is only an early refusal, never a substitute
                 # for the independent streaming byte and chunk counters.
                 if response.content_length is not None and response.content_length > MAX_BYTES:
