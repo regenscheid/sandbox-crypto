@@ -25,7 +25,7 @@ it('separates render and repair cache identity by project and immutable context'
 });
 
 it('writes only a scoped explicit settings payload and retains operation identity', async () => {
-  const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ revision: 1 }) });
+  const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ revision: 1 })));
   vi.stubGlobal('fetch', fetch);
   const payload = { expected: 0, macros: { '\\F': 'x' }, operation_id: 'stable' };
   await api.changeMacros('p/one', payload);

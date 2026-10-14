@@ -2,46 +2,36 @@
 <script lang="ts">
   import { api, type JobListing } from '../lib/api';
   import { jobElapsed } from '../lib/jobs';
+  import { initialPoll, Poller, type PollState } from '../lib/poller';
   import ErrorMessage from './ErrorMessage.svelte';
   import JobCard from './JobCard.svelte';
+  import PollStatus from './PollStatus.svelte';
 
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
-  let data = $state<JobListing | null>(null);
+  let view = $state<PollState<JobListing>>(initialPoll());
   let error = $state<unknown>(null);
   let cancelling = $state<string | null>(null);
+  const data = $derived(view.data);
 
   $effect(() => {
     const project = projectId,
       session = sessionId;
-    let live = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    data = null;
+    view = initialPoll();
     error = null;
-    async function refresh(): Promise<void> {
-      try {
-        const found = await api.jobs(project, session);
-        if (live) {
-          data = found;
-          error = null;
-        }
-      } catch (found) {
-        if (live) error = found;
-      } finally {
-        if (live) timer = setTimeout(() => void refresh(), 3000);
-      }
-    }
-    void refresh();
-    return () => {
-      live = false;
-      clearTimeout(timer);
-    };
+    const poller = new Poller(
+      (signal) => api.jobs(project, session, signal),
+      (value) => {
+        view = value;
+      },
+    );
+    return poller.watch();
   });
 
   async function cancel(job: string): Promise<void> {
     cancelling = job;
     try {
       await api.cancelJob(projectId, sessionId, job);
-      data = await api.jobs(projectId, sessionId);
+      view = { ...view, data: await api.jobs(projectId, sessionId) };
       error = null;
     } catch (found) {
       error = found;
@@ -54,6 +44,7 @@
 <section aria-label="Background jobs">
   <h2>Background jobs</h2>
   {#if error}<ErrorMessage {error} />{/if}
+  <PollStatus phase={view.phase} hasData={data !== null} what="Job views" />
   {#if data}
     {#each data.waits as wait (wait.run_id)}
       <div class="waiting" role="status">
@@ -79,7 +70,7 @@
       />
     {/each}
     {#if data.truncated}<p class="muted">Showing the most recent jobs.</p>{/if}
-  {:else if !error}<p class="muted">Loading jobs…</p>{/if}
+  {/if}
 </section>
 
 <style>

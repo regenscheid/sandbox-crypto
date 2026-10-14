@@ -2,21 +2,15 @@
 /**
  * The workspace API, version 0 (packages/workspace, api.py and documents.py): read-only
  * views of the harness's projects, sessions and runs and of the project's living
- * documents, live job status and cancellation, and repairs of LaTeX by the reviewer model (mathrepair.py). The session
- * cookie travels with every request, and the browser adds the `Origin` header the server
- * requires of a POST; there is nothing else to send.
+ * documents, live job status and cancellation, and repairs of LaTeX by the reviewer model
+ * (mathrepair.py). Requests go through http.ts. The session cookie travels with every
+ * request, and the browser adds the `Origin` header the server requires of a POST.
  */
 import type { ServerBlock } from './attach';
-import {
-  KERNEL_DEADLINE_MS,
-  KernelReadError,
-  kernelObservation,
-  kernelReadsAllowed,
-  stopKernelReadsForLogout,
-  validKernelScope,
-  type KernelObservation,
-  type KernelScope,
-} from './kernels';
+import { ApiError, get, post } from './http';
+import { signOut } from './session';
+
+export { ApiError };
 
 export interface ProjectSummary {
   project_id: string;
@@ -424,147 +418,19 @@ export interface CommentChange {
   replayed?: boolean;
 }
 
-export class ApiError extends Error {
-  constructor(
-    readonly status: number,
-    readonly kind: string,
-    message: string,
-    readonly details: Record<string, unknown> = {},
-  ) {
-    super(message);
-  }
-
-  get loggedOut(): boolean {
-    return this.status === 401;
-  }
-}
-
-async function failure(response: Response): Promise<ApiError> {
-  let kind = 'unavailable';
-  let message = `the server answered ${response.status}`;
-  let details: Record<string, unknown> = {};
-  try {
-    const body = (await response.json()) as {
-      error?: { kind?: string; message?: string; details?: Record<string, unknown> };
-    };
-    kind = body.error?.kind ?? kind;
-    message = body.error?.message ?? message;
-    details = body.error?.details ?? {};
-  } catch {
-    // Not JSON: keep the status.
-  }
-  return new ApiError(response.status, kind, message, details);
-}
-
-export async function get<T>(path: string): Promise<T> {
-  const response = await fetch(`/api/v0${path}`, { headers: { Accept: 'application/json' } });
-  if (!response.ok) throw await failure(response);
-  return (await response.json()) as T;
-}
-
-export async function post<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(`/api/v0${path}`, {
-    method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw await failure(response);
-  return (await response.json()) as T;
-}
-
 const part = encodeURIComponent;
 
-// Only this passive read uses this lease/deadline/bound; generic API behavior is unchanged.
-let kernelReadOwned = false;
-async function observeKernels(scope: KernelScope, signal: AbortSignal): Promise<KernelObservation> {
-  if (!kernelReadsAllowed()) throw new KernelReadError(401);
-  if (kernelReadOwned || signal.aborted || !validKernelScope(scope)) throw new KernelReadError(0);
-  kernelReadOwned = true;
-  const controller = new AbortController();
-  let response: Response | undefined;
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-  let cancellation: Promise<unknown> | undefined;
-  const cancelBody = (): Promise<unknown> => {
-    cancellation ??= (
-      reader ? reader.cancel() : (response?.body?.cancel() ?? Promise.resolve())
-    ).catch(() => undefined);
-    return cancellation;
-  };
-  const abort = () => {
-    controller.abort();
-    if (response) void cancelBody();
-  };
-  signal.addEventListener('abort', abort, { once: true });
-  const deadline = setTimeout(abort, KERNEL_DEADLINE_MS);
-  try {
-    response = await fetch(
-      `/api/v0/projects/${part(scope.projectId)}/sessions/${part(scope.sessionId)}/kernels`,
-      {
-        headers: { Accept: 'application/json' },
-        signal: controller.signal,
-        redirect: 'error',
-        cache: 'no-store',
-      },
-    );
-    if (controller.signal.aborted || response.redirected || response.type === 'opaqueredirect')
-      throw new KernelReadError(0);
-    // Error bodies carry no useful kernel data. Cancel rather than parsing/retaining arbitrary text.
-    if (!response.ok) {
-      await cancelBody();
-      throw new KernelReadError(response.status);
-    }
-    if (!response.body) throw new KernelReadError(0);
-    const declared = response.headers.get('content-length');
-    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > 12 * 1024))
-      throw new KernelReadError(0);
-    reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let size = 0,
-      reads = 0;
-    while (true) {
-      const chunk = await reader.read();
-      if (controller.signal.aborted) throw new KernelReadError(0);
-      if (chunk.done) break;
-      if (++reads > 256) throw new KernelReadError(0);
-      if (chunk.value.length > 12 * 1024 - size) throw new KernelReadError(0);
-      chunks.push(chunk.value);
-      size += chunk.value.length;
-    }
-    const bytes = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.length;
-    }
-    return kernelObservation(
-      JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown,
-      scope,
-    );
-  } catch (error) {
-    if (error instanceof KernelReadError) throw error;
-    throw new KernelReadError(0);
-  } finally {
-    await cancelBody();
-    reader?.releaseLock();
-    clearTimeout(deadline);
-    signal.removeEventListener('abort', abort);
-    kernelReadOwned = false;
-  }
-}
-
 export const api = {
-  kernels: (project: string, session: string, environment: string, signal: AbortSignal) =>
-    observeKernels({ projectId: project, sessionId: session, environmentId: environment }, signal),
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) =>
     post<MacroContext>(`/projects/${part(project)}/macros`, value),
   projects: () => get<{ projects: ProjectSummary[] }>('/projects'),
   project: (project: string) =>
     get<{ project: Project }>(`/projects/${part(project)}`).then((found) => found.project),
-  session: (project: string, session: string) =>
-    get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`),
-  jobs: (project: string, session: string) =>
-    get<JobListing>(`/projects/${part(project)}/sessions/${part(session)}/jobs`),
+  session: (project: string, session: string, signal?: AbortSignal) =>
+    get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`, { signal }),
+  jobs: (project: string, session: string, signal?: AbortSignal) =>
+    get<JobListing>(`/projects/${part(project)}/sessions/${part(session)}/jobs`, { signal }),
   cancelJob: (project: string, session: string, job: string) =>
     post(`/projects/${part(project)}/sessions/${part(session)}/jobs/${part(job)}/cancel`, {}),
   run: (project: string, session: string, run: string) =>
@@ -604,8 +470,9 @@ export const api = {
   history: (project: string, document: string) =>
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),
   mathRepair: (request: MathRepairRequest) => post<MathRepairAnswer>('/math-repair', request),
+  /** Ends the page's session at once, even when the server cannot be told. */
   async logout(): Promise<void> {
-    stopKernelReadsForLogout();
+    signOut();
     const response = await fetch('/api/v0/logout', { method: 'POST' });
     if (!response.ok && response.status !== 401) {
       throw new ApiError(response.status, 'unavailable', 'logging out failed');

@@ -30,45 +30,22 @@ input is held or unavailable, with unknown differences rather than an empty
 inventory. A genuine complete zero-difference result is labeled as equality of
 the two validated retained package records, not completeness of guest inventory.
 
-## Bounded validation and pages
+## Pages and reads
 
-The consumer checks exact scope, aware receipt timestamp, allowlisted keys,
-JavaScript safe integers, both selected raw pins and lockfile refs, and every
-available header's hash/size/count binding even for held responses. Complete
-responses require both headers and skipped-zero inputs. Added/removed/changed
-totals must sum and agree with aggregate entry-count arithmetic. Rows validate
-all Conda and pip fields, exact changed-field names, side/change agreement,
-normalized pip name plus prefix/user identity, declared license bindings and
-strict tuple ordering. Missing optional fields on an absent side have the same
-null semantics as the worker's comparison.
+The browser checks only that a page names the selected project and environment;
+the worker and the workspace server validate the comparison's contents. Pages
+contain at most eight rows within the 64 KiB answer limit. Next follows the actual
+returned continuation, which can consume fewer than eight rows. Previous uses a
+retained stack of actual page starts. No full diff, raw 8 MiB lockfile, durable
+browser cache or background diff poll is introduced.
 
-Pages contain at most eight rows within the existing 64 KiB streamed body cap
-and 256-chunk cap. Next follows the actual returned continuation, which can
-consume fewer than eight rows. Previous uses a retained stack of actual page
-starts. Later complete pages must preserve the selected headers, header changes
-and global totals; next-page keys must follow the previous page. No full diff,
-raw 8 MiB lockfile, durable browser cache or background diff poll is introduced.
+Comparison reads are one-shot reads with a 12-second deadline, above the worker's
+eight-second comparison budget; ordinary observation reads keep eight seconds.
+Hide, scope change, unmount or sign-out drop the old read's reply. An unavailable
+previous page stays explicitly dated and its paging controls are disabled. A new
+comparison requires an explicit user action.
 
-As in the original viewer, parsing uses the platform JSON parser followed by
-strict DTO validation. It does not detect duplicate raw JSON keys before that
-parser normalizes them. The worker and the proxy refuse ambiguous
-retained/upstream JSON and generate canonical response envelopes. This frontend
-makes no independent raw-byte hashing claim: displayed source proof is the
-backend's verified observation at its named boundaries.
-
-## Ownership and presentation
-
-Comparison reads have a 12-second whole transport/body and view deadline, above
-the worker's eight-second comparison budget and the comparison proxy/client
-budgets. Ordinary observation reads retain their existing eight-second deadline.
-All summary/detail/history/comparison reads use the same actual global fetch/body
-owner. Timeout, hide, scope change, unmount or logout abort the old generation;
-ignored abort/cancel still retains physical ownership until settlement. One-shot
-comparison owners stop after their actual attempt settles, including hidden or
-expired attempts. An unavailable previous page stays explicitly dated and its
-paging controls are disabled. A new comparison requires an explicit user action.
-There is no hard network/I/O liveness guarantee when a browser implementation
-ignores cancellation.
+## Presentation
 
 Rows show both original entries and all recorded metadata differences, including
 same-version build/channel/hash changes. Conda licenses remain declared metadata
@@ -77,9 +54,6 @@ Source URLs and every other retained string render as escaped text, never active
 links or HTML. Membership and metadata differences certify neither installed
 files nor licensing, policy permission or scientific correctness.
 
-The tests in `web/workspace/src/lib/provisioning.test.ts` cover pin, header,
-held, totals, type and row coherence, short-page continuations and facts across
-pages, pip and Conda metadata and escaped presentation, the comparison's deadlines,
-ownership when an abort or body cancellation is ignored, and settlement of one-shot
-reads. Native revision selection and paging against a real worker were checked in
+The tests in `web/workspace/src/lib/provisioning.test.ts` cover held and
+empty comparisons, pip and Conda metadata and escaped presentation. Native revision selection and paging against a real worker were checked in
 [Lab31](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md).

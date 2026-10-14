@@ -2,20 +2,18 @@
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import type { Project } from '../lib/api';
+  import { onSignOut } from '../lib/session';
   import { formatTime } from '../lib/format';
-  import { onKernelLogout } from '../lib/kernels';
+  import { initialPoll, Poller, type PollState } from '../lib/poller';
   import {
     environmentChoices,
-    ProvisionReader,
     readProvision,
-    diffIdentity,
     differenceKey,
-    packageIdentity,
     packageKey,
     DIFF_DEADLINE_MS,
     PACKAGES_DEADLINE_MS,
     PROVISION_DEADLINE_MS,
-    type ReadState,
+    type ProvisionData,
     type Selection,
     type ProvisionObservation,
     type OperationDetail,
@@ -30,15 +28,15 @@
   let {
     projectId,
     project,
-    initialView = { phase: 'loading', data: null, busy: false },
+    initialView = initialPoll(),
     initialSelection = null,
-    initialDetail = { phase: 'loading', data: null, busy: false },
+    initialDetail = initialPoll(),
   }: {
     projectId: string;
     project: Project;
-    initialView?: ReadState;
+    initialView?: PollState<ProvisionData>;
     initialSelection?: Selection | null;
-    initialDetail?: ReadState;
+    initialDetail?: PollState<ProvisionData>;
   } = $props();
   const choices = $derived(environmentChoices(projectId, project));
   let selectedId = $state<string | null>(null);
@@ -47,8 +45,8 @@
       choices.find((e) => e.shared) ??
       choices[0],
   );
-  let view = $state<ReadState>(untrack(() => initialView));
-  let detail = $state<ReadState>(untrack(() => initialDetail));
+  let view = $state<PollState<ProvisionData>>(untrack(() => initialView));
+  let detail = $state<PollState<ProvisionData>>(untrack(() => initialDetail));
   let selection = $state<Selection | null>(untrack(() => initialSelection));
   let before = $state<RevisionSummary | null>(
     untrack(() => (initialSelection?.kind === 'diff' ? initialSelection.before : null)),
@@ -65,8 +63,8 @@
   let mounted = $state(false),
     visible = $state(false),
     blocked = $state(false);
-  let overviewOwner = $state<ProvisionReader | null>(null),
-    detailOwner = $state<ProvisionReader | null>(null);
+  let overviewOwner = $state<Poller<ProvisionData> | null>(null),
+    detailOwner = $state<Poller<ProvisionData> | null>(null);
   const overview = $derived(
     view.data?.project_id === projectId &&
       view.data.environment_id === selected?.scope.environmentId
@@ -151,8 +149,6 @@
     select({
       ...selection,
       offset: comparison.next_offset,
-      expected: diffIdentity(comparison),
-      previousKey: differenceKey(comparison.differences.at(-1)!),
     });
   }
   function previousComparison(): void {
@@ -171,7 +167,6 @@
       before: selection.before,
       after: selection.after,
       offset,
-      expected: diffIdentity(comparison),
     });
   }
   function loadPackages(revision: RevisionSummary): void {
@@ -193,8 +188,6 @@
     select({
       ...selection,
       offset: packages.next_offset,
-      expected: packageIdentity(packages),
-      previousKey: packageKey(packages.packages.at(-1)!),
     });
   }
   function previousPackages(): void {
@@ -212,7 +205,6 @@
       kind: 'packages',
       revision: selection.revision,
       offset,
-      expected: packageIdentity(packages),
     });
   }
   function holdReason(reason: string): string {
@@ -232,7 +224,7 @@
       selection = null;
     }
   }
-  function phaseLabel(phase: ReadState['phase']): string {
+  function phaseLabel(phase: PollState<ProvisionData>['phase']): string {
     return {
       loading: 'Reading environment records…',
       observed: '',
@@ -258,13 +250,13 @@
   $effect(() => {
     if (!mounted || !selected) return;
     const scope = selected.scope;
-    view = { phase: 'loading', data: null, busy: false };
+    view = initialPoll();
     selection = null;
     before = after = null;
     diffOffsets = [];
     packageOffsets = [];
     let disposed = false;
-    const owner = new ProvisionReader(
+    const owner = new Poller(
       (signal) => readProvision(scope, { kind: 'summary' }, signal),
       (value) => {
         if (!disposed) {
@@ -274,7 +266,7 @@
       },
     );
     overviewOwner = owner;
-    const off = onKernelLogout(() => owner.logout());
+    const off = onSignOut(() => owner.logout());
     return () => {
       disposed = true;
       owner.stop();
@@ -287,15 +279,15 @@
   });
   $effect(() => {
     if (!mounted || !selected || !selection) {
-      detail = { phase: 'loading', data: null, busy: false };
+      detail = initialPoll();
       return;
     }
     const scope = selected.scope,
       requested = selection;
     detailKey = selectionKey;
-    detail = { phase: 'loading', data: null, busy: false };
+    detail = initialPoll();
     let disposed = false;
-    const owner = new ProvisionReader(
+    const owner = new Poller(
       (signal) => readProvision(scope, requested, signal),
       (value) => {
         if (!disposed) {
@@ -308,16 +300,19 @@
           if (requested.kind === 'packages' && value.phase === 'changed') packageOffsets = [];
         }
       },
-      false,
-      requested.kind === 'diff'
-        ? DIFF_DEADLINE_MS
-        : requested.kind === 'packages'
-          ? PACKAGES_DEADLINE_MS
-          : PROVISION_DEADLINE_MS,
-      requested.kind === 'diff' || requested.kind === 'packages',
+      {
+        repeat: false,
+        deadlineMs:
+          requested.kind === 'diff'
+            ? DIFF_DEADLINE_MS
+            : requested.kind === 'packages'
+              ? PACKAGES_DEADLINE_MS
+              : PROVISION_DEADLINE_MS,
+        once: requested.kind === 'diff' || requested.kind === 'packages',
+      },
     );
     detailOwner = owner;
-    const off = onKernelLogout(() => owner.logout());
+    const off = onSignOut(() => owner.logout());
     return () => {
       disposed = true;
       owner.stop();

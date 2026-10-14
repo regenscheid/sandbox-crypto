@@ -1,19 +1,33 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
-  import { api } from '../lib/api';
+  import { api, type SessionDetail } from '../lib/api';
   import { formatTime } from '../lib/format';
+  import { initialPoll, Poller, type PollState } from '../lib/poller';
   import { projectHref } from '../lib/router';
   import { kernelPanelScope } from '../lib/kernels';
   import { planPanelScope } from '../lib/plans';
-  import ErrorMessage from './ErrorMessage.svelte';
   import JobsPanel from './JobsPanel.svelte';
   import KernelPanel from './KernelPanel.svelte';
   import PlanPanel from './PlanPanel.svelte';
+  import PollStatus from './PollStatus.svelte';
   import RunSection from './RunSection.svelte';
   const reviewComponent = import('./ReviewsPanel.svelte');
 
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
-  const loading = $derived(api.session(projectId, sessionId));
+  // Polled, so that a run that ends and a session that closes show up.
+  let view = $state<PollState<SessionDetail>>(initialPoll());
+  $effect(() => {
+    const project = projectId,
+      session = sessionId;
+    view = initialPoll();
+    const poller = new Poller(
+      (signal) => api.session(project, session, signal),
+      (value) => {
+        view = value;
+      },
+    );
+    return poller.watch();
+  });
 </script>
 
 <nav class="trail">
@@ -21,9 +35,9 @@
 </nav>
 <h1>Session {sessionId}</h1>
 
-{#await loading}
-  <p class="muted">Loading…</p>
-{:then detail}
+<PollStatus phase={view.phase} hasData={view.data !== null} what="Session views" />
+{#if view.data}
+  {@const detail = view.data}
   <dl class="facts">
     <dt>Environment</dt>
     <dd>
@@ -65,6 +79,4 @@
       <RunSection {projectId} {sessionId} {run} initiallyOpen={index === detail.runs.length - 1} />
     {/each}
   {/if}
-{:catch error}
-  <ErrorMessage {error} />
-{/await}
+{/if}

@@ -88,7 +88,8 @@ harness was disconnected are found at the next safe point or turn.
 The session page lists every active job and the 20 most recently ended jobs,
 with live state, elapsed time, resource measurements, head and tail output,
 recent watcher notes and cancellation. It refreshes through the authenticated
-workspace server every three seconds. Active waits show their job IDs and
+workspace server every three seconds while the page is visible, backing off
+after failures. Active waits show their job IDs and
 check-in setting; an expired harness lease is shown as disconnected. Job text
 and watcher notes are escaped plain text. Keys stay in the server.
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 /** Scoped USER text drafts and exact uncertain requests; no plan execution authority. */
-import { kernelReadsAllowed } from './kernels';
+import { ApiError, post } from './http';
 import {
   planObservation,
   validPlanBody,
@@ -9,6 +9,7 @@ import {
   type PlanRef,
   type PlanScope,
 } from './plans';
+import { signedOut } from './session';
 
 export const EDIT_RESPONSE_BYTES = 8192;
 export const EDIT_DEADLINE_MS = 8000;
@@ -181,7 +182,7 @@ const owned = new Set<string>();
 const scopeKey = (scope: PlanScope, plan: string) =>
   `${scope.projectId}:${scope.sessionId}:${plan}`;
 const writeKey = (scope: PlanScope) => `${scope.projectId}:${scope.sessionId}`;
-/** Same-origin bounded write. Keep ownership through ignored abort/header/body settlement. */
+/** One write per session at a time; the scope's key is held until the request settles. */
 export async function writePlanChange(
   scope: PlanScope,
   request: PlanChange,
@@ -189,91 +190,24 @@ export async function writePlanChange(
 ): Promise<PlanReceipt> {
   scope = { ...scope };
   const key = writeKey(scope);
-  if (!kernelReadsAllowed()) throw new PlanWriteError(401);
-  if (
-    owned.has(key) ||
-    signal.aborted ||
-    !ids.test(scope.projectId) ||
-    !ids.test(scope.sessionId) ||
-    !ids.test(request.operation_id) ||
-    !ref(request.base) ||
-    !counter(request.base.version + 1, 1) ||
-    editProblem(request.body, request.reason)
-  )
+  if (signedOut()) throw new PlanWriteError(401);
+  if (owned.has(key) || signal.aborted || editProblem(request.body, request.reason))
     throw new PlanWriteError(0);
-  const payload = JSON.stringify(request);
-  if (new TextEncoder().encode(payload).length > 128 * 1024) throw new PlanWriteError(0);
-  request = JSON.parse(payload) as PlanChange;
+  request = copy(request);
   owned.add(key);
-  const controller = new AbortController();
-  let response: Response | undefined,
-    reader: ReadableStreamDefaultReader<Uint8Array> | undefined,
-    cancellation: Promise<unknown> | undefined;
-  const cancel = () =>
-    (cancellation ??= (
-      reader ? reader.cancel() : (response?.body?.cancel() ?? Promise.resolve())
-    ).catch(() => undefined));
-  const abort = () => {
-    controller.abort();
-    if (response) void cancel();
-  };
-  const deadline = setTimeout(abort, EDIT_DEADLINE_MS);
-  signal.addEventListener('abort', abort, { once: true });
   try {
-    response = await fetch(
-      `/api/v0/projects/${encodeURIComponent(scope.projectId)}/sessions/${encodeURIComponent(scope.sessionId)}/plan/changes`,
-      {
-        method: 'POST',
-        credentials: 'same-origin',
-        redirect: 'error',
-        cache: 'no-store',
-        signal: controller.signal,
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-        body: payload,
-      },
+    const value = await post<unknown>(
+      `/projects/${encodeURIComponent(scope.projectId)}/sessions/${encodeURIComponent(scope.sessionId)}/plan/changes`,
+      request,
+      { signal, deadlineMs: EDIT_DEADLINE_MS, maxBytes: EDIT_RESPONSE_BYTES },
     );
-    if (controller.signal.aborted || !kernelReadsAllowed()) throw new PlanWriteError(0);
-    if (response.redirected || response.type === 'opaqueredirect') throw new PlanWriteError(0);
-    if (!response.ok && response.status !== 409) throw new PlanWriteError(response.status);
-    const declared = response.headers.get('content-length');
-    if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > EDIT_RESPONSE_BYTES))
-      throw new PlanWriteError(0);
-    if (!response.body) throw new PlanWriteError(0);
-    reader = response.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let size = 0,
-      reads = 0;
-    while (true) {
-      const chunk = await reader.read();
-      if (controller.signal.aborted || !kernelReadsAllowed()) throw new PlanWriteError(0);
-      if (chunk.done) break;
-      if (++reads > 128 || chunk.value.length > EDIT_RESPONSE_BYTES - size)
-        throw new PlanWriteError(0);
-      chunks.push(chunk.value);
-      size += chunk.value.length;
-    }
-    const bytes = new Uint8Array(size);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.length;
-    }
-    const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
-    if (response.status === 409)
-      throw new PlanWriteError(
-        409,
-        object(value) && object(value.error) && ref(value.error.current)
-          ? copy(value.error.current)
-          : null,
-      );
     return receipt(value, scope, request);
   } catch (error) {
-    throw error instanceof PlanWriteError ? error : new PlanWriteError(0);
+    if (error instanceof PlanWriteError) throw error;
+    if (!(error instanceof ApiError)) throw new PlanWriteError(0);
+    const current = error.status === 409 && ref(error.error.current) ? error.error.current : null;
+    throw new PlanWriteError(error.status, current ? copy(current) : null);
   } finally {
-    await cancel();
-    reader?.releaseLock();
-    clearTimeout(deadline);
-    signal.removeEventListener('abort', abort);
     owned.delete(key);
   }
 }
@@ -498,7 +432,7 @@ export class PlanEditSession {
     return (
       this.active &&
       !this.signedOut &&
-      kernelReadsAllowed() &&
+      !signedOut() &&
       !this.blocked &&
       this.observed &&
       this.current.session_closed_at === null &&
@@ -685,13 +619,7 @@ export class PlanEditSession {
     this.emit();
     try {
       const ack = await this.transport(this.scope, request, controller.signal);
-      if (
-        !this.active ||
-        epoch !== this.epoch ||
-        !kernelReadsAllowed() ||
-        controller.signal.aborted
-      )
-        return;
+      if (!this.active || epoch !== this.epoch || signedOut() || controller.signal.aborted) return;
       this.draft.pending = {
         request,
         state: 'acknowledged',

@@ -55,18 +55,14 @@ generation and exact start/current revisions, with the worker receipt time. Empt
 and unavailable are distinct. A previous observation remains explicitly dated and
 labeled as an unknown current state when polling fails or pauses.
 
-One request is owned until actual settlement, with an eight-second deadline and
-12 KiB response limit. Successful polls schedule the next read three seconds after
-completion; errors back off to at most thirty seconds. Hidden pages pause reads.
-Visibility, view replacement, unmount and logout invalidate old replies even if
-their transport ignores abort. Logout starts a sticky page-lifetime read fence,
-including for a panel mounted while the logout HTTP request is pending. A new
-login requires a page reload before these reads resume.
-
-The browser validates exact scope, aware receipt time, unique kernel/language
-identities and revision/status coherence. JavaScript cannot represent the entire
-worker integer range exactly: unsafe generation or revision integers refuse the
-observation rather than displaying rounded pins. The panel has no restart action.
+The panel reads through the workspace's shared poller and request function
+([workspace](WORKSPACE.md#views)): an eight-second deadline, a 12 KiB answer limit,
+three seconds between reads, backoff to thirty seconds, no reads while the page is
+hidden, and none after sign-out until the page is reloaded. A reply that arrives
+after the page was hidden or the panel replaced is dropped. The browser checks
+only that an observation names the panel's project, session and environment; the
+revision fields are shown as the server sends them. The panel has no restart
+action.
 
 The panel is an eventual observation of a visible session. It does not deliver
 notices to agents ([kernel notices](KERNEL-NOTICE-DELIVERY.md) do that), push
