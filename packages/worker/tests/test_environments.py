@@ -1191,7 +1191,7 @@ async def test_recycle_intent_requires_actual_termination_and_clears_quarantine(
         assert await confirmed("env-1") is (phase == "Stopped")
         if phase == "Stopped":
             manager.confirmed_daemon_loss = confirmed
-            await manager._recover("env-1", [], startup=True)
+            await manager._recover("env-1", startup=True)
             assert not store.recycle_needed("env-1")
             assert "env-1" not in manager._quarantined
     finally:

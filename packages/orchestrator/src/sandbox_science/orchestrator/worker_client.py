@@ -22,10 +22,12 @@ import aiohttp
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
     AdmissionRequest,
     AdmissionResult,
     ArtifactRef,
     Capabilities,
+    Clock,
     EnvironmentInfo,
     EnvironmentRequest,
     ErrorKind,
@@ -79,6 +81,8 @@ CALL_TIMEOUT: Final = 600.0
 """Seconds a request may go without data from the worker before it is given up."""
 STREAM_TIMEOUT: Final = 4 * EVENT_HEARTBEAT_SECONDS
 """Seconds an event stream may go without even a heartbeat before it counts as dropped."""
+TRANSFER_TIMEOUT: Final = 10.0
+"""Seconds an artifact publication or content transfer may take as a whole."""
 RESULT_GRACE: Final = 300.0
 """Seconds past an execution's own limit that ``run`` waits for its result. The worker's
 watchdog ends an overdue execution within 90 seconds of its limit."""
@@ -109,6 +113,9 @@ class WorkerObservationTransport:
 
 
 class WorkerClient:
+    """The worker API. The keyword arguments set its timeouts and delays, in seconds;
+    ``clock`` paces reconnection attempts."""
+
     def __init__(
         self,
         base_url: str,
@@ -116,9 +123,19 @@ class WorkerClient:
         *,
         session: aiohttp.ClientSession | None = None,
         stream_timeout: float = STREAM_TIMEOUT,
+        reconnect_delay: float = RECONNECT_DELAY,
+        result_grace: float = RESULT_GRACE,
+        observation_timeout: float = KERNEL_OBSERVATION_TIMEOUT,
+        transfer_timeout: float = TRANSFER_TIMEOUT,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.stream_timeout = stream_timeout
+        self.reconnect_delay = reconnect_delay
+        self.result_grace = result_grace
+        self.observation_timeout = observation_timeout
+        self.transfer_timeout = transfer_timeout
+        self.clock = clock
         self._headers = {"Authorization": f"Bearer {token}"}
         self._session = session
         self._owns_session = session is None
@@ -414,7 +431,7 @@ class WorkerClient:
                         ErrorKind.UNAVAILABLE, f"lost the worker's event stream: {exc}"
                     ) from exc
                 _log.info("event stream dropped (%s); resuming after %d", exc, after)
-                await asyncio.sleep(RECONNECT_DELAY * failures)
+                await self.clock.sleep(self.reconnect_delay * failures)
                 continue
             # The stream ended without a result: ask again from where it stopped.
             failures += 1
@@ -446,7 +463,7 @@ class WorkerClient:
         project_id = request.context.project_id
         events = self.events(execution.execution_id, project_id=project_id)
         try:
-            async with asyncio.timeout(request.timeout_seconds + RESULT_GRACE):
+            async with asyncio.timeout(request.timeout_seconds + self.result_grace):
                 async with contextlib.aclosing(events):
                     async for event in events:
                         if on_event is not None:
@@ -456,7 +473,7 @@ class WorkerClient:
         except TimeoutError as exc:
             raise WorkerAPIError(
                 ErrorKind.UNAVAILABLE,
-                f"no result from the worker {RESULT_GRACE:g} s after the execution's limit",
+                f"no result from the worker {self.result_grace:g} s after the execution's limit",
             ) from exc
         return await self.get(execution.execution_id, project_id=project_id)
 
@@ -514,7 +531,7 @@ class WorkerClient:
             KernelObservation,
             KernelStatusRequest(context=context),
             max_bytes=MAX_KERNEL_OBSERVATION_BYTES,
-            total_timeout=KERNEL_OBSERVATION_TIMEOUT,
+            total_timeout=self.observation_timeout,
             allow_redirects=False,
         )
         if (result.environment_id, result.session_id) != (
@@ -532,7 +549,7 @@ class WorkerClient:
             KernelLineageObservation,
             KernelStatusRequest(context=context),
             max_bytes=MAX_KERNEL_OBSERVATION_BYTES,
-            total_timeout=KERNEL_OBSERVATION_TIMEOUT,
+            total_timeout=self.observation_timeout,
             allow_redirects=False,
         )
         if (result.project_id, result.environment_id, result.session_id) != (
@@ -576,7 +593,7 @@ class WorkerClient:
                 f"{self.base_url}/v1/artifacts",
                 data=body,
                 headers={**self._headers, "Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=self.transfer_timeout),
                 allow_redirects=False,
             ) as response:
                 payload = await _bounded_body(
@@ -622,7 +639,7 @@ class WorkerClient:
                 f"{self.base_url}/v1/artifacts/{snapshot.artifact_id}/content",
                 params={"project_id": snapshot.project_id},
                 headers=self._headers,
-                timeout=aiohttp.ClientTimeout(total=10),
+                timeout=aiohttp.ClientTimeout(total=self.transfer_timeout),
                 allow_redirects=False,
                 auto_decompress=False,
             ) as response:

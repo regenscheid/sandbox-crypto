@@ -37,13 +37,12 @@ from sandbox_science.orchestrator.projects import (
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 
+from .api import TIMEOUTS, Timeouts
 from .provisioning_client import MAX_BYTES, ProvisionObserver
 
 MAX_ENVIRONMENTS: Final = 64
 MAX_CALLS: Final = 8
 MAX_LOGIN_CALLS: Final = 2
-CALL_TIMEOUT: Final = 6.0
-DIFF_TIMEOUT: Final = 10.0
 PATH: Final = "/api/v0/projects/{project}/environments/{environment}/provisioning/observations"
 ENVIRONMENTS_PATH: Final = "/api/v0/projects/{project}/provisioning/environments"
 ROUTE_PREFIX: Final = "provisioning-observation-"
@@ -498,8 +497,10 @@ async def _fetch(
 class ProvisionProxy:
     """Immediate bounded admission; actual file/request work remains owned until drain."""
 
-    def __init__(self, store: ProjectStore, worker: WorkerClient | None) -> None:
-        self.store, self.worker = store, worker
+    def __init__(
+        self, store: ProjectStore, worker: WorkerClient | None, *, timeouts: Timeouts = TIMEOUTS
+    ) -> None:
+        self.store, self.worker, self.timeouts = store, worker, timeouts
         self._files = ThreadPoolExecutor(max_workers=2, thread_name_prefix="provisioning-registry")
         self._tasks: set[asyncio.Task[str]] = set()
         self._scopes: set[tuple[str, str | None]] = set()
@@ -564,7 +565,7 @@ class ProvisionProxy:
                     raise ProjectError(
                         ErrorKind.UNSUPPORTED, "provisioning views need a configured worker"
                     )
-                observer = ProvisionObserver(worker)
+                observer = ProvisionObserver(worker, self.timeouts)
                 assert environment is not None  # noqa: S101 - recorded membership above
                 answer = (await _fetch(observer, project, environment, wanted)).model_dump_json()
             if not authorized():
@@ -605,7 +606,7 @@ class ProvisionProxy:
         principal: str,
         authorized: Callable[[], bool],
     ) -> str:
-        """Respond within six seconds without releasing still-running owned work."""
+        """Respond within the call timeout without releasing still-running owned work."""
         if type(wanted) is not Selection:
             raise ProjectError(ErrorKind.INVALID_REQUEST, "invalid observation selection")
         wanted.__post_init__()
@@ -644,7 +645,9 @@ class ProvisionProxy:
         task.add_done_callback(finished)
         try:
             async with asyncio.timeout(
-                DIFF_TIMEOUT if wanted.kind in {"lockfile-diff", "packages"} else CALL_TIMEOUT
+                self.timeouts.comparison
+                if wanted.kind in {"lockfile-diff", "packages"}
+                else self.timeouts.call
             ):
                 return await asyncio.shield(task)
         except TimeoutError as error:
@@ -691,9 +694,10 @@ def add_routes(
     worker: WorkerClient | None,
     principal: Callable[[web.Request], str],
     authorized: Callable[[web.Request], bool],
+    timeouts: Timeouts = TIMEOUTS,
 ) -> None:
     """Register only authenticated read projections; no action routes are added."""
-    proxy = ProvisionProxy(store, worker)
+    proxy = ProvisionProxy(store, worker, timeouts=timeouts)
     app[PROXY] = proxy
 
     def handler(kind: Kind) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:

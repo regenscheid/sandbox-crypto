@@ -29,6 +29,7 @@ from sandbox_science.orchestrator.session_plans import (
     SessionPlans,
 )
 
+from .api import TIMEOUTS, Timeouts
 from .plans import PATH, LoginEndedError, session_snapshot
 
 ROUTE_NAME: Final = "workspace_session_plan_change"
@@ -36,7 +37,6 @@ MAX_REQUEST_BYTES: Final = 128 * 1024
 MAX_RESPONSE_BYTES: Final = 8 * 1024
 MAX_CALLS: Final = 8
 MAX_LOGIN_CALLS: Final = 2
-CALL_TIMEOUT: Final = 6.0
 _IDENTIFIER: Final = TypeAdapter(Identifier)
 T = TypeVar("T")
 
@@ -74,8 +74,11 @@ def _inode(info: os.stat_result) -> tuple[int, int]:
 class PlanEditor:
     """Finite request owner; cancellation cannot abandon admitted file/SQL work."""
 
-    def __init__(self, projects: ProjectStore, canonical: DocumentStore) -> None:
+    def __init__(
+        self, projects: ProjectStore, canonical: DocumentStore, *, timeout: float = TIMEOUTS.call
+    ) -> None:
         self.projects = projects
+        self.timeout = timeout
         # Only this lane uses the connection. A busy SQL lock refuses immediately;
         # no hidden wait separates final authentication from transaction admission.
         self.documents = DocumentStore(canonical.path, producer="workspace-plan-edit", timeout=0)
@@ -327,7 +330,7 @@ class PlanEditor:
 
         task.add_done_callback(finished)
         try:
-            async with asyncio.timeout(CALL_TIMEOUT):
+            async with asyncio.timeout(self.timeout):
                 return await asyncio.shield(task)
         except TimeoutError:
             task.cancel()
@@ -387,9 +390,10 @@ def add_routes(
     canonical: DocumentStore,
     principal: Callable[[web.Request], str],
     authorized: Callable[[web.Request], bool],
+    timeouts: Timeouts = TIMEOUTS,
 ) -> None:
     """Add only a USER body edit. Creation, status/progress and approval are absent."""
-    editor = PlanEditor(projects, canonical)
+    editor = PlanEditor(projects, canonical, timeout=timeouts.call)
     app[EDITOR] = editor
 
     async def change(request: web.Request) -> web.Response:
