@@ -120,7 +120,7 @@ class Scope(Contract):
 
 
 class FindingMacroContexts(Contract):
-    """The macro contexts a finding is shown with (``Findings.macro_contexts``)."""
+    """The macro contexts a finding is shown with (``mathchecks.contexts``)."""
 
     finding: MacroContext
     """The finding's own: its math check's pinned context, or its anchors'."""

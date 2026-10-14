@@ -8,11 +8,11 @@ import sqlite3
 import pytest
 
 from sandbox_science.orchestrator.consistency.findings import Findings
-from sandbox_science.orchestrator.consistency.mathnotices import MathNotices
 from sandbox_science.orchestrator.documents import USER, Author, DocumentError
-from sandbox_science.orchestrator.documents.mathcontroller import MathController
-from sandbox_science.orchestrator.documents.mathjobs import MathJobs
 from sandbox_science.orchestrator.documents.project_macros import ProjectMacros, resolve, view
+from sandbox_science.orchestrator.mathchecks.controller import MathController
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
+from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 
 from .test_comment_math import comment
 from .test_consistency import anchor, dispatch, raise_finding, read_confirmation
@@ -319,7 +319,7 @@ async def test_anchored_response_agreement_or_explicit_ambiguity(stores, same):
 def test_confirmation_requires_exact_available_explanation_context(
     stores, monkeypatch, context, decision
 ):
-    from sandbox_science.orchestrator.documents import project_macros
+    from sandbox_science.orchestrator.consistency import response_bodies
 
     docs, reviews, _ = stores
     change(docs, {r"\F": "project"})
@@ -349,7 +349,7 @@ def test_confirmation_requires_exact_available_explanation_context(
     with monkeypatch.context() as legacy:
         if context == "unknown":
             # A valid older response writer retained the body but no macro pins.
-            legacy.setattr(project_macros, "response_saved", lambda *_args, **_kw: None)
+            legacy.setattr(response_bodies, "response_saved", lambda *_args, **_kw: None)
         api.respond(
             "p",
             "s",

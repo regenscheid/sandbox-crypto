@@ -11,7 +11,6 @@ import pytest
 
 from sandbox_science.contracts import ErrorKind
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
-from sandbox_science.orchestrator.documents.mathjobs import Checker
 from sandbox_science.orchestrator.harness import (
     Harness,
     IsolationRefusedError,
@@ -22,6 +21,7 @@ from sandbox_science.orchestrator.harness import (
     save,
 )
 from sandbox_science.orchestrator.jobstate import JobState
+from sandbox_science.orchestrator.mathchecks.jobs import Checker
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.tools import ToolOutcome

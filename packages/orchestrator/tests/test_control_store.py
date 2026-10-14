@@ -15,7 +15,13 @@ from typing import Any
 
 import pytest
 
-from sandbox_science.orchestrator.control import ControlError, ControlStore, migrations
+from sandbox_science.orchestrator.control import (
+    ControlError,
+    ControlEvent,
+    ControlStore,
+    Tx,
+    migrations,
+)
 from sandbox_science.orchestrator.documents import DocumentError
 
 CURRENT = migrations.VERSION
@@ -662,3 +668,38 @@ def test_the_evidence_checks_neither_copy_artifact_bytes_nor_let_bad_ones_in(
     free = pages * db.execute("PRAGMA page_size").fetchone()[0]
     db.close()
     assert free < size // 4
+
+
+def test_subscribers_run_once_each_in_the_change_that_records_their_event(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path / "control.sqlite3")
+    seen: list[str] = []
+
+    def record(tx: Tx, event: ControlEvent) -> None:
+        tx.sql.execute("INSERT INTO job_runs(project) VALUES (?)", (event.project,))
+        seen.append(event.kind)
+
+    def failing(tx: Tx, event: ControlEvent) -> None:
+        raise RuntimeError("the subscriber fails")
+
+    store.subscribe("saved", record)
+    store.subscribe("saved", record)  # already there
+    store.subscribe("broken", failing)
+    with store.write() as tx:
+        store.notify(tx, ControlEvent(1, "saved", "kept", None, {}))
+        store.notify(tx, ControlEvent(2, "unwatched", "p", None, {}))
+    assert seen == ["saved"]
+
+    def saved_then_broken() -> None:
+        with store.write() as tx:
+            store.notify(tx, ControlEvent(3, "saved", "dropped", None, {}))
+            store.notify(tx, ControlEvent(4, "broken", "p", None, {}))
+
+    with pytest.raises(RuntimeError, match="subscriber fails"):
+        saved_then_broken()
+    with store.read() as tx:
+        assert tx.sql.execute("SELECT project FROM job_runs").fetchall() == [("kept",)]
+        with pytest.raises(ControlError, match="change it records"):
+            store.notify(tx, ControlEvent(5, "saved", "read", None, {}))
+    store.close()

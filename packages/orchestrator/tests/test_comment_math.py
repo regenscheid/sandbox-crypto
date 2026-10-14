@@ -10,10 +10,10 @@ from unittest.mock import patch as mock_patch
 
 import pytest
 
-from sandbox_science.orchestrator.consistency.mathnotices import MathNotices
 from sandbox_science.orchestrator.documents import USER, DocumentError, comment_bodies
 from sandbox_science.orchestrator.documents.annotations import Annotations
-from sandbox_science.orchestrator.documents.mathjobs import MathJobs
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
+from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 
 from .test_document_math import BAD, MAIN, ScriptedChecker, create, drain, get
 from .test_document_math import stores as stores
@@ -446,7 +446,7 @@ async def test_dependency_refresh_preserves_explicit_user_decision(stores, kind,
     ],
 )
 async def test_previous_assessment_and_user_decision_of_another_shape_are_not_used(stores, payload):
-    from sandbox_science.orchestrator.consistency.mechanical import MechanicalFindings
+    from sandbox_science.orchestrator.mathchecks.mechanical import MechanicalFindings
 
     docs, reviews, _ = stores
     doc, entry = source_fixture(docs, "comment")
@@ -493,7 +493,7 @@ async def test_an_invalid_or_oversized_observation_is_refused_when_written(store
 async def test_unknown_retained_resolution_actor_is_bounded_and_preserved(stores, actor):
     import tracemalloc
 
-    from sandbox_science.orchestrator.consistency.mechanical import MechanicalFindings
+    from sandbox_science.orchestrator.mathchecks.mechanical import MechanicalFindings
 
     docs, reviews, _ = stores
     source_fixture(docs, "comment")
@@ -585,7 +585,7 @@ def test_atomic_revision_scheduling_and_append_only_history(stores):
 
 @pytest.mark.asyncio
 async def test_shared_job_quota_holds_math_but_not_comment_writes(stores):
-    from sandbox_science.orchestrator.documents.mathjobs import MathLimits
+    from sandbox_science.orchestrator.mathchecks.jobs import MathLimits
 
     docs, reviews, _ = stores
     doc = create(docs, USER, "Context.")

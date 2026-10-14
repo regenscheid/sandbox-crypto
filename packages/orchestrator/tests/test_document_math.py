@@ -11,8 +11,8 @@ from typing import Literal
 
 import pytest
 
+from sandbox_science.orchestrator import mathchecks
 from sandbox_science.orchestrator.consistency.findings import Findings
-from sandbox_science.orchestrator.consistency.mathnotices import MathNotices
 from sandbox_science.orchestrator.consistency.notices import FindingNotices
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import (
@@ -22,9 +22,10 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     store_path,
 )
-from sandbox_science.orchestrator.documents.mathjobs import MathJobs, MathLimits
 from sandbox_science.orchestrator.harness import save
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs, MathLimits
+from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 from sandbox_science.orchestrator.projects import ProjectStore
 
 MAIN = Author(kind="agent", session_id="s", run_id="r1", role="main", model="scripted")
@@ -70,6 +71,7 @@ def stores(tmp_path: Path):
     projects.open_session("p", "s", dedicated=False)
     projects.open_session("p", "other", dedicated=False)
     docs = DocumentStore(store_path(tmp_path))
+    mathchecks.subscribe(docs)
     clock = [1000.0]
     reviews = ReviewStore(docs, clock=lambda: clock[0])
     yield docs, reviews, clock
@@ -473,16 +475,14 @@ async def test_logical_quota_holds_checks_without_vetoing_edits(stores) -> None:
         assert db.execute("SELECT count(*) FROM math_observations").fetchone()[0] == 0
 
 
-def test_save_hook_fault_rolls_source_and_event_back(stores, monkeypatch) -> None:
-    from sandbox_science.orchestrator.documents import mathqueue
-
+def test_save_hook_fault_rolls_source_and_event_back(stores) -> None:
     docs, _, _ = stores
     doc = create(docs)
 
     def broken(*args):
         raise RuntimeError("synthetic atomic math scheduling fault")
 
-    monkeypatch.setattr(mathqueue, "record_event", broken)
+    docs.control.subscribe("document.revision_created", broken)
     with pytest.raises(RuntimeError, match="scheduling"):
         docs.edit_source(
             "p", doc, base=1, text="New text.\n", author=USER, reason="Edit", operation_id="fault"
@@ -655,8 +655,8 @@ async def test_configuration_drift_during_await_and_mixed_runtime_are_unavailabl
 @pytest.mark.asyncio
 async def test_closing_only_delivery_success_and_final_turn_pending(stores) -> None:
     from sandbox_science.contracts import ExecutionContext
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
     from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.mathchecks.controller import MathController
     from sandbox_science.orchestrator.model import ScriptedModel
     from sandbox_science.orchestrator.tools import Toolbox
     from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -708,8 +708,8 @@ async def test_closing_only_delivery_success_and_final_turn_pending(stores) -> N
 @pytest.mark.asyncio
 async def test_failed_model_after_closing_notice_releases_it_unacknowledged(stores) -> None:
     from sandbox_science.contracts import ExecutionContext
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
     from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.mathchecks.controller import MathController
     from sandbox_science.orchestrator.model import ModelError, ModelTurn
     from sandbox_science.orchestrator.tools import Toolbox
     from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -757,7 +757,7 @@ async def test_actual_commit_thread_owned_through_repeated_cancellation(
     import asyncio
     import threading
 
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
+    from sandbox_science.orchestrator.mathchecks.controller import MathController
 
     docs, reviews, _ = stores
     create(docs)
@@ -802,8 +802,8 @@ async def test_terminal_review_and_math_share_one_closing_model_handoff(
     from sandbox_science.contracts import ExecutionContext
     from sandbox_science.orchestrator.consistency.controller import ReviewController
     from sandbox_science.orchestrator.consistency.models import ReviewConfig
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
     from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.mathchecks.controller import MathController
     from sandbox_science.orchestrator.model import ModelTurn
     from sandbox_science.orchestrator.tools import Toolbox
     from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -902,8 +902,8 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
     from datetime import UTC, datetime
 
     from sandbox_science.contracts import ErrorKind, ExecutionContext
-    from sandbox_science.orchestrator.documents.mathcontroller import MathChecks, MathController
     from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.mathchecks.controller import MathChecks, MathController
     from sandbox_science.orchestrator.model import ScriptedModel
     from sandbox_science.orchestrator.projects import ProjectError
     from sandbox_science.orchestrator.tools import Toolbox
@@ -1040,7 +1040,7 @@ async def test_staged_bound_rebinds_after_failed_save_and_rechecks_current_evide
 
 @pytest.mark.asyncio
 async def test_same_head_bounded_retry_remains_pending_and_visible(stores) -> None:
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
+    from sandbox_science.orchestrator.mathchecks.controller import MathController
 
     docs, reviews, _ = stores
     create(docs, text="\n\n".join(f"$x_{i}$" for i in range(300)))
@@ -1063,8 +1063,8 @@ async def test_closing_bound_thread_owned_through_repeated_cancellation(
     import threading
 
     from sandbox_science.contracts import ExecutionContext
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
     from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.mathchecks.controller import MathController
     from sandbox_science.orchestrator.model import ScriptedModel
     from sandbox_science.orchestrator.tools import Toolbox
     from sandbox_science.orchestrator.worker_client import WorkerClient
@@ -1118,8 +1118,8 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
     from sandbox_science.contracts import ExecutionContext
     from sandbox_science.orchestrator.consistency.controller import ReviewController
     from sandbox_science.orchestrator.consistency.models import ReviewConfig
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
     from sandbox_science.orchestrator.loop import run_task
+    from sandbox_science.orchestrator.mathchecks.controller import MathController
     from sandbox_science.orchestrator.model import ScriptedModel
     from sandbox_science.orchestrator.tools import Toolbox
     from sandbox_science.orchestrator.worker_client import WorkerClient

@@ -9,10 +9,10 @@ from unittest.mock import patch
 import pytest
 
 from sandbox_science.orchestrator.consistency.findings import Findings
-from sandbox_science.orchestrator.consistency.mathnotices import MathNotices
 from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.documents import USER, Author, DocumentError
-from sandbox_science.orchestrator.documents.mathjobs import MathJobs, MathLimits
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs, MathLimits
+from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 
 from .test_consistency import anchor, claim, dispatch, raise_finding, read_confirmation
 from .test_document_math import BAD, MAIN, ScriptedChecker, create, drain

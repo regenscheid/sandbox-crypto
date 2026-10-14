@@ -23,6 +23,7 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext, new_id
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
+from .mathchecks import subscribe as check_math
 from .projects import ProjectError, ProjectStore, ensure_environment
 from .worker_client import WorkerClient
 
@@ -115,6 +116,7 @@ def document(args: argparse.Namespace) -> int:
     with contextlib.closing(ProjectStore(args.state_dir, readonly=True)) as projects:
         project = projects.get(args.project)
     store = DocumentStore(store_path(args.state_dir), producer="harness-cli")
+    check_math(store)
     try:
         match args.action:
             case "import":

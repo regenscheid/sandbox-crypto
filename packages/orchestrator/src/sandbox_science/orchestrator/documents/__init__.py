@@ -11,9 +11,11 @@ by area:
 - storage: ``store``, ``models``, ``errors`` and ``project_macros``, in the control
   store's SQLite database;
 - comments: ``annotations``, ``comment_bodies`` and ``annotation_tools``;
-- math checks: ``mathqueue``, ``mathjobs``, ``mathcontroller``, ``comment_math`` and
-  ``response_math``;
 - the agents' document tool: ``tool``.
+
+The math checks of documents are in ``sandbox_science.orchestrator.mathchecks``, which
+subscribes to saved revisions; this package imports neither it nor the consistency
+review.
 """
 
 from sandbox_science.orchestrator.control import FILE_NAME, store_path

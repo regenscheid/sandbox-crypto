@@ -33,12 +33,12 @@ from .artifacts import ArtifactInventory
 from .consistency.controller import ReviewController
 from .consistency.store import ReviewStore
 from .documents import DocumentError, DocumentStore, DocumentTool
-from .documents.mathcontroller import MathController
-from .documents.mathjobs import Checker
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task
+from .mathchecks.controller import MathController
+from .mathchecks.jobs import Checker
 from .model import ChatModel
 from .plan_tools import PlanTools
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment

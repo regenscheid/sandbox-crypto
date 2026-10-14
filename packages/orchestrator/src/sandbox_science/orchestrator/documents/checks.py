@@ -18,7 +18,7 @@ When a revision is saved, its new and changed blocks are checked for:
 
 The checks are heuristics: they warn and never change the text. KaTeX's own check is
 scheduled atomically by the source-event hook and runs outside source transactions
-in ``mathjobs``. It creates separately attributed mechanical findings.
+in ``mathchecks.jobs``. It creates separately attributed mechanical findings.
 """
 
 from __future__ import annotations

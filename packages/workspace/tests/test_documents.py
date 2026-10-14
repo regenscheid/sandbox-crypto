@@ -16,7 +16,9 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
+from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, store_path
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.app import create_app
 
@@ -568,3 +570,31 @@ async def test_comment_body_revision_cas_existing_route_authority_and_retry(
     assert thread["entries"][0]["body"] == "Original USER body"
     assert thread["entries"][0]["body_source"]["revision"] == 2
     assert thread["entries"][1]["author"]["kind"] == "user"
+
+
+async def test_a_revision_saved_through_the_workspace_is_scheduled_for_a_math_check(
+    client: TestClient[Any, Any], documents: dict[str, str], state_dir: Path
+) -> None:
+    doc = documents["notes"]
+    saved = await post_change(
+        client,
+        doc,
+        {
+            "action": "source",
+            "base": 1,
+            "text": "Notes with $x$.\n",
+            "reason": "Math",
+            "operation_id": "math",
+        },
+    )
+    assert saved["outcome"] == "applied"
+    # The fixture's store had no subscriber, so only the workspace's save can have
+    # scheduled this document's checks.
+    owner = DocumentStore(store_path(state_dir))
+    try:
+        jobs = MathJobs(ReviewStore(owner))
+        check = jobs.claim("p1", "worker")
+        assert check is not None
+        assert jobs.job(check)["document"] == doc
+    finally:
+        owner.close()

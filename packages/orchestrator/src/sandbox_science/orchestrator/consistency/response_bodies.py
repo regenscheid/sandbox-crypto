@@ -25,6 +25,14 @@ from sandbox_science.orchestrator.documents.errors import (
     DocumentError,
 )
 from sandbox_science.orchestrator.documents.models import Author
+from sandbox_science.orchestrator.documents.project_macros import (
+    read as macros_read,
+)
+from sandbox_science.orchestrator.documents.project_macros import (
+    response_anchors,
+    response_saved,
+    response_view,
+)
 
 from .store import digest, dump, identifier, text
 
@@ -185,10 +193,6 @@ def pin(db: sqlite3.Connection, finding: str, revision: int) -> Json | None:
     try:
         body = read(db, finding, revision, full=False)
         result = projection(body)
-        from sandbox_science.orchestrator.documents.project_macros import (
-            read as macros_read,
-        )
-        from sandbox_science.orchestrator.documents.project_macros import response_anchors
 
         result["macro_context"] = {
             **macros_read(db, body["project"]),
@@ -233,7 +237,6 @@ def commit(
             prepared.held,
         ),
     )
-    from sandbox_science.orchestrator.documents.project_macros import response_saved
 
     response_saved(db, parent, prepared.base + 1, legacy=legacy, unknown_anchors=prepared.base > 0)
     db.execute(
@@ -286,7 +289,6 @@ class ResponseBodies:
                     full=False,
                 )
             )
-        from sandbox_science.orchestrator.documents.project_macros import response_view
 
         result["macro_context"] = response_view(
             self.store.documents, project, result["source"], body_revision=body_revision

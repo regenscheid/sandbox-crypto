@@ -33,7 +33,7 @@ from typing import Any, Final, cast
 from pydantic import TypeAdapter, ValidationError
 
 from sandbox_science.contracts import new_id
-from sandbox_science.orchestrator.control import DEFAULT_TIMEOUT, ControlStore
+from sandbox_science.orchestrator.control import DEFAULT_TIMEOUT, ControlEvent, ControlStore, Tx
 
 from .blocks import BYTE_ORDER_MARK, Budget, check_text, normalize_newlines, parse
 from .checks import warnings
@@ -77,6 +77,7 @@ from .models import (
 from .normalize import Normalized, normalize
 from .operations import MAX_OPERATIONS, Operation, touches
 from .parser import parser_versions
+from .project_macros import source_saved
 
 CACHED: Final = 16
 """Parsed revisions kept, by document, revision and content hash."""
@@ -1678,8 +1679,8 @@ class DocumentStore:
         author: Author,
         payload: Json,
     ) -> None:
-        """Record an event in the change's transaction, and tell the math checks and the
-        project macros about a saved source."""
+        """Record an event in the change's transaction, pin a saved source's project
+        macros, and tell the control store's subscribers (such as the math checks)."""
         cursor = db.execute(
             "INSERT INTO events (time, kind, producer, project_id, session_id, document_id, "
             "payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -1694,12 +1695,9 @@ class DocumentStore:
             ),
         )
         assert cursor.lastrowid is not None  # noqa: S101 - this event was inserted
-        from .mathqueue import record_event as record_math
-
-        record_math(db, kind, info.document_id, cursor.lastrowid)
-        from .project_macros import source_saved
-
         source_saved(db, kind, info.document_id)
+        event = ControlEvent(cursor.lastrowid, kind, info.project_id, info.document_id, payload)
+        self.control.notify(Tx(db), event)
 
     def _replay(
         self,
