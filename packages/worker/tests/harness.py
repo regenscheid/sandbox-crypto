@@ -240,13 +240,13 @@ class ManagerView:
     def watch_package_gate_syncs(self, patch: pytest.MonkeyPatch) -> list[ExecutorChannel]:
         """Record every executor whose package gate the manager syncs as it opens."""
         synced: list[ExecutorChannel] = []
-        original = self.manager._sync_package_gate
+        original = self.manager._admission.sync
 
         async def watched(environment_id: str, channel: ExecutorChannel) -> bool:
             synced.append(channel)
             return await original(environment_id, channel)
 
-        patch.setattr(self.manager, "_sync_package_gate", watched)
+        patch.setattr(self.manager._admission, "sync", watched)
         return synced
 
     def poller(self, environment_id: str) -> tuple[ExecutorChannel, asyncio.Task[Any]]:
