@@ -514,12 +514,21 @@ async def test_cp_f1_a_capability_installs_in_its_turn_records_and_probes(
     assert (done.reason, done.stage, done.error) == (None, None, None)
     assert done.catalog is not None
     assert done.catalog.version == 3
-    # It probed first (CP-2), resolved, installed and probed again.
-    check, resolve, install, probe = done.executions
+    # It probed first (CP-2), observed the installer, resolved, installed and probed again.
+    check, version, resolve, install, probe = done.executions
     for execution_id in done.executions:
         execution = await world.execution(execution_id)
         assert execution["origin"] == done.provision_id
         assert execution["operation_id"].startswith(f"{done.provision_id}.")
+    assert (await world.execution(version))["operation_id"].endswith(".version-conda")
+    assert done.installer_steps is not None
+    assert [step.label for step in done.installer_steps] == [
+        "version-conda",
+        "resolve-conda",
+        "install-conda",
+    ]
+    assert done.installer_steps[0].observed_version == "2.9.0"
+    assert all(step.log_status == "stored" for step in done.installer_steps)
     # Every resolved file, with what the policy decided for its download (CP-6, CP-7).
     files = {file.name: file for file in done.files}
     assert set(files) == {"pari", "gmp"}
@@ -572,6 +581,14 @@ async def test_cp_f1_a_capability_installs_in_its_turn_records_and_probes(
     }
     assert all(fetch.allowed for fetch in world.cache.fetched)
     del resolve
+    owner = world.provisioner._ops[done.provision_id].task
+    assert owner is not None
+    await owner
+    observations = [r for r in world.records() if r.kind.startswith("provision.")]
+    assert [r.kind for r in observations] == ["provision.requested", "provision.finished"]
+    assert observations[-1].data()["outcome"] == "completed"
+    await world.provision("op-gp", capability="gp", expected=200)
+    assert len([r for r in world.records() if r.kind.startswith("provision.")]) == 2
 
 
 @pytest.mark.asyncio
@@ -1109,7 +1126,7 @@ async def test_cancelling_an_install_stops_it_and_records_where(
     world = await make_world()
     monkeypatch.setenv("FAKEPM_GATE", str(gate(world)))  # never opened: the install waits
     operation = await world.provision("op-1", conda=["fpylll"])
-    await world.until(operation["provision_id"], lambda op: len(op.executions) == 2)
+    await world.until(operation["provision_id"], lambda op: len(op.executions) >= 3)
     await world.until(operation["provision_id"], lambda op: op.state == "installing")
     await asyncio.sleep(0.5)
     path = f"/v1/provisioning/{operation['provision_id']}/cancel"
@@ -1169,8 +1186,8 @@ async def test_an_install_whose_executor_is_lost_is_looked_at_again(make_world: 
     )
     assert (done.revision_before, done.revision_after) == (0, 1)
     labels = [(await world.execution(e))["operation_id"].rsplit(".", 1)[1] for e in done.executions]
-    assert labels == ["resolve-conda", "install-conda", "install-conda-look"]
-    assert (await world.execution(done.executions[1]))["state"] == "lost"
+    assert labels == ["version-conda", "resolve-conda", "install-conda", "install-conda-look"]
+    assert (await world.execution(done.executions[2]))["state"] == "lost"
     assert (await world.queue()).status == "needs_recovery"
 
 
@@ -1311,6 +1328,7 @@ async def test_a_restarted_worker_ends_what_it_left(make_world: Factory) -> None
             "state": ProvisionState.INSTALLING,
             "outcome": None,
             "provision_id": "prv-" + "0" * 24,
+            "installer_steps": None,  # explicitly model a legacy crash record
         }
     )
     world.store._db.execute(  # pyright: ignore[reportPrivateUsage]

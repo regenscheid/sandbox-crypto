@@ -486,6 +486,9 @@ def kill_executor() -> None:
 
 def main(argv: list[str]) -> int:
     tool, args = argv[0], argv[1:]
+    if args == ["--version"]:
+        print("pip 25.2 from /synthetic (python 3.13)" if tool.startswith("pip") else "2.9.0")
+        return 0
     if tool.startswith("pip"):
         return pip(args)
     if tool in ("conda", "mamba", "micromamba"):
