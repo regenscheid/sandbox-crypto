@@ -38,7 +38,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 
 from pydantic import ValidationError
 
@@ -59,14 +59,21 @@ from sandbox_science.contracts import (
     ShellRequest,
     new_id,
 )
-from sandbox_science.contracts.provisioning import MAX_FILES, MAX_TEXT, Reason, Stage
+from sandbox_science.contracts.provisioning import (
+    MAX_FILES,
+    MAX_TEXT,
+    InstallerLabel,
+    InstallerStep,
+    Reason,
+    Stage,
+)
 from sandbox_science.contracts.revisions import MAX_PROBE_OUTPUT
 from sandbox_science.contracts.worker import MAX_TIMEOUT_SECONDS
 from sandbox_science.policy import Action, HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.approvals import VALID_UNTIL, RequestKey
 from sandbox_science.policy.ceiling import effective_resources
 
-from . import resolution
+from . import installer_records, resolution
 from .catalog import CapabilitySpec, Catalog, ProbeSpec
 from .errors import WorkerError
 from .manager import ExecutionManager
@@ -205,6 +212,9 @@ class Provisioner:
         self.restorer = restorer
         self.clock = clock
         self.poll = poll
+        self.installer_logs = installer_records.InstallerArtifacts(
+            self.store, manager.blobs, manager.max_artifact_size
+        )
         self._ops: dict[str, _Op] = {}
         self._queues: dict[str, list[str]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -291,6 +301,7 @@ class Provisioner:
             catalog=self.catalog.ref,
             planned_revision=current.revision if current is not None else None,
             submitted_at=self.clock(),
+            installer_steps=(),
         )
         self.store.insert_provision(record, digest)
         op = _Op(record, asyncio.get_running_loop().create_future())
@@ -411,6 +422,7 @@ class Provisioner:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await self.installer_logs.close()
 
     # Bookkeeping.
 
@@ -632,6 +644,17 @@ class Provisioner:
         step's own package commands made it (managed), as only the install's do."""
         if op.cancelled.is_set():
             raise _cancelled(stage)
+        if label in installer_records.LABELS:
+            if any(step.label == label for step in op.record.installer_steps or ()):
+                raise WorkerError(ErrorKind.CONFLICT, "installer step already has retained intent")
+            self._installer_step(
+                op,
+                InstallerStep(
+                    label=cast(InstallerLabel, label),
+                    installer="micromamba" if label.endswith("conda") else "pip",
+                    operation_id=f"{op.record.provision_id}.{label}",
+                ),
+            )
         request = ShellRequest(
             operation_id=f"{op.record.provision_id}.{label}",
             context=op.record.request.context,
@@ -645,14 +668,112 @@ class Provisioner:
             hashlib.sha256(request.model_dump_json().encode()).hexdigest(),
         )
         execution, _ = await self.manager.submit(request, origin=op.record.provision_id)
-        self._update(op, executions=(*op.record.executions, execution.execution_id))
+        updates: dict[str, Any] = {"executions": (*op.record.executions, execution.execution_id)}
+        if label in installer_records.LABELS:
+            pending = next(step for step in op.record.installer_steps or () if step.label == label)
+            updates["installer_steps"] = tuple(
+                step.model_copy(
+                    update={
+                        "execution_id": execution.execution_id,
+                        "attempt_id": execution.attempt_id,
+                    }
+                )
+                if step.label == pending.label
+                else step
+                for step in op.record.installer_steps or ()
+            )
+        self._update(op, **updates)
         op.step = execution.execution_id
         try:
             if op.cancelled.is_set():
                 await self.manager.cancel(execution.execution_id)
-            return await self.manager.wait(execution.execution_id)
+            terminal = await self.manager.wait(execution.execution_id)
+            if label in installer_records.LABELS:
+                await self._installer_log(op, terminal, label)
+            return terminal
         finally:
             op.step = None
+
+    def _installer_step(self, op: _Op, step: InstallerStep) -> None:
+        previous = op.record.installer_steps or ()
+        self._update(
+            op,
+            installer_steps=(
+                tuple(step if old.label == step.label else old for old in previous)
+                if any(old.label == step.label for old in previous)
+                else (*previous, step)
+            ),
+        )
+
+    async def _installer_log(self, op: _Op, execution: Execution, label: str) -> None:
+        pending = next(step for step in op.record.installer_steps or () if step.label == label)
+        try:
+            prepared = installer_records.prepare(op.record, execution, label)
+        except installer_records.InstallerLogError:
+            self._installer_step(
+                op,
+                pending.model_copy(
+                    update={
+                        "log_status": "unavailable",
+                        "unavailable_reason": "metadata_unavailable",
+                    }
+                ),
+            )
+            raise WorkerError(
+                ErrorKind.UNAVAILABLE, "original installer metadata unavailable"
+            ) from None
+        self._installer_step(
+            op, prepared.step.model_copy(update={"log_status": "pending", "log": None})
+        )
+        try:
+            step, interrupted = await self.installer_logs.publish(prepared)
+        except installer_records.InstallerLogError:
+            self._installer_step(
+                op,
+                prepared.step.model_copy(
+                    update={
+                        "log_status": "unavailable",
+                        "log": None,
+                        "unavailable_reason": "artifact_unavailable",
+                    }
+                ),
+            )
+            self._update(
+                op,
+                notes=_notes(
+                    op.record.notes,
+                    "A sanitized installer log is unavailable. Original execution facts remain; "
+                    "do not repeat the installer to recreate it.",
+                ),
+            )
+            return
+        self._installer_step(op, step)
+        if interrupted is not None:
+            raise interrupted
+
+    async def _installer_version(self, op: _Op, conda: bool) -> None:
+        label = "version-conda" if conda else "version-pip"
+        execution = await self._execute(
+            op,
+            ("micromamba" if conda else "pip", "--version"),
+            label=label,
+            stage="resolve",
+            timeout=10.0,
+            limit=4096,
+        )
+        if execution.state is ExecutionState.CANCELLED or op.cancelled.is_set():
+            raise _cancelled("resolve")
+        if execution.state in (ExecutionState.LOST, ExecutionState.TIMED_OUT):
+            raise _Stop(
+                ProvisionOutcome.FAILED,
+                "resolve_failed",
+                "resolve",
+                ErrorInfo(
+                    kind=ErrorKind.UNAVAILABLE,
+                    message="Installer version observation is unknown; "
+                    "no resolve/install was dispatched.",
+                ),
+            )
 
     async def _check(self, op: _Op, name: str, capability: CapabilitySpec) -> None:
         """End ``already_satisfied`` if the capability's probes pass at the current revision:
@@ -757,6 +878,8 @@ class Provisioner:
     async def _resolve(self, op: _Op, conda: Sequence[str], pip: Sequence[str]) -> list[Resolved]:
         """Dry runs in the sandbox: the exact files the install would bring (CP-7)."""
         resolved: list[Resolved] = []
+        if conda or pip:
+            await self._installer_version(op, bool(conda))
         steps = [
             (
                 "resolve-conda",
