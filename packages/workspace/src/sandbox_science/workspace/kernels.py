@@ -18,6 +18,7 @@ from sandbox_science.orchestrator.projects import ProjectError
 from sandbox_science.orchestrator.worker_client import WorkerAPIError
 
 from .context import CONTEXT, identifier, json_answer, no_query, session_record
+from .errors import log_worker_failure
 
 PATH: Final = "/api/v0/projects/{project}/sessions/{session}/kernels"
 
@@ -49,6 +50,8 @@ async def observed(request: web.Request) -> web.Response:
             observation = await context.worker.observe_kernels(scope)
     except WorkerAPIError as error:
         unsupported = error.kind is ErrorKind.UNSUPPORTED
+        if not unsupported:
+            log_worker_failure(error)
         raise ProjectError(
             ErrorKind.UNSUPPORTED if unsupported else ErrorKind.UNAVAILABLE,
             "kernel observation is unavailable or unsupported",

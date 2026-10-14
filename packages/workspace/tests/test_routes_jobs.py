@@ -9,6 +9,7 @@ ownership check and the guards.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -309,6 +310,20 @@ async def test_unreachable_worker_is_unavailable_and_names_no_address(
         response = await call(client, route)
         await error_of(response, 503, "unavailable")
         assert_no_leak(await response.text(), url.removeprefix("http://"), "127.0.0.1")
+
+
+async def test_unreachable_worker_is_logged_with_its_cause(
+    aiohttp_client: ClientFactory,
+    state_dir: Path,
+    static_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with refusing_port() as url, caplog.at_level(logging.WARNING, "sandbox_science.workspace"):
+        client = await workspace(aiohttp_client, state_dir, static_dir, worker_url=url)
+        response = await call(client, "list")
+        await error_of(response, 503, "unavailable")
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("worker request failed" in r.getMessage() for r in warnings)
 
 
 @pytest.mark.parametrize("route", ROUTES)

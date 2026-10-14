@@ -80,16 +80,19 @@ async def change(request: web.Request) -> web.Response:
     )
 
     def write() -> str:
-        if session_record(context.projects, project, session).closed_at is not None:
-            raise ProjectError(ErrorKind.CONFLICT, "a closed session cannot be edited")
-        # An edit never creates the plans' tables or a plan.
-        if SessionPlans(context.documents).summary(authority) is None:
-            if has_records(context.documents, authority.scope):
-                raise ProjectError(ErrorKind.UNAVAILABLE, "session plan is damaged")
-            raise ProjectError(ErrorKind.NOT_FOUND, "this session has no plan to edit")
-        receipt = SessionPlans(context.writer).revise(
-            authority, wanted.operation_id, wanted.base, wanted.body, wanted.reason
-        )
+        session_record(context.projects, project, session)  # a missing project makes no lock
+        # The project lock keeps a close from landing between the check and the edit.
+        with context.projects.locked(project):
+            if session_record(context.projects, project, session).closed_at is not None:
+                raise ProjectError(ErrorKind.CONFLICT, "a closed session cannot be edited")
+            # An edit never creates the plans' tables or a plan.
+            if SessionPlans(context.documents).summary(authority) is None:
+                if has_records(context.documents, authority.scope):
+                    raise ProjectError(ErrorKind.UNAVAILABLE, "session plan is damaged")
+                raise ProjectError(ErrorKind.NOT_FOUND, "this session has no plan to edit")
+            receipt = SessionPlans(context.writer).revise(
+                authority, wanted.operation_id, wanted.base, wanted.body, wanted.reason
+            )
         return EditReceipt(
             project_id=project, session_id=session, receipt=receipt
         ).model_dump_json()

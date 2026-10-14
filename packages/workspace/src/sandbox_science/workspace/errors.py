@@ -8,8 +8,9 @@ and is logged.
 
 A worker refusal the browser can act on keeps its kind and the worker's message. Any
 other worker failure is 503 with a fixed message, since transport errors name the
-worker's address. A damaged project or run record is 503 with a fixed message too: the
-store's message names the record's path.
+worker's address; the cause is logged as a warning. A damaged project or run record
+is 503 with a fixed message too, since the store's message names the record's path;
+it is logged as an error.
 """
 
 from __future__ import annotations
@@ -91,6 +92,11 @@ def document_kind(caught: DocumentError) -> ErrorKind:
         return ErrorKind.INTERNAL
 
 
+def log_worker_failure(caught: WorkerAPIError) -> None:
+    """Log a worker failure that the browser sees only as a fixed 503."""
+    _log.warning("worker request failed (%s): %s", caught.kind.value, caught.message)
+
+
 def to_response(caught: Exception, *, extra: dict[str, object] | None = None) -> web.Response:
     """The error response for an exception a route raised."""
     match caught:
@@ -102,6 +108,7 @@ def to_response(caught: Exception, *, extra: dict[str, object] | None = None) ->
         case WorkerAPIError() if caught.kind in WORKER_REFUSALS:
             kind, message = caught.kind, caught.message
         case WorkerAPIError():
+            log_worker_failure(caught)
             kind, message = ErrorKind.UNAVAILABLE, "the worker is unavailable"
         case TimeoutError():
             kind, message = ErrorKind.UNAVAILABLE, "the request timed out"

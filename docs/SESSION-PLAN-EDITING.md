@@ -94,13 +94,15 @@ replay the earlier USER principal. No operation-absence proof is exposed.
 ## Writing
 
 The route checks the IDs, the content type and the body, then in a thread under
-the six-second call timeout: it reads the project record with `ProjectStore.get`
-and refuses a closed session; it checks through the app's read-only `DocumentStore`
-connection that the session has a plan, so an edit never creates the plans'
-tables or a plan; and it calls `SessionPlans.revise` through the app's writable
-connection. The plan's version CAS and the operation ID are the only concurrency
-control. A concurrent model or tool operation is serialized by the core
-transaction and CAS; no lock is held across a network or model await.
+the six-second call timeout, holding the project's lock (`ProjectStore.locked`,
+which closing a session also takes): it reads the project record and refuses a
+closed session; it checks through the app's read-only `DocumentStore` connection
+that the session has a plan, so an edit never creates the plans' tables or a
+plan; and it calls `SessionPlans.revise` through the app's writable connection.
+A close that arrives during an edit waits for it, so an edit never lands on a
+closed session. Between edits, the plan's version CAS and the operation ID are
+the concurrency control. A concurrent model or tool operation is serialized by
+the core transaction and CAS; no lock is held across a network or model await.
 
 This is **logical-session CAS**, not an opaque cross-request session lifetime
 fence. A later request in a reopened logical session may edit the current plan if
@@ -113,7 +115,8 @@ cancellation.
 
 Local tests use real HTTP and cover immutable USER, body and progress history,
 exact replay and stale CAS, authority injection, request and core limits, closed
-and terminal scopes, a missing pointer and SQL rollback. A scripted MAIN test edits through HTTP at the model boundary:
+and terminal scopes, a close waiting for an edit in progress, a missing pointer
+and SQL rollback. A scripted MAIN test edits through HTTP at the model boundary:
 a read and an effect in the same batch stay fenced until the new read reaches a
 successful model call.
 

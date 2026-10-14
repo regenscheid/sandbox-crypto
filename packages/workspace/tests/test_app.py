@@ -16,6 +16,7 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
+from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.app import (
     CONTENT_SECURITY_POLICY,
@@ -354,3 +355,12 @@ async def test_only_get_and_head_reach_the_files(client: TestClient[Any, Any]) -
     refused = await client.post("/", headers={"Origin": origin(client)})
     assert refused.status == 405
     assert (await client.post("/")).status == 403  # no origin
+
+
+async def test_an_injected_document_store_must_be_read_only(
+    state_dir: Path, static_dir: Path
+) -> None:
+    writable = DocumentStore(store_path(state_dir))
+    with pytest.raises(ValueError, match="read-only"):
+        create_app(ProjectStore(state_dir), static_dir, login_token=TOKEN, document_store=writable)
+    writable.close()

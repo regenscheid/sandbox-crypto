@@ -211,7 +211,11 @@ def create_app(
     the page is told that there is no reviewer model to repair math. Without
     ``document_store``, the documents are read from the control store in the state
     directory of ``store``, with a read-only connection for views and a separate lazy
-    writer for explicit user changes. The application closes ``job_worker``."""
+    writer for explicit user changes. A ``document_store`` given must be read-only
+    (``ValueError`` otherwise), since every view reads through it. The application
+    closes ``job_worker``."""
+    if document_store is not None and not document_store.readonly:
+        raise ValueError("the workspace's document_store must be read-only")
     sessions = Sessions(login_token)
     files = StaticFiles(static_dir)
     repairs = math_repair if math_repair is not None else MathRepairService()

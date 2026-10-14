@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import threading
 from types import SimpleNamespace
 from typing import cast
 
@@ -287,6 +289,42 @@ async def test_missing_pointer_is_corruption_not_absence(
         db.execute("DELETE FROM session_plan_projections WHERE kind='current'")
     client = await create(aiohttp_client, state_dir, static_dir)
     assert (await post(client, payload(ref))).status == 503
+
+
+@pytest.mark.asyncio
+async def test_a_close_waits_for_an_edit_in_progress(
+    aiohttp_client, state_dir, static_dir, journal, monkeypatch
+):
+    ref = seed(journal)
+    entered, release = threading.Event(), threading.Event()
+    revise = SessionPlans.revise
+
+    def held(self, *args, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return revise(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionPlans, "revise", held)
+    client = await create(aiohttp_client, state_dir, static_dir)
+    edit = asyncio.create_task(post(client, payload(ref)))
+    assert await asyncio.to_thread(entered.wait, 5)
+    store = ProjectStore(state_dir)
+    closer = threading.Thread(target=store.close_session, args=("p1", "a"))
+    closer.start()
+    try:
+        # The edit holds the project lock, so the close cannot land before it commits.
+        await asyncio.to_thread(closer.join, 0.2)
+        assert closer.is_alive()
+        assert store.get("p1").sessions["a"].closed_at is None
+    finally:
+        release.set()
+    assert (await edit).status == 200
+    await asyncio.to_thread(closer.join, 5)
+    assert store.get("p1").sessions["a"].closed_at is not None
+    summary = journal.summary(authority())
+    assert summary is not None
+    assert summary.head.version == 2
+    assert (await post(client, payload(summary.head, operation="after-close"))).status == 409
 
 
 @pytest.mark.asyncio
