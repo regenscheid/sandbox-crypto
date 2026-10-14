@@ -61,7 +61,14 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run python scripts/tiers.py run ${{ matrix.tier }} -n auto --durations=25
+      # pytest writes to a file that is printed when it ends: written straight to the step's
+      # output, parallel runs stalled the hosted runner until the job timed out, with no log.
+      - run: |
+          status=0
+          uv run python scripts/tiers.py run ${{ matrix.tier }} -n auto --durations=25 \
+            > "$RUNNER_TEMP/pytest.txt" 2>&1 < /dev/null || status=$?
+          cat "$RUNNER_TEMP/pytest.txt"
+          exit "$status"
 
   # The whole suite, serially and unfiltered, on every supported Python.
   full:
@@ -98,9 +105,13 @@ jobs:
           python-version: "3.13"
           enable-cache: true
       - run: uv sync --locked
-      - run: >-
-          uv run python scripts/tiers.py run slow -n auto --count 10
-          -o tmp_path_retention_policy=failed
+      - run: |
+          status=0
+          uv run python scripts/tiers.py run slow -n auto --count 10 \
+            -o tmp_path_retention_policy=failed > "$RUNNER_TEMP/pytest.txt" 2>&1 < /dev/null \
+            || status=$?
+          cat "$RUNNER_TEMP/pytest.txt"
+          exit "$status"
 
   # The workspace GUI (D80): packages from the lockfile, without install scripts.
   web:
