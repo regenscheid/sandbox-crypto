@@ -3,8 +3,8 @@
   import { untrack } from 'svelte';
   import { api, type DocumentRevision, type DocumentChange } from '../lib/api';
   import { describeAuthor } from '../lib/authors';
-  import { documentRequest, documentAnswered } from '../lib/documentRequests';
-  import { clearDraft, loadDraft, saveDraft } from '../lib/drafts';
+  import { documentDrafts } from '../lib/drafts';
+  import { guardedWrite } from '../lib/mutation';
   import { documentHref } from '../lib/router';
   import ErrorMessage from './ErrorMessage.svelte';
   let {
@@ -13,8 +13,11 @@
     refreshed,
   }: { projectId: string; found: DocumentRevision; refreshed: () => void } = $props();
   const id = $derived(found.document.document_id);
+  const scope = $derived(`${projectId}:${id}`);
   const initial = untrack(() => found);
-  const restored = untrack(() => loadDraft(projectId, initial.document.document_id));
+  const restored = untrack(
+    () => documentDrafts.load(`${projectId}:${initial.document.document_id}`).draft,
+  );
   let open = $state(restored !== null);
   let base = $state(restored?.base ?? initial.revision.number);
   let text = $state(restored?.text ?? initial.text);
@@ -29,7 +32,7 @@
   let persisted = $state(true);
   let projectName = $state(initial.document.name);
   $effect(() => {
-    if (open) persisted = saveDraft(projectId, id, { base, text, reason, block, retained });
+    if (open) persisted = documentDrafts.save(scope, { base, text, reason, block, retained });
   });
   function begin(selectedBlock: string | null) {
     block = selectedBlock;
@@ -52,11 +55,11 @@
         reason,
         ...(block === null ? { text } : { operations: [{ op: 'replace', block, markdown: text }] }),
       };
-      const request = await documentRequest(projectId, id, body);
-      result = await api.changeDocument(projectId, id, { ...body, operation_id: request.id });
-      documentAnswered(request);
+      result = await guardedWrite('document', scope, body, (change) =>
+        api.changeDocument(projectId, id, change),
+      );
       if (['applied', 'unchanged'].includes(result.outcome)) {
-        clearDraft(projectId, id);
+        documentDrafts.clear(scope);
         open = false;
         refreshed();
       } else current = await api.document(projectId, id);
@@ -67,7 +70,15 @@
     }
   }
   async function resolve() {
-    if (!current) current = await api.document(projectId, id);
+    error = null;
+    if (!current) {
+      try {
+        current = await api.document(projectId, id);
+      } catch (caught) {
+        error = caught;
+        return;
+      }
+    }
     retained = text;
     base = current.revision.number;
     // Source resolution starts with the current document so untouched newer blocks
@@ -91,9 +102,9 @@
             : `Restore revision ${found.revision.number}`,
         ...(action === 'promote' ? { name: projectName } : { target: found.revision.number }),
       };
-      const request = await documentRequest(projectId, id, body);
-      await api.changeDocument(projectId, id, { ...body, operation_id: request.id });
-      documentAnswered(request);
+      await guardedWrite('document', scope, body, (change) =>
+        api.changeDocument(projectId, id, change),
+      );
       location.hash = documentHref(projectId, id);
       refreshed();
     } catch (caught) {
@@ -103,7 +114,7 @@
     }
   }
   function discard() {
-    clearDraft(projectId, id);
+    documentDrafts.clear(scope);
     open = false;
     result = null;
     current = null;

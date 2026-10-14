@@ -2,14 +2,13 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api } from '../lib/api';
-  import { loadDraft, saveDraft, clearDraft } from '../lib/drafts';
-  import { documentRequest, documentAnswered } from '../lib/documentRequests';
+  import { macroDrafts } from '../lib/drafts';
+  import { guardedWrite } from '../lib/mutation';
   import ErrorMessage from './ErrorMessage.svelte';
   let { projectId }: { projectId: string } = $props();
-  const key = 'project-macros';
-  const draft = untrack(() => loadDraft(projectId, key));
+  const draft = untrack(() => macroDrafts.load(projectId).draft);
   let text = $state(draft?.text ?? ''),
-    expected = $state(draft?.base ?? 0),
+    expected = $state(draft?.expected ?? 0),
     head = $state(0);
   let busy = $state(false),
     error = $state<unknown>(null),
@@ -25,14 +24,7 @@
   }
   const loading = refresh();
   $effect(() => {
-    if (text)
-      persisted = saveDraft(projectId, key, {
-        base: expected,
-        text,
-        reason: '',
-        retained: '',
-        block: null,
-      });
+    if (text) persisted = macroDrafts.save(projectId, { expected, text });
   });
   async function save() {
     busy = true;
@@ -40,12 +32,12 @@
     status = '';
     try {
       const payload = { expected, macros: JSON.parse(text) as unknown };
-      const request = await documentRequest(projectId, key, payload);
-      const result = await api.changeMacros(projectId, { ...payload, operation_id: request.id });
-      documentAnswered(request);
+      const result = await guardedWrite('macros', projectId, payload, (sent) =>
+        api.changeMacros(projectId, sent),
+      );
       expected = head = result.revision;
       text = JSON.stringify(result.macros, null, 2);
-      clearDraft(projectId, key);
+      macroDrafts.clear(projectId);
       status = `Saved project macro revision ${head}. Math checks refresh at the next active run; reload other open document views to adopt this context.`;
       window.dispatchEvent(new Event('project-macros-changed'));
     } catch (caught) {

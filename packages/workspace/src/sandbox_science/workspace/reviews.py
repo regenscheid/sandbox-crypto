@@ -15,6 +15,7 @@ from sandbox_science.orchestrator.documents import USER, DocumentError
 from sandbox_science.orchestrator.documents.mathjobs import MathJobs
 
 from . import api, documents
+from .context import json_body
 
 # Persisted heterogeneous review JSON is bounded by the review store.
 Json = dict[str, Any]
@@ -72,11 +73,7 @@ async def listing(request: web.Request) -> web.Response:
 
 
 async def request_review(request: web.Request) -> web.Response:
-    try:
-        raw = await request.json()
-        if raw != {}:
-            raise ValueError
-    except (ValueError, UnicodeDecodeError, RecursionError):
+    if await json_body(request, "review request") != {}:
         return documents.api_error(
             DocumentError("invalid_request", "review request must be an empty object")
         )
@@ -185,15 +182,10 @@ def contexts(store: ReviewStore, project: str, finding: Json) -> Json:
 
 
 async def respond(request: web.Request) -> web.Response:
-    try:
-        raw = await request.json()
-        if not isinstance(raw, dict):
-            raise ValueError
-        raw = cast(Json, raw)
-        if raw.get("finding") != request.match_info["finding"]:
-            raise ValueError
-    except (ValueError, UnicodeDecodeError, RecursionError):
+    raw = await json_body(request, "finding response")
+    if not isinstance(raw, dict) or cast(Json, raw).get("finding") != request.match_info["finding"]:
         return documents.api_error(DocumentError("invalid_request", "invalid finding response"))
+    raw = cast(Json, raw)
     return await answer(
         request, lambda s, p, sid: Findings(s).respond(p, sid, raw, USER), writer=True
     )

@@ -8,7 +8,6 @@ server-derived user attribution and the application's authenticated same-origin 
 from __future__ import annotations
 
 import asyncio
-import logging
 import re
 from collections.abc import Callable
 from typing import Annotated, Final, Literal, cast
@@ -16,31 +15,21 @@ from typing import Annotated, Final, Literal, cast
 from aiohttp import hdrs, web
 from pydantic import Field, TypeAdapter, ValidationError
 
-from sandbox_science.contracts import ErrorKind
 from sandbox_science.contracts.model import Contract
 from sandbox_science.orchestrator.documents import DocumentError, DocumentStore, Mapped
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.models import NAME, USER
 from sandbox_science.orchestrator.documents.operations import Operation, unlay
 
-from . import api
+from . import api, errors
+from .context import json_body
 
 DOCUMENTS: Final = web.AppKey("documents", DocumentStore)
 WRITER: Final = web.AppKey("document_writer", DocumentStore)
 
-_log = logging.getLogger(__name__)
 
 _DOCUMENT_ID: Final = re.compile(r"doc-[0-9a-f]{24}")
 _REVISION: Final = re.compile(r"[1-9][0-9]{0,8}")
-_STATUS: Final = {
-    "invalid_request": (400, ErrorKind.INVALID_REQUEST),
-    "policy_denied": (403, ErrorKind.POLICY_DENIED),
-    "not_found": (404, ErrorKind.NOT_FOUND),
-    "conflict": (409, ErrorKind.CONFLICT),
-    "busy": (503, ErrorKind.UNAVAILABLE),
-    "unavailable": (503, ErrorKind.UNAVAILABLE),
-}
-
 Json = dict[str, object]
 
 
@@ -126,10 +115,7 @@ async def comment_thread(request: web.Request) -> web.Response:
 
 
 async def comment_change(request: web.Request) -> web.Response:
-    try:
-        raw = await request.json()
-    except (ValueError, UnicodeDecodeError):
-        return api_error(DocumentError("invalid_request", "invalid annotation change"))
+    raw = await json_body(request, "annotation change")
     return await answer(
         request,
         lambda store: Annotations(store).change(
@@ -151,11 +137,11 @@ async def preview(request: web.Request) -> web.Response:
 
 
 async def change(request: web.Request) -> web.Response:
+    # JSON escaping can expand the one-MiB source bound; other routes keep 64 KiB.
+    raw = await json_body(request, "document change", limit=8 * 1024 * 1024)
     try:
-        # JSON escaping can expand the one-MiB source bound; other routes keep 64 KiB.
-        raw = await request.clone(client_max_size=8 * 1024 * 1024).json()
         value = _CHANGE.validate_python(raw)
-    except (ValidationError, ValueError, UnicodeDecodeError):
+    except ValidationError:
         return api_error(DocumentError("invalid_request", "invalid document change"))
     project, reference = request.match_info["project"], request.match_info["document"]
 
@@ -272,16 +258,8 @@ def _reference(reference: str) -> bool:
 
 
 def api_error(error: DocumentError) -> web.Response:
-    status, kind = _STATUS.get(error.kind, (500, ErrorKind.INTERNAL))
-    message = error.message if status != 500 else "internal workspace error"
-    if error.kind == "unavailable":
-        # The control store is one this version cannot use, such as a newer one.
-        _log.error("the control store is unavailable: %s", error.message)
-    return web.json_response(
-        {"error": {"kind": kind.value, "message": message, "details": error.details}},
-        status=status,
-        headers={hdrs.CACHE_CONTROL: "no-store"},
-    )
+    """A document store error, by the workspace's one mapping (errors.py)."""
+    return errors.to_response(error)
 
 
 def _revision(store: DocumentStore, project: str, reference: str, number: int | None) -> Json:

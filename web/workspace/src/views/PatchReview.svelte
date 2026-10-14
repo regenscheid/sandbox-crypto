@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { api, type PatchPreview } from '../lib/api';
-  import { documentRequest, documentAnswered } from '../lib/documentRequests';
+  import { guardedWrite } from '../lib/mutation';
   import { describeAuthor } from '../lib/authors';
   import ErrorMessage from './ErrorMessage.svelte';
   let {
@@ -38,12 +38,9 @@
         base: preview.base,
         reason: `User reviewed and applied patch ${patchId}`,
       };
-      const request = await documentRequest(projectId, documentId, body);
-      const result = await api.changeDocument(projectId, documentId, {
-        ...body,
-        operation_id: request.id,
-      });
-      documentAnswered(request);
+      const result = await guardedWrite('document', `${projectId}:${documentId}`, body, (change) =>
+        api.changeDocument(projectId, documentId, change),
+      );
       message = result.message || result.outcome;
       if (['accepted', 'unchanged'].includes(result.outcome)) refreshed();
     } catch (caught) {

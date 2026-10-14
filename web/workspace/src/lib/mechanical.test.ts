@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { render } from 'svelte/server';
 import FindingCard from '../views/FindingCard.svelte';
 import { reviews, type Finding } from './reviews';
-import { clearDraft, saveDraft } from './drafts';
+import { findingDrafts } from './drafts';
 import { Preview } from './preview';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -29,12 +29,11 @@ const finding: Finding = {
 };
 
 it('renders mechanical authority, exact evidence and retained stale USER response draft', () => {
-  saveDraft('p', 'review:s:finding-mechanical', {
-    base: 3,
-    text: 'Unsaved user explanation <script>',
-    reason: 'rebut',
-    retained: 'doc-old:1',
-    block: null,
+  findingDrafts.save('p:s:finding-mechanical', {
+    expected: 3,
+    explanation: 'Unsaved user explanation <script>',
+    action: 'rebut',
+    references: 'doc-old:1',
   });
   const html = render(FindingCard, {
     props: {
@@ -55,7 +54,7 @@ it('renders mechanical authority, exact evidence and retained stale USER respons
   expect(html).toContain('Use current finding revision');
   expect(html).toContain('Unsaved user explanation &lt;script>');
   expect(html).not.toContain('<script>');
-  clearDraft('p', 'review:s:finding-mechanical');
+  findingDrafts.clear('p:s:finding-mechanical');
 });
 
 it('isolates mechanical preview selection and invalidation across a refreshed head/scope', async () => {

@@ -2,6 +2,7 @@
 /** Scoped USER text drafts and exact uncertain requests; no plan execution authority. */
 import type { BodyChange, PlanReceipt } from './api-types';
 import { ApiError, post } from './http';
+import { DraftStore } from './mutation';
 import {
   planObservation,
   validPlanBody,
@@ -217,8 +218,6 @@ export interface PlanDraft extends RetainedText {
   retained: RetainedText | null;
   unresolved: PlanChange | null;
 }
-const memory = new Map<string, { draft: PlanDraft; warning: boolean }>();
-const storageKey = (scope: PlanScope, plan: string) => `plan-text-draft:${scopeKey(scope, plan)}`;
 function validDraft(value: unknown, scope: PlanScope, plan: string): value is PlanDraft {
   try {
     if (
@@ -299,58 +298,24 @@ function validDraft(value: unknown, scope: PlanScope, plan: string): value is Pl
     return false;
   }
 }
+const planDrafts = (scope: PlanScope, plan: string) =>
+  new DraftStore<PlanDraft>(
+    'plan',
+    (value): value is PlanDraft => validDraft(value, scope, plan),
+    MAX_DRAFT_BYTES,
+  );
 export function storePlanDraft(scope: PlanScope, plan: string, draft: PlanDraft): boolean {
-  if (!validDraft(draft, scope, plan)) return false;
-  const key = storageKey(scope, plan),
-    value = copy(draft);
-  memory.set(key, { draft: value, warning: true });
-  try {
-    const encoded = JSON.stringify({ format: 1, scope, plan, draft: value });
-    if (new TextEncoder().encode(encoded).length > MAX_DRAFT_BYTES) return false;
-    sessionStorage.setItem(key, encoded);
-    memory.set(key, { draft: value, warning: false });
-    return true;
-  } catch {
-    return false;
-  }
+  return planDrafts(scope, plan).save(scopeKey(scope, plan), draft);
 }
 export function loadPlanDraft(
   scope: PlanScope,
   plan: string,
 ): { draft: PlanDraft | null; warning: boolean; blocked: boolean } {
-  const key = storageKey(scope, plan),
-    found = memory.get(key);
-  if (found) return { draft: copy(found.draft), warning: found.warning, blocked: false };
-  try {
-    const raw = sessionStorage.getItem(key);
-    if (raw === null) return { draft: null, warning: false, blocked: false };
-    if (raw.length > MAX_DRAFT_BYTES || new TextEncoder().encode(raw).length > MAX_DRAFT_BYTES)
-      return { draft: null, warning: true, blocked: true };
-    const value: unknown = JSON.parse(raw);
-    if (
-      !object(value) ||
-      value.format !== 1 ||
-      value.plan !== plan ||
-      !object(value.scope) ||
-      value.scope.projectId !== scope.projectId ||
-      value.scope.sessionId !== scope.sessionId ||
-      !validDraft(value.draft, scope, plan)
-    )
-      return { draft: null, warning: true, blocked: true };
-    memory.set(key, { draft: copy(value.draft), warning: false });
-    return { draft: copy(value.draft), warning: false, blocked: false };
-  } catch {
-    return { draft: null, warning: true, blocked: true };
-  }
+  const loaded = planDrafts(scope, plan).load(scopeKey(scope, plan));
+  return { draft: loaded.draft, warning: !loaded.stored, blocked: loaded.damaged };
 }
 function clearDraft(scope: PlanScope, plan: string): boolean {
-  memory.delete(storageKey(scope, plan));
-  try {
-    sessionStorage.removeItem(storageKey(scope, plan));
-    return true;
-  } catch {
-    return false;
-  }
+  return planDrafts(scope, plan).clear(scopeKey(scope, plan));
 }
 export interface EditorView {
   draft: PlanDraft;

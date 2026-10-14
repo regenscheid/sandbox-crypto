@@ -2,8 +2,8 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import { api, type CommentBodySource } from '../lib/api';
-  import { documentRequest, documentAnswered } from '../lib/documentRequests';
-  import { loadDraft, saveDraft, clearDraft } from '../lib/drafts';
+  import { bodyCorrectionDrafts } from '../lib/drafts';
+  import { guardedWrite } from '../lib/mutation';
   import ErrorMessage from './ErrorMessage.svelte';
   let {
     projectId,
@@ -21,38 +21,26 @@
     changed: () => Promise<void>;
   } = $props();
   const initial = untrack(() => source);
-  const key = untrack(() => `${documentId}:comment-body:${initial.entry_id}`);
-  const draft = untrack(() => loadDraft(projectId, key));
-  function retained(value?: string | null): { base: number; sha256: string } {
-    try {
-      const parsed = JSON.parse(value ?? 'null');
-      if (
-        parsed &&
-        Number.isInteger(parsed.base) &&
-        parsed.base >= 0 &&
-        /^[0-9a-f]{64}$/.test(parsed.sha256)
-      )
-        return parsed;
-    } catch {
-      /* A damaged optional draft does not grant a revision. */
-    }
-    return { base: initial.revision!, sha256: initial.sha256! };
-  }
-  let body = $state(draft?.text ?? initial.body ?? '');
-  let threadBase = $state(draft?.base ?? untrack(() => expected));
-  let bodyBase = $state(retained(draft?.retained));
+  const key = untrack(() => `${projectId}:${documentId}:${initial.entry_id}`);
+  const draft = bodyCorrectionDrafts.load(key).draft;
+  let body = $state(draft?.body ?? initial.body ?? '');
+  let threadBase = $state(draft?.expected ?? untrack(() => expected));
+  let bodyBase = $state(
+    draft
+      ? { base: draft.base, sha256: draft.sha256 }
+      : { base: initial.revision!, sha256: initial.sha256! },
+  );
   let editing = $state(Boolean(draft)),
     busy = $state(false),
     persisted = $state(true);
   let error = $state<unknown>(null);
   $effect(() => {
     if (editing)
-      persisted = saveDraft(projectId, key, {
-        text: body,
-        base: threadBase,
-        reason: 'edit_body',
-        retained: JSON.stringify(bodyBase),
-        block: null,
+      persisted = bodyCorrectionDrafts.save(key, {
+        expected: threadBase,
+        body,
+        base: bodyBase.base,
+        sha256: bodyBase.sha256,
       });
   });
   async function save() {
@@ -68,10 +56,10 @@
         sha256: bodyBase.sha256,
         body,
       };
-      const request = await documentRequest(projectId, documentId, change);
-      await api.changeComment(projectId, documentId, { ...change, operation_id: request.id });
-      documentAnswered(request);
-      clearDraft(projectId, key);
+      await guardedWrite('comment', `${projectId}:${documentId}`, change, (sent) =>
+        api.changeComment(projectId, documentId, sent),
+      );
+      bodyCorrectionDrafts.clear(key);
       editing = false;
       await changed();
     } catch (caught) {
@@ -124,7 +112,7 @@
       <button onclick={save}>Save body correction</button><button
         onclick={() => {
           editing = false;
-          clearDraft(projectId, key);
+          bodyCorrectionDrafts.clear(key);
         }}>Discard body draft</button
       >
     </fieldset>

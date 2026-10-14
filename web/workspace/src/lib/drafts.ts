@@ -1,56 +1,127 @@
 // SPDX-License-Identifier: MIT
-/** Drafts survive view changes in memory and reloads in this browser tab. */
-export interface Draft {
+/**
+ * The editors' drafts, one typed store per kind (mutation.ts). Each draft keeps the
+ * revision it was based on, so a save can be checked against the current revision.
+ */
+import { DraftStore } from './mutation';
+
+type Check = (value: unknown) => boolean;
+const text: Check = (value) => typeof value === 'string';
+const revision: Check = (value) => Number.isSafeInteger(value) && (value as number) >= 0;
+const nullableText: Check = (value) => value === null || typeof value === 'string';
+const oneOf =
+  (...values: string[]): Check =>
+  (value) =>
+    typeof value === 'string' && values.includes(value);
+
+function shape<T>(fields: Record<keyof T & string, Check>) {
+  return (value: unknown): value is T => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+    const found = value as Record<string, unknown>;
+    const keys = Object.keys(fields);
+    return (
+      Object.keys(found).length === keys.length &&
+      keys.every((key) => fields[key as keyof T & string](found[key]))
+    );
+  };
+}
+
+/** A document edit: the whole source (`block` null) or one block's Markdown. */
+export interface DocumentDraft {
   base: number;
   text: string;
   reason: string;
   block: string | null;
+  /** The user's earlier text, kept visible while a conflict is resolved. */
   retained: string;
 }
-const memory = new Map<string, Draft>();
-const key = (project: string, document: string) => `document-draft:${project}:${document}`;
+export const documentDrafts = new DraftStore<DocumentDraft>(
+  'document',
+  shape<DocumentDraft>({
+    base: revision,
+    text,
+    reason: text,
+    block: nullableText,
+    retained: text,
+  }),
+  3 * 1024 * 1024,
+);
 
-export function loadDraft(project: string, document: string): Draft | null {
-  const id = key(project, document);
-  const found = memory.get(id);
-  if (found) return found;
-  try {
-    const raw = sessionStorage.getItem(id);
-    if (!raw || raw.length > 3 * 1024 * 1024) return null;
-    const value: unknown = JSON.parse(raw);
-    if (!value || typeof value !== 'object') return null;
-    const draft = value as Draft;
-    if (
-      !Number.isSafeInteger(draft.base) ||
-      draft.base < 1 ||
-      typeof draft.text !== 'string' ||
-      typeof draft.reason !== 'string' ||
-      typeof draft.retained !== 'string' ||
-      !(draft.block === null || typeof draft.block === 'string')
-    )
-      return null;
-    memory.set(id, draft);
-    return draft;
-  } catch {
-    return null;
-  }
+/** A new comment and its anchor. */
+export interface CommentDraft {
+  base: number;
+  block: string;
+  body: string;
+  kind: string;
+  math: string;
+  quote: string;
+  session: string;
 }
-export function saveDraft(project: string, document: string, draft: Draft): boolean {
-  const id = key(project, document);
-  memory.set(id, { ...draft });
-  try {
-    sessionStorage.setItem(id, JSON.stringify(draft));
-    return true;
-  } catch {
-    return false;
-  }
+export const commentDrafts = new DraftStore<CommentDraft>(
+  'comment',
+  shape<CommentDraft>({
+    base: revision,
+    block: text,
+    body: text,
+    kind: text,
+    math: text,
+    quote: text,
+    session: text,
+  }),
+);
+
+/** A reply to a comment thread, or an edit of its latest entry. */
+export interface ReplyDraft {
+  expected: number;
+  body: string;
+  mode: 'reply' | 'edit';
+  session: string;
 }
-export function clearDraft(project: string, document: string): void {
-  const id = key(project, document);
-  memory.delete(id);
-  try {
-    sessionStorage.removeItem(id);
-  } catch {
-    /* Memory draft is already cleared. */
-  }
+export const replyDrafts = new DraftStore<ReplyDraft>(
+  'reply',
+  shape<ReplyDraft>({
+    expected: revision,
+    body: text,
+    mode: oneOf('reply', 'edit'),
+    session: text,
+  }),
+);
+
+/** A correction of a comment's original body, against its thread and body revisions. */
+export interface BodyCorrectionDraft {
+  expected: number;
+  body: string;
+  base: number;
+  sha256: string;
 }
+export const bodyCorrectionDrafts = new DraftStore<BodyCorrectionDraft>(
+  'comment-body',
+  shape<BodyCorrectionDraft>({
+    expected: revision,
+    body: text,
+    base: revision,
+    sha256: (value) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value),
+  }),
+);
+
+/** A user's response to a review finding. */
+export interface FindingDraft {
+  expected: number;
+  explanation: string;
+  action: string;
+  references: string;
+}
+export const findingDrafts = new DraftStore<FindingDraft>(
+  'finding',
+  shape<FindingDraft>({ expected: revision, explanation: text, action: text, references: text }),
+);
+
+/** The project's macro setting, as JSON text. */
+export interface MacroDraft {
+  expected: number;
+  text: string;
+}
+export const macroDrafts = new DraftStore<MacroDraft>(
+  'macros',
+  shape<MacroDraft>({ expected: revision, text }),
+);
