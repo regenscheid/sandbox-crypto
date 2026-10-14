@@ -98,9 +98,9 @@ from . import capture
 from .artifacts import Blobs, BlobWriter
 from .backends import Backend
 from .channel import ExecutorChannel, Message
+from .connections import Activity, Connection, ConnectionHooks, EnvironmentConnections
 from .errors import ExecutorRefusalError, WorkerError
 from .identity import execution_digest, same_execution
-from .isolation import probe
 from .kernel_revisions import KernelBirth
 from .output_observations import normalize as normalize_observation
 from .package_gate import PackageGate
@@ -139,7 +139,6 @@ MAX_TRACEBACK_LINES = 100
 MAX_TRACEBACK_LINE = 8 * 1024
 MAX_WRITTEN = 1000
 MAX_LIST = 5000
-MAX_HOSTNAME = 255
 MAX_REVISIONS = 64
 """``revision`` events one execution may report; later ones are dropped."""
 MAX_EXECUTION_LOCKFILES = 4
@@ -147,11 +146,6 @@ MAX_EXECUTION_LOCKFILES = 4
 attempt whose package commands made a change. A revision left without one gets the
 current lockfile asked for instead, while it is current."""
 _EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
-
-
-class _DaemonIncarnationError(WorkerError):
-    def __init__(self) -> None:
-        super().__init__(ErrorKind.UNAVAILABLE, "the sandbox executor incarnation was lost")
 
 
 def _time_limit(request: ExecutionRequest) -> float:
@@ -228,20 +222,6 @@ class _Live:
 
 
 @dataclass
-class _Environment:
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    channel: ExecutorChannel | None = None
-    location: Location | None = None
-    languages: tuple[str, ...] = ()
-    features: tuple[str, ...] = ()
-    running: set[str] = field(default_factory=set[str])
-    last_used: float = field(kw_only=True)
-    """Last ordinary use, by the manager's clock; passive observers never refresh it."""
-    requests: int = 0
-    """Ordinary requests in flight: files, publication and explicit kernel operations."""
-
-
-@dataclass
 class _KernelObserver:
     scope: tuple[str, str, str]
     valid: bool = True
@@ -255,23 +235,6 @@ MAX_KERNEL_OBSERVATIONS = 8
 _Observation = TypeVar("_Observation")
 
 Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
-
-
-@dataclass(frozen=True)
-class Activity:
-    """What an environment is doing, as the worker sees it, for idle suspension (W3)."""
-
-    last_used: float | None
-    """When the worker last asked anything of it (monotonic clock); None if never since it
-    started."""
-    running: int
-    cpu_seconds: float | None
-    """CPU time used below its executor so far; None without an executor, when no research
-    code runs there."""
-    kernels: int
-    executor: str | None = None
-    """The executor's incarnation, so that CPU samples of different executors are not
-    compared."""
 
 
 @dataclass(frozen=True)
@@ -343,17 +306,33 @@ class ExecutionManager:
         self._capture_counts: dict[str, int] = {}
         self._blob_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="artifact-blob")
         self._closing_task: asyncio.Task[None] | None = None
-        # The isolation probe's sentinel goes here, among the worker's own files.
         self.state_dir = state_dir
         self._live: dict[str, _Live] = {}
         self._held_notices: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
         """Notices from syncing shared files for file requests, by environment and session,
         for the session's next result there (D79)."""
-        self._environments: dict[str, _Environment] = {}
-        self._channels: set[ExecutorChannel] = set()
         self._tasks: set[asyncio.Task[Any]] = set()
         self._usability = Usability(store)
         """What stands in the way of using each environment, and the worker's shutdown."""
+        self._connections = EnvironmentConnections(
+            backend,
+            store,
+            self._usability,
+            ConnectionHooks(
+                # Looked up when a message arrives, as tests wrap them.
+                on_event=lambda environment_id, message: self._on_event(environment_id, message),
+                on_closed=lambda environment_id, channel: self._on_closed(environment_id, channel),
+                daemon_identity=self._daemon_binding,
+                incarnation_lost=self._incarnation_lost,
+                recycle=lambda environment_id: self._spawn(self._recycle_daemon(environment_id)),
+                sync_package_gate=self._sync_package_gate,
+                hello=self._hello,
+                connected=self._reconcile_captures,
+            ),
+            clock=clock,
+            pool_id=pool_id,
+            state_dir=state_dir,
+        )
         self._streams_ended = False
         self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}
         self.job_resources: Callable[[str], Resources] | None = None
@@ -616,7 +595,7 @@ class ExecutionManager:
                 continue
             live.channel = channel
             live.dispatched = True
-            environment = self._environments.get(environment_id)
+            environment = self._connections.get(environment_id)
             if environment is not None:
                 environment.running.add(live.execution.execution_id)
             if live.cancel_requested:
@@ -754,64 +733,13 @@ class ExecutionManager:
             raise asyncio.CancelledError
         jobs = self._running_jobs(environment_id)
         await self._cancel_jobs(jobs)
-        environment = self._environments.get(environment_id)
-        if environment is None:
-            return
-        async with environment.lock:
-            await self._drop(environment_id, environment)
-
-    async def _drop(self, environment_id: str, environment: _Environment) -> None:
-        """Forget an environment's record, then close its executor. Hold its lock.
-
-        The record goes first, so that a request arriving meanwhile starts with a
-        new one instead of opening an executor nobody tracks.
-        """
-        if self._environments.get(environment_id) is environment:
-            self._environments.pop(environment_id)
-        channel = environment.channel
-        if channel is not None:
-            self._channels.discard(channel)
-            await channel.shutdown()
-            if not self._usability.recycle_pending(environment_id):
-                self.store.forget_endpoint(environment_id)
+        await self._connections.release(environment_id)
 
     async def activity(self, environment_id: str) -> Activity | None:
         """What an environment is doing now; None when its executor cannot say."""
-        environment = self._environments.get(environment_id)
-        if environment is None:
-            return Activity(
-                last_used=None,
-                running=len(self._running_jobs(environment_id)),
-                cpu_seconds=None,
-                kernels=0,
-            )
-        busy = len(environment.running) + environment.requests
-        busy += sum(
-            1
-            for job in self._running_jobs(environment_id)
-            if job.execution_id not in environment.running
+        return await self._connections.activity(
+            environment_id, [job.execution_id for job in self._running_jobs(environment_id)]
         )
-        channel = environment.channel
-        if channel is None or channel.closed:
-            return Activity(environment.last_used, busy, None, 0)
-        try:
-            reply = await channel.request("usage", reply_timeout=10)
-        except WorkerError:
-            return None
-        raw, kernels = reply.get("cpu_seconds"), reply.get("kernels")
-        if (
-            isinstance(raw, bool)
-            or not isinstance(raw, int | float)
-            or not isinstance(kernels, int)
-        ):
-            return None
-        try:
-            cpu = float(raw)  # an executor research code took over may send 10**400
-        except OverflowError:
-            return None
-        if not math.isfinite(cpu) or cpu < 0:
-            return None
-        return Activity(environment.last_used, busy, cpu, kernels, channel.incarnation)
 
     async def release_if_idle(self, environment_id: str, idle_since: float) -> bool:
         """Stop an environment's executor if nothing ran in it or used it since ``idle_since``.
@@ -822,14 +750,7 @@ class ExecutionManager:
             owner.lease.environment_id == environment_id for owner in self._capture_owners.values()
         ):
             return False
-        environment = self._environments.get(environment_id)
-        if environment is None:
-            return True
-        async with environment.lock:
-            if environment.running or environment.requests or environment.last_used > idle_since:
-                return False
-            await self._drop(environment_id, environment)
-        return True
+        return await self._connections.release_if_idle(environment_id, idle_since)
 
     async def close(self) -> None:
         """Detach daemon bridges; stop stdio executors and report their attempts lost."""
@@ -854,7 +775,7 @@ class ExecutionManager:
         await asyncio.gather(
             *(
                 channel.detach() if channel.daemon_token else channel.close()
-                for channel in self._channels
+                for channel in self._connections.channels
             )
         )
         for live in list(self._live.values()):
@@ -971,7 +892,7 @@ class ExecutionManager:
         )
         live.execution = final
         self._changed(live)
-        environment = self._environments.get(live.environment_id)
+        environment = self._connections.get(live.environment_id)
         if environment is not None:
             environment.running.discard(execution_id)
             environment.last_used = self.clock.monotonic()
@@ -1037,46 +958,12 @@ class ExecutionManager:
 
     # Environments.
 
-    async def _environment(self, environment_id: str) -> _Environment:
-        while True:
-            fence = self._usability.fence(environment_id)
-            if fence is not None:
-                await asyncio.shield(fence)
-                continue
-            environment = self._environments.setdefault(
-                environment_id, _Environment(last_used=self.clock.monotonic())
-            )
-            if self._usability.recycle_pending(environment_id):
-                async with environment.lock:
-                    if not self._usability.recycle_pending(environment_id):
-                        continue
-                    fence = self._start_daemon_fence(environment_id)
-                await asyncio.shield(fence)
-                continue
-            # Marked used before anything waits, so that suspension leaves it alone.
-            environment.last_used = self.clock.monotonic()
-            if environment.channel is None or environment.channel.closed:
-                # Outside the lock: preparing may start a stopped sandbox under the
-                # environments' own lock, which suspension holds while it takes this one.
-                await self.backend.prepare(environment_id)
-            try:
-                async with environment.lock:
-                    if (
-                        self._environments.get(environment_id) is not environment
-                        or self._usability.fence(environment_id) is not None
-                    ):
-                        continue  # released or fenced while this request waited
-                    await self._open(environment_id, environment)
-            except _DaemonIncarnationError:
-                fence = self._start_daemon_fence(environment_id)
-                await asyncio.shield(fence)
-                continue
-            return environment
+    async def _environment(self, environment_id: str) -> Connection:
+        """The environment's connection, with its executor open."""
+        return await self._connections.connect(environment_id)
 
-    def _start_daemon_fence(self, environment_id: str) -> asyncio.Task[None]:
-        return self._usability.start_fence(
-            environment_id, lambda: self._spawn(self._recycle_daemon(environment_id))
-        )
+    def _daemon_binding(self, environment_id: str) -> tuple[str, str] | None:
+        return self.daemon_identity(environment_id) if self.daemon_identity else None
 
     async def _recycle_daemon(self, environment_id: str) -> None:
         """Fence the whole VM, outside the execution lock, before publishing a replacement.
@@ -1106,85 +993,29 @@ class ExecutionManager:
             self._capture_counts = self._capture_usage()
         self._usability.sandbox_stopped(environment_id)
 
-    async def _open(self, environment_id: str, environment: _Environment) -> None:
-        """Start the environment's executor unless one runs. Hold its lock."""
-        if environment.channel is None or environment.channel.closed:
-            identity = self.daemon_identity(environment_id) if self.daemon_identity else None
-            channel = await self.backend.open(
-                environment_id,
-                partial(self._on_event, environment_id),
-                partial(self._on_closed, environment_id),
-            )
-            self._channels.add(channel)
+    def _incarnation_lost(self, environment_id: str, previous: str) -> None:
+        """End the executions sent to the daemon of incarnation ``previous``, now gone."""
+        for live in list(self._live.values()):
+            saved = self.store.recovery(live.execution.execution_id)
             if (
-                self.daemon_identity is not None
-                and self.daemon_identity(environment_id) != identity
+                live.environment_id == environment_id
+                and live.dispatched
+                and saved is not None
+                and saved[1] == previous
+                and live.execution.state not in TERMINAL_STATES
             ):
-                await channel.shutdown()
-                raise WorkerError(ErrorKind.UNAVAILABLE, "environment binding changed during open")
-            previous = self.store.endpoint_incarnation(environment_id)
-            previous_binding = self.store.endpoint_binding(environment_id)
-            if (
-                self.backend.name == "openshell"
-                and channel.daemon_token is not None
-                and previous is not None
-                and (
-                    channel.incarnation != previous
-                    or (previous_binding is not None and previous_binding != identity)
-                )
-            ):
-                self._usability.require_recycle(environment_id, previous)
-                await channel.shutdown()
-                for live in list(self._live.values()):
-                    saved = self.store.recovery(live.execution.execution_id)
-                    if (
-                        live.environment_id == environment_id
-                        and live.dispatched
-                        and saved is not None
-                        and saved[1] == previous
-                        and live.execution.state not in TERMINAL_STATES
-                    ):
-                        self._lose(live, "the sandbox executor incarnation")
-                raise _DaemonIncarnationError()
-            await self._sync_package_gate(environment_id, channel)
-            try:
-                hostname, languages, features = self._describe(environment_id, channel.hello)
-                self._observe(environment_id, channel.hello.get("environment"), "")
-                self.store.kernel_starts.epoch(
-                    environment_id,
-                    channel.incarnation,
-                    channel.hello.get("package_epoch"),
-                    channel.hello.get("environment"),
-                    remember=True,
-                )
-                declared = self.backend.isolation_tier
-                isolation = await probe(channel, declared, self.state_dir)
-            except Exception:
-                await channel.shutdown()  # never leave an executor running unused
-                raise
-            if isolation.tier < declared:
-                _log.warning(
-                    "environment %s: isolation tier %d declared, %d in effect: %s",
-                    environment_id,
-                    declared,
-                    isolation.tier,
-                    "; ".join(isolation.evidence.findings),
-                )
-            environment.location = Location(
-                pool_id=self.pool_id,
-                backend=self.backend.name,
-                sandbox_id=self.backend.sandbox_id(environment_id),
-                hostname=hostname,
-                isolation_tier=isolation.tier,
-                declared_isolation_tier=declared,
-                isolation_evidence=isolation.evidence,
-            )
-            environment.languages = languages
-            environment.features = features
-            environment.channel = channel
-            if channel.daemon_token is not None:
-                self.store.remember_endpoint(environment_id, channel.incarnation, identity)
-            await self._reconcile_captures(environment_id, channel)
+                self._lose(live, "the sandbox executor incarnation")
+
+    def _hello(self, environment_id: str, channel: ExecutorChannel) -> None:
+        """Note the package state a new executor reports."""
+        self._observe(environment_id, channel.hello.get("environment"), "")
+        self.store.kernel_starts.epoch(
+            environment_id,
+            channel.incarnation,
+            channel.hello.get("package_epoch"),
+            channel.hello.get("environment"),
+            remember=True,
+        )
 
     async def forget_revisions(self, environment_id: str) -> None:
         """Forget a deleted environment's revisions, and delete the lockfiles only they
@@ -1247,7 +1078,7 @@ class ExecutionManager:
         revision 0 has none at first; return whether it was asked. One request at a time
         for each environment, and nothing waits for it. Executions ask (_ask_lockfile),
         each within its budget: revision 0 gets its lockfile as the first one starts."""
-        environment = self._environments.get(environment_id)
+        environment = self._connections.get(environment_id)
         channel = environment.channel if environment is not None else None
         if (
             channel is None
@@ -1288,58 +1119,8 @@ class ExecutionManager:
                 _log.warning("environment %s: cannot store a lockfile: %s", environment_id, exc)
                 return None
 
-    def _describe(
-        self, environment_id: str, hello: Message
-    ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
-        """The host name, kernel languages and features from an executor's ``hello``, checked."""
-        where, languages = hello.get("location"), hello.get("languages", [])
-        if not isinstance(where, dict) or not isinstance(languages, list):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "the executor sent a malformed hello")
-        hostname = cast(dict[str, Any], where).get("hostname")
-        if not isinstance(hostname, str):
-            hostname = ""
-        hostname = "".join(char for char in hostname[:MAX_HOSTNAME] if char.isprintable())
-        if hello.get("not_dumpable") is False:
-            _log.info(
-                "the executor for %s stays dumpable, so research code in that environment can "
-                "reach its file descriptors through /proc (the sandbox refuses sockets to a "
-                "process that is not dumpable)",
-                environment_id,
-            )
-        if hello.get("subreaper") is False:
-            _log.warning(
-                "the executor for %s cannot adopt orphaned processes; a shell call's processes "
-                "that leave its session and clear their environment can outlive it",
-                environment_id,
-            )
-        names = (name for name in cast(list[object], languages) if isinstance(name, str))
-        raw: object = hello.get("features", [])
-        offered = cast(list[object], raw) if isinstance(raw, list) else []
-        features = tuple(dict.fromkeys(f for f in offered if isinstance(f, str) and f in FEATURES))
-        return (
-            hostname or "unknown",
-            tuple(dict.fromkeys(n for n in names if n in LANGUAGES)),
-            features,
-        )
-
-    @contextlib.asynccontextmanager
-    async def _using(self, environment_id: str) -> AsyncGenerator[ExecutorChannel]:
-        """The environment's executor, counted as in use until the block ends."""
-        environment = await self._environment(environment_id)
-        channel = environment.channel
-        if channel is None:
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE, f"environment {environment_id} has no executor"
-            )
-        environment.requests += 1
-        try:
-            yield channel
-        finally:
-            environment.requests -= 1
-            environment.last_used = self.clock.monotonic()
-
     async def _on_closed(self, environment_id: str, channel: ExecutorChannel) -> None:
-        self._channels.discard(channel)
+        self._connections.channels.discard(channel)
         self._gate_acked.pop(channel, None)
         if channel.daemon_token is not None and (self._usability.closing or not channel.detaching):
             poller = self._pollers.get(environment_id)
@@ -1347,9 +1128,7 @@ class ExecutionManager:
                 self._pollers.pop(environment_id, None)
                 if poller[1] is not asyncio.current_task():
                     poller[1].cancel()
-            environment = self._environments.get(environment_id)
-            if environment is not None and environment.channel is channel:
-                environment.channel = None
+            self._connections.closed(environment_id, channel)
             if not self._usability.closing:
                 self._spawn(self._recover(environment_id))
             return
@@ -1358,9 +1137,7 @@ class ExecutionManager:
         for live in list(self._live.values()):
             if live.channel is channel and live.execution.state not in TERMINAL_STATES:
                 self._lose(live, "the worker" if self._usability.closing else "the executor")
-        environment = self._environments.get(environment_id)
-        if environment is not None and environment.channel is channel:
-            environment.channel = None
+        self._connections.closed(environment_id, channel)
 
     # Submission and dispatch.
 
@@ -1488,7 +1265,7 @@ class ExecutionManager:
             )
 
     def _fail(self, live: _Live, error: ErrorInfo) -> None:
-        environment = self._environments.get(live.environment_id)
+        environment = self._connections.get(live.environment_id)
         if environment is not None:
             environment.running.discard(live.execution.execution_id)
             environment.last_used = self.clock.monotonic()
@@ -2026,7 +1803,7 @@ class ExecutionManager:
         self._noticed[key] = max([since, *(at for at, _ in fresh)])
         return tuple(text for _, text in fresh)
 
-    def _located(self, environment_id: str, environment: _Environment) -> Location | None:
+    def _located(self, environment_id: str, environment: Connection) -> Location | None:
         """The environment's location, with its current revision."""
         location, record = environment.location, self.store.revision(environment_id)
         if location is None or record is None:
@@ -2105,8 +1882,8 @@ class ExecutionManager:
         )
         if (
             live.channel is not None
-            and self._environments.get(environment_id) is not None
-            and self._environments[environment_id].channel is live.channel
+            and (connection := self._connections.get(environment_id)) is not None
+            and connection.channel is live.channel
         ):
             self.store.kernel_starts.epoch(
                 environment_id,
@@ -2159,7 +1936,7 @@ class ExecutionManager:
         generation = _integer(raw.get("generation", 1), 1, 2**31 - 1)
         if language not in LANGUAGES or generation is None:
             return None, state_lost
-        environment = self._environments.get(environment_id)
+        environment = self._connections.get(environment_id)
         channel = environment.channel if environment is not None else None
         if expected_channel is not None and channel is not expected_channel:
             return None, state_lost  # old bridge cannot rebind a replacement's kernel
@@ -2279,7 +2056,7 @@ class ExecutionManager:
     async def kernel_status(self, request: KernelStatusRequest) -> KernelListing:
         """Observe only the authenticated context's kernels; admission gates stay unchanged."""
         context = request.context
-        async with self._using(context.environment_id) as channel:
+        async with self._connections.using(context.environment_id) as channel:
             if (
                 type(channel.hello.get("kernel_revision_protocol")) is not int
                 or channel.hello.get("kernel_revision_protocol") != 1
@@ -2325,9 +2102,9 @@ class ExecutionManager:
 
     def _observed_environment(
         self, context: ExecutionContext
-    ) -> tuple[_Environment, ExecutorChannel]:
+    ) -> tuple[Connection, ExecutorChannel]:
         environment_id = context.environment_id
-        environment = self._environments.get(environment_id)
+        environment = self._connections.get(environment_id)
         channel = environment.channel if environment is not None else None
         if (
             not self._usability.usable(context)
@@ -2712,7 +2489,7 @@ class ExecutionManager:
     async def restart_kernel(self, request: KernelRestartRequest) -> KernelInfo:
         context = request.context
         self.package_admission(context.environment_id)
-        async with self._using(context.environment_id) as channel:
+        async with self._connections.using(context.environment_id) as channel:
             if not await self._sync_package_gate(context.environment_id, channel):
                 raise WorkerError(
                     ErrorKind.UNAVAILABLE, "legacy executor cannot fence kernel restart"
@@ -2753,7 +2530,7 @@ class ExecutionManager:
 
     async def _close_session(self, request: SessionCloseRequest) -> SessionClosed:
         context = request.context
-        environment = self._environments.get(context.environment_id)
+        environment = self._connections.get(context.environment_id)
         channel = environment.channel if environment is not None else None
         if environment is None or channel is None or channel.closed:
             return SessionClosed()
@@ -2831,7 +2608,7 @@ class ExecutionManager:
         )
 
     async def read_file(self, request: ReadFileRequest) -> FileContent:
-        async with self._using(request.context.environment_id) as channel:
+        async with self._connections.using(request.context.environment_id) as channel:
             await self._sync_shared(request.context, request.path, channel)
             found = await self._read_range(
                 channel, request, request.offset, request.length, hashed=True
@@ -2849,7 +2626,7 @@ class ExecutionManager:
 
     async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
         context = request.context
-        async with self._using(context.environment_id) as channel:
+        async with self._connections.using(context.environment_id) as channel:
             fields: dict[str, Any] = {
                 "path": request.path,
                 "content_b64": request.content_b64,
@@ -2877,7 +2654,7 @@ class ExecutionManager:
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
         context = request.context
-        async with self._using(context.environment_id) as channel:
+        async with self._connections.using(context.environment_id) as channel:
             await self._sync_shared(context, request.path, channel)
             reply = await channel.request("list", session=context.session_id, path=request.path)
             raw = reply.get("entries")
@@ -3139,7 +2916,7 @@ class ExecutionManager:
             async with asyncio.timeout_at(
                 asyncio.get_running_loop().time() + max(0, deadline - self.clock.monotonic())
             ):
-                async with self._using(context.environment_id) as channel:
+                async with self._connections.using(context.environment_id) as channel:
                     protocol = channel.hello.get("artifact_capture_protocol")
                     if type(protocol) is not int or protocol != capture.PROTOCOL:
                         raise WorkerError(

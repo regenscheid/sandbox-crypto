@@ -38,12 +38,8 @@ from sandbox_science.worker.channel import (
     ExecutorChannel,
     Message,
 )
-from sandbox_science.worker.manager import (
-    ExecutionManager,
-    _Environment,
-    _KernelObserver,
-    _Live,
-)
+from sandbox_science.worker.connections import Connection
+from sandbox_science.worker.manager import ExecutionManager, _KernelObserver, _Live
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
@@ -73,20 +69,20 @@ class ManagerView:
 
     def connected(self) -> set[str]:
         """The environments the manager holds a connection record for."""
-        return set(self.manager._environments)
+        return set(self.manager._connections.records)
 
-    def connection(self, environment_id: str) -> _Environment:
+    def connection(self, environment_id: str) -> Connection:
         """The connection record: its lock, channel, last use and requests in flight."""
-        return self.manager._environments[environment_id]
+        return self.manager._connections.records[environment_id]
 
     def channel(self, environment_id: str = "env1") -> ExecutorChannel:
         """The executor the environment is connected to; there must be one."""
-        channel = self.manager._environments[environment_id].channel
+        channel = self.manager._connections.records[environment_id].channel
         assert channel is not None, f"{environment_id} has no executor"
         return channel
 
     def channel_or_none(self, environment_id: str = "env1") -> ExecutorChannel | None:
-        environment = self.manager._environments.get(environment_id)
+        environment = self.manager._connections.records.get(environment_id)
         return environment.channel if environment is not None else None
 
     def executor_process(self, environment_id: str = "env1") -> asyncio.subprocess.Process:
@@ -95,12 +91,12 @@ class ManagerView:
         assert process is not None, f"{environment_id}'s executor has no process"
         return process
 
-    def put_connection(self, environment_id: str, record: _Environment) -> None:
+    def put_connection(self, environment_id: str, record: Connection) -> None:
         """Install a connection record, as if the environment had connected."""
-        self.manager._environments[environment_id] = record
+        self.manager._connections.records[environment_id] = record
 
     def drop_connection(self, environment_id: str) -> None:
-        self.manager._environments.pop(environment_id)
+        self.manager._connections.records.pop(environment_id)
 
     # Executions in flight.
 

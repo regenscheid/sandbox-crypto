@@ -38,8 +38,8 @@ from sandbox_science.contracts import (
 from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.channel import ExecutorChannel, Message
+from sandbox_science.worker.connections import Activity
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.manager import Activity
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
