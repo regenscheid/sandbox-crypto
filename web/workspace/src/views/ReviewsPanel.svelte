@@ -1,23 +1,26 @@
 <!-- SPDX-License-Identifier: MIT -->
+<!--
+  A session's consistency reviews, math checks and findings (docs/CONSISTENCY-REVIEW.md),
+  in four parts that share one reading (reviewBrowser.ts). Each part shows its own
+  failures beside its controls.
+-->
 <script lang="ts">
-  import { emptyReviewPanel, panelBusy, panelError, ReviewBrowser } from '../lib/reviewBrowser';
-  import FindingCard from './FindingCard.svelte';
+  import { emptyReviewPanel, panelBusy, ReviewBrowser } from '../lib/reviewBrowser';
   import ErrorMessage from './ErrorMessage.svelte';
+  import FindingList from './FindingList.svelte';
+  import MathChecks from './MathChecks.svelte';
   import PinnedEvidencePreview from './PinnedEvidencePreview.svelte';
+  import ReviewDetail from './ReviewDetail.svelte';
+  import ReviewList from './ReviewList.svelte';
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
   const panel = $state(emptyReviewPanel());
   const browser = new ReviewBrowser(panel, () => ({ project: projectId, session: sessionId }));
   const busy = $derived(panelBusy(panel));
-  const error = $derived(panelError(panel));
-  const selected = $derived(panel.selected);
-  const refresh = () => browser.refresh();
-  // The Refresh button clears every failure shown, as the panel did before; the effect
-  // below only reads the lists again.
+  // The Refresh button clears every failure shown; the effect below only reads the lists.
   function refreshAll() {
     browser.clearErrors();
     void browser.refresh();
   }
-  const read = (review: string, evidence: string) => browser.read(review, evidence);
   $effect(() => {
     void browser.refresh();
   });
@@ -34,143 +37,30 @@
     onclick={() => browser.request()}>Request review at next live safe point</button
   >
   {#if panel.notice}<p role="status">{panel.notice}</p>{/if}
-  {#if panel.unreviewed.length}<details open>
-      <summary>Windows left unreviewed after bounded retries</summary>
-      <pre>{JSON.stringify(panel.unreviewed, null, 2)}</pre>
-    </details>{/if}
-  {#if !panel.reviews.items.length}<p>No consistency reviews recorded.</p>{/if}
-  <ul>
-    {#each panel.reviews.items as review (review.review_id)}<li>
-        <button onclick={() => browser.select(review)}
-          >{review.kind} · {review.state} · {new Date(
-            review.created * 1000,
-          ).toLocaleString()}</button
-        >
-        {review.summary}
-      </li>{/each}
-  </ul>
-  {#if panel.reviews.next}<button disabled={busy} onclick={() => browser.reviews.more()}
-      >Load more reviews</button
-    >{/if}
-  {#if selected}
-    <h3>{selected.kind} review · {selected.state}</h3>
-    <p class="prose">{selected.summary}</p>
-    <p>
-      Alias {selected.alias ?? 'unavailable'} · model {selected.resolved_model ?? 'unavailable'} · {selected.calls}
-      model calls · {selected.input_tokens} input / {selected.output_tokens} output tokens · {selected.estimated_tokens}
-      reserved estimate.
-    </p>
-    <p>
-      {#if selected.kind === 'confirmation'}Pinned finding and fix scope · no author feed consumed{:else}Feed
-        {selected.start_seq}–{selected.end_seq}{/if} · coverage {selected.coverage_complete
-        ? 'complete within available evidence'
-        : 'incomplete'} · cap {selected.cap_reached ? 'reached' : 'not reached'} · rubric {selected.rubric}.
-    </p>
-    <details>
-      <summary>Classifier and configuration identity</summary>
-      <pre>{JSON.stringify(
-          { classifier: selected.classifier, config_revision: selected.config_revision },
-          null,
-          2,
-        )}</pre>
-    </details>
-    <ul>
-      {#each panel.evidence.items as item (item.evidence)}<li>
-          <button onclick={() => read(selected!.review_id, item.evidence)}
-            >{item.kind} · {item.complete ? 'available' : 'incomplete'}</button
-          ><code>{JSON.stringify(item.locator)}</code>
-        </li>{/each}
-    </ul>
-    {#if panel.evidence.next !== null}<button
-        disabled={busy}
-        onclick={() => browser.evidence.more()}>Load more snapshot evidence</button
-      >{/if}
-    <button disabled={busy || panel.records.next === null} onclick={() => browser.records.more()}
-      >Load review audit records</button
-    >
-    {#each panel.records.items as record, index (index)}<details>
-        <summary>Audit record {index + 1}</summary>
-        <pre>{JSON.stringify(record, null, 2)}</pre>
-      </details>{/each}
-  {/if}
+  {#if panel.requestError}<ErrorMessage error={panel.requestError} />{/if}
+  <ReviewList {panel} {browser} {busy} />
+  {#if panel.reviews.error}<ErrorMessage error={panel.reviews.error} />{/if}
+  {#if panel.selected}<ReviewDetail {panel} {browser} review={panel.selected} {busy} />{/if}
+  <!-- Evidence text read from a review or a finding's anchors. -->
   {#if panel.text.items.length}<PinnedEvidencePreview
       text={panel.text.items.join('')}
     />{#if panel.text.next !== null}<button onclick={() => browser.text.more()}
         >Read next evidence slice</button
       >{/if}{/if}
-  <h3>Mechanical math checks</h3>
-  <p class="muted">
-    Mechanical checks use the operator-configured renderer. Unavailable, queued and quota-held work
-    cannot establish a fix. Checks with no eligible author remain visible here.
-  </p>
-  {#if panel.queue.length}<details open>
-      <summary>Pending or held source revisions</summary>
-      <pre>{JSON.stringify(panel.queue, null, 2)}</pre>
-      {#if panel.queueMore}<p>Additional sources remain queued or held.</p>{/if}
-    </details>{/if}
-  {#if !panel.checks.items.length}<p>No mechanical math checks recorded.</p>{/if}
-  <ul>
-    {#each panel.checks.items as check (check.check_id)}<li>
-        <button onclick={() => browser.readMath(check.check_id)}
-          >{check.kind === 'comment'
-            ? 'Comment body'
-            : check.kind === 'response'
-              ? 'Finding explanation'
-              : 'Math'} revision {check.revision} · {check.state} · {check.rejected} rejected · {check.unavailable}
-          unavailable</button
-        >{#if check.macro_context_status}<p class="muted">
-            Project macro revision {check.project_macro_revision} · context {check.macro_context_status}.
-          </p>{/if}{#if check.document}<code>{check.document}</code>{/if}{#if check.comment}<p
-            class="muted"
-          >
-            Original entry <code>{check.comment.entry_id}</code>; document macro revision {check
-              .comment.macro_revision}.
-          </p>{/if}{#if check.response}<p class="muted">
-            Finding <code>{check.response.finding}</code>; original response {check.response
-              .response_revision}; pinned source macro context.
-          </p>{/if}
-      </li>{/each}
-  </ul>
-  {#if panel.checks.next}<button onclick={() => browser.checks.more()}>Load more math checks</button
-    >{/if}
-  {#if panel.math.items.length}<h4>Mechanical evidence and author provenance</h4>
-    <pre aria-label="Document math check">{panel.math.items.join('\n')}</pre>
-    {#if panel.math.next !== null}<button onclick={() => browser.math.more()}
-        >Read next math evidence page</button
-      >{/if}{/if}
-  <h3>Findings</h3>
-  {#if !panel.findings.items.length}<p>No consistency findings recorded.</p>{/if}
-  {#each panel.findings.items as finding (finding.finding_id)}<FindingCard
-      {projectId}
-      {sessionId}
-      {finding}
-      changed={refresh}
-      {read}
-    />{/each}
-  {#if panel.findings.next}<button disabled={busy} onclick={() => browser.findings.more()}
-      >Load more findings</button
-    >{/if}
-  {#if error}<ErrorMessage {error} />{/if}
+  {#if panel.text.error}<ErrorMessage error={panel.text.error} />{/if}
+  <MathChecks {panel} {browser} />
+  <FindingList {projectId} {sessionId} {panel} {browser} {busy} />
 </section>
 
 <style>
-  pre,
-  .prose {
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-  pre {
-    max-height: 22rem;
-    overflow: auto;
-  }
-  code {
-    overflow-wrap: anywhere;
-  }
-  button {
-    margin: 0.25rem;
-  }
   section {
     border-top: 1px solid var(--border, #9996);
     margin-top: 1rem;
+  }
+  section :global(button) {
+    margin: 0.25rem;
+  }
+  section :global(code) {
+    overflow-wrap: anywhere;
   }
 </style>

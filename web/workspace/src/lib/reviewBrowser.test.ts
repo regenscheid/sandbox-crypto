@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { describe, expect, it } from 'vitest';
-import { emptyReviewPanel, panelBusy, panelError, ReviewBrowser } from './reviewBrowser';
+import { emptyReviewPanel, panelBusy, ReviewBrowser } from './reviewBrowser';
 import type { reviews, Review } from './reviews';
 
 type Api = typeof reviews;
@@ -152,7 +152,7 @@ describe('the reviews panel', () => {
     ]);
   });
 
-  it('shows the first failure, and the outcome of a review request', async () => {
+  it("keeps each list's failure on that list, and the outcome of a review request", async () => {
     const { panel, calls, answer, browse } = browser();
     const done = browse.refresh();
     const failure = new Error('offline');
@@ -160,7 +160,8 @@ describe('the reviews panel', () => {
     answer('list', { reviews: [], next_after: null, unreviewed: [] });
     answer('math', { checks: [], next_after: null, queue: [] });
     await done;
-    expect(panelError(panel)).toBe(failure);
+    expect(panel.findings.error).toBe(failure);
+    expect([panel.reviews.error, panel.checks.error]).toEqual([null, null]);
     const asked = browse.request();
     answer('request', { queued: true, detail: 'Queued for the next safe point.' });
     await asked;
@@ -237,8 +238,8 @@ describe('a newly chosen review or text never shows, or extends, the last one', 
     const asked = browse.request();
     fail('request', new Error('request failed'));
     await asked;
-    expect(panelError(panel)).not.toBeNull();
+    expect([panel.text.error, panel.requestError]).not.toContain(null);
     browse.clearErrors();
-    expect(panelError(panel)).toBeNull();
+    expect([panel.text.error, panel.requestError]).toEqual([null, null]);
   });
 });

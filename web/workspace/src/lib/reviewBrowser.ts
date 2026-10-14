@@ -65,13 +65,6 @@ export function panelBusy(panel: ReviewPanel): boolean {
   );
 }
 
-/** The panel's first failure to show. */
-export function panelError(panel: ReviewPanel): unknown {
-  const lists = [panel.reviews, panel.findings, panel.checks, panel.evidence, panel.records];
-  const failed = [...lists, panel.text, panel.math].find((list) => list.error !== null);
-  return failed?.error ?? panel.requestError;
-}
-
 export class ReviewBrowser {
   readonly reviews: PagedList<Review, string>;
   readonly findings: PagedList<Finding, string>;
