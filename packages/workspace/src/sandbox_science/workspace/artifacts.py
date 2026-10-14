@@ -59,6 +59,8 @@ class ViewerLink(Contract):
 
     url: str
     expires_at: datetime
+    path: str
+    """Where the PDF was published from, which an anchor into it names."""
 
 
 def add_routes(app: web.Application) -> None:
@@ -134,7 +136,8 @@ async def viewer(request: web.Request) -> web.Response:
         # The fragment never reaches a server. The workspace's origin is the only window
         # the viewer posts anchors to (docs/specs/pdf-viewer.md, PV-6).
         fragment = urlencode({"c": capability, "w": preview.workspace_origin})
-        answer = ViewerLink(url=f"{preview.origin}/viewer/#{fragment}", expires_at=expires)
+        url = f"{preview.origin}/viewer/#{fragment}"
+        answer = ViewerLink(url=url, expires_at=expires, path=found.path)
         return api.dumps(answer.model_dump(mode="json"))
 
     return json_answer(await asyncio.to_thread(mint))

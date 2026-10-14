@@ -8,7 +8,9 @@
  * - `#/projects/<project>/documents/<document>` a living document's current revision,
  *   `…/revisions/<number>` one of its revisions, and `…/revisions/<number>/blocks/<block>`
  *   that revision with one block in focus (a finding's anchor, say);
- * - `#/projects/<project>/documents/<document>/history` who changed what in it.
+ * - `#/projects/<project>/documents/<document>/history` who changed what in it;
+ * - `#/projects/<project>/artifacts/<artifact>/revisions/<number>/<sha256>` a published
+ *   PDF in the viewer.
  */
 
 export type Route =
@@ -23,6 +25,7 @@ export type Route =
       block: string | null;
     }
   | { view: 'history'; project: string; document: string }
+  | { view: 'pdf'; project: string; artifact: string; revision: number; sha256: string }
   | { view: 'missing' };
 
 function decoded(part: string): string | null {
@@ -68,6 +71,13 @@ export function parseRoute(hash: string): Route {
     if (number !== null && (parts.length === 6 || block !== null))
       return { view: 'document', project, document: name, revision: number, block };
   }
+  if (parts[2] === 'artifacts' && parts.length === 7 && parts[4] === 'revisions') {
+    const number = revision(parts[5]);
+    const sha256 = parts[6]!;
+    if (number !== null && /^[0-9a-f]{64}$/.test(sha256)) {
+      return { view: 'pdf', project, artifact: name, revision: number, sha256 };
+    }
+  }
   return { view: 'missing' };
 }
 
@@ -93,4 +103,8 @@ export function documentHref(
 
 export function historyHref(project: string, document: string): string {
   return `${documentHref(project, document)}/history`;
+}
+
+export function pdfHref(project: string, artifact: string, revision: number, sha256: string) {
+  return `${projectHref(project)}/artifacts/${encodeURIComponent(artifact)}/revisions/${revision}/${sha256}`;
 }

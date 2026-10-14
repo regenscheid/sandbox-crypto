@@ -7,12 +7,14 @@
  * request, and the browser adds the `Origin` header the server requires of a POST.
  */
 import type {
+  ArtifactListing,
   ProjectAnswer,
   ProjectListing,
   ProjectView,
   RunEntry,
   SessionDetail,
   SessionView,
+  ViewerLink,
 } from './api-types';
 import type { ServerBlock } from './attach';
 import { ApiError, get, post } from './http';
@@ -447,6 +449,17 @@ export const api = {
   previewPatch: (project: string, document: string, patch: string) =>
     get<PatchPreview>(
       `/projects/${part(project)}/documents/${part(document)}/patches/${part(patch)}/preview`,
+    ),
+  /** The project's published artifacts, a page at a time, and whether the viewer is on. */
+  artifacts: (project: string, after: string | null = null) =>
+    get<ArtifactListing>(
+      `/projects/${part(project)}/artifacts` + (after === null ? '' : `?after=${part(after)}`),
+    ),
+  /** A link that opens one PDF revision in the viewer, for 10 minutes. */
+  viewerLink: (project: string, artifact: string, revision: number, sha256: string) =>
+    get<ViewerLink>(
+      `/projects/${part(project)}/artifacts/${part(artifact)}/revisions/${revision}/viewer` +
+        `?sha256=${part(sha256)}`,
     ),
   history: (project: string, document: string) =>
     get<DocumentHistory>(`/projects/${part(project)}/documents/${part(document)}/history`),

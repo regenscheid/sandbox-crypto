@@ -10,6 +10,23 @@ export interface AdmissionSummary {
   recorded: boolean;
 }
 
+/** A published artifact at its latest revision. */
+export interface ArtifactEntry {
+  artifact_id: string;
+  revision: number;
+  path: string;
+  sha256: string;
+  size: number;
+  media_type: string;
+  created_at: string;
+}
+
+export interface ArtifactListing {
+  artifacts: ArtifactEntry[];
+  next_after: string | null;
+  viewer: boolean;
+}
+
 /** A body edit against an exact base version. */
 export interface BodyChange {
   operation_id: string;
@@ -576,6 +593,13 @@ export interface SessionView {
   dedicated: boolean;
   opened_at: string;
   closed_at: string | null;
+}
+
+/** The viewer's URL for one PDF revision, and when it stops opening it. */
+export interface ViewerLink {
+  url: string;
+  expires_at: string;
+  path: string;
 }
 
 /** The worker's observation plus the project it belongs to. */

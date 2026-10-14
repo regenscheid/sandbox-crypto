@@ -6,6 +6,7 @@
   import ErrorMessage from './ErrorMessage.svelte';
   import ProjectMacros from './ProjectMacros.svelte';
   import EnvironmentPanel from './EnvironmentPanel.svelte';
+  import ArtifactList from './ArtifactList.svelte';
 
   let { projectId }: { projectId: string } = $props();
   const loading = $derived(api.project(projectId));
@@ -104,6 +105,8 @@
   {:catch error}
     <ErrorMessage {error} />
   {/await}
+
+  <ArtifactList {projectId} />
 
   <EnvironmentPanel {projectId} {project} />
 {:catch error}
