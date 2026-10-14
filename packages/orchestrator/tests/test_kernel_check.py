@@ -13,9 +13,9 @@ from sandbox_science.contracts import (
     KernelInfo,
     KernelObservation,
 )
-from sandbox_science.orchestrator.notices import KERNELS
 from sandbox_science.orchestrator.loop import run_task
 from sandbox_science.orchestrator.model import ModelTurn, ScriptedModel, ToolCall
+from sandbox_science.orchestrator.notices import KERNELS
 from sandbox_science.orchestrator.tools import Toolbox
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
 

@@ -14,12 +14,10 @@ from pydantic import ConfigDict, Field, model_validator
 
 from sandbox_science.contracts.model import Contract, Identifier
 from sandbox_science.orchestrator.model import ToolSpec
-from sandbox_science.orchestrator.prompt_bundle import (
-    MAX_SCHEMA_BYTES,
-    MAX_SYSTEM_BYTES,
-    _tool_bytes,  # pyright: ignore[reportPrivateUsage] - pure bounded schema encoder only
-)
+from sandbox_science.orchestrator.prompts import schema_json
 
+MAX_SYSTEM_BYTES = 64 * 1024
+MAX_SCHEMA_BYTES = 512 * 1024
 MAX_PROVENANCE_BYTES = 16 * 1024
 ASSEMBLY_VERSION = "sandbox-reviewer-bundle-1"
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -158,7 +156,7 @@ class ReviewerBundle:
     def verify(self, first: object, passed: Sequence[ToolSpec]) -> None:
         if first != {"role": "system", "content": self.provenance.rubric_text}:
             raise ValueError("actual reviewer system input changed")
-        _, canonical, names = _tool_bytes(passed)
+        canonical, names = schema_json(passed), tuple(spec.name for spec in passed)
         if (
             names != self.provenance.tool_names
             or len(canonical) != self.provenance.schema_bytes
@@ -171,7 +169,8 @@ class ReviewerBundle:
 
 def assemble_reviewer(system: str, version: str, specs: Sequence[ToolSpec]) -> ReviewerBundle:
     raw = _rubric(system)
-    owned, canonical, names = _tool_bytes(specs)
+    owned, canonical = schema_json(specs, canonical=False), schema_json(specs)
+    names = tuple(spec.name for spec in specs)
     pin = ReviewerProvenance.model_construct(
         rubric_version=version,
         rubric_text=system,

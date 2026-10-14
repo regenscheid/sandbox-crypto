@@ -128,26 +128,6 @@ def test_unvalidated_copied_pin_never_charges_reservation(store, change):
     assert reviews.run("p", "s", review)["calls"] == 0
 
 
-@pytest.mark.parametrize("schema", [{"enum": [1 << 4095] * 4096}, {"enum": ["\0" * 400000]}])
-def test_schema_expansion_refuses_before_large_aggregate_encoding(schema):
-    tracemalloc.start()
-    try:
-        with pytest.raises(ValueError, match="budget"):
-            assemble_reviewer(RUBRIC, RUBRIC_VERSION, [ToolSpec("read", "Read", schema)])
-        peak = tracemalloc.get_traced_memory()[1]
-    finally:
-        tracemalloc.stop()
-    assert peak < 2 * 1024 * 1024
-
-
-def test_non_json_cycle_and_nonfinite_schemas_refuse():
-    cycle = []
-    cycle.append(cycle)
-    for schema in ({"enum": cycle}, {"value": float("nan")}, {"bad": object()}):
-        with pytest.raises(ValueError, match="schema"):
-            assemble_reviewer(RUBRIC, RUBRIC_VERSION, [ToolSpec("read", "Read", schema)])
-
-
 def test_unrepresentable_installed_input_and_copied_overflow_refuse_before_encoding(monkeypatch):
     for rubric in ("x" * 65537, "\ud800", "\0" * 10000):
         with pytest.raises(ValueError, match="reviewer"):

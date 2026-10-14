@@ -54,41 +54,24 @@ cannot supply any of them through wording.
 
 ## Retained input provenance and compatibility
 
-Unselected runs retain `sandbox-main-bundle-1` exactly, including custom-system
-input, unavailable metadata and legacy records without metadata. `run_task` accepts
-optional trusted `research_template`; a differing custom `system` plus selection
-is refused. Explicitly supplying bytes identical to the installed MAIN base is
-recognized by content, without claiming who supplied those bytes or granting
-authority.
-
-Selected runs use complete-only `sandbox-main-bundle-2`. The bounded component
-sequence is MAIN, stock, optional planning. The stock pin contains exact ID,
-version, UTF-8 byte count and SHA-256; the full system and ordered schemas retain
-their existing pins. Its bundle digest uses the distinct
-`main-prompt-bundle-v2` domain. It remains content identity, not origin attestation,
-authorization, provider wire proof or evidence of model compliance.
-
-Historical reads validate the retained system and component bytes and hashes;
-they never substitute today's catalog text or require the historical version to
-remain installed. New catalog text/version affects a later run, while an active
-run keeps its original immutable assembly and fresh owned schema projections.
-Version-1 and legacy parsing still accept their original default fields.
-
-Safe failed-run retention carries the same selected provenance with fixed failure
-metadata and no final answer. Selection adds no notice or ACK. Existing
-successful-model delivery and durable save-before-ACK rules remain in force; a
-failed/duplicate save cannot acknowledge a new notice. Cancellation still
-propagates under the existing owned cleanup rules.
+A selected template is the `stock` section of the system message, between the MAIN
+base and the optional planning guidance, and the run record pins it with the other
+sections: ID, version, UTF-8 byte count and SHA-256
+([MAIN prompt provenance](MAIN-PROMPT-PROVENANCE.md)). `run_task` accepts an optional
+trusted `research_template`; a differing custom `system` plus a selection is refused.
+The selection is made once, at the start of a run: a catalog change during the run
+affects a later run. Older runs' `sandbox-main-bundle-1` and `sandbox-main-bundle-2`
+provenance is kept as read. Selection adds no notice, acknowledgement or tool, and
+failed runs keep their pins with fixed failure metadata and no answer.
 
 ## Source and tests
 
-[prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompt_bundle.py)
-owns the separate selected schema and exact retained validation;
+[prompts.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompts.py)
+pins the sections and tools;
 [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 resolves the trusted selection once;
 [cli.py](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py)
-offers only the five fixed choices. The pure tool encoder is shared with the
-reviewer provenance.
+offers only the five fixed choices.
 
 Scripted tests exercise all five selections with and without plan tools,
 unchanged tasks/grants, document injection, mid-run catalog/schema mutation,
