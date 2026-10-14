@@ -36,7 +36,7 @@ SESSION = "lab35-session"
 ENVIRONMENT = "lab35-environment"
 PREFIX = "evidence/provisioning-observations-"
 MAX_BYTES = 65536
-ADMISSION_READY = False
+ADMISSION_READY = True
 WHOLE_SECONDS = 1800.0
 MAX_EXECUTIONS = 16
 MAX_NEW_OPERATIONS = 2
@@ -1387,7 +1387,11 @@ def main() -> int:
             json.dumps(
                 {
                     "project": PROJECT,
-                    "status": "source-only; root admission disabled",
+                    "status": (
+                        "root admission enabled; explicit run --admit required"
+                        if ADMISSION_READY
+                        else "source-only; root admission disabled"
+                    ),
                     "vm": 1,
                     "executions": MAX_EXECUTIONS,
                     "new_operations": MAX_NEW_OPERATIONS,
