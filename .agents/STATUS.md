@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-10-14, main `299fa24`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
+Updated 2026-10-14, main `2b44c77`. This file is replaced, not appended to, and stays under 10 KB. History is in the git log, PR descriptions and [lab reports](docs/agent-reports/).
 
 ## Phase and focus
 
@@ -15,7 +15,7 @@ Updated 2026-10-14, main `299fa24`. This file is replaced, not appended to, and 
 - **Provisioning (D84):** Conda and pip installs as queued operations with one permission request per install, AGPL refusal, environment revisions with lockfiles, explicit named Conda upgrades, installer observations and events, and a recovery fence after uncertain installs. Restoring a revision, uninstall, pip upgrade and disk limits are not built.
 - **Harness (CLI):** the tool loop with a scripted or OpenAI-compatible model, projects and sessions, the planning phase with live progress (D86), living documents in the SQLite control store (D85), comments and work requests, automatic consistency review, mechanical math findings (D82) and the low-cost job watcher.
 - **Workspace GUI:** login; documents with editing, conflicts and history; comments; review findings; session plans with editing; finished runs' transcripts; jobs; the kernel panel; the provisioning view; math rendering with repairs. It reads runs the CLI made and cannot start one.
-- **Built but unwired, being removed** (plan decision 2): delegation (child controller, dispatcher, run kernels, records, attempts) and document files in environments (catalog, outbox, delivery, worker source adapter), kept on the tags `archive/delegation-2026-10` and `archive/document-sync-2026-10`; also the dead `orchestrator/reviews.py`.
+- **Removed, archived on tags** (plan decision 2, #129): the delegation prototype (child controller, dispatcher, run kernels, records, attempts; `archive/delegation-2026-10`) and document files in environments and exports (outbox, delivery, worker source adapter, export inputs; `archive/document-sync-2026-10`), with the dead `orchestrator/reviews.py`. About 11,100 lines of product code and 8,900 of tests. Delegation is to be rebuilt as a role of the one loop (plan, Phase 4). The worker's own document catalog stays, parked, with no production caller.
 - **Not built:** chat in the GUI, a run with a real model, the ledger and board, the PDF viewer, approvals in the GUI (the policy middleware's CLI answers them), an MCP client in the harness, the connector auth service.
 - **Tests:** about 11,500 Python tests (11,464 passed, 43 opt-in skips at the last full run) and 828 web tests; CI runs Python 3.12 and 3.13 and the web checks.
 
@@ -32,9 +32,9 @@ The [plan](refactor-plan/PLAN.md) has five phases. The owner answered its decisi
 | 4. The M2 exit path: chat, a real model, ledger and board, PDF viewer, then delegation and MCP | Later |
 
 Phase 0 is done when the bug tests pass, the unwired modules are gone and the suite still passes, STATUS is under 10 KB, and the size guard runs in CI. Phase 0 so far:
-- **Merged:** raw evidence out of git, history rewritten, `scripts/check_repo_hygiene.py` in CI (#123); A-01, a second workbook no longer disables the first session's effect tools and a policy revision no longer blocks them, and A-10, a last-turn job notice no longer discards the final answer (#125); E-02, the workspace answers 503 without the worker's address when the worker is unavailable (#124); E-16, prettier formats the web app (#127).
-- **In flight:** removing the unwired delegation and document-sync code; the tracking files and decision records (F-02, F-10, #126); CI guards and dead suppressions (F-03 in part, F-12, #128).
-- **Next:** the worker bug fixes C-01, C-10, C-11 and C-15, then Phase 1.
+- **Merged:** raw evidence out of git, history rewritten, `scripts/check_repo_hygiene.py` in CI (#123); A-01, a second workbook no longer disables the first session's effect tools and a policy revision no longer blocks them, and A-10, a last-turn job notice no longer discards the final answer (#125); E-02, the workspace answers 503 without the worker's address when the worker is unavailable (#124); E-16, prettier formats the web app (#127); STATUS, the handoff and PLAN-CHANGES rewritten short, and the adopted decisions recorded (F-02, F-10, #126); CI job timeouts, superseded-run cancelling, a per-test timeout and dead suppressions removed (F-03 in part, F-12, #128); the unwired delegation and document-sync code removed (A-03, C-05, D-10, B-11, F-07, #129).
+- **In flight:** the worker bug fixes C-01 (executions orphaned by a bridge loss during recovery), C-10 (shutdown hangs on open event streams), C-11 (the flaky capture test) and C-15 (silent background-task failures).
+- **Next:** a docs-sync pass over `docs/` (F-08, B-16, C-17, D-11, E-20), then Phase 1.
 
 ## M2 exit path
 
@@ -71,8 +71,8 @@ Each has a recommendation; nothing here blocks Phase 0.
 
 ## Last five merges
 
+- #129 `2b44c77`: the unwired delegation and document-sync code removed, archived on tags.
+- #128 `036ebd9`: CI job timeouts, superseded-run cancelling, a per-test timeout, dead suppressions removed.
+- #126 `5fb7a6b`: short STATUS, handoff and PLAN-CHANGES; the adopted decisions recorded.
 - #127 `299fa24`: E-16, prettier for the web app.
 - #124 `b078846`: E-02, a 503 without the worker's address when the worker is unavailable.
-- #125 `3cc20f6`: A-01 and A-10, the plan fence on the run's own session and last-turn answers.
-- #123 `0e6a662`: raw lab evidence out of git; the refactoring plan.
-- #122 `6e9608a`: explicit named Conda upgrades, accepted in [Lab36](docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md).
