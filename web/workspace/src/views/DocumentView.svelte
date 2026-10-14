@@ -180,7 +180,12 @@
   {#if shown.tombstone}
     <p>The document was deleted in this revision. Its earlier revisions remain.</p>
   {:else}
-    <article class="document" use:focusBlock={block}>
+    <!-- Only a block of this revision is looked for; another is said to be missing. -->
+    {@const known = block !== null && found.blocks.some((item) => item.id === block)}
+    {#if block !== null && !known}<p role="status">
+        Block {block} is not in this revision; the link may name an earlier one.
+      </p>{/if}
+    <article class="document" use:focusBlock={known ? block : null}>
       <Markdown source={found.text} document={input} bind:mismatches />
     </article>
   {/if}

@@ -6,7 +6,7 @@
  */
 import type { Json } from './api';
 import { locatorText, when } from './reviewText';
-import type { Finding, Transition } from './reviews';
+import type { Finding, Review, Transition } from './reviews';
 import { documentHref } from './router';
 
 const STATUSES: Readonly<Record<string, string>> = {
@@ -86,7 +86,7 @@ export function anchorView(project: string, anchor: Anchor): AnchorView {
   const revision = locator['revision'];
   if (text(locator['comment']))
     where = `comment ${text(locator['comment'])} in document ${document}`;
-  else if (text(locator['finding']))
+  else if (text(locator['finding']) && locator['response_revision'] !== undefined)
     where = `the explanation of finding ${text(locator['finding'])}, response ${text(locator['response_revision'])}`;
   else if (document && typeof revision === 'number')
     href = documentHref(project, document, revision, block || undefined);
@@ -101,7 +101,40 @@ export function anchorView(project: string, anchor: Anchor): AnchorView {
   };
 }
 
+/** Who made a decision, in words, from the actor a transition records. */
+export function actorText(actor: string): string {
+  const [kind, ...rest] = actor.split(':');
+  const id = rest.join(':');
+  if (kind === 'review') return `review ${id}`;
+  if (kind === 'session') return `the main agent of session ${id}`;
+  if (kind === 'user') return 'the user';
+  if (actor === 'platform:math') return 'the math check';
+  if (kind === 'platform') return `the platform (${id})`;
+  if (kind === 'harness') return 'the harness';
+  return actor;
+}
+
 /** One step of a finding's history in words: its new status, who decided and when. */
 export function transitionText(entry: Transition): string {
-  return `Revision ${entry.revision}: ${entry.status}, by ${entry.actor} · ${when(entry.created)}`;
+  return `Revision ${entry.revision}: ${entry.status}, by ${actorText(entry.actor)} · ${when(entry.created)}`;
+}
+
+const SEVERITIES: Readonly<Record<string, string>> = {
+  fail: 'a materially false or unsupported durable claim, or a claimed action without a record',
+  warn: 'a claim that needs correction or qualification',
+  note: 'information',
+};
+
+/** What a severity means (CR-18). */
+export function severityText(severity: string): string {
+  return Object.hasOwn(SEVERITIES, severity) ? SEVERITIES[severity]! : severity;
+}
+
+/** Which review raised a finding, and how (CR-17), as far as the reviews loaded say. */
+export function raisedText(finding: Finding, review: Review | undefined): string {
+  if (finding.review_id === null) return 'Raised by the platform.';
+  if (!review) return `Raised by review ${finding.review_id}.`;
+  const model = review.resolved_model ?? 'an unknown model';
+  const alias = review.alias ? `, alias ${review.alias}` : '';
+  return `Raised by ${review.kind} review ${review.review_id}: ${model}${alias}, rubric ${review.rubric}.`;
 }

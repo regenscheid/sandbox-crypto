@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: MIT
+import { render } from 'svelte/server';
 import { describe, expect, it } from 'vitest';
-import { anchorView, decisions, resolved, statusText, transitionText } from './findingView';
+import FindingCard from '../views/FindingCard.svelte';
+import { findingDrafts } from './drafts';
+import {
+  actorText,
+  anchorView,
+  decisions,
+  raisedText,
+  resolved,
+  severityText,
+  statusText,
+  transitionText,
+} from './findingView';
 import { when } from './reviewText';
-import type { Finding, Transition } from './reviews';
+import type { Finding, Review, Transition } from './reviews';
 
 type Anchor = Finding['anchors'][number];
 
@@ -82,5 +94,63 @@ describe('the finding card', () => {
     expect(transitionText(entry as Transition)).toBe(
       `Revision 2: claimed fixed, by agent:run-1 · ${when(1791990000)}`,
     );
+  });
+});
+
+describe('the finding card, after review', () => {
+  it('names a reviewer anchor on a pinned finding as that finding, not a response', () => {
+    const anchor = {
+      evidence: 'ev-1',
+      review: 'rv-1',
+      locator: { finding: 'finding-0123', revision: 2 },
+    } as unknown as Anchor;
+    expect(anchorView('p1', anchor).text).toBe('finding finding-0123 revision 2');
+  });
+
+  it('says who decided, what a severity means and which review raised the finding', () => {
+    expect(actorText('review:rv-1')).toBe('review rv-1');
+    expect(actorText('session:s1')).toBe('the main agent of session s1');
+    expect(actorText('user:user')).toBe('the user');
+    expect(actorText('platform:math')).toBe('the math check');
+    expect(severityText('warn')).toBe('a claim that needs correction or qualification');
+    const finding = { review_id: 'rv-1' } as Finding;
+    expect(raisedText(finding, undefined)).toBe('Raised by review rv-1.');
+    const review = {
+      review_id: 'rv-1',
+      kind: 'terminal',
+      resolved_model: 'model-r',
+      alias: 'reviewer',
+      rubric: 'r2',
+    } as Review;
+    expect(raisedText(finding, review)).toBe(
+      'Raised by terminal review rv-1: model-r, alias reviewer, rubric r2.',
+    );
+  });
+
+  it('keeps a kept decision the status no longer allows, marked, and does not let it be saved', () => {
+    findingDrafts.save('p:s:finding-kept', {
+      expected: 2,
+      explanation: 'It is fixed.',
+      action: 'confirm',
+      references: '',
+    });
+    const finding = {
+      finding_id: 'finding-kept',
+      review_id: null,
+      severity: 'warn',
+      category: 'math',
+      statement: 'S',
+      remedy: null,
+      status: 'confirmed fixed',
+      revision: 3,
+      reflags: 0,
+      anchors: [],
+    } as unknown as Finding;
+    const html = render(FindingCard, {
+      props: { projectId: 'p', sessionId: 's', finding, changed: async () => {} },
+    }).body.replace(/\s+/g, ' ');
+    expect(html).toContain('confirm (kept, not allowed now)');
+    expect(html).toContain('Your kept decision, confirm, is not allowed');
+    expect(html).toMatch(/<button disabled[^>]*>\s*Save user response/);
   });
 });
