@@ -3,19 +3,40 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from pathlib import Path
+from typing import Any
 
 import pytest
 
 from sandbox_science.orchestrator.consistency.findings import Findings
-from sandbox_science.orchestrator.documents import USER, Author, DocumentError
-from sandbox_science.orchestrator.documents.project_macros import ProjectMacros, resolve, view
+from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
+from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.control import migrations
+from sandbox_science.orchestrator.control.errors import ControlError
+from sandbox_science.orchestrator.documents import (
+    USER,
+    Author,
+    DocumentError,
+    DocumentStore,
+    store_path,
+)
+from sandbox_science.orchestrator.documents.project_macros import (
+    ProjectMacros,
+    resolve,
+    response_view,
+    view,
+)
+from sandbox_science.orchestrator.mathchecks import jobs as jobs_module
+from sandbox_science.orchestrator.mathchecks.contexts import finding_macro_contexts
 from sandbox_science.orchestrator.mathchecks.controller import MathController
 from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 
+from .control_versions import EMPTY_SHA, older_store
 from .test_comment_math import comment
-from .test_consistency import anchor, dispatch, raise_finding, read_confirmation
+from .test_consistency import anchor, claim, dispatch, raise_finding, read_confirmation
 from .test_document_math import MAIN, ScriptedChecker, create, drain, get, patch
 from .test_document_math import stores as stores
 from .test_response_math import response
@@ -188,8 +209,9 @@ def test_historical_document_context_is_pinned_and_legacy_is_unknown(stores):
     assert saved["macros"][r"\F"] == "before"
     with docs.control.write() as tx:
         db = tx.sql
-        db.execute("DROP TRIGGER document_macro_pins_delete")
-        db.execute("DELETE FROM document_macro_pins")
+        # A revision from before revisions recorded their project macros.
+        db.execute("DROP TRIGGER revisions_no_update")
+        db.execute("UPDATE revisions SET macro_revision=NULL")
     unknown = view(docs, "p", document=doc, revision=1, historical=True)
     assert not unknown["known"]
     assert unknown["held"]
@@ -291,17 +313,19 @@ async def test_anchored_response_agreement_or_explicit_ambiguity(stores, same):
     children = [f for f in get(reviews) if f["origin"] == "math"]
     latest = MathJobs(reviews).listing("p")["checks"][0]
     job = MathJobs(reviews).job(latest["check_id"])
+    effective = MathJobs(reviews).effective_context(job)
+    assert effective is not None
     assert job["response"]["finding"] == scientific["finding_id"]
     if same:
         assert len(children) == 1
         assert checker.calls[0].macros[r"\F"] == "one"
-        assert not job["effective_macro_context"]["held"]
+        assert not effective["held"]
     else:
         assert children == []
         assert checker.calls == []
         assert latest["macro_context_status"] == "held"
-        assert job["effective_macro_context"]["held"]
-        assert "Conflicting" in job["effective_macro_context"]["problems"][0]
+        assert effective["held"]
+        assert "Conflicting" in effective["problems"][0]
     assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "open"
     pinned_review = dispatch(reviews)
     assert reviews.run("p", "s", pinned_review)["coverage_complete"] == int(same)
@@ -348,8 +372,8 @@ def test_confirmation_requires_exact_available_explanation_context(
     api = Findings(reviews)
     with monkeypatch.context() as legacy:
         if context == "unknown":
-            # A valid older response writer retained the body but no macro pins.
-            legacy.setattr(response_bodies, "response_saved", lambda *_args, **_kw: None)
+            # A valid older response writer retained the body but no macro revision.
+            legacy.setattr(response_bodies, "macro_head", lambda *_args: None)
         api.respond(
             "p",
             "s",
@@ -403,27 +427,6 @@ def test_confirmation_requires_exact_available_explanation_context(
         )
 
 
-@pytest.mark.asyncio
-async def test_effective_context_quota_holds_without_vetoing_source_or_settings(
-    stores, monkeypatch
-):
-    from sandbox_science.orchestrator.documents import project_macros
-
-    docs, reviews, _ = stores
-    doc = create(docs)
-    monkeypatch.setattr(project_macros, "MAX_CONTEXT_BYTES", 1)
-    jobs = MathJobs(reviews)
-    check = jobs.claim("p", "owner")
-    assert check
-    checker = ScriptedChecker()
-    assert not await jobs.step(check, "owner", checker)
-    assert checker.calls == []
-    assert "context quota" in jobs.listing("p")["queue"][0]["blocked"]
-    change(docs, {r"\F": "x"})
-    patch(docs, doc, "x", "ordinary-edit")
-    assert docs.document("p", doc).head == 2
-
-
 def test_cli_explicit_settings_and_safe_invalid_input(stores, tmp_path, capsys):
     from sandbox_science.orchestrator.cli import main
 
@@ -449,3 +452,331 @@ def test_cli_explicit_settings_and_safe_invalid_input(stores, tmp_path, capsys):
     source.write_text('{"\\\\F":"test-secret-invalid-input-not-a-credential"')
     assert main(arguments) == 1
     assert "test-secret-invalid-input-not-a-credential" not in capsys.readouterr().err
+
+
+def macro_reads(docs, reviews, doc: str, finding: str, decision: int) -> tuple[Any, ...]:
+    """What the macro provenance answers: a historical document view, every check with
+    its effective context, an explanation body's view, the confirmation targets, and
+    the recorded revisions."""
+
+    jobs = MathJobs(reviews)
+    checks = []
+    for entry in jobs.listing("p")["checks"]:
+        job = jobs.job(entry["check_id"])
+        checks.append((entry, job, jobs.effective_context(job)))
+    with docs.control.read() as tx:
+        recorded = [
+            tx.sql.execute(sql).fetchall()
+            for sql in (
+                "SELECT document_id,number,macro_revision FROM revisions ORDER BY rowid",
+                "SELECT check_id,macro_revision,macro_held FROM math_jobs ORDER BY rowid",
+                "SELECT source,revision,macro_revision FROM review_response_bodies ORDER BY rowid",
+                "SELECT review_id,finding_id,macro_revision FROM review_response_pins",
+            )
+        ]
+    return (
+        view(docs, "p", document=doc, revision=1, historical=True),
+        checks,
+        ResponseBodies(reviews).get("p", "s", finding, decision, body_revision=1),
+        reviews.confirmation_targets("p", "s"),
+        recorded,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_macro_revisions_keep_what_the_pins_held(stores, tmp_path):
+    """A version-9 store's pin tables become version 10's macro_revision columns, and the
+    store answers as the one it was copied from."""
+    from sandbox_science.orchestrator.control import migrations
+    from sandbox_science.orchestrator.documents import DocumentStore, store_path
+
+    from .control_versions import older_store
+
+    docs, reviews, _ = stores
+    change(docs, {r"\F": "project"})
+    doc = docs.create("p", name="macros", title="M", text="$\\F$\n", author=USER).document_id
+    finding, decision = response(reviews, body=r"$\F$", action="fix")
+    await drain(reviews, ScriptedChecker("accepted"))
+    confirmation = dispatch(reviews, "confirmation")
+    assert confirmation
+    change(docs, {r"\F": "later"})
+    before = macro_reads(docs, reviews, doc, finding, decision)
+    checks = before[4][1]
+    assert checks
+    assert all(row[1] == 1 for row in checks)  # the checks used setting revision 1
+    old = tmp_path / "old"
+    older_store(docs.path, store_path(old), migrations.BASELINE + 7)  # version 9
+    copied = DocumentStore(store_path(old))
+    copied.initialize()  # the writer brings the store to the current version
+    try:
+        copied_reviews = ReviewStore(copied, clock=lambda: 1000.0)
+        after = macro_reads(copied, copied_reviews, doc, finding, decision)
+    finally:
+        copied.close()
+    assert after == before
+
+
+# The review's probes of B-12 (#221), kept as tests.
+def _every(reviews, review):
+    after, items = 0, []
+    while True:
+        page = reviews.manifest("p", "s", review, after=after, limit=20)
+        items.extend(page["evidence"])
+        if page["next_after"] is None:
+            return items
+        after = page["next_after"]
+
+
+def _documents(reviews, review, order):
+    found = {
+        e["locator"]["document"]: e
+        for e in _every(reviews, review)
+        if e["kind"] == "document" and e["locator"]["document"] in order
+    }
+    return [{"evidence": found[d]["evidence"]} for d in order]
+
+
+def _raise(reviews, review, anchors, op):
+    return Findings(reviews).create(
+        "p",
+        "s",
+        review,
+        "owner",
+        {
+            "severity": "fail",
+            "category": "contradicting_value",
+            "statement": "Anchored statement.",
+            "anchors": anchors,
+            "operation_id": op,
+        },
+    )
+
+
+async def _explained_then_reflagged(docs, reviews):
+    """A finding on two agreeing documents, explained (rebut), its rebuttal rejected,
+    then raised again by a later review naming the same anchors in the other order."""
+    one, two = (
+        docs.create(
+            "p",
+            name=name,
+            title=name,
+            session_id="s",
+            author=MAIN,
+            text="---\nmacros:\n  '\\F': 'agreed'\n---\n\nEvidence.\n",
+        ).document_id
+        for name in ("one", "two")
+    )
+    reviews.ingest_documents("p", "s")
+    claim(reviews)
+    first = dispatch(reviews)
+    finding = _raise(reviews, first, _documents(reviews, first, [one, two]), "f1")["finding_id"]
+    reviews.finish("p", "s", first, "owner", "findings", "First")
+    Findings(reviews).respond(
+        "p",
+        "s",
+        {
+            "finding": finding,
+            "expected": 1,
+            "action": "rebut",
+            "explanation": r"Not so: $\F$",
+            "operation_id": "rebut",
+        },
+        MAIN,
+    )
+    await drain(reviews, ScriptedChecker("accepted"))
+    claim(reviews, "Another message.", "m2")
+    second = dispatch(reviews)
+    read_confirmation(reviews, second)
+    item = next(
+        i
+        for i in _every(reviews, second)
+        if i["kind"] == "finding" and i["locator"]["finding"] == finding
+    )
+    Findings(reviews).confirm(
+        "p",
+        "s",
+        second,
+        "owner",
+        {
+            "finding": finding,
+            "expected": 2,
+            "decision": "reject_rebuttal",
+            "explanation": "The rebuttal does not hold.",
+            "anchors": [{"evidence": item["evidence"]}],
+            "operation_id": "decide",
+        },
+    )
+    return finding, second, (one, two)
+
+
+@pytest.mark.asyncio
+async def test_a_reflag_does_not_change_a_past_explanations_macro_context(stores):
+    """An explanation's anchors are its finding's at the explanation's decision
+    revision: a later reflag naming the same documents in another order leaves its
+    context, key and its checks' effective contexts alone (as main's pin did)."""
+    docs, reviews, _ = stores
+    finding, second, (one, two) = await _explained_then_reflagged(docs, reviews)
+    source = f"response:{finding}:r2:explanation"
+    jobs = MathJobs(reviews)
+    (check,) = [
+        c["check_id"] for c in jobs.listing("p")["checks"] if "response" in jobs.job(c["check_id"])
+    ]
+    before_view = response_view(docs, "p", source, body_revision=1)
+    before_check = jobs.effective_context(jobs.job(check))
+    raised = _raise(reviews, second, _documents(reviews, second, [two, one]), "f1-again")
+    assert raised["finding_id"] == finding  # a reflag, not a new finding
+    after_view = response_view(docs, "p", source, body_revision=1)
+    after_check = jobs.effective_context(jobs.job(check))
+    assert after_view["macros"] == before_view["macros"]  # the definitions agree...
+    assert after_view["anchors"] == before_view["anchors"]  # ...but the anchors moved
+    assert after_view["key"] == before_view["key"]
+    assert after_check == before_check
+
+
+@pytest.mark.asyncio
+async def test_listing_contexts_parse_a_checked_source_at_most_once(stores, monkeypatch):
+    """A check's effective context is derived from its immutable inputs once: a page of
+    twenty findings of one check parses the checked source at most once."""
+    docs, reviews, _ = stores
+    create(docs, MAIN, "".join(f"Paragraph {i}: $\\unknown{{v{i}}}$\n\n" for i in range(20)))
+    await drain(reviews, ScriptedChecker())
+    page = Findings(reviews).listing("p", "s")["findings"]
+    assert len(page) == 20
+    parses: list[int] = []
+    real = getattr(jobs_module, "attach")  # noqa: B009 - the module's import, not an export
+    monkeypatch.setattr(jobs_module, "attach", lambda *a: parses.append(1) or real(*a))
+    for finding in page:
+        finding_macro_contexts(reviews, "p", finding)
+    assert len(parses) <= 1, f"{len(parses)} full parses for one page of findings"
+
+
+def _v9_copy(docs, tmp_path: Path) -> Path:
+    old = store_path(tmp_path / "old")
+    older_store(docs.path, old, migrations.BASELINE + 7)
+    return old
+
+
+def _migrate(path: Path) -> None:
+    copied = DocumentStore(path)
+    try:
+        copied.initialize()
+    finally:
+        copied.close()
+
+
+@pytest.mark.parametrize(
+    "orphan",
+    [
+        "INSERT INTO response_macro_revisions VALUES"
+        "('response:finding-000000000000000000000000:r1:explanation',1,0)",
+        f"INSERT INTO review_macro_pins VALUES('review-x','finding-x',0,'{EMPTY_SHA}')",
+    ],
+)
+def test_a_pin_the_migration_cannot_place_is_refused_not_dropped(stores, tmp_path, orphan):
+    """A pin version 10 has no row to copy to refuses the store with the control store's
+    message, as every other step that cannot carry a row does."""
+    docs, _, _ = stores
+    create(docs, USER, "Text.\n")
+    old = _v9_copy(docs, tmp_path)
+    with sqlite3.connect(old) as db:
+        db.execute(orphan)
+    with pytest.raises(ControlError, match="refuses"):
+        _migrate(old)
+
+
+@pytest.mark.asyncio
+async def test_migration_keeps_an_explanations_pinned_anchors(stores, tmp_path):
+    """A version-9 store that pinned an explanation's anchors in one order (as main did
+    at first save) answers with that order after migrating, whatever the finding's
+    current anchors say; the migration checks the pinned anchors against those it
+    derives."""
+    docs, reviews, _ = stores
+    finding, second, (one, two) = await _explained_then_reflagged(docs, reviews)
+    source = f"response:{finding}:r2:explanation"
+    pinned = response_view(docs, "p", source)["anchors"]
+    _raise(reviews, second, _documents(reviews, second, [two, one]), "f1-again")
+    old = _v9_copy(docs, tmp_path)
+
+    with sqlite3.connect(old) as db:
+        # What main stored: the anchors at first save.
+        db.execute("DROP TRIGGER response_macro_anchors_update")
+        db.execute(
+            "UPDATE response_macro_anchors SET anchors=? WHERE source=?",
+            (json.dumps(pinned, separators=(",", ":")), source),
+        )
+    _migrate(old)
+    migrated = DocumentStore(old)
+    try:
+        assert response_view(migrated, "p", source)["anchors"] == pinned
+    finally:
+        migrated.close()
+
+
+@pytest.mark.asyncio
+async def test_a_checks_recorded_macro_revision_stays_immutable(stores):
+    """math_macro_pins and math_macro_contexts refused updates; a trigger keeps their
+    replacement columns on math_jobs once set."""
+    docs, reviews, _ = stores
+    create(docs)
+    await drain(reviews, ScriptedChecker())
+    with pytest.raises(sqlite3.IntegrityError), docs.control.write() as tx:
+        tx.sql.execute("UPDATE math_jobs SET macro_revision=7,macro_held=1")
+
+
+@pytest.mark.asyncio
+async def test_math_check_evidence_still_shows_the_effective_context(stores):
+    """GET /math-checks/{check} (MathJobs.evidence) returns the check with its
+    effective_macro_context: the exact definitions its formulas were rendered with."""
+    docs, reviews, _ = stores
+    create(docs, MAIN, "---\nmacros:\n  '\\F': 'document'\n---\n\n$\\unknown{x}$\n")
+    await drain(reviews, ScriptedChecker())
+    jobs = MathJobs(reviews)
+    (entry,) = jobs.listing("p")["checks"]
+    check = jobs.evidence("p", entry["check_id"])["check"]
+    assert check.get("effective_macro_context", {}).get("effective", {}).get(r"\F") == "document"
+
+
+def test_a_pin_the_new_column_refuses_gets_the_control_stores_refusal(stores, tmp_path):
+    """document_macro_pins never had a range CHECK; the new column does. Such a row
+    leaves the store at version 9 with the ControlError (unavailable) every other step
+    gives, not a bare sqlite3.IntegrityError."""
+    docs, _reviews, _ = stores
+    create(docs, USER, "Text.\n")
+    old = _v9_copy(docs, tmp_path)
+    with sqlite3.connect(old) as db:
+        db.execute("DROP TRIGGER document_macro_pins_update")
+        db.execute("UPDATE document_macro_pins SET project_revision=-1")
+    with pytest.raises(ControlError, match="refuses"):
+        _migrate(old)
+    with sqlite3.connect(old) as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (9,)
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "control_v9"
+
+
+def test_a_version_9_store_from_the_code_before_answers_as_that_code_did(tmp_path):
+    """A version-9 store the code before B-12 wrote (fixtures/control_v9, made by its
+    build.py) migrates to version 10 and gives every macro answer that code gave for
+    it: check contexts and effective contexts, the listing, document and explanation
+    views, findings with their contexts, confirmation targets, runs and notices."""
+    import gzip
+
+    from .control_versions import macro_answers
+
+    path = store_path(tmp_path)
+    with sqlite3.connect(path) as db:
+        db.executescript(gzip.decompress((FIXTURE / "control-v9.sql.gz").read_bytes()).decode())
+        db.execute(f"PRAGMA application_id = {migrations.APPLICATION_ID}")
+        db.execute(f"PRAGMA user_version = {migrations.BASELINE + 7}")
+    expected = json.loads(gzip.decompress((FIXTURE / "answers.json.gz").read_bytes()))
+    docs = DocumentStore(path)
+    try:
+        docs.initialize()  # the writer brings the store to the current version
+        reviews = ReviewStore(docs, clock=lambda: 1000.0)
+        answers = macro_answers(docs, reviews, lambda jobs, job: jobs.effective_context(job))
+    finally:
+        docs.close()
+    assert answers.keys() == expected.keys()
+    for key in expected:
+        assert answers[key] == expected[key], key

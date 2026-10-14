@@ -274,7 +274,7 @@ def test_an_oversized_body_is_refused_when_written(stores):
         tx.sql.execute(
             "INSERT INTO review_response_bodies SELECT source,finding_id,decision_revision,"
             "revision+1,?,sha256,block_map,author,owners,next_block,next_span,"
-            "identity_floor,held FROM review_response_bodies",
+            "identity_floor,held,macro_revision FROM review_response_bodies",
             ("x" * 40000,),
         )
 
@@ -486,25 +486,26 @@ def test_response_replay_receipt_binds_its_immutable_revision(stores):
     assert api.get("p", "s", finding, decision)["body"] == "$y$"
 
 
-def test_the_response_checks_keep_a_response_and_its_body(tmp_path, monkeypatch):
+def test_the_response_checks_keep_a_response_and_its_body(tmp_path):
     from sandbox_science.orchestrator.consistency.store import ReviewStore
     from sandbox_science.orchestrator.control import migrations
     from sandbox_science.orchestrator.documents import DocumentStore, store_path
     from sandbox_science.orchestrator.projects import ProjectStore
 
-    with monkeypatch.context() as old:  # a store from before version 5
-        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:3])
-        old.setattr(migrations, "VERSION", migrations.BASELINE + 2)
-        projects = ProjectStore(tmp_path)
-        projects.create("p", "minimal", "sha256:" + "a" * 64)
-        projects.open_session("p", "s", dedicated=False)
-        projects.close()
-        docs = DocumentStore(store_path(tmp_path))
-        reviews = ReviewStore(docs, clock=lambda: 1000.0)
-        finding, decision = response(reviews)
-        before = ResponseBodies(reviews).get("p", "s", finding, decision)
-        docs.close()
-    docs = DocumentStore(store_path(tmp_path))
+    from .control_versions import older_store
+
+    current, old = tmp_path / "current", tmp_path / "old"
+    projects = ProjectStore(current)
+    projects.create("p", "minimal", "sha256:" + "a" * 64)
+    projects.open_session("p", "s", dedicated=False)
+    projects.close()
+    docs = DocumentStore(store_path(current))
+    reviews = ReviewStore(docs, clock=lambda: 1000.0)
+    finding, decision = response(reviews)
+    before = ResponseBodies(reviews).get("p", "s", finding, decision)
+    docs.close()
+    older_store(store_path(current), store_path(old), migrations.BASELINE + 2)  # before v5
+    docs = DocumentStore(store_path(old))
     docs.initialize()  # the writer brings the store to the current version
     try:
         after = ResponseBodies(ReviewStore(docs, clock=lambda: 1000.0)).get(

@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: MIT
-"""Versioned USER project macros and immutable math-context pins (LD-28).
+"""Versioned USER project macros, and the macro contexts texts are checked and shown
+with (LD-28).
 
-Settings writes only append a bounded revision. Current-source refresh is lazy in
-the existing math admission loop; neither settings nor source saves render math.
+Settings writes only append a bounded revision. A document revision, a math check, a
+response body revision and a review's response pin record the setting revision they
+used (decision 7); the effective context (anchors, definitions, problems, whether it
+is held) is derived from that and the immutable sources when read. Current-source
+refresh is lazy in the existing math admission loop; neither settings nor source saves
+render math.
 """
 
 from __future__ import annotations
@@ -27,7 +32,6 @@ if TYPE_CHECKING:
 Json = dict[str, Any]
 MAX_BYTES = 16 * 1024
 MAX_HISTORY = 1024
-MAX_CONTEXT_BYTES = 64 * 1024 * 1024
 _NAME = re.compile(r"\\(?:[A-Za-z]+|[^A-Za-z\s])\Z")
 EMPTY_SHA = hashlib.sha256(b"{}").hexdigest()
 
@@ -204,101 +208,111 @@ class ProjectMacros:
             raise DocumentError(INVALID_REQUEST, "invalid project macro scope")
 
 
-def source_saved(db: sqlite3.Connection, kind: str, document: str) -> None:
-    if kind == "document.revision_created":
-        db.execute(
-            "INSERT INTO document_macro_pins SELECT d.document_id,d.head,coalesce(h.revision,0) "
-            "FROM documents d LEFT JOIN project_macro_heads h ON h.project=d.project_id "
-            "WHERE d.document_id=?",
-            (document,),
-        )
-
-
-def pin(
-    db: sqlite3.Connection, check: str, project: str, anchors: list[Json] | None = None
-) -> None:
-    setting = read(db, project)
-    encoded = dump(anchors or [])
-    if len(encoded.encode()) > 16384:
-        raise DocumentError(INTERNAL, "math macro anchors exceed their bound")
-    db.execute(
-        "INSERT INTO math_macro_pins VALUES(?,?,?,?,?)",
-        (check, project, setting["revision"], setting["sha256"], encoded),
-    )
+def pin(db: sqlite3.Connection, check: str, project: str) -> None:
+    """Record the setting revision a new math check uses: the current one."""
+    db.execute("UPDATE math_jobs SET macro_revision=? WHERE check_id=?", (head(db, project), check))
 
 
 def job_context(db: sqlite3.Connection | None, check: str, project: str) -> Json:
-    if db is None:
+    """The setting a check used and the anchors its macros come from: an explanation's
+    finding's document anchors, or none."""
+    row = (
+        None
+        if db is None
+        else db.execute(
+            "SELECT j.macro_revision,r.source FROM math_jobs j LEFT JOIN math_response_jobs r "
+            "USING(check_id) WHERE j.check_id=?",
+            (check,),
+        ).fetchone()
+    )
+    if db is None or row is None or row[0] is None:
         return {**read(db, project, 0), "known": False, "anchors": []}
-    row = db.execute(
-        "SELECT revision,sha256,anchors FROM math_macro_pins WHERE check_id=? AND project=?",
-        (check, project),
-    ).fetchone()
-    if row is None:
-        return {**read(db, project, 0), "known": False, "anchors": []}
-    setting = read(db, project, row[0])
-    if row[1] != setting["sha256"]:
-        raise DocumentError(INTERNAL, "math macro pin does not bind its setting")
-    return {**setting, "known": True, "anchors": cast(list[Json], json.loads(row[2]))}
+    anchors = [] if row[1] is None else response_anchors(db, row[1])
+    return {**read(db, project, row[0]), "known": True, "anchors": anchors}
 
 
 def current(db: sqlite3.Connection, check: str, project: str) -> bool:
+    """Whether a check used the current setting and resolved its context unheld."""
     context = job_context(db, check, project)
     return bool(
         context["known"]
         and context["revision"] == head(db, project)
         and db.execute(
-            "SELECT 1 FROM math_macro_contexts WHERE check_id=? AND held=0", (check,)
+            "SELECT 1 FROM math_jobs WHERE check_id=? AND macro_held=0", (check,)
         ).fetchone()
     )
 
 
-def response_saved(
-    db: sqlite3.Connection,
-    parent: Json,
-    revision: int,
-    *,
-    legacy: bool = False,
-    unknown_anchors: bool = False,
-) -> None:
-    anchors = (
-        [{"unknown": True}]
-        if legacy or unknown_anchors
-        else finding_anchors(db, parent["project"], parent["finding"])
-    )
-    db.execute(
-        "INSERT OR IGNORE INTO response_macro_anchors VALUES(?,?)",
-        (parent["source"], dump(anchors)),
-    )
-    if not legacy:
-        db.execute(
-            "INSERT INTO response_macro_revisions VALUES(?,?,?)",
-            (parent["source"], revision, head(db, parent["project"])),
-        )
+_SEVERITY_RANK = {"fail": 0, "warn": 1, "note": 2}
+"""As the consistency review ranks severities: a lower rank is more severe."""
 
 
 def response_anchors(db: sqlite3.Connection, source: str) -> list[Json]:
+    """An explanation's macro anchors: the documents its finding was anchored to when
+    the explanation was given (its decision revision), or unknown when its first body
+    revision came from a writer that recorded no macros. A later reflag of the finding
+    does not change them."""
     row = db.execute(
-        "SELECT anchors FROM response_macro_anchors WHERE source=?", (source,)
+        "SELECT f.project,f.finding_id,b.decision_revision,b.macro_revision "
+        "FROM review_response_bodies b JOIN review_findings f USING(finding_id) "
+        "WHERE b.source=? ORDER BY b.revision LIMIT 1",
+        (source,),
+    ).fetchone()
+    if row is None or row[3] is None:
+        return [{"unknown": True}]
+    project, finding, decision = row[0], row[1], row[2]
+    anchors = header_anchors(db, finding, decision)
+    if anchors is None:
+        return finding_anchors(db, project, finding)
+    return anchor_pins(db, project, anchors)
+
+
+def header_anchors(db: sqlite3.Connection, finding: str, revision: int) -> object | None:
+    """The anchors a review finding's header held at ``revision``, from its last
+    assessment then: a reflag's assessment replaced them when it was at least as severe
+    as the header, and kept them otherwise. None when no transition recorded one."""
+    row = db.execute(
+        "SELECT payload FROM review_transitions WHERE finding_id=? AND revision<=? "
+        "AND json_extract(payload,'$.assessment') IS NOT NULL ORDER BY revision DESC LIMIT 1",
+        (finding, revision),
     ).fetchone()
     if row is None:
+        return None
+    try:
+        payload = cast(Json, json.loads(row[0]))
+        new, old = cast(Json, payload["assessment"]), payload.get("previous_assessment")
+        if not isinstance(old, dict):
+            return new["anchors"]
+        old = cast(Json, old)
+        stronger = _SEVERITY_RANK[new["severity"]] <= _SEVERITY_RANK[old["severity"]]
+        return new["anchors"] if stronger else old["anchors"]
+    except (ValueError, KeyError, TypeError, RecursionError):
         return [{"unknown": True}]
-    return cast(list[Json], json.loads(row[0]))
 
 
 def finding_anchors(db: sqlite3.Connection, project: str, finding: str) -> list[Json]:
+    """The documents a finding is anchored to now."""
     row = db.execute(
         "SELECT anchors FROM review_findings WHERE finding_id=? AND project=?",
         (finding, project),
     ).fetchone()
+    if row is None:
+        return [{"unknown": True}]
     try:
-        if row is None:
-            raise ValueError
-        anchors = json.loads(row[0])
+        return anchor_pins(db, project, json.loads(row[0]))
+    except (ValueError, RecursionError):
+        return [{"unknown": True}]
+
+
+def anchor_pins(db: sqlite3.Connection, project: str, anchors: object) -> list[Json]:
+    """The document revisions a finding's anchors name, each once, in their order."""
+    try:
         if not isinstance(anchors, list) or len(cast(list[Any], anchors)) > 32:
             raise ValueError
         pins: list[Json] = []
         for anchor in cast(list[Json], anchors):
+            if anchor.get("unknown"):
+                raise ValueError
             locator = anchor.get("locator", {})
             if "document" not in locator:
                 continue
@@ -389,11 +403,12 @@ def view(
             known, setting = False, read(db, project, 0)
         elif historical and document is not None:
             row = db.execute(
-                "SELECT project_revision FROM document_macro_pins WHERE document=? AND revision=?",
+                "SELECT macro_revision FROM revisions WHERE document_id=? AND number=?",
                 (document, revision),
             ).fetchone()
-            known = row is not None
-            setting = read(db, project, 0 if row is None else row[0])
+            pinned: int | None = None if row is None else row[0]
+            known = pinned is not None
+            setting = read(db, project, 0 if pinned is None else pinned)
     pins = anchors or []
     if document is not None and revision is not None:
         saved = documents.revision(project, document, revision)
@@ -417,8 +432,7 @@ def response_view(
         anchors = response_anchors(db, source)
         saved = (
             db.execute(
-                "SELECT project_revision FROM response_macro_revisions "
-                "WHERE source=? AND body_revision=?",
+                "SELECT macro_revision FROM review_response_bodies WHERE source=? AND revision=?",
                 (source, body_revision),
             ).fetchone()
             if body_revision is not None
@@ -433,73 +447,19 @@ def response_view(
     )
 
 
-def resolved(db: sqlite3.Connection, check: str, context: Json) -> Json | None:
-    row = db.execute(
-        "SELECT definitions,problems,held,context_key FROM math_macro_contexts WHERE check_id=?",
-        (check,),
-    ).fetchone()
-    if row is None:
-        return None
-    content: Json = {
-        **context,
-        "effective": cast(Json, json.loads(row[0])),
-        "problems": cast(list[str], json.loads(row[1])),
-        "held": bool(row[2]),
-    }
-    key = hashlib.sha256(dump(content).encode()).hexdigest()
-    if row[3] != key:
-        raise DocumentError(INTERNAL, "effective macro context does not bind its pins")
-    return {**content, "key": key}
+def resolved(context: Json, definitions: dict[str, str], problems: list[str], held: bool) -> Json:
+    """A check's effective context: its setting and anchors with the definitions,
+    problems and held state they resolve to, and a key over all of them."""
+    content: Json = {**context, "effective": definitions, "problems": problems, "held": held}
+    return {**content, "key": hashlib.sha256(dump(content).encode()).hexdigest()}
 
 
-def save_resolution(
-    db: sqlite3.Connection,
-    check: str,
-    context: Json,
-    definitions: dict[str, str],
-    problems: list[str],
-    held: bool,
-) -> bool:
-    content = {**context, "effective": definitions, "problems": problems, "held": held}
-    encoded, warnings = dump(definitions), dump(problems)
-    if len(encoded.encode()) > 65536 or len(warnings.encode()) > 32768:
-        raise DocumentError(INTERNAL, "effective macro context exceeds its bounds")
-    existing = resolved(db, check, context)
-    if existing is not None:
-        if (
-            existing["effective"] != definitions
-            or existing["held"] != held
-            or existing["problems"] != problems
-        ):
-            raise DocumentError(INTERNAL, "effective macro context changed within an attempt")
-        return True
-    size = db.execute(
-        "SELECT coalesce(sum(length(CAST(definitions AS BLOB))+"
-        "length(CAST(problems AS BLOB))),0) FROM math_macro_contexts"
-    ).fetchone()[0]
-    if size + len(encoded.encode()) + len(warnings.encode()) > MAX_CONTEXT_BYTES:
-        message = "math effective macro context quota reached"
-        db.execute(
-            "UPDATE math_sources SET blocked=? WHERE document="
-            "(SELECT document FROM math_jobs WHERE check_id=?)",
-            (message, check),
-        )
-        db.execute(
-            "UPDATE comment_math_sources SET blocked=? WHERE entry_id="
-            "(SELECT entry_id FROM math_comment_jobs WHERE check_id=?)",
-            (message, check),
-        )
-        db.execute(
-            "UPDATE response_math_sources SET blocked=? WHERE source="
-            "(SELECT source FROM math_response_jobs WHERE check_id=?)",
-            (message, check),
-        )
-        return False
-    db.execute(
-        "INSERT OR IGNORE INTO math_macro_contexts VALUES(?,?,?,?,?)",
-        (check, encoded, warnings, int(held), hashlib.sha256(dump(content).encode()).hexdigest()),
-    )
-    return True
+def save_resolution(db: sqlite3.Connection, check: str, held: bool) -> None:
+    """Record whether a check's macro context is held; an attempt resolves it once."""
+    row = db.execute("SELECT macro_held FROM math_jobs WHERE check_id=?", (check,)).fetchone()
+    if row is not None and row[0] is not None and bool(row[0]) != held:
+        raise DocumentError(INTERNAL, "effective macro context changed within an attempt")
+    db.execute("UPDATE math_jobs SET macro_held=? WHERE check_id=?", (int(held), check))
 
 
 def _sources() -> tuple[tuple[str, str, str, str], ...]:
@@ -534,8 +494,8 @@ def _candidates(table: str, key: str, join: str, condition: str) -> str:
         f"SELECT s.{key} FROM {table} s "  # noqa: S608 - fixed schema names
         f"WHERE s.project=? AND s.completed=s.target AND s.retry_requested=0 AND {condition} AND "
         f"EXISTS(SELECT 1 FROM math_jobs j WHERE {join} AND j.revision=s.target) AND "
-        f"NOT EXISTS(SELECT 1 FROM math_jobs j JOIN math_macro_pins p USING(check_id) WHERE {join} "
-        "AND j.revision=s.target AND p.revision=?) ORDER BY s.rowid LIMIT 32"
+        f"NOT EXISTS(SELECT 1 FROM math_jobs j WHERE {join} "
+        "AND j.revision=s.target AND j.macro_revision=?) ORDER BY s.rowid LIMIT 32"
     )
 
 

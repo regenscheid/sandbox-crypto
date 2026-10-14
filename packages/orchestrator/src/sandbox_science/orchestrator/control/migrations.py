@@ -24,12 +24,13 @@ A row the new schema refuses leaves the store at its version, with a ``ControlEr
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from collections.abc import Callable, Sequence
 from importlib import resources
 from pathlib import Path
-from typing import Final
+from typing import Final, cast
 
 from .errors import BUSY, INTERNAL, NOT_FOUND, UNAVAILABLE, ControlError
 
@@ -665,6 +666,174 @@ def _run_service_control(schema: Schema) -> None:
         schema.execute(statement)
 
 
+def _immutable_update(schema: Schema, trigger: str, sql: str) -> None:
+    """Run ``sql`` on an append-only table, lifting its update ``trigger`` for it."""
+    (create,) = schema.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (trigger,)
+    ).fetchone()
+    schema.execute(f'DROP TRIGGER "{trigger}"')
+    schema.execute(sql)
+    schema.execute(create)
+
+
+_EMPTY_SETTING: Final = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+"""The SHA-256 of the empty project macro setting, ``{}`` (revision 0)."""
+
+_UNPLACED: Final = (
+    # (what a row is, the query that finds the first one version 10 cannot carry)
+    (
+        "a document macro pin of no revision",
+        "SELECT p.document FROM document_macro_pins p WHERE NOT EXISTS(SELECT 1 FROM revisions r "
+        "WHERE r.document_id=p.document AND r.number=p.revision)",
+    ),
+    (
+        "a document macro pin out of range",
+        "SELECT document FROM document_macro_pins WHERE typeof(project_revision)!='integer' "
+        "OR project_revision NOT BETWEEN 0 AND 999999999",
+    ),
+    (
+        "an explanation macro revision of no body revision",
+        "SELECT p.source FROM response_macro_revisions p WHERE NOT EXISTS(SELECT 1 FROM "
+        "review_response_bodies b WHERE b.source=p.source AND b.revision=p.body_revision)",
+    ),
+    (
+        "an explanation macro revision out of range",
+        "SELECT source FROM response_macro_revisions WHERE typeof(project_revision)!='integer' "
+        "OR project_revision NOT BETWEEN 0 AND 999999999",
+    ),
+    (
+        "a review macro pin of no response pin",
+        "SELECT p.review_id FROM review_macro_pins p WHERE NOT EXISTS(SELECT 1 FROM "
+        "review_response_pins r WHERE r.review_id=p.review_id AND r.finding_id=p.finding_id)",
+    ),
+    (
+        "a review macro pin whose digest is not its setting's",
+        "SELECT p.review_id FROM review_macro_pins p JOIN review_findings f USING(finding_id) "
+        "WHERE p.sha256 IS NOT (CASE WHEN p.revision=0 THEN ? ELSE (SELECT r.sha256 FROM "
+        "project_macro_revisions r WHERE r.project=f.project AND r.revision=p.revision) END)",
+    ),
+    (
+        "a math macro pin of no check",
+        "SELECT p.check_id FROM math_macro_pins p WHERE NOT EXISTS(SELECT 1 FROM math_jobs j "
+        "WHERE j.check_id=p.check_id)",
+    ),
+    (
+        "a math macro pin of another project than its check's",
+        "SELECT p.check_id FROM math_macro_pins p JOIN math_job_scope s USING(check_id) "
+        "WHERE p.project IS NOT s.project",
+    ),
+    (
+        "a math macro pin whose digest is not its setting's",
+        "SELECT check_id FROM math_macro_pins p WHERE p.sha256 IS NOT (CASE WHEN p.revision=0 "
+        "THEN ? ELSE (SELECT r.sha256 FROM project_macro_revisions r WHERE r.project=p.project "
+        "AND r.revision=p.revision) END)",
+    ),
+    (
+        "a math macro pin with anchors for a check of no explanation",
+        "SELECT check_id FROM math_macro_pins p WHERE json(anchors)!='[]' AND NOT EXISTS("
+        "SELECT 1 FROM math_response_jobs r WHERE r.check_id=p.check_id)",
+    ),
+    (
+        "a math macro context of no check",
+        "SELECT c.check_id FROM math_macro_contexts c WHERE NOT EXISTS(SELECT 1 FROM math_jobs j "
+        "WHERE j.check_id=c.check_id)",
+    ),
+)
+
+
+def _macro_revisions(schema: Schema) -> None:
+    """Version 10: a math check, a document revision, a response body revision and a
+    review's response pin record the project macro revision they used (decision 7);
+    the effective macro context is derived when read, and the six tables that pinned
+    it go (B-12). A pin this cannot carry, or whose anchors differ from those derived
+    for it, refuses the migration rather than being dropped."""
+    for what, query in _UNPLACED:
+        parameters = (_EMPTY_SETTING,) if "?" in query else ()
+        found = schema.execute(query + " LIMIT 1", parameters).fetchone()
+        if found is not None:
+            raise RefusedRowError(f"{what} ({found[0]})")
+    revision = "INTEGER CHECK (macro_revision IS NULL OR macro_revision BETWEEN 0 AND 999999999)"
+    for table in ("revisions", "math_jobs", "review_response_bodies", "review_response_pins"):
+        schema.execute(f"ALTER TABLE {table} ADD COLUMN macro_revision {revision}")
+    schema.execute(
+        "ALTER TABLE math_jobs ADD COLUMN macro_held INTEGER "
+        "CHECK (macro_held IS NULL OR macro_held IN (0, 1))"
+    )
+    schema.execute(
+        "UPDATE math_jobs SET macro_revision=(SELECT p.revision FROM math_macro_pins p "
+        "WHERE p.check_id=math_jobs.check_id),macro_held=(SELECT c.held FROM "
+        "math_macro_contexts c WHERE c.check_id=math_jobs.check_id)"
+    )
+    # Only the rows with a pin are rewritten.
+    _immutable_update(
+        schema,
+        "revisions_no_update",
+        "UPDATE revisions SET macro_revision=(SELECT p.project_revision FROM "
+        "document_macro_pins p WHERE p.document=revisions.document_id "
+        "AND p.revision=revisions.number) WHERE EXISTS(SELECT 1 FROM document_macro_pins p "
+        "WHERE p.document=revisions.document_id AND p.revision=revisions.number)",
+    )
+    _immutable_update(
+        schema,
+        "review_response_bodies_update",
+        "UPDATE review_response_bodies SET macro_revision=(SELECT p.project_revision FROM "
+        "response_macro_revisions p WHERE p.source=review_response_bodies.source "
+        "AND p.body_revision=review_response_bodies.revision) WHERE EXISTS(SELECT 1 FROM "
+        "response_macro_revisions p WHERE p.source=review_response_bodies.source "
+        "AND p.body_revision=review_response_bodies.revision)",
+    )
+    _immutable_update(
+        schema,
+        "review_response_pins_update",
+        "UPDATE review_response_pins SET macro_revision=(SELECT p.revision FROM "
+        "review_macro_pins p WHERE p.review_id=review_response_pins.review_id "
+        "AND p.finding_id=review_response_pins.finding_id) WHERE EXISTS(SELECT 1 FROM "
+        "review_macro_pins p WHERE p.review_id=review_response_pins.review_id "
+        "AND p.finding_id=review_response_pins.finding_id)",
+    )
+    _same_anchors(schema)
+    # A check records the revision it used and whether it was held once, for good.
+    schema.execute(
+        "CREATE TRIGGER math_jobs_macros_kept BEFORE UPDATE OF macro_revision,macro_held "
+        "ON math_jobs WHEN (OLD.macro_revision IS NOT NULL "
+        "AND NEW.macro_revision IS NOT OLD.macro_revision) OR (OLD.macro_held IS NOT NULL "
+        "AND NEW.macro_held IS NOT OLD.macro_held) "
+        "BEGIN SELECT RAISE(ABORT,'a check keeps its macro revision and held state'); END"
+    )
+    for table in (
+        "math_macro_pins",
+        "document_macro_pins",
+        "response_macro_anchors",
+        "response_macro_revisions",
+        "math_macro_contexts",
+        "review_macro_pins",
+    ):
+        schema.execute(f"DROP TABLE {table}")
+
+
+def _same_anchors(schema: Schema) -> None:
+    """Refuse the migration when an explanation's pinned anchors, or an explanation
+    check's, differ from those version 10 derives for it (its finding's anchors at the
+    explanation's decision revision)."""
+    # The derivation is the documents' own; it reads only through ``execute``.
+    from sandbox_science.orchestrator.documents.project_macros import response_anchors
+
+    db = cast(sqlite3.Connection, schema)
+    pinned = [
+        *schema.execute("SELECT source,anchors FROM response_macro_anchors ORDER BY rowid"),
+        *schema.execute(
+            "SELECT r.source,p.anchors FROM math_macro_pins p JOIN math_response_jobs r "
+            "USING(check_id) ORDER BY p.rowid"
+        ),
+    ]
+    for source, raw in pinned:
+        if json.loads(raw) != response_anchors(db, source):
+            raise RefusedRowError(
+                f"the pinned macro anchors of {source} differ from its finding's anchors "
+                "when it was explained"
+            )
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -674,6 +843,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _evidence_checks,
     _run_service,
     _run_service_control,
+    _macro_revisions,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

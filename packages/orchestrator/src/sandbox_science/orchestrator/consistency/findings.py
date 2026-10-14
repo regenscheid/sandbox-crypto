@@ -796,11 +796,11 @@ class Findings:
 
                 macro = current_body["macro_context"]
                 pinned_macro = db.execute(
-                    "SELECT revision,sha256 FROM review_macro_pins "
+                    "SELECT macro_revision FROM review_response_pins "
                     "WHERE review_id=? AND finding_id=?",
                     (review, value.finding),
                 ).fetchone()
-                if pinned_macro != (macro["revision"], macro["sha256"]):
+                if pinned_macro != (macro["revision"],):
                     raise DocumentError(
                         CONFLICT, "response macro context changed during confirmation"
                     )

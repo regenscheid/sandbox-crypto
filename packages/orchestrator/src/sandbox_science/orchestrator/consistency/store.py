@@ -564,8 +564,8 @@ class ReviewStore:
                 "WHERE p.review_id=t.review_id AND p.finding_id=f.finding_id),0) "
                 "AND (NOT EXISTS(SELECT 1 FROM review_response_bodies b WHERE "
                 "b.finding_id=f.finding_id AND b.decision_revision=f.revision) OR EXISTS("
-                "SELECT 1 FROM review_macro_pins m WHERE m.review_id=t.review_id AND "
-                "m.finding_id=f.finding_id AND m.revision=:macros)) AND r.state "
+                "SELECT 1 FROM review_response_pins m WHERE m.review_id=t.review_id AND "
+                "m.finding_id=f.finding_id AND m.macro_revision=:macros)) AND r.state "
             )
             return [
                 tuple(row)
@@ -948,19 +948,15 @@ class ReviewStore:
                 )
         for finding, pinned in plan.response_pins.items():
             db.execute(
-                "INSERT INTO review_response_pins VALUES(?,?,?,?,?)",
+                "INSERT INTO review_response_pins VALUES(?,?,?,?,?,?)",
                 (
                     review,
                     finding,
                     pinned["response_revision"],
                     pinned["revision"],
                     pinned["sha256"],
+                    pinned["macro_context"]["revision"],
                 ),
-            )
-            macro = pinned["macro_context"]
-            db.execute(
-                "INSERT INTO review_macro_pins VALUES(?,?,?,?)",
-                (review, finding, macro["revision"], macro["sha256"]),
             )
         for ordinal, evidence in enumerate(plan.grants, len(plan.items) + 1):
             db.execute("INSERT INTO review_grants VALUES(?,?,?)", (review, evidence, ordinal))

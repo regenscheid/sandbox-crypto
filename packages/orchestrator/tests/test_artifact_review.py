@@ -486,22 +486,23 @@ def test_corrupt_giant_blob_is_clipped_before_python_and_never_copied(state) -> 
     )
 
 
-def test_the_evidence_checks_keep_artifacts_feed_and_evidence(tmp_path, monkeypatch) -> None:
+def test_the_evidence_checks_keep_artifacts_feed_and_evidence(tmp_path) -> None:
     from sandbox_science.orchestrator.control import migrations
 
-    with monkeypatch.context() as old:  # a store from before version 7
-        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:5])
-        old.setattr(migrations, "VERSION", migrations.BASELINE + 4)
-        old_state = build(tmp_path)
-        reviews, inventory, _ = old_state
-        publish(old_state)
-        ingest_artifacts(reviews, "p", "s")
-        review = dispatch(reviews)
-        evidence = items(reviews, review)
-        payloads = [reviews.evidence("p", "s", review, e["evidence"]) for e in evidence]
-        before = (inventory.list("p"), inventory.events("p"), evidence, payloads)
-        reviews.documents.close()
-    documents = DocumentStore(store_path(tmp_path))
+    from .control_versions import older_store
+
+    current, old = tmp_path / "current", tmp_path / "old"
+    made = build(current)
+    reviews, inventory, _ = made
+    publish(made)
+    ingest_artifacts(reviews, "p", "s")
+    review = dispatch(reviews)
+    evidence = items(reviews, review)
+    payloads = [reviews.evidence("p", "s", review, e["evidence"]) for e in evidence]
+    before = (inventory.list("p"), inventory.events("p"), evidence, payloads)
+    reviews.documents.close()
+    older_store(store_path(current), store_path(old), migrations.BASELINE + 4)  # before v7
+    documents = DocumentStore(store_path(old))
     documents.initialize()  # the writer brings the store to the current version
     try:
         inventory = ArtifactInventory(documents)
