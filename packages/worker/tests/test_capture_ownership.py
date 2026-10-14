@@ -277,12 +277,12 @@ async def test_reconnect_ack_requires_exact_helper_and_explicit_cleanup(
     original = channel.request
     monkeypatch.setattr(channel, "request", forged)
     try:
-        await worker._reconcile_captures("env1", channel)
+        await view(worker).reconcile_captures("env1", channel)
         assert store.capture_leases() == expected
         monkeypatch.setattr(channel, "request", original)
         # A fresh incarnation never provides proof for the old tuple.
         old_incarnation, channel.incarnation = channel.incarnation, new_id("inc")
-        await worker._reconcile_captures("env1", channel)
+        await view(worker).reconcile_captures("env1", channel)
         channel.incarnation = old_incarnation
         assert store.capture_leases() == expected
     finally:

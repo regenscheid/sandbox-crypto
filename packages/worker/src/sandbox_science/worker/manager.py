@@ -18,17 +18,14 @@ import hashlib
 import itertools
 import logging
 import math
-import mimetypes
 import posixpath
 import re
 import sqlite3
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from functools import partial
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -87,13 +84,12 @@ from sandbox_science.contracts.worker import (
     LANGUAGES,
     MAX_EVENT_BYTES,
     MAX_PATH_BYTES,
-    MAX_READ_BYTES,
     PROTOCOL_VERSION,
 )
 from sandbox_science.policy.model import Resources
 
 from . import capture
-from .artifacts import Blobs, BlobWriter
+from .artifacts import Blobs
 from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .connections import Activity, Connection, ConnectionHooks, EnvironmentConnections
@@ -103,9 +99,11 @@ from .kernel_revisions import KernelBirth
 from .output_observations import normalize as normalize_observation
 from .package_gate import PackageGate
 from .package_gate import refusal as recovery_refusal
+from .publication import Publication
+from .replies import Range, epoch, integer
 from .revisions import Prepared, Revisions, package_commands
 from .shared_sync import SharedSync
-from .store import CaptureLease, KernelRecord, Store
+from .store import KernelRecord, Store
 from .timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
 from .usability import Usability
 
@@ -151,19 +149,6 @@ def _time_limit(request: ExecutionRequest) -> float:
     if request.timeout_seconds is None:
         raise WorkerError(ErrorKind.INTERNAL, "the job's time limit was never resolved")
     return request.timeout_seconds
-
-
-def _integer(value: object, low: int = -(2**31), high: int = 2**31 - 1) -> int | None:
-    if isinstance(value, int) and not isinstance(value, bool) and low <= value <= high:
-        return value
-    return None
-
-
-def _epoch(value: object) -> datetime | None:
-    if isinstance(value, int | float) and not isinstance(value, bool):
-        with contextlib.suppress(OverflowError, OSError, ValueError):
-            return datetime.fromtimestamp(value, UTC)
-    return None
 
 
 def _seconds(value: object) -> float:
@@ -235,26 +220,6 @@ _Observation = TypeVar("_Observation")
 Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
 
 
-@dataclass(frozen=True)
-class _Range:
-    """A range of a file as the executor read it; ``sha256`` only when it was asked for."""
-
-    size: int
-    sha256: str | None
-    modified: datetime | None
-    offset: int
-    data: bytes
-    content_b64: str
-    eof: bool
-    stamp: str | None = None
-
-
-@dataclass
-class _Publication:
-    lease: CaptureLease
-    certain: bool = True
-
-
 class ExecutionManager:
     def __init__(
         self,
@@ -299,10 +264,6 @@ class ExecutionManager:
         self.capture_timeout = capture_timeout
         self.capture_ack_timeout = capture_ack_timeout
         """Seconds the executor gets to confirm it cleaned up a cancelled capture."""
-        self._captures: set[asyncio.Task[ArtifactRef]] = set()
-        self._capture_owners: dict[asyncio.Task[ArtifactRef], _Publication] = {}
-        self._capture_counts: dict[str, int] = {}
-        self._blob_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="artifact-blob")
         self._closing_task: asyncio.Task[None] | None = None
         self.state_dir = state_dir
         self._live: dict[str, _Live] = {}
@@ -331,13 +292,22 @@ class ExecutionManager:
                     environment_id, channel
                 ),
                 hello=lambda environment_id, channel: self._hello(environment_id, channel),
-                connected=lambda environment_id, channel: self._reconcile_captures(
+                connected=lambda environment_id, channel: self._publication.reconcile(
                     environment_id, channel
                 ),
             ),
             clock=clock,
             pool_id=pool_id,
             state_dir=state_dir,
+        )
+        self._publication = Publication(
+            store,
+            blobs,
+            self._connections,
+            self._usability,
+            clock=clock,
+            max_artifact_size=max_artifact_size,
+            ack_timeout=capture_ack_timeout,
         )
         self._streams_ended = False
         self._pollers: dict[str, tuple[ExecutorChannel, asyncio.Task[Any]]] = {}
@@ -349,7 +319,6 @@ class ExecutionManager:
         self.notices: Notices | None = None
         """Admission notices for an environment since a time; the environments set it."""
         self._noticed: dict[tuple[str, str], datetime] = {}
-        self._capture_counts = self._capture_usage()
         self._gate_locks: dict[str, asyncio.Lock] = {}
         self._gate_acked: dict[ExecutorChannel, PackageGate] = {}
         self._gate_retries: dict[str, asyncio.Task[Any]] = {}
@@ -725,18 +694,7 @@ class ExecutionManager:
             await self._release(environment_id)
 
     async def _release(self, environment_id: str) -> None:
-        captures = [
-            task
-            for task, owner in self._capture_owners.items()
-            if owner.lease.environment_id == environment_id
-        ]
-        for task in captures:
-            task.cancel()
-        # VM cleanup cannot substitute for actual host blob/FD ownership. Keep
-        # release pending through repeated cancellation until these tasks drain.
-        _, cancelled = await capture.owned(asyncio.gather(*captures, return_exceptions=True))
-        if cancelled:
-            raise asyncio.CancelledError
+        await self._publication.cancel(environment_id)
         jobs = self._running_jobs(environment_id)
         await self._cancel_jobs(jobs)
         await self._connections.release(environment_id)
@@ -752,9 +710,7 @@ class ExecutionManager:
 
         Returns whether it did (or there was none), so that its sandbox may stop.
         """
-        if self._running_jobs(environment_id) or any(
-            owner.lease.environment_id == environment_id for owner in self._capture_owners.values()
-        ):
+        if self._running_jobs(environment_id) or self._publication.holds(environment_id):
             return False
         return await self._connections.release_if_idle(environment_id, idle_since)
 
@@ -768,12 +724,7 @@ class ExecutionManager:
             raise asyncio.CancelledError
 
     async def _close(self) -> None:
-        captures = list(self._captures)
-        for task in captures:
-            task.cancel()
-        await asyncio.gather(*captures, return_exceptions=True)
-        # Admitted blob work has drained before the pool/FDs or channels can close.
-        self._blob_pool.shutdown(wait=True)
+        await self._publication.close()
         tasks = list(self._tasks)
         for task in tasks:
             task.cancel()
@@ -995,8 +946,7 @@ class ExecutionManager:
         if old_incarnation is not None:
             # This callback proved termination of the original immutable VM
             # binding. Incarnation change/transport failure alone never clears.
-            self.store.fenced_captures(environment_id, old_incarnation, *binding)
-            self._capture_counts = self._capture_usage()
+            self._publication.sandbox_stopped(environment_id, old_incarnation, *binding)
         self._usability.sandbox_stopped(environment_id)
 
     def _incarnation_lost(self, environment_id: str, previous: str) -> None:
@@ -1032,18 +982,8 @@ class ExecutionManager:
     async def confirm_capture_cleanup(
         self, environment_id: str, sandbox: str, sandbox_id: str
     ) -> None:
-        """Trusted lifecycle callback after proof of this exact original VM's deletion.
-
-        Active host owners retain admission even after guest cleanup is proved.
-        Unknown/other bindings and corrupt state never inherit the proof.
-        """
-        for lease in self.store.capture_leases():
-            if lease.environment_id == environment_id and (lease.sandbox, lease.sandbox_id) == (
-                sandbox,
-                sandbox_id,
-            ):
-                self.store.fenced_captures(environment_id, lease.incarnation, sandbox, sandbox_id)
-        self._capture_counts = self._capture_usage()
+        """Trusted lifecycle callback after proof of this exact original VM's deletion."""
+        self._publication.confirm_cleanup(environment_id, sandbox, sandbox_id)
 
     def _package_deletion_binding(self, environment_id: str) -> str | None:
         if self.daemon_identity is not None:
@@ -1768,10 +1708,10 @@ class ExecutionManager:
         location = live.execution.location
         before = location.environment_revision if location is not None else None
         return Result(
-            exit_code=_integer(raw.get("exit_code")),
-            signal=_integer(raw.get("signal"), 1, 255),
+            exit_code=integer(raw.get("exit_code")),
+            signal=integer(raw.get("signal"), 1, 255),
             status=raw.get("status"),
-            execution_count=_integer(raw.get("execution_count"), 0),
+            execution_count=integer(raw.get("execution_count"), 0),
             stdout=_stream(raw.get("stdout"), "stdout", live.limit),
             stderr=_stream(raw.get("stderr"), "stderr", live.limit),
             outputs=_outputs(raw.get("outputs"), live.limit),
@@ -1780,8 +1720,8 @@ class ExecutionManager:
             running_kernels=running,
             state_lost=lost,
             elapsed_seconds=_seconds(raw.get("elapsed_seconds")),
-            sandbox_started_at=_epoch(raw.get("sandbox_started")),
-            sandbox_ended_at=_epoch(raw.get("sandbox_ended")),
+            sandbox_started_at=epoch(raw.get("sandbox_started")),
+            sandbox_ended_at=epoch(raw.get("sandbox_ended")),
             written_files=tuple(paths[:MAX_WRITTEN]),
             written_files_truncated=raw.get("written_files_truncated") is True
             or len(paths) > MAX_WRITTEN,
@@ -1939,7 +1879,7 @@ class ExecutionManager:
             return None, state_lost
         raw = cast(dict[str, Any], raw)
         language = raw.get("language", "python")
-        generation = _integer(raw.get("generation", 1), 1, 2**31 - 1)
+        generation = integer(raw.get("generation", 1), 1, 2**31 - 1)
         if language not in LANGUAGES or generation is None:
             return None, state_lost
         environment = self._connections.get(environment_id)
@@ -2303,7 +2243,7 @@ class ExecutionManager:
             if isinstance(cpu, int | float) and not isinstance(cpu, bool) and 0 <= cpu <= 1e15
             else None
         )
-        memory = _integer(reply.get("memory_bytes"), 0, 2**62)
+        memory = integer(reply.get("memory_bytes"), 0, 2**62)
         execution = self.get(execution_id)
         if execution.result is not None:
             return await self.job_status(execution_id, project_id)
@@ -2508,7 +2448,7 @@ class ExecutionManager:
         length: int,
         *,
         hashed: bool,
-    ) -> _Range:
+    ) -> Range:
         reply = await channel.request(
             "read",
             session=request.context.session_id,
@@ -2522,7 +2462,7 @@ class ExecutionManager:
             if not isinstance(encoded, str):
                 raise TypeError("content_b64")
             data = base64.b64decode(encoded, validate=True)
-            size, start = _integer(reply.get("size"), 0, 2**62), _integer(reply.get("offset"), 0)
+            size, start = integer(reply.get("size"), 0, 2**62), integer(reply.get("offset"), 0)
             sha256 = reply.get("sha256")
             if size is None or start != offset or len(data) > length or offset + len(data) > size:
                 raise ValueError("a range that was not asked for")
@@ -2532,10 +2472,10 @@ class ExecutionManager:
             raise WorkerError(
                 ErrorKind.INTERNAL, f"the executor sent a malformed file reply ({exc})"
             ) from exc
-        return _Range(
+        return Range(
             size=size,
             sha256=sha256 if hashed else None,
-            modified=_epoch(reply.get("modified")),
+            modified=epoch(reply.get("modified")),
             offset=offset,
             data=data,
             content_b64=encoded,
@@ -2604,7 +2544,7 @@ class ExecutionManager:
                         name=item.get("name"),
                         type=item.get("type"),
                         size=item.get("size"),
-                        modified_at=_epoch(item.get("modified")),
+                        modified_at=epoch(item.get("modified")),
                     )
                 )
             return FileListing(
@@ -2613,329 +2553,12 @@ class ExecutionManager:
                 truncated=reply.get("truncated") is True or len(entries) < len(every),
             )
 
-    async def _blob_io(self, function: Callable[..., Any], *args: object) -> Any:
-        """Keep the actual thread owned before cancellation can close/reuse its FD."""
-        future = asyncio.get_running_loop().run_in_executor(
-            self._blob_pool, partial(function, *args)
-        )
-        result, cancelled = await capture.owned(future)
-        if cancelled:
-            raise asyncio.CancelledError
-        return result
-
-    async def _capture_range(
-        self,
-        channel: ExecutorChannel,
-        reading: ReadFileRequest,
-        offset: int,
-        deadline: float,
-        owner: _Publication,
-        *,
-        hashed: bool,
-    ) -> _Range:
-        remaining = deadline - self.clock.monotonic()
-        if remaining <= 0:
-            raise TimeoutError
-        capture_id = new_id("cap")
-        try:
-            owner.lease = self.store.dispatch_capture(
-                owner.lease,
-                channel.incarnation,
-                capture_id,
-                self.store.capture_binding(reading.context.environment_id, channel.incarnation)
-                if channel.daemon_token is not None
-                else None,
-            )
-        except ValueError as exc:
-            owner.certain = False
-            raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from exc
-        owner.certain = False
-        # Keep the request pending so cancellation waits for the original reader as
-        # well as the explicit cleanup acknowledgement. A mere HTTP timeout cannot
-        # cancel a filesystem operation in the sandbox.
-        task = asyncio.create_task(
-            channel.request(
-                "capture_read",
-                capture_id=capture_id,
-                session=reading.context.session_id,
-                path=reading.path,
-                offset=offset,
-                length=MAX_READ_BYTES,
-                max_bytes=min(capture.MAX_BYTES, self.max_artifact_size),
-                hash=hashed,
-                timeout=remaining,
-                reply_timeout=None,
-            )
-        )
-        try:
-            async with asyncio.timeout(remaining):
-                reply = await asyncio.shield(task)
-            if reply.get("capture_id") != capture_id or reply.get("cleaned") is not True:
-                raise WorkerError(ErrorKind.INTERNAL, "capture reply lacks exact cleanup proof")
-            owner.certain = True
-        except BaseException:
-
-            async def cleanup() -> None:
-                try:
-                    async with asyncio.timeout(self.capture_ack_timeout):
-                        cancelled = await channel.request(
-                            "capture_cancel",
-                            capture_id=capture_id,
-                            reply_timeout=self.capture_ack_timeout,
-                        )
-                    if (
-                        cancelled.get("capture_id") == capture_id
-                        and cancelled.get("cleaned") is True
-                    ):
-                        owner.certain = True
-                finally:
-                    # This task only owns a protocol reply, not guest filesystem
-                    # work. No ACK means its durable lease stays held; the guest
-                    # pool still owns the actual helper until observed exit.
-                    if not task.done():
-                        task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-                    if not task.cancelled() and task.exception() is None:
-                        result = task.result()
-                        if result.get("capture_id") == capture_id and result.get("cleaned") is True:
-                            owner.certain = True
-
-            with contextlib.suppress(WorkerError, TimeoutError):
-                await capture.owned(asyncio.create_task(cleanup()))
-            if not owner.certain:
-                raise WorkerError(
-                    ErrorKind.UNAVAILABLE,
-                    "capture cleanup outcome is unknown; durable admission remains held",
-                ) from None
-            raise
-        error: object = reply.get("capture_error")
-        if error is not None:
-            record = cast(dict[str, Any], error) if isinstance(error, dict) else {}
-            kind, message = record.get("kind"), record.get("message")
-            if (
-                not isinstance(kind, str)
-                or len(kind) > 32
-                or not isinstance(message, str)
-                or len(message) > 512
-            ):
-                raise WorkerError(ErrorKind.INTERNAL, "invalid capture failure metadata")
-            try:
-                error_kind = ErrorKind(kind)
-            except ValueError:
-                error_kind = ErrorKind.INTERNAL
-            raise WorkerError(error_kind, message)
-        try:
-            encoded = reply.get("content_b64")
-            if not isinstance(encoded, str) or len(encoded) > 4 * ((MAX_READ_BYTES + 2) // 3):
-                raise ValueError("range encoding exceeds its bound")
-            data = base64.b64decode(encoded, validate=True)
-            limit = min(capture.MAX_BYTES, self.max_artifact_size)
-            size = _integer(reply.get("size"), 0, limit)
-            start = _integer(reply.get("offset"), 0, capture.MAX_BYTES)
-            sha256, stamp = reply.get("sha256"), reply.get("stamp")
-            eof = reply.get("eof")
-            modified = reply.get("modified")
-            if (
-                size is None
-                or start != offset
-                or len(data) > MAX_READ_BYTES
-                or offset + len(data) > size
-                or type(eof) is not bool
-                or eof != (offset + len(data) == size)
-                or not isinstance(stamp, str)
-                or re.fullmatch(r"[0-9a-f]{64}", stamp) is None
-                or (
-                    hashed
-                    and (
-                        not isinstance(sha256, str) or re.fullmatch(r"[0-9a-f]{64}", sha256) is None
-                    )
-                )
-                or (not hashed and sha256 is not None)
-                or not isinstance(modified, int | float)
-                or isinstance(modified, bool)
-                or not math.isfinite(modified)
-            ):
-                raise ValueError("invalid capture metadata")
-        except (TypeError, ValueError) as exc:
-            raise WorkerError(
-                ErrorKind.INTERNAL, "the executor sent a malformed capture reply"
-            ) from exc
-        return _Range(size, sha256, _epoch(modified), offset, data, encoded, eof, stamp)
-
-    def _capture_usage(self) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        try:
-            for lease in self.store.capture_leases():
-                counts[lease.environment_id] = counts.get(lease.environment_id, 0) + 1
-        except ValueError:
-            return {"unknown-corrupt-state": 4}
-        return counts
-
-    async def _reconcile_captures(self, environment_id: str, channel: ExecutorChannel) -> None:
-        """Only held host-drained leases can receive same-incarnation cleanup ACKs.
-
-        Active rows left by an abruptly lost worker remain conservative holds:
-        another process may still own host I/O. Neither time nor a new executor
-        incarnation proves that ownership ended.
-        """
-        protocol = channel.hello.get("artifact_capture_protocol")
-        if type(protocol) is not int or protocol != capture.PROTOCOL:
-            return
-        try:
-            leases = self.store.capture_leases()
-        except ValueError:
-            return
-        for lease in leases:
-            if (
-                lease.phase != "held"
-                or lease.environment_id != environment_id
-                or lease.incarnation != channel.incarnation
-                or not lease.capture_id
-            ):
-                continue
-            try:
-                async with asyncio.timeout(self.capture_ack_timeout):
-                    reply = await channel.request("capture_cancel", capture_id=lease.capture_id)
-                if reply.get("capture_id") == lease.capture_id and reply.get("cleaned") is True:
-                    self.store.acknowledge_capture(lease)
-            except (WorkerError, TimeoutError, ValueError):
-                _log.warning("capture cleanup remains unknown; durable admission held")
-        self._capture_counts = self._capture_usage()
-
     async def publish(self, request: PublishRequest) -> ArtifactRef:
-        """Admit four durable publications, two per environment, without queued work.
-
-        Unknown guest cleanup holds admission even after actual host work drains;
-        this is a byte observation, never proof of writer closure.
-        """
-        environment_id = request.context.environment_id
-        if self._usability.closing or self._usability.releasing(environment_id):
-            raise WorkerError(ErrorKind.UNAVAILABLE, "artifact capture admission limit reached")
-        deadline = self.clock.monotonic() + self.capture_timeout
-        try:
-            lease = self.store.reserve_capture(new_id("pub"), environment_id)
-        except ValueError as exc:
-            raise WorkerError(ErrorKind.UNAVAILABLE, str(exc)) from exc
-        owner = _Publication(lease)
-        task = asyncio.create_task(self._publish(request, deadline, owner))
-        self._captures.add(task)
-        self._capture_owners[task] = owner
-        self._capture_counts = self._capture_usage()
-
-        def finished(done: asyncio.Task[ArtifactRef]) -> None:
-            self._captures.discard(done)
-            self._capture_owners.pop(done)
-            try:
-                self.store.finish_capture(owner.lease, certain=owner.certain)
-            except ValueError:
-                _log.error("capture completion cannot release displaced admission; held")
-            self._capture_counts = self._capture_usage()
-            if not done.cancelled():
-                done.exception()
-
-        task.add_done_callback(finished)
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await capture.owned(task)
-            raise
-
-    async def _publish(
-        self, request: PublishRequest, deadline: float, owner: _Publication
-    ) -> ArtifactRef:
-        context = request.context
-        writer: BlobWriter | None = None
-        try:
-            async with asyncio.timeout_at(
-                asyncio.get_running_loop().time() + max(0, deadline - self.clock.monotonic())
-            ):
-                async with self._connections.using(context.environment_id) as channel:
-                    protocol = channel.hello.get("artifact_capture_protocol")
-                    if type(protocol) is not int or protocol != capture.PROTOCOL:
-                        raise WorkerError(
-                            ErrorKind.UNSUPPORTED,
-                            "this executor lacks bounded artifact capture protocol 1",
-                        )
-                    reading = ReadFileRequest(context=context, path=request.path)
-                    changed = WorkerError(
-                        ErrorKind.CONFLICT, f"{request.path} changed while it was published"
-                    )
-                    creating = asyncio.get_running_loop().run_in_executor(
-                        self._blob_pool, self.blobs.writer
-                    )
-                    writer, cancelled = await capture.owned(creating)
-                    if cancelled:
-                        raise asyncio.CancelledError
-                    found = await self._capture_range(
-                        channel, reading, 0, deadline, owner, hashed=True
-                    )
-                    size, sha256, stamp = found.size, found.sha256, found.stamp
-                    offset = 0
-                    while True:
-                        await self._blob_io(writer.write, found.data)
-                        offset += len(found.data)
-                        if offset == size:
-                            break
-                        if len(found.data) < MAX_READ_BYTES or found.eof:
-                            raise changed
-                        found = await self._capture_range(
-                            channel, reading, offset, deadline, owner, hashed=False
-                        )
-                        if found.size != size or found.stamp != stamp:
-                            raise changed
-                    if (
-                        sha256 is None
-                        or writer.size != size
-                        or not await self._blob_io(writer.commit, sha256)
-                    ):
-                        raise changed
-                    media_type = (
-                        request.media_type
-                        or mimetypes.guess_type(request.path)[0]
-                        or "application/octet-stream"
-                    )
-                    produced_by = await self._blob_io(
-                        self.store.producer_hint,
-                        context.project_id,
-                        context.environment_id,
-                        context.session_id,
-                        request.path,
-                        deadline,
-                    )
-                    if self.clock.monotonic() >= deadline:
-                        raise TimeoutError
-                    artifact = ArtifactRef(
-                        artifact_id=new_id("art"),
-                        project_id=context.project_id,
-                        sha256=sha256,
-                        size=size,
-                        media_type=media_type,
-                        source_path=request.path,
-                        produced_by=produced_by,
-                        created_at=self.clock.now(),
-                    )
-                    self.store.insert_artifact(artifact)
-                    return artifact
-        except TimeoutError as exc:
-            raise WorkerError(
-                ErrorKind.TIMED_OUT, "artifact capture operation budget expired; cleanup completed"
-            ) from exc
-        finally:
-            if writer is not None:
-                await self._blob_io(writer.discard)
+        """Publish a file of the environment as an artifact, within ``capture_timeout``."""
+        return await self._publication.publish(request, self.capture_timeout)
 
     def artifact(self, artifact_id: str, project_id: str | None = None) -> ArtifactRef:
-        try:
-            artifact = self.store.artifact(artifact_id)
-        except ValidationError as exc:
-            raise WorkerError(
-                ErrorKind.INTERNAL, f"the stored record of {artifact_id} is unreadable"
-            ) from exc
-        if artifact is None or (project_id is not None and artifact.project_id != project_id):
-            raise WorkerError(ErrorKind.NOT_FOUND, f"no artifact {artifact_id}")
-        return artifact
+        return self._publication.artifact(artifact_id, project_id)
 
 
 def _size(text: str) -> int:
@@ -2985,7 +2608,7 @@ def _stream(raw: object, name: str, limit: int) -> StreamOutput | None:
         return None
     raw = cast(dict[str, Any], raw)
     text = _text(raw.get("text"), 3 * limit)
-    total = _integer(raw.get("total_bytes"), 0, 2**62)
+    total = integer(raw.get("total_bytes"), 0, 2**62)
     if text is None or total is None:
         return None
     truncated = raw.get("truncated") is True or text is not raw.get("text")

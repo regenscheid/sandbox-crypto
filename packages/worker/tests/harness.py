@@ -129,11 +129,15 @@ class ManagerView:
 
     def captures(self) -> int:
         """Artifact captures running on the worker's side."""
-        return len(self.manager._captures)
+        return self.manager._publication.running()
 
     def capture_counts(self) -> dict[str, int]:
         """Captures holding admission, by environment."""
-        return dict(self.manager._capture_counts)
+        return dict(self.manager._publication.counts)
+
+    async def reconcile_captures(self, environment_id: str, channel: ExecutorChannel) -> None:
+        """Ask the executor to confirm the cleanup of held captures, as a reconnect does."""
+        await self.manager._publication.reconcile(environment_id, channel)
 
     def fetching_lockfiles(self) -> set[str]:
         return set(self.manager._fetching)
