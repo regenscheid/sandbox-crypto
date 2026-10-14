@@ -3,9 +3,10 @@
 
 The trusted worker service starts it inside a research sandbox and speaks
 newline-delimited JSON with it over stdin and stdout. It depends only on the
-standard library, provisioning.py beside it and, once a kernel starts,
-jupyter_client, so the worker service can copy it into any sandbox that has
-Python. docs/specs/tools.md defines the behavior and docs/WORKER.md the protocol.
+standard library, its siblings beside it (provisioning.py, capture.py and
+sandbox_files.py, the file operations) and, once a kernel starts, jupyter_client,
+so the worker service can copy it into any sandbox that has Python.
+docs/specs/tools.md defines the behavior and docs/WORKER.md the protocol.
 
 Requests carry an ``id`` and an ``op``; each gets one reply
 (``{"type": "reply", "id": …, "ok": …}``). Shell commands and cells reply as
@@ -23,7 +24,6 @@ import asyncio
 import base64
 import codecs
 import contextlib
-import errno
 import functools
 import hashlib
 import importlib
@@ -43,7 +43,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 
 async def _owned[T](work: Awaitable[T], cancelled: Callable[[], None] | None = None) -> T:
@@ -68,15 +68,29 @@ def _sibling(name: str) -> ModuleType:
         raise ImportError(f"no {name}.py beside {__file__}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[qualified] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        # A half-built module is never left for anything to find.
+        del sys.modules[qualified]
+        raise
     return module
 
 
 if TYPE_CHECKING:
-    from . import capture, provisioning
+    from . import capture, provisioning, sandbox_files
+    from .sandbox_files import MAX_PATH_BYTES as MAX_PATH_BYTES
+    from .sandbox_files import SHARED as SHARED
+    from .sandbox_files import ToolError as ToolError
+    from .sandbox_files import encode_line as encode_line
 else:
     capture = _sibling("capture")
     provisioning = _sibling("provisioning")
+    sandbox_files = _sibling("sandbox_files")
+    ToolError = sandbox_files.ToolError
+    encode_line = sandbox_files.encode_line
+    SHARED = sandbox_files.SHARED
+    MAX_PATH_BYTES = sandbox_files.MAX_PATH_BYTES
 
 PROTOCOL = 1
 MAX_LINE = 16 * 1024 * 1024
@@ -85,16 +99,7 @@ MAX_REQUEST = 64 * 1024 * 1024
 """The longest request line it reads (a file write carries the file)."""
 MAX_READ = 8 * 1024 * 1024
 MAX_LIST = 5000
-MAX_SNAPSHOT = 20000
-"""Files scanned before and after an attempt to find the ones it wrote."""
-MAX_DEPTH = 128
-"""Directory levels scanned below the session workspace and the shared area."""
 MAX_WRITTEN = 1000
-MAX_PATH_BYTES = 4096
-MAX_OBSERVATION_ENTRIES = 64
-MAX_OBSERVATION_BYTES = 16 * 1024
-MAX_OBSERVATION_SCAN_ENTRIES = 256
-MAX_OBSERVATION_SCAN_BYTES = 64 * 1024
 MAX_OUTPUTS = 10_000
 """Rich outputs a cell returns; one note stands for any beyond them or the limit."""
 STREAM_CHUNK = 64 * 1024
@@ -130,7 +135,6 @@ MAX_LOOKS = 8
 PROBE_TEXT = 256
 """The longest value the isolation probe reports."""
 MAX_SENTINELS = 8
-SHARED = "shared"
 CONFIG_RECORD = "configured.json"
 """In the executor's own directory: what ``configure`` wrote, by path and SHA-256."""
 OWNER = "SANDBOX_SCIENCE_OWNER"
@@ -138,7 +142,6 @@ OWNER = "SANDBOX_SCIENCE_OWNER"
 keep it unless they replace their whole environment."""
 PR_SET_DUMPABLE = 4
 PR_SET_CHILD_SUBREAPER = 36
-_DIRECTORY = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 _SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -171,15 +174,6 @@ class _SystemClock:
 
 Leader = tuple[int, int]
 """A session leader's process ID and start time."""
-
-
-class ToolError(Exception):
-    """A failure reported to the worker service with one of the spec's error kinds."""
-
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
-        self.message = message
 
 
 class _NotStartedError(Exception):
@@ -296,739 +290,6 @@ def bounded(text: str, limit: int) -> str:
         return text
     half = limit // 2
     return f"{text[:half]}\n[… {len(text) - 2 * half} characters omitted …]\n{text[-half:]}"
-
-
-def printable_path(name: str) -> str:
-    """A file name as text: bytes that are not UTF-8 become U+FFFD."""
-    return name.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
-
-
-# Paths. File operations open one directory at a time, relative to the last, and
-# never follow a symlink, so a symlink swapped in on the way cannot redirect them.
-
-
-def check_relative(path: str) -> str:
-    """The same rules as the contracts' validate_relative_path."""
-    if path == ".":
-        return path
-    if not path or "\x00" in path or len(path.encode()) > 4096 or path.startswith("/"):
-        raise ToolError("invalid_request", f"invalid path {path!r}")
-    if any(segment in ("", ".", "..") for segment in path.split("/")):
-        raise ToolError("invalid_request", f"path {path!r} has an empty, '.' or '..' segment")
-    return path
-
-
-def _refused(parent: int, name: str, path: str, exc: OSError) -> ToolError:
-    """Why ``name`` in the directory ``parent`` cannot be used on the way to ``path``."""
-    with contextlib.suppress(OSError):
-        if stat.S_ISLNK(os.lstat(name, dir_fd=parent).st_mode):
-            return ToolError("invalid_request", f"path {path!r} goes through a symlink")
-    if exc.errno == errno.ENOTDIR:
-        return ToolError("invalid_request", f"path {path!r}: {name!r} is not a directory")
-    return ToolError("invalid_request", f"cannot use {path!r}: {exc.strerror}")
-
-
-def _open_directory(parent: int, name: str, path: str, *, create: bool) -> int:
-    try:
-        return os.open(name, _DIRECTORY, dir_fd=parent)
-    except FileNotFoundError:
-        if not create:
-            raise ToolError("not_found", f"{path!r} does not exist") from None
-    except OSError as exc:
-        raise _refused(parent, name, path, exc) from exc
-    with contextlib.suppress(FileExistsError):
-        os.mkdir(name, dir_fd=parent)
-    try:
-        return os.open(name, _DIRECTORY, dir_fd=parent)
-    except OSError as exc:
-        raise _refused(parent, name, path, exc) from exc
-
-
-def _walk(directory: int, names: Sequence[str], path: str, *, create: bool) -> int:
-    """Open ``names`` one directory at a time below ``directory``, which is consumed."""
-    try:
-        for name in names:
-            child = _open_directory(directory, name, path, create=create)
-            os.close(directory)
-            directory = child
-    except BaseException:
-        os.close(directory)
-        raise
-    return directory
-
-
-class SnapshotFiles(dict[str, tuple[int, int, int]]):
-    """Compatibility map plus a separately bounded, lossless metadata sidecar.
-
-    This adds no filesystem operations. The original walk's regular-file/depth/
-    directory limitations remain; its result is never mutation-complete.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.raw: dict[tuple[str, bytes], tuple[int, int, int]] = {}
-        self.raw_bytes = 0
-        self.limited = False
-        self.error = False
-        self.path_omitted = False
-        self.started_ns = time.monotonic_ns()
-        self.finished_ns: int | None = None
-
-    def observe(self, area: str, path: str, stamp: tuple[int, int, int]) -> None:
-        if len(self.raw) >= MAX_OBSERVATION_SCAN_ENTRIES:
-            self.limited = True
-            return
-        raw = os.fsencode(path)
-        if (
-            len(raw) > MAX_PATH_BYTES
-            or b"\0" in raw
-            or any(part in (b"", b".", b"..") for part in raw.split(b"/"))
-        ):
-            self.path_omitted = True
-            return
-        size = len(raw) + 128
-        if self.raw_bytes + size > MAX_OBSERVATION_SCAN_BYTES:
-            self.limited = True
-            return
-        self.raw[(area, raw)] = stamp
-        self.raw_bytes += size
-
-
-def _scan_error(files: dict[str, tuple[int, int, int]]) -> None:
-    if isinstance(files, SnapshotFiles):
-        files.error = True
-
-
-def scan_files(
-    directory: int, prefix: str, files: dict[str, tuple[int, int, int]], *, area: str = "session"
-) -> bool:
-    """Add the regular files below ``directory`` (which is consumed) to ``files``.
-
-    Depth first, holding open only the directories on the current path. Returns
-    True when MAX_SNAPSHOT files stopped the scan.
-    """
-    path = [(directory, prefix, _subdirectories(directory, prefix, files, area, prefix))]
-    try:
-        while path:
-            if len(files) >= MAX_SNAPSHOT:
-                if isinstance(files, SnapshotFiles):
-                    files.limited = True
-                return True
-            current, relative, pending = path[-1]
-            if not pending or len(path) > MAX_DEPTH:
-                if pending and isinstance(files, SnapshotFiles):
-                    files.limited = True
-                os.close(current)
-                path.pop()
-                continue
-            name = pending.pop()
-            try:
-                child = os.open(name, _DIRECTORY, dir_fd=current)
-            except OSError:
-                _scan_error(files)
-                continue
-            below = f"{relative}{name}/"
-            path.append((child, below, _subdirectories(child, below, files, area, prefix)))
-        return False
-    finally:
-        for current, _, _ in path:
-            os.close(current)
-
-
-def _subdirectories(
-    directory: int,
-    relative: str,
-    files: dict[str, tuple[int, int, int]],
-    area: str = "session",
-    root_prefix: str = "",
-) -> list[str]:
-    """Record a directory's regular files in ``files``; return its subdirectories' names."""
-    names: list[str] = []
-    try:
-        with os.scandir(directory) as listing:
-            for entry in listing:
-                if len(files) >= MAX_SNAPSHOT:
-                    break
-                try:
-                    if entry.is_dir(follow_symlinks=False):
-                        names.append(entry.name)
-                        continue
-                    if not entry.is_file(follow_symlinks=False):
-                        continue
-                    info = entry.stat(follow_symlinks=False)
-                except OSError:
-                    _scan_error(files)
-                    continue
-                stamp = (info.st_mtime_ns, info.st_size, info.st_ino)
-                files[relative + entry.name] = stamp
-                if isinstance(files, SnapshotFiles):
-                    # The namespace may have changed since is_file(). Preserve
-                    # the compatibility map, but do not label special metadata
-                    # as a regular-file observation.
-                    if not stat.S_ISREG(info.st_mode):
-                        files.error = True
-                        continue
-                    # The root is tagged by the caller before legacy textual
-                    # prefixes or printable_path can collapse distinct paths.
-                    files.observe(area, relative[len(root_prefix) :] + entry.name, stamp)
-    except OSError:
-        _scan_error(files)
-    return names
-
-
-def observation_report(before: object, after: object) -> Message | None:
-    """Project only already-observed metadata; missing-after is not a deletion proof."""
-    if not isinstance(before, SnapshotFiles) or not isinstance(after, SnapshotFiles):
-        return None
-    entries: list[Message] = []
-    report: Message = {
-        "protocol": 1,
-        "source": "regular_stat_report_v1",
-        "clock": "executor_monotonic",
-        "before_started_ns": before.started_ns,
-        "before_finished_ns": before.finished_ns,
-        "after_started_ns": after.started_ns,
-        "after_finished_ns": after.finished_ns,
-        "entries": entries,
-        "coverage": {
-            "before_limited": before.limited,
-            "after_limited": after.limited,
-            "before_error": before.error,
-            "after_error": after.error,
-            "path_omitted": before.path_omitted or after.path_omitted,
-            "report_truncated": False,
-        },
-    }
-
-    def metadata(stamp: tuple[int, int, int] | None) -> Message | None:
-        if stamp is None:
-            return None
-        return {"mtime_ns": stamp[0], "size": stamp[1], "inode": stamp[2]}
-
-    for area, raw in sorted(before.raw.keys() | after.raw.keys()):
-        previous, current = before.raw.get((area, raw)), after.raw.get((area, raw))
-        if previous == current:
-            continue
-        kind = "not_seen_after" if current is None else "regular_stat_difference"
-        if current is not None and previous is None and (before.limited or before.error):
-            kind = "regular_observed"
-        entry: Message = {
-            "kind": kind,
-            "area": area,
-            "path_b64": base64.b64encode(raw).decode("ascii"),
-            "before": metadata(previous),
-            "after": metadata(current),
-        }
-        if len(entries) >= MAX_OBSERVATION_ENTRIES:
-            report["coverage"]["report_truncated"] = True
-            break
-        entries.append(entry)
-        # Reserve room for host-side explicit defaults in canonical serialization.
-        if len(encode_line(report)) > MAX_OBSERVATION_BYTES - 512:
-            entries.pop()
-            report["coverage"]["report_truncated"] = True
-            break
-    return report
-
-
-def bounded_observations(message: Message) -> Message:
-    """Keep the independent sidecar bounded before end fitting or recovery compaction."""
-    raw = message.get("output_observations")
-    if raw is None:
-        return message
-    pending: list[tuple[object, int]] = [(raw, 0)]
-    size = nodes = 0
-    while pending:
-        value, depth = pending.pop()
-        nodes += 1
-        if nodes > 2048 or depth > 6:
-            break
-        if isinstance(value, str):
-            if len(value) > 8192:
-                break
-            size += len(value.encode("utf-8", "replace"))
-        elif isinstance(value, dict):
-            if len(cast(dict[object, object], value)) > 64:
-                break
-            pending.extend(
-                (item, depth + 1)
-                for pair in cast(dict[object, object], value).items()
-                for item in pair
-            )
-        elif isinstance(value, (list, tuple)):
-            if len(cast(list[object] | tuple[object, ...], value)) > 64:
-                break
-            pending.extend(
-                (item, depth + 1) for item in cast(list[object] | tuple[object, ...], value)
-            )
-        elif value is None or type(value) in (bool, int):
-            if type(value) is int and value.bit_length() > 64:
-                break
-            size += 24
-        else:
-            break
-        if size > MAX_OBSERVATION_BYTES:
-            break
-    else:
-        try:
-            if len(encode_line({"report": raw})) <= MAX_OBSERVATION_BYTES:
-                return message
-        except (ValueError, TypeError, OverflowError, RecursionError):
-            pass  # invalid derived data must not prevent the terminal result
-    return {**message, "output_observations": None, "observation_omitted": "oversized"}
-
-
-SHARED_REPLY_BYTES = 4 * 1024 * 1024
-"""The most path bytes a scan of the shared area reports; the rest is a truncated scan.
-
-A reply names a path at most twice, in ``files`` and in ``sha256`` or ``too_large``, so
-it stays under MAX_LINE."""
-SYNC_MARK = ".sandbox-science-sync"
-"""Beside sessions/ and shared/: the worker's mark of this environment's sync (D79)."""
-
-
-def scan_shared(directory: int) -> tuple[dict[str, list[int]], bool, bool, list[str]]:
-    """The regular files below ``shared/`` (``directory``, which is consumed), for its sync.
-
-    Maps each path to its modification time, size, inode and executable bit. Returns
-    the files, whether the scan stopped early, whether anything could not be read (so
-    that missing files prove nothing), and names that are not text.
-    """
-    files: dict[str, list[int]] = {}
-    odd: list[str] = []
-    partial = False
-    truncated = False
-    reported = 0
-    stack: list[tuple[int, str, int]] = [(directory, SHARED + "/", 0)]
-    try:
-        while stack:
-            current, relative, depth = stack.pop()
-            try:
-                if depth > MAX_DEPTH:
-                    partial = True
-                    continue
-                try:
-                    listing = list(os.scandir(current))
-                except OSError:
-                    partial = True
-                    continue
-                for entry in listing:
-                    name = entry.name
-                    if not name.isprintable():
-                        # Never a synced path, so its absence proves nothing: no partial scan.
-                        odd.append(relative + name.encode("utf-8", "replace").decode())
-                        continue
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            child = os.open(name, _DIRECTORY, dir_fd=current)
-                            stack.append((child, f"{relative}{name}/", depth + 1))
-                            continue
-                        if not entry.is_file(follow_symlinks=False):
-                            continue
-                        if name.startswith(".write-"):
-                            continue  # a write of this executor's under way
-                        info = entry.stat(follow_symlinks=False)
-                    except OSError:
-                        partial = True
-                        continue
-                    path = relative + name
-                    reported += len(json.dumps(path, ensure_ascii=False).encode())
-                    if len(files) >= MAX_SNAPSHOT or reported > SHARED_REPLY_BYTES:
-                        truncated = True
-                        return files, truncated, partial, odd[:10]
-                    executable = 1 if info.st_mode & 0o111 else 0
-                    files[path] = [info.st_mtime_ns, info.st_size, info.st_ino, executable]
-            finally:
-                os.close(current)
-    finally:
-        for current, _, _ in stack:
-            os.close(current)
-    return files, truncated, partial, odd[:10]
-
-
-def read_range(descriptor: int, offset: int, length: int, hashed: bool, path: str) -> Message:
-    """A range of an open file and, when ``hashed``, the whole file's SHA-256.
-
-    One pass over the file gives both. The descriptor is consumed.
-    """
-    with os.fdopen(descriptor, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise ToolError("invalid_request", f"{path!r} is not a regular file")
-        content = bytearray()
-        reply: Message = {"modified": info.st_mtime, "offset": offset}
-        if hashed:
-            digest = hashlib.sha256()
-            position = 0
-            while block := handle.read(1024 * 1024):
-                digest.update(block)
-                end = position + len(block)
-                if end > offset and position < offset + length:
-                    content += block[max(0, offset - position) : offset + length - position]
-                position = end
-            reply.update(sha256=digest.hexdigest(), size=position)
-        else:
-            handle.seek(offset)
-            content += handle.read(length)
-            reply["size"] = info.st_size
-    reply.update(
-        content_b64=base64.b64encode(content).decode(),
-        eof=offset + len(content) >= reply["size"],
-    )
-    return reply
-
-
-def write_file(
-    parent: int,
-    name: str,
-    content: bytes,
-    expected: object,
-    create_only: bool,
-    path: str,
-    executable: bool | None = None,
-    if_unused: bool = False,
-) -> Message:
-    """Create or atomically replace ``name`` in the directory ``parent``, which is consumed.
-
-    The reply's ``stamp`` is the new file's modification time, size and inode as written,
-    taken before the file takes its name, so a later change shows as a different stamp.
-    With ``if_unused``, a file that another process is writing is left alone, and the
-    reply says ``busy``.
-    """
-    try:
-        try:
-            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
-        except FileNotFoundError:
-            info = None
-        if info is not None and stat.S_ISLNK(info.st_mode):
-            raise ToolError("invalid_request", f"path {path!r} goes through a symlink")
-        if info is not None and stat.S_ISDIR(info.st_mode):
-            raise ToolError("invalid_request", f"{path!r} is a directory")
-        if create_only and info is not None:
-            raise ToolError("conflict", f"{path!r} already exists")
-        checked: os.stat_result | None = None
-        if expected is not None:
-            if info is None:
-                raise ToolError("conflict", f"{path!r} does not exist")
-            current, checked = _hashed(parent, name, path)
-            if current != expected:
-                raise ToolError("conflict", f"{path!r} changed: its SHA-256 is {current}")
-        temporary = f".write-{secrets.token_hex(8)}"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
-        descriptor = os.open(temporary, flags, 0o600, dir_fd=parent)
-        swapped = False
-        try:
-            with os.fdopen(descriptor, "wb") as handle:
-                handle.write(content)
-                if executable is not None:
-                    os.fchmod(handle.fileno(), 0o755 if executable else 0o644)
-                handle.flush()
-                written = os.fstat(handle.fileno())
-            if info is not None and if_unused and being_written(_absolute(parent, name)):
-                os.unlink(temporary, dir_fd=parent)
-                return {"busy": True}
-            try:
-                swapped = checked is not None and _exchange(parent, temporary, name)
-            except FileNotFoundError:
-                raise ToolError("conflict", f"{path!r} changed while it was written") from None
-            if swapped:
-                # The file that was there is at the temporary name now; if it changed
-                # after its check, it goes back, and so it does if a process opened it for
-                # writing just before the swap, whose writes would otherwise be lost.
-                if checked is not None and _changed_since(parent, temporary, checked):
-                    _exchange(parent, temporary, name)
-                    swapped = False
-                    raise ToolError("conflict", f"{path!r} changed while it was written")
-                if if_unused and being_written(_absolute(parent, temporary)):
-                    _exchange(parent, temporary, name)
-                    swapped = False
-                    os.unlink(temporary, dir_fd=parent)
-                    return {"busy": True}
-                swapped = False
-                os.unlink(temporary, dir_fd=parent)
-            else:
-                if checked is not None and _changed_since(parent, name, checked):
-                    raise ToolError("conflict", f"{path!r} changed while it was written")
-                os.replace(temporary, name, src_dir_fd=parent, dst_dir_fd=parent)
-        except BaseException:
-            if swapped:
-                # The file that was there could not go back: it keeps a name of its own,
-                # in sight, rather than being lost under the temporary one.
-                with contextlib.suppress(OSError):
-                    recovered = f"{name}.recovered-{secrets.token_hex(4)}"
-                    os.rename(temporary, recovered, src_dir_fd=parent, dst_dir_fd=parent)
-            else:
-                with contextlib.suppress(OSError):
-                    os.unlink(temporary, dir_fd=parent)
-            raise
-    finally:
-        os.close(parent)
-    return {
-        "sha256": hashlib.sha256(content).hexdigest(),
-        "size": len(content),
-        "stamp": [written.st_mtime_ns, written.st_size, written.st_ino],
-    }
-
-
-_RENAME_EXCHANGE: Final = 2
-
-
-def _exchange(parent: int, first: str, second: str) -> bool:
-    """Swap two names in ``parent`` at once (renameat2); False where that is unavailable."""
-    try:
-        import ctypes
-
-        libc = ctypes.CDLL(None, use_errno=True)
-        renameat2 = libc.renameat2
-    except (ImportError, OSError, AttributeError):
-        return False
-    renameat2.argtypes = [
-        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint,
-    ]  # fmt: skip
-    if renameat2(parent, os.fsencode(first), parent, os.fsencode(second), _RENAME_EXCHANGE) == 0:
-        return True
-    code = ctypes.get_errno()
-    if code in (errno.EINVAL, errno.ENOSYS, errno.EPERM, errno.EOPNOTSUPP):
-        return False  # not on this file system, or refused by the sandbox
-    raise OSError(code, os.strerror(code), second)
-
-
-def _absolute(parent: int, name: str) -> str:
-    """The path of ``name`` in the directory ``parent``, as ``/proc`` shows it."""
-    return os.path.join(os.readlink(f"/proc/self/fd/{parent}"), name)
-
-
-def _changed_since(parent: int, name: str, before: os.stat_result) -> bool:
-    """Whether ``name`` is no longer the file ``before`` described."""
-    try:
-        now = os.stat(name, dir_fd=parent, follow_symlinks=False)
-    except FileNotFoundError:
-        return True
-    return (now.st_ino, now.st_mtime_ns, now.st_size) != (
-        before.st_ino,
-        before.st_mtime_ns,
-        before.st_size,
-    )
-
-
-def _move_file(source: int, name: str, destination: int, target: str, path: str) -> list[int]:
-    """Give the regular file ``name`` the free name ``target``; return its new stamp."""
-    info = os.stat(name, dir_fd=source, follow_symlinks=False)
-    if not stat.S_ISREG(info.st_mode):
-        raise ToolError("invalid_request", f"{path!r} is not a regular file")
-    try:
-        # A hard link never replaces an existing file, and the inode stays the same.
-        os.link(name, target, src_dir_fd=source, dst_dir_fd=destination, follow_symlinks=False)
-        os.unlink(name, dir_fd=source)
-    except FileExistsError:
-        raise ToolError("conflict", f"the new name for {path!r} is taken") from None
-    except OSError as exc:
-        if exc.errno not in (errno.EPERM, errno.EXDEV, errno.EMLINK, errno.EOPNOTSUPP):
-            raise
-        # No hard links here: a rename, after checking the name is free.
-        try:
-            os.stat(target, dir_fd=destination, follow_symlinks=False)
-        except FileNotFoundError:
-            os.rename(name, target, src_dir_fd=source, dst_dir_fd=destination)
-        else:
-            raise ToolError("conflict", f"the new name for {path!r} is taken") from None
-    moved = os.stat(target, dir_fd=destination, follow_symlinks=False)
-    return [moved.st_mtime_ns, moved.st_size, moved.st_ino]
-
-
-_WHOLE_EXECUTOR: Final = frozenset(
-    {errno.ENOSPC, errno.EDQUOT, errno.EIO, errno.EROFS, errno.EMFILE, errno.ENFILE, errno.ENOMEM}
-)
-"""Errors that concern the executor or its disk rather than one file."""
-
-
-def _file_error(exc: OSError, path: str) -> ToolError:
-    """A failure on one file, by kind; a full disk or an exhausted executor stops the sync."""
-    if exc.errno in _WHOLE_EXECUTOR:
-        return ToolError("unavailable", f"cannot change {path!r}: {exc.strerror}")
-    if exc.errno in (errno.EACCES, errno.EPERM):
-        return ToolError("policy_denied", f"cannot change {path!r}: {exc.strerror}")
-    return ToolError("invalid_request", f"cannot change {path!r}: {exc.strerror}")
-
-
-def _read_mark(root: Path) -> str | None:
-    """The sync's mark, read without following a link or waiting on a pipe."""
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-    try:
-        descriptor = os.open(root / SYNC_MARK, flags)
-    except OSError:
-        return None
-    with os.fdopen(descriptor, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            return None
-        try:
-            return handle.read(257).decode()[:256]
-        except UnicodeDecodeError:
-            return None
-
-
-def _write_mark(root: Path, mark: str) -> None:
-    temporary = root / f".write-{secrets.token_hex(8)}"
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
-    with os.fdopen(os.open(temporary, flags, 0o600), "w") as handle:
-        handle.write(mark)
-    os.replace(temporary, root / SYNC_MARK)
-
-
-def being_written(path: str) -> bool:
-    """Whether another process has the file ``path`` open for writing, or mapped writable.
-
-    Read from ``/proc``, at the moment it matters. Processes it may not inspect, such as
-    non-dumpable ones, are left out, so False is not a proof.
-    """
-    own = str(os.getpid())
-    try:
-        processes = [entry for entry in os.listdir("/proc") if entry.isdigit() and entry != own]
-    except OSError:
-        return False
-    for process in processes:
-        try:
-            descriptors = os.listdir(f"/proc/{process}/fd")
-        except OSError:
-            continue
-        for descriptor in descriptors:
-            try:
-                if os.readlink(f"/proc/{process}/fd/{descriptor}") != path:
-                    continue
-                with open(f"/proc/{process}/fdinfo/{descriptor}") as info:
-                    flags = next(
-                        int(line.split()[1], 8) for line in info if line.startswith("flags:")
-                    )
-            except (OSError, StopIteration, ValueError, IndexError):
-                continue
-            if flags & (os.O_WRONLY | os.O_RDWR):
-                return True
-        try:
-            with open(f"/proc/{process}/maps") as maps:
-                for line in maps:
-                    fields = line.split(maxsplit=5)
-                    shared_write = len(fields) == 6 and "w" in fields[1] and "s" in fields[1]
-                    if shared_write and fields[5].rstrip("\n") == path:
-                        return True  # a shared, writable mapping writes to the file
-        except OSError:
-            continue
-    return False
-
-
-def _remove_checked(
-    parent: int, name: str, expected: str, path: str, *, if_unused: bool = False
-) -> bool:
-    """Unlink ``name`` if it is the regular file whose content hashes to ``expected``.
-
-    With ``if_unused``, a file that another process is writing stays, and the result is
-    False: the file is first moved aside, so a writer that opened it a moment before is
-    still seen, and then put back.
-    """
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-    try:
-        descriptor = os.open(name, flags, dir_fd=parent)
-    except FileNotFoundError:
-        raise ToolError("not_found", f"no file {path!r}") from None
-    with os.fdopen(descriptor, "rb") as handle:
-        info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode):
-            raise ToolError("invalid_request", f"{path!r} is not a regular file")
-        digest = hashlib.sha256()
-        while block := handle.read(1024 * 1024):
-            digest.update(block)
-        if digest.hexdigest() != expected:
-            raise ToolError("conflict", f"{path!r} changed: its SHA-256 is {digest.hexdigest()}")
-        # The name must still be this file, not one put in its place meanwhile.
-        if os.stat(name, dir_fd=parent, follow_symlinks=False).st_ino != info.st_ino:
-            raise ToolError("conflict", f"{path!r} changed while it was checked")
-        if not if_unused:
-            os.unlink(name, dir_fd=parent)
-            return True
-        if being_written(_absolute(parent, name)):
-            return False
-        aside = f".write-remove-{secrets.token_hex(8)}"  # a name scans leave out
-        os.rename(name, aside, src_dir_fd=parent, dst_dir_fd=parent)
-        if being_written(_absolute(parent, aside)):
-            # Back under its name, unless a new file took the name meanwhile.
-            try:
-                os.link(aside, name, src_dir_fd=parent, dst_dir_fd=parent)
-            except FileExistsError:
-                recovered = f"{name}.recovered-{secrets.token_hex(4)}"
-                os.rename(aside, recovered, src_dir_fd=parent, dst_dir_fd=parent)
-                return False
-            os.unlink(aside, dir_fd=parent)
-            return False
-        os.unlink(aside, dir_fd=parent)
-        return True
-
-
-def _stamped_sha256(parent: int, name: str, stamp: Sequence[int]) -> str | None:
-    """The SHA-256 of ``name`` if it is still the file scanned as ``stamp``, else None.
-
-    A digest then always belongs to the stamp reported with it, so the worker never
-    takes a later version for the one it scanned.
-    """
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-    with os.fdopen(os.open(name, flags, dir_fd=parent), "rb") as handle:
-        before = os.fstat(handle.fileno())
-        scanned = (before.st_mtime_ns, before.st_size, before.st_ino)
-        if not stat.S_ISREG(before.st_mode) or scanned != tuple(stamp[:3]):
-            return None
-        digest = hashlib.sha256()
-        while block := handle.read(1024 * 1024):
-            digest.update(block)
-        after = os.fstat(handle.fileno())
-    if (after.st_mtime_ns, after.st_size) != scanned[:2]:
-        return None  # changed while it was read
-    return digest.hexdigest()
-
-
-def _hashed(parent: int, name: str, path: str) -> tuple[str, os.stat_result]:
-    """A file's SHA-256, and its status as it was before it was read."""
-    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-    with os.fdopen(os.open(name, flags, dir_fd=parent), "rb") as handle:
-        before = os.fstat(handle.fileno())
-        if not stat.S_ISREG(before.st_mode):
-            raise ToolError("invalid_request", f"{path!r} is not a regular file")
-        digest = hashlib.sha256()
-        while block := handle.read(1024 * 1024):
-            digest.update(block)
-    return digest.hexdigest(), before
-
-
-def list_directory(directory: int, limit: int) -> tuple[list[Message], bool]:
-    """Up to ``limit`` entries of a directory, by name; symlinks are not followed.
-
-    The descriptor is consumed.
-    """
-    try:
-        with os.scandir(directory) as listing:
-            names = sorted(entry.name for entry in listing)
-        entries: list[Message] = []
-        for name in names[:limit]:
-            try:
-                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
-            except OSError:
-                continue
-            if stat.S_ISLNK(info.st_mode):
-                kind = "symlink"
-            elif stat.S_ISDIR(info.st_mode):
-                kind = "directory"
-            elif stat.S_ISREG(info.st_mode):
-                kind = "file"
-            else:
-                kind = "other"
-            entries.append(
-                {
-                    "name": printable_path(name),
-                    "type": kind,
-                    "size": info.st_size,
-                    "modified": info.st_mtime,
-                }
-            )
-        return entries, len(names) > limit
-    finally:
-        os.close(directory)
 
 
 # Processes. Every command and kernel runs with its own OWNER mark, and the
@@ -1679,7 +940,7 @@ class Executor:
         """A workspace path's base (its directories below the root) and the rest of it."""
         if not isinstance(path, str):
             raise ToolError("invalid_request", "path must be a string")
-        check_relative(path)
+        sandbox_files.check_relative(path)
         if path == SHARED or path.startswith(SHARED + "/"):
             return [SHARED], path.split("/")[1:]
         return ["sessions", self.session_name(session)], [] if path == "." else path.split("/")
@@ -1687,12 +948,12 @@ class Executor:
     def open_base(self, base: Sequence[str]) -> int:
         """Open the session workspace or the shared area, creating it, through no symlink."""
         root = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-        return _walk(root, base, "/".join(base), create=True)
+        return sandbox_files.walk(root, base, "/".join(base), create=True)
 
     def directory(self, session: object, path: object) -> Path:
         """A workspace directory's path, once it is known to exist with no symlink on the way."""
         base, rest = self.split(session, path)
-        os.close(_walk(self.open_base(base), rest, str(path), create=False))
+        os.close(sandbox_files.walk(self.open_base(base), rest, str(path), create=False))
         return self.root.joinpath(*base, *rest)
 
     def snapshot(self, session: str) -> tuple[dict[str, tuple[int, int, int]], bool]:
@@ -1701,7 +962,7 @@ class Executor:
         Maps each path to its modification time, size and inode number. No
         symlink is followed, to the areas themselves included.
         """
-        files = SnapshotFiles()
+        files = sandbox_files.SnapshotFiles()
         for area, prefix, base in (
             ("session", "", ["sessions", session]),
             ("shared", SHARED + "/", [SHARED]),
@@ -1711,7 +972,7 @@ class Executor:
             except (OSError, ToolError):
                 files.error = True
                 continue
-            if scan_files(directory, prefix, files, area=area):
+            if sandbox_files.scan_files(directory, prefix, files, area=area):
                 files.finished_ns = time.monotonic_ns()
                 return files, True
         files.finished_ns = time.monotonic_ns()
@@ -1723,9 +984,9 @@ class Executor:
         """The files created or changed since ``before``, for the attempt's result."""
         after = await asyncio.to_thread(self.snapshot, session)
         changed = sorted(path for path, stamp in after[0].items() if before[0].get(path) != stamp)
-        names = [printable_path(path) for path in changed[:MAX_WRITTEN]]
+        names = [sandbox_files.printable_path(path) for path in changed[:MAX_WRITTEN]]
         try:
-            observations = observation_report(before[0], after[0])
+            observations = sandbox_files.observation_report(before[0], after[0])
         except Exception:
             observations = None  # derived metadata must never change research completion
         return {
@@ -2185,7 +1446,7 @@ class Executor:
             if not isinstance(path, str) or path == ".":
                 raise ToolError("invalid_request", f"invalid path {path!r}")
             directory = state / "config" if base == "config" else Path.home()
-            files.append((directory / check_relative(path), content, variable))
+            files.append((directory / sandbox_files.check_relative(path), content, variable))
         written, skipped, pointers = await asyncio.to_thread(write_config_files, state, files)
         self.configured = {**env, **pointers}
         await self.reply(request, written=written, skipped=skipped)
@@ -2423,12 +1684,14 @@ class Executor:
 
     def job_logs(self, session: str, execution: str) -> dict[str, int]:
         """Create two private regular files through held, symlink-free directory FDs."""
-        parent = _walk(self.open_base(["sessions", session]), [".jobs"], ".jobs", create=True)
+        parent = sandbox_files.walk(
+            self.open_base(["sessions", session]), [".jobs"], ".jobs", create=True
+        )
         descriptors: dict[str, int] = {}
         try:
             # A preexisting job path is never reused, even if research code planted it.
             os.mkdir(execution, mode=0o700, dir_fd=parent)
-            directory = os.open(execution, _DIRECTORY, dir_fd=parent)
+            directory = os.open(execution, sandbox_files.DIRECTORY_FLAGS, dir_fd=parent)
             try:
                 for name in ("stdout", "stderr"):
                     flags = (
@@ -2959,7 +2222,7 @@ class Executor:
         base, rest = self.split(request.get("session"), path)
         if not rest:
             raise ToolError("invalid_request", f"{path!r} is not a regular file")
-        parent = _walk(self.open_base(base), rest[:-1], str(path), create=False)
+        parent = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=False)
         try:
             # Without O_NONBLOCK, opening a FIFO would wait for a writer.
             flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
@@ -2967,12 +2230,14 @@ class Executor:
         except FileNotFoundError:
             raise ToolError("not_found", f"no file {path!r}") from None
         except OSError as exc:
-            raise _refused(parent, rest[-1], str(path), exc) from exc
+            raise sandbox_files.path_refusal(parent, rest[-1], str(path), exc) from exc
         finally:
             os.close(parent)
         # In a thread: hashing a large file takes a while, and must not stall other work.
         hashed = request.get("hash", True) is not False
-        reply = await asyncio.to_thread(read_range, descriptor, offset, length, hashed, str(path))
+        reply = await asyncio.to_thread(
+            sandbox_files.read_range, descriptor, offset, length, hashed, str(path)
+        )
         await self.reply(request, **reply)
 
     async def op_capture_read(self, request: Message) -> None:
@@ -3032,9 +2297,9 @@ class Executor:
             )
         executable = request.get("executable")
         try:
-            parent = _walk(self.open_base(base), rest[:-1], str(path), create=True)
+            parent = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=True)
             reply = await asyncio.to_thread(
-                write_file,
+                sandbox_files.write_file,
                 parent,
                 rest[-1],
                 content,
@@ -3045,7 +2310,7 @@ class Executor:
                 request.get("if_unused") is True,
             )
         except OSError as exc:
-            raise _file_error(exc, str(path)) from exc
+            raise sandbox_files.file_error(exc, str(path)) from exc
         await self.reply(request, **reply)
 
     async def op_shared(self, request: Message) -> None:
@@ -3057,7 +2322,8 @@ class Executor:
         the worker's mark of this environment, which the reply carries.
         """
         raw: object = request.get("hash", [])
-        wanted = [path for path in cast(list[object], raw) if isinstance(path, str)][:MAX_SNAPSHOT]
+        named = [path for path in cast(list[object], raw) if isinstance(path, str)]
+        wanted = named[: sandbox_files.MAX_SNAPSHOT]
         limit = max(0, int(request.get("hash_limit", 0)))
         budget = max(0, int(request.get("hash_budget", 0)))
         mark = request.get("mark")
@@ -3078,9 +2344,9 @@ class Executor:
         mark: str | None,
     ) -> Message:
         if mark is not None:
-            _write_mark(self.root, mark[:256])
-        current = _read_mark(self.root)
-        files, truncated, partial, odd = scan_shared(self.open_base([SHARED]))
+            sandbox_files.write_mark(self.root, mark[:256])
+        current = sandbox_files.read_mark(self.root)
+        files, truncated, partial, odd = sandbox_files.scan_shared(self.open_base([SHARED]))
         digests: dict[str, str] = {}
         too_large: list[str] = []
         for path in wanted:
@@ -3094,11 +2360,11 @@ class Executor:
                 continue  # hashed at a later scan
             try:
                 _, rest = self.split(None, path)
-                parent = _walk(self.open_base([SHARED]), rest[:-1], path, create=False)
+                parent = sandbox_files.walk(self.open_base([SHARED]), rest[:-1], path, create=False)
             except (OSError, ToolError):
                 continue
             try:
-                digest = _stamped_sha256(parent, rest[-1], stamp)
+                digest = sandbox_files.stamped_sha256(parent, rest[-1], stamp)
             except (OSError, ToolError):
                 continue  # gone or replaced meanwhile: compared again next time
             finally:
@@ -3133,9 +2399,11 @@ class Executor:
         directories = [self.open_base(base)]
         try:
             for name in rest[:-1]:
-                directories.append(_walk(os.dup(directories[-1]), [name], str(path), create=False))
+                directories.append(
+                    sandbox_files.walk(os.dup(directories[-1]), [name], str(path), create=False)
+                )
             removed = await asyncio.to_thread(
-                _remove_checked,
+                sandbox_files.remove_checked,
                 directories[-1],
                 rest[-1],
                 expected,
@@ -3151,7 +2419,7 @@ class Executor:
                 except OSError:
                     break  # not empty, or not ours to remove
         except OSError as exc:
-            raise _file_error(exc, str(path)) from exc
+            raise sandbox_files.file_error(exc, str(path)) from exc
         finally:
             for directory in directories:
                 os.close(directory)
@@ -3168,17 +2436,22 @@ class Executor:
         target_base, target_rest = self.split(None, target)
         if base != [SHARED] or target_base != [SHARED] or not rest or not target_rest:
             raise ToolError("invalid_request", "only files in the shared area are moved")
-        source = _walk(self.open_base(base), rest[:-1], str(path), create=False)
+        source = sandbox_files.walk(self.open_base(base), rest[:-1], str(path), create=False)
         try:
-            destination = _walk(
+            destination = sandbox_files.walk(
                 self.open_base(target_base), target_rest[:-1], str(target), create=True
             )
             try:
                 stamp = await asyncio.to_thread(
-                    _move_file, source, rest[-1], destination, target_rest[-1], str(path)
+                    sandbox_files.move_file,
+                    source,
+                    rest[-1],
+                    destination,
+                    target_rest[-1],
+                    str(path),
                 )
             except OSError as exc:
-                raise _file_error(exc, str(path)) from exc
+                raise sandbox_files.file_error(exc, str(path)) from exc
             finally:
                 os.close(destination)
         finally:
@@ -3189,13 +2462,13 @@ class Executor:
         path = request.get("path", ".")
         base, rest = self.split(request.get("session"), path)
         try:
-            directory = _walk(self.open_base(base), rest, str(path), create=False)
+            directory = sandbox_files.walk(self.open_base(base), rest, str(path), create=False)
         except ToolError as error:
             if error.kind == "not_found":
                 raise ToolError("not_found", f"no directory {path!r}") from None
             raise
         limit = min(int(request.get("limit", MAX_LIST)), MAX_LIST)
-        entries, truncated = await asyncio.to_thread(list_directory, directory, limit)
+        entries, truncated = await asyncio.to_thread(sandbox_files.list_directory, directory, limit)
         await self.reply(request, entries=entries, truncated=truncated)
 
     async def op_lockfile(self, request: Message) -> None:
@@ -3451,19 +2724,13 @@ def _mime_bundle(data: object) -> dict[str, str]:
 # Lines.
 
 
-def encode_line(message: Message) -> bytes:
-    """One protocol line: JSON in UTF-8. An unpaired surrogate becomes '?'."""
-    text = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
-    return (text + "\n").encode("utf-8", "replace")
-
-
 def fit_line(message: Message) -> bytes | None:
     """``message`` as a line no longer than MAX_LINE, or None if it cannot be one.
 
     An ``end`` event's result gives up output, its largest part first, until it
     fits. A reply that does not fit becomes an error reply.
     """
-    message = bounded_observations(message)
+    message = sandbox_files.bounded_observations(message)
     line = encode_line(message)
     if len(line) <= MAX_LINE:
         return line

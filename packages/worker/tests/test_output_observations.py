@@ -37,7 +37,7 @@ from sandbox_science.contracts.output_observations import (
     OutputScope,
     OutputStat,
 )
-from sandbox_science.worker import daemon, executor, output_observations
+from sandbox_science.worker import daemon, executor, output_observations, sandbox_files
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import LocalBackend
@@ -80,14 +80,16 @@ def terminal(store: Store, name: str = "a", context: ExecutionContext = CONTEXT)
     )
 
 
-def scan(root: Path) -> executor.SnapshotFiles:
-    result = executor.SnapshotFiles()
+def scan(root: Path) -> sandbox_files.SnapshotFiles:
+    result = sandbox_files.SnapshotFiles()
     for area, prefix, path in (
         ("session", "", root / "session"),
         ("shared", "shared/", root / "shared"),
     ):
         path.mkdir(exist_ok=True)
-        executor.scan_files(os.open(path, executor._DIRECTORY), prefix, result, area=area)
+        sandbox_files.scan_files(
+            os.open(path, sandbox_files.DIRECTORY_FLAGS), prefix, result, area=area
+        )
     return result
 
 
@@ -101,7 +103,7 @@ def test_sidecar_keeps_byte_and_root_identity_without_extra_file_reads(tmp_path:
     (session / "shared/x").write_bytes(b"session")
     (tmp_path / "shared/x").write_bytes(b"shared")
     after = scan(tmp_path)
-    report = OutputReport.model_validate(executor.observation_report(before, after))
+    report = OutputReport.model_validate(sandbox_files.observation_report(before, after))
     assert len(report.entries) == 5
     assert len({entry.identity() for entry in report.entries}) == 5
     assert {(entry.area, entry.raw()) for entry in report.entries} >= {
@@ -123,7 +125,7 @@ def test_stat_blind_spots_and_absence_stay_incomplete(tmp_path: Path) -> None:
     (tmp_path / "session/deleted").unlink()
     (tmp_path / "session/link").symlink_to("/etc/passwd")
     os.mkfifo(tmp_path / "session/fifo")
-    report = OutputReport.model_validate(executor.observation_report(before, scan(tmp_path)))
+    report = OutputReport.model_validate(sandbox_files.observation_report(before, scan(tmp_path)))
     assert [(entry.kind, entry.raw()) for entry in report.entries] == [
         ("not_seen_after", b"deleted")
     ]
@@ -142,13 +144,13 @@ def test_namespace_swap_does_not_label_special_metadata_as_regular(
         stat=lambda **_fields: SimpleNamespace(st_mode=mode, st_mtime_ns=1, st_size=2, st_ino=3),
     )
     monkeypatch.setattr(os, "scandir", lambda _directory: nullcontext(iter([entry])))
-    before, after = executor.SnapshotFiles(), executor.SnapshotFiles()
-    assert executor._subdirectories(123, "", after) == []
+    before, after = sandbox_files.SnapshotFiles(), sandbox_files.SnapshotFiles()
+    assert sandbox_files._subdirectories(123, "", after) == []
     # Keep the ordinary written_files projection compatible, but the independently
     # typed report must not misrepresent the stat result as a regular file.
     assert after["swapped"] == (1, 2, 3)
     assert not after.raw
-    report = OutputReport.model_validate(executor.observation_report(before, after))
+    report = OutputReport.model_validate(sandbox_files.observation_report(before, after))
     assert not report.entries
     assert report.coverage.after_error
 
@@ -163,10 +165,10 @@ def test_parallel_metadata_has_independent_entry_byte_and_wire_bounds(
     assert len(after.raw) <= 256
     assert after.raw_bytes <= 65536
     assert after.limited
-    report = OutputReport.model_validate(executor.observation_report(before, after))
+    report = OutputReport.model_validate(sandbox_files.observation_report(before, after))
     assert len(report.entries) == 64
     assert report.coverage.report_truncated
-    monkeypatch.setattr(executor, "MAX_OBSERVATION_SCAN_BYTES", 150)
+    monkeypatch.setattr(sandbox_files, "MAX_OBSERVATION_SCAN_BYTES", 150)
     tiny = scan(tmp_path)
     assert len(tiny.raw) <= 1
     assert tiny.limited
@@ -183,13 +185,13 @@ def test_source_error_and_path_omission_remain_explicit_without_new_io(
 
     monkeypatch.setattr(value, "open_base", denied)
     before, _ = value.snapshot("missing")
-    assert isinstance(before, executor.SnapshotFiles)
+    assert isinstance(before, sandbox_files.SnapshotFiles)
     assert before.error
     assert before.finished_ns is not None
-    after = executor.SnapshotFiles()
+    after = sandbox_files.SnapshotFiles()
     after.observe("session", "x" * 4097, (1, 0, 1))
     after.observe("session", "visible", (1, 0, 1))
-    report = OutputReport.model_validate(executor.observation_report(before, after))
+    report = OutputReport.model_validate(sandbox_files.observation_report(before, after))
     assert report.coverage.path_omitted
     assert report.coverage.before_error
     assert report.entries[0].kind == "regular_observed"
@@ -569,7 +571,7 @@ async def test_derived_projection_exception_does_not_change_legacy_files(
     def broken(*args: object) -> None:
         raise ValueError("synthetic derived failure")
 
-    monkeypatch.setattr(executor, "observation_report", broken)
+    monkeypatch.setattr(sandbox_files, "observation_report", broken)
     written = await value.written("s1", before)
     assert written["written_files"] == ["healthy"]
     assert written["output_observations"] is None
