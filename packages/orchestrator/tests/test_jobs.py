@@ -241,6 +241,36 @@ async def test_first_and_all_wait_modes(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_last_turn_job_notice_keeps_answer_and_waits_for_next_run(tmp_path: Path) -> None:
+    worker = FakeWorker()
+
+    class Answering(ScriptedModel):
+        async def complete(
+            self, messages: Sequence[Message], tools: Sequence[ToolSpec]
+        ) -> ModelTurn:
+            # The job ends while the model writes its final answer.
+            worker.records["exe-1"] = execution(state=ExecutionState.SUCCEEDED)
+            return await super().complete(messages, tools)
+
+    model = Answering.from_json([{"text": "final answer"}])
+    jobs = tools(worker, tmp_path)
+    transcript = await run_task(
+        model,
+        Toolbox(cast(WorkerClient, worker), CONTEXT, features=("jobs",), jobs=jobs),
+        "answer",
+        run_id="run-1",
+        max_turns=1,
+    )
+    assert transcript.stopped == "answered"
+    assert transcript.final_text == "final answer"
+    assert transcript.messages[-1] == {"role": "assistant", "content": "final answer"}
+    assert transcript.job_notice_ids == []
+    # Nothing acknowledged the notice, so the next run delivers it.
+    notices = await tools(worker, tmp_path).notices()
+    assert [notice["job_id"] for notice in notices] == ["exe-1"]
+
+
+@pytest.mark.asyncio
 async def test_notice_replays_after_restart_until_saved_run_acknowledges(tmp_path: Path) -> None:
     worker = FakeWorker()
     worker.records["exe-1"] = execution(state=ExecutionState.SUCCEEDED)

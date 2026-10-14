@@ -412,20 +412,35 @@ async def test_status_cas_race_and_awaiting_approval_cannot_be_bypassed(fixture,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["close", "aba", "unrelated"])
+@pytest.mark.parametrize("change", ["close", "aba"])
 async def test_original_registry_lifetime_is_not_refreshed_after_change(fixture, change):
     f = fixture
-    if change in {"close", "aba"}:
-        f.projects.close_session("p", "s")
+    f.projects.close_session("p", "s")
     if change == "aba":
         f.projects.open_session("p", "s", dedicated=False)
-    if change == "unrelated":
-        f.projects.open_session("p", "other", dedicated=False)
     with pytest.raises(DocumentError, match="planning"):
         await made(f)
     with pytest.raises(DocumentError, match="planning"):
         await f.adapter.check_dispatch("write_file")
     await f.adapter.check_dispatch("read_file")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["second_session", "other_closed", "policy"])
+async def test_other_project_changes_keep_this_runs_effect_tools(fixture, change):
+    f = fixture
+    if change in {"second_session", "other_closed"}:
+        # A second workbook opens in the same project while this run continues.
+        f.projects.open_session("p", "other", dedicated=False)
+    if change == "other_closed":
+        f.projects.close_session("p", "other")
+    if change == "policy":
+        # The worker enforces the project's current policy on each effect.
+        f.projects.set_policy("p", "sha256:" + "b" * 64)
+    await f.adapter.check_dispatch("shell")
+    ref, _ = await active(f)
+    assert ref["version"] == 1
+    await f.adapter.check_dispatch("write_file")
 
 
 @pytest.mark.asyncio
