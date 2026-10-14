@@ -13,6 +13,7 @@ Date: 2026-10-11. Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.
 | [Plans and delegation](plans-and-delegation.md) | Draft | Plans in part: [session plans](../SESSION-PLANS.md); delegation is not built (the prototype is [archived](../../.agents/docs/archive/README.md)) |
 | [Project ledger, board and frontier](ledger.md) | Draft; questions 2 to 6 settled (2026-10-11) | Not built |
 | [Skills](skills.md) | Draft | Not built |
+| [Run service](run-service.md) | Draft (2026-10-14); its open questions change the design | Not built |
 
 These specifications state what the new harness must do for the CScience features it reimplements (D03, D11), and how to test it. They are written in the project's own words from observed use, the agent reports and public documentation (D56). The agent reports serve as evidence of *what* CScience does; their line anchors are not reproduced. No Claude Science code, prompt, skill text, schema or SQL is used. The reviewer rubric, role prompts and tool descriptions are written independently when each feature is built.
 
@@ -28,6 +29,7 @@ These specifications state what the new harness must do for the CScience feature
 | [Research artifacts](research-artifacts.md) | Artifact identity and revisions, publication, lineage, references, annotations | D09, D10, D28, D37, D40 |
 | [PDF sources](pdf-sources.md) | Page facts and labels, page text with line anchors, search, page and region renders, `PdfAnchor` | D59 |
 | [Living documents](living-documents.md) | Markdown with LaTeX, block and math-span IDs, attributed revisions, user edits, revision-checked agent patches and suggestions, comments and work requests, rendering, references, exports, events for reviews, math delimiter normalization and the repair of LaTeX that KaTeX rejects, document files in every environment with their helper and merged direct edits, math findings for the agents that wrote the math | D23, D25, D28, D65, D82 |
+| [Run service](run-service.md) | GUI chat: the run service, one active run per session, messages queued to safe points, earlier conversation, cancel, restart, run events and their format | Refactoring plan decision 5, D83 |
 | [Project ledger, board and frontier](ledger.md) | Typed entries and statuses, evidence links and evidence types, attribution, published and project results, frontier comparison, links to findings, reconsideration flags, mutations, the external pack's board records and imports; the board, frontier, issue list and history as views | D24, D29, D33, D34 |
 
 Not yet specified: native Sage kernel behavior (roadmap M0) and the proposed reproduction review (D27). Every [external skills compatibility gate](../EXTERNAL-SKILLS.md#compatibility-gates) now has a fixture: gates 1–3 and 7 in [skills](skills.md), gate 4 in [plans and delegation](plans-and-delegation.md) with its link to a board entry in the [ledger](ledger.md) (LG-F8), and gates 5 and 6 in the ledger (LG-F7, LG-F9, LG-F11).
