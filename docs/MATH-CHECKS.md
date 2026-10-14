@@ -219,7 +219,7 @@ a writer; `reopen` supports concurrent USER CAS/draft checks.
 ## Validation boundary
 
 Tests cover historical ownership,
-stale/unavailable/configuration retries, bounded corrupt-state reads, actual-work
+stale/unavailable/configuration retries, write-time checks of the math tables, actual-work
 cancellation, closing-round delivery and failed-save/ACK races. Checked in the
 browser with actual local KaTeX 0.18.9 and Node 24.20.0 on synthetic documents in
 [document math acceptance](../.agents/docs/agent-reports/document-math-2026-10-12.md)

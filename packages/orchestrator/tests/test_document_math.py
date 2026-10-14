@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from typing import Literal
 
@@ -522,22 +523,22 @@ async def test_math_commit_fault_rolls_observation_finding_and_cursor_back(store
 
 
 @pytest.mark.asyncio
-async def test_corrupt_job_prefix_bound_and_source_hash_binding(stores) -> None:
+async def test_a_job_is_checked_when_written_and_bound_to_its_source(stores) -> None:
     docs, reviews, _ = stores
     create(docs)
     jobs = MathJobs(reviews)
     check = jobs.claim("p", "owner")
     assert check
+    for column, value in (("reason", "x" * 5000), ("lease_until", float("inf"))):
+        refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+        with refused, docs.control.write() as tx:
+            tx.sql.execute(
+                f"UPDATE math_jobs SET {column}=? WHERE check_id=?",
+                (value, check),
+            )
     with docs.control.write() as tx:
         db = tx.sql
-        db.execute("UPDATE math_jobs SET reason=? WHERE check_id=?", ("x" * 20_000_000, check))
-    with pytest.raises(DocumentError, match="bounds"):
-        jobs.job(check)
-    with docs.control.write() as tx:
-        db = tx.sql
-        db.execute(
-            "UPDATE math_jobs SET reason=NULL,source_sha256=? WHERE check_id=?", ("b" * 64, check)
-        )
+        db.execute("UPDATE math_jobs SET source_sha256=? WHERE check_id=?", ("b" * 64, check))
     checker = ScriptedChecker()
     with pytest.raises(DocumentError, match="digest"):
         await jobs.step(check, "owner", checker)
@@ -1109,27 +1110,6 @@ async def test_closing_bound_thread_owned_through_repeated_cancellation(
     assert get(reviews)[0]["status"] == "open"
 
 
-def test_corrupt_admission_lease_and_listing_ids_refuse_before_fetch(stores) -> None:
-    docs, reviews, _ = stores
-    create(docs)
-    jobs = MathJobs(reviews)
-    check = jobs.claim("p", "owner")
-    with docs.control.write() as tx:
-        db = tx.sql
-        db.execute("UPDATE math_jobs SET lease_until=? WHERE check_id=?", (float("inf"), check))
-    with pytest.raises(DocumentError, match="lease"):
-        jobs.claim("p", "other")
-    with docs.control.write() as tx:
-        db = tx.sql
-        # Remove only the new immutable context pin in this corrupt-row fixture,
-        # so its FK does not prevent testing the original admission read bound.
-        db.execute("DROP TRIGGER math_macro_pins_delete")
-        db.execute("DELETE FROM math_macro_pins")
-        db.execute("UPDATE math_jobs SET check_id=?", ("x" * 20_000_000,))
-    with pytest.raises(DocumentError, match="identity"):
-        jobs.listing("p")
-
-
 @pytest.mark.asyncio
 async def test_completed_scientific_bound_survives_later_math_failure(stores, monkeypatch):
     import argparse
@@ -1225,3 +1205,34 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
     )
     assert Findings(reviews).get("p", "s", math["finding_id"])["status"] == "open"
     assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "unaddressed"
+
+
+@pytest.mark.asyncio
+async def test_the_math_checks_keep_jobs_observations_and_findings(tmp_path, monkeypatch):
+    from sandbox_science.orchestrator.control import migrations
+
+    with monkeypatch.context() as old:  # a store from before version 6
+        old.setattr(migrations, "MIGRATIONS", migrations.MIGRATIONS[:4])
+        old.setattr(migrations, "VERSION", migrations.BASELINE + 3)
+        projects = ProjectStore(tmp_path)
+        projects.create("p", "minimal", "sha256:" + "a" * 64)
+        projects.open_session("p", "s", dedicated=False)
+        projects.close()
+        docs = DocumentStore(store_path(tmp_path))
+        reviews = ReviewStore(docs, clock=lambda: 1000.0)
+        create(docs)
+        await drain(reviews, ScriptedChecker())
+        jobs = MathJobs(reviews)
+        before = (jobs.listing("p"), [jobs.job(c["check_id"]) for c in jobs.listing("p")["checks"]])
+        findings = get(reviews)
+        docs.close()
+    docs = DocumentStore(store_path(tmp_path))
+    docs.initialize()  # the writer brings the store to the current version
+    try:
+        reviews = ReviewStore(docs, clock=lambda: 1000.0)
+        jobs = MathJobs(reviews)
+        after = (jobs.listing("p"), [jobs.job(c["check_id"]) for c in jobs.listing("p")["checks"]])
+        assert after == before
+        assert get(reviews) == findings
+    finally:
+        docs.close()

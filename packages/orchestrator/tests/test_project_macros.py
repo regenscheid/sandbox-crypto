@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import sqlite3
-import tracemalloc
 
 import pytest
 
@@ -240,20 +239,16 @@ def test_new_macro_context_queues_a_new_confirmation_without_spending_old_retrie
     assert reviews.run("p", "s", second)["confirmation_key"] != first_key
 
 
-def test_corrupt_definition_read_is_bounded_before_parse(stores):
+def test_oversized_definitions_are_refused_when_written(stores):
     docs, _, _ = stores
     change(docs, {r"\F": "x"})
-    with docs.control.write() as tx:
-        db = tx.sql
-        db.execute("DROP TRIGGER project_macro_revisions_update")
-        db.execute("UPDATE project_macro_revisions SET definitions=?", ("x" * 20_000_000,))
-    tracemalloc.start()
-    try:
-        with pytest.raises(DocumentError, match="bounds"):
-            ProjectMacros(docs).get("p")
-        assert tracemalloc.get_traced_memory()[1] < 200_000
-    finally:
-        tracemalloc.stop()
+    refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+    with refused, docs.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO project_macro_revisions SELECT project,revision+1,?,sha256,author "
+            "FROM project_macro_revisions",
+            ('{"x": "' + "x" * 20_000 + '"}',),
+        )
 
 
 @pytest.mark.asyncio

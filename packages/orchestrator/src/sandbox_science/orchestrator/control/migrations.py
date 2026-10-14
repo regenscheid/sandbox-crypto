@@ -339,11 +339,143 @@ def _response_checks(schema: Schema) -> None:
         rebuild(schema, table, create)
 
 
+def _math_checks(schema: Schema) -> None:
+    """Version 6: math checks, their observations and owners, and project macros and
+    their pins check their own values when they are written (decision 3)."""
+    for table, create in (
+        (
+            "math_jobs",
+            """CREATE TABLE math_jobs (
+    check_id TEXT PRIMARY KEY CHECK (length(CAST(check_id AS BLOB)) BETWEEN 1 AND 128),
+    document TEXT REFERENCES documents(document_id),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    source_sha256 TEXT NOT NULL
+        CHECK (length(source_sha256) = 64 AND source_sha256 NOT GLOB '*[^0-9a-f]*'),
+    state TEXT NOT NULL CHECK (state IN ('running', 'finished')),
+    owner TEXT CHECK (owner IS NULL OR length(CAST(owner AS BLOB)) <= 128),
+    lease_until REAL CHECK (lease_until IS NULL OR lease_until BETWEEN -1e18 AND 1e18),
+    cursor INTEGER NOT NULL DEFAULT 0 CHECK (cursor BETWEEN 0 AND 20000),
+    spans INTEGER CHECK (spans IS NULL OR spans BETWEEN 0 AND 20000),
+    available INTEGER NOT NULL DEFAULT 0 CHECK (available BETWEEN 0 AND 1000000000),
+    rejected INTEGER NOT NULL DEFAULT 0 CHECK (rejected BETWEEN 0 AND 1000000000),
+    unavailable INTEGER NOT NULL DEFAULT 0 CHECK (unavailable BETWEEN 0 AND 1000000000),
+    configuration TEXT CHECK (configuration IS NULL
+        OR (json_valid(configuration) AND length(CAST(configuration AS BLOB)) <= 4096)),
+    runtime TEXT CHECK (runtime IS NULL OR length(CAST(runtime AS BLOB)) <= 256),
+    reason TEXT CHECK (reason IS NULL OR length(CAST(reason AS BLOB)) <= 4096),
+    attribution_cursor INTEGER
+        CHECK (attribution_cursor IS NULL OR attribution_cursor BETWEEN 0 AND revision),
+    created REAL NOT NULL CHECK (created BETWEEN -1e18 AND 1e18),
+    ended REAL CHECK (ended IS NULL OR ended BETWEEN -1e18 AND 1e18)) STRICT""",
+        ),
+        (
+            "math_sources",
+            """CREATE TABLE math_sources (
+    document TEXT PRIMARY KEY REFERENCES documents(document_id),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    target INTEGER NOT NULL CHECK (target BETWEEN 0 AND 1000000000),
+    completed INTEGER NOT NULL DEFAULT 0 CHECK (completed BETWEEN 0 AND 1000000000),
+    blocked TEXT CHECK (blocked IS NULL OR length(CAST(blocked AS BLOB)) <= 4096),
+    retry_requested INTEGER NOT NULL DEFAULT 0 CHECK (retry_requested IN (0, 1))) STRICT""",
+        ),
+        (
+            "math_block_owners",
+            """CREATE TABLE math_block_owners (
+    document TEXT NOT NULL REFERENCES documents(document_id), block TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    author TEXT NOT NULL CHECK (json_valid(author)),
+    PRIMARY KEY(document,block)) STRICT""",
+        ),
+        (
+            "math_observations",
+            """CREATE TABLE math_observations (
+    check_id TEXT NOT NULL REFERENCES math_jobs(check_id),
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    block TEXT NOT NULL, span TEXT NOT NULL,
+    input_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL,
+    payload TEXT NOT NULL
+        CHECK (json_valid(payload) AND length(CAST(payload AS BLOB)) <= 32768),
+    bytes INTEGER NOT NULL CHECK (bytes >= 0),
+    PRIMARY KEY(check_id,ordinal)) STRICT""",
+        ),
+        (
+            "math_job_owners",
+            """CREATE TABLE math_job_owners (
+    check_id TEXT NOT NULL REFERENCES math_jobs(check_id), block TEXT NOT NULL,
+    revision INTEGER CHECK (revision IS NULL OR revision BETWEEN 1 AND 999999999),
+    author TEXT CHECK (author IS NULL
+        OR (json_valid(author) AND length(CAST(author AS BLOB)) <= 8192)),
+    bytes INTEGER NOT NULL CHECK (bytes >= 0),
+    PRIMARY KEY(check_id,block)) STRICT""",
+        ),
+        (
+            "project_macro_revisions",
+            """CREATE TABLE project_macro_revisions (
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 1 AND 999999999),
+    definitions TEXT NOT NULL
+        CHECK (json_valid(definitions) AND length(CAST(definitions AS BLOB)) <= 16384),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    author TEXT NOT NULL CHECK (json_valid(author)),
+    PRIMARY KEY(project,revision)) STRICT""",
+        ),
+        (
+            "project_macro_operations",
+            """CREATE TABLE project_macro_operations (
+    project TEXT NOT NULL, actor TEXT NOT NULL, operation TEXT NOT NULL,
+    fingerprint TEXT NOT NULL
+        CHECK (length(fingerprint) = 64 AND fingerprint NOT GLOB '*[^0-9a-f]*'),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND 999999999),
+    PRIMARY KEY(project,actor,operation)) STRICT""",
+        ),
+        (
+            "math_macro_pins",
+            """CREATE TABLE math_macro_pins (
+    check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
+    project TEXT NOT NULL CHECK (length(CAST(project AS BLOB)) BETWEEN 1 AND 128),
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND 999999999),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    anchors TEXT NOT NULL
+        CHECK (json_valid(anchors) AND length(CAST(anchors AS BLOB)) <= 16384)) STRICT""",
+        ),
+        (
+            "response_macro_anchors",
+            """CREATE TABLE response_macro_anchors (
+    source TEXT PRIMARY KEY,
+    anchors TEXT NOT NULL
+        CHECK (json_valid(anchors) AND length(CAST(anchors AS BLOB)) <= 16384)) STRICT""",
+        ),
+        (
+            "math_macro_contexts",
+            """CREATE TABLE math_macro_contexts (
+    check_id TEXT PRIMARY KEY REFERENCES math_jobs(check_id),
+    definitions TEXT NOT NULL
+        CHECK (json_valid(definitions) AND length(CAST(definitions AS BLOB)) <= 65536),
+    problems TEXT NOT NULL
+        CHECK (json_valid(problems) AND length(CAST(problems AS BLOB)) <= 32768),
+    held INTEGER NOT NULL CHECK (held IN (0, 1)),
+    context_key TEXT NOT NULL
+        CHECK (length(context_key) = 64 AND context_key NOT GLOB '*[^0-9a-f]*')) STRICT""",
+        ),
+        (
+            "review_macro_pins",
+            """CREATE TABLE review_macro_pins (
+    review_id TEXT NOT NULL, finding_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND 999999999),
+    sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+    PRIMARY KEY(review_id,finding_id)) STRICT""",
+        ),
+    ):
+        rebuild(schema, table, create)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
     _comment_checks,
     _response_checks,
+    _math_checks,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""

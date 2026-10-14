@@ -440,16 +440,12 @@ async def test_dependency_refresh_preserves_explicit_user_decision(stores, kind,
 @pytest.mark.parametrize(
     "payload",
     [
-        "{broken",
-        "x" * 20_000_000,
         json.dumps({"owner": {"revision": 1}}),
         json.dumps({"owner": {"revision": 1, "author": {"kind": "agent"}}}),
         json.dumps({"owner": {"revision": 2, "author": MAIN.model_dump(mode="json")}}),
     ],
 )
-async def test_previous_assessment_and_user_decision_json_are_bounded_before_parse(stores, payload):
-    import tracemalloc
-
+async def test_previous_assessment_and_user_decision_of_another_shape_are_not_used(stores, payload):
     from sandbox_science.orchestrator.consistency.mechanical import MechanicalFindings
 
     docs, reviews, _ = stores
@@ -473,13 +469,23 @@ async def test_previous_assessment_and_user_decision_json_are_bounded_before_par
         # deliberately retain their separate existing contracts.
         db.execute("DROP TRIGGER review_transitions_update")
         db.execute("UPDATE review_transitions SET payload=?", (payload,))
-        tracemalloc.start()
-        try:
-            assert mechanism._previous_owner(db, job, item) is None
-            assert mechanism._user_resolved(db, {**found, "status": "confirmed fixed"})
-            assert tracemalloc.get_traced_memory()[1] < 100_000
-        finally:
-            tracemalloc.stop()
+        assert mechanism._previous_owner(db, job, item) is None
+        assert mechanism._user_resolved(db, {**found, "status": "confirmed fixed"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", ["{broken", "x" * 40_000])
+async def test_an_invalid_or_oversized_observation_is_refused_when_written(stores, payload):
+    docs, reviews, _ = stores
+    source_fixture(docs, "comment")
+    await drain(reviews, ScriptedChecker())
+    refused = pytest.raises(sqlite3.IntegrityError, match="CHECK")
+    with refused, docs.control.write() as tx:
+        tx.sql.execute(
+            "INSERT INTO math_observations SELECT check_id,ordinal+1000,block,span,"
+            "input_sha256,status,?,bytes FROM math_observations LIMIT 1",
+            (payload,),
+        )
 
 
 @pytest.mark.asyncio
