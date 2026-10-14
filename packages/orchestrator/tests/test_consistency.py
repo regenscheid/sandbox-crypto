@@ -1163,7 +1163,12 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
     monkeypatch.setattr(ProjectStore, "save_run", failed_save)
     assert (
         await save(
-            fields, 0, hooks, projects=ProjectStore(args.state_dir), transcript=args.transcript
+            fields,
+            0,
+            hooks,
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
         )
         == 1
     )
@@ -1173,7 +1178,12 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
     monkeypatch.setattr(ProjectStore, "save_run", original)
     assert (
         await save(
-            fields, 0, hooks, projects=ProjectStore(args.state_dir), transcript=args.transcript
+            fields,
+            0,
+            hooks,
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
         )
         == 0
     )

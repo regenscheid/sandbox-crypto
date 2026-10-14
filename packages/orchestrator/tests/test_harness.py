@@ -314,8 +314,11 @@ async def test_a_record_that_cannot_be_kept_still_reaches_the_transcript(
         "tools": [{"tool": "pdf_info", "arguments": "{}", "pdf": deep}],
     }
     transcript = tmp_path / "t.json"
-    assert await save(fields, 0, (), projects=store, transcript=transcript) == 1
-    assert "the run's record could not be kept" in capsys.readouterr().err
+    errors: list[str] = []
+    assert (
+        await save(fields, 0, (), projects=store, transcript=transcript, error=errors.append) == 1
+    )
+    assert "the run's record could not be kept" in errors[0]
     assert json.loads(transcript.read_text())["final_text"] == "done"
     assert store.runs("p1", "s1") == []
 

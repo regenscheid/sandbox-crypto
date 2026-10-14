@@ -169,17 +169,19 @@ async def test_save_acknowledges_every_source_from_the_record(
         delivered={source: sorted(ids) for source, ids in transcript.delivered.items()},
     ).model_dump(mode="json")
     args = argparse.Namespace(transcript=None, state_dir=tmp_path)
+    errors: list[str] = []
     assert (
         await save(
             fields,
             0,
             [failing, other],
             projects=ProjectStore(args.state_dir),
+            error=errors.append,
             transcript=args.transcript,
         )
         == 1
     )
-    assert "the run's failing could not be acknowledged" in capsys.readouterr().err
+    assert "the run's failing could not be acknowledged" in errors[0]
     (saved,) = projects.runs("p", "s")
     assert projects.run("p", "s", saved.name).delivered == {
         "failing": ["failing-1"],

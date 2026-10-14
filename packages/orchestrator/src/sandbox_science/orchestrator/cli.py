@@ -61,7 +61,18 @@ from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, n
 from .documents import USER, Author, DocumentError, DocumentStore, store_path
 from .documents.errors import CONFLICT
 from .documents.tool import view_blocks
-from .harness import Finished, Harness, Role, RunRequest, Settings, Stores, closing, save
+from .harness import (
+    Finished,
+    Harness,
+    IsolationRefusedError,
+    Role,
+    RunRequest,
+    Settings,
+    Stores,
+    admit,
+    closing,
+    save,
+)
 from .jobstate import JobState
 from .loop import Interruption
 from .mathcheck import MathChecker
@@ -107,9 +118,13 @@ def _gateway(
     )
 
 
-def _role(script: Path | None, alias: str, gateway: Callable[[], ChatModel]) -> Role:
-    model = ScriptedModel.from_json(json.loads(script.read_text())) if script else gateway()
-    return Role(model, alias)
+def _role(script: Path | None, flag: str, alias: str, gateway: Callable[[], ChatModel]) -> Role:
+    if script is None:
+        return Role(gateway(), alias)
+    try:
+        return Role(ScriptedModel.from_json(json.loads(script.read_text())), alias)
+    except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
+        raise ModelError(f"the {flag} file cannot be read: {exc}") from None
 
 
 async def _close(model: ChatModel) -> None:
@@ -120,12 +135,14 @@ async def _close(model: ChatModel) -> None:
 async def _run(args: argparse.Namespace) -> int:
     """Run one task against the worker, then save its record and acknowledge its notices.
 
-    The worker client, the models and the stores close after the run and before its
-    record is saved, in reverse order; a failure there is recorded as the run's.
+    The session is resolved and the worker's isolation checked before the stores open
+    and the watcher's and reviewer's scripts are read. The worker client, the models and
+    the stores close after the run and before its record is saved, in reverse order; a
+    failure there is recorded as the run's.
     """
     sink = _Printer()
     alias = "scripted" if args.script is not None else args.model
-    main = _role(args.script, alias, lambda: _gateway(args, args.model))
+    main = _role(args.script, "--script", alias, lambda: _gateway(args, args.model))
     request = RunRequest(
         project=args.project,
         session=args.session,
@@ -135,6 +152,7 @@ async def _run(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         research_template=args.research_template,
     )
+    minimum: int | None = None if args.allow_unisolated else args.min_isolation_tier
     finished: Finished | None = None
     state_dir: Path | None = args.state_dir
     projects = ProjectStore(state_dir) if state_dir is not None else None
@@ -146,6 +164,13 @@ async def _run(args: argparse.Namespace) -> int:
                     interruption.context(WorkerClient(args.worker, _read_secret(args.token_file)))
                 )
                 closing(stack, interruption, lambda: _close(main.model))
+                try:
+                    admitted = await admit(
+                        client, projects, request, sink, min_isolation_tier=minimum
+                    )
+                except IsolationRefusedError as refused:
+                    sink.error(f"{refused} (--allow-unisolated for development)")
+                    return 2
                 stores = None
                 if projects is not None and state_dir is not None:
                     documents = DocumentStore(store_path(state_dir), producer="harness")
@@ -155,6 +180,7 @@ async def _run(args: argparse.Namespace) -> int:
                 if args.watcher_model is not None:
                     watcher = _role(
                         args.watcher_script,
+                        "--watcher-script",
                         args.watcher_model,
                         lambda: _gateway(
                             args, args.watcher_model, max_tokens=300, max_response_bytes=16384
@@ -164,36 +190,33 @@ async def _run(args: argparse.Namespace) -> int:
                 if args.reviewer_model is not None:
                     reviewer = _role(
                         args.reviewer_script,
+                        "--reviewer-script",
                         args.reviewer_model,
                         lambda: _gateway(
                             args, args.reviewer_model, max_tokens=2048, max_response_bytes=65536
                         ),
                     )
                     closing(stack, interruption, lambda: _close(reviewer.model))
-                checker = (
-                    MathChecker(args.math_node, args.math_launcher, args.math_bundle)
-                    if args.math_node is not None
-                    else None
-                )
-                settings = Settings(
-                    min_isolation_tier=None if args.allow_unisolated else args.min_isolation_tier,
-                    max_turns=args.max_turns,
-                    watcher_calls_per_hour=args.watcher_calls_per_hour,
-                    watcher_first_check=args.watcher_first_check,
-                    watcher_interval=args.watcher_interval,
-                    checker=checker,
-                )
                 harness = Harness(
                     client,
                     main,
                     stores=stores,
                     watcher=watcher,
                     reviewer=reviewer,
-                    settings=settings,
+                    checker=(
+                        MathChecker(args.math_node, args.math_launcher, args.math_bundle)
+                        if args.math_node is not None
+                        else None
+                    ),
+                    settings=Settings(
+                        min_isolation_tier=minimum,
+                        max_turns=args.max_turns,
+                        watcher_calls_per_hour=args.watcher_calls_per_hour,
+                        watcher_first_check=args.watcher_first_check,
+                        watcher_interval=args.watcher_interval,
+                    ),
                 )
-                finished = await harness.run(request, sink)
-                if finished is None:
-                    return 2
+                finished = await harness.start(admitted, sink)
     except BaseException as error:
         if interruption.error is not None:
             raise interruption.error from None
@@ -209,6 +232,7 @@ async def _run(args: argparse.Namespace) -> int:
         finished.status,
         finished.hooks,
         projects=projects,
+        error=sink.error,
         transcript=args.transcript,
     )
 

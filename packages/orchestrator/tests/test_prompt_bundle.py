@@ -295,11 +295,17 @@ async def test_retention_legacy_and_save_before_ack(tmp_path, monkeypatch, failu
         [Hook()],
         projects=ProjectStore(args.state_dir),
         transcript=args.transcript,
+        error=print,
     ) == int(failure)
     assert acknowledged == [[]]
     assert (
         await save(
-            fields, 0, [Hook()], projects=ProjectStore(args.state_dir), transcript=args.transcript
+            fields,
+            0,
+            [Hook()],
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
         )
         == 1
     )

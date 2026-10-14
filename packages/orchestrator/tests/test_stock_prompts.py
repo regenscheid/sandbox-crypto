@@ -297,11 +297,17 @@ async def test_selected_history_is_exact_after_catalog_changes_and_safe_failed_s
         [Hook()],
         projects=ProjectStore(args.state_dir),
         transcript=args.transcript,
+        error=print,
     ) == int(failure)
     assert observed == [[]]
     assert (
         await save(
-            fields, 0, [Hook()], projects=ProjectStore(args.state_dir), transcript=args.transcript
+            fields,
+            0,
+            [Hook()],
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
         )
         == 1
     )  # Existing duplicate save refuses.

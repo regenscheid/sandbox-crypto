@@ -260,8 +260,10 @@ async def test_cli_cleanup_failure_keeps_partial_record_and_closes_model(
             await cli._run(args)
         assert projects.runs("p", "s") == []
         assert not args.transcript.exists()
-        # The model and the store are open before setup, so a cancelled setup closes them too.
-        assert closed == ["store", "model", "client"]
+        # The main model is open before setup, so a cancelled setup closes it too; the
+        # store opens only after the session is resolved and the worker admitted.
+        expected = ["model", "client"] if cancel_phase == "setup" else ["store", "model", "client"]
+        assert closed == expected
         return
     assert await cli._run(args) == 1
     assert closed == ["store", "model", "client"]
@@ -306,6 +308,7 @@ async def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp
             [Hook()],
             projects=ProjectStore(args.state_dir),
             transcript=args.transcript,
+            error=print,
         )
         == 1
     )
@@ -319,6 +322,7 @@ async def test_failed_save_never_acknowledges_and_foreign_session_is_refused(tmp
             [Hook()],
             projects=ProjectStore(args.state_dir),
             transcript=args.transcript,
+            error=print,
         )
         == 1
     )

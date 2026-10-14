@@ -3,17 +3,18 @@
 
 The CLI builds a ``Harness`` from its arguments, and a run service can build the same.
 It takes its worker client, models and stores as constructed objects and does not close
-them: their owner does, after the run. Each run resolves the session's execution
-context, refuses a worker below the minimum isolation tier, assembles the run's tools
-and turn hooks, runs the tool loop, and closes what it made. ``save`` then keeps the
-run's record and lets each hook acknowledge what the record names.
+them: their owner does, after the run. ``admit`` first resolves the session's
+execution context and refuses a worker below the minimum isolation tier, needing only
+the worker client and the project records, so a caller can build the rest after it.
+``Harness.start`` then assembles the run's tools and turn hooks, runs the tool loop and
+closes what it made; ``Harness.run`` does both. ``save`` keeps the run's record and lets
+each hook acknowledge what the record names.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-import sys
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
@@ -21,9 +22,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import ErrorKind, ExecutionContext, Location, new_id
+from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 from sandbox_science.contracts.worker import Language
 
 from .aio import threaded
@@ -44,6 +45,8 @@ from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
 from .session_plans import SessionPlans
 from .tools import Toolbox, ToolOutcome
 from .worker_client import WorkerClient
+
+_IDENTIFIER: TypeAdapter[str] = TypeAdapter(Identifier)
 
 
 def tier_in_effect(location: Location) -> int | None:
@@ -94,14 +97,12 @@ class Settings:
     watcher_calls_per_hour: int = 60
     watcher_first_check: float = 300
     watcher_interval: float = 1800
-    checker: Checker | None = None
-    """The configured math checker; without it, math checks report the renderer unavailable."""
 
 
 @dataclass(frozen=True)
 class RunRequest:
-    """One task for a session. ``environment`` runs a session without stores in that
-    environment as it is; with stores, the project's records choose it."""
+    """One task for a session. Without stores, ``environment`` names the environment
+    the session runs in as it is; with stores, the project's records choose it."""
 
     project: str
     session: str
@@ -109,6 +110,7 @@ class RunRequest:
     environment: str | None = None
     dedicated: bool = False
     run_id: str | None = None
+    """With stores, an identifier: it names the run's record."""
     research_template: str | None = None
 
 
@@ -122,6 +124,90 @@ class RunSink(Protocol):
     def error(self, text: str) -> None: ...
 
     async def tool(self, name: str, arguments: str, outcome: ToolOutcome) -> None: ...
+
+
+class IsolationRefusedError(Exception):
+    """The worker offers less isolation than the run requires; nothing ran."""
+
+
+@dataclass(frozen=True)
+class Admitted:
+    """A run whose session is resolved and whose worker is isolated enough."""
+
+    request: RunRequest
+    run_id: str
+    context: ExecutionContext
+    languages: tuple[Language, ...]
+    features: tuple[str, ...]
+    stateful: bool
+    started_at: datetime
+
+
+async def admit(
+    client: WorkerClient,
+    projects: ProjectStore | None,
+    request: RunRequest,
+    sink: RunSink,
+    *,
+    min_isolation_tier: int | None,
+) -> Admitted:
+    """Resolve the session's execution context and check the worker's isolation, before
+    anything else of the run is built.
+
+    With ``projects``, the session is opened and the worker creates or revises its
+    environment. Raises ``IsolationRefusedError`` for a worker below ``min_isolation_tier``.
+    """
+    started = datetime.now(UTC)
+    if projects is not None:
+        if request.environment is not None:
+            raise ValueError("with stores, the project's records choose the environment")
+        if request.run_id is not None:
+            _IDENTIFIER.validate_python(request.run_id)
+        project = projects.get(request.project)
+        session = projects.open_session(
+            request.project, request.session, dedicated=request.dedicated
+        )
+        info = await ensure_environment(client, project, session.environment_id)
+        if info is not None:
+            sink.note(
+                f"environment: {info.environment_id} ({info.profile}, {info.policy}), "
+                f"sandbox {info.sandbox}"
+            )
+        context = ExecutionContext(
+            project_id=request.project,
+            session_id=request.session,
+            environment_id=session.environment_id,
+            policy_revision=project.policy,
+        )
+    elif request.environment is None:
+        raise ValueError("a run without stores names its environment")
+    else:
+        context = ExecutionContext(
+            project_id=request.project,
+            session_id=request.session,
+            environment_id=request.environment,
+        )
+    capabilities = await client.capabilities(context.environment_id)
+    location = capabilities.location
+    tier = tier_in_effect(location)
+    if min_isolation_tier is not None and (tier is None or tier < min_isolation_tier):
+        raise IsolationRefusedError(
+            f"the worker offers {describe_isolation(location)}. At least tier "
+            f"{min_isolation_tier} is required"
+        )
+    sink.note(
+        f"worker: pool {location.pool_id}, {location.backend} backend, sandbox "
+        f"{location.sandbox_id}, host {location.hostname}, {describe_isolation(location)}"
+    )
+    return Admitted(
+        request,
+        request.run_id or new_id("run"),
+        context,
+        tuple(capabilities.languages),
+        tuple(capabilities.features),
+        projects is not None,
+        started,
+    )
 
 
 @dataclass
@@ -175,35 +261,37 @@ class Harness:
         stores: Stores | None = None,
         watcher: Role | None = None,
         reviewer: Role | None = None,
+        checker: Checker | None = None,
         settings: Settings | None = None,
     ) -> None:
+        """``checker`` is the configured math checker; without it, math checks report
+        the renderer unavailable. A reviewer and a checker need stores."""
+        if stores is None and (reviewer is not None or checker is not None):
+            raise ValueError("a reviewer and a math checker need the state directory's stores")
         self.client, self.main, self.stores = client, main, stores
-        self.watcher, self.reviewer = watcher, reviewer
+        self.watcher, self.reviewer, self.checker = watcher, reviewer, checker
         self.settings = settings or Settings()
 
-    async def run(self, request: RunRequest, sink: RunSink) -> Finished | None:
-        """Run the task to its end; ``None`` when the worker's isolation is refused.
+    async def run(self, request: RunRequest, sink: RunSink) -> Finished:
+        """Admit the run (``admit``), then run it (``start``)."""
+        projects = self.stores.projects if self.stores is not None else None
+        admitted = await admit(
+            self.client,
+            projects,
+            request,
+            sink,
+            min_isolation_tier=self.settings.min_isolation_tier,
+        )
+        return await self.start(admitted, sink)
+
+    async def start(self, admitted: Admitted, sink: RunSink) -> Finished:
+        """Run an admitted task to its end.
 
         A failure in the run or in closing what it made is recorded in the transcript;
         the first cancellation or exit propagates.
         """
-        run_id = request.run_id or new_id("run")
-        started = datetime.now(UTC)
-        context = await self.context(request, sink)
-        capabilities = await self.client.capabilities(context.environment_id)
-        location = capabilities.location
-        minimum = self.settings.min_isolation_tier
-        tier = tier_in_effect(location)
-        if minimum is not None and (tier is None or tier < minimum):
-            sink.error(
-                f"the worker offers {describe_isolation(location)}. At least tier {minimum} "
-                "is required (--allow-unisolated for development)"
-            )
-            return None
-        sink.note(
-            f"worker: pool {location.pool_id}, {location.backend} backend, sandbox "
-            f"{location.sandbox_id}, host {location.hostname}, {describe_isolation(location)}"
-        )
+        if admitted.stateful != (self.stores is not None):
+            raise ValueError("the run was admitted with other stores than this harness has")
         transcript: Transcript | None = None
         hooks: Sequence[TurnHook] = ()
         interruption = Interruption()
@@ -211,18 +299,17 @@ class Harness:
             async with AsyncExitStack() as stack:
                 with interruption.protect():
                     toolbox = await self._toolbox(
-                        context, run_id, capabilities.languages, capabilities.features,
-                        lambda close: closing(stack, interruption, close),
-                    )  # fmt: skip
+                        admitted, lambda close: closing(stack, interruption, close)
+                    )
                     hooks = toolbox.turn_hooks()
                     transcript = await run_task(
                         self.main.model,
                         toolbox,
-                        request.task,
-                        run_id=run_id,
+                        admitted.request.task,
+                        run_id=admitted.run_id,
                         max_turns=self.settings.max_turns,
                         on_tool=sink.tool,
-                        research_template=request.research_template,
+                        research_template=admitted.request.research_template,
                         hooks=hooks,
                     )
         except BaseException as error:
@@ -231,48 +318,23 @@ class Harness:
             if not isinstance(error, Exception) or transcript is None:
                 raise
             transcript.fail("cleanup")
-        return Finished(run_id, context, request.task, started, transcript, hooks)
-
-    async def context(self, request: RunRequest, sink: RunSink) -> ExecutionContext:
-        """The session's execution context; from the project's records with stores, which
-        open the session and have the worker create or revise its environment."""
-        if self.stores is None:
-            if request.environment is None:
-                raise ValueError("a run without stores names its environment")
-            return ExecutionContext(
-                project_id=request.project,
-                session_id=request.session,
-                environment_id=request.environment,
-            )
-        projects = self.stores.projects
-        project = projects.get(request.project)
-        session = projects.open_session(
-            request.project, request.session, dedicated=request.dedicated
-        )
-        info = await ensure_environment(self.client, project, session.environment_id)
-        if info is not None:
-            sink.note(
-                f"environment: {info.environment_id} ({info.profile}, {info.policy}), "
-                f"sandbox {info.sandbox}"
-            )
-        return ExecutionContext(
-            project_id=request.project,
-            session_id=request.session,
-            environment_id=session.environment_id,
-            policy_revision=project.policy,
+        return Finished(
+            admitted.run_id,
+            admitted.context,
+            admitted.request.task,
+            admitted.started_at,
+            transcript,
+            hooks,
         )
 
     async def _toolbox(
-        self,
-        context: ExecutionContext,
-        run_id: str,
-        languages: Sequence[Language],
-        features: Sequence[str],
-        on_close: Callable[[Callable[[], Awaitable[object]]], None],
+        self, admitted: Admitted, on_close: Callable[[Callable[[], Awaitable[object]]], None]
     ) -> Toolbox:
         """The run's tools; ``on_close`` takes what closes each part the run made."""
         stores, settings, alias = self.stores, self.settings, self.main.alias
         watcher, reviewer = self.watcher, self.reviewer
+        context, run_id = admitted.context, admitted.run_id
+        languages, features = admitted.languages, admitted.features
         jobs = JobTools(
             self.client,
             context,
@@ -300,7 +362,7 @@ class Harness:
         artifacts = ArtifactPublisher(inventory, self.client, context, run_id=run_id, alias=alias)
         on_close(artifacts.aclose)
         math_checks = MathController(
-            reviews.store, context.project_id, context.session_id, run_id, checker=settings.checker
+            reviews.store, context.project_id, context.session_id, run_id, checker=self.checker
         )
         owners: list[PlanTools] = []
 
@@ -346,21 +408,17 @@ def closing(
     stack.push_async_callback(protected)
 
 
-def _stderr(text: str) -> None:
-    print(f"error: {text}", file=sys.stderr)
-
-
 async def save(
     fields: dict[str, object],
     status: int,
     hooks: Sequence[TurnHook],
     *,
     projects: ProjectStore | None,
+    error: Callable[[str], None],
     transcript: Path | None = None,
-    error: Callable[[str], None] = _stderr,
 ) -> int:
     """Keep a run's record, then let each hook acknowledge what the saved record names;
-    ``status`` unless something fails.
+    ``status`` unless something fails, which ``error`` reports.
 
     The record is written to ``transcript`` first, then kept in ``projects``. A record
     that does not validate, such as a tool result nested deeper than pydantic follows,

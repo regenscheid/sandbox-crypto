@@ -410,6 +410,7 @@ async def test_safe_points_only_main_and_failed_turn_replays(store: DocumentStor
                 [WorkRequests(main)],
                 projects=ProjectStore(args.state_dir),
                 transcript=args.transcript,
+                error=print,
             )
             == 0
         )
@@ -454,6 +455,7 @@ async def test_failed_run_save_cannot_acknowledge_request(
             0,
             [WorkRequests(main)],
             projects=ProjectStore(store.path.parent),
+            error=print,
         )
         == 1
     )
@@ -894,6 +896,7 @@ async def test_failed_second_model_keeps_delivered_request_and_releases_unseen(
             1,
             [WorkRequests(main)],
             projects=ProjectStore(store.path.parent),
+            error=print,
         )
         == 1
     )

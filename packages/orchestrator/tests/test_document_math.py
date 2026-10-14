@@ -952,7 +952,12 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
     args = argparse.Namespace(state_dir=docs.path.parent, transcript=None)
     assert (
         await save(
-            fields, 0, hooks, projects=ProjectStore(args.state_dir), transcript=args.transcript
+            fields,
+            0,
+            hooks,
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
         )
         == 1
     )
@@ -963,7 +968,12 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
     monkeypatch.setattr(ProjectStore, "save_run", original)
     assert (
         await save(
-            fields, 0, hooks, projects=ProjectStore(args.state_dir), transcript=args.transcript
+            fields,
+            0,
+            hooks,
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
         )
         == 0
     )
@@ -1204,7 +1214,12 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
     args = argparse.Namespace(state_dir=docs.path.parent, transcript=None)
     assert (
         await save(
-            fields, 1, hooks, projects=ProjectStore(args.state_dir), transcript=args.transcript
+            fields,
+            1,
+            hooks,
+            projects=ProjectStore(args.state_dir),
+            transcript=args.transcript,
+            error=print,
         )
         == 1
     )

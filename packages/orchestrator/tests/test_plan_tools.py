@@ -643,6 +643,7 @@ async def test_committed_progress_survives_later_failure_without_fabricating_com
                     0,
                     (),
                     projects=f.projects,
+                    error=print,
                 )
                 == 1
             )
