@@ -33,7 +33,8 @@ skips terminal review; failed/interrupted author loops do not run a terminal rev
 Terminal holds process at most three bounded windows. Each window pins a contiguous
 feed prefix; unseen overflow retains its cursor. Terminal ingestion drains through a
 pinned document-event head in pages of 200, at most 10,000 events per boundary, and marks
-remaining backlog incomplete. Completed windows advance the author-work watermark;
+remaining backlog incomplete. A page's observations and its cursor commit in one change,
+as the artifact pages' do, and the session is checked once per call, not per item. Completed windows advance the author-work watermark;
 failed/dropped windows retain their exact retry end. The third failure records an
 unreviewed window before advancing. Confirmation attempts track each exact finding
 revision separately and cannot clear, advance or replace an author-work retry window.

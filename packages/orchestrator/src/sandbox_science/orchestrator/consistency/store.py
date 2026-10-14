@@ -248,74 +248,89 @@ class ReviewStore:
         """Consume bounded pages through a pinned event head, preserving overflow.
 
         Terminal boundaries drain at most 10,000 events. Any remaining backlog is
-        explicit incomplete coverage and is resumed at the next boundary.
+        explicit incomplete coverage and is resumed at the next boundary. Each page's
+        observations and its cursor commit together.
         """
         self.scope(project, session)
         with self.documents.control.read() as tx:
-            db = tx.sql
-            target = db.execute(
+            target = tx.sql.execute(
                 "SELECT coalesce(max(seq),0) FROM events WHERE project_id=?", (project,)
             ).fetchone()[0]
         after = 0
         for _ in range(50 if drain else 1):
-            with self.documents.control.read() as tx:
+            after, rows = self._document_page(project, session, target)
+            if not rows:
+                break
+            observations = [
+                (self._document_observation(project, document, number), chars, structural)
+                for _seq, document, owner, kind, author, number, chars, structural in rows
+                if kind == "document.revision_created"
+                and owner == session
+                and author in ("agent", "worker")
+            ]
+            after = rows[-1][0]
+            with self.documents.control.write() as tx:
                 db = tx.sql
-                current = db.execute(
-                    "SELECT document_cursor FROM review_windows WHERE project=? AND session=?",
-                    (project, session),
-                ).fetchone()
-                after = current[0] if current else 0
-                rows = db.execute(
-                    """SELECT seq,document_id,session_id,kind,
-                    json_extract(payload,'$.author_kind'),json_extract(payload,'$.revision'),
-                    json_extract(payload,'$.agent_characters'),
-                    json_array_length(payload,'$.structural_added')
-                    FROM events WHERE project_id=? AND seq>? AND seq<=? ORDER BY seq LIMIT 200""",
-                    (project, after, target),
-                ).fetchall()
-            for _seq, document, owner, kind, author, number, chars, structural in rows:
-                if (
-                    kind == "document.revision_created"
-                    and owner == session
-                    and author in ("agent", "worker")
-                ):
-                    revision = self.documents.revision(project, document, number)
-                    self.observe(
+                for (key, locator, payload), chars, structural in observations:
+                    self.record_observation(
+                        db,
                         project,
                         session,
-                        f"document:{document}:{number}",
+                        key,
                         "document",
-                        {
-                            "document": document,
-                            "revision": number,
-                            "sha256": revision.info.sha256,
-                            "run": revision.info.author.run_id,
-                        },
-                        {
-                            "document": document,
-                            "revision": number,
-                            "sha256": revision.info.sha256,
-                            "author": revision.info.author.model_dump(mode="json"),
-                            "reason": revision.info.reason,
-                            "tombstone": revision.info.tombstone,
-                        },
+                        locator,
+                        payload,
                         characters=chars or 0,
                         structural=structural or 0,
                         effects=True,
                     )
-            if rows:
-                after = rows[-1][0]
-                with self.documents.control.write() as tx:
-                    db = tx.sql
-                    self._window(db, project, session)
-                    db.execute(
-                        "UPDATE review_windows SET document_cursor=max(document_cursor,?) "
-                        "WHERE project=? AND session=?",
-                        (after, project, session),
-                    )
-            if not rows or after >= target:
+                self._window(db, project, session)
+                db.execute(
+                    "UPDATE review_windows SET document_cursor=max(document_cursor,?) "
+                    "WHERE project=? AND session=?",
+                    (after, project, session),
+                )
+            if after >= target:
                 break
         return {"cursor": after, "target": target, "complete": after >= target}
+
+    def _document_page(
+        self, project: str, session: str, target: int
+    ) -> tuple[int, list[tuple[Any, ...]]]:
+        """The session's document cursor and the next 200 project events up to ``target``."""
+        with self.documents.control.read() as tx:
+            db = tx.sql
+            current = db.execute(
+                "SELECT document_cursor FROM review_windows WHERE project=? AND session=?",
+                (project, session),
+            ).fetchone()
+            after = current[0] if current else 0
+            rows = db.execute(
+                """SELECT seq,document_id,session_id,kind,
+                json_extract(payload,'$.author_kind'),json_extract(payload,'$.revision'),
+                json_extract(payload,'$.agent_characters'),
+                json_array_length(payload,'$.structural_added')
+                FROM events WHERE project_id=? AND seq>? AND seq<=? ORDER BY seq LIMIT 200""",
+                (project, after, target),
+            ).fetchall()
+        return after, [tuple(row) for row in rows]
+
+    def _document_observation(
+        self, project: str, document: str, number: int
+    ) -> tuple[str, Json, Json]:
+        """The source key, locator and payload of an agent's document revision."""
+        revision = self.documents.revision(project, document, number)
+        common = {"document": document, "revision": number, "sha256": revision.info.sha256}
+        return (
+            f"document:{document}:{number}",
+            {**common, "run": revision.info.author.run_id},
+            {
+                **common,
+                "author": revision.info.author.model_dump(mode="json"),
+                "reason": revision.info.reason,
+                "tombstone": revision.info.tombstone,
+            },
+        )
 
     def run_effects(self, project: str, session: str, run: str) -> bool:
         """Derive effects from durable run-attributed observations, not callbacks."""

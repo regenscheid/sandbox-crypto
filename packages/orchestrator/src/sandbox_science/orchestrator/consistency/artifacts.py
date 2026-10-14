@@ -6,7 +6,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Final, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 from pydantic import Field, ValidationError
 
@@ -27,6 +28,8 @@ from sandbox_science.orchestrator.documents.errors import (
 from .store import Json, stored_json
 
 if TYPE_CHECKING:
+    from sandbox_science.orchestrator.artifacts import ArtifactInventory
+
     from .store import ReviewStore
 
 TEXT_BYTES: Final = 64 * 1024
@@ -144,6 +147,35 @@ def project_artifact(
     return locator, payload, available == "text"
 
 
+@dataclass(frozen=True, slots=True)
+class _Observation:
+    """One review-feed observation a page of artifact evidence adds."""
+
+    key: str
+    locator: Json
+    payload: Json
+    complete: bool
+    artifacts: int
+
+
+@dataclass(frozen=True, slots=True)
+class _Page:
+    """A bounded page of a session's artifact evidence, read at ``after``."""
+
+    after: int
+    target: int
+    events: list[tuple[int, str]]
+    unknown: list[tuple[object, ...]]
+
+
+_UNSEEN_OPERATIONS: Final = (
+    "FROM artifact_operations o WHERE project=? AND actor=? AND state!='done' "
+    "AND NOT EXISTS(SELECT 1 FROM review_feed f WHERE f.project=o.project "
+    "AND f.session=o.actor AND f.source_key='artifact:operation:'||o.operation)"
+)
+"""A session's unresolved publication operations the review feed has not observed."""
+
+
 def ingest_artifacts(
     store: ReviewStore, project: str, session: str, *, drain: bool = False
 ) -> Json:
@@ -158,175 +190,27 @@ def ingest_artifacts(
     if inventory is None:
         return {"cursor": 0, "target": 0, "complete": True, "enabled": False}
     with store.documents.control.read() as tx:
-        db = tx.sql
-        target = db.execute(
-            "SELECT coalesce(max(seq),0) FROM artifact_events WHERE project=?",
-            (project,),
+        target = tx.sql.execute(
+            "SELECT coalesce(max(seq),0) FROM artifact_events WHERE project=?", (project,)
         ).fetchone()[0]
     after, unknown_more = 0, False
     for _ in range(10 if drain else 1):
-        with store.documents.control.read() as tx:
-            db = tx.sql
-            row = db.execute(
-                "SELECT cursor FROM review_artifact_cursors WHERE project=? AND session=?",
-                (project, session),
-            ).fetchone()
-            after = row[0] if row else 0
-            actual_head = db.execute(
-                "SELECT coalesce(max(seq),0) FROM artifact_events WHERE project=?",
-                (project,),
-            ).fetchone()[0]
-            if type(after) is not int or not 0 <= after <= actual_head:
-                raise DocumentError(CONFLICT, "artifact evidence cursor is invalid")
-            # A coexisting ingestor may already have covered a newer prefix than
-            # this call pinned. This is progress, not a turn-aborting conflict.
-            target = max(target, after)
-            events = db.execute(
-                "SELECT seq,record FROM artifact_events "
-                "WHERE project=? AND seq>? AND seq<=? ORDER BY seq LIMIT 10",
-                (project, after, target),
-            ).fetchall()
-            unknown = db.execute(
-                "SELECT operation,request,digest,state,worker,receipt "
-                "FROM artifact_operations o WHERE project=? AND actor=? AND state!='done' "
-                "AND NOT EXISTS(SELECT 1 FROM review_feed f WHERE f.project=o.project "
-                "AND f.session=o.actor AND f.source_key='artifact:operation:'||o.operation) "
-                "ORDER BY o.rowid LIMIT 11",
-                (project, session),
-            ).fetchall()
-        prepared: list[tuple[str, Json, Json, bool, int]] = []
-        for seq, raw in events:
-            try:
-                event = ArtifactEvent.model_validate(stored_json(raw))
-            except ValidationError:
-                raise DocumentError(CONFLICT, "invalid stored artifact event") from None
-            if (
-                event.project_id != project
-                or event.seq != seq
-                or event.revision.project_id != project
-            ):
-                raise DocumentError(CONFLICT, "artifact event scope differs")
-            if event.source.context.session_id != session:
-                continue
-            if (
-                event.worker_snapshot.project_id != project
-                or event.worker_snapshot.sha256 != event.revision.sha256
-                or event.worker_snapshot.size != event.revision.size
-            ):
-                raise DocumentError(CONFLICT, "artifact event snapshot differs")
-            locator, payload, complete = project_artifact(
-                store, project, event.revision, event.source, event.worker_snapshot.source_path
-            )
-            prepared.append(
-                (
-                    f"artifact:event:{seq}",
-                    locator,
-                    payload,
-                    complete,
-                    int(event.kind == "artifact.revision_created"),
-                )
-            )
-        uncertain: list[tuple[tuple[object, ...], Json, Json]] = []
-        for op in unknown[:PAGE]:
-            operation, raw, sha, _phase, _worker, _receipt = op
-            request = stored_json(raw)
-            try:
-                source = ArtifactPublicationSource.model_validate(request["source"])
-                encoded, expected = inventory.publication_request(
-                    source, request["path"], request["media_type"]
-                )
-            except (ValidationError, KeyError, ValueError):
-                raise DocumentError(CONFLICT, "invalid unresolved artifact intent") from None
-            if (source.context.project_id, source.context.session_id) != (project, session):
-                raise DocumentError(CONFLICT, "unresolved artifact scope differs")
-            if expected != sha or encoded != raw:
-                raise DocumentError(CONFLICT, "unresolved artifact fingerprint differs")
-            with store.documents.control.read() as tx:
-                db = tx.sql
-                state = inventory.find_operation(db, source, operation, expected)
-            if state is None or state.state == "done":
-                continue
-            snapshot = None
-            if state.worker is not None:
-                snapshot = ArtifactSnapshot.model_validate(state.worker.model_dump())
-                if snapshot.project_id != project or snapshot.source_path != request["path"]:
-                    raise DocumentError(CONFLICT, "unresolved worker snapshot scope differs")
-            payload = {
-                "publication_operation": operation,
-                "availability": "known_worker_snapshot" if snapshot else "unknown_remote_outcome",
-                "worker_snapshot": snapshot.model_dump(mode="json") if snapshot else None,
-                "source": source.model_dump(mode="json"),
-                "reason": "Control bytes are not retained; no source content is granted.",
-            }
-            uncertain.append((op, {"operation": operation, "run": source.run_id}, payload))
-        end = events[-1][0] if events else after
-        with store.documents.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                "INSERT OR IGNORE INTO review_artifact_cursors VALUES(?,?,0)", (project, session)
-            )
-            actual = db.execute(
-                "SELECT cursor FROM review_artifact_cursors WHERE project=? AND session=?",
-                (project, session),
-            ).fetchone()[0]
-            if actual != after:
-                # Another ingestor owns this prefix; retry a fresh bounded page.
-                continue
-            for key, locator, payload, complete, count in prepared:
-                store.record_observation(
-                    db,
-                    project,
-                    session,
-                    key,
-                    "artifact",
-                    locator,
-                    payload,
-                    complete=complete,
-                    artifacts=count,
-                    effects=True,
-                )
-            for op, locator, payload in uncertain:
-                current = db.execute(
-                    "SELECT operation,request,digest,state,worker,receipt "
-                    "FROM artifact_operations WHERE project=? AND actor=? AND operation=?",
-                    (project, session, op[0]),
-                ).fetchone()
-                key = f"artifact:operation:{op[0]}"
-                if (
-                    current == op
-                    and not db.execute(
-                        "SELECT 1 FROM review_feed WHERE project=? AND session=? AND source_key=?",
-                        (project, session, key),
-                    ).fetchone()
-                ):
-                    store.record_observation(
-                        db,
-                        project,
-                        session,
-                        key,
-                        "artifact",
-                        locator,
-                        payload,
-                        complete=False,
-                        effects=True,
-                    )
-            db.execute(
-                "UPDATE review_artifact_cursors SET cursor=? WHERE project=? AND session=?",
-                (end, project, session),
-            )
+        page = _read_page(store, project, session, target)
+        after, target = page.after, page.target
+        events = _project_events(store, project, session, page.events)
+        uncertain = _project_uncertain(store, inventory, project, session, page.unknown)
+        end = page.events[-1][0] if page.events else after
+        if not _commit_page(store, project, session, page, events, uncertain, end):
+            continue  # another ingestor owns this prefix; retry a fresh bounded page
         after = end
-        unknown_more = len(unknown) > PAGE
+        unknown_more = len(page.unknown) > PAGE
         if after >= target and not unknown_more:
             break
     # Recheck unseen uncertainty after commit, including concurrently accepted intents.
     with store.documents.control.read() as tx:
-        db = tx.sql
         unknown_more = (
-            db.execute(
-                "SELECT 1 FROM artifact_operations o WHERE project=? AND actor=? AND state!='done' "
-                "AND NOT EXISTS(SELECT 1 FROM review_feed f WHERE f.project=o.project "
-                "AND f.session=o.actor AND "
-                "f.source_key='artifact:operation:'||o.operation) LIMIT 1",
+            tx.sql.execute(
+                f"SELECT 1 {_UNSEEN_OPERATIONS} LIMIT 1",
                 (project, session),
             ).fetchone()
             is not None
@@ -337,6 +221,185 @@ def ingest_artifacts(
         "complete": after >= target and not unknown_more,
         "enabled": True,
     }
+
+
+def _read_page(store: ReviewStore, project: str, session: str, target: int) -> _Page:
+    """The session's cursor, the next events up to ``target`` (or past it, when a
+    coexisting ingestor already covered more), and the unseen unresolved operations."""
+    with store.documents.control.read() as tx:
+        db = tx.sql
+        row = db.execute(
+            "SELECT cursor FROM review_artifact_cursors WHERE project=? AND session=?",
+            (project, session),
+        ).fetchone()
+        after = row[0] if row else 0
+        actual_head = db.execute(
+            "SELECT coalesce(max(seq),0) FROM artifact_events WHERE project=?",
+            (project,),
+        ).fetchone()[0]
+        if type(after) is not int or not 0 <= after <= actual_head:
+            raise DocumentError(CONFLICT, "artifact evidence cursor is invalid")
+        # A coexisting ingestor may already have covered a newer prefix than
+        # this call pinned. This is progress, not a turn-aborting conflict.
+        target = max(target, after)
+        events = db.execute(
+            "SELECT seq,record FROM artifact_events "
+            "WHERE project=? AND seq>? AND seq<=? ORDER BY seq LIMIT 10",
+            (project, after, target),
+        ).fetchall()
+        unknown = db.execute(
+            "SELECT operation,request,digest,state,worker,receipt "
+            f"{_UNSEEN_OPERATIONS} ORDER BY o.rowid LIMIT 11",
+            (project, session),
+        ).fetchall()
+    return _Page(after, target, [tuple(e) for e in events], [tuple(u) for u in unknown])
+
+
+def _project_events(
+    store: ReviewStore, project: str, session: str, events: list[tuple[int, str]]
+) -> list[_Observation]:
+    """The observations of this session's artifact events, each checked against its
+    project, sequence and worker snapshot."""
+    found: list[_Observation] = []
+    for seq, raw in events:
+        try:
+            event = ArtifactEvent.model_validate(stored_json(raw))
+        except ValidationError:
+            raise DocumentError(CONFLICT, "invalid stored artifact event") from None
+        if event.project_id != project or event.seq != seq or event.revision.project_id != project:
+            raise DocumentError(CONFLICT, "artifact event scope differs")
+        if event.source.context.session_id != session:
+            continue
+        if (
+            event.worker_snapshot.project_id != project
+            or event.worker_snapshot.sha256 != event.revision.sha256
+            or event.worker_snapshot.size != event.revision.size
+        ):
+            raise DocumentError(CONFLICT, "artifact event snapshot differs")
+        locator, payload, complete = project_artifact(
+            store, project, event.revision, event.source, event.worker_snapshot.source_path
+        )
+        found.append(
+            _Observation(
+                f"artifact:event:{seq}",
+                locator,
+                payload,
+                complete,
+                int(event.kind == "artifact.revision_created"),
+            )
+        )
+    return found
+
+
+def _project_uncertain(
+    store: ReviewStore,
+    inventory: ArtifactInventory,
+    project: str,
+    session: str,
+    unknown: list[tuple[object, ...]],
+) -> list[tuple[tuple[object, ...], _Observation]]:
+    """Metadata-only observations of unresolved publications, each with the operation
+    row it was read from, which the commit checks is unchanged."""
+    found: list[tuple[tuple[object, ...], _Observation]] = []
+    for op in unknown[:PAGE]:
+        operation, raw, sha = op[0], op[1], op[2]
+        request = stored_json(cast(str, raw))
+        try:
+            source = ArtifactPublicationSource.model_validate(request["source"])
+            encoded, expected = inventory.publication_request(
+                source, request["path"], request["media_type"]
+            )
+        except (ValidationError, KeyError, ValueError):
+            raise DocumentError(CONFLICT, "invalid unresolved artifact intent") from None
+        if (source.context.project_id, source.context.session_id) != (project, session):
+            raise DocumentError(CONFLICT, "unresolved artifact scope differs")
+        if expected != sha or encoded != raw:
+            raise DocumentError(CONFLICT, "unresolved artifact fingerprint differs")
+        with store.documents.control.read() as tx:
+            state = inventory.find_operation(tx.sql, source, cast(str, operation), expected)
+        if state is None or state.state == "done":
+            continue
+        snapshot = None
+        if state.worker is not None:
+            snapshot = ArtifactSnapshot.model_validate(state.worker.model_dump())
+            if snapshot.project_id != project or snapshot.source_path != request["path"]:
+                raise DocumentError(CONFLICT, "unresolved worker snapshot scope differs")
+        payload = {
+            "publication_operation": operation,
+            "availability": "known_worker_snapshot" if snapshot else "unknown_remote_outcome",
+            "worker_snapshot": snapshot.model_dump(mode="json") if snapshot else None,
+            "source": source.model_dump(mode="json"),
+            "reason": "Control bytes are not retained; no source content is granted.",
+        }
+        locator = {"operation": operation, "run": source.run_id}
+        found.append(
+            (op, _Observation(f"artifact:operation:{operation}", locator, payload, False, 0))
+        )
+    return found
+
+
+def _commit_page(
+    store: ReviewStore,
+    project: str,
+    session: str,
+    page: _Page,
+    events: list[_Observation],
+    uncertain: list[tuple[tuple[object, ...], _Observation]],
+    end: int,
+) -> bool:
+    """Insert the page's observations and move the cursor to ``end`` in one change;
+    False, and nothing written, when another ingestor moved the cursor meanwhile."""
+    with store.documents.control.write() as tx:
+        db = tx.sql
+        db.execute(
+            "INSERT OR IGNORE INTO review_artifact_cursors VALUES(?,?,0)", (project, session)
+        )
+        actual = db.execute(
+            "SELECT cursor FROM review_artifact_cursors WHERE project=? AND session=?",
+            (project, session),
+        ).fetchone()[0]
+        if actual != page.after:
+            return False
+        for item in events:
+            store.record_observation(
+                db,
+                project,
+                session,
+                item.key,
+                "artifact",
+                item.locator,
+                item.payload,
+                complete=item.complete,
+                artifacts=item.artifacts,
+                effects=True,
+            )
+        for op, item in uncertain:
+            current = db.execute(
+                "SELECT operation,request,digest,state,worker,receipt "
+                "FROM artifact_operations WHERE project=? AND actor=? AND operation=?",
+                (project, session, op[0]),
+            ).fetchone()
+            seen = db.execute(
+                "SELECT 1 FROM review_feed WHERE project=? AND session=? AND source_key=?",
+                (project, session, item.key),
+            ).fetchone()
+            if current is not None and tuple(current) == op and not seen:
+                store.record_observation(
+                    db,
+                    project,
+                    session,
+                    item.key,
+                    "artifact",
+                    item.locator,
+                    item.payload,
+                    complete=False,
+                    effects=True,
+                )
+        db.execute(
+            "UPDATE review_artifact_cursors SET cursor=? WHERE project=? AND session=?",
+            (end, project, session),
+        )
+    return True
 
 
 class ArtifactConsumer:
