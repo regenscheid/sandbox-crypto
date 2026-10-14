@@ -567,3 +567,27 @@ async def test_actual_blob_fsync_failure_closes_fd_and_publishes_no_reference(
     finally:
         await owner.close()
         store.close()
+
+
+@pytest.mark.parametrize("name", ["operation_id", "execution_id", "attempt_id", "log_status"])
+def test_copied_admitted_pin_subclasses_refuse_before_equality(name: str):
+    operation, execution = fixture_step()
+    visits: list[str] = []
+
+    class WrongPin(str):
+        def __eq__(self, other):
+            visits.append("eq")
+            return True
+
+        def __ne__(self, other):
+            visits.append("ne")
+            return False
+
+        __hash__ = str.__hash__
+
+    assert operation.installer_steps is not None
+    step = operation.installer_steps[0].model_copy(update={name: WrongPin("foreign-original-step")})
+    operation = operation.model_copy(update={"installer_steps": (step,)})
+    with pytest.raises(logs.InstallerLogError):
+        logs.prepare(operation, execution, "install-conda")
+    assert visits == []
