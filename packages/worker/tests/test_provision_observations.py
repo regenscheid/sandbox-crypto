@@ -475,6 +475,7 @@ async def test_real_http_scope_queries_and_no_active_component_calls(store: Stor
             guard_package_deletion=lambda _: None,
             forget_package_gate=lambda _: None,
             guard_package_reuse=lambda _: None,
+            end_streams=lambda: None,
         ),
     )
     clients = (ClientSettings(name="read", token_sha256=token_digest(CLIENT), projects=("p",)),)

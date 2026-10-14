@@ -276,8 +276,8 @@ async def test_c1_a_store_with_delegated_run_executions_is_refused(tmp_path: Pat
         Store(path)
 
 
-async def test_c1_sigterm_stops_the_worker_cleanly_and_it_starts_again(tmp_path: Path) -> None:
-    # SIGTERM (a systemd stop) ran no cleanup; with output stored, no start succeeded after.
+def _served(tmp_path: Path) -> tuple[str, Callable[[str], Awaitable[subprocess.Popen[bytes]]]]:
+    """The URL of a ``sandbox-science-worker serve`` process, and how to start one."""
     port = _free_port()
     (tmp_path / "worker.token").write_text(TOKEN + "\n")
     (tmp_path / "worker.toml").write_text(
@@ -301,7 +301,12 @@ async def test_c1_sigterm_stops_the_worker_cleanly_and_it_starts_again(tmp_path:
             await asyncio.sleep(0.05)
         raise AssertionError("the worker did not start")
 
-    url = f"http://127.0.0.1:{port}"
+    return f"http://127.0.0.1:{port}", launch
+
+
+async def test_c1_sigterm_stops_the_worker_cleanly_and_it_starts_again(tmp_path: Path) -> None:
+    # SIGTERM (a systemd stop) ran no cleanup; with output stored, no start succeeded after.
+    url, launch = _served(tmp_path)
     first = await launch("first.log")
     async with aiohttp.ClientSession(headers=AUTH) as http:
         script = "for i in 1 2 3 4 5; do echo line $i; sleep 0.1; done; sleep 60"
@@ -331,6 +336,38 @@ async def test_c1_sigterm_stops_the_worker_cleanly_and_it_starts_again(tmp_path:
         finally:
             second.terminate()
             await asyncio.to_thread(second.wait, 30)
+
+
+async def test_sigterm_ends_open_event_streams_instead_of_waiting_for_them(
+    tmp_path: Path,
+) -> None:
+    # A connected event stream held shutdown until aiohttp gave up on it after 60 s.
+    url, launch = _served(tmp_path)
+    worker = await launch("worker.log")
+    try:
+        async with aiohttp.ClientSession(headers=AUTH) as http:
+            body = {
+                "operation_id": "op-stream",
+                "kind": "shell",
+                "context": CONTEXT,
+                "script": "echo started; sleep 60",
+            }
+            async with http.post(f"{url}/v1/executions", json=body) as response:
+                execution_id = (await response.json())["execution_id"]
+            async with http.get(f"{url}/v1/executions/{execution_id}/events") as response:
+                async for line in response.content:
+                    if line.strip() and "started" in json.loads(line).get("text", ""):
+                        break
+                worker.send_signal(signal.SIGTERM)
+                # Far below the 60 s, and the 15 s heartbeat, the stream held it before.
+                assert await asyncio.to_thread(worker.wait, 10) == 0
+                rest = [json.loads(line) async for line in response.content if line.strip()]
+        # The stream ended early, without a result: the client asks again with ``after``.
+        assert all(event["type"] != "result" for event in rest)
+    finally:
+        if worker.poll() is None:
+            worker.kill()
+            await asyncio.to_thread(worker.wait, 30)
 
 
 # H2: an execution always ends, in a state that is stored and replays.

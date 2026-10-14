@@ -200,6 +200,7 @@ def create_app(
     app[MANAGER] = manager
     app[CREATING] = {}
     app[LOCKFILE_DIFFS] = LockfileDiffs()
+    app.on_shutdown.append(_end_streams)
     app.on_cleanup.append(_drain_lockfile_diffs)
     if document_catalog is not None:
         app[DOCUMENT_CATALOG] = document_catalog
@@ -314,6 +315,11 @@ def create_app(
 
 async def _drain_lockfile_diffs(app: web.Application) -> None:
     await app[LOCKFILE_DIFFS].close()
+
+
+async def _end_streams(app: web.Application) -> None:
+    """At shutdown, end the event streams instead of waiting for them to end."""
+    app[MANAGER].end_streams()
 
 
 def _catalog(request: web.Request) -> tuple[DocumentsCatalog, str]:
