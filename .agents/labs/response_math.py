@@ -9,6 +9,7 @@ import json
 import tempfile
 from pathlib import Path
 
+from sandbox_science.orchestrator import mathchecks
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.consistency.store import ReviewStore
@@ -19,8 +20,8 @@ from sandbox_science.orchestrator.documents import (
     DocumentStore,
     store_path,
 )
-from sandbox_science.orchestrator.documents.mathjobs import MathJobs
 from sandbox_science.orchestrator.mathcheck import MathChecker
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore
 
 PROJECT = "response-math-demo"
@@ -160,6 +161,7 @@ async def create(args: argparse.Namespace) -> None:
     for session in (SESSION, "b"):
         projects.open_session(PROJECT, session, dedicated=False)
     documents = DocumentStore(store_path(root), producer="browser-fixture")
+    mathchecks.subscribe(documents)  # as the harness and the workspace do
     try:
         store = ReviewStore(documents)
         doc = documents.create(
@@ -288,6 +290,7 @@ async def change(args: argparse.Namespace) -> None:
     root = checked(args.state_dir)
     metadata = json.loads((root / "fixture.json").read_text())
     documents = DocumentStore(store_path(root), producer="browser-fixture")
+    mathchecks.subscribe(documents)  # as the harness and the workspace do
     try:
         store = ReviewStore(documents)
         if args.action == "main-fix":

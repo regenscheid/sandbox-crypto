@@ -24,13 +24,14 @@ from pathlib import Path
 
 from aiohttp import web
 
+from sandbox_science.orchestrator import mathchecks
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
-from sandbox_science.orchestrator.documents.mathjobs import MathJobs
 from sandbox_science.orchestrator.documents.project_macros import ProjectMacros, view
 from sandbox_science.orchestrator.mathcheck import MathChecker
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.app import create_app
 
@@ -150,6 +151,7 @@ async def seed(root: Path, renderer: MathChecker | None) -> dict:
         projects.create(project, "minimal", "sha256:" + "a" * 64)
         projects.open_session(project, session, dedicated=False)
     documents = DocumentStore(store_path(root), producer="browser-fixture")
+    mathchecks.subscribe(documents)  # as the harness and the workspace do
     try:
         settings = ProjectMacros(documents)
         settings.change(A, {"expected": 0, "macros": INITIAL, "operation_id": "seed-a-1"}, USER)
@@ -311,6 +313,7 @@ async def main() -> None:
     root, info = checked(args.fixture)
     renderer = checker(args)
     documents = DocumentStore(store_path(root), producer="browser-fixture")
+    mathchecks.subscribe(documents)  # as the harness and the workspace do
     try:
         if args.action == "change":
             api = ProjectMacros(documents)

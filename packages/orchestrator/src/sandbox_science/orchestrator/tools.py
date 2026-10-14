@@ -43,11 +43,11 @@ from sandbox_science.contracts.worker import Language
 from .artifact_publisher import ArtifactPublisher
 from .consistency.controller import REVIEW_EFFECTS, ReviewController, Reviews
 from .documents.errors import DocumentError
-from .documents.mathcontroller import MathChecks, MathController
 from .documents.tool import DOCUMENT_EFFECTS, DocumentTool, WorkRequests, with_notices
 from .hooks import Effect, TurnHook
 from .jobs import BACKGROUND, JOB_EFFECTS, JOB_SPECS, JobNotices, JobTools
 from .kernel_check import KernelCheck
+from .mathchecks.controller import MathChecks, MathController
 from .model import ToolCall, ToolSpec
 from .plan_tools import Plans, PlanTools
 from .provision import PROVISION_SPECS, PROVISIONING, ProvisionTools

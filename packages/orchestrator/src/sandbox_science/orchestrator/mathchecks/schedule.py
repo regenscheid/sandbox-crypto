@@ -1,20 +1,26 @@
 # SPDX-License-Identifier: MIT
 """Atomic document-math scheduling; immutable source history is the durable backlog.
 
-The save hook records a high-water revision and the current block owners with SQL
-only. It never renders, parses, starts a task or refuses a save for a check quota.
+``record_event`` subscribes to saved revisions (``subscribe`` in this package). It
+records a high-water revision and the current block owners with SQL only, in the
+save's transaction. It never renders, parses, starts a task or refuses a save for a
+check quota.
 """
 
 from __future__ import annotations
 
-import sqlite3
+from sandbox_science.orchestrator.control import ControlEvent, Tx
+from sandbox_science.orchestrator.documents.errors import INTERNAL, DocumentError
 
-from .errors import INTERNAL, DocumentError
+REVISION_CREATED = "document.revision_created"
+LEASE = 120
+"""Seconds a claimed check is leased to its worker."""
 
 
-def record_event(db: sqlite3.Connection, kind: str, document: str, event: int) -> None:
+def record_event(tx: Tx, event: ControlEvent) -> None:
     """Schedule every saved revision and keep exact current content ownership."""
-    if kind != "document.revision_created":
+    db, kind, document = tx.sql, event.kind, event.document
+    if kind != REVISION_CREATED or document is None:
         return
     if not db.in_transaction:
         raise DocumentError(INTERNAL, "math scheduling requires the source transaction")
@@ -31,7 +37,7 @@ def record_event(db: sqlite3.Connection, kind: str, document: str, event: int) -
         db.execute(
             "SELECT 1 FROM events WHERE seq=? AND document_id=? AND kind=? "
             "AND json_extract(payload,'$.revision')=?",
-            (event, document, kind, revision),
+            (event.seq, document, kind, revision),
         ).fetchone()
         is None
     ):

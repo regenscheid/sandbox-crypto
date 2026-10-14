@@ -27,14 +27,14 @@ from sandbox_science.contracts import (
     WriteFileRequest,
 )
 from sandbox_science.contracts.worker import TERMINAL_STATES
-from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator import cli, mathchecks
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, Author, DocumentStore, store_path
 from sandbox_science.orchestrator.documents.annotations import Annotations
-from sandbox_science.orchestrator.documents.mathjobs import MathJobs
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
 from sandbox_science.orchestrator.session_plans import (
     PlanAuthority,
@@ -472,7 +472,9 @@ class Harness:
     # The notice sources, made through public stores as the user or an earlier run would.
 
     def documents(self) -> DocumentStore:
-        return DocumentStore(store_path(self.state))
+        store = DocumentStore(store_path(self.state))
+        mathchecks.subscribe(store)  # as the harness and the workspace do
+        return store
 
     def notes(self) -> None:
         """A project document the user wrote."""

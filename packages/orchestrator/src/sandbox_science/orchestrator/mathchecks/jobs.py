@@ -17,18 +17,41 @@ from typing import Any, Protocol, cast
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.aio import threaded
-from sandbox_science.orchestrator.consistency.store import ReviewStore, dump
+from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
+from sandbox_science.orchestrator.consistency.store import ReviewStore, dump, identifier
+from sandbox_science.orchestrator.documents.engine import attach
+from sandbox_science.orchestrator.documents.errors import (
+    CONFLICT,
+    INTERNAL,
+    INVALID_REQUEST,
+    NOT_FOUND,
+    DocumentError,
+)
+from sandbox_science.orchestrator.documents.identity import Mapped
+from sandbox_science.orchestrator.documents.operations import unlay
+from sandbox_science.orchestrator.documents.project_macros import (
+    anchored_macros,
+    head,
+    job_context,
+    pin,
+    refresh,
+    resolve,
+    resolved,
+    save_resolution,
+)
 from sandbox_science.orchestrator.mathcheck import Formula, MathCheck
+from sandbox_science.orchestrator.mathchecks.mechanical import MechanicalFindings
 
-from .engine import attach
-from .errors import CONFLICT, INTERNAL, DocumentError
-from .identity import Mapped
-from .operations import unlay
+from .comments import CommentMath, metadata, reconcile
+from .comments import queue as comment_queue
+from .responses import ResponseMath
+from .responses import metadata as response_metadata
+from .responses import queue as response_queue
+from .schedule import LEASE
 
 Json = dict[str, Any]
 MAP_BYTES = 16 * 1024 * 1024
 BATCH = 32
-LEASE = 120
 
 
 class Checker(Protocol):
@@ -69,10 +92,6 @@ class MathJobs:
         self.store, self.documents, self.limits = store, store.documents, limits or MathLimits()
 
     def _fence(self, db: sqlite3.Connection, check: str, owner: str) -> tuple[Any, ...]:
-        from .comment_math import CommentMath, metadata
-        from .response_math import ResponseMath
-        from .response_math import metadata as response_metadata
-
         response = response_metadata(db, check)
         if response is not None:
             return ResponseMath(self).fence(db, check, owner, response)
@@ -123,26 +142,20 @@ class MathJobs:
                     dump(configuration) if configuration else None,
                 ),
             )
-            from .comment_math import CommentMath
 
             CommentMath(self).retry(db, project, dump(configuration) if configuration else None)
-            from .response_math import ResponseMath
 
             ResponseMath(self).retry(db, project, dump(configuration) if configuration else None)
 
     def claim(self, project: str, owner: str) -> str | None:
-        from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
-
         ResponseBodies(self.store).reconcile(project)
         now = self.store.clock()
         if not math.isfinite(now) or abs(now) > 1e18:
             raise DocumentError(INTERNAL, "invalid math clock")
         with self.documents.control.write() as tx:
             db = tx.sql
-            from .comment_math import reconcile
 
             reconcile(db, project)
-            from .project_macros import refresh
 
             refresh(db, project)
             if (
@@ -185,12 +198,9 @@ class MathJobs:
                 (project,),
             ).fetchone()
             if source is None:
-                from .comment_math import CommentMath
-
                 selected = CommentMath(self).claim(db, project, owner, now)
                 if selected is not None:
                     return selected
-                from .response_math import ResponseMath
 
                 return ResponseMath(self).claim(db, project, owner, now)
             source = tuple(source)
@@ -221,7 +231,6 @@ class MathJobs:
                 "UPDATE math_sources SET blocked=NULL,retry_requested=0 WHERE document=?",
                 (source[0],),
             )
-            from .project_macros import pin
 
             pin(db, check, project)
             return check
@@ -259,19 +268,16 @@ class MathJobs:
             (value["project"],) = db.execute(
                 "SELECT project FROM math_job_scope WHERE check_id=?", (check,)
             ).fetchone()
-            from .comment_math import metadata
 
             comment = metadata(db, check)
             if comment is not None:
                 value["comment"] = comment
-            from .response_math import metadata as response_metadata
 
             response = response_metadata(db, check)
             if response is not None:
                 value["response"] = response
             elif value["document"] is None:
                 raise DocumentError(INTERNAL, "math job names no source")
-            from .project_macros import job_context, resolved
 
             value["macro_context"] = job_context(db, check, value["project"])
             value["effective_macro_context"] = resolved(db, check, value["macro_context"])
@@ -304,9 +310,6 @@ class MathJobs:
         change/removal cannot relabel earlier work. Unknown is recorded only after
         reaching the beginning, never because a page budget ran out.
         """
-        from .comment_math import CommentMath, metadata
-        from .response_math import ResponseMath
-        from .response_math import metadata as response_metadata
 
         with self.documents.control.read() as tx:
             db = tx.sql
@@ -449,8 +452,6 @@ class MathJobs:
         complete: bool,
         live: set[tuple[str, str]],
     ) -> None:
-        from sandbox_science.orchestrator.consistency.mechanical import MechanicalFindings
-
         job = self.job(check)
         with self.documents.control.write() as tx:
             db = tx.sql
@@ -531,12 +532,8 @@ class MathJobs:
                     (self.store.clock(), check),
                 )
                 if "response" in job:
-                    from .response_math import ResponseMath
-
                     ResponseMath(self).finish(db, job)
                 elif "comment" in job:
-                    from .comment_math import CommentMath
-
                     CommentMath(self).finish(db, job)
                 else:
                     db.execute(
@@ -550,12 +547,8 @@ class MathJobs:
     def load(self, job: Json) -> Mapped:
         """Bound bytes before parsing and bind job/project/hash to actual source."""
         if "response" in job:
-            from .response_math import ResponseMath
-
             return ResponseMath(self).load(job)
         if "comment" in job:
-            from .comment_math import CommentMath
-
             return CommentMath(self).load(job)
         with self.documents.control.read() as tx:
             db = tx.sql
@@ -577,8 +570,6 @@ class MathJobs:
             raise DocumentError(INTERNAL, "pinned math source identity is invalid") from None
 
     def effective_macros(self, job: Json, mapped: Mapped, owner: str) -> dict[str, str]:
-        from .project_macros import anchored_macros, resolve, save_resolution
-
         project = job["macro_context"]["macros"]
         held = not job["macro_context"]["known"]
         if "response" in job:
@@ -586,8 +577,6 @@ class MathJobs:
                 self.documents, job["project"], job["macro_context"]
             )
         elif "comment" in job:
-            from .comment_math import CommentMath
-
             macros, problems = resolve(project, CommentMath(self).macros(job))
         else:
             macros, problems = resolve(
@@ -748,8 +737,6 @@ class MathJobs:
     def listing(
         self, project: str, *, after: str | None = None, session: str | None = None
     ) -> Json:
-        from sandbox_science.orchestrator.consistency.store import identifier
-
         if self.documents.control.missing:
             return {"checks": [], "next_after": None, "queue": []}
         with self.documents.control.read() as tx:
@@ -767,8 +754,6 @@ class MathJobs:
                     (project, after, session, session),
                 ).fetchone()
                 if row is None:
-                    from .errors import NOT_FOUND
-
                     raise DocumentError(NOT_FOUND, "no such scoped math cursor")
                 cursor = row[0]
             rows = list(
@@ -805,10 +790,6 @@ class MathJobs:
                 )
                 for r in rows[:20]
             ]
-            from .comment_math import metadata
-            from .comment_math import queue as comment_queue
-            from .response_math import metadata as response_metadata
-            from .response_math import queue as response_queue
 
             for entry in checks:
                 comment = metadata(db, entry["check_id"])
@@ -818,7 +799,6 @@ class MathJobs:
                 response = response_metadata(db, entry["check_id"])
                 if response:
                     entry["kind"], entry["response"] = "response", response
-                from .project_macros import head, job_context, resolved
 
                 context = job_context(db, entry["check_id"], project)
                 effective = resolved(db, entry["check_id"], context)
@@ -868,10 +848,6 @@ class MathJobs:
         span: object = None,
         session: str | None = None,
     ) -> Json:
-        from sandbox_science.orchestrator.consistency.store import identifier
-
-        from .errors import INVALID_REQUEST, NOT_FOUND
-
         identifier(check, "math")
         if type(after) is not int or not 0 <= after <= 20000:
             raise DocumentError(INVALID_REQUEST, "invalid math evidence cursor")

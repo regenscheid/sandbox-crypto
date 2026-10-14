@@ -9,7 +9,9 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.orchestrator import cli
+from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import Author, DocumentStore, store_path
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 from sandbox_science.orchestrator.projects import ProjectStore
 
 POLICY = "sha256:" + "a" * 64
@@ -156,3 +158,20 @@ def test_an_import_never_undoes_later_revisions(
     status, out, _ = _run(capsys, "document", "export", *where, "ff", "--revision", "1")
     assert out == "# Fermat\n\nText.\n"
     store.close()
+
+
+def test_an_imported_revision_is_scheduled_for_a_math_check(
+    state: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "ff.md"
+    source.write_text("Let $p = 17$.\n", encoding="utf-8")
+    where = ("--state-dir", str(state), "--project", "p1")
+    assert _run(capsys, "document", "import", *where, "--name", "ff", str(source))[0] == 0
+    store = DocumentStore(store_path(state))
+    try:
+        jobs = MathJobs(ReviewStore(store))
+        check = jobs.claim("p1", "worker")
+        assert check is not None
+        assert jobs.job(check)["revision"] == 1
+    finally:
+        store.close()

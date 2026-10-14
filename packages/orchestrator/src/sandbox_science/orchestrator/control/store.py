@@ -10,6 +10,10 @@ run, and the workspace server), so a change is one ``BEGIN IMMEDIATE`` transacti
 takes SQLite's write lock before it reads anything. The database uses write-ahead
 logging, so readers never wait for a writer, and ``synchronous=FULL``, so a change
 reported done survives a crash.
+
+A repository that records an event in a change calls ``notify``, which runs the
+subscribers of that kind of event in the same transaction: another package acts on a
+saved document this way, without the documents importing it (``subscribe``).
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import logging
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +43,21 @@ class Tx:
     """A transaction in progress: repositories run their SQL on ``sql``."""
 
     sql: sqlite3.Connection
+
+
+@dataclass(frozen=True, slots=True)
+class ControlEvent:
+    """An event a change recorded (a row of ``events``), as its subscribers see it."""
+
+    seq: int
+    kind: str
+    project: str
+    document: str | None
+    payload: Mapping[str, object]
+
+
+type Subscriber = Callable[[Tx, ControlEvent], None]
+"""Runs in the change that recorded the event; raising fails that change."""
 
 
 def _busy(error: sqlite3.OperationalError) -> bool:
@@ -69,6 +88,7 @@ class ControlStore:
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         self._after: list[Callable[[], None]] | None = None
+        self._subscribers: dict[str, list[Subscriber]] = {}
 
     @property
     def missing(self) -> bool:
@@ -146,6 +166,25 @@ class ControlStore:
             if self._after is None or self._db is None or not self._db.in_transaction:
                 raise ControlError(INTERNAL, "after_commit needs an open change")
             self._after.append(action)
+
+    def subscribe(self, kind: str, subscriber: Subscriber) -> None:
+        """Run ``subscriber`` in every change on this store that records an event of
+        ``kind``. The process's composition roots subscribe once, before the first change;
+        a subscriber already there is not added again."""
+        with self._lock:
+            subscribers = self._subscribers.setdefault(kind, [])
+            if subscriber not in subscribers:
+                subscribers.append(subscriber)
+
+    def notify(self, tx: Tx, event: ControlEvent) -> None:
+        """Run the subscribers of ``event``'s kind in ``tx``, the open change that recorded
+        it. A subscriber that raises fails the change."""
+        with self._lock:
+            if self._after is None or tx.sql is not self._db:  # not this store's open change
+                raise ControlError(INTERNAL, "an event is published in the change it records")
+            subscribers = tuple(self._subscribers.get(event.kind, ()))
+        for subscriber in subscribers:
+            subscriber(tx, event)
 
     @contextmanager
     def read(self) -> Generator[Tx]:

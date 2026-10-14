@@ -29,6 +29,7 @@ from sandbox_science.orchestrator.documents.errors import (
     POLICY_DENIED,
     DocumentError,
 )
+from sandbox_science.orchestrator.documents.project_macros import head, response_view
 from sandbox_science.orchestrator.projects import ProjectError, recorded
 
 from .models import ReviewConfig, ReviewOutcome, ReviewType, Scope
@@ -418,7 +419,6 @@ class ReviewStore:
         self.scope(project, session)
         with self.documents.control.read() as tx:
             db = tx.sql
-            from sandbox_science.orchestrator.documents.project_macros import head
 
             macro_match = (
                 "(NOT EXISTS(SELECT 1 FROM review_response_bodies b WHERE "
@@ -581,7 +581,6 @@ class ReviewStore:
             )
             if body_pin is not None and finding["response"] is not None:
                 finding["response"]["body"] = body_pin
-                from sandbox_science.orchestrator.documents.project_macros import response_view
 
                 finding["response"]["macro_context"] = response_view(
                     self.documents, project, body_pin["source"]

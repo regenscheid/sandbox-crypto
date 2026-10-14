@@ -13,7 +13,8 @@ from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.response_bodies import ResponseBodies
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER, DocumentError
-from sandbox_science.orchestrator.documents.mathjobs import MathJobs
+from sandbox_science.orchestrator.mathchecks.contexts import finding_macro_contexts
+from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 
 from . import api, documents
 from .context import json_body
@@ -154,7 +155,7 @@ async def finding(request: web.Request) -> web.Response:
 
 def contexts(store: ReviewStore, project: str, finding: Json) -> Json:
     """The finding with the macro contexts it is shown with."""
-    found = Findings(store).macro_contexts(project, finding)
+    found = finding_macro_contexts(store, project, finding)
     finding["macro_context"] = found.finding.model_dump(mode="json", exclude_none=True)
     for entry in finding.get("history", []):
         entry["macro_context"] = found.history.model_dump(mode="json", exclude_none=True)

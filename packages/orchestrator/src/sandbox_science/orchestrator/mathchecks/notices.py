@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import sqlite3
 
-from .findings import Findings
-from .notices import FindingNotices
-from .store import Json, clipped, dump
+from sandbox_science.orchestrator.consistency.findings import Findings
+from sandbox_science.orchestrator.consistency.notices import FindingNotices
+from sandbox_science.orchestrator.consistency.store import Json, clipped, dump
 
 
 class MathNotices(FindingNotices):

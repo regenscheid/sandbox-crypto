@@ -10,11 +10,12 @@ from typing import Any, cast
 from pydantic import ValidationError
 
 from sandbox_science.contracts import new_id
+from sandbox_science.orchestrator.consistency.findings import Findings
+from sandbox_science.orchestrator.consistency.store import ReviewStore, digest, dump
 from sandbox_science.orchestrator.documents.comment_bodies import source_key
+from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.documents.models import Author
-
-from .findings import Findings
-from .store import ReviewStore, digest, dump
+from sandbox_science.orchestrator.documents.project_macros import current
 
 Json = dict[str, Any]
 
@@ -36,7 +37,6 @@ class MechanicalFindings:
             return None
         # A worker with an established session can route to its main agent; an
         # unknown run is never fabricated. Foreign/legacy unprovable scope is excluded.
-        from sandbox_science.orchestrator.documents.errors import DocumentError
 
         try:
             self.store.scope(project, author.session_id)
@@ -45,8 +45,6 @@ class MechanicalFindings:
         return author
 
     def _current(self, db: sqlite3.Connection, job: Json) -> bool:
-        from sandbox_science.orchestrator.documents.project_macros import current
-
         if not current(db, job["check_id"], job["project"]):
             return False
         return (

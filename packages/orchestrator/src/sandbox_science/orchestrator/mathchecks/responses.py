@@ -8,14 +8,15 @@ from typing import TYPE_CHECKING, Any
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.consistency import response_bodies as bodies
+from sandbox_science.orchestrator.documents.engine import attach
+from sandbox_science.orchestrator.documents.errors import CONFLICT, INTERNAL, DocumentError
+from sandbox_science.orchestrator.documents.identity import Mapped
+from sandbox_science.orchestrator.documents.project_macros import pin, response_anchors
 
-from .engine import attach
-from .errors import CONFLICT, INTERNAL, DocumentError
-from .identity import Mapped
-from .mathjobs import LEASE
+from .schedule import LEASE
 
 if TYPE_CHECKING:
-    from .mathjobs import MathJobs
+    from .jobs import MathJobs
 
 Json = dict[str, Any]
 
@@ -92,7 +93,6 @@ class ResponseMath:
             (check, revision, saved["sha256"], owner, now + LEASE, now),
         )
         db.execute("INSERT INTO math_response_jobs VALUES(?,?)", (check, source))
-        from .project_macros import pin, response_anchors
 
         pin(db, check, project, response_anchors(db, source))
         db.execute(

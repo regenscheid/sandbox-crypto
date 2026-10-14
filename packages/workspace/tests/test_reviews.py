@@ -11,6 +11,7 @@ import pytest
 import pytest_asyncio
 from aiohttp.test_utils import TestClient
 
+from sandbox_science.orchestrator import mathchecks
 from sandbox_science.orchestrator.consistency.findings import Findings
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import DocumentStore, store_path
@@ -25,6 +26,7 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture
 def review_data(state_dir: Path):
     documents = DocumentStore(store_path(state_dir))
+    mathchecks.subscribe(documents)
     store = ReviewStore(documents)
     store.observe(
         "p1",
@@ -156,10 +158,11 @@ async def test_mechanical_math_evidence_is_scoped_bounded_and_separate_from_revi
     import hashlib
 
     from sandbox_science.orchestrator.documents import Author
-    from sandbox_science.orchestrator.documents.mathjobs import MathJobs
     from sandbox_science.orchestrator.mathcheck import MathCheck
+    from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 
     documents = DocumentStore(store_path(state_dir))
+    mathchecks.subscribe(documents)
     store = ReviewStore(documents)
     author = Author(
         kind="agent", session_id="a", run_id="math-fixture", role="main", model="scripted"
@@ -258,6 +261,7 @@ async def test_main_response_body_read_is_scoped_readonly_and_preserves_original
 
     _, _, finding = review_data
     documents = DocumentStore(store_path(state_dir))
+    mathchecks.subscribe(documents)
     store = ReviewStore(documents)
     actor = Author(kind="agent", session_id="a", run_id="original", role="main")
     Findings(store).respond(
@@ -316,10 +320,11 @@ async def test_explanation_check_evidence_and_queue_never_cross_session(
     client, review_data, state_dir: Path
 ) -> None:
     from sandbox_science.orchestrator.documents import Author
-    from sandbox_science.orchestrator.documents.mathjobs import MathJobs
+    from sandbox_science.orchestrator.mathchecks.jobs import MathJobs
 
     _, _, finding = review_data
     documents = DocumentStore(store_path(state_dir))
+    mathchecks.subscribe(documents)
     store = ReviewStore(documents)
     Findings(store).respond(
         "p1",

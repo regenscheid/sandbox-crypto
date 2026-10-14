@@ -11,13 +11,17 @@ from typing import TYPE_CHECKING, Any
 
 from sandbox_science.contracts import new_id
 from sandbox_science.orchestrator.aio import lease, owned, threaded
-from sandbox_science.orchestrator.consistency.mathnotices import MathNotices
 from sandbox_science.orchestrator.consistency.store import ReviewStore
+from sandbox_science.orchestrator.documents.project_macros import needs_refresh
+from sandbox_science.orchestrator.documents.store import DocumentStore
 from sandbox_science.orchestrator.hooks import Closing, Notice, Point, RunView, TurnHook
+from sandbox_science.orchestrator.mathchecks.notices import MathNotices
 from sandbox_science.orchestrator.notices import MATH
 
-from .mathjobs import Checker, MathJobs
-from .store import DocumentStore
+from .comments import metadata, remaining
+from .jobs import Checker, MathJobs
+from .responses import metadata as response_metadata
+from .responses import remaining as response_remaining
 
 if TYPE_CHECKING:
     from sandbox_science.orchestrator.projects import RunRecord
@@ -58,9 +62,6 @@ class MathController:
                     return
 
     def blocked(self, check: str) -> bool:
-        from .comment_math import metadata
-        from .response_math import metadata as response_metadata
-
         if self.store.documents.control.missing:
             return False
         with self.store.documents.control.read() as tx:
@@ -122,10 +123,6 @@ class MathController:
         }
 
     def remaining(self) -> bool:
-        from .comment_math import remaining
-        from .project_macros import needs_refresh
-        from .response_math import remaining as response_remaining
-
         if self.store.documents.control.missing:
             return False
         with self.store.documents.control.read() as tx:

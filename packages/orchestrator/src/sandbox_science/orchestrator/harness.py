@@ -27,18 +27,19 @@ from pydantic import TypeAdapter, ValidationError
 from sandbox_science.contracts import ErrorKind, ExecutionContext, Identifier, Location, new_id
 from sandbox_science.contracts.worker import Language
 
+from . import mathchecks
 from .aio import threaded
 from .artifact_publisher import ArtifactPublisher
 from .artifacts import ArtifactInventory
 from .consistency.controller import ReviewController
 from .consistency.store import ReviewStore
 from .documents import DocumentError, DocumentStore, DocumentTool
-from .documents.mathcontroller import MathController
-from .documents.mathjobs import Checker
 from .hooks import TurnHook
 from .jobs import JobTools
 from .jobstate import JobState
 from .loop import MAX_INPUT_CHARS, Interruption, Transcript, run_task
+from .mathchecks.controller import MathController
+from .mathchecks.jobs import Checker
 from .model import ChatModel
 from .plan_tools import PlanTools
 from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment
@@ -82,11 +83,18 @@ class Role:
 @dataclass(frozen=True)
 class Stores:
     """A state directory's stores. Without them a run keeps no record and gets no
-    documents, reviews, math checks, plans, artifact inventory or kernel check."""
+    documents, reviews, math checks, plans, artifact inventory or kernel check.
+
+    Making it subscribes the math checks to the documents' saved revisions, so every
+    harness, however it is assembled, schedules them (``mathchecks.subscribe``).
+    """
 
     projects: ProjectStore
     documents: DocumentStore
     jobs: JobState
+
+    def __post_init__(self) -> None:
+        mathchecks.subscribe(self.documents)
 
 
 @dataclass(frozen=True)
