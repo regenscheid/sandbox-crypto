@@ -244,6 +244,34 @@ async def test_edit_answers_a_receipt_and_the_next_read_shows_it(
     assert current["version"]["author"]["role"] == "user"
 
 
+async def test_an_operation_replays_after_logging_in_again(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, plans: SessionPlans
+) -> None:
+    # The user identity is the workspace's one USER, not the login's cookie, so a save
+    # whose answer was lost replays after a new login instead of conflicting with itself.
+    base = seed(plans)
+    first = await post(await workspace(aiohttp_client, state_dir, static_dir), change(base))
+    assert first.status == 200
+    again = await post(await workspace(aiohttp_client, state_dir, static_dir), change(base))
+    assert again.status == 200
+    assert await again.json() == await first.json()
+
+
+async def test_a_save_recorded_under_a_login_digest_conflicts_and_never_applies_twice(
+    aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, plans: SessionPlans
+) -> None:
+    # Saves recorded before the one USER named their author by a login cookie's digest.
+    base = seed(plans)
+    earlier = PlanAuthority(
+        scope=PlanScope(project_id="p1", session_id="a"), role="user", user_id="a" * 64
+    )
+    plans.revise(earlier, "user-edit-1", base, plan_body(body("USER refined it")), "USER")
+    client = await workspace(aiohttp_client, state_dir, static_dir)
+    response = await post(client, change(base))
+    assert (await error_of(response, 409, "conflict"))["current"]["version"] == 2
+    assert current_version(plans) == 2
+
+
 async def test_repeating_an_operation_replays_its_receipt(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, plans: SessionPlans
 ) -> None:

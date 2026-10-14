@@ -37,11 +37,11 @@ track references. It accepts all valid body changes rather than imposing a text
 editor's narrower field set. Every nested field is validated; extra authority,
 status, progress, outcome or approval fields are refused.
 
-The server constructs USER authority from the path scope and SHA-256 digest of
-the login cookie. The request cannot choose an actor,
-run, model, environment, database or grant. The digest is an opaque login
-principal, not the raw cookie or an account identity stable across logins. A new
-login has a different operation namespace even for the same operation string.
+The server constructs USER authority from the path scope and the workspace's one
+USER (`user_id` `user`, as documents name their USER author). The request cannot
+choose an actor, run, model, environment, database or grant. The identity, and so
+the operation namespace, is the same for every login. Plan versions recorded
+before this used a digest of the login cookie; they show as USER too.
 
 The route limits the complete request to 128 KiB, including whitespace and JSON
 escaping. The core's canonical ASCII-JSON body limit remains 64 KiB; titles and

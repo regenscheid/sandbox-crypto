@@ -6,8 +6,9 @@ and offered tools ([prompt inventory](ORCHESTRATOR-PROMPTS.md#prompt-inventory))
 The provenance layer does not change tool schemas or their order, grants, dispatch,
 planning or closing behavior. [Research framing](STOCK-RESEARCH-PROMPTS.md) is
 explicitly selected; the [small-scale trial guidance](PILOT-COMPUTATIONS.md) is
-part of the ordinary MAIN base. Watcher, consistency reviewer and display-repair
-model calls have their own provenance records; this MAIN field does not cover them.
+part of the ordinary MAIN base. Watcher and consistency reviewer model calls have
+their own provenance records, and display repairs keep none; this MAIN field does not
+cover them.
 
 ## Assembly and actual inputs
 

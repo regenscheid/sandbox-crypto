@@ -112,4 +112,4 @@ and bounded refusal of 20-MiB corrupt metadata.
 These tests use local scripted peers and synthetic state. They do not execute
 models, workers or research code, or establish provider wire transformations or
 model quality. Dynamic payload hashes, global retention and prompt loading are not
-built; reviewer and display-repair provenance have their own pages.
+built; reviewer provenance has its own page, and display repairs keep none.

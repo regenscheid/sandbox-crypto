@@ -138,8 +138,8 @@ async def test_http_user_version_preserves_progress_and_historical_operation_rep
     assert current.head.status_revision == 2
     assert current.head.progress_cursor == 2
     assert current.version.author.role == "user"
-    assert current.version.author.user_id is not None
-    assert len(current.version.author.user_id) == 64
+    # The workspace's one USER, the same for every login.
+    assert current.version.author.user_id == "user"
     assert current.version.author.run_id is None
     assert current.version.reason == request["reason"]
     assert not current.steps[0].matches_current_step

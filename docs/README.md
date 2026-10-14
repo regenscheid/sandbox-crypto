@@ -63,7 +63,6 @@ Progress and history are not kept here: current state is in [STATUS](../.agents/
 | [Lockfile comparison route](LOCKFILE-DIFF-WORKSPACE.md) | The workspace proxy for a lockfile comparison |
 | [Lockfile comparison view](LOCKFILE-DIFFERENCES-VIEW.md) | The GUI view comparing two retained lockfiles |
 | [Workspace revision packages](REVISION-PACKAGES-WORKSPACE.md) | The workspace read of a revision's packages and licenses |
-| [Display-repair provenance](DISPLAY-REPAIR-PROVENANCE.md) | The math-repair answer's producing-input descriptor |
 
 ## Design and plan
 
