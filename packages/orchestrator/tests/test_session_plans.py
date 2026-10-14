@@ -878,11 +878,12 @@ def test_a_plan_stored_with_the_removed_approval_status_reads_as_a_draft(store, 
         for name, _ in triggers:
             tx.sql.execute(f"DROP TRIGGER {name}")
         for table in ("session_plan_records", "session_plan_projections"):
+            # One statement, so the row's byte accounting (a CHECK) holds throughout.
             tx.sql.execute(
-                f"UPDATE {table} SET record=replace(record,?,?)",
+                f"UPDATE {table} SET record=replace(record,?1,?2),"
+                "bytes=length(CAST(replace(record,?1,?2) AS BLOB))+512",
                 (old, new),
             )
-            tx.sql.execute(f"UPDATE {table} SET bytes=length(CAST(record AS BLOB))+512")
         for _, sql in triggers:
             tx.sql.execute(sql)
         changed = tx.sql.execute(
