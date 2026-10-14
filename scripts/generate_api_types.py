@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,7 @@ HEADER = (
 )
 
 Schema = dict[str, Any]
+IDENTIFIER = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*")
 
 
 def _union(parts: list[str]) -> str:
@@ -113,19 +115,24 @@ def _object(schema: Schema, indent: str) -> str:
     # A model's answer carries every field, defaults included, so none is optional.
     lines = ["{"]
     for name, field in schema["properties"].items():
-        lines.append(f"{indent}  {name}: {_type(field)};")
+        key = name if IDENTIFIER.fullmatch(name) else json.dumps(name)
+        lines.append(f"{indent}  {key}: {_type(field)};")
     lines.append(f"{indent}}}")
     return "\n".join(lines)
 
 
 def _comment(schema: Schema) -> str:
-    text = " ".join(str(schema.get("description", "")).split())
+    # A docstring's own "*/" must not end the comment early.
+    text = " ".join(str(schema.get("description", "")).split()).replace("*/", "*\\/")
     return f"/** {text} */\n" if text else ""
 
 
 def generate() -> str:
+    # Field names, not aliases: the routes dump their models without by_alias.
     _, top = models_json_schema(
-        [(model, "serialization") for model in MODELS], ref_template="#/$defs/{model}"
+        [(model, "serialization") for model in MODELS],
+        by_alias=False,
+        ref_template="#/$defs/{model}",
     )
     parts = [HEADER]
     for name, schema in sorted(top["$defs"].items()):
