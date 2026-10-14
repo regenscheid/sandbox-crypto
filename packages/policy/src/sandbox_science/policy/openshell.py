@@ -435,6 +435,10 @@ class McpProxyTarget(StrictModel):
     max_body_bytes: Annotated[int, Field(gt=0)] | None = None
     filesystem: SandboxFilesystem = SandboxFilesystem()
     """Paths the proxy's image provides outside the workdir, such as its interpreter's prefix."""
+    admit_escalated: bool = False
+    """Admit escalated tools at the fence, so that an approval the MCP proxy records can
+    take effect: the proxy itself holds each call for approval. Off, the fence denies
+    escalated tools even after approval, since approved grants are not compiled in."""
 
 
 class OrchestratorTarget(StrictModel):
@@ -1243,7 +1247,9 @@ def compile_mcp_proxy(
                     f"port {port} is a control-plane port that OpenShell blocks; calls will fail",
                 )
             )
-        rules, deny_rules = _tool_rules(server, project.defaults.action, subject, findings)
+        rules, deny_rules = _tool_rules(
+            server, project.defaults.action, subject, findings, target.admit_escalated
+        )
         binding = _credential_binding(server, subject, findings)
         bindings_by_host.setdefault((server.host, port), set()).add(
             binding.provider if binding else None
@@ -1361,18 +1367,25 @@ def _openshell_matches(pattern: str, name: str) -> bool:
 
 
 def _tool_rules(
-    server: McpServer, default: Action, subject: str, findings: list[Finding]
+    server: McpServer,
+    default: Action,
+    subject: str,
+    findings: list[Finding],
+    admit_escalated: bool = False,
 ) -> tuple[tuple[Rule, ...], tuple[DenyEntry, ...]]:
     """Translate tool lists into OpenShell rules that are never looser than the project's.
 
     OpenShell denies tools no allow entry names, and any matching deny entry wins.
-    Escalated tools are denied at the fence.
+    Escalated tools are denied at the fence, unless ``admit_escalated``: then they are
+    admitted like allowed ones, and the MCP proxy holds each call for approval.
     """
     prefix = server.tool_prefix or ""
     tools = server.tools
-    blocking = sorted({_collapse(pattern) for pattern in (*tools.escalate, *tools.deny)})
-    exact_allows = sorted(pattern for pattern in tools.allow if "*" not in pattern)
-    glob_allows = sorted({_collapse(pattern) for pattern in tools.allow if "*" in pattern})
+    held = () if admit_escalated else tools.escalate
+    admitted = (*tools.allow, *(tools.escalate if admit_escalated else ()))
+    blocking = sorted({_collapse(pattern) for pattern in (*held, *tools.deny)})
+    exact_allows = sorted({pattern for pattern in admitted if "*" not in pattern})
+    glob_allows = sorted({_collapse(pattern) for pattern in admitted if "*" in pattern})
     blocking_globs = any("*" in pattern for pattern in blocking)
     # OpenShell's tool globs use '.' as the separator: '*' stops at it and only '**'
     # matches any value, while the project's '*' matches dots too. A compiled deny
@@ -1462,13 +1475,24 @@ def _tool_rules(
                 "names, so such tools are denied at the fence (stricter)",
             )
         )
-    if tools.escalate or default is Action.ESCALATE:
+    if admit_escalated and tools.escalate:
         findings.append(
             Finding(
                 Severity.INFO,
                 f"{subject}.tools",
-                "escalated tools are always denied at this fence, even after approval: approved "
-                "grants are not compiled in yet (stricter)",
+                "escalated tools are admitted at this fence, so that approvals take effect; the "
+                "MCP proxy holds each call for approval (looser at the fence only)",
+            )
+        )
+    if (tools.escalate and not admit_escalated) or default is Action.ESCALATE:
+        findings.append(
+            Finding(
+                Severity.INFO,
+                f"{subject}.tools",
+                "escalated tools"
+                + (" the policy does not name" if admit_escalated else "")
+                + " are always denied at this fence, even after approval: approved grants are "
+                "not compiled in yet (stricter)",
             )
         )
     return tuple(rules), tuple(deny_rules)

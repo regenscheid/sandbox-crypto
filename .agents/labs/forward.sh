@@ -23,7 +23,9 @@ token_sha256 = "$ORCH_SHA"
 kind = "orchestrator"
 project = "lab17"
 TOML
-"$R/.venv/bin/python" -I "$L/compile_proxy_policy.py" "$L/policy-proxy.yaml" "$W/openshell-policy.yaml"
+"$R/.venv/bin/sandbox-science-mcp-proxy" compile-policy --policy "$L/policy-proxy.yaml" \
+  --ceiling "$W/mcp-proxy/pool-ceiling.yaml" --targets "$R/examples/openshell/targets.yaml" \
+  --out "$W/openshell-policy.yaml"
 phase_of() { openshell sandbox get $N -o json 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin).get("phase",""))' 2>/dev/null; }
 call() { timeout 60 "$R/.venv/bin/python" -I "$L/mcp_caller.py" http://127.0.0.1:18080 "$ORCH_TOKEN" 2>&1 | tail -1 | cut -c1-110; }
 unit() { echo "$(systemctl --user is-active openshell-lab-mcp-forward), $(systemctl --user show -p NRestarts --value openshell-lab-mcp-forward) restarts"; }

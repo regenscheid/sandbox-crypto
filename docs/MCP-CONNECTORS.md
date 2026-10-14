@@ -171,13 +171,15 @@ Callers send `Authorization: Bearer <token>` to `http://<listen>/mcp/<server>`; 
 
 **In its own sandbox.** In production the proxy runs in its own OpenShell sandbox, from the `mcp-proxy` image ([images](IMAGES.md#the-mcp-proxy-image)): OpenShell sets the credential variables to placeholders, and the compiled policy (`compile_mcp_proxy`) re-enforces the declared servers, methods and tools. The image's command, `/opt/sandbox-science/bin/mcp-proxy-run`, waits until the settings exist at `/sandbox/mcp-proxy/proxy.toml`, runs the proxy, and starts it again whenever it exits. The operator:
 
-1. compiles the sandbox's policy with `compile_mcp_proxy()`. The targets file's `mcp_proxy` names the interpreter as the binary (`/opt/sandbox-science/bin/python*`), since OpenShell sees the interpreter that runs a Python entry point (lab 13), and in `filesystem` the image's prefix, read-only;
+1. compiles the sandbox's policy with `sandbox-science-mcp-proxy compile-policy` (below), from the project policy, the pool ceiling and the targets file. The targets file's `mcp_proxy` names the interpreter as the binary (`/opt/sandbox-science/bin/python*`), since OpenShell sees the interpreter that runs a Python entry point (lab 13), and in `filesystem` the image's prefix, read-only. With `--admit-escalated`, the fence admits the policy's escalated tools, which the proxy holds for approval, so that an approval can take effect; without it, OpenShell refuses an escalated tool even after approval;
 2. creates the sandbox from the image, with the providers the compiled policy binds and the launcher as its command;
 3. uploads the pool ceiling and the project policies into `/sandbox/mcp-proxy/`, then the settings (`listen = "127.0.0.1:8080"`, `state_dir = "state"`), since the launcher starts the proxy once they are there;
 4. binds each project to its policy with `bind`, through `openshell sandbox exec`;
 5. exposes the proxy, which listens on the sandbox's loopback, on the pool host with `openshell forward service`. Other sandboxes then reach it as `host.openshell.internal`; the orchestrator's compiled policy admits it as `orchestrator.mcp_proxy` in the targets file.
 
 ```bash
+sandbox-science-mcp-proxy compile-policy --policy policy.yaml --ceiling pool-ceiling.yaml \
+  --targets targets.yaml --out mcp-proxy-policy.yaml --admit-escalated
 openshell sandbox create --name mcp-proxy --from sandbox-science/mcp-proxy:<tag> \
   --policy mcp-proxy-policy.yaml --provider crypto-research-mcp --no-auto-providers --detach \
   -- /opt/sandbox-science/bin/mcp-proxy-run
@@ -220,7 +222,7 @@ sandbox-science-harness run ... --mcp-proxy http://127.0.0.1:8080 --mcp-token-fi
 - **Effects.** Every connector tool has the effect class `effect`, since the policy marks none read-only, so the plan fence applies to it.
 - **Untrusted text.** A tool's description loses control, invisible and private-use characters (but line breaks and tabs), is bounded to 2,000 characters and is framed as the server's. Its input schema is rebuilt from JSON Schema's structural keywords only (`type`, `properties`, `required`, `items`, `additionalProperties` as a boolean, `anyOf`/`oneOf`/`allOf`, `enum`/`const` with bounded and cleaned values, at most 1,024 characters of them a tool, past which they are dropped, and numeric and length limits); titles, descriptions, defaults, examples, patterns and references are dropped. A schema that is larger than 16 KiB, malformed, or not an object becomes an empty object schema, so a model API never refuses it.
 - **Calls.** Each call names the run's session in `Sandbox-Science-Session`, which the proxy records with the call. The harness keeps one MCP session per server, started once for concurrent callers, and starts it again once if the proxy no longer knows it; callers that find it forgotten together share one new start. It sends every message with its keys sorted, so a call made again after its approval matches the request the operator approved. A call has 330 s, longer than the proxy's `upstream_timeout`.
-- **Refusals.** A refusal is the tool's error, with the proxy's reason. A call held for approval comes back as `approval_required`, naming the permission request; the operator answers it with `pending` and `approve` (owner decision 1), and the agent calls again with the same arguments. An error a server answered is framed as the server's. Arguments JSON cannot hold are `not_sent`, and nothing reaches the server. A call whose answer is lost or unreadable is `no_usable_answer`: the server may have done the work, and the agent is told to check before calling again.
+- **Refusals.** A refusal is the tool's error, with the proxy's reason. A call held for approval comes back as `approval_required`, naming the permission request; the operator answers it with `pending` and `approve` (owner decision 1), and the agent calls again with the same arguments. For an approval to take effect, the proxy sandbox's policy is compiled with `--admit-escalated` (above). An error a server answered is framed as the server's. Arguments JSON cannot hold are `not_sent`, and nothing reaches the server. A call whose answer is lost or unreadable is `no_usable_answer`: the server may have done the work, and the agent is told to check before calling again.
 - **Results** are the text the server returned, read whole up to 8 MiB and bounded as any tool result; the proxy withholds binary content.
 
 Tested against the proxy and its fake server in one process (`packages/orchestrator/tests/test_connectors.py`), with synthetic tokens.
@@ -228,7 +230,7 @@ Tested against the proxy and its fake server in one process (`packages/orchestra
 ### Not built yet
 
 - Issuing proxy tokens to callers: an operator writes them into the proxy's settings, and gives the harness its own in a file ([the harness's client](#the-harnesss-client)).
-- A product command for the proxy's sandbox. `compile_mcp_proxy()` is a library function that only the example renderer and the lab scripts call, and the operator steps above are manual.
+- A product command for the rest of the proxy's sandbox: compiling its policy is one (`compile-policy`), but creating the sandbox, uploading the files, binding projects and forwarding the port are the manual steps above.
 - Exporting the event store's records from the proxy's VM to the monitor, and a way for approvals to reach the proxy other than `openshell sandbox exec`.
 - The connector auth service: OAuth with DCR, refresh, the upstream-worker swap for external refresh, and `403 insufficient_scope` as an escalation. Until then an `oauth` server works only with a token put into its provider by hand. crypto-research-mcp does not need it.
 - Binary results as artifact references; they are withheld for now.
@@ -236,7 +238,7 @@ Tested against the proxy and its fake server in one process (`packages/orchestra
 - MCP 2026-07-28, which the policy library knows: it has no sessions, carries metadata in every request, mirrors names in `Mcp-Method` and `Mcp-Name` headers and embeds server requests in results. The proxy refuses servers pinned to it, and the policy's list of protocol methods needs it too.
 - Passing server notifications (progress, logging, list changes) to callers, and resuming interrupted event streams.
 - Caller identity from the platform rather than per-sandbox tokens, since the middleware knows which sandbox sent a request, and `process`-level attribution.
-- Approved tools are not compiled into the proxy sandbox's fence, so OpenShell still refuses an escalated tool there; until they are, the fence has to allow escalated tools for approvals to take effect (backlog).
+- Approved tools compiled into the proxy sandbox's fence one by one. Until then, `compile-policy --admit-escalated` admits every escalated tool at the fence, and the proxy alone holds each call for approval (backlog).
 - `Basic` credentials in `headers` servers: how OpenShell expects a placeholder inside one is unchecked.
 - A test against crypto-research-mcp, which needs the owner's service token in its provider ([below](#crypto-research-mcp-a-cloudflare-access-service-token)).
 

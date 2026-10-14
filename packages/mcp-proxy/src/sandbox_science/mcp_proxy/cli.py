@@ -34,10 +34,11 @@ import aiohttp
 from aiohttp import web
 
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
-from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
+from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling, load_policy
 from sandbox_science.policy.approvals import ALL_SCOPES, KINDS
 from sandbox_science.policy.approvals import commands as approval_commands
 from sandbox_science.policy.loader import read_limited
+from sandbox_science.policy.openshell import CompileError, compile_mcp_proxy, load_targets
 
 from .callers import Callers, token_digest
 from .errors import McpProxyError, StoreError
@@ -67,6 +68,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     unbind.add_argument("--state-dir", type=Path, required=True)
     unbind.add_argument("--project", required=True)
     commands.add_parser("new-token", help="print a new caller token and its hash")
+    compile_policy = commands.add_parser(
+        "compile-policy",
+        help="compile a project policy into the OpenShell policy of the proxy's own sandbox",
+    )
+    compile_policy.add_argument("--policy", type=Path, required=True, help="the project policy")
+    compile_policy.add_argument(
+        "--ceiling", type=Path, required=True, help="the pool ceiling, as the proxy's settings"
+    )
+    compile_policy.add_argument(
+        "--targets", type=Path, required=True, help="the deployment targets (mcp_proxy)"
+    )
+    compile_policy.add_argument("--out", type=Path, required=True)
+    compile_policy.add_argument(
+        "--admit-escalated",
+        action="store_true",
+        help="admit escalated tools at the fence, so that approvals take effect",
+    )
     pending = commands.add_parser("pending", help="list permission requests nobody answered")
     pending.add_argument("--settings", type=Path, required=True)
     pending.add_argument("--request", type=int, help="show this request in full, answered or not")
@@ -100,6 +118,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 removed = PolicyStore(args.state_dir).unbind(args.project)
                 print(f"unbound {args.project}" if removed else f"{args.project} was not bound")
                 return 0
+            case "compile-policy":
+                return _compile_policy(
+                    args.policy, args.ceiling, args.targets, args.out, args.admit_escalated
+                )
             case "pending":
                 path = load_settings(args.settings).event_store_path
                 return approval_commands.pending(_read_records(path, 0), args.request)
@@ -116,9 +138,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"token = {token}")
                 print(f"token_sha256 = {token_digest(token)}")
                 return 0
-    except (McpProxyError, StoreError, PolicyLoadError, EventStoreError, OSError) as exc:
+    except (
+        McpProxyError,
+        StoreError,
+        PolicyLoadError,
+        CompileError,
+        EventStoreError,
+        OSError,
+    ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+
+
+def _compile_policy(
+    policy: Path, ceiling: Path, targets: Path, out: Path, admit_escalated: bool
+) -> int:
+    """Write the proxy sandbox's OpenShell policy, and print what the compiler found."""
+    target = load_targets(targets).mcp_proxy
+    if admit_escalated:
+        target = target.model_copy(update={"admit_escalated": True})
+    compiled = compile_mcp_proxy(load_policy(policy), target, ceiling=load_ceiling(ceiling))
+    for finding in compiled.findings:
+        print(f"{finding.severity.value}: {finding.subject}: {finding.message}")
+    out.write_text(compiled.policy.to_yaml())
+    print(f"wrote {out}")
+    return 0
 
 
 def _read_records(path: Path, after: int) -> list[Record]:
