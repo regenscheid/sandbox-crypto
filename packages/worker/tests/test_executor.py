@@ -23,7 +23,7 @@ import pytest
 
 from sandbox_science.contracts import ProbeFacts
 from sandbox_science.testing import FakeClock, eventually
-from sandbox_science.worker import executor
+from sandbox_science.worker import executor, sandbox_files
 
 pytestmark = pytest.mark.slow
 
@@ -412,12 +412,12 @@ def test_a_digest_belongs_to_the_stamp_it_was_scanned_with(tmp_path: Path) -> No
     stamp = [info.st_mtime_ns, info.st_size, info.st_ino]
     directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        digest = executor._stamped_sha256(directory, "f", stamp)
+        digest = sandbox_files.stamped_sha256(directory, "f", stamp)
         assert digest == hashlib.sha256(b"one").hexdigest()
         # Replaced since the scan: no digest, so the worker compares it again later.
         (tmp_path / "g").write_bytes(b"two")
         os.replace(tmp_path / "g", tmp_path / "f")
-        assert executor._stamped_sha256(directory, "f", stamp) is None
+        assert sandbox_files.stamped_sha256(directory, "f", stamp) is None
     finally:
         os.close(directory)
 
@@ -521,10 +521,12 @@ def test_only_a_writer_keeps_a_file_from_being_replaced(tmp_path: Path) -> None:
     target.write_bytes(b"v1")
     reader = _holder(target, "rb")
     try:
-        assert not executor.being_written(os.path.realpath(target))
+        assert not sandbox_files.being_written(os.path.realpath(target))
         directory = os.open(shared, os.O_RDONLY | os.O_DIRECTORY)
         expected = hashlib.sha256(b"v1").hexdigest()
-        reply = executor.write_file(directory, "data.h5", b"v2", expected, False, "x", None, True)
+        reply = sandbox_files.write_file(
+            directory, "data.h5", b"v2", expected, False, "x", None, True
+        )
         assert "busy" not in reply
         assert target.read_bytes() == b"v2"
     finally:
@@ -532,10 +534,12 @@ def test_only_a_writer_keeps_a_file_from_being_replaced(tmp_path: Path) -> None:
         reader.wait()
     writer = _holder(target, "ab")
     try:
-        assert executor.being_written(os.path.realpath(target))
+        assert sandbox_files.being_written(os.path.realpath(target))
         directory = os.open(shared, os.O_RDONLY | os.O_DIRECTORY)
         expected = hashlib.sha256(b"v2").hexdigest()
-        reply = executor.write_file(directory, "data.h5", b"v3", expected, False, "x", None, True)
+        reply = sandbox_files.write_file(
+            directory, "data.h5", b"v3", expected, False, "x", None, True
+        )
         assert reply == {"busy": True}
         assert target.read_bytes() == b"v2"
         assert [path.name for path in shared.iterdir()] == ["data.h5"]  # nothing left over
@@ -549,7 +553,7 @@ def test_a_writer_that_opens_the_file_just_before_the_swap_keeps_it(
 ) -> None:
     target = tmp_path / "log.csv"
     target.write_bytes(b"v1\n")
-    exchange = executor._exchange
+    exchange = sandbox_files._exchange
     holders: list[subprocess.Popen[bytes]] = []
 
     def a_job_opens_it_first(parent: int, first: str, second: str) -> bool:
@@ -557,11 +561,13 @@ def test_a_writer_that_opens_the_file_just_before_the_swap_keeps_it(
             holders.append(_holder(target, "ab"))
         return exchange(parent, first, second)
 
-    monkeypatch.setattr(executor, "_exchange", a_job_opens_it_first)
+    monkeypatch.setattr(sandbox_files, "_exchange", a_job_opens_it_first)
     directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     expected = hashlib.sha256(b"v1\n").hexdigest()
     try:
-        reply = executor.write_file(directory, "log.csv", b"v2\n", expected, False, "x", None, True)
+        reply = sandbox_files.write_file(
+            directory, "log.csv", b"v2\n", expected, False, "x", None, True
+        )
         assert reply == {"busy": True}  # swapped, seen and swapped back
         assert target.read_bytes() == b"v1\n"
         assert [path.name for path in tmp_path.iterdir()] == ["log.csv"]
@@ -576,7 +582,7 @@ def test_a_write_that_lands_after_the_check_is_a_conflict(
 ) -> None:
     (tmp_path / "f").write_bytes(b"old")
     expected = hashlib.sha256(b"old").hexdigest()
-    hashed = executor._hashed
+    hashed = sandbox_files._hashed
 
     def and_then_research_code_writes(
         parent: int, name: str, path: str
@@ -585,10 +591,10 @@ def test_a_write_that_lands_after_the_check_is_a_conflict(
         (tmp_path / "f").write_bytes(b"theirs")
         return result
 
-    monkeypatch.setattr(executor, "_hashed", and_then_research_code_writes)
+    monkeypatch.setattr(sandbox_files, "_hashed", and_then_research_code_writes)
     directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     with pytest.raises(executor.ToolError, match="changed while it was written"):
-        executor.write_file(directory, "f", b"ours", expected, False, "f")
+        sandbox_files.write_file(directory, "f", b"ours", expected, False, "f")
     assert (tmp_path / "f").read_bytes() == b"theirs"
 
 
@@ -596,7 +602,7 @@ def test_a_write_landing_just_before_the_swap_is_kept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / "f").write_bytes(b"old")
-    exchange = executor._exchange
+    exchange = sandbox_files._exchange
     swaps: list[tuple[str, str]] = []
 
     def research_code_writes_first(parent: int, first: str, second: str) -> bool:
@@ -606,11 +612,11 @@ def test_a_write_landing_just_before_the_swap_is_kept(
         swaps.append((first, second))
         return exchange(parent, first, second)
 
-    monkeypatch.setattr(executor, "_exchange", research_code_writes_first)
+    monkeypatch.setattr(sandbox_files, "_exchange", research_code_writes_first)
     directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     expected = hashlib.sha256(b"old").hexdigest()
     with pytest.raises(executor.ToolError, match="changed while it was written"):
-        executor.write_file(directory, "f", b"ours", expected, False, "f")
+        sandbox_files.write_file(directory, "f", b"ours", expected, False, "f")
     assert (tmp_path / "f").read_bytes() == b"old+theirs"
     assert len(swaps) == 2  # swapped, and swapped back
     assert sorted(path.name for path in tmp_path.iterdir()) == ["f"]
@@ -634,9 +640,9 @@ def test_escaped_names_count_in_full_against_the_reply_limit(
     for n in range(10):
         (shared / ("\\" * 20 + str(n))).write_bytes(b"x")
     # Each path is about 30 bytes as text, about 70 once JSON escapes it.
-    monkeypatch.setattr(executor, "SHARED_REPLY_BYTES", 400)
+    monkeypatch.setattr(sandbox_files, "SHARED_REPLY_BYTES", 400)
     directory = os.open(shared, os.O_RDONLY | os.O_DIRECTORY)
-    files, truncated, _, _ = executor.scan_shared(directory)
+    files, truncated, _, _ = sandbox_files.scan_shared(directory)
     assert truncated
     assert len(files) < 10
 

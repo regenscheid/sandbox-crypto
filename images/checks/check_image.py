@@ -56,7 +56,14 @@ SERVICES = ("orchestrator", "mcp-proxy")
 """The platform services' images: no executor or kernels, and a read-only prefix."""
 PREFIX = "/opt/sandbox-science"
 EXECUTOR_DIR = Path("/sandbox/.sandbox-science")
-WORKER_FILES = ("executor.py", "provisioning.py", "pdfhelper.py", "daemon.py", "capture.py")
+WORKER_FILES = (
+    "executor.py",
+    "provisioning.py",
+    "pdfhelper.py",
+    "daemon.py",
+    "capture.py",
+    "sandbox_files.py",
+)
 """The worker's files that run inside a sandbox (packages/worker/src/sandbox_science/worker)."""
 PROJECT = Path("/sandbox/project")
 SESSION = "image-check"

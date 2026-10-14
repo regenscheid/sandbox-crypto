@@ -99,10 +99,15 @@ def test_every_sibling_a_sandbox_file_loads_is_shipped(path: Path) -> None:
 
 
 def test_the_image_checks_ship_the_same_files() -> None:
-    check = (REPOSITORY / "images/checks/check_image.py").read_text()
-    listed = re.search(r"^WORKER_FILES = \((.*)\)$", check, re.MULTILINE)
-    assert listed is not None
-    assert set(re.findall(r'"([a-z_]+\.py)"', listed[1])) == NAMES
+    check = ast.parse((REPOSITORY / "images/checks/check_image.py").read_text())
+    listed = [
+        ast.literal_eval(node.value)
+        for node in check.body
+        if isinstance(node, ast.Assign)
+        and [ast.unparse(target) for target in node.targets] == ["WORKER_FILES"]
+    ]
+    assert len(listed) == 1
+    assert set(listed[0]) == NAMES
     script = (REPOSITORY / "images/test.sh").read_text()
     copied = re.search(r"^for name in ([a-z_ ]+); do$", script, re.MULTILINE)
     assert copied is not None

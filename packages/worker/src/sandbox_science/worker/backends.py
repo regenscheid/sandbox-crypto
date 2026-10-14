@@ -17,7 +17,7 @@ from typing import Literal, Protocol
 
 from sandbox_science.contracts import ErrorKind
 
-from . import capture, daemon, executor, pdfhelper, provisioning
+from . import capture, daemon, executor, pdfhelper, provisioning, sandbox_files
 from .channel import EventHandler, ExecutorChannel
 from .errors import WorkerError
 from .package_clients import ClientConfiguration, render
@@ -37,6 +37,7 @@ SANDBOX_FILES: tuple[Path, ...] = (
     PDF_HELPER_SOURCE,
     DAEMON_SOURCE,
     CAPTURE_SOURCE,
+    Path(sandbox_files.__file__),
 )
 """Every file the executor runs from inside a sandbox, uploaded side by side into the
 executor's directory. They use only the standard library and each other (the executor
