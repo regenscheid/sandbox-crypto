@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, TypeVar
@@ -75,6 +76,32 @@ from sandbox_science.contracts.revisions import (
     MAX_REVISION_PAGE,
     MAX_REVISION_PAGE_BYTES,
 )
+from sandbox_science.contracts.run_api import (
+    MAX_RUN_API_RESPONSE,
+    RunAttemptRequest,
+    RunBindingRequest,
+    RunCloseRequest,
+    RunControlResult,
+    RunEnrollmentRequest,
+    RunEventPage,
+    RunEventsRequest,
+    RunRestartRequest,
+    check_run_execution,
+    run_api_bytes,
+    strict_run_json,
+)
+from sandbox_science.contracts.run_cells import (
+    RunCellExecution,
+    RunCellRequest,
+    RunKernelObservation,
+    run_kernel_id,
+)
+from sandbox_science.contracts.run_kernels import (
+    RunKernelBinding,
+    RunKernelEnrollment,
+    RunKernelScope,
+    run_kernel_binding_sha256,
+)
 from sandbox_science.contracts.worker import EVENT_HEARTBEAT_SECONDS, MAX_EVENT_BYTES, Language
 
 _log = logging.getLogger(__name__)
@@ -133,6 +160,9 @@ class WorkerClient:
         self._headers = {"Authorization": f"Bearer {token}"}
         self._session = session
         self._owns_session = session is None
+        self._run_closing = False
+        self._run_work: set[asyncio.Task[BaseModel]] = set()
+        self._run_close_task: asyncio.Task[None] | None = None
 
     async def __aenter__(self) -> WorkerClient:
         return self
@@ -141,9 +171,24 @@ class WorkerClient:
         await self.close()
 
     async def close(self) -> None:
-        if self._owns_session and self._session is not None:
-            await self._session.close()
-            self._session = None
+        """Drain selected request owners before closing this client's owned session."""
+        if self._run_close_task is None or (
+            self._run_close_task.done() and self._owns_session and self._session is not None
+        ):
+            self._run_closing = True
+
+            async def actual() -> None:
+                work = tuple(self._run_work)
+                for task in work:
+                    task.cancel()
+                if work:
+                    await asyncio.gather(*work, return_exceptions=True)
+                if self._owns_session and self._session is not None:
+                    await self._session.close()
+                    self._session = None
+
+            self._run_close_task = asyncio.create_task(actual())
+        await _selected_owned(self._run_close_task, cancel_on_interrupt=False)
 
     def _http(self) -> aiohttp.ClientSession:
         if self._session is None:
@@ -393,6 +438,242 @@ class WorkerClient:
         )
 
     # Executions.
+
+    async def _run_call(
+        self,
+        action: str,
+        request: BaseModel,
+        response_model: type[_Model],
+        *,
+        timeout_seconds: float,
+    ) -> _Model:
+        if (
+            self._run_closing
+            or len(self._run_work) >= 8
+            or (type(timeout_seconds) is not int and type(timeout_seconds) is not float)
+            or not math.isfinite(timeout_seconds)
+            or not 0 < timeout_seconds <= 190
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "selected transport is unavailable")
+        try:
+            raw = run_api_bytes(request)
+        except (ValueError, TypeError, UnicodeError, ValidationError):
+            raise WorkerAPIError(ErrorKind.INVALID_REQUEST, "invalid selected request") from None
+
+        async def actual() -> _Model:
+            try:
+                async with self._http().post(
+                    self.base_url + "/v1/run-kernels/" + action,
+                    data=raw,
+                    headers={**self._headers, "Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+                    allow_redirects=False,
+                ) as response:
+                    payload = await _bounded_body(response.content, MAX_RUN_API_RESPONSE)
+                    strict_run_json(payload, MAX_RUN_API_RESPONSE)
+                    if response.status not in (200, 201):
+                        try:
+                            kind = WorkerErrorResponse.model_validate_json(
+                                payload, strict=True
+                            ).error.kind
+                        except ValidationError:
+                            kind = ErrorKind.UNAVAILABLE
+                        raise WorkerAPIError(
+                            kind, "selected worker request was refused", response.status
+                        )
+                    result = response_model.model_validate_json(payload, strict=True)
+                    if type(result) is RunCellExecution:
+                        check_run_execution(result)
+                    if type(result) is RunKernelObservation:
+                        for entry in result.kernels:
+                            if (
+                                entry.kernel.kernel_id
+                                != run_kernel_id(result.binding, entry.kernel.language)
+                                or not 1 <= entry.kernel.generation < 2**31
+                            ):
+                                raise ValueError("selected observation kernel differs")
+                    return result
+            except (aiohttp.ClientError, TimeoutError, ValueError, ValidationError, RecursionError):
+                raise WorkerAPIError(
+                    ErrorKind.UNAVAILABLE, "selected worker response is unavailable"
+                ) from None
+
+        task = asyncio.create_task(actual())
+        self._run_work.add(task)
+        try:
+            return await _selected_owned(task, cancel_on_interrupt=True)
+        finally:
+            self._run_work.discard(task)
+
+    async def enroll_run(
+        self, scope: RunKernelScope, operation_id: str, *, timeout_seconds: float = 10
+    ) -> RunKernelEnrollment:
+        """Enroll once under the authenticated controller; never reconnect/rebind a child."""
+        request = RunEnrollmentRequest(scope=scope, operation_id=operation_id)
+        result = await self._run_call(
+            "enroll", request, RunKernelEnrollment, timeout_seconds=timeout_seconds
+        )
+        expected = hashlib.sha256(
+            b"run-kernel-enrollment-v1\0"
+            + json.dumps(
+                {"binding": result.binding.model_dump(mode="json"), "operation_id": operation_id},
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("ascii")
+        ).hexdigest()
+        if (
+            result.binding.scope != scope
+            or result.operation_id != operation_id
+            or result.binding_sha256 != run_kernel_binding_sha256(result.binding)
+            or result.request_sha256 != expected
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "selected enrollment differs")
+        return result
+
+    async def submit_run_cell(
+        self, request: RunCellRequest, *, timeout_seconds: float = 10
+    ) -> RunCellExecution:
+        """Submit exactly once. A transport failure is unknown, never an automatic retry."""
+        result = await self._run_call(
+            "submit", request, RunCellExecution, timeout_seconds=timeout_seconds
+        )
+        if (
+            result.binding != request.binding
+            or result.execution.operation_id != request.operation_id
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "selected submit response differs")
+        return result
+
+    async def _run_attempt(
+        self,
+        action: str,
+        binding: RunKernelBinding,
+        execution_id: str,
+        attempt_id: str,
+        *,
+        timeout_seconds: float,
+    ) -> RunCellExecution:
+        request = RunAttemptRequest(
+            binding=binding, execution_id=execution_id, attempt_id=attempt_id
+        )
+        result = await self._run_call(
+            action, request, RunCellExecution, timeout_seconds=timeout_seconds
+        )
+        if (
+            result.binding != binding
+            or result.execution.execution_id != execution_id
+            or result.execution.attempt_id != attempt_id
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "selected attempt response differs")
+        return result
+
+    async def get_run(
+        self,
+        binding: RunKernelBinding,
+        execution_id: str,
+        attempt_id: str,
+        *,
+        timeout_seconds: float = 10,
+    ) -> RunCellExecution:
+        """Read one exact historical selected attempt, never a MAIN execution fallback."""
+        return await self._run_attempt(
+            "get", binding, execution_id, attempt_id, timeout_seconds=timeout_seconds
+        )
+
+    async def cancel_run(
+        self,
+        binding: RunKernelBinding,
+        execution_id: str,
+        attempt_id: str,
+        *,
+        timeout_seconds: float = 10,
+    ) -> RunCellExecution:
+        """Cancel only the original selected attempt under controller authorization."""
+        return await self._run_attempt(
+            "cancel", binding, execution_id, attempt_id, timeout_seconds=timeout_seconds
+        )
+
+    async def run_events(
+        self,
+        binding: RunKernelBinding,
+        execution_id: str,
+        attempt_id: str,
+        *,
+        after: int,
+        limit: int,
+        timeout_seconds: float = 10,
+    ) -> RunEventPage:
+        request = RunEventsRequest(
+            binding=binding,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+            after=after,
+            limit=limit,
+        )
+        result = await self._run_call(
+            "events", request, RunEventPage, timeout_seconds=timeout_seconds
+        )
+        selected = result.selected
+        if (
+            selected.binding != binding
+            or selected.execution.execution_id != execution_id
+            or selected.execution.attempt_id != attempt_id
+            or result.after != after
+            or len(result.events) > limit
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "selected event page differs")
+        return result
+
+    async def observe_run(
+        self, binding: RunKernelBinding, *, timeout_seconds: float = 10
+    ) -> RunKernelObservation:
+        result = await self._run_call(
+            "observe",
+            RunBindingRequest(binding=binding),
+            RunKernelObservation,
+            timeout_seconds=timeout_seconds,
+        )
+        if result.binding != binding:
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "selected observation differs")
+        return result
+
+    async def close_run(
+        self, binding: RunKernelBinding, operation_id: str, *, timeout_seconds: float = 10
+    ) -> RunControlResult:
+        request = RunCloseRequest(binding=binding, operation_id=operation_id)
+        result = await self._run_call(
+            "close", request, RunControlResult, timeout_seconds=timeout_seconds
+        )
+        if (
+            result.request.binding != binding
+            or result.request.operation_id != operation_id
+            or result.request.action != "close"
+            or result.request.language is not None
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "selected close response differs")
+        return result
+
+    async def restart_run(
+        self,
+        binding: RunKernelBinding,
+        operation_id: str,
+        language: Language,
+        *,
+        timeout_seconds: float = 10,
+    ) -> RunControlResult:
+        request = RunRestartRequest(binding=binding, operation_id=operation_id, language=language)
+        result = await self._run_call(
+            "restart", request, RunControlResult, timeout_seconds=timeout_seconds
+        )
+        if (
+            result.request.binding != binding
+            or result.request.operation_id != operation_id
+            or result.request.action != "restart"
+            or result.request.language != language
+        ):
+            raise WorkerAPIError(ErrorKind.UNAVAILABLE, "selected restart response differs")
+        return result
 
     async def submit(self, request: ExecutionRequest) -> Execution:
         return await self._call("POST", "/v1/executions", Execution, request)
@@ -760,3 +1041,25 @@ def _error(payload: bytes, status: int) -> WorkerAPIError:
 def dump(value: Any) -> str:
     """Compact JSON, for tool results the model reads."""
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+
+
+async def _selected_owned[T](work: asyncio.Task[T], *, cancel_on_interrupt: bool) -> T:
+    """Retain the real HTTP/body owner through repeated caller cancellation."""
+    first: asyncio.CancelledError | None = None
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError as error:
+            if first is None:
+                first = error
+                if cancel_on_interrupt:
+                    work.cancel()
+        except BaseException:
+            if first is None:
+                raise
+            break  # retrieve below without masking the original caller cancellation
+    if first is not None:
+        with contextlib.suppress(BaseException):
+            work.result()
+        raise first
+    return work.result()

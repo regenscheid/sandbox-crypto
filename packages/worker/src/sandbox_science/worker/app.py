@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import hmac
 import logging
 import re
@@ -77,6 +78,7 @@ from .errors import WorkerError
 from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
+from .run_api import RunAPI, RunPrincipal, managed_run_context, register_run_api
 from .settings import ClientSettings, token_digest
 
 _log = logging.getLogger(__name__)
@@ -113,6 +115,8 @@ class Client:
     projects: frozenset[str] | None
     max_environments: int | None = None
     document_catalog: bool = False
+    run_identity: str | None = None
+    run_restart: bool = False
 
     def allows(self, project_id: str) -> bool:
         return self.projects is None or project_id in self.projects
@@ -141,7 +145,14 @@ def create_app(
     pool = Client("pool", None, document_catalog=True)
     by_digest = {
         c.token_sha256: Client(
-            c.name, frozenset(c.projects), c.max_environments, c.document_catalog
+            c.name,
+            frozenset(c.projects),
+            c.max_environments,
+            c.document_catalog,
+            hashlib.sha256(b"run-controller-config-v1\0" + c.model_dump_json().encode()).hexdigest()
+            if c.run_controller
+            else None,
+            c.run_restart,
         )
         for c in clients
     }
@@ -161,7 +172,9 @@ def create_app(
 
     def read_observation(request: web.Request) -> bool:
         resource = request.match_info.route.resource
-        return resource is not None and "/provisioning/observations" in resource.canonical
+        return request.path.startswith("/v1/run-kernels/") or (
+            resource is not None and "/provisioning/observations" in resource.canonical
+        )
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
@@ -179,6 +192,8 @@ def create_app(
         except ValidationError as exc:
             response = _error(ErrorKind.INVALID_REQUEST, _summary(exc), 400)
         except web.HTTPException as exc:
+            if request.path.startswith("/v1/run-kernels/"):
+                exc.headers["Cache-Control"] = "no-store"
             _audit(request, client, exc.status)
             raise
         except Exception:
@@ -300,6 +315,19 @@ def create_app(
             web.get("/v1/artifacts/{artifact_id}", get_artifact),
             web.get("/v1/artifacts/{artifact_id}/content", get_artifact_content),
         ]
+    )
+
+    def run_authorize(request: web.Request, context: ExecutionContext | None) -> RunPrincipal:
+        client = _client(request)
+        if client.run_identity is None:
+            raise WorkerError(ErrorKind.POLICY_DENIED, "selected controller permission required")
+        if context is not None:
+            _visible(request, context.project_id, "selected project")
+            managed_run_context(_environments(request), context)
+        return RunPrincipal(client.run_identity, client.run_restart)
+
+    register_run_api(
+        app, RunAPI(manager, run_authorize, enabled=any(c.run_controller for c in clients))
     )
     return app
 
@@ -1003,6 +1031,10 @@ async def observe_revision_packages(request: web.Request) -> web.Response:
 def _execution(request: web.Request) -> Execution:
     """The route's execution, once it is known to belong to the client's projects."""
     execution_id = request.match_info["execution_id"]
+    # A project token/known execution ID is not original child/controller proof.
+    # Check the bounded marker before the legacy execution reader materializes it.
+    if request.app[MANAGER].store.kernel_scope(execution_id) != "legacy":
+        raise WorkerError(ErrorKind.NOT_FOUND, "no legacy execution")
     execution = request.app[MANAGER].get(execution_id, _project(request))
     _visible(request, execution.context.project_id, f"execution {execution_id}")
     return execution
