@@ -53,7 +53,14 @@ from .mathchecks.controller import MathController
 from .mathchecks.jobs import Checker
 from .model import ChatModel, Message
 from .plan_tools import PlanTools
-from .projects import ProjectError, ProjectStore, RunRecord, ensure_environment, run_name
+from .projects import (
+    ProjectError,
+    ProjectStore,
+    RunRecord,
+    RunRole,
+    ensure_environment,
+    run_name,
+)
 from .runstate import RunState
 from .session_plans import SessionPlans
 from .tools import HARNESS_TOOL_NAMES, Toolbox, ToolOutcome
@@ -141,6 +148,14 @@ class RunRequest:
     message_ids: tuple[str, ...] = ()
     """The queued messages the run is started for (RS-6): its conversation begins with
     them, and ``task`` only names them in the record."""
+    parent: str | None = None
+    """A delegated run's parent: the name its record will be kept under (PD-32)."""
+    delegation: str | None = None
+    """A delegated run's delegation. Nothing starts delegated runs yet."""
+
+    @property
+    def role(self) -> RunRole:
+        return "main" if self.parent is None else "delegated"
 
 
 @dataclass(frozen=True)
@@ -263,6 +278,8 @@ class Finished:
     transcript: Transcript
     hooks: Sequence[TurnHook] = ()
     ended_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    parent: str | None = None
+    delegation: str | None = None
 
     @property
     def status(self) -> int:
@@ -275,6 +292,9 @@ class Finished:
         transcript = self.transcript
         return {
             "run_id": self.run_id,
+            "role": "main" if self.parent is None else "delegated",
+            "parent": self.parent,
+            "delegation": self.delegation,
             "context": self.context.model_dump(mode="json"),
             "task": self.task,
             "started_at": self.started_at,
@@ -389,6 +409,8 @@ class Harness:
             admitted.started_at,
             transcript,
             hooks,
+            parent=admitted.request.parent,
+            delegation=admitted.request.delegation,
         )
 
     def chat(self, admitted: Admitted) -> RunChat | None:
@@ -405,6 +427,8 @@ class Harness:
             task=None if request.message_ids else request.task,
             message_ids=request.message_ids,
             prefix=1 + len(request.history) + (0 if request.message_ids else 1),
+            parent=request.parent,
+            delegation=request.delegation,
             clock=self.clock,
         )
 

@@ -66,6 +66,8 @@ class RunChat:
         task: str | None,
         message_ids: Sequence[str] = (),
         prefix: int = 2,
+        parent: str | None = None,
+        delegation: str | None = None,
         poll: float = POLL_SECONDS,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
@@ -75,6 +77,7 @@ class RunChat:
         message, the earlier conversation and the task."""
         self.state, self.context, self.run, self.run_id = state, context, run, run_id
         self.task, self.message_ids, self.prefix = task, tuple(message_ids), prefix
+        self.parent, self.delegation = parent, delegation
         self.poll, self.clock = poll, clock
         self.offered: set[str] = set()
         self.texts: dict[str, str] = {}
@@ -255,6 +258,9 @@ class EventLog(TurnHook):
                     "project": chat.context.project_id,
                     "session": chat.context.session_id,
                     "run_id": chat.run_id,
+                    "role": "main" if chat.parent is None else "delegated",
+                    "parent": chat.parent,
+                    "delegation": chat.delegation,
                     "message_ids": list(chat.message_ids),
                     "prompt_provenance": (
                         pins.model_dump(mode="json") if pins is not None else None

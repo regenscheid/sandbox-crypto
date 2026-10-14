@@ -541,11 +541,13 @@ export interface RevisionSummaryPage {
   revisions: RevisionSummary[];
 }
 
-/** A run a session keeps, named by when it started and its run ID. */
+/** A run a session keeps, named by when it started and its run ID, with its place in the session's tree of runs. */
 export interface RunEntry {
   name: string;
   run_id: string;
   started_at: string;
+  role: "main" | "delegated";
+  parent: string | null;
 }
 
 /** One thing a run did, for display (RS-14). */

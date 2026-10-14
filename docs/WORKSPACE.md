@@ -259,6 +259,7 @@ With `--state-dir`, the harness keeps every run that reaches the tool loop, incl
 | Field | Contents |
 | --- | --- |
 | `run_id` | The run's ID, which starts the operation IDs of its tool calls |
+| `role`, `parent`, `delegation` | The run's place in its session's tree of runs: `main` for the root, which answers the user, or `delegated` with its parent's record name and its delegation ([plans and delegation](specs/plans-and-delegation.md), PD-32). Nothing starts delegated runs yet; older records are `main` |
 | `context` | Project, session, environment and policy revision |
 | `task` | The task as given |
 | `started_at`, `ended_at` | When the run started and ended, in UTC |

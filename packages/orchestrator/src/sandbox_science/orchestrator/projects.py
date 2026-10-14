@@ -165,11 +165,21 @@ def _summary(value: JsonValue | None) -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], value) if isinstance(value, dict) else {}
 
 
+RunRole = Literal["main", "delegated"]
+"""A run's role in its session's tree of runs (PD-32): the root answers the user, and a
+delegated run works for its parent."""
+
+
 class RunRecord(Contract):
     """One run of the harness: what ``run --transcript`` writes, and what a session keeps."""
 
     run_id: str
     """The run's ID, which starts every operation ID of its tool calls."""
+    role: RunRole = "main"
+    parent: str | None = None
+    """For a delegated run, the name its parent's record is kept under."""
+    delegation: Identifier | None = None
+    """For a delegated run, the delegation it carries out."""
     prompt_provenance: Annotated[
         PromptPins | dict[str, JsonValue] | None, Field(union_mode="left_to_right")
     ] = None
@@ -237,6 +247,17 @@ class RunRecord(Contract):
         return _summary(self.summaries.get("math"))
 
     @model_validator(mode="after")
+    def _place_in_the_tree(self) -> RunRecord:
+        delegated = self.parent is not None and self.delegation is not None
+        if delegated != (self.role == "delegated") or (self.parent is None) != (
+            self.delegation is None
+        ):
+            raise ValueError(
+                "a delegated run names its parent and its delegation; a main run neither"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _failure_is_not_an_answer(self) -> RunRecord:
         if self.failure is not None and (self.stopped != "error" or self.final_text is not None):
             raise ValueError("a failed run must have error status and no final answer")
@@ -252,11 +273,15 @@ class RunRecord(Contract):
 
 
 class RunEntry(Contract):
-    """A run a session keeps, named by when it started and its run ID."""
+    """A run a session keeps, named by when it started and its run ID, with its place in
+    the session's tree of runs."""
 
     name: str
     run_id: Identifier
     started_at: datetime
+    role: RunRole = "main"
+    parent: str | None = None
+    """The name of its parent's record, for a delegated run."""
 
 
 def environment_id(*parts: str) -> str:
@@ -469,8 +494,8 @@ class ProjectStore:
                 )
             try:
                 tx.sql.execute(
-                    "INSERT INTO runs (project_id, session_id, name, run_id, started_at, record) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO runs (project_id, session_id, name, run_id, started_at, record, "
+                    "role, parent, delegation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         project_id,
                         session_id,
@@ -478,6 +503,9 @@ class ProjectStore:
                         entry.run_id,
                         _time(entry.started_at),
                         text,
+                        record.role,
+                        record.parent,
+                        record.delegation,
                     ),
                 )
             except sqlite3.IntegrityError:
@@ -493,13 +521,14 @@ class ProjectStore:
             return []
         with self.control.read() as tx:
             rows = tx.sql.execute(
-                "SELECT name, run_id, started_at FROM runs WHERE project_id = ? AND "
-                "session_id = ? ORDER BY name",
+                "SELECT name, run_id, started_at, role, parent FROM runs WHERE project_id = ? "
+                "AND session_id = ? ORDER BY name",
                 (project_id, session_id),
             ).fetchall()
         try:
             return [
-                RunEntry(name=name, run_id=run, started_at=started) for name, run, started in rows
+                RunEntry(name=name, run_id=run, started_at=started, role=role, parent=parent)
+                for name, run, started, role, parent in rows
             ]
         except ValidationError as exc:
             raise ProjectError(

@@ -834,6 +834,20 @@ def _same_anchors(schema: Schema) -> None:
             )
 
 
+def _run_tree(schema: Schema) -> None:
+    """Version 11: a run's place in its session's tree of runs: its role, and for a
+    delegated run its parent run and its delegation (plans-and-delegation spec, PD-32)."""
+    for statement in (
+        "ALTER TABLE runs ADD COLUMN role TEXT NOT NULL DEFAULT 'main' "
+        "CHECK (role IN ('main', 'delegated'))",
+        "ALTER TABLE runs ADD COLUMN parent TEXT "
+        "CHECK (parent IS NULL OR length(CAST(parent AS BLOB)) BETWEEN 1 AND 256)",
+        "ALTER TABLE runs ADD COLUMN delegation TEXT "
+        "CHECK (delegation IS NULL OR length(CAST(delegation AS BLOB)) BETWEEN 1 AND 128)",
+    ):
+        schema.execute(statement)
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _baseline,
     _projects,
@@ -844,6 +858,7 @@ MIGRATIONS: Final[tuple[Migration, ...]] = (
     _run_service,
     _run_service_control,
     _macro_revisions,
+    _run_tree,
 )
 """``MIGRATIONS[0]`` creates the baseline in an empty database, and ``MIGRATIONS[i]``
 takes a database in version ``BASELINE + i - 1`` to ``BASELINE + i``."""
