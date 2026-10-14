@@ -546,8 +546,14 @@ A lost bridge starts a live recovery of its environment. Each attempt reattaches
 unfinished execution of the environment that no open bridge carries, including one
 whose bridge was lost while the recovery ran. A failed attempt, such as a transient
 gateway failure, is repeated after 0.2 s, doubling up to 30 s, until none is left.
-Events reach the worker only by polling: every 0.1 s, it asks each bridge to `replay`
-the events of the executions it carries after their saved cursors. An unexpected failure
+The daemon pushes each execution's events to the active bridge as they come, once that
+bridge has every earlier one, so it never sends an event ahead of a gap. A new bridge
+gets pushes for an execution once a `replay` (up to 32 events a page, which the worker
+asks for again while the daemon says there are `more`, up to 64 pages) has brought it to
+the latest, or from the start for an execution it started itself. Every 2 s, the worker
+also asks each bridge to `replay` the executions it carries after their saved cursors;
+that catches an event a push left out, such as one too large for its line or trimmed
+from the daemon's history, which arrives with its gap marked. An unexpected failure
 while polling or recovering, such as one of the worker's database, is logged, and polling
 or recovery goes on; the poller then waits longer, doubling up to 10 s, while it lasts. Startup tries five times, then refuses readiness
 until remembered live daemons can be reconciled and unknown installers quiesced.

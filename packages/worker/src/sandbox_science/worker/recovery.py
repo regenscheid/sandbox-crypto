@@ -37,6 +37,8 @@ _log = logging.getLogger(__name__)
 
 STARTUP_RECOVERY_ATTEMPTS = 5
 """Recovery attempts at startup before the worker refuses to start."""
+REPLAY_PAGES = 64
+"""Pages one replay asks for before it leaves the rest to the next pass."""
 
 
 @dataclass(frozen=True)
@@ -282,18 +284,29 @@ class DaemonRecovery:
         )
 
     async def _replay(self, live: Live, channel: ExecutorChannel) -> None:
-        saved = self.store.recovery(live.execution.execution_id)
-        reply = await channel.request(
-            "replay",
-            execution=live.execution.execution_id,
-            after=saved[2] if saved else 0,
-            reply_timeout=30,
-        )
-        if reply.get("found") is not True and live.execution.state not in TERMINAL_STATES:
-            self.hooks.lose(live, "the executor with no retained execution record")
+        """Replay the execution's events the worker has not stored, a page at a time, until
+        the daemon has none left; from then on it pushes them as they come."""
+        for _ in range(REPLAY_PAGES):
+            saved = self.store.recovery(live.execution.execution_id)
+            reply = await channel.request(
+                "replay",
+                execution=live.execution.execution_id,
+                after=saved[2] if saved else 0,
+                reply_timeout=30,
+            )
+            if reply.get("found") is not True:
+                if live.execution.state not in TERMINAL_STATES:
+                    self.hooks.lose(live, "the executor with no retained execution record")
+                return
+            if reply.get("more") is not True or live.execution.state in TERMINAL_STATES:
+                return
 
     async def _poll_daemon(self, environment_id: str, channel: ExecutorChannel) -> None:
-        """Replay the bridge's executions until it closes.
+        """Replay the bridge's executions now and then, until it closes.
+
+        The daemon pushes each event as it comes, once the bridge has every earlier one;
+        this slow pass catches an event a push left for a replay, such as one that came
+        while a replay page was being sent.
 
         A failed bridge is closed, which starts a recovery. Any other failure, such as
         one of the store, is logged and the poller goes on, waiting longer while it lasts.

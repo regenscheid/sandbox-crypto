@@ -36,6 +36,7 @@ from sandbox_science.worker import daemon, executor, sandbox_processes
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, daemon_token
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel
 from sandbox_science.worker.store import Store
+from sandbox_science.worker.timeouts import ManagerTimeouts
 
 from .harness import Harness, running
 
@@ -143,6 +144,44 @@ async def test_bridge_failure_recovers_without_losing_or_restarting_job(worker: 
     assert result.result.stdout.text == "beforeafter"
     recovered_channel = worker.view.channel("env1")
     assert recovered_channel.incarnation == channel.incarnation
+
+
+@pytest.mark.asyncio
+async def test_daemon_pushes_events_before_and_after_a_reconnect(tmp_path: Path) -> None:
+    # The replay pass is a minute away: only the daemon's pushes bring the events in time.
+    timeouts = ManagerTimeouts(poll_interval=60)
+    async with await Harness.start(tmp_path, daemon=True, timeouts=timeouts) as worker:
+        job, _ = await worker.manager.submit(
+            request("pushed", "printf before; " + gated("printf after"))
+        )
+        await running(worker.manager, job.execution_id)
+        await eventually(lambda: worker.store.event_usage(job.execution_id)[1] > 0, timeout=5)
+        open_gate(worker)
+        result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 5)
+        assert result.state is ExecutionState.SUCCEEDED
+        assert result.result is not None
+        assert result.result.stdout is not None
+        assert result.result.stdout.text == "beforeafter"
+
+        # A new bridge replays what it missed, then is pushed the rest.
+        job, _ = await worker.manager.submit(
+            request("replayed", "printf before; " + gated("printf after", "again"))
+        )
+        await running(worker.manager, job.execution_id)
+        # The worker has every event so far, so the new bridge's replay finds none.
+        await eventually(lambda: worker.store.event_usage(job.execution_id)[1] > 0, timeout=5)
+        channel = worker.view.live_channel(job.execution_id)
+        assert channel._process is not None
+        channel._process.kill()
+        await eventually(
+            lambda: worker.view.live(job.execution_id).channel not in (None, channel), timeout=10
+        )
+        open_gate(worker, "again")
+        result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 5)
+        assert result.state is ExecutionState.SUCCEEDED
+        assert result.result is not None
+        assert result.result.stdout is not None
+        assert result.result.stdout.text == "beforeafter"
 
 
 @pytest.mark.asyncio
@@ -519,6 +558,15 @@ async def raw_request(writer: asyncio.StreamWriter, number: int, **fields: Any) 
     await writer.drain()
 
 
+async def next_reply(reader: asyncio.StreamReader) -> dict[str, Any]:
+    """The next line that is not an event: the daemon pushes each execution's events to
+    the bridge that started it as they come (C-02), between its replies."""
+    while True:
+        message = json.loads(await asyncio.wait_for(reader.readline(), 3))
+        if message.get("type") != "event":
+            return message
+
+
 @pytest.mark.asyncio
 async def test_synchronous_admission_caps_buffered_burst(
     server: daemon.Daemon, monkeypatch: pytest.MonkeyPatch
@@ -535,7 +583,8 @@ async def test_synchronous_admission_caps_buffered_burst(
             script="sleep 60",
             timeout=100,
         )
-    replies = [json.loads(await asyncio.wait_for(reader.readline(), 3)) for _ in range(6)]
+    # Changed by C-02: pushed events come between the replies.
+    replies = [await next_reply(reader) for _ in range(6)]
     assert sum(reply.get("ok") is True for reply in replies) == 2
     assert sum(not item.ended for item in server.history.values()) == 2
     writer.close()
@@ -558,7 +607,8 @@ async def test_rejected_admissions_are_bounded_and_replay_terminal_outcome(
             cwd="missing",
             script="true",
         )
-    replies = [json.loads(await asyncio.wait_for(reader.readline(), 3)) for _ in range(6)]
+    # Changed by C-02: pushed events come between the replies.
+    replies = [await next_reply(reader) for _ in range(6)]
     assert all(reply.get("ok") is False for reply in replies)
     assert len(server.history) <= 4
     assert all(item.ended for item in server.history.values())

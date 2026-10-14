@@ -597,6 +597,7 @@ async def test_daemon_compaction_preserves_independent_report() -> None:
     value = object.__new__(daemon.Daemon)
     value.history = OrderedDict({"exe-a": daemon.History()})
     value.bytes = 0
+    value.writer = None  # Changed by C-02: the daemon pushes events to its bridge.
     report = OutputReport().model_dump(mode="json")
     await value.send(
         {
