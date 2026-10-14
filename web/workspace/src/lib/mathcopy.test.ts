@@ -2,7 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { copyMath, installMathCopy } from './mathcopy';
 import { forgetResults, renderDocument, renderMarkdown } from './markdown';
-import { ModelRepairs, repairKey } from './mathrepair';
+import { repairKey } from './mathrepair';
+import { ModelRepairs } from './modelRepairs';
 import { NO_MACROS } from './macros';
 
 beforeEach(() => forgetResults());

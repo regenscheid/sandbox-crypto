@@ -4,7 +4,8 @@ import { render } from 'svelte/server';
 import { api } from './api';
 import { macroSet } from './macros';
 import { renderMarkdown, textState } from './markdown';
-import { ModelRepairs, repairKey } from './mathrepair';
+import { repairKey } from './mathrepair';
+import { ModelRepairs } from './modelRepairs';
 import FindingCard from '../views/FindingCard.svelte';
 import type { Finding } from './reviews';
 

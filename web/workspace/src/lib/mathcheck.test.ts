@@ -43,3 +43,23 @@ describe('isolated math check shares the GUI renderer', () => {
     );
   });
 });
+
+describe('the server-side math checker bundles no browser client', () => {
+  it('reaches neither the API client nor the model repairs through value imports', () => {
+    // This directory's modules as text; type-only imports vanish from the bundle, and
+    // every other relative import is followed.
+    const sources = import.meta.glob('./*.ts', { query: '?raw', import: 'default', eager: true });
+    const seen = new Set<string>();
+    const walk = (file: string): void => {
+      if (seen.has(file)) return;
+      seen.add(file);
+      const source = String(sources[file] ?? '');
+      for (const match of source.matchAll(/^import (?!type )[^;]*?from '(\.\/[^']+)';/gms))
+        walk(`${match[1]}.ts`);
+    };
+    walk('./mathcheck.ts');
+    expect(seen).toContain('./mathrepair.ts');
+    for (const browserOnly of ['api', 'http', 'session', 'modelRepairs', 'pageRepairs'])
+      expect(seen).not.toContain(`./${browserOnly}.ts`);
+  });
+});

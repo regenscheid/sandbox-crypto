@@ -18,7 +18,7 @@
   import { renderDocument, renderMarkdown, textState, whenMathTime } from './markdown';
   import type { DocumentInput } from './markdown';
   import { NO_MACROS, type MacroSet } from './macros';
-  import { pageRepairs } from './mathrepair';
+  import { pageRepairs } from './pageRepairs';
 
   let {
     source,

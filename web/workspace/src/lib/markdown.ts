@@ -57,8 +57,8 @@ import {
   recoverMath,
   repairKey,
   type MathRenderer,
-  type ModelRepairs,
 } from './mathrepair';
+import type { ModelRepairs } from './modelRepairs';
 import { visible } from './text';
 
 /** The dollar math rules; the server's mdit-py-plugins must use the same settings. */
