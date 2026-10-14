@@ -304,7 +304,7 @@ async def test_the_cli_keeps_the_pins_without_credentials(tmp_path, monkeypatch,
         script=script, run_id="cli-run", worker="unused", token_file=None, allow_unisolated=True,
         state_dir=tmp_path, watcher_model=None, reviewer_model=None, math_node=None,
         watcher_calls_per_hour=1, watcher_first_check=1, watcher_interval=1,
-        task="A small factual reply", max_turns=1, transcript=None,
+        task="A small factual reply", max_turns=1, max_input_chars=400_000, transcript=None,
     )  # fmt: skip
     monkeypatch.setattr(cli, "WorkerClient", Client)
     monkeypatch.setattr(cli, "read_secret", lambda _: "test-secret-unused-not-a-credential")

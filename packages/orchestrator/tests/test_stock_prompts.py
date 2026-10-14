@@ -411,6 +411,7 @@ async def test_actual_cli_keeps_selected_input_and_safe_failed_record(
         watcher_interval=1,
         task=INJECTION,
         max_turns=1,
+        max_input_chars=400_000,
         transcript=None,
         research_template="report",
     )

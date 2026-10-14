@@ -11,11 +11,16 @@ worker boundary without a model.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 import aiohttp
+
+from sandbox_science.contracts.clock import SYSTEM_CLOCK, Clock
+
+_log = logging.getLogger(__name__)
 
 Message = dict[str, Any]
 
@@ -62,8 +67,17 @@ class ModelError(Exception):
         """The gateway's HTTP status, when it answered with an error."""
 
 
+class ContextLimitError(ModelError):
+    """The conversation is longer than the model's context window."""
+
+
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 """The largest answer read from the gateway, by default."""
+RETRIED: Final = frozenset({429, 502, 503, 504})
+"""Gateway statuses that a later attempt can get past: rate limits and an unavailable
+or slow upstream."""
+MAX_RETRY_WAIT: Final = 60.0
+"""The longest wait before a retry, whatever the gateway's ``Retry-After`` asks."""
 
 
 class OpenAICompatibleModel:
@@ -71,7 +85,12 @@ class OpenAICompatibleModel:
 
     ``max_tokens``, when given, limits each answer's length. An answer larger than
     ``max_response_bytes``, a redirect (never followed: it would carry the request to
-    another address), and any other status but 2xx are errors.
+    another address), and any other status but 2xx are errors. A rate limit (429) or an
+    unavailable upstream (502, 503, 504) is tried again up to ``retries`` times, after
+    ``Retry-After`` or ``backoff`` seconds doubling each time, at most a minute. A
+    gateway that says the conversation exceeds the model's context raises
+    ``ContextLimitError``. An error's message quotes the gateway's answer, with the key
+    replaced if the answer holds it.
     """
 
     def __init__(
@@ -84,7 +103,12 @@ class OpenAICompatibleModel:
         timeout: float = 600,
         max_tokens: int | None = None,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
+        retries: int = 3,
+        backoff: float = 2.0,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
+        if retries < 0 or backoff < 0:
+            raise ValueError("retries and backoff are not negative")
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._api_key = api_key
@@ -93,6 +117,7 @@ class OpenAICompatibleModel:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._max_tokens = max_tokens
         self._max_response_bytes = max_response_bytes
+        self._retries, self._backoff, self._clock = retries, backoff, clock
 
     async def close(self) -> None:
         if self._owns_session and self._session is not None:
@@ -116,6 +141,25 @@ class OpenAICompatibleModel:
                 for tool in tools
             ]
             body["tool_choice"] = "auto"
+        wait = self._backoff
+        for attempt in range(self._retries + 1):
+            try:
+                return _parse_completion(await self._post(body))
+            except _RetryableError as retry:
+                if attempt == self._retries:
+                    raise retry.error from None
+                delay = min(retry.after if retry.after is not None else wait, MAX_RETRY_WAIT)
+                # The status only: the gateway's text can quote the request.
+                _log.warning(
+                    "the model gateway answered HTTP %s; trying again in %.1f s",
+                    retry.error.status,
+                    delay,
+                )
+                await self._clock.sleep(delay)
+                wait *= 2
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def _post(self, body: dict[str, Any]) -> str:
         if self._session is None:
             self._session = aiohttp.ClientSession()
         try:
@@ -131,14 +175,44 @@ class OpenAICompatibleModel:
                     text = data.decode("utf-8")
                 except UnicodeDecodeError as exc:
                     raise ModelError("the model gateway's answer is not UTF-8") from exc
-                if not 200 <= response.status < 300:
-                    raise ModelError(
-                        f"the model gateway returned {response.status}: {text[:300]}",
-                        status=response.status,
-                    )
+                if 200 <= response.status < 300:
+                    return text
+                status = response.status
+                if self._api_key:  # A gateway can quote the key it refuses.
+                    text = text.replace(self._api_key, "[the gateway key]")
+                error = ModelError(
+                    f"the model gateway returned {status}: {text[:300]}", status=status
+                )
+                if status in RETRIED:
+                    raise _RetryableError(error, _retry_after(response.headers.get("Retry-After")))
+                if status in (400, 413) and _context_exceeded(text):
+                    raise ContextLimitError(str(error), status=status)
+                raise error
         except aiohttp.ClientError as exc:
             raise ModelError(f"cannot reach the model gateway: {exc}") from exc
-        return _parse_completion(text)
+
+
+class _RetryableError(Exception):
+    def __init__(self, error: ModelError, after: float | None) -> None:
+        self.error, self.after = error, after
+
+
+def _retry_after(value: str | None) -> float | None:
+    """``Retry-After`` in seconds; an HTTP date or anything else is ignored."""
+    try:
+        seconds = float(value) if value is not None else None
+    except ValueError:
+        return None
+    return seconds if seconds is not None and 0 <= seconds < float("inf") else None
+
+
+def _context_exceeded(text: str) -> bool:
+    """Whether a gateway's error says the input is longer than the model's context.
+
+    LiteLLM reports it as ``ContextWindowExceededError``; providers' own codes pass
+    through as ``context_length_exceeded``."""
+    lowered = text.lower()
+    return "context_length_exceeded" in lowered or "contextwindowexceeded" in lowered
 
 
 async def _read_limited(response: aiohttp.ClientResponse, limit: int) -> bytes:

@@ -254,6 +254,9 @@ class Reply:
     calls: Sequence[tuple[str, Json]] = ()
     before: Callable[[], Awaitable[object]] | None = None
     status: int = 200
+    error: str = "synthetic gateway failure"
+    """The body of an answer that is not a 200."""
+    retry_after: str | None = None
 
 
 def call(name: str, /, **arguments: Any) -> tuple[str, Json]:
@@ -287,7 +290,8 @@ class Gateway:
         if reply.before is not None:
             await reply.before()
         if reply.status != 200:
-            return web.Response(status=reply.status, text="synthetic gateway failure")
+            headers = {} if reply.retry_after is None else {"Retry-After": reply.retry_after}
+            return web.Response(status=reply.status, text=reply.error, headers=headers)
         tool_calls: list[Json] = []
         for name, arguments in reply.calls:
             self.numbered += 1
@@ -305,6 +309,7 @@ class Gateway:
             {
                 "model": f"scripted-{alias}",
                 "choices": [{"message": message, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": len(messages), "completion_tokens": self.numbered},
             }
         )
 
@@ -434,6 +439,7 @@ class Harness:
         *,
         status: int = 0,
         max_turns: int | None = None,
+        max_input_chars: int | None = None,
         reviewer: bool = False,
     ) -> RunRecord:
         """One ``run`` through the CLI; the record as the project keeps it."""
@@ -451,6 +457,8 @@ class Harness:
         ]  # fmt: skip
         if max_turns is not None:
             argv += ["--max-turns", str(max_turns)]
+        if max_input_chars is not None:
+            argv += ["--max-input-chars", str(max_input_chars)]
         if reviewer:
             argv += ["--reviewer-model", "reviewer"]
         assert await asyncio.to_thread(cli.main, [*argv, TASK]) == status

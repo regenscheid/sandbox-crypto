@@ -63,7 +63,7 @@ def run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
             "state_dir": tmp_path, "watcher_model": "watch", "watcher_script": None,
             "reviewer_model": None, "reviewer_script": None, "math_node": None,
             "watcher_calls_per_hour": 1, "watcher_first_check": 1, "watcher_interval": 1,
-            "task": "T", "max_turns": 1, "transcript": None,
+            "task": "T", "max_turns": 1, "max_input_chars": 400_000, "transcript": None,
         }  # fmt: skip
         return argparse.Namespace(**{**values, **changes})
 

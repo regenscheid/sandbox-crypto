@@ -735,6 +735,7 @@ async def test_cli_cancelled_constructor_closes_owner_published_before_thread_re
         watcher_interval=1,
         task="Continue",
         max_turns=1,
+        max_input_chars=400_000,
         transcript=None,
     )
     monkeypatch.setattr(harness, "PlanTools", factory)

@@ -15,15 +15,18 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypeVar
 
 from .hooks import RESPONSE_ROUNDS, Notice, Point, TurnHook
-from .model import ChatModel, Message
+from .model import ChatModel, ContextLimitError, Message, ModelTurn
 from .plan_tools import GUIDANCE, GUIDANCE_VERSION, Plans
 from .plan_tools import NAMES as PLAN_NAMES
-from .projects import FailurePhase
-from .prompts import PromptPins, Section, assemble
+from .projects import FailurePhase, ModelUsage
+from .prompts import PromptPins, Section, assemble, schema_json
 from .stock_prompts import select_template
 from .tools import Toolbox, ToolOutcome, bound, operation_id
 from .worker_client import dump
 
+MAX_INPUT_CHARS: Final = 400_000
+"""The longest conversation, with its tool schemas, sent to MAIN by default: about
+100,000 tokens of English or JSON, inside common context windows."""
 MAIN_VERSION: Final = "sandbox-main-2"
 """The version of ``SYSTEM_PROMPT``'s text."""
 SYSTEM_PROMPT: Final = (
@@ -98,6 +101,9 @@ class Transcript:
     final_text: str | None = None
     turns: int = 0
     max_turns: int = 30
+    max_input_chars: int = MAX_INPUT_CHARS
+    usage: list[ModelUsage] = field(default_factory=list[ModelUsage])
+    """Each answered model call's usage, in order."""
     response_rounds: int = 0
     stopped: str = "answered"
     failure: FailurePhase | None = None
@@ -242,6 +248,36 @@ async def _attach(
     outcome.record.update(extra)
 
 
+async def _complete(model: ChatModel, toolbox: Toolbox, transcript: Transcript) -> ModelTurn | None:
+    """The model's reply, or ``None`` when the conversation is too long for the model.
+
+    The run then stops with ``context_limit``: when the conversation and the tool
+    schemas exceed the run's budget, or when the gateway says they exceed the model's
+    context. No model call saw the notices offered since the last one.
+    """
+    size = len(dump(transcript.messages)) + len(schema_json(toolbox.specs))
+    if size > transcript.max_input_chars:
+        _log.warning("the conversation, %d characters, exceeds the run's budget", size)
+        transcript.stopped = "context_limit"
+        return None
+    transcript.phase = "model"
+    try:
+        reply = await model.complete(transcript.messages, toolbox.specs)
+    except ContextLimitError as error:
+        _log.warning("the conversation, %d characters, exceeds the model's: %s", size, error)
+        reply = None
+        transcript.stopped = "context_limit"
+    transcript.phase = "harness"
+    if reply is None:
+        return None
+    transcript.usage.append(
+        ModelUsage(
+            model=reply.model, input_tokens=reply.input_tokens, output_tokens=reply.output_tokens
+        )
+    )
+    return reply
+
+
 async def _run_task(
     model: ChatModel,
     toolbox: Toolbox,
@@ -256,9 +292,8 @@ async def _run_task(
     for turn in range(transcript.max_turns):
         await _notices(hooks, "turn", transcript)
         transcript.turns = turn + 1
-        transcript.phase = "model"
-        reply = await model.complete(transcript.messages, toolbox.specs)
-        transcript.phase = "harness"
+        if (reply := await _complete(model, toolbox, transcript)) is None:
+            return transcript
         await _model_returned(hooks, transcript)
         assistant: Message = {"role": "assistant", "content": reply.text}
         if reply.tool_calls:
@@ -320,6 +355,7 @@ async def run_task(
     *,
     run_id: str,
     max_turns: int = 30,
+    max_input_chars: int = MAX_INPUT_CHARS,
     system: str = SYSTEM_PROMPT,
     research_template: str | None = None,
     on_tool: Callable[[str, str, ToolOutcome], Awaitable[None]] | None = None,
@@ -328,7 +364,8 @@ async def run_task(
     """Run a task, keeping an active originating-run lease while it waits or computes.
 
     ``hooks`` defaults to the toolbox's; a caller that acknowledges the saved run's
-    deliveries passes the hooks it will acknowledge with.
+    deliveries passes the hooks it will acknowledge with. A failure is logged with its
+    cause; the transcript keeps only the phase it happened in.
     """
     transcript: Transcript | None = None
     interruption = Interruption()
@@ -350,6 +387,7 @@ async def run_task(
                 )
                 transcript = Transcript(
                     max_turns=max_turns,
+                    max_input_chars=max_input_chars,
                     prompt_provenance=pins,
                     messages=[
                         {"role": "system", "content": text},
@@ -368,6 +406,7 @@ async def run_task(
                 except Exception:
                     # Catch inside the leases: retain only successfully delivered claims
                     # until the caller durably saves this partial record, then ACKs them.
+                    _log.exception("run %s failed during %s", run_id, transcript.phase)
                     transcript.fail(transcript.phase)
                 for hook in hooks:
                     if (summary := hook.summary()) is not None:
@@ -379,5 +418,6 @@ async def run_task(
             raise
         if transcript is None:
             raise  # Setup did not start a run; there is no observed transcript.
+        _log.exception("run %s failed during cleanup", run_id)
         transcript.fail("cleanup")
     return transcript
