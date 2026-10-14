@@ -69,8 +69,9 @@
   {:then listed}
     {#if listed.length === 0}
       <p>
-        No documents yet. Agents create them with the document tool; the user imports them
-        with <code>sandbox-science-harness document import</code>.
+        No documents yet. Agents create them with the document tool; the user imports them with <code
+          >sandbox-science-harness document import</code
+        >.
       </p>
     {:else}
       <table>
@@ -89,7 +90,9 @@
               <td><a href={documentHref(projectId, found.document_id)}>{found.name}</a></td>
               <td>{found.title}</td>
               <td>
-                {found.scope === 'project' ? 'the project' : `session ${found.session_id}'s workbook`}
+                {found.scope === 'project'
+                  ? 'the project'
+                  : `session ${found.session_id}'s workbook`}
               </td>
               <td>{found.head}</td>
               <td>{formatTime(found.created_at)}</td>

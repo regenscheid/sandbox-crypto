@@ -41,8 +41,17 @@ import type { MarkdownIt, StateBlock } from 'markdown-it';
 
 /** The kinds of theorem-like containers (LD-4); the server's parser.THEOREM_KINDS. */
 export const THEOREM_KINDS: ReadonlySet<string> = new Set([
-  'theorem', 'lemma', 'proposition', 'corollary', 'definition', 'claim', 'assumption',
-  'conjecture', 'proof', 'remark', 'example',
+  'theorem',
+  'lemma',
+  'proposition',
+  'corollary',
+  'definition',
+  'claim',
+  'assumption',
+  'conjecture',
+  'proof',
+  'remark',
+  'example',
 ]);
 
 /** The container rule's name, as the server's: tokens `container_theorem_like_open`. */
@@ -64,7 +73,12 @@ function isCodeBlock(state: StateBlock, line: number): boolean {
   return state.sCount[line]! - state.blkIndent >= 4;
 }
 
-function frontMatter(state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean {
+function frontMatter(
+  state: StateBlock,
+  startLine: number,
+  endLine: number,
+  silent: boolean,
+): boolean {
   const marker = '-';
   const minimum = 3;
   let autoClosed = false;
@@ -72,7 +86,8 @@ function frontMatter(state: StateBlock, startLine: number, endLine: number, sile
   let maximum = state.eMarks[startLine]!;
   const length = state.src.length;
   // At the very start of the text alone, as the server has it: never a list item's or quote's line.
-  if (startLine !== 0 || state.bMarks[0]! + state.tShift[0]! !== 0 || state.blkIndent !== 0) return false;
+  if (startLine !== 0 || state.bMarks[0]! + state.tShift[0]! !== 0 || state.blkIndent !== 0)
+    return false;
   if (state.src[0] !== marker) return false;
   let position = start + 1;
   while (position <= maximum && position < length) {
@@ -133,7 +148,12 @@ function theoremLike(params: string): boolean {
   return THEOREM_KINDS.has(first);
 }
 
-function container(state: StateBlock, startLine: number, endLine: number, silent: boolean): boolean {
+function container(
+  state: StateBlock,
+  startLine: number,
+  endLine: number,
+  silent: boolean,
+): boolean {
   const markerString = ':';
   const markerChar = ':';
   const markerLength = 1;

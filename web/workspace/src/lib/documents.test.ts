@@ -124,7 +124,10 @@ describe('the server’s IDs on the browser’s parse', () => {
     blocks[2] = { ...blocks[2]!, math: [{ id: 'm2', kind: 'inline', tex: 'a \\in \\F_q' }] };
     const rendered = renderDocument(SOURCE, document(blocks));
     expect(rendered.mismatches).toEqual([
-      { lines: [7, 8], message: 'b3 has 1 formula on the server, which the browser reads otherwise' },
+      {
+        lines: [7, 8],
+        message: 'b3 has 1 formula on the server, which the browser reads otherwise',
+      },
     ]);
     expect(rendered.html).not.toContain('data-math="m2"');
     // The block keeps its ID: only its formulas lose theirs.
@@ -146,12 +149,14 @@ describe('the server’s IDs on the browser’s parse', () => {
       blocks: [],
       macros: NO_MACROS,
     });
-    expect(rendered.html).toContain('<p class="theorem-head">Lemma &lt;b&gt;x&lt;/b&gt; &quot;y&quot;.</p>');
+    expect(rendered.html).toContain(
+      '<p class="theorem-head">Lemma &lt;b&gt;x&lt;/b&gt; &quot;y&quot;.</p>',
+    );
   });
 });
 
 describe("a document's displayed equations", () => {
-  it("render without the markers of the quote they are in, which their TeX keeps", () => {
+  it('render without the markers of the quote they are in, which their TeX keeps', () => {
     const source = '> Quoted:\n>\n> $$\n> \\sum_{a} a = 0\n> $$\n';
     const rendered = renderDocument(source, { blocks: [], macros: NO_MACROS });
     const annotation = /<annotation encoding="application\/x-tex">([^<]*)<\/annotation>/.exec(
@@ -203,7 +208,7 @@ describe("a document's macros", () => {
       '\\global': '\\gdef\\y{2}',
       '\\twice': '#1 \\cdot #1',
       '\\long': 'x'.repeat(MAX_MACRO + 1),
-      'plain': 'x',
+      plain: 'x',
     };
     const found = macroSet(definitions);
     expect(found.definitions).toEqual({ '\\ok': '\\left|#1\\right|', '\\hash': '##1 #1' });

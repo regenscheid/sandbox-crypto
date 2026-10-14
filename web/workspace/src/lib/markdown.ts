@@ -149,8 +149,10 @@ export function textState(): TextState {
  * macros always renders alike. Within a count and a size. The keys of the model repairs
  * hold the macros too, since KaTeX's error, and so the repairs, depend on them.
  */
-const results = new Kept<Result>(4_000, 8_000_000, (key, result) =>
-  key.length + ('html' in result ? result.html.length : 200),
+const results = new Kept<Result>(
+  4_000,
+  8_000_000,
+  (key, result) => key.length + ('html' in result ? result.html.length : 200),
 );
 
 /** One go: when it began, and what it has rendered. */
@@ -454,10 +456,11 @@ function renderMath(
   // display candidate, and an approximation has no MathML at all (LD-44).
   const html = renderFormula(token, tag, display, rendering).replace(
     /^<(span|div) /,
-    (_matched, element: string) => `<${element} data-math-source="${escapeHtml(written).replace(
-      /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g,
-      (control) => `&#${control.codePointAt(0)};`,
-    )}" `,
+    (_matched, element: string) =>
+      `<${element} data-math-source="${escapeHtml(written).replace(
+        /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g,
+        (control) => `&#${control.codePointAt(0)};`,
+      )}" `,
   );
   return withIds(html, token);
 }
@@ -665,7 +668,9 @@ export function renderDocument(
     } catch (error) {
       // The document still renders, without IDs, and says why.
       const lines = source.split('\n').length;
-      mismatches = [{ lines: [0, lines], message: `the browser could not map its parse: ${String(error)}` }];
+      mismatches = [
+        { lines: [0, lines], message: `the browser could not map its parse: ${String(error)}` },
+      ];
     }
     for (const token of tokens) {
       if (token.type === 'math_block' || token.type === 'math_block_label') {

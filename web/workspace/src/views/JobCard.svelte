@@ -2,7 +2,11 @@
 <script lang="ts">
   import type { BackgroundJob } from '../lib/api';
   import { finishedStates, jobElapsed } from '../lib/jobs';
-  let { job, cancelling = false, oncancel }: {
+  let {
+    job,
+    cancelling = false,
+    oncancel,
+  }: {
     job: BackgroundJob;
     cancelling?: boolean;
     oncancel?: () => void;
@@ -21,10 +25,14 @@
     {/if}
   </div>
   <p class="muted">{job.expected_progress}</p>
-  <p class="muted"><code>{job.job_id}</code>
-    {#if job.exit_code !== null} · exit {job.exit_code}{/if}
-    {#if job.cpu_seconds !== null} · CPU {jobElapsed(job.cpu_seconds)}{/if}
-    {#if job.memory_bytes !== null} · {(job.memory_bytes / 1048576).toFixed(1)} MiB{/if}
+  <p class="muted">
+    <code>{job.job_id}</code>
+    {#if job.exit_code !== null}
+      · exit {job.exit_code}{/if}
+    {#if job.cpu_seconds !== null}
+      · CPU {jobElapsed(job.cpu_seconds)}{/if}
+    {#if job.memory_bytes !== null}
+      · {(job.memory_bytes / 1048576).toFixed(1)} MiB{/if}
   </p>
   {#if job.checkin}
     <p class="checkin" role="status">
@@ -36,8 +44,10 @@
   {#if job.stdout || job.stderr}
     <details>
       <summary>Output head and latest tail</summary>
-      {#if job.stdout}<h4>stdout</h4><pre>{job.stdout}</pre>{/if}
-      {#if job.stderr}<h4>stderr</h4><pre>{job.stderr}</pre>{/if}
+      {#if job.stdout}<h4>stdout</h4>
+        <pre>{job.stdout}</pre>{/if}
+      {#if job.stderr}<h4>stderr</h4>
+        <pre>{job.stderr}</pre>{/if}
     </details>
   {/if}
   {#if job.state === 'lost'}
@@ -46,10 +56,34 @@
 </article>
 
 <style>
-  .job-card { border: 1px solid var(--border, #ccd); border-radius: 0.5rem; padding: 1rem; margin: 0.8rem 0; }
-  .job-heading { display: flex; flex-wrap: wrap; gap: 0.8rem; align-items: center; }
-  .job-state { font-size: 0.85rem; padding: 0.1rem 0.5rem; border: 1px solid currentColor; border-radius: 1rem; }
-  button { margin-left: auto; }
-  pre { max-height: 22rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-  h4 { margin-bottom: 0.4rem; }
+  .job-card {
+    border: 1px solid var(--border, #ccd);
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin: 0.8rem 0;
+  }
+  .job-heading {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.8rem;
+    align-items: center;
+  }
+  .job-state {
+    font-size: 0.85rem;
+    padding: 0.1rem 0.5rem;
+    border: 1px solid currentColor;
+    border-radius: 1rem;
+  }
+  button {
+    margin-left: auto;
+  }
+  pre {
+    max-height: 22rem;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  h4 {
+    margin-bottom: 0.4rem;
+  }
 </style>

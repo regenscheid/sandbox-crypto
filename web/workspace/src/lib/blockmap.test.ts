@@ -18,7 +18,9 @@ describe('blocks and formulas, as the server finds them', () => {
   for (const { name, markdown, blocks, math } of [...documents.cases, ...tables.cases]) {
     it(name, () => {
       const found = parsed(markdown);
-      expect(found.blocks.map((block) => [block.kind, block.depth, ...block.lines])).toEqual(blocks);
+      expect(found.blocks.map((block) => [block.kind, block.depth, ...block.lines])).toEqual(
+        blocks,
+      );
       expect(found.spans.map((span) => [span.block, span.kind, span.tex])).toEqual(math);
     });
   }
@@ -83,9 +85,11 @@ describe('historical profile 1 maps', () => {
 it('keeps image-description math escapes untrimmed and outside document anchors', () => {
   const source = '| ![\x85$x$\\\x85](https://example.org) |\n| --- |\n';
   const tokens = documentParser.parse(source, {});
-  const image = tokens.find((token) => token.type === 'inline')?.children?.find(
-    (token) => token.type === 'image',
-  );
-  expect(image?.children?.filter((token) => token.type === 'math_inline').map((token) => token.content)).toEqual(['x']);
+  const image = tokens
+    .find((token) => token.type === 'inline')
+    ?.children?.find((token) => token.type === 'image');
+  expect(
+    image?.children?.filter((token) => token.type === 'math_inline').map((token) => token.content),
+  ).toEqual(['x']);
   expect(blockMap(source, tokens).spans).toEqual([]);
 });

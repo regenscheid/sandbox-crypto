@@ -180,7 +180,9 @@ describe('math', () => {
   });
 
   it('shows an equation label beside the equation', () => {
-    expect(html('$$E = mc^2$$ (eq:energy)')).toContain('<span class="math-label">(eq:energy)</span>');
+    expect(html('$$E = mc^2$$ (eq:energy)')).toContain(
+      '<span class="math-label">(eq:energy)</span>',
+    );
   });
 
   it('approximates math nothing repairs, and keeps it as written behind a mark', () => {
@@ -487,11 +489,13 @@ describe('goes', () => {
   it("hold the page's thread a bounded time, render each text only in its turn, and finish", async () => {
     // The review's page, smaller: long texts of Markdown, each with slow formulas, broken
     // so that the repairs run too.
-    const prose = 'Lorem *ipsum* `code` [link](https://example.org/a) dolor $5 and **bold** text.\n';
+    const prose =
+      'Lorem *ipsum* `code` [link](https://example.org/a) dolor $5 and **bold** text.\n';
     const formula = (n: number) => `$$${'\\Huge xy\\tiny xy'.repeat(300)}${n}\\notdefined$$`;
     const sources = Array.from(
       { length: 10 },
-      (_, text) => `${prose.repeat(1_250)}\n\n${[0, 1].map((n) => formula(text * 10 + n)).join('\n\n')}`,
+      (_, text) =>
+        `${prose.repeat(1_250)}\n\n${[0, 1].map((n) => formula(text * 10 + n)).join('\n\n')}`,
     );
     const pages = await renderAll(sources);
     expect(pages.firstView).toBeLessThan(1_000);
@@ -535,15 +539,24 @@ describe('long text', () => {
     ['a closing \\] after text on every line', '\\[ x \\] y\n'.repeat(19_000)],
     // The review of 2026-10-11 (PR #61): a long run of backslashes, and macro bombs.
     ['a run of backslashes', '\\'.repeat(199_000)],
-    ['a run of backslashes in every table cell', `| a |\n| - |\n${`| ${'\\'.repeat(1_000)} |\n`.repeat(190)}`],
+    [
+      'a run of backslashes in every table cell',
+      `| a |\n| - |\n${`| ${'\\'.repeat(1_000)} |\n`.repeat(190)}`,
+    ],
     [
       'nested definitions',
       `$$\\def\\a{${'x'.repeat(400)}}\\def\\b{\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a}` +
         `\\def\\c{\\b\\b\\b\\b\\b\\b\\b\\b\\b\\b}${'\\c'.repeat(8)}$$`,
     ],
     ['a definition used 20 times', `$$\\def\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(20)}$$`],
-    ['a definition joined by the repairs', `$\\d\\label{x}ef\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(20)}\\foo$`],
-    ['the heaviest formulas without definitions', '$\\Huge x\\tiny y$'.repeat(1).concat(`$$${'\\Huge x\\tiny y'.repeat(357)}$$\n\n`.repeat(4))],
+    [
+      'a definition joined by the repairs',
+      `$\\d\\label{x}ef\\a{${'x'.repeat(2_000)}}${'\\a'.repeat(20)}\\foo$`,
+    ],
+    [
+      'the heaviest formulas without definitions',
+      '$\\Huge x\\tiny y$'.repeat(1).concat(`$$${'\\Huge x\\tiny y'.repeat(357)}$$\n\n`.repeat(4)),
+    ],
     // The third review's round: every \[ before one \] judged by reading its content.
     ['escaped brackets opening before one closing bracket', `x ${'\\[a '.repeat(45_000)}\\]`],
     ['escapes in brackets opening before one closing bracket', `x ${'\\[\\* '.repeat(35_000)}\\]`],
@@ -562,7 +575,6 @@ describe('code', () => {
     expect(out).toContain('תודה\u200F.');
   });
 });
-
 
 it('renders comment text with explicit document macros without attaching document IDs', () => {
   const macros = macroSet({ '\\F': '\\mathbb{F}' });

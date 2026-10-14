@@ -5,8 +5,19 @@ import { KATEX_OPTIONS } from './markdown';
 
 describe('isolated math check shares the GUI renderer', () => {
   it('accepts math under the effective bounded macros', () => {
-    const result = checkFormula({ id: 'm1', tex: '\\F_{17}', display: false, macros: { '\\F': '\\mathbb{F}' } });
-    expect(result).toMatchObject({ status: 'accepted', error: null, remedy: null, engine: '0.18.9', options: KATEX_OPTIONS });
+    const result = checkFormula({
+      id: 'm1',
+      tex: '\\F_{17}',
+      display: false,
+      macros: { '\\F': '\\mathbb{F}' },
+    });
+    expect(result).toMatchObject({
+      status: 'accepted',
+      error: null,
+      remedy: null,
+      engine: '0.18.9',
+      options: KATEX_OPTIONS,
+    });
     expect(result).not.toHaveProperty('html');
   });
 
@@ -18,12 +29,17 @@ describe('isolated math check shares the GUI renderer', () => {
 
   it('does not mistake renderer skips for accepted formulas', () => {
     for (const tex of ['x'.repeat(5_001), '\\def\\foo{a}\\foo']) {
-      expect(checkFormula({ id: 'm1', tex, display: false, macros: {} })).toMatchObject({ status: 'unavailable', remedy: null });
+      expect(checkFormula({ id: 'm1', tex, display: false, macros: {} })).toMatchObject({
+        status: 'unavailable',
+        remedy: null,
+      });
     }
   });
 
-  it('does not leak a preceding formula\'s macros into another check', () => {
+  it("does not leak a preceding formula's macros into another check", () => {
     checkFormula({ id: 'm1', tex: '\\myword', display: false, macros: { '\\myword': 'a' } });
-    expect(checkFormula({ id: 'm2', tex: '\\myword', display: false, macros: {} }).status).toBe('rejected');
+    expect(checkFormula({ id: 'm2', tex: '\\myword', display: false, macros: {} }).status).toBe(
+      'rejected',
+    );
   });
 });

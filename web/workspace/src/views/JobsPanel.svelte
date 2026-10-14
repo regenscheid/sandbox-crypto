@@ -11,7 +11,8 @@
   let cancelling = $state<string | null>(null);
 
   $effect(() => {
-    const project = projectId, session = sessionId;
+    const project = projectId,
+      session = sessionId;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     data = null;
@@ -19,7 +20,10 @@
     async function refresh(): Promise<void> {
       try {
         const found = await api.jobs(project, session);
-        if (live) { data = found; error = null; }
+        if (live) {
+          data = found;
+          error = null;
+        }
       } catch (found) {
         if (live) error = found;
       } finally {
@@ -27,7 +31,10 @@
       }
     }
     void refresh();
-    return () => { live = false; clearTimeout(timer); };
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
   });
 
   async function cancel(job: string): Promise<void> {
@@ -36,8 +43,11 @@
       await api.cancelJob(projectId, sessionId, job);
       data = await api.jobs(projectId, sessionId);
       error = null;
-    } catch (found) { error = found; }
-    finally { cancelling = null; }
+    } catch (found) {
+      error = found;
+    } finally {
+      cancelling = null;
+    }
   }
 </script>
 
@@ -50,7 +60,11 @@
         <strong>{wait.connected ? 'Agent waiting' : 'Waiting harness disconnected'}</strong>
         for {wait.mode === 'all' ? 'all jobs' : 'the first job to end'}:
         {wait.job_ids.join(', ')} · {jobElapsed((Date.now() - Date.parse(wait.started_at)) / 1000)}
-        <p class="muted">{wait.watcher ? `Check-ins by ${wait.watcher}` : 'Check-ins are off: no watcher model configured.'}</p>
+        <p class="muted">
+          {wait.watcher
+            ? `Check-ins by ${wait.watcher}`
+            : 'Check-ins are off: no watcher model configured.'}
+        </p>
         {#each wait.checkins as check}
           <p>{check.state === 'fine' ? 'Progress' : 'Needs attention'}: {check.note}</p>
         {/each}
@@ -58,12 +72,20 @@
     {/each}
     {#if data.jobs.length === 0}<p class="muted">No background jobs in this session.</p>{/if}
     {#each data.jobs as job (job.job_id)}
-      <JobCard {job} cancelling={cancelling === job.job_id} oncancel={() => void cancel(job.job_id)} />
+      <JobCard
+        {job}
+        cancelling={cancelling === job.job_id}
+        oncancel={() => void cancel(job.job_id)}
+      />
     {/each}
     {#if data.truncated}<p class="muted">Showing the most recent jobs.</p>{/if}
   {:else if !error}<p class="muted">Loading jobs…</p>{/if}
 </section>
 
 <style>
-  .waiting { border-left: 3px solid #5284ba; padding: 0.7rem 1rem; background: #5284ba10; }
+  .waiting {
+    border-left: 3px solid #5284ba;
+    padding: 0.7rem 1rem;
+    background: #5284ba10;
+  }
 </style>

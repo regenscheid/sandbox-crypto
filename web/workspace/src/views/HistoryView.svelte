@@ -14,7 +14,10 @@
 
   let { projectId, documentId }: { projectId: string; documentId: string } = $props();
   let refresh = $state(0);
-  const loading = $derived.by(() => { refresh; return api.history(projectId, documentId); });
+  const loading = $derived.by(() => {
+    refresh;
+    return api.history(projectId, documentId);
+  });
 </script>
 
 <nav class="trail">
@@ -45,7 +48,11 @@
     <tbody>
       {#each [...history.revisions].reverse() as revision (revision.number)}
         <tr>
-          <td><a href={documentHref(projectId, info.document_id, revision.number)}>{revision.number}</a></td>
+          <td
+            ><a href={documentHref(projectId, info.document_id, revision.number)}
+              >{revision.number}</a
+            ></td
+          >
           <td>{formatTime(revision.created_at)}</td>
           <td>
             {describeAuthor(revision.author)}
@@ -57,7 +64,9 @@
           <td>
             {revision.tombstone ? 'deleted the document' : describeChanges(revision)}
             {#if revision.warnings > 0}
-              <span class="muted">({revision.warnings} {revision.warnings === 1 ? 'warning' : 'warnings'})</span>
+              <span class="muted"
+                >({revision.warnings} {revision.warnings === 1 ? 'warning' : 'warnings'})</span
+              >
             {/if}
           </td>
         </tr>
@@ -84,7 +93,9 @@
             <td>
               {#each changes as change, index (index)}
                 {index > 0 ? '; ' : ''}{change.status} in
-                <a href={documentHref(projectId, info.document_id, change.revision)}>{change.revision}</a>
+                <a href={documentHref(projectId, info.document_id, change.revision)}
+                  >{change.revision}</a
+                >
                 by {describeAuthor(change.author)}
               {/each}
             </td>
@@ -116,13 +127,21 @@
               {patch.state}
               {#if patch.revision}
                 <span class="muted">
-                  in <a href={documentHref(projectId, info.document_id, patch.revision)}>{patch.revision}</a>
+                  in <a href={documentHref(projectId, info.document_id, patch.revision)}
+                    >{patch.revision}</a
+                  >
                 </span>
               {/if}
             </td>
-            <td>{patch.reason}
+            <td
+              >{patch.reason}
               {#if ['conflicted', 'refused', 'suggested'].includes(patch.state)}
-                <PatchReview {projectId} documentId={info.document_id} patchId={patch.patch_id} refreshed={() => refresh += 1} />
+                <PatchReview
+                  {projectId}
+                  documentId={info.document_id}
+                  patchId={patch.patch_id}
+                  refreshed={() => (refresh += 1)}
+                />
               {/if}
             </td>
           </tr>

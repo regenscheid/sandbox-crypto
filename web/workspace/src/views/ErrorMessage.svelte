@@ -7,8 +7,8 @@
 
 {#if error instanceof ApiError && error.loggedOut}
   <p class="problem">
-    Not logged in. Open the login URL that <code>sandbox-science-workspace serve</code> printed
-    when it started.
+    Not logged in. Open the login URL that <code>sandbox-science-workspace serve</code> printed when it
+    started.
   </p>
 {:else if error instanceof ApiError}
   <p class="problem">{error.message} <span class="muted">({error.kind})</span></p>

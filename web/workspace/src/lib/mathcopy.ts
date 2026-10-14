@@ -2,11 +2,12 @@
 /** Copy original math from the shared renderer, including display-only repairs (LD-44). */
 
 const FORMULA = '.math[data-math-source]';
-const ORDINARY_COPY = 'input, textarea, [contenteditable]:not([contenteditable="false"]), ' +
+const ORDINARY_COPY =
+  'input, textarea, [contenteditable]:not([contenteditable="false"]), ' +
   'pre, .math-mark, .math-details';
 
 function elementAt(node: Node): Element | null {
-  return node.nodeType === 1 ? node as Element : node.parentElement;
+  return node.nodeType === 1 ? (node as Element) : node.parentElement;
 }
 
 function formulaAt(node: Node, root: HTMLElement): Element | null {
@@ -20,13 +21,26 @@ function formulaAt(node: Node, root: HTMLElement): Element | null {
  * and paragraphs must not run together. Existing text-node whitespace stays exact. */
 function plainText(node: Node): string {
   const parts: (string | null)[] = [];
-  const blocks = new Set(['P', 'DIV', 'PRE', 'LI', 'BLOCKQUOTE', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TR']);
+  const blocks = new Set([
+    'P',
+    'DIV',
+    'PRE',
+    'LI',
+    'BLOCKQUOTE',
+    'H1',
+    'H2',
+    'H3',
+    'H4',
+    'H5',
+    'H6',
+    'TR',
+  ]);
   const visit = (current: Node): void => {
     if (current.nodeType === 3) {
       parts.push(current.textContent ?? '');
       return;
     }
-    const element = current.nodeType === 1 ? current as Element : null;
+    const element = current.nodeType === 1 ? (current as Element) : null;
     if (element?.hasAttribute('hidden')) return;
     if (element?.tagName === 'DETAILS' && !element.hasAttribute('open')) {
       // Living-document front matter is collapsed by default. Copying nearby math
@@ -43,9 +57,12 @@ function plainText(node: Node): string {
     }
     const block = element !== null && blocks.has(element.tagName);
     if (block) parts.push(null);
-    const cells = element?.tagName === 'TR' ? [...current.childNodes].filter(
-      (child) => child.nodeType === 1 && ['TD', 'TH'].includes((child as Element).tagName),
-    ) : [];
+    const cells =
+      element?.tagName === 'TR'
+        ? [...current.childNodes].filter(
+            (child) => child.nodeType === 1 && ['TD', 'TH'].includes((child as Element).tagName),
+          )
+        : [];
     if (cells.length) {
       cells.forEach((cell, index) => {
         if (index > 0) parts.push('\t');
@@ -91,7 +108,8 @@ export function copyMath(event: ClipboardEvent, root: HTMLElement): void {
   // A selection inside one Markdown view need not clone that view's outer element.
   // Across views, cloneContents retains each Markdown ancestor instead. Either way,
   // metadata elsewhere in the app must not acquire formula-copy behavior.
-  const insideMarkdown = (elementAt(range.commonAncestorContainer)?.closest('.markdown') ?? null) !== null;
+  const insideMarkdown =
+    (elementAt(range.commonAncestorContainer)?.closest('.markdown') ?? null) !== null;
   const formulas = [...fragment.querySelectorAll(FORMULA)].filter(
     (math) => insideMarkdown || math.closest('.markdown') !== null,
   );
