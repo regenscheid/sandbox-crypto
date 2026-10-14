@@ -1,6 +1,6 @@
 # Execution tools: shell, kernels and files
 
-**Status.** Draft (W0), to review with the user. W1 implements it first. It is written from the architecture and the observed behavior of the reference harness, in the project's own words (D56).
+**Status.** Approved as drafted, with the proposed answers to its open questions, adopted on 2026-10-14 under the owner's instruction to proceed with the refactoring plan's recommendations. W1 implemented it first. It is written from the architecture and the observed behavior of the reference harness, in the project's own words (D56).
 
 ## Scope
 
@@ -156,6 +156,8 @@ The worker's conformance suite runs these through the worker API against any bac
 20. **No watcher.** With no watcher alias configured, a wait makes no model calls until the job ends, and the GUI says that check-ins are off.
 
 ## Open questions
+
+The proposed answers below were adopted with the spec on 2026-10-14. Default limits for shell calls and cells remain open.
 
 - **Shell state.** Should the shell keep a working directory between calls, as some interactive harnesses do? This spec proposes no state, which makes calls independent and retries safe.
 - **Default limits.** Wall time and output size for shell calls and cells.
