@@ -14,7 +14,7 @@ import pytest_asyncio
 
 from sandbox_science.contracts import ExecutionContext, KernelStatusRequest
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
-from sandbox_science.worker import manager as manager_module
+from sandbox_science.worker import kernels as kernels_module
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.timeouts import ManagerTimeouts
@@ -208,7 +208,7 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
         nonlocal count
         if op == "kernels":
             count += 1
-            if count == manager_module.MAX_KERNEL_OBSERVATIONS:
+            if count == kernels_module.MAX_KERNEL_OBSERVATIONS:
                 started.set()
             await asyncio.Event().wait()
         return await request(channel, op, **fields)
@@ -216,7 +216,7 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
     monkeypatch.setattr(ExecutorChannel, "request", blocked)
     tasks: list[asyncio.Task[Any]] = []
     try:
-        for index in range(manager_module.MAX_KERNEL_OBSERVATIONS):
+        for index in range(kernels_module.MAX_KERNEL_OBSERVATIONS):
             name = f"env-{index}"
             record = type(environment)(channel=environment.channel, last_used=0.0)
             view(manager).put_connection(name, record)
@@ -234,7 +234,7 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
                         context=REQUEST.context.model_copy(update={"environment_id": name})
                     )
                 )
-        assert len(view(manager).observations()) == manager_module.MAX_KERNEL_OBSERVATIONS
+        assert len(view(manager).observations()) == kernels_module.MAX_KERNEL_OBSERVATIONS
     finally:
         for task in tasks:
             task.cancel()
@@ -242,7 +242,7 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
         await asyncio.gather(*tasks, return_exceptions=True)
     assert view(manager).observations() == {}
     assert environment.requests == 0
-    for index in range(manager_module.MAX_KERNEL_OBSERVATIONS):
+    for index in range(kernels_module.MAX_KERNEL_OBSERVATIONS):
         view(manager).drop_connection(f"env-{index}")
 
 

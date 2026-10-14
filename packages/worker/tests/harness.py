@@ -39,7 +39,8 @@ from sandbox_science.worker.channel import (
     Message,
 )
 from sandbox_science.worker.connections import Connection
-from sandbox_science.worker.manager import ExecutionManager, _KernelObserver, _Live
+from sandbox_science.worker.kernels import _Observer
+from sandbox_science.worker.manager import ExecutionManager, _Live
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
@@ -115,9 +116,9 @@ class ManagerView:
 
     # Kernel observations, captures and lockfile fetches.
 
-    def observations(self) -> dict[str, _KernelObserver]:
+    def observations(self) -> dict[str, _Observer]:
         """The kernel observations in flight, by environment."""
-        return dict(self.manager._kernel_observations)
+        return dict(self.manager._kernels._observations)
 
     def closing_sessions(self) -> dict[tuple[str, str, str], int]:
         """Session closes in progress, by project, environment and session."""
