@@ -370,9 +370,12 @@ class KernelRegistry:
             environment.requests -= 1
             environment.last_used = self.clock.monotonic()
         raw: object = reply.get("kernels")
-        stopped: list[KernelInfo] = []
-        for item in cast(list[object], raw) if isinstance(raw, list) else []:
+        items = cast(list[object], raw) if isinstance(raw, list) else []
+        if len(items) > len(LANGUAGES):
+            items = []  # bounded like every kernel list an executor sends
+        stopped: dict[str, KernelInfo] = {}
+        for item in items:
             kernel, _ = self.kernel(context.environment_id, context.session_id, item, False)
             if kernel is not None:
-                stopped.append(kernel)
-        return SessionClosed(kernels=tuple(stopped))
+                stopped[kernel.language] = kernel
+        return SessionClosed(kernels=tuple(stopped.values()))
