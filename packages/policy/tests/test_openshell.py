@@ -143,8 +143,10 @@ def mcp_policy(tools: str, *, prefix: str = "", default: str = "escalate") -> Lo
     )
 
 
-def compile_mcp(policy: LoadedPolicy) -> Compiled:
-    return compile_mcp_proxy(policy, TARGETS.mcp_proxy, ceiling=OPEN)
+def compile_mcp(policy: LoadedPolicy, *, admit_escalated: bool = False) -> Compiled:
+    return compile_mcp_proxy(
+        policy, TARGETS.mcp_proxy, ceiling=OPEN, admit_escalated=admit_escalated
+    )
 
 
 def openshell_glob(pattern: str, name: str) -> bool:
@@ -182,6 +184,13 @@ def openshell_admits(policy: OpenShellPolicy, server: str, tool: str) -> bool:
 def library_allows(policy: LoadedPolicy, server: str, tool: str) -> bool:
     decision = evaluate(McpOperation(server, "tools/call", tool), policy, ceiling=OPEN)
     return decision.action in (Action.ALLOW, Action.ALERT)
+
+
+def library_allows_or_escalates_by_name(policy: LoadedPolicy, server: str, tool: str) -> bool:
+    """Allowed, or escalated by an escalate entry (not by the default action)."""
+    decision = evaluate(McpOperation(server, "tools/call", tool), policy, ceiling=OPEN)
+    named = decision.action is Action.ESCALATE and ".tools.escalate[" in (decision.rule or "")
+    return decision.action in (Action.ALLOW, Action.ALERT) or named
 
 
 # Research sandbox: admission endpoints plus the policy middleware.
@@ -881,11 +890,16 @@ def test_the_example_fence_matches_the_library_for_every_known_tool() -> None:
 )
 @pytest.mark.parametrize("prefix", ["", "portal-", "srv.v1-"])
 @pytest.mark.parametrize("default", ["escalate", "allow", "deny"])
+@pytest.mark.parametrize("admit_escalated", [False, True])
 def test_compiled_tool_rules_are_never_looser_than_the_library(
-    tools: str, prefix: str, default: str
+    tools: str, prefix: str, default: str, admit_escalated: bool
 ) -> None:
+    """Admitting escalated tools admits nothing but them beyond what is allowed, and
+    denies nothing the fence admits without it."""
     policy = mcp_policy(tools, prefix=prefix, default=default)
-    compiled = compile_mcp(policy)
+    compiled = compile_mcp(policy, admit_escalated=admit_escalated)
+    held = compile_mcp(policy)
+    admitted = library_allows_or_escalates_by_name if admit_escalated else library_allows
     rng = random.Random(f"{tools}{prefix}{default}")  # noqa: S311 - test data, not secrets
     alphabet = [
         "a_",
@@ -910,7 +924,47 @@ def test_compiled_tool_rules_are_never_looser_than_the_library(
         if not tool:
             continue
         if openshell_admits(compiled.policy, "srv", tool):
-            assert library_allows(policy, "srv", tool), tool
+            assert admitted(policy, "srv", tool), tool
+        if openshell_admits(held.policy, "srv", tool):
+            assert openshell_admits(compiled.policy, "srv", tool), tool
+
+
+def test_escalated_tools_are_admitted_at_the_fence_only_on_request() -> None:
+    policy = mcp_policy("{allow: ['*_search'], escalate: [crawl, '*_feedback'], deny: ['admin_*']}")
+    held = compile_mcp(policy)
+    admitting = compile_mcp(policy, admit_escalated=True)
+    for tool, before, after in (
+        ("paper_search", True, True),
+        ("crawl", False, True),
+        ("paper_feedback", False, True),
+        ("admin_feedback", False, False),
+        ("admin_search", False, False),
+        ("other", False, False),  # escalated by the default action only: still held
+    ):
+        assert openshell_admits(held.policy, "srv", tool) is before, tool
+        assert openshell_admits(admitting.policy, "srv", tool) is after, tool
+    assert any("escalate entries match are admitted" in f.message for f in admitting.findings)
+
+
+def test_admitting_escalated_tools_never_denies_a_tool_allowed_by_name() -> None:
+    policy = mcp_policy(
+        "{allow: [portal_list, paper_search], escalate: [crawl, '*_feedback'], deny: ['portal_*']}"
+    )
+    held = compile_mcp(policy)
+    admitting = compile_mcp(policy, admit_escalated=True)
+    for tool, before, after in (
+        ("portal_list", True, True),  # admitting '*_feedback' would deny it with 'portal_*'
+        ("paper_search", True, True),
+        ("crawl", False, True),
+        ("paper_feedback", False, False),  # so the escalated pattern stays held
+        ("portal_feedback", False, False),
+        ("portal_reset", False, False),
+    ):
+        assert openshell_admits(held.policy, "srv", tool) is before, tool
+        assert openshell_admits(admitting.policy, "srv", tool) is after, tool
+    (warning,) = [f for f in admitting.findings if "are not admitted" in f.message]
+    assert "*_feedback" in warning.message
+    assert "portal_list" in warning.message
 
 
 def test_deny_entries_are_compiled_only_with_allow_patterns() -> None:

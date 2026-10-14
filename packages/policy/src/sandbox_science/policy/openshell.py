@@ -1199,10 +1199,14 @@ def compile_mcp_proxy(
     *,
     ceiling: PoolCeiling,
     floor: HardFloor = DEFAULT_FLOOR,
+    admit_escalated: bool = False,
 ) -> Compiled:
     """Compile the MCP proxy sandbox's policy: one inspected endpoint per declared server.
 
-    Servers the floor or the pool ceiling rule out are left out and reported. A server
+    With ``admit_escalated``, the fence also admits the tools the policy escalates by
+    name, which the MCP proxy holds for approval, so that an approval can take effect;
+    without it, the fence denies them even after approval, since approved grants are not
+    compiled in. Servers the floor or the pool ceiling rule out are left out and reported. A server
     named by host name may resolve only to public addresses, less those the floor and
     the ceiling deny (``mcp_server_ranges``). Raises CompileError when two servers
     would share an endpoint.
@@ -1243,7 +1247,9 @@ def compile_mcp_proxy(
                     f"port {port} is a control-plane port that OpenShell blocks; calls will fail",
                 )
             )
-        rules, deny_rules = _tool_rules(server, project.defaults.action, subject, findings)
+        rules, deny_rules = _tool_rules(
+            server, project.defaults.action, subject, findings, admit_escalated
+        )
         binding = _credential_binding(server, subject, findings)
         bindings_by_host.setdefault((server.host, port), set()).add(
             binding.provider if binding else None
@@ -1361,98 +1367,54 @@ def _openshell_matches(pattern: str, name: str) -> bool:
 
 
 def _tool_rules(
-    server: McpServer, default: Action, subject: str, findings: list[Finding]
+    server: McpServer,
+    default: Action,
+    subject: str,
+    findings: list[Finding],
+    admit_escalated: bool = False,
 ) -> tuple[tuple[Rule, ...], tuple[DenyEntry, ...]]:
     """Translate tool lists into OpenShell rules that are never looser than the project's.
 
     OpenShell denies tools no allow entry names, and any matching deny entry wins.
-    Escalated tools are denied at the fence.
+    Escalated tools are denied at the fence, unless ``admit_escalated``: then the tools
+    the policy escalates by name are admitted like allowed ones, and the MCP proxy holds
+    each call for approval. Admitting an escalated pattern needs deny entries, which can
+    deny a tool the policy allows by exact name; when it would, only the escalated exact
+    names are admitted, so the flag never denies a tool the fence admits without it.
     """
     prefix = server.tool_prefix or ""
     tools = server.tools
-    blocking = sorted({_collapse(pattern) for pattern in (*tools.escalate, *tools.deny)})
-    exact_allows = sorted(pattern for pattern in tools.allow if "*" not in pattern)
-    glob_allows = sorted({_collapse(pattern) for pattern in tools.allow if "*" in pattern})
-    blocking_globs = any("*" in pattern for pattern in blocking)
-    # OpenShell's tool globs use '.' as the separator: '*' stops at it and only '**'
-    # matches any value, while the project's '*' matches dots too. A compiled deny
-    # pattern can therefore miss a dotted name its project pattern blocks. When there
-    # are deny patterns, allow patterns must admit only names whose part after the
-    # prefix has no dot, where the two dialects agree.
-    if blocking_globs and any("." in pattern for pattern in glob_allows):
-        findings.append(
-            Finding(
-                Severity.WARNING,
-                f"{subject}.tools",
-                "allow patterns containing '.' are not compiled while escalate or deny "
-                "contain patterns, which OpenShell matches differently for dotted names "
-                "(stricter)",
+    held = _CompiledTools.of(prefix, tools.allow, (*tools.escalate, *tools.deny), subject)
+    chosen = held
+    patterns_held = False
+    if admit_escalated and tools.escalate:
+        exact_escalated = tuple(pattern for pattern in tools.escalate if "*" not in pattern)
+        escalated_globs = tuple(pattern for pattern in tools.escalate if "*" in pattern)
+        chosen = _CompiledTools.of(prefix, (*tools.allow, *tools.escalate), tools.deny, subject)
+        allowed = [prefix + pattern for pattern in tools.allow if "*" not in pattern]
+        newly_denied = sorted(set(chosen.denied(allowed)) - set(held.denied(allowed)))
+        if newly_denied:
+            patterns_held = True
+            chosen = _CompiledTools.of(
+                prefix,
+                (*tools.allow, *exact_escalated),
+                (*escalated_globs, *tools.deny),
+                subject,
             )
-        )
-        glob_allows = [pattern for pattern in glob_allows if "." not in pattern]
-    if "*" in blocking and glob_allows:
-        findings.append(
-            Finding(
-                Severity.INFO,
-                f"{subject}.tools",
-                "allow patterns are outranked by '*' in escalate or deny and are not compiled",
-            )
-        )
-        glob_allows = []
-    for pattern in (*exact_allows, *glob_allows):
-        if not _STRICT_TOOL_NAME_RE.fullmatch(prefix + pattern):
             findings.append(
                 Finding(
                     Severity.WARNING,
                     f"{subject}.tools",
-                    f"{prefix + pattern} does not fit OpenShell's tool names (letters, digits, "
-                    "_ . - and at most 128 characters), so calls to it are refused (stricter)",
+                    "the escalated patterns "
+                    + ", ".join(prefix + pattern for pattern in escalated_globs)
+                    + " are not admitted at this fence: admitting them needs deny entries "
+                    "that would deny "
+                    + ", ".join(newly_denied)
+                    + ", which the policy allows by name, so the tools they match stay "
+                    "denied even after approval (stricter)",
                 )
             )
-    rules = [Rule(allow=AllowEntry(method=method)) for method in sorted(MCP_PROTOCOL_METHODS)]
-    # A lone '*' without a prefix may admit every name ('**') only when no deny pattern
-    # exists; '**' then subsumes every other allow entry, which OpenShell would reject
-    # beside it.
-    everything = "*" in glob_allows and not prefix and not blocking_globs
-    if everything:
-        rules.append(Rule(allow=AllowEntry(method="tools/call", tool="**")))
-    else:
-        if exact_allows:
-            names = tuple(prefix + pattern for pattern in exact_allows)
-            rules.append(Rule(allow=AllowEntry(method="tools/call", tool=AnyOf(any=names))))
-        rules.extend(
-            Rule(allow=AllowEntry(method="tools/call", tool=prefix + pattern))
-            for pattern in glob_allows
-        )
-    deny_rules: list[DenyEntry] = []
-    if glob_allows:
-        # Only an allow pattern can admit a tool the project blocks, so deny entries
-        # are needed only when there is one.
-        deny_rules = [DenyEntry(method="tools/call", tool=prefix + pattern) for pattern in blocking]
-        if prefix:
-            # '*' also matches nothing, so 'portal-*' would admit a tool named just
-            # 'portal-', which the project refuses.
-            deny_rules.append(DenyEntry(method="tools/call", tool=prefix))
-        findings.append(
-            Finding(
-                Severity.INFO,
-                f"{subject}.tools",
-                "OpenShell's '*' does not match '.', so allow patterns admit fewer names when "
-                "tool names contain dots (stricter)",
-            )
-        )
-        for name in exact_allows:
-            for pattern in blocking:
-                if "*" in pattern and _openshell_matches(prefix + pattern, prefix + name):
-                    findings.append(
-                        Finding(
-                            Severity.WARNING,
-                            f"{subject}.tools",
-                            f"{prefix + name} is allowed by exact name, but the deny entry "
-                            f"{prefix + pattern} also matches it, so OpenShell denies it "
-                            "(stricter)",
-                        )
-                    )
+    findings.extend(chosen.findings)
     if default in (Action.ALLOW, Action.ALERT):
         findings.append(
             Finding(
@@ -1462,16 +1424,149 @@ def _tool_rules(
                 "names, so such tools are denied at the fence (stricter)",
             )
         )
-    if tools.escalate or default is Action.ESCALATE:
+    if admit_escalated and tools.escalate:
         findings.append(
             Finding(
                 Severity.INFO,
                 f"{subject}.tools",
-                "escalated tools are always denied at this fence, even after approval: approved "
-                "grants are not compiled in yet (stricter)",
+                (
+                    "tools the escalate entries name exactly are admitted at this fence, but "
+                    "not those only its escalated patterns match (see the warning),"
+                    if patterns_held
+                    else "tools the escalate entries match are admitted at this fence,"
+                )
+                + " so that approvals take effect; the MCP proxy holds each call for approval "
+                "(looser at the fence only)",
             )
         )
-    return tuple(rules), tuple(deny_rules)
+    if (tools.escalate and not admit_escalated) or default is Action.ESCALATE:
+        findings.append(
+            Finding(
+                Severity.INFO,
+                f"{subject}.tools",
+                (
+                    "tools escalated by the default action, which no escalate entry names,"
+                    if admit_escalated
+                    else "escalated tools"
+                )
+                + " are always denied at this fence, even after approval: approved grants are "
+                "not compiled in yet (stricter)",
+            )
+        )
+    return chosen.rules, chosen.deny_rules
+
+
+@dataclass(frozen=True)
+class _CompiledTools:
+    """One server's tool rules for a set of admitted and a set of blocking patterns."""
+
+    rules: tuple[Rule, ...]
+    deny_rules: tuple[DenyEntry, ...]
+    findings: tuple[Finding, ...]
+
+    def denied(self, names: Iterable[str]) -> list[str]:
+        """The names a deny entry matches."""
+        patterns = [entry.tool for entry in self.deny_rules if isinstance(entry.tool, str)]
+        return [name for name in names if any(_openshell_matches(p, name) for p in patterns)]
+
+    @classmethod
+    def of(
+        cls,
+        prefix: str,
+        admitted: Iterable[str],
+        blocked: Iterable[str],
+        subject: str,
+    ) -> _CompiledTools:
+        """Rules admitting ``admitted`` and never a name ``blocked`` matches."""
+        admitted = tuple(admitted)
+        findings: list[Finding] = []
+        blocking = sorted({_collapse(pattern) for pattern in blocked})
+        exact_allows = sorted({pattern for pattern in admitted if "*" not in pattern})
+        glob_allows = sorted({_collapse(pattern) for pattern in admitted if "*" in pattern})
+        blocking_globs = any("*" in pattern for pattern in blocking)
+        # OpenShell's tool globs use '.' as the separator: '*' stops at it and only '**'
+        # matches any value, while the project's '*' matches dots too. A compiled deny
+        # pattern can therefore miss a dotted name its project pattern blocks. When there
+        # are deny patterns, allow patterns must admit only names whose part after the
+        # prefix has no dot, where the two dialects agree.
+        if blocking_globs and any("." in pattern for pattern in glob_allows):
+            findings.append(
+                Finding(
+                    Severity.WARNING,
+                    f"{subject}.tools",
+                    "allow patterns containing '.' are not compiled while escalate or deny "
+                    "contain patterns, which OpenShell matches differently for dotted names "
+                    "(stricter)",
+                )
+            )
+            glob_allows = [pattern for pattern in glob_allows if "." not in pattern]
+        if "*" in blocking and glob_allows:
+            findings.append(
+                Finding(
+                    Severity.INFO,
+                    f"{subject}.tools",
+                    "allow patterns are outranked by '*' in escalate or deny and are not compiled",
+                )
+            )
+            glob_allows = []
+        for pattern in (*exact_allows, *glob_allows):
+            if not _STRICT_TOOL_NAME_RE.fullmatch(prefix + pattern):
+                findings.append(
+                    Finding(
+                        Severity.WARNING,
+                        f"{subject}.tools",
+                        f"{prefix + pattern} does not fit OpenShell's tool names (letters, "
+                        "digits, _ . - and at most 128 characters), so calls to it are refused "
+                        "(stricter)",
+                    )
+                )
+        rules = [Rule(allow=AllowEntry(method=method)) for method in sorted(MCP_PROTOCOL_METHODS)]
+        # A lone '*' without a prefix may admit every name ('**') only when no deny pattern
+        # exists; '**' then subsumes every other allow entry, which OpenShell would reject
+        # beside it.
+        everything = "*" in glob_allows and not prefix and not blocking_globs
+        if everything:
+            rules.append(Rule(allow=AllowEntry(method="tools/call", tool="**")))
+        else:
+            if exact_allows:
+                names = tuple(prefix + pattern for pattern in exact_allows)
+                rules.append(Rule(allow=AllowEntry(method="tools/call", tool=AnyOf(any=names))))
+            rules.extend(
+                Rule(allow=AllowEntry(method="tools/call", tool=prefix + pattern))
+                for pattern in glob_allows
+            )
+        deny_rules: list[DenyEntry] = []
+        if glob_allows:
+            # Only an allow pattern can admit a tool the project blocks, so deny entries
+            # are needed only when there is one.
+            deny_rules = [
+                DenyEntry(method="tools/call", tool=prefix + pattern) for pattern in blocking
+            ]
+            if prefix:
+                # '*' also matches nothing, so 'portal-*' would admit a tool named just
+                # 'portal-', which the project refuses.
+                deny_rules.append(DenyEntry(method="tools/call", tool=prefix))
+            findings.append(
+                Finding(
+                    Severity.INFO,
+                    f"{subject}.tools",
+                    "OpenShell's '*' does not match '.', so allow patterns admit fewer names "
+                    "when tool names contain dots (stricter)",
+                )
+            )
+            for name in exact_allows:
+                for pattern in blocking:
+                    if "*" in pattern and _openshell_matches(prefix + pattern, prefix + name):
+                        findings.append(
+                            Finding(
+                                Severity.WARNING,
+                                f"{subject}.tools",
+                                f"{prefix + name} is allowed by exact name, but the deny entry "
+                                f"{prefix + pattern} also matches it, so OpenShell denies it "
+                                "(stricter)",
+                            )
+                        )
+        return cls(tuple(rules), tuple(deny_rules), tuple(findings))
 
 
 def _credential_binding(

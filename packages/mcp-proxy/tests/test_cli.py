@@ -73,3 +73,46 @@ def test_serve_refuses_bad_settings(tmp_path: Path, capsys: pytest.CaptureFixtur
     )
     assert main(["serve", "--settings", str(settings)]) == 1
     assert "missing.yaml" in capsys.readouterr().err
+
+
+def test_compile_policy_writes_the_proxy_sandboxs_policy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ceiling = tmp_path / "pool-ceiling.yaml"
+    ceiling.write_text("apiVersion: sandbox-science/v0alpha1\nkind: PoolCeiling\n")
+    targets = REPO_ROOT / "examples" / "openshell" / "targets.yaml"
+    base = ["--policy", str(EXAMPLE_POLICY), "--ceiling", str(ceiling), "--targets", str(targets)]
+    held, admitting = tmp_path / "held.yaml", tmp_path / "admitting.yaml"
+    assert main(["compile-policy", *base, "--out", str(held)]) == 0
+    printed = capsys.readouterr().out
+    assert f"wrote {held}" in printed
+    assert "always denied at this fence" in printed
+    assert main(["compile-policy", *base, "--out", str(admitting), "--admit-escalated"]) == 0
+    printed = capsys.readouterr().out
+    assert "escalate entries name exactly are admitted at this fence" in printed
+    # The example escalates firecrawl's crawl by name: only the second admits it. Its
+    # escalated patterns would need a deny entry for portal_*, which the exact-allowed
+    # portal_list_servers matches, so they stay held at the fence, and the compiler says so.
+    assert "firecrawl-mcp_firecrawl_crawl" not in held.read_text()
+    assert "firecrawl-mcp_firecrawl_crawl" in admitting.read_text()
+    assert "would deny crypto_research_mcp-portal_list_servers" in printed
+    assert "feedback" not in admitting.read_text()
+    assert (
+        held.read_text()
+        == (REPO_ROOT / "examples" / "openshell" / "mcp-proxy.yaml").read_text().split("\n", 2)[2]
+    )
+
+
+def test_compile_policy_refuses_a_bad_ceiling(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ceiling = tmp_path / "bad.yaml"
+    ceiling.write_text("kind: Nothing\n")
+    targets = REPO_ROOT / "examples" / "openshell" / "targets.yaml"
+    argv = [
+        "compile-policy", "--policy", str(EXAMPLE_POLICY), "--ceiling", str(ceiling),
+        "--targets", str(targets), "--out", str(tmp_path / "out.yaml"),
+    ]  # fmt: skip
+    assert main(argv) == 1
+    assert capsys.readouterr().err.startswith("error:")
+    assert not (tmp_path / "out.yaml").exists()
