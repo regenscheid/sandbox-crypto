@@ -3,6 +3,13 @@
   import { untrack } from 'svelte';
   import { api, type DocumentRevision, type DocumentChange } from '../lib/api';
   import { describeAuthor } from '../lib/authors';
+  import {
+    documentAction,
+    draftChange,
+    resolveAgainst,
+    saved,
+    startDraft,
+  } from '../lib/documentEdit';
   import { documentDrafts } from '../lib/drafts';
   import { guardedWrite } from '../lib/mutation';
   import { documentHref } from '../lib/router';
@@ -35,12 +42,7 @@
     if (open) persisted = documentDrafts.save(scope, { base, text, reason, block, retained });
   });
   function begin(selectedBlock: string | null) {
-    block = selectedBlock;
-    text =
-      selectedBlock === null
-        ? found.text
-        : (found.blocks.find((item) => item.id === selectedBlock)?.source ?? '');
-    base = found.revision.number;
+    ({ block, text, base } = startDraft(found, selectedBlock));
     result = null;
     error = null;
     open = true;
@@ -49,16 +51,11 @@
     busy = true;
     error = null;
     try {
-      const body = {
-        action: block === null ? 'source' : 'patch',
-        base,
-        reason,
-        ...(block === null ? { text } : { operations: [{ op: 'replace', block, markdown: text }] }),
-      };
+      const body = draftChange({ base, text, reason, block, retained });
       result = await guardedWrite('document', scope, body, (change) =>
         api.changeDocument(projectId, id, change),
       );
-      if (['applied', 'unchanged'].includes(result.outcome)) {
+      if (saved(result)) {
         documentDrafts.clear(scope);
         open = false;
         refreshed();
@@ -79,29 +76,17 @@
         return;
       }
     }
-    retained = text;
-    base = current.revision.number;
-    // Source resolution starts with the current document so untouched newer blocks
-    // cannot be overwritten by the old full-source draft. The old draft stays visible.
-    if (block === null || !current.blocks.some((item) => item.id === block)) {
-      block = null;
-      text = current.text;
-    }
+    ({ base, text, block, retained } = resolveAgainst(
+      { base, text, reason, block, retained },
+      current,
+    ));
     result = null;
   }
   async function action(action: 'promote' | 'revert') {
     busy = true;
     error = null;
     try {
-      const body = {
-        action,
-        base: found.document.head,
-        reason:
-          action === 'promote'
-            ? 'Move workbook document to project'
-            : `Restore revision ${found.revision.number}`,
-        ...(action === 'promote' ? { name: projectName } : { target: found.revision.number }),
-      };
+      const body = documentAction(found, action, projectName);
       await guardedWrite('document', scope, body, (change) =>
         api.changeDocument(projectId, id, change),
       );
