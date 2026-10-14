@@ -50,7 +50,6 @@
     return JSON.stringify(result, null, 2);
   });
   const busy = $derived(responding.busy || pages.loading);
-  const error = $derived(responding.error ?? pages.error ?? evidence.error);
   let historyHead = initial.revision,
     sourceHead = initial.response_generation ?? 0;
   $effect(() => {
@@ -118,10 +117,13 @@
         >{/if}
       <pre>{JSON.stringify(anchor, null, 2)}</pre>{/each}
   </details>
+  <!-- Each failure shows beside its own control, so a newer one is never hidden. -->
   {#if evidence.value}<pre aria-label="Mechanical math evidence">{evidence.value}</pre>{/if}
+  {#if evidence.error}<ErrorMessage error={evidence.error} />{/if}
   <button disabled={busy || !history.available()} onclick={() => history.read()}
     >{history.started ? 'Load earlier finding history' : 'Read finding history'}</button
   >
+  {#if pages.error}<ErrorMessage error={pages.error} />{/if}
   {#each history.entries() as entry (entry.revision)}<div class="transition">
       <p>{entry.revision} · {entry.status} · {entry.actor}</p>
       {#each entry.macro_context?.problems ?? [] as problem}<p role="status">
@@ -193,7 +195,7 @@
   {#if !persisted}<p role="alert">
       Browser storage is unavailable. Keep this tab open or copy your response draft.
     </p>{/if}
-  {#if error}<ErrorMessage {error} />{/if}
+  {#if responding.error}<ErrorMessage error={responding.error} />{/if}
 </article>
 
 <style>

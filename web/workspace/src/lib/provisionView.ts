@@ -7,31 +7,33 @@
  */
 import type { PollPhase } from './poller';
 
+const PHASE_LABELS: Readonly<Record<PollPhase, string>> = {
+  loading: 'Reading environment records…',
+  observed: '',
+  paused: 'Observations paused.',
+  unavailable: 'Observation unavailable. Current state is unknown.',
+  unsupported: 'This worker is unconfigured or does not support provisioning observations.',
+  missing: 'This recorded environment or selected record is no longer available.',
+  changed: 'This selection changed. Refresh the overview or history and select it again.',
+  signed_out: 'Observations stopped for sign-out. Reload after signing in.',
+};
+
 /** What the panel says for an observation's phase; nothing while observed. */
 export function phaseLabel(phase: PollPhase): string {
-  return {
-    loading: 'Reading environment records…',
-    observed: '',
-    paused: 'Observations paused.',
-    unavailable: 'Observation unavailable. Current state is unknown.',
-    unsupported: 'This worker is unconfigured or does not support provisioning observations.',
-    missing: 'This recorded environment or selected record is no longer available.',
-    changed: 'This selection changed. Refresh the overview or history and select it again.',
-    signed_out: 'Observations stopped for sign-out. Reload after signing in.',
-  }[phase];
+  return Object.hasOwn(PHASE_LABELS, phase) ? PHASE_LABELS[phase] : '';
 }
 
-/** Why a comparison or a package listing held an input back. */
+const HOLD_REASONS: Readonly<Record<string, string>> = {
+  lockfile_unrecorded: 'No lockfile was recorded',
+  blob_missing: 'The recorded lockfile is unavailable or evicted',
+  unsupported_format: 'The retained format is unsupported',
+  skipped_entries: 'The retained lockfile omitted package entries',
+  input_limit: 'The selected input exceeds this reader’s limits',
+};
+
+/** Why a comparison or a package listing held an input back; only its own reasons count. */
 export function holdReason(reason: string): string {
-  return (
-    {
-      lockfile_unrecorded: 'No lockfile was recorded',
-      blob_missing: 'The recorded lockfile is unavailable or evicted',
-      unsupported_format: 'The retained format is unsupported',
-      skipped_entries: 'The retained lockfile omitted package entries',
-      input_limit: 'The selected input exceeds this reader’s limits',
-    }[reason] ?? 'Unknown input'
-  );
+  return Object.hasOwn(HOLD_REASONS, reason) ? HOLD_REASONS[reason]! : 'Unknown input';
 }
 
 /**

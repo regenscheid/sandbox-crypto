@@ -21,6 +21,12 @@ describe('the Environments panel', () => {
     expect(holdReason('blob_missing')).toBe('The recorded lockfile is unavailable or evicted');
     expect(holdReason('something_new')).toBe('Unknown input');
   });
+  it("takes no label from an object's inherited names", () => {
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(holdReason(name)).toBe('Unknown input');
+      expect(phaseLabel(name as PollPhase)).toBe('');
+    }
+  });
   it('pages forward by the next offset and back to exactly the page before', () => {
     const first = pageForward([], { offset: 0, next_offset: 50 });
     expect(first).toEqual({ offset: 50, trail: [0] });
