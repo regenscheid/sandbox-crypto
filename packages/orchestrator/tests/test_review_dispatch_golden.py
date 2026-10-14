@@ -17,6 +17,7 @@ import pytest
 
 from sandbox_science.orchestrator.consistency import store as storage
 from sandbox_science.orchestrator.consistency.findings import Findings
+from sandbox_science.orchestrator.consistency.models import ReviewConfig
 from sandbox_science.orchestrator.consistency.store import ReviewStore
 from sandbox_science.orchestrator.documents import USER
 
@@ -125,3 +126,40 @@ def test_a_confirmation_that_does_not_fit_falls_back_to_terminal(
     assert not found["run"]["coverage_complete"]
     assert found["run"]["confirmation_key"] is None
     assert fingerprint(found) == GOLDEN["fallback"], fingerprint(found)
+
+
+@pytest.mark.parametrize("change", ["disable", "reconfigure", "none"])
+def test_a_fallback_reads_the_configuration_again(
+    store, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """When a confirmation falls back to author work, it plans that work with the
+    configuration as it is then: disabled meanwhile, it dispatches nothing; reconfigured,
+    the review records the new configuration."""
+    reviews, documents, _ = store
+    fixed_finding(reviews, documents, statement="The count is wrong. " * 100)
+    claim(reviews, "The final author answer.", "final-answer")
+    monkeypatch.setattr(storage, "MAX_ITEM_BYTES", 512)
+    revision = type(documents).revision
+    calls = [0]
+
+    def changing(self: Any, *args: Any, **kwargs: Any) -> Any:
+        calls[0] += 1
+        if calls[0] == 1:  # while the confirmation is planned
+            if change == "disable":
+                reviews.configure("p", "s", ReviewConfig(enabled=False))
+            elif change == "reconfigure":
+                reviews.configure("p", "s", ReviewConfig(min_interval_seconds=7))
+        return revision(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(documents), "revision", changing)
+    review = reviews.dispatch(
+        "p", "s", "confirmation", author_run="author-1", owner="owner", alias="reviewer"
+    )
+    if change == "disable":
+        assert review is None
+        return
+    assert review is not None
+    run = reviews.run("p", "s", review)
+    assert run["kind"] == "terminal"
+    assert run["config_revision"] == reviews.config("p")[1]
+    assert run["config"]["min_interval_seconds"] == (7 if change == "reconfigure" else 120)

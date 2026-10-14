@@ -616,6 +616,13 @@ class ReviewStore:
             return None
         plan = self._plan(project, session, kind, targets, coverage_complete)
         if plan.kind == "confirmation" and not plan.targets:
+            # Serve author work instead, with the configuration and targets as they are
+            # now: the review may have been disabled or reconfigured meanwhile.
+            self.scope(project, session)
+            config, config_revision = self.config(project)
+            if not config.enabled:
+                return None
+            targets = self.confirmation_targets(project, session)
             plan = self._plan(project, session, "terminal", targets, False)
         review = new_id("rev")
         with self.documents.control.write() as tx:
