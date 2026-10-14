@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
     CondaPackage,
     EnvironmentRevision,
     Lockfile,
@@ -604,6 +605,7 @@ async def test_authenticated_actual_http_no_active_calls_and_exact_pages(fixture
         ExecutionManager,
         SimpleNamespace(
             store=fixture.store,
+            clock=SYSTEM_CLOCK,
             revisions=SimpleNamespace(blobs=fixture.blobs),
             forget_revisions=lambda _: None,
             guard_package_deletion=lambda _: None,

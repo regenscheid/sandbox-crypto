@@ -2,13 +2,25 @@
 """The execution manager's grace periods, deadlines and polling intervals.
 
 The defaults are the production values. Tests pass shorter ones instead of
-patching module constants.
+patching module constants. ``seconds`` checks such a parameter wherever the worker
+takes one.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Final
+
+
+def seconds(name: str, value: float) -> float:
+    """``value`` if it is a positive, finite number of seconds; ValueError otherwise.
+
+    A zero or negative interval would make a polling loop spin, and a NaN never ends one.
+    """
+    if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive number of seconds")
+    return value
 
 
 @dataclass(frozen=True)
@@ -36,11 +48,11 @@ class ManagerTimeouts:
     recovery_retry: float = 0.2
     """The first wait before retrying a daemon recovery; it doubles each time."""
     recovery_retry_max: float = 30.0
+    """The longest wait between daemon recovery retries."""
 
     def __post_init__(self) -> None:
         for name, value in vars(self).items():
-            if isinstance(value, bool) or not value > 0:
-                raise ValueError(f"{name} must be a positive number of seconds")
+            seconds(name, value)
 
 
 MANAGER_TIMEOUTS: Final = ManagerTimeouts()

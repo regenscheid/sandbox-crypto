@@ -34,6 +34,7 @@ from sandbox_science.contracts import SYSTEM_CLOCK, Clock, EnvironmentInfo
 from .environments import Environments
 from .errors import WorkerError
 from .manager import ExecutionManager
+from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
 
@@ -59,8 +60,10 @@ class Suspender:
         self.environments = environments
         self.manager = manager
         self.after = after
-        self.interval = interval if interval is not None else max(5.0, min(60.0, after / 4))
-        self.sample_timeout = sample_timeout
+        self.interval = seconds(
+            "interval", interval if interval is not None else max(5.0, min(60.0, after / 4))
+        )
+        self.sample_timeout = seconds("sample_timeout", sample_timeout)
         """How long one environment's sample may take."""
         self.clock = clock
         """The manager's clock, which its activity reports use too."""

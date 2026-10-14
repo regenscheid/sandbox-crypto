@@ -20,7 +20,7 @@ import re
 from collections.abc import Awaitable, Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Final, cast
 
 from aiohttp import web
@@ -78,6 +78,7 @@ from .lockfile_diffs import LockfileDiffs, Pair
 from .manager import ExecutionManager
 from .provisioner import MAX_WAIT, RESERVED_OPERATION, Provisioner
 from .settings import ClientSettings, token_digest
+from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
 
@@ -140,6 +141,7 @@ def create_app(
 ) -> web.Application:
     """The worker's HTTP API; event streams carry an empty line after ``heartbeat`` quiet
     seconds."""
+    seconds("heartbeat", heartbeat)
     if clients and environments is None:
         raise ValueError("clients need managed environments to keep their projects apart")
     expected = f"Bearer {token}".encode()
@@ -956,7 +958,7 @@ async def observe_lockfile_diff(request: web.Request) -> web.Response:
             {
                 "project_id": scope[0],
                 "environment_id": scope[1],
-                "observed_at": datetime.now(UTC),
+                "observed_at": request.app[MANAGER].clock.now(),
                 **result,
             },
             strict=True,
@@ -1008,7 +1010,7 @@ async def observe_revision_packages(request: web.Request) -> web.Response:
             {
                 "project_id": scope[0],
                 "environment_id": scope[1],
-                "observed_at": datetime.now(UTC),
+                "observed_at": request.app[MANAGER].clock.now(),
                 **result,
             },
             strict=True,

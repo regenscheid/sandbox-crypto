@@ -22,7 +22,6 @@ import mimetypes
 import posixpath
 import re
 import sqlite3
-import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -227,8 +226,8 @@ class _Environment:
     languages: tuple[str, ...] = ()
     features: tuple[str, ...] = ()
     running: set[str] = field(default_factory=set[str])
-    last_used: float = field(default_factory=time.monotonic)
-    """Last ordinary use, by the monotonic clock; passive observers never refresh it."""
+    last_used: float = field(kw_only=True)
+    """Last ordinary use, by the manager's clock; passive observers never refresh it."""
     requests: int = 0
     """Ordinary requests in flight: files, publication and explicit kernel operations."""
 

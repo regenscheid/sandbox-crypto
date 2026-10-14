@@ -140,7 +140,9 @@ async def test_delayed_empty_reply_cannot_pass_a_changed_connection(
     async def changed(peer: ExecutorChannel, op: str, **fields: Any) -> Message:
         if op == "kernels":
             if change == "object":
-                view(manager).put_connection("env1", type(environment)(channel=channel))
+                view(manager).put_connection(
+                    "env1", type(environment)(channel=channel, last_used=environment.last_used)
+                )
             elif change == "channel":
                 environment.channel = None
             elif change == "incarnation":
@@ -216,7 +218,8 @@ async def test_global_and_per_environment_admission_owned_until_cancellation(
     try:
         for index in range(manager_module.MAX_KERNEL_OBSERVATIONS):
             name = f"env-{index}"
-            view(manager).put_connection(name, type(environment)(channel=environment.channel))
+            record = type(environment)(channel=environment.channel, last_used=0.0)
+            view(manager).put_connection(name, record)
             context = REQUEST.context.model_copy(update={"environment_id": name})
             tasks.append(
                 asyncio.create_task(
@@ -266,6 +269,8 @@ async def test_whole_deadline_includes_actual_channel_write_lock(
             channel._write_lock.release()
         assert environment.last_used == before
         assert view(manager).observations() == {}
+        # Once the lock is free, an observation within the production budget succeeds.
+        manager.timeouts = ManagerTimeouts()
         assert (await getattr(manager, observe_method)(REQUEST)).kernels == ()
 
 

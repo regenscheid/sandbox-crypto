@@ -482,6 +482,7 @@ async def _cancel_deadline(
     assert execution.state is ExecutionState.CANCELLING
     await eventually(lambda: clock.sleepers == sleeping + 1)
     clock.advance(jobs.timeouts.cancel_grace - 1)
+    assert clock.sleepers == sleeping + 1  # the cancel's deadline has not come
     assert jobs.get(job.execution_id).state is ExecutionState.CANCELLING
     clock.advance(1)
     final = await asyncio.wait_for(jobs.wait(job.execution_id), 10)

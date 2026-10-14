@@ -29,7 +29,7 @@ from pathlib import Path
 from aiohttp import web
 from pydantic import TypeAdapter, ValidationError
 
-from sandbox_science.contracts import EnvironmentState, Identifier
+from sandbox_science.contracts import SYSTEM_CLOCK, Clock, EnvironmentState, Identifier
 from sandbox_science.policy.openshell import CompileError, compile_sandbox
 from sandbox_science.policy.store import StoreError
 
@@ -60,12 +60,14 @@ def _executor_args(settings: Settings) -> list[str]:
     return ["--kernel-idle", repr(settings.kernel_idle_timeout)]
 
 
-def _environments(settings: Settings) -> Environments | None:
+def _environments(settings: Settings, clock: Clock = SYSTEM_CLOCK) -> Environments | None:
     openshell = settings.openshell
     if openshell is None or openshell.environments is None:
         return None
     cli_env = OpenShellBackend(openshell, settings.state_dir).cli_env()
-    environments = Environments(openshell, openshell.environments, settings.state_dir, cli_env)
+    environments = Environments(
+        openshell, openshell.environments, settings.state_dir, cli_env, clock=clock
+    )
     target = environments.targets.sandbox.package_cache
     if openshell.package_cache is not None and cache_endpoint(openshell.package_cache) != (
         target.host,
@@ -97,6 +99,7 @@ def _provisioner(
         policies=environments,
         permissions=Permissions(managed.event_store_path) if managed is not None else None,
         cache=openshell.package_cache if openshell is not None else None,
+        clock=manager.clock,
     )
 
 
@@ -118,7 +121,9 @@ def _backend(settings: Settings, environments: Environments | None) -> Backend:
 
 async def serve(settings: Settings) -> None:
     token = settings.token()
-    environments = _environments(settings)
+    # One clock for everything that compares times with another component.
+    clock = SYSTEM_CLOCK
+    environments = _environments(settings, clock)
     store = Store(settings.state_dir / "worker.sqlite3")
     documents = DocumentsCatalog(
         settings.state_dir / "documents-catalog.sqlite3", settings.document_catalog
@@ -127,7 +132,9 @@ async def serve(settings: Settings) -> None:
     # The shared files' blobs are kept apart from published artifacts, by project (D79).
     shared = (
         SharedSync(
-            SharedRecords(settings.state_dir / "shared.sqlite3"), settings.state_dir / "shared"
+            SharedRecords(settings.state_dir / "shared.sqlite3"),
+            settings.state_dir / "shared",
+            clock=clock,
         )
         if settings.shared_sync
         else None
@@ -141,6 +148,7 @@ async def serve(settings: Settings) -> None:
         state_dir=settings.state_dir,
         shared=shared,
         package_cache=settings.openshell.package_cache if settings.openshell else None,
+        clock=clock,
     )
     if environments is not None:
         environments.release = manager.release
@@ -189,7 +197,7 @@ async def serve(settings: Settings) -> None:
             background.append(asyncio.create_task(DraftWatcher(environments, interval).run()))
         if environments is not None and environments.settings.suspend_after is not None:
             suspender = Suspender(
-                environments, manager, environments.settings.suspend_after, clock=manager.clock
+                environments, manager, environments.settings.suspend_after, clock=clock
             )
             background.append(asyncio.create_task(suspender.run()))
         await stopping.wait()

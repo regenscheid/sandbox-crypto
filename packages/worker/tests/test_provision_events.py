@@ -394,7 +394,7 @@ async def test_terminal_observation_releases_queue_before_append_but_remains_own
         permissions=permission,
         cache=None,
         clock=FakeClock(NOW),
-        retain=0,
+        retain=0.001,
     )
     source = record()
     store.insert_provision(source, "a" * 64)

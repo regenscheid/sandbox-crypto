@@ -27,8 +27,15 @@ from typing import Any
 import pytest
 import pytest_asyncio
 
-from sandbox_science.contracts import ErrorKind, Execution, ExecutionContext, ExecutionState
-from sandbox_science.testing import eventually
+from sandbox_science.contracts import (
+    SYSTEM_CLOCK,
+    Clock,
+    ErrorKind,
+    Execution,
+    ExecutionContext,
+    ExecutionState,
+)
+from sandbox_science.testing import FakeClock, eventually
 from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
@@ -740,22 +747,28 @@ async def test_an_attempts_result_outlives_a_sync_cut_short(
     assert any("could not be synced" in notice for notice in done["result"]["notices"])
 
 
-async def test_files_the_sync_brings_are_not_a_calls_own(synced: Harness) -> None:
-    status, long = await synced.post(
-        "/v1/executions",
-        {
-            "operation_id": "op-l",
-            "context": _in("env2", "s2"),
-            "kind": "shell",
-            "script": "sleep 2",
-        },
-    )
-    assert status == 201
-    await synced.wait_running(long["execution_id"])
-    await _shell(synced, "op-1", _in("env1", "s1"), 'echo r > "$PROJECT_SHARED/r.txt"')
-    await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
-    done = await synced.finish(long["execution_id"])
-    assert done["result"]["written_files"] == []
+@pytest.mark.parametrize("fake", [False, True], ids=["system-clock", "fake-clock"])
+async def test_files_the_sync_brings_are_not_a_calls_own(tmp_path: Path, fake: bool) -> None:
+    # The sync and the manager compare times: both read the manager's clock, whatever it is.
+    clock: Clock = FakeClock() if fake else SYSTEM_CLOCK
+    gate = tmp_path / "gate"
+    async with await Harness.start(tmp_path / "worker", shared_bytes=64, clock=clock) as synced:
+        status, long = await synced.post(
+            "/v1/executions",
+            {
+                "operation_id": "op-l",
+                "context": _in("env2", "s2"),
+                "kind": "shell",
+                "script": f"until [ -e {gate} ]; do sleep 0.01; done",
+            },
+        )
+        assert status == 201
+        await synced.wait_running(long["execution_id"])
+        await _shell(synced, "op-1", _in("env1", "s1"), 'echo r > "$PROJECT_SHARED/r.txt"')
+        await _shell(synced, "op-2", _in("env2", "s3"), "true")  # brings r.txt in while s2 runs
+        gate.touch()
+        done = await synced.finish(long["execution_id"])
+        assert done["result"]["written_files"] == []
 
 
 async def test_a_conflict_found_for_a_file_request_reaches_the_running_call(

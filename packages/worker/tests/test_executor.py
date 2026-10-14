@@ -192,8 +192,8 @@ def test_lines_are_utf8_whatever_the_text() -> None:
 
 
 def test_a_long_session_gets_a_kernel_id_the_worker_can_report(tmp_path: Path) -> None:
-    long = executor.Kernel("s" * 128, "python", tmp_path, {})
-    short = executor.Kernel("s1", "python", tmp_path, {})
+    long = executor.Kernel("s" * 128, "python", tmp_path, {}, last_used=0.0)
+    short = executor.Kernel("s1", "python", tmp_path, {}, last_used=0.0)
     assert short.kernel_id == "krn-s1-python"
     assert len(long.kernel_id) <= 128
     assert long.kernel_id.startswith("krn-")

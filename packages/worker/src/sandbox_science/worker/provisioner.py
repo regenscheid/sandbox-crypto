@@ -83,6 +83,7 @@ from .permissions import Permissions, PermissionStoreError
 from .provision_events import ProvisionEvents
 from .resolution import Decided, Resolved, ResolveError
 from .revisions import read_lockfile
+from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
 
@@ -209,10 +210,10 @@ class Provisioner:
         self.restorer = restorer
         self.clock = clock
         """Stamps the operations' records and times permission deadlines."""
-        self.poll = poll
-        self.lockfile_wait = lockfile_wait
+        self.poll = seconds("poll", poll)
+        self.lockfile_wait = seconds("lockfile_wait", lockfile_wait)
         """Seconds an operation waits for a revision's lockfile to arrive."""
-        self.retain = retain
+        self.retain = seconds("retain", retain)
         """Seconds a finished operation stays in memory for clients still waiting on it."""
         self.installer_logs = installer_records.InstallerArtifacts(
             self.store, manager.blobs, manager.max_artifact_size

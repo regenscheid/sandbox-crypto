@@ -1364,8 +1364,9 @@ class Kernel:
     client: Any = None
     owner: str = ""
     leader: Leader | None = None
-    last_used: float = field(default_factory=time.monotonic)
-    """When a cell last started or ended, for stopping idle kernels."""
+    last_used: float = field(kw_only=True)
+    """When a cell last started or ended, by the executor's clock, for stopping idle
+    kernels."""
 
     @property
     def kernel_id(self) -> str:
@@ -2495,8 +2496,13 @@ class Executor:
         key = (session, language)
         if key not in self.kernels:
             cwd = self.directory(session, ".")
-            kernel = Kernel(session, language, cwd, self.environment(session))
-            kernel.last_used = self.clock.monotonic()
+            kernel = Kernel(
+                session,
+                language,
+                cwd,
+                self.environment(session),
+                last_used=self.clock.monotonic(),
+            )
             self.kernels[key] = kernel
         return self.kernels[key]
 

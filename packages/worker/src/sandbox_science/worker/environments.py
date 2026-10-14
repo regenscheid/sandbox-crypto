@@ -77,6 +77,7 @@ from sandbox_science.policy.store import PolicyStore, StoreError
 from .errors import WorkerError
 from .provisioner import Governing
 from .settings import EnvironmentSettings, OpenShellBackendSettings
+from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
 
@@ -414,11 +415,11 @@ class Environments:
         self.settings = settings
         self.clock = clock
         """Stamps the environments' records and times the backoff after a failed start."""
-        self.poll_seconds = poll_seconds
+        self.poll_seconds = seconds("poll_seconds", poll_seconds)
         """Between looks at a sandbox that is starting or stopping."""
-        self.resume_timeout = resume_timeout
+        self.resume_timeout = seconds("resume_timeout", resume_timeout)
         """The longest a stopped sandbox may take to start or stop, within ``create_timeout``."""
-        self.start_backoff = start_backoff
+        self.start_backoff = seconds("start_backoff", start_backoff)
         """After a failed start, uses fail at once for this long instead of starting again."""
         self.handmade_sandboxes = frozenset(backend.sandboxes)
         self.cli = OpenShellCli(backend, cli_env)

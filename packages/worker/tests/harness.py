@@ -355,6 +355,7 @@ class Harness(WorkerApi):
             "timeouts": timeouts,
             "clock": clock,
         }
+        self.clock = clock
         self.heartbeat = heartbeat
         self.store_path = root / store_name
         self.store = Store(self.store_path)
@@ -378,6 +379,7 @@ class Harness(WorkerApi):
             self.root / "shared",
             max_file_bytes=self._shared_bytes,
             max_project_bytes=self._shared_total,
+            clock=self.clock,
         )
 
     def new_manager(self) -> ExecutionManager:

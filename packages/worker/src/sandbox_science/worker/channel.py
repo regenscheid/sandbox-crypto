@@ -22,6 +22,7 @@ from typing import Any, Final, cast
 from sandbox_science.contracts import ErrorKind, new_id
 
 from .errors import ExecutorRefusalError, WorkerError
+from .timeouts import seconds
 
 _log = logging.getLogger(__name__)
 
@@ -44,6 +45,10 @@ class ChannelTimeouts:
 
     write: float = WRITE_TIMEOUT
     close_grace: float = CLOSE_GRACE
+
+    def __post_init__(self) -> None:
+        seconds("write", self.write)
+        seconds("close_grace", self.close_grace)
 
 
 CHANNEL_TIMEOUTS: Final = ChannelTimeouts()

@@ -2435,3 +2435,10 @@ async def test_required_original_binding_guard_precedes_guest_delete(
     finally:
         await manager.close()
         store.close()
+
+
+@pytest.mark.parametrize("name", ["poll_seconds", "resume_timeout", "start_backoff"])
+async def test_environment_waits_must_be_positive(tmp_path: Path, name: str) -> None:
+    waits: dict[str, float] = {name: 0.0}
+    with pytest.raises(ValueError, match=name):
+        Setup(tmp_path, None, None, **waits)
