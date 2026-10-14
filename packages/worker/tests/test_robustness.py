@@ -23,16 +23,15 @@ import sqlite3
 import subprocess
 import sys
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import aiohttp
 import pytest
 import pytest_asyncio
 from aiohttp import web
-from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import (
     ArtifactRef,
@@ -41,123 +40,21 @@ from sandbox_science.contracts import (
     ExecutionState,
     StreamEvent,
 )
-from sandbox_science.contracts.worker import MAX_EVENT_BYTES
 from sandbox_science.worker import app as app_module
 from sandbox_science.worker import channel as channel_module
 from sandbox_science.worker import manager as manager_module
 from sandbox_science.worker.app import create_app
-from sandbox_science.worker.artifacts import Blobs
-from sandbox_science.worker.backends import Backend, ClosedHandler, LocalBackend, OpenShellBackend
+from sandbox_science.worker.backends import ClosedHandler, LocalBackend, OpenShellBackend
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings, OpenShellBackendSettings
 from sandbox_science.worker.store import Store
 
-TOKEN = "r" * 40
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
-CONTEXT = {"project_id": "p1", "session_id": "s1", "environment_id": "env1"}
-OTHER_SESSION = {**CONTEXT, "session_id": "s2"}
-HOSTILE = Path(__file__).with_name("hostile_executor.py")
+from .harness import AUTH, CONTEXT, HOSTILE, TOKEN, Harness, HostileBackend
 
-ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
+OTHER_SESSION = {**CONTEXT, "session_id": "s2"}
 
 pytestmark = pytest.mark.asyncio
-
-
-class Worker:
-    """A worker under test, through its HTTP API."""
-
-    def __init__(self, client: TestClient[Any, Any], manager: ExecutionManager, root: Path) -> None:
-        self.client = client
-        self.manager = manager
-        self.root = root
-
-    @property
-    def workspace(self) -> Path:
-        return self.root / "environments" / "env1" / "project" / "sessions" / "s1"
-
-    async def post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        response = await self.client.post(path, json=body, headers=AUTH)
-        return response.status, await response.json()
-
-    async def get(self, path: str) -> tuple[int, dict[str, Any]]:
-        response = await self.client.get(path, headers=AUTH)
-        return response.status, await response.json()
-
-    async def submit(
-        self, operation_id: str, context: dict[str, str] | None = None, **request: Any
-    ) -> dict[str, Any]:
-        body = {"operation_id": operation_id, "context": context or CONTEXT, **request}
-        status, execution = await self.post("/v1/executions", body)
-        assert status in (200, 201), execution
-        return execution
-
-    async def events(
-        self, execution_id: str, after: int = 0
-    ) -> AsyncGenerator[dict[str, Any], None]:
-        async with self.client.get(
-            f"/v1/executions/{execution_id}/events", params={"after": after}, headers=AUTH
-        ) as response:
-            assert response.status == 200
-            while line := await response.content.readline(max_line_length=MAX_EVENT_BYTES):
-                if line.strip():
-                    yield json.loads(line)
-
-    async def finish(self, execution_id: str, timeout: float = 120) -> dict[str, Any]:
-        async def follow() -> dict[str, Any]:
-            async with contextlib.aclosing(self.events(execution_id)) as events:
-                async for event in events:
-                    if event["type"] == "result":
-                        return event["execution"]
-            raise AssertionError("the event stream ended without a result")
-
-        return await asyncio.wait_for(follow(), timeout)
-
-    async def run(
-        self, operation_id: str, context: dict[str, str] | None = None, **request: Any
-    ) -> dict[str, Any]:
-        execution = await self.submit(operation_id, context, **request)
-        return await self.finish(execution["execution_id"])
-
-    async def wait_running(self, execution_id: str) -> None:
-        async def follow() -> None:
-            async with contextlib.aclosing(self.events(execution_id)) as events:
-                async for event in events:
-                    if event["type"] == "state" and event["state"] == "running":
-                        return
-
-        await asyncio.wait_for(follow(), 60)
-
-
-class HostileBackend:
-    """Starts hostile_executor.py, a stand-in for an executor research code took over."""
-
-    name: Literal["local"] = "local"
-
-    def __init__(self, mode: str, env: dict[str, str] | None = None) -> None:
-        self.mode = mode
-        self.env = env
-        self.channels: list[ExecutorChannel] = []
-
-    async def prepare(self, environment_id: str) -> None:
-        return None
-
-    async def open(
-        self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
-    ) -> ExecutorChannel:
-        argv = [sys.executable, "-I", str(HOSTILE), self.mode]
-        channel = ExecutorChannel(argv, on_event, on_closed, env=self.env)
-        self.channels.append(channel)
-        await channel.start()
-        return channel
-
-    def sandbox_id(self, environment_id: str) -> str | None:
-        return None
-
-    @property
-    def isolation_tier(self) -> int:
-        return 0
 
 
 def _running(channel: ExecutorChannel) -> bool:
@@ -165,32 +62,10 @@ def _running(channel: ExecutorChannel) -> bool:
     return process is not None and process.returncode is None
 
 
-async def start_worker(
-    aiohttp_client: ClientFactory,
-    root: Path,
-    backend: Backend | None = None,
-    max_artifact_size: int = 1 << 20,
-) -> tuple[Worker, Store]:
-    store = Store(root / "worker.sqlite3")
-    manager = ExecutionManager(
-        store,
-        backend or LocalBackend(LocalBackendSettings(python=sys.executable), root),
-        Blobs(root / "artifacts"),
-        pool_id="test-pool",
-        max_artifact_size=max_artifact_size,
-        state_dir=root,
-    )
-    await manager.start()
-    client = await aiohttp_client(create_app(manager, TOKEN))
-    return Worker(client, manager, root), store
-
-
 @pytest_asyncio.fixture
-async def worker(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Worker]:
-    started, store = await start_worker(aiohttp_client, tmp_path)
-    yield started
-    await started.manager.close()
-    store.close()
+async def worker(tmp_path: Path) -> AsyncIterator[Harness]:
+    async with await Harness.start(tmp_path) as started:
+        yield started
 
 
 def _gone(pid: int) -> bool:
@@ -215,9 +90,7 @@ def _free_port() -> int:
 # C1: the worker always starts again.
 
 
-async def test_c1_a_worker_starts_again_after_a_crash(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_c1_a_worker_starts_again_after_a_crash(tmp_path: Path) -> None:
     # A crash left the record's last_seq behind the stored events: the restart reused a
     # sequence number, failed on the events table's key, and so did every later start.
     now = datetime.now(UTC)
@@ -245,7 +118,7 @@ async def test_c1_a_worker_starts_again_after_a_crash(
         "'{\"x\": 1}')"
     )
     store.close()
-    started, store = await start_worker(aiohttp_client, tmp_path)
+    started = await Harness.start(tmp_path)
     try:
         lost = await started.finish("exe-crashed")
         assert lost["state"] == "lost"
@@ -253,14 +126,13 @@ async def test_c1_a_worker_starts_again_after_a_crash(
         events = [event async for event in started.events("exe-crashed")]
         assert [event["seq"] for event in events] == list(range(1, 10))
         assert events[-1]["type"] == "result"
-        assert store.unfinished() == []  # the bad record is not retried at every start
+        assert started.store.unfinished() == []  # the bad record is not retried at every start
         status, body = await started.get("/v1/executions/exe-bad")
         assert (status, body["error"]["kind"]) == (500, "internal")
         again = await started.run("op-after", kind="shell", script="echo back")
         assert again["result"]["stdout"]["text"] == "back\n"
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
 async def test_c1_a_store_with_delegated_run_executions_is_refused(tmp_path: Path) -> None:
@@ -375,10 +247,10 @@ async def test_sigterm_ends_open_event_streams_instead_of_waiting_for_them(
 
 @pytest.mark.parametrize("mode", ["inf", "big_float", "surrogate", "huge_numbers"])
 async def test_h2_values_that_could_not_be_stored_are_cleaned(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     monkeypatch.setattr(manager_module, "RETAIN_LIVE", 0.2)  # later reads come from the store
-    started, store = await start_worker(aiohttp_client, tmp_path, HostileBackend(mode))
+    started = await Harness.start(tmp_path, backend=HostileBackend(mode))
     try:
         execution = await started.run("op-x", kind="shell", script="true")
         assert execution["state"] == "succeeded"
@@ -398,18 +270,16 @@ async def test_h2_values_that_could_not_be_stored_are_cleaned(
         status, _ = await started.post("/v1/artifacts", {"context": CONTEXT, "path": "x.txt"})
         assert status == 201
     finally:
-        await started.manager.close()
-        store.close()
-    restarted, store = await start_worker(aiohttp_client, tmp_path)
-    await restarted.manager.close()
-    store.close()
+        await started.close()
+    restarted = await Harness.start(tmp_path)
+    await restarted.close()
 
 
 async def test_h2_a_malformed_hello_fails_the_attempt_and_stops_its_executor(
-    aiohttp_client: ClientFactory, tmp_path: Path
+    tmp_path: Path,
 ) -> None:
     backend = HostileBackend("hello_bad")
-    started, store = await start_worker(aiohttp_client, tmp_path, backend)
+    started = await Harness.start(tmp_path, backend=backend)
     try:
         for number in range(2):
             execution = await started.run(f"op-{number}", kind="shell", script="true")
@@ -418,22 +288,17 @@ async def test_h2_a_malformed_hello_fails_the_attempt_and_stops_its_executor(
         assert len(backend.channels) == 2
         assert not any(_running(channel) for channel in backend.channels)
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_h2_a_missing_openshell_cli_fails_the_attempt(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_h2_a_missing_openshell_cli_fails_the_attempt(tmp_path: Path) -> None:
     settings = OpenShellBackendSettings(
         cli=str(tmp_path / "missing" / "openshell"),
         isolation_tier=3,
         sched_shim=False,
         sandboxes={"env1": "research-1"},
     )
-    started, store = await start_worker(
-        aiohttp_client, tmp_path, OpenShellBackend(settings, tmp_path)
-    )
+    started = await Harness.start(tmp_path, backend=OpenShellBackend(settings, tmp_path))
     try:
         execution = await started.run("op-os", kind="shell", script="true")
         assert execution["state"] == "failed"
@@ -441,33 +306,27 @@ async def test_h2_a_missing_openshell_cli_fails_the_attempt(
         status, body = await started.get("/v1/capabilities?environment_id=env1")
         assert (status, body["error"]["kind"]) == (503, "unavailable")
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_h2_an_unexpected_failure_in_dispatch_ends_the_attempt(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_h2_an_unexpected_failure_in_dispatch_ends_the_attempt(tmp_path: Path) -> None:
     class Broken(LocalBackend):
         async def open(
             self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
         ) -> ExecutorChannel:
             raise RuntimeError("something nobody expected")
 
-    started, store = await start_worker(
-        aiohttp_client, tmp_path, Broken(LocalBackendSettings(), tmp_path)
-    )
+    started = await Harness.start(tmp_path, backend=Broken(LocalBackendSettings(), tmp_path))
     try:
         execution = await started.run("op-x", kind="shell", script="true")
         assert execution["state"] == "failed"
         assert execution["result"]["error"]["kind"] == "internal"
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
 async def test_h2_a_stream_that_fails_once_started_drops_the_connection(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The middleware used to write a second HTTP response into the open stream.
     execution = await worker.run("op-x", kind="shell", script="echo hi")
@@ -490,7 +349,7 @@ async def test_h2_a_stream_that_fails_once_started_drops_the_connection(
 
 
 async def test_h2_a_client_leaving_a_stream_is_not_an_error(
-    worker: Worker, caplog: pytest.LogCaptureFixture
+    worker: Harness, caplog: pytest.LogCaptureFixture
 ) -> None:
     # Lab 5: a client that stopped reading made the worker log an error with a traceback.
     # aiohttp's test server cancels a handler whose client leaves, so this needs a
@@ -523,7 +382,7 @@ async def test_h2_a_client_leaving_a_stream_is_not_an_error(
 
 
 async def test_h2_quiet_streams_carry_heartbeats(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(app_module, "EVENT_HEARTBEAT_SECONDS", 0.2)
     execution = await worker.submit("op-quiet", kind="shell", script="sleep 1.5")
@@ -540,11 +399,9 @@ async def test_h2_quiet_streams_carry_heartbeats(
 # H3: one bad line no longer ends the connection, nor leaves an executor running.
 
 
-async def test_h3_bad_lines_do_not_end_the_connection(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_h3_bad_lines_do_not_end_the_connection(tmp_path: Path) -> None:
     backend = HostileBackend("bad_lines")
-    started, store = await start_worker(aiohttp_client, tmp_path, backend)
+    started = await Harness.start(tmp_path, backend=backend)
     try:
         for number in range(2):
             execution = await started.run(f"op-{number}", kind="shell", script="true")
@@ -553,12 +410,11 @@ async def test_h3_bad_lines_do_not_end_the_connection(
         (channel,) = backend.channels  # the same executor all along
         assert not channel.closed
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
     assert not _running(channel)
 
 
-async def test_h3_a_huge_exception_fails_only_its_cell(worker: Worker) -> None:
+async def test_h3_a_huge_exception_fails_only_its_cell(worker: Harness) -> None:
     # Honest research code: the end line was over the limit, so the reader ended and
     # every running execution in the environment was lost.
     bystander = await worker.submit(
@@ -573,7 +429,7 @@ async def test_h3_a_huge_exception_fails_only_its_cell(worker: Worker) -> None:
     assert (await worker.finish(bystander["execution_id"]))["state"] == "succeeded"
 
 
-async def test_h3_research_code_cannot_write_into_the_protocol(worker: Worker) -> None:
+async def test_h3_research_code_cannot_write_into_the_protocol(worker: Harness) -> None:
     # A shell call wrote into the executor's protocol pipe through /proc/$PPID/fd.
     if os.geteuid() == 0:
         pytest.skip("root may open any process's /proc files")
@@ -594,11 +450,9 @@ async def test_h3_research_code_cannot_write_into_the_protocol(worker: Worker) -
 # H4: the worker bounds what executors send.
 
 
-async def test_h4_output_beyond_the_budget_is_not_stored(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_h4_output_beyond_the_budget_is_not_stored(tmp_path: Path) -> None:
     backend = HostileBackend("flood", env={**os.environ, "FLOOD_MIB": "16"})
-    started, store = await start_worker(aiohttp_client, tmp_path, backend)
+    started = await Harness.start(tmp_path, backend=backend)
     try:
         execution = await started.run(
             "op-flood", kind="shell", script="true", output_limit_bytes=1024
@@ -608,34 +462,30 @@ async def test_h4_output_beyond_the_budget_is_not_stored(
         assert stored < 128 * 1024
         assert ExecutionState.CANCELLING in [event.get("state") for event in events]
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
     assert (tmp_path / "worker.sqlite3").stat().st_size < 8 * 1024 * 1024
 
 
 async def test_h4_the_number_of_events_is_bounded(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(manager_module, "MAX_EVENTS", 50)
     backend = HostileBackend("tinyflood", env={**os.environ, "FLOOD_N": "500"})
-    started, store = await start_worker(aiohttp_client, tmp_path, backend)
+    started = await Harness.start(tmp_path, backend=backend)
     try:
         execution = await started.run("op-tiny", kind="shell", script="true")
         assert execution["state"] == "succeeded"
         events = [event async for event in started.events(execution["execution_id"])]
         assert sum(event["type"] == "stream" for event in events) == 50
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
 @pytest.mark.parametrize("mode", ["sizelie", "badb64", "badoffset", "shrinks"])
-async def test_h4_publication_checks_what_the_executor_sends(
-    aiohttp_client: ClientFactory, tmp_path: Path, mode: str
-) -> None:
+async def test_h4_publication_checks_what_the_executor_sends(tmp_path: Path, mode: str) -> None:
     # The size of the first range was trusted: 32 MiB were stored under a 1 MiB limit.
-    started, store = await start_worker(
-        aiohttp_client, tmp_path, HostileBackend(mode), max_artifact_size=64 << 20
+    started = await Harness.start(
+        tmp_path, backend=HostileBackend(mode), max_artifact_size=64 << 20
     )
     try:
         status, body = await started.post("/v1/artifacts", {"context": CONTEXT, "path": "a.bin"})
@@ -647,16 +497,13 @@ async def test_h4_publication_checks_what_the_executor_sends(
             status, body = await started.post("/v1/files/read", {"context": CONTEXT, "path": "a"})
             assert (status, body["error"]["kind"]) == (500, "internal")
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_h4_publication_stops_at_the_size_first_reported(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_h4_publication_stops_at_the_size_first_reported(tmp_path: Path) -> None:
     # An executor that never said eof made publication grow its temporary blob forever.
-    started, store = await start_worker(
-        aiohttp_client, tmp_path, HostileBackend("noeof"), max_artifact_size=64 << 20
+    started = await Harness.start(
+        tmp_path, backend=HostileBackend("noeof"), max_artifact_size=64 << 20
     )
     try:
         status, artifact = await started.post(
@@ -668,14 +515,13 @@ async def test_h4_publication_stops_at_the_size_first_reported(
         assert not (tmp_path / "artifacts" / "blobs").exists()
         assert list((tmp_path / "artifacts" / "tmp").iterdir()) == []
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
 # M1, M2, M3: files, leftover processes and replay.
 
 
-async def test_m1_a_fifo_does_not_stall_other_sessions(worker: Worker) -> None:
+async def test_m1_a_fifo_does_not_stall_other_sessions(worker: Harness) -> None:
     await worker.run("op-fifo", kind="shell", script="mkfifo pipe")
     read = worker.post("/v1/files/read", {"context": CONTEXT, "path": "pipe"})
     status, body = await asyncio.wait_for(read, 10)
@@ -686,13 +532,12 @@ async def test_m1_a_fifo_does_not_stall_other_sessions(worker: Worker) -> None:
 
 
 async def test_m1_publication_hashes_the_file_once(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    started, store = await start_worker(aiohttp_client, tmp_path, max_artifact_size=64 << 20)
+    started = await Harness.start(tmp_path, max_artifact_size=64 << 20)
     try:
         await started.run("op-big", kind="shell", script="head -c 20000000 /dev/urandom > big")
-        channel = started.manager._environments["env1"].channel
-        assert channel is not None
+        channel = started.view.channel("env1")
         reads: list[dict[str, Any]] = []
         request = channel.request
 
@@ -707,11 +552,10 @@ async def test_m1_publication_hashes_the_file_once(
         assert artifact["size"] == 20000000
         assert [fields["hash"] for fields in reads] == [True, False, False]
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_m2_a_shell_call_leaves_no_processes_behind(worker: Worker) -> None:
+async def test_m2_a_shell_call_leaves_no_processes_behind(worker: Harness) -> None:
     # setsid and job control (set -m) took processes out of the call's process group;
     # env -i with a double fork also drops the call's mark. The kernel and another
     # session's call must survive the cleanup.
@@ -738,7 +582,7 @@ async def test_m2_a_shell_call_leaves_no_processes_behind(worker: Worker) -> Non
 
 
 async def test_m3_replay_reads_the_store_a_page_at_a_time(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     script = "for i in $(seq 1 12); do echo $i; sleep 0.02; done"
     execution = await worker.run("op-many", kind="shell", script=script)
@@ -760,9 +604,7 @@ async def test_m3_replay_reads_the_store_a_page_at_a_time(
 # The Low items.
 
 
-async def test_low_events_from_another_environment_are_ignored(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_low_events_from_another_environment_are_ignored(tmp_path: Path) -> None:
     hostile_env: dict[str, str] = {}
 
     class Mixed(LocalBackend):
@@ -776,9 +618,7 @@ async def test_low_events_from_another_environment_are_ignored(
             await channel.start()
             return channel
 
-    started, store = await start_worker(
-        aiohttp_client, tmp_path, Mixed(LocalBackendSettings(), tmp_path)
-    )
+    started = await Harness.start(tmp_path, backend=Mixed(LocalBackendSettings(), tmp_path))
     try:
         victim = await started.submit("op-victim", kind="shell", script="sleep 2; echo real")
         await started.wait_running(victim["execution_id"])
@@ -790,11 +630,10 @@ async def test_low_events_from_another_environment_are_ignored(
         assert final["state"] == "succeeded"
         assert final["result"]["stdout"]["text"] == "real\n"
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_low_asking_for_events_after_the_last_ends_the_stream(worker: Worker) -> None:
+async def test_low_asking_for_events_after_the_last_ends_the_stream(worker: Harness) -> None:
     execution = await worker.run("op-x", kind="shell", script="true")
 
     async def collect() -> list[dict[str, Any]]:
@@ -804,7 +643,7 @@ async def test_low_asking_for_events_after_the_last_ends_the_stream(worker: Work
     assert await asyncio.wait_for(collect(), 5) == []
 
 
-async def test_low_environment_ids_must_be_identifiers(worker: Worker, tmp_path: Path) -> None:
+async def test_low_environment_ids_must_be_identifiers(worker: Harness, tmp_path: Path) -> None:
     status, body = await worker.get("/v1/capabilities?environment_id=../../escaped")
     assert (status, body["error"]["kind"]) == (400, "invalid_request")
     assert not (tmp_path.parent / "escaped").exists()
@@ -817,7 +656,7 @@ async def test_low_environment_ids_must_be_identifiers(worker: Worker, tmp_path:
         await backend.open("../escaped", ignore, ignore)
 
 
-async def test_low_a_long_session_id_runs_cells(worker: Worker) -> None:
+async def test_low_a_long_session_id_runs_cells(worker: Harness) -> None:
     context = {**CONTEXT, "session_id": "s" * 120}
     cell = await worker.run("op-long", context, kind="cell", code="1 + 1")
     assert cell["state"] == "succeeded", cell["result"]
@@ -825,7 +664,7 @@ async def test_low_a_long_session_id_runs_cells(worker: Worker) -> None:
 
 
 async def test_low_media_types_are_checked_and_artifacts_served_as_downloads(
-    worker: Worker,
+    worker: Harness,
 ) -> None:
     content = base64.b64encode(b"<script>alert(1)</script>").decode()
     await worker.post(
@@ -856,7 +695,7 @@ async def test_low_media_types_are_checked_and_artifacts_served_as_downloads(
     assert "X-Injected" not in response.headers
 
 
-async def test_low_an_authorization_header_that_is_not_utf8_is_refused(worker: Worker) -> None:
+async def test_low_an_authorization_header_that_is_not_utf8_is_refused(worker: Harness) -> None:
     server = worker.client.server
     reader, writer = await asyncio.open_connection(server.host, server.port)
     writer.write(
@@ -868,7 +707,7 @@ async def test_low_an_authorization_header_that_is_not_utf8_is_refused(worker: W
     assert status.startswith(b"HTTP/1.1 401")
 
 
-async def test_low_requests_can_name_the_project(worker: Worker) -> None:
+async def test_low_requests_can_name_the_project(worker: Harness) -> None:
     execution = await worker.run("op-x", kind="shell", script="echo x > x.txt")
     execution_id = execution["execution_id"]
     status, _ = await worker.get(f"/v1/executions/{execution_id}?project_id=p1")
@@ -893,11 +732,11 @@ async def test_low_requests_can_name_the_project(worker: Worker) -> None:
 
 
 async def test_an_executor_that_stops_reading_fails_its_requests_in_time(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Research code can stop its executor; a request must not wait for it forever.
     monkeypatch.setattr(channel_module, "WRITE_TIMEOUT", 0.5)
-    started, store = await start_worker(aiohttp_client, tmp_path, HostileBackend("deaf"))
+    started = await Harness.start(tmp_path, backend=HostileBackend("deaf"))
     try:
         payload = base64.b64encode(b"x" * (4 << 20)).decode()
         began = time.monotonic()
@@ -908,17 +747,13 @@ async def test_an_executor_that_stops_reading_fails_its_requests_in_time(
         assert "stopped reading" in body["error"]["message"]
         assert time.monotonic() - began < 10
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_a_forged_cpu_time_is_no_activity(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
-    started, store = await start_worker(aiohttp_client, tmp_path, HostileBackend("huge_cpu"))
+async def test_a_forged_cpu_time_is_no_activity(tmp_path: Path) -> None:
+    started = await Harness.start(tmp_path, backend=HostileBackend("huge_cpu"))
     try:
         await started.manager.capabilities("env1")
         assert await started.manager.activity("env1") is None
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()

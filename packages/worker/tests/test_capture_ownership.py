@@ -22,6 +22,8 @@ from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
+from .harness import view
+
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 
 
@@ -48,8 +50,7 @@ async def test_lost_bridge_and_generic_refusal_hold_durable_capacity(
     second: ExecutionManager | None = None
     await first.start()
     await first.capabilities("env1")
-    channel = first._environments["env1"].channel
-    assert channel is not None
+    channel = view(first).channel("env1")
     original = channel.request
     attempts: list[str] = []
 
@@ -72,8 +73,8 @@ async def test_lost_bridge_and_generic_refusal_hold_durable_capacity(
             with pytest.raises(WorkerError, match=r"unknown.*held"):
                 await first.publish(PublishRequest(context=CONTEXT, path="x"))
         assert attempts == ["capture_read", "capture_cancel"] * 2
-        assert not first._captures  # Host work drained; guest admission is still held.
-        assert first._capture_counts == {"env1": 2}
+        assert not view(first).captures()  # Host work drained; guest admission is still held.
+        assert view(first).capture_counts() == {"env1": 2}
         assert all(item.phase == "held" for item in store.capture_leases())
         with pytest.raises(WorkerError, match="admission"):
             await first.publish(PublishRequest(context=CONTEXT, path="x"))
@@ -82,7 +83,7 @@ async def test_lost_bridge_and_generic_refusal_hold_durable_capacity(
         store = Store(tmp_path / "worker.sqlite3")
         second = manager(store, tmp_path)
         await second.start()
-        assert second._capture_counts == {"env1": 2}
+        assert view(second).capture_counts() == {"env1": 2}
         with pytest.raises(WorkerError, match="admission"):
             await second.publish(PublishRequest(context=CONTEXT, path="x"))
         assert len(store.capture_leases()) == 2
@@ -103,8 +104,7 @@ async def test_restart_same_daemon_exact_ack_reconciles_only_held_rows(
     second: ExecutionManager | None = None
     await first.start()
     await first.capabilities("env1")
-    channel = first._environments["env1"].channel
-    assert channel is not None
+    channel = view(first).channel("env1")
     incarnation = channel.incarnation
     original = channel.request
 
@@ -123,11 +123,10 @@ async def test_restart_same_daemon_exact_ack_reconciles_only_held_rows(
         await first.close()
         second = manager(store, tmp_path, daemon=True)
         await second.start()
-        recovered = second._environments["env1"].channel
-        assert recovered is not None
+        recovered = view(second).channel("env1")
         assert recovered.incarnation == incarnation
         assert [item.phase for item in store.capture_leases()] == ["active"]
-        assert second._capture_counts == {"env1": 1}
+        assert view(second).capture_counts() == {"env1": 1}
     finally:
         if second is not None:
             await second.release("env1")
@@ -155,8 +154,7 @@ async def test_cancel_ack_deadline_includes_actual_channel_write_lock(
     )
     await worker.start()
     await worker.capabilities("env1")
-    channel = worker._environments["env1"].channel
-    assert channel is not None
+    channel = view(worker).channel("env1")
     dispatched = asyncio.Event()
     dispatch = store.dispatch_capture
 
@@ -175,7 +173,7 @@ async def test_cancel_ack_deadline_includes_actual_channel_write_lock(
         async with asyncio.timeout(10):  # a hang guard only
             with pytest.raises(WorkerError, match="unknown"):
                 await publish
-        assert not worker._captures
+        assert not view(worker).captures()
         assert len(store.capture_leases()) == 1
         assert store.capture_leases()[0].phase == "held"
         assert not channel._pending
@@ -263,8 +261,7 @@ async def test_reconnect_ack_requires_exact_helper_and_explicit_cleanup(
     worker = manager(store, tmp_path)
     await worker.start()
     await worker.capabilities("env1")
-    channel = worker._environments["env1"].channel
-    assert channel is not None
+    channel = view(worker).channel("env1")
     lease = store.reserve_capture(new_id("pub"), "env1")
     lease = store.dispatch_capture(lease, channel.incarnation, new_id("cap"))
     store.finish_capture(lease, certain=False)

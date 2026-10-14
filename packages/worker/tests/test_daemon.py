@@ -32,12 +32,11 @@ from sandbox_science.contracts import (
     ShellRequest,
 )
 from sandbox_science.worker import daemon, executor
-from sandbox_science.worker.artifacts import Blobs
 from sandbox_science.worker.backends import ClosedHandler, LocalBackend, daemon_token
 from sandbox_science.worker.channel import EventHandler, ExecutorChannel
-from sandbox_science.worker.manager import ExecutionManager
-from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
+
+from .harness import Harness, running
 
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 
@@ -53,7 +52,7 @@ def request(operation: str, script: str = "sleep 60", **fields: Any) -> JobReque
     )
 
 
-def internal_request(worker: Worker, script: str = "sleep 60") -> ShellRequest:
+def internal_request(worker: Harness, script: str = "sleep 60") -> ShellRequest:
     """A positive saved operation+exact step, as registered only by the provisioner."""
     record = ProvisionOperation(
         provision_id="provision-test",
@@ -77,77 +76,21 @@ def internal_request(worker: Worker, script: str = "sleep 60") -> ShellRequest:
     return result
 
 
-class Worker:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.store = Store(root / "worker.sqlite")
-        self.backend = LocalBackend(LocalBackendSettings(daemon=True), root)
-        self.manager = self.new_manager()
-
-    def new_manager(self) -> ExecutionManager:
-        manager = ExecutionManager(
-            self.store,
-            self.backend,
-            Blobs(self.root / "blobs"),
-            pool_id="test",
-            max_artifact_size=1 << 20,
-            state_dir=self.root,
-        )
-        manager.daemon_identity = lambda _environment: ("synthetic-sandbox", "synthetic-id")
-        return manager
-
-    async def restart(self) -> None:
-        await self.manager.close()
-        self.store.close()
-        self.store = Store(self.root / "worker.sqlite")
-        self.manager = self.new_manager()
-        await self.manager.start()
-
-    async def cleanup(self) -> None:
-        # close() deliberately detaches. Explicit lifecycle shutdown is mandatory even
-        # when an assertion failed before the current manager obtained its channel.
-        channel: ExecutorChannel | None = None
-        try:
-            async with asyncio.timeout(35):
-                await self.manager.capabilities("env1")
-                channel = self.manager._environments["env1"].channel
-                await self.manager.release("env1")
-        finally:
-            # Even a failed assertion that disabled polling cannot strand a daemon.
-            if channel is not None:
-                await asyncio.shield(channel.shutdown())
-            await self.manager.close()
-            self.store.close()
-
-
 @pytest_asyncio.fixture
-async def worker(tmp_path: Path) -> AsyncIterator[Worker]:
-    value = Worker(tmp_path)
-    await value.manager.start()
-    try:
+async def worker(tmp_path: Path) -> AsyncIterator[Harness]:
+    async with await Harness.start(tmp_path, daemon=True) as value:
         yield value
-    finally:
-        await value.cleanup()
-
-
-async def running(manager: ExecutionManager, execution_id: str) -> None:
-    async with asyncio.timeout(15):
-        async for event in manager.events(execution_id, 0):
-            if getattr(event, "state", None) is ExecutionState.RUNNING:
-                return
-    raise AssertionError("execution never ran")
 
 
 @pytest.mark.asyncio
 async def test_worker_restart_preserves_identity_events_logs_and_never_replays(
-    worker: Worker,
+    worker: Harness,
 ) -> None:
     job, _ = await worker.manager.submit(
         request("restart", "printf run >> marker; printf before; sleep 1; printf after")
     )
     await running(worker.manager, job.execution_id)
-    channel = worker.manager._live[job.execution_id].channel
-    assert channel is not None
+    channel = worker.view.live_channel(job.execution_id)
     incarnation = channel.incarnation
     await worker.restart()
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
@@ -158,8 +101,7 @@ async def test_worker_restart_preserves_identity_events_logs_and_never_replays(
     assert result.result is not None
     assert result.result.stdout is not None
     assert result.result.stdout.text == "beforeafter"
-    recovered_channel = worker.manager._environments["env1"].channel
-    assert recovered_channel is not None
+    recovered_channel = worker.view.channel("env1")
     assert recovered_channel.incarnation == incarnation
     marker = await worker.manager.read_file(ReadFileRequest(context=CONTEXT, path="marker"))
     assert base64.b64decode(marker.content_b64) == b"run"
@@ -172,11 +114,10 @@ async def test_worker_restart_preserves_identity_events_logs_and_never_replays(
 
 
 @pytest.mark.asyncio
-async def test_bridge_failure_recovers_without_losing_or_restarting_job(worker: Worker) -> None:
+async def test_bridge_failure_recovers_without_losing_or_restarting_job(worker: Harness) -> None:
     job, _ = await worker.manager.submit(request("bridge", "printf before; sleep 1; printf after"))
     await running(worker.manager, job.execution_id)
-    channel = worker.manager._live[job.execution_id].channel
-    assert channel is not None
+    channel = worker.view.live_channel(job.execution_id)
     assert channel._process is not None
     channel._process.kill()
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
@@ -184,13 +125,12 @@ async def test_bridge_failure_recovers_without_losing_or_restarting_job(worker: 
     assert result.result is not None
     assert result.result.stdout is not None
     assert result.result.stdout.text == "beforeafter"
-    recovered_channel = worker.manager._environments["env1"].channel
-    assert recovered_channel is not None
+    recovered_channel = worker.view.channel("env1")
     assert recovered_channel.incarnation == channel.incarnation
 
 
 @pytest.mark.asyncio
-async def test_connected_final_result_preserves_approved_output(worker: Worker) -> None:
+async def test_connected_final_result_preserves_approved_output(worker: Harness) -> None:
     job, _ = await worker.manager.submit(
         request("output", f'{sys.executable} -I -c \'print("x"*600000,end="")\'')
     )
@@ -203,7 +143,7 @@ async def test_connected_final_result_preserves_approved_output(worker: Worker) 
 
 
 @pytest.mark.asyncio
-async def test_definite_refusal_is_immediately_terminal(worker: Worker) -> None:
+async def test_definite_refusal_is_immediately_terminal(worker: Harness) -> None:
     call, _ = await worker.manager.submit(
         ShellRequest(operation_id="badcwd", context=CONTEXT, script="true", cwd="missing")
     )
@@ -215,7 +155,7 @@ async def test_definite_refusal_is_immediately_terminal(worker: Worker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cancel_persisted_while_disconnected_is_recovered(worker: Worker) -> None:
+async def test_cancel_persisted_while_disconnected_is_recovered(worker: Harness) -> None:
     job, _ = await worker.manager.submit(request("cancel"))
     await running(worker.manager, job.execution_id)
     worker.store.cancel_intent(job.execution_id)
@@ -225,7 +165,7 @@ async def test_cancel_persisted_while_disconnected_is_recovered(worker: Worker) 
 
 
 @pytest.mark.asyncio
-async def test_kernel_globals_survive_worker_restart(worker: Worker) -> None:
+async def test_kernel_globals_survive_worker_restart(worker: Harness) -> None:
     first, _ = await worker.manager.submit(
         CellRequest(operation_id="kernel1", context=CONTEXT, language="python", code="value = 1729")
     )
@@ -248,16 +188,14 @@ async def test_kernel_globals_survive_worker_restart(worker: Worker) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_control_requests_are_cancelled_during_recovery(worker: Worker) -> None:
+async def test_unknown_control_requests_are_cancelled_during_recovery(worker: Harness) -> None:
     job, _ = await worker.manager.submit(request("known", "sleep 1; printf kept"))
     await running(worker.manager, job.execution_id)
-    channel = worker.manager._live[job.execution_id].channel
-    assert channel is not None
+    channel = worker.view.live_channel(job.execution_id)
     unknown = "exe-" + "f" * 24
     await channel.request("shell", execution=unknown, session="s1", script="sleep 60", timeout=100)
     await worker.restart()
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     assert unknown not in (await channel.request("active"))["executions"]
     assert (
         await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
@@ -265,7 +203,7 @@ async def test_unknown_control_requests_are_cancelled_during_recovery(worker: Wo
 
 
 @pytest.mark.asyncio
-async def test_withdrawn_provisioning_execution_is_cancelled_on_restart(worker: Worker) -> None:
+async def test_withdrawn_provisioning_execution_is_cancelled_on_restart(worker: Harness) -> None:
     job, _ = await worker.manager.submit(internal_request(worker), origin="provision-test")
     await running(worker.manager, job.execution_id)
     await worker.restart()
@@ -275,7 +213,7 @@ async def test_withdrawn_provisioning_execution_is_cancelled_on_restart(worker: 
 
 
 @pytest.mark.asyncio
-async def test_corrupt_recovery_row_does_not_block_other_jobs(worker: Worker) -> None:
+async def test_corrupt_recovery_row_does_not_block_other_jobs(worker: Harness) -> None:
     bad, _ = await worker.manager.submit(request("bad"))
     good, _ = await worker.manager.submit(request("good", "sleep 1; echo good"))
     await running(worker.manager, good.execution_id)
@@ -288,21 +226,19 @@ async def test_corrupt_recovery_row_does_not_block_other_jobs(worker: Worker) ->
     assert (
         await asyncio.wait_for(worker.manager.wait(good.execution_id), 10)
     ).state is ExecutionState.SUCCEEDED
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     assert bad.execution_id not in (await channel.request("active"))["executions"]
 
 
 @pytest.mark.asyncio
-async def test_daemon_incarnation_loss_reaps_escaped_children(worker: Worker) -> None:
+async def test_daemon_incarnation_loss_reaps_escaped_children(worker: Harness) -> None:
     job, _ = await worker.manager.submit(
         request("incarnation", "setsid sleep 60 </dev/null >/dev/null 2>&1 & echo $! > child; wait")
     )
     await running(worker.manager, job.execution_id)
     data = await worker.manager.read_file(ReadFileRequest(context=CONTEXT, path="child"))
     child = int(base64.b64decode(data.content_b64))
-    channel = worker.manager._live[job.execution_id].channel
-    assert channel is not None
+    channel = worker.view.live_channel(job.execution_id)
     os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
     result = await asyncio.wait_for(worker.manager.wait(job.execution_id), 15)
     assert result.state is ExecutionState.LOST
@@ -313,15 +249,14 @@ async def test_daemon_incarnation_loss_reaps_escaped_children(worker: Worker) ->
 
 @pytest.mark.asyncio
 async def test_openshell_replacement_waits_for_one_durable_lifecycle_fence(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_science.worker.errors import WorkerError
 
     monkeypatch.setattr(worker.backend, "name", "openshell")
     job, _ = await worker.manager.submit(request("fenced-incarnation"))
     await running(worker.manager, job.execution_id)
-    channel = worker.manager._live[job.execution_id].channel
-    assert channel is not None
+    channel = worker.view.live_channel(job.execution_id)
     old = channel.incarnation
     entered, proceed = asyncio.Event(), asyncio.Event()
     calls: list[str] = []
@@ -359,12 +294,11 @@ async def test_openshell_replacement_waits_for_one_durable_lifecycle_fence(
 
 @pytest.mark.asyncio
 async def test_openshell_replacement_fences_endpoint_without_unfinished_jobs(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(worker.backend, "name", "openshell")
     await worker.manager.capabilities("env1")
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     old = channel.incarnation
     await worker.manager.close()
     os.kill(channel.hello["location"]["pid"], signal.SIGKILL)
@@ -386,15 +320,14 @@ async def test_openshell_replacement_fences_endpoint_without_unfinished_jobs(
 
 @pytest.mark.asyncio
 async def test_recycle_intent_survives_failed_fence_and_worker_restart(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_science.contracts import ErrorKind
     from sandbox_science.worker.errors import WorkerError
 
     monkeypatch.setattr(worker.backend, "name", "openshell")
     await worker.manager.capabilities("env1")
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     old, pid = channel.incarnation, channel.hello["location"]["pid"]
     await worker.manager.close()
     # Crash after durable intent, before the stop command or any replacement open.
@@ -409,10 +342,10 @@ async def test_recycle_intent_survives_failed_fence_and_worker_restart(
         await worker.manager.start()
     assert worker.store.recycle_needed("env1")
     assert worker.store.endpoint_incarnation("env1") == old
-    assert worker.manager._environments["env1"].channel is None
+    assert worker.view.channel_or_none("env1") is None
     await worker.manager.close()
     worker.store.close()
-    worker.store = Store(worker.root / "worker.sqlite")
+    worker.store = Store(worker.store_path)
     worker.manager = worker.new_manager()
 
     async def succeeded(environment: str, _sandbox: str, _sandbox_id: str) -> None:
@@ -428,7 +361,7 @@ async def test_recycle_intent_survives_failed_fence_and_worker_restart(
 
 @pytest.mark.asyncio
 async def test_transport_or_authentication_failure_never_recycles_sandbox(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_science.contracts import ErrorKind
     from sandbox_science.worker.errors import WorkerError
@@ -459,7 +392,7 @@ async def test_transport_or_authentication_failure_never_recycles_sandbox(
 
 @pytest.mark.asyncio
 async def test_unmanaged_replacement_requires_operator_lifecycle_cleanup(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_science.worker.errors import WorkerError
 
@@ -475,7 +408,7 @@ async def test_unmanaged_replacement_requires_operator_lifecycle_cleanup(
             await worker.manager.capabilities("env1")
         assert worker.store.recycle_needed("env1")
         assert worker.store.endpoint_incarnation("env1") == old
-        assert worker.manager._environments["env1"].channel is None
+        assert worker.view.channel_or_none("env1") is None
     finally:
         # Fixture-only cleanup: reconnect the known local daemon to reap its processes.
         worker.store.finish_recycle("env1")
@@ -486,14 +419,13 @@ async def test_unmanaged_replacement_requires_operator_lifecycle_cleanup(
 
 @pytest.mark.asyncio
 async def test_legacy_endpoint_requires_cleanup_if_incarnation_changed_before_binding_known(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_science.worker.errors import WorkerError
 
     monkeypatch.setattr(worker.backend, "name", "openshell")
     await worker.manager.capabilities("env1")
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     old = channel.incarnation
     worker.store.remember_endpoint("env1", old)  # previous schema has no binding
     await worker.manager.close()
@@ -517,7 +449,7 @@ async def test_legacy_endpoint_requires_cleanup_if_incarnation_changed_before_bi
 
 
 @pytest.mark.asyncio
-async def test_same_incarnation_backfills_legacy_endpoint_binding(worker: Worker) -> None:
+async def test_same_incarnation_backfills_legacy_endpoint_binding(worker: Harness) -> None:
     await worker.manager.capabilities("env1")
     old = worker.store.endpoint_incarnation("env1")
     assert old is not None
@@ -529,7 +461,7 @@ async def test_same_incarnation_backfills_legacy_endpoint_binding(worker: Worker
 
 
 @pytest.mark.asyncio
-async def test_output_charge_survives_restart(worker: Worker) -> None:
+async def test_output_charge_survives_restart(worker: Harness) -> None:
     job, _ = await worker.manager.submit(request("budget", "printf before; sleep 2; printf after"))
     await running(worker.manager, job.execution_id)
     async with asyncio.timeout(5):
@@ -537,7 +469,7 @@ async def test_output_charge_survives_restart(worker: Worker) -> None:
             await asyncio.sleep(0.02)
     previous = worker.store.event_usage(job.execution_id)
     await worker.restart()
-    live = worker.manager._live[job.execution_id]
+    live = worker.view.live(job.execution_id)
     assert live.events >= previous[0]
     assert live.stored >= previous[1]
     assert (
@@ -729,7 +661,7 @@ def test_daemon_token_is_stable_private_and_rejects_symlink(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_cancel_during_pending_final_sync_cannot_acknowledge_end(worker: Worker) -> None:
+async def test_cancel_during_pending_final_sync_cannot_acknowledge_end(worker: Harness) -> None:
     from typing import cast
 
     class Shared:
@@ -771,7 +703,7 @@ async def test_cancel_during_pending_final_sync_cannot_acknowledge_end(worker: W
 
 
 @pytest.mark.asyncio
-async def test_corrupt_only_execution_still_quiesces_its_daemon(worker: Worker) -> None:
+async def test_corrupt_only_execution_still_quiesces_its_daemon(worker: Harness) -> None:
     job, _ = await worker.manager.submit(request("sole-corrupt"))
     await running(worker.manager, job.execution_id)
     worker.store._db.execute(
@@ -780,13 +712,12 @@ async def test_corrupt_only_execution_still_quiesces_its_daemon(worker: Worker) 
     )
     await worker.restart()
     assert worker.manager.get(job.execution_id).state is ExecutionState.LOST
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     assert (await channel.request("active"))["executions"] == []
 
 
 @pytest.mark.asyncio
-async def test_provisioning_recovery_waits_for_termination_before_startup(worker: Worker) -> None:
+async def test_provisioning_recovery_waits_for_termination_before_startup(worker: Harness) -> None:
     job, _ = await worker.manager.submit(
         internal_request(
             worker,
@@ -799,13 +730,12 @@ async def test_provisioning_recovery_waits_for_termination_before_startup(worker
     await running(worker.manager, job.execution_id)
     await worker.restart()
     assert worker.manager.get(job.execution_id).state is ExecutionState.CANCELLED
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     assert (await channel.request("active"))["executions"] == []
 
 
 @pytest.mark.asyncio
-async def test_offline_rollover_preserves_full_log_and_same_attempt(worker: Worker) -> None:
+async def test_offline_rollover_preserves_full_log_and_same_attempt(worker: Harness) -> None:
     job, _ = await worker.manager.submit(
         request(
             "noisy",
@@ -833,12 +763,11 @@ async def test_offline_rollover_preserves_full_log_and_same_attempt(worker: Work
 
 
 @pytest.mark.asyncio
-async def test_stale_bridge_event_cannot_finish_reconnected_attempt(worker: Worker) -> None:
+async def test_stale_bridge_event_cannot_finish_reconnected_attempt(worker: Harness) -> None:
     job, _ = await worker.manager.submit(request("fenced", "sleep .4; printf actual"))
     await running(worker.manager, job.execution_id)
-    channel = worker.manager._live[job.execution_id].channel
-    assert channel is not None
-    await worker.manager._on_event(
+    worker.view.live_channel(job.execution_id)
+    await worker.view.deliver(
         "env1",
         {
             "execution": job.execution_id,
@@ -937,24 +866,25 @@ async def test_wrong_server_proof_is_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reconnect_keeps_existing_watchdog_and_replaces_old_poller(worker: Worker) -> None:
+async def test_reconnect_keeps_existing_watchdog_and_replaces_old_poller(worker: Harness) -> None:
     job, _ = await worker.manager.submit(request("watchdog", "sleep 1; printf done"))
     await running(worker.manager, job.execution_id)
-    live = worker.manager._live[job.execution_id]
+    live = worker.view.live(job.execution_id)
     watchdog = live.watchdog
     channel = live.channel
     assert channel is not None
     # A live recovery must never add another grace period or replace its deadline.
-    await worker.manager._recover("env1")
+    await worker.view.recover("env1")
     assert live.watchdog is watchdog
     stale = asyncio.create_task(asyncio.Event().wait())
-    worker.manager._pollers["env1"][1].cancel()
-    worker.manager._pollers["env1"] = (
+    worker.view.poller("env1")[1].cancel()
+    worker.view.put_poller(
+        "env1",
         ExecutorChannel([], lambda _m: asyncio.sleep(0), lambda _c: asyncio.sleep(0)),
         stale,
     )
-    worker.manager._poll("env1", channel)
-    assert worker.manager._pollers["env1"][0] is channel
+    worker.view.poll("env1", channel)
+    assert worker.view.poller("env1")[0] is channel
     await asyncio.sleep(0)
     assert stale.cancelled()
     ended = await asyncio.wait_for(worker.manager.wait(job.execution_id), 10)
@@ -1002,7 +932,7 @@ def test_event_and_source_cursor_rollback_together(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_confirmed_sandbox_loss_forgets_endpoint_without_blocking_startup(
-    worker: Worker,
+    worker: Harness,
 ) -> None:
     job, _ = await worker.manager.submit(request("known-lost"))
     await running(worker.manager, job.execution_id)
@@ -1020,7 +950,7 @@ async def test_confirmed_sandbox_loss_forgets_endpoint_without_blocking_startup(
 
 @pytest.mark.asyncio
 async def test_unreachable_live_endpoint_refuses_startup_without_claiming_loss(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sandbox_science.contracts import ErrorKind
     from sandbox_science.worker.errors import WorkerError
@@ -1047,7 +977,7 @@ async def test_unreachable_live_endpoint_refuses_startup_without_claiming_loss(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("known_job", [False, True])
 async def test_disabling_daemon_transport_with_live_endpoints_refuses_startup(
-    worker: Worker, known_job: bool
+    worker: Harness, known_job: bool
 ) -> None:
     from sandbox_science.worker.errors import WorkerError
 
@@ -1057,13 +987,14 @@ async def test_disabling_daemon_transport_with_live_endpoints_refuses_startup(
         await running(worker.manager, job.execution_id)
     else:
         await worker.manager.capabilities("env1")
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     unknown = "exe-" + "e" * 24
     await channel.request("shell", execution=unknown, session="s1", script="sleep 60", timeout=100)
     await worker.manager.close()
-    settings = worker.backend.settings
-    worker.backend.settings = settings.model_copy(update={"daemon": False})
+    backend = worker.backend
+    assert isinstance(backend, LocalBackend)
+    settings = backend.settings
+    backend.settings = settings.model_copy(update={"daemon": False})
     worker.manager = worker.new_manager()
     try:
         with pytest.raises(WorkerError, match="before disabling daemon transport; startup refused"):
@@ -1072,12 +1003,11 @@ async def test_disabling_daemon_transport_with_live_endpoints_refuses_startup(
         if job is not None:
             assert worker.manager.get(job.execution_id).state is ExecutionState.RUNNING
     finally:
-        worker.backend.settings = settings
+        backend.settings = settings
         await worker.manager.close()
         worker.manager = worker.new_manager()
         await worker.manager.start()
-    channel = worker.manager._environments["env1"].channel
-    assert channel is not None
+    channel = worker.view.channel("env1")
     assert unknown not in (await channel.request("active"))["executions"]
 
 
@@ -1184,7 +1114,7 @@ async def test_shutdown_exits_even_when_acknowledgement_is_lost(
     await writer.wait_closed()
 
 
-def record_channels(worker: Worker, monkeypatch: pytest.MonkeyPatch) -> list[ExecutorChannel]:
+def record_channels(worker: Harness, monkeypatch: pytest.MonkeyPatch) -> list[ExecutorChannel]:
     """The executor channels the backend opens from now on, in order."""
     opened: list[ExecutorChannel] = []
     original = worker.backend.open
@@ -1229,7 +1159,7 @@ def manager_errors() -> Iterator[Records]:
 
 @pytest.mark.asyncio
 async def test_execution_dispatched_during_a_recovery_is_recovered_too(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch
+    worker: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     opened = record_channels(worker, monkeypatch)
     first, _ = await worker.manager.submit(request("first", "sleep 1; printf first"))
@@ -1262,7 +1192,7 @@ async def test_execution_dispatched_during_a_recovery_is_recovered_too(
 
 @pytest.mark.asyncio
 async def test_poller_survives_an_unexpected_error_and_logs_it(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
+    worker: Harness, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
 ) -> None:
     job, _ = await worker.manager.submit(request("poll-error", "sleep 1; printf done"))
     await running(worker.manager, job.execution_id)
@@ -1284,7 +1214,7 @@ async def test_poller_survives_an_unexpected_error_and_logs_it(
 
 @pytest.mark.asyncio
 async def test_unexpected_recovery_error_is_logged_and_recovery_goes_on(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
+    worker: Harness, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
 ) -> None:
     opened = record_channels(worker, monkeypatch)
     job, _ = await worker.manager.submit(request("recovery-error", "sleep 1; printf done"))
@@ -1307,7 +1237,7 @@ async def test_unexpected_recovery_error_is_logged_and_recovery_goes_on(
 
 @pytest.mark.asyncio
 async def test_failed_background_task_is_logged(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
+    worker: Harness, monkeypatch: pytest.MonkeyPatch, manager_errors: Records
 ) -> None:
     await worker.manager.capabilities("env1")
 

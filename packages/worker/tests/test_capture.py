@@ -31,6 +31,7 @@ from sandbox_science.contracts import (
     new_id,
 )
 from sandbox_science.orchestrator.worker_client import WorkerClient
+from sandbox_science.testing import eventually
 from sandbox_science.worker import capture
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs, BlobWriter
@@ -39,6 +40,8 @@ from sandbox_science.worker.errors import WorkerError
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
+
+from .harness import view
 
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 TOKEN = "test-secret-capture-" + "x" * 32
@@ -293,8 +296,7 @@ async def test_real_http_publish_transfer_and_ordinary_read(
         assert await client.verified_artifact_content(artifact) == data
         before = await client.read_file(ReadFileRequest(context=CONTEXT, path="x"))
         assert before.size == len(data)
-        channel = manager._environments["env1"].channel
-        assert channel is not None
+        channel = view(manager).channel("env1")
         channel.hello.pop("artifact_capture_protocol")
         response = await http.post(
             "/v1/artifacts", json=request.model_dump(mode="json"), headers=AUTH
@@ -339,8 +341,7 @@ async def test_http_capture_metadata_refusal_before_allocation(
 ) -> None:
     http, manager, _ = service
     await manager.capabilities("env1")
-    channel = manager._environments["env1"].channel
-    assert channel is not None
+    channel = view(manager).channel("env1")
     original = channel.request
     giant = "x" * (12 << 20)
 
@@ -408,7 +409,7 @@ async def test_cancelled_blocked_blob_thread_retains_fd_admission_and_shutdown(
         await asyncio.sleep(0.02)
         assert not task.done()
         assert not closing.done()
-        assert len(manager._captures) == 1
+        assert view(manager).captures() == 1
         with pytest.raises(WorkerError, match="admission"):
             await manager.publish(PublishRequest(context=CONTEXT, path="x"))
         release.set()
@@ -416,8 +417,8 @@ async def test_cancelled_blocked_blob_thread_retains_fd_admission_and_shutdown(
             await task
         await closing
         assert closed == [False]
-        assert not manager._captures
-        assert not manager._capture_counts
+        assert not view(manager).captures()
+        assert not view(manager).capture_counts()
         assert list((manager.blobs.root / "tmp").iterdir()) == []
     finally:
         release.set()
@@ -434,8 +435,7 @@ async def test_http_disconnect_does_not_claim_remote_cancellation(
     http, manager, _ = service
     await manager.capabilities("env1")
     manager.capture_timeout = 0.2
-    channel = manager._environments["env1"].channel
-    assert channel is not None
+    channel = view(manager).channel("env1")
     original = channel.request
     started, cancelled = asyncio.Event(), asyncio.Event()
 
@@ -461,11 +461,9 @@ async def test_http_disconnect_does_not_claim_remote_cancellation(
     await asyncio.wait_for(started.wait(), 2)
     with pytest.raises(TimeoutError):
         await task
-    assert len(manager._captures) == 1  # Default aiohttp handler continues after disconnect.
+    assert view(manager).captures() == 1  # Default aiohttp handler continues after disconnect.
     await asyncio.wait_for(cancelled.wait(), 2)
-    async with asyncio.timeout(2):
-        while manager._captures:
-            await asyncio.sleep(0.01)
+    await eventually(lambda: view(manager).captures() == 0, timeout=10)
     assert manager.store._db.execute("SELECT count(*) FROM artifacts").fetchone()[0] == 0
     assert list((manager.blobs.root / "tmp").iterdir()) == []
 

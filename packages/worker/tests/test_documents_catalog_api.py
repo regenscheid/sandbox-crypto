@@ -28,6 +28,7 @@ from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
 
+from .harness import view
 from .test_documents_catalog import chunks, entry, page, target
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
@@ -134,8 +135,8 @@ async def test_http_completion_replay_has_no_executor_or_publication_side_effect
     )
     assert response.status == 200
     assert (await response.json())["replayed"]
-    assert not manager._environments
-    assert not manager._live
+    assert not view(manager).connected()
+    assert not view(manager).live_executions()
     assert catalog._db.execute("SELECT count(*) FROM document_written_revisions").fetchone()[0] == 0
     assert not list(manager.state_dir.rglob("documents"))
 

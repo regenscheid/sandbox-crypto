@@ -21,43 +21,30 @@ from sandbox_science.contracts import (
     kernel_lineage_sha256,
 )
 from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerClient
-from sandbox_science.worker.backends import LocalBackend
+from sandbox_science.testing import eventually
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.settings import LocalBackendSettings
 
-from .test_daemon import Worker as DaemonWorker
+from .harness import AUTH, CONTEXT, TOKEN, Harness, view
 from .test_kernel_observation import REQUEST
-from .test_service import AUTH, CONTEXT, TOKEN, ClientFactory, Worker, start_worker
 
 pytestmark = pytest.mark.asyncio
 BINDING = ("ss-test-original", "vm-test-original")
 
 
 @pytest_asyncio.fixture
-async def lineage(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Worker]:
-    worker, store = await start_worker(
-        aiohttp_client, tmp_path, backend=LocalBackend(LocalBackendSettings(daemon=True), tmp_path)
-    )
+async def lineage(tmp_path: Path) -> AsyncIterator[Harness]:
     # Synthetic trusted managed identity; this fixture is not VM attestation.
-    worker.manager.daemon_identity = lambda _: BINDING
+    worker = await Harness.start(tmp_path, daemon=True, identity=BINDING)
     try:
         yield worker
     finally:
         # Restore the exact synthetic owner after deliberate binding damage.
         worker.manager.daemon_identity = lambda _: BINDING
-        environment = worker.manager._environments.get("env1")
-        channel = environment.channel if environment is not None else None
-        try:
-            await worker.manager.release("env1")
-        finally:
-            if channel is not None:
-                await asyncio.shield(channel.shutdown())
-            await worker.manager.close()
-            store.close()
+        await worker.close()
 
 
-async def test_actual_http_client_exact_birth_and_stale_pin_are_readonly(lineage: Worker) -> None:
+async def test_actual_http_client_exact_birth_and_stale_pin_are_readonly(lineage: Harness) -> None:
     manager = lineage.manager
     async with WorkerClient(
         str(lineage.client.make_url("")), TOKEN, session=lineage.client.session
@@ -65,11 +52,11 @@ async def test_actual_http_client_exact_birth_and_stale_pin_are_readonly(lineage
         with pytest.raises(WorkerAPIError) as error:
             await client.observe_kernel_lineage(REQUEST.context)
         assert error.value.kind == "unavailable"
-        assert manager._environments == {}
+        assert view(manager).connected() == set()
         await lineage.run("lineage-seed", kind="cell", code="lineage_value = 1729")
         manager.revisions.observe("env1", "b" * 32)
         manager.store.set_package_status("env1", "needs_recovery", "prv-synthetic", 0)
-        environment = manager._environments["env1"]
+        environment = view(manager).connection("env1")
         environment.last_used = before = time.monotonic() - 60
         rows = list(manager.store._db.iterdump())
         observed = await client.observe_kernel_lineage(REQUEST.context)
@@ -115,16 +102,14 @@ async def test_actual_http_client_exact_birth_and_stale_pin_are_readonly(lineage
     ],
 )
 async def test_missing_or_changed_original_proof_stays_unknown(
-    lineage: Worker,
+    lineage: Harness,
     change: str,
     reason: str,
 ) -> None:
     await lineage.run("lineage-seed", kind="cell", code="lineage_value = 1729")
     manager = lineage.manager
     # Initial lockfile retention is unrelated owned background work.
-    async with asyncio.timeout(5):
-        while manager._fetching:
-            await asyncio.sleep(0.01)
+    await eventually(lambda: not view(manager).fetching_lockfiles(), timeout=5)
     db = manager.store._db
     birth, _ = manager.store.kernel_starts.retained("env1", "s1", "python")
     assert birth is not None
@@ -167,8 +152,7 @@ async def test_missing_or_changed_original_proof_stays_unknown(
 async def test_same_daemon_restart_retains_birth_key_and_explicit_restart_changes_it(
     tmp_path: Path,
 ) -> None:
-    worker = DaemonWorker(tmp_path)
-    await worker.manager.start()
+    worker = await Harness.start(tmp_path, daemon=True)
     try:
         execution, _ = await worker.manager.submit(
             CellRequest(operation_id="lineage-start", context=REQUEST.context, code="value = 1729")
@@ -214,10 +198,10 @@ async def test_same_daemon_restart_retains_birth_key_and_explicit_restart_change
             != key
         )
     finally:
-        await worker.cleanup()
+        await worker.close()
 
 
-async def test_known_original_birth_does_not_imply_a_current_revision(lineage: Worker) -> None:
+async def test_known_original_birth_does_not_imply_a_current_revision(lineage: Harness) -> None:
     await lineage.run("lineage-start", kind="cell", code="value = 1729")
     lineage.manager.store._db.execute("DELETE FROM environment_revisions")
     before = list(lineage.manager.store._db.iterdump())
@@ -232,7 +216,7 @@ async def test_known_original_birth_does_not_imply_a_current_revision(lineage: W
 
 
 async def test_changed_trusted_vm_during_rpc_cannot_prove_original_birth(
-    lineage: Worker, monkeypatch: pytest.MonkeyPatch
+    lineage: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await lineage.run("lineage-start", kind="cell", code="value = 1729")
     manager = lineage.manager
@@ -251,11 +235,10 @@ async def test_changed_trusted_vm_during_rpc_cannot_prove_original_birth(
 
 
 @pytest.mark.parametrize("column", ["incarnation", "sandbox", "sandbox_id", "birth"])
-async def test_corrupt_huge_proof_has_bounded_reads(lineage: Worker, column: str) -> None:
+async def test_corrupt_huge_proof_has_bounded_reads(lineage: Harness, column: str) -> None:
     await lineage.run("lineage-seed", kind="cell", code="lineage_value = 1729")
     manager = lineage.manager
-    channel = manager._environments["env1"].channel
-    assert channel is not None
+    channel = view(manager).channel("env1")
     reply = await channel.request("kernels", session="s1")
     db = manager.store._db
     query = (
@@ -272,7 +255,7 @@ async def test_corrupt_huge_proof_has_bounded_reads(lineage: Worker, column: str
     try:
         # Isolate the synchronous SQL/mapping boundary from asyncio pipe buffers.
         # HTTP composition and the shared transport budget are exercised separately.
-        observed = manager._kernel_lineage(REQUEST.context, channel, reply["kernels"])
+        observed = view(manager).kernel_lineage(REQUEST.context, channel, reply["kernels"])
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -281,7 +264,7 @@ async def test_corrupt_huge_proof_has_bounded_reads(lineage: Worker, column: str
 
 
 async def test_lineage_shares_observer_admission_and_completed_close_token(
-    lineage: Worker,
+    lineage: Harness,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await lineage.run("lineage-seed", kind="cell", code="lineage_value = 1729")
@@ -311,11 +294,11 @@ async def test_lineage_shares_observer_admission_and_completed_close_token(
         finally:
             release.set()
             await asyncio.gather(pending, return_exceptions=True)
-    assert manager._kernel_observations == {}
+    assert view(manager).observations() == {}
     assert (await manager.observe_kernel_lineage(REQUEST)).kernels == ()
 
 
-async def test_lineage_route_auth_and_project_scope_do_not_dispatch(lineage: Worker) -> None:
+async def test_lineage_route_auth_and_project_scope_do_not_dispatch(lineage: Harness) -> None:
     response = await lineage.client.post("/v1/kernels/lineage", json={"context": CONTEXT})
     assert response.status == 401
     # The ordinary fixture client has a project-scoped token as well as the pool token.
@@ -323,11 +306,11 @@ async def test_lineage_route_auth_and_project_scope_do_not_dispatch(lineage: Wor
         "/v1/kernels/lineage", json={"context": {**CONTEXT, "project_id": "other"}}, headers=AUTH
     )
     assert response.status in {404, 503}  # pool token may inspect only an existing connection
-    assert lineage.manager._environments == {}
+    assert lineage.view.connected() == set()
 
 
 async def test_lineage_refuses_duplicate_live_kernel_ids_as_unavailable(
-    lineage: Worker, monkeypatch: pytest.MonkeyPatch
+    lineage: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await lineage.run("lineage-open", kind="shell", script="true")
     original = ExecutorChannel.request
@@ -346,4 +329,4 @@ async def test_lineage_refuses_duplicate_live_kernel_ids_as_unavailable(
     status, body = await lineage.post("/v1/kernels/lineage", {"context": CONTEXT})
     assert status == 503
     assert body["error"]["kind"] == "unavailable"
-    assert lineage.manager._kernel_observations == {}
+    assert lineage.view.observations() == {}

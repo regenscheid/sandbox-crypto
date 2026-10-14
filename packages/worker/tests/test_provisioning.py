@@ -2,7 +2,7 @@
 """Package commands: turns, waits and revisions with lockfiles (docs/specs/conda-provisioning.md).
 
 A throwaway environment (a venv with a ``conda-meta`` directory) stands in for the
-sandbox's Conda prefix, and fake_manager.py for pip and micromamba, so nothing here
+sandbox's Conda prefix, and fake_package_manager.py for pip and micromamba, so nothing here
 installs a real package or reaches the network. The wrappers and the hook run as real
 processes; the worker tests use the local backend and real executors, or
 hostile_executor.py for an executor that research code has taken over.
@@ -34,7 +34,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -48,26 +48,25 @@ from sandbox_science.contracts import (
     RevisionHistory,
 )
 from sandbox_science.contracts.revisions import MAX_REVISION_PAGE_BYTES
+from sandbox_science.testing import eventually
 from sandbox_science.worker import executor as executor_module
 from sandbox_science.worker import provisioning
 from sandbox_science.worker import revisions as revisions_module
 from sandbox_science.worker.app import create_app
 from sandbox_science.worker.artifacts import Blobs
-from sandbox_science.worker.backends import ClosedHandler, LocalBackend
-from sandbox_science.worker.channel import EventHandler, ExecutorChannel
+from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.executor import Executor, Running, signal_processes, without_wrapped
 from sandbox_science.worker.manager import ExecutionManager
 from sandbox_science.worker.revisions import Prepared, Revisions, package_command
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
 
-FAKE = Path(__file__).with_name("fake_manager.py")
+from .harness import AUTH, CONTEXT, TOKEN, Harness, HostileBackend, context
+
+FAKE = Path(__file__).with_name("fake_package_manager.py")
 CACHE_HOST = "host.openshell.internal"
 CACHE = f"http://{CACHE_HOST}:8090"
 """The package cache's URL, as the worker's settings name it (package_cache)."""
-TOKEN = "p" * 40
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
-CONTEXT = {"project_id": "p1", "session_id": "s1", "environment_id": "env1"}
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 
@@ -534,16 +533,17 @@ def test_a_change_before_a_command_is_no_part_of_its_record(sandbox: Sandbox) ->
 # The worker: executions wait while a package command runs, and each change is a revision.
 
 
-class Worker:
+class Worker(Harness):
     """A worker whose executor runs with the throwaway prefix, or a hostile stand-in."""
 
-    def __init__(
-        self, client: TestClient[Any, Any], manager: ExecutionManager, root: Path, prefix: Prefix
-    ) -> None:
-        self.client = client
-        self.manager = manager
-        self.root = root
-        self.prefix = prefix
+    prefix: Prefix
+
+    @classmethod
+    async def started(cls, root: Path, prefix: Prefix, **options: Any) -> Worker:
+        worker = cls(root, package_cache=CACHE, python=str(prefix.python), **options)
+        worker.prefix = prefix
+        await worker.open()
+        return worker
 
     @property
     def state(self) -> provisioning.State:
@@ -551,58 +551,36 @@ class Worker:
         project = self.root / "environments" / "env1" / "project"
         return provisioning.State(project / ".executor" / "provisioning")
 
-    async def get(self, path: str) -> tuple[int, dict[str, Any]]:
-        response = await self.client.get(path, headers=AUTH)
-        return response.status, await response.json()
-
-    async def submit(self, operation_id: str, session: str = "s1", **request: Any) -> str:
-        context = {**CONTEXT, "session_id": session}
-        body = {"operation_id": operation_id, "context": context, "kind": "shell", **request}
-        response = await self.client.post("/v1/executions", json=body, headers=AUTH)
-        execution = await response.json()
-        assert response.status == 201, execution
+    async def begin(self, operation_id: str, session: str = "s1", **request: Any) -> str:
+        """Submit a shell call (or another kind) in ``session``; returns its ID."""
+        body = {"kind": "shell", **request}
+        execution = await self.submit(operation_id, context(session_id=session), **body)
         return str(execution["execution_id"])
 
-    async def finish(self, execution_id: str, timeout: float = 120) -> dict[str, Any]:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            _, execution = await self.get(f"/v1/executions/{execution_id}")
-            if execution["result"] is not None:
-                return execution
-            await asyncio.sleep(0.05)
-        raise AssertionError(f"{execution_id} did not finish")
-
-    async def run(self, operation_id: str, session: str = "s1", **request: Any) -> dict[str, Any]:
-        return await self.finish(await self.submit(operation_id, session, **request))
-
-    async def until(self, execution_id: str, state: str, timeout: float = 60) -> None:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            _, execution = await self.get(f"/v1/executions/{execution_id}")
-            if execution["state"] == state:
-                return
-            await asyncio.sleep(0.05)
-        raise AssertionError(f"{execution_id} never reached {state}")
+    async def call(self, operation_id: str, session: str = "s1", **request: Any) -> dict[str, Any]:
+        """Submit a shell call (or another kind) in ``session`` and follow it to its end."""
+        return await self.finish(await self.begin(operation_id, session, **request))
 
     async def waiting(self, timeout: float = 60) -> None:
         """Until a package command waits for its turn."""
-        deadline = time.monotonic() + timeout
-        while not (self.state.lock.exists() and waiters(self.state.lock)):
-            assert time.monotonic() < deadline, "nothing came to wait for the lock"
-            await asyncio.sleep(0.02)
+        await eventually(
+            lambda: self.state.lock.exists() and waiters(self.state.lock) > 0,
+            timeout=timeout,
+            interval=0.02,
+            describe="a package command waiting for the lock",
+        )
 
     async def logged(self, line: str, timeout: float = 60) -> None:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self.prefix.log.exists() and line in self.prefix.log.read_text():
-                return
-            await asyncio.sleep(0.05)
-        raise AssertionError(f"{line!r} never appeared in the log")
+        await eventually(
+            lambda: self.prefix.log.exists() and line in self.prefix.log.read_text(),
+            timeout=timeout,
+            describe=f"{line!r} in the log",
+        )
 
     async def page(self, after: int = -1) -> tuple[RevisionHistory, int]:
         """A page of the history, and its size in bytes."""
         response = await self.client.get(
-            f"/v1/environments/env1/revisions?after={after}", headers=AUTH
+            f"/v1/environments/env1/revisions?after={after}", headers=self.headers
         )
         data = await response.read()
         assert response.status == 200, data[:500]
@@ -613,7 +591,7 @@ class Worker:
 
     async def lockfile(self, revision: int) -> tuple[Lockfile, bytes]:
         response = await self.client.get(
-            f"/v1/environments/env1/revisions/{revision}/lockfile", headers=AUTH
+            f"/v1/environments/env1/revisions/{revision}/lockfile", headers=self.headers
         )
         assert response.status == 200, await response.text()
         data = await response.read()
@@ -621,36 +599,14 @@ class Worker:
         return Lockfile.model_validate_json(data), data
 
 
-async def start_worker(
-    aiohttp_client: ClientFactory, root: Path, prefix: Prefix
-) -> tuple[Worker, Store]:
-    store = Store(root / "worker.sqlite3")
-    manager = ExecutionManager(
-        store,
-        LocalBackend(LocalBackendSettings(python=str(prefix.python)), root),
-        Blobs(root / "artifacts"),
-        pool_id="test-pool",
-        max_artifact_size=1 << 20,
-        state_dir=root,
-        package_cache=CACHE,
-    )
-    await manager.start()
-    client = await aiohttp_client(create_app(manager, TOKEN))
-    return Worker(client, manager, root, prefix), store
-
-
 @pytest_asyncio.fixture
-async def worker(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[Worker]:
+async def worker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Worker]:
     prefix = make_prefix(tmp_path, kernels=True)
     # Only the stand-ins: the host's own package managers are not on the executor's PATH.
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setenv("FAKEPM_LOG", str(prefix.log))
-    started, store = await start_worker(aiohttp_client, tmp_path / "worker", prefix)
-    yield started
-    await started.manager.close()
-    store.close()
+    async with await Worker.started(tmp_path / "worker", prefix) as started:
+        yield started
 
 
 @pytest.mark.asyncio
@@ -659,12 +615,12 @@ async def test_installs_from_two_sessions_take_turns_and_each_is_a_revision(
 ) -> None:
     # CP-F7: B runs first and installs later; A's install comes in between, and holds its
     # turn until B's install is waiting for it.
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     after_alpha = 'until grep -q "start alpha" "$FAKEPM_LOG"; do sleep 0.05; done'
-    b = await worker.submit("op-b", "s2", script=f"{after_alpha}; pip install beta")
-    await worker.until(b, "running")
+    b = await worker.begin("op-b", "s2", script=f"{after_alpha}; pip install beta")
+    await worker.until_state(b, "running")
     gate = worker.root.parent / "gate"
-    a = await worker.submit("op-a", "s1", script=f"FAKEPM_GATE={gate} pip install alpha")
+    a = await worker.begin("op-a", "s1", script=f"FAKEPM_GATE={gate} pip install alpha")
     await worker.waiting()
     gate.touch()
     first, second = await worker.finish(a), await worker.finish(b)
@@ -700,15 +656,13 @@ async def test_new_executions_wait_while_packages_link_and_running_ones_do_not(
     worker: Worker,
 ) -> None:
     # CP-F7 and CP-12: an execution submitted during an install starts after it.
-    await worker.run("op-0", script="true")
-    running = await worker.submit("op-running", "s1", script="sleep 1.5; echo done")
-    await worker.until(running, "running")
+    await worker.call("op-0", script="true")
+    running = await worker.begin("op-running", "s1", script="sleep 1.5; echo done")
+    await worker.until_state(running, "running")
     gate = worker.root.parent / "gate"
-    install = await worker.submit(
-        "op-install", "s2", script=f"FAKEPM_GATE={gate} pip install gamma"
-    )
+    install = await worker.begin("op-install", "s2", script=f"FAKEPM_GATE={gate} pip install gamma")
     await worker.logged("start gamma")
-    waiting = await worker.submit(
+    waiting = await worker.begin(
         "op-waiting", "s3", script='python -c "import time; print(time.time())"'
     )
     await asyncio.sleep(0.5)
@@ -731,12 +685,12 @@ async def test_new_executions_wait_while_packages_link_and_running_ones_do_not(
 
 @pytest.mark.asyncio
 async def test_changes_are_recorded_as_managed_or_unmanaged(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     real_pip = worker.prefix.root / "bin" / "pip"
-    bypass = await worker.run("op-bypass", script=f'"{real_pip}" install delta')
-    wrapped = await worker.run("op-wrapped", script="pip install epsilon")
-    module = await worker.run("op-module", script="python -m pip install zeta")
-    conda = await worker.run("op-conda", script="micromamba install -y toolz")
+    bypass = await worker.call("op-bypass", script=f'"{real_pip}" install delta')
+    wrapped = await worker.call("op-wrapped", script="pip install epsilon")
+    module = await worker.call("op-module", script="python -m pip install zeta")
+    conda = await worker.call("op-conda", script="micromamba install -y toolz")
     for execution in (bypass, wrapped, module, conda):
         assert execution["state"] == "succeeded", execution["result"]
     history = await worker.revisions()
@@ -769,7 +723,7 @@ async def test_changes_are_recorded_as_managed_or_unmanaged(worker: Worker) -> N
 
 @pytest.mark.asyncio
 async def test_revision_zero_gets_its_lockfile(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     deadline = time.monotonic() + 30
     while (zero := (await worker.revisions()).revisions[0]).lockfile is None:
         assert time.monotonic() < deadline, "revision 0 never got its lockfile"
@@ -783,14 +737,14 @@ async def test_revision_zero_gets_its_lockfile(worker: Worker) -> None:
 
 @pytest.mark.asyncio
 async def test_an_execution_waits_no_longer_than_its_time_limit(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     with held(worker.state):
-        busy = await worker.run("op-busy", script="echo ran", timeout_seconds=1)
+        busy = await worker.call("op-busy", script="echo ran", timeout_seconds=1)
     assert busy["state"] == "timed_out"
     message = busy["result"]["error"]["message"]
     assert re.search(r"waited \d+ s for a package command in this environment to finish", message)
     assert "did not start" in message
-    after = await worker.run("op-after", script="echo ran")
+    after = await worker.call("op-after", script="echo ran")
     assert after["result"]["stdout"]["text"] == "ran\n"
 
 
@@ -798,16 +752,16 @@ async def test_an_execution_waits_no_longer_than_its_time_limit(worker: Worker) 
 async def test_a_cell_waits_for_a_package_command_and_pip_in_a_kernel_takes_its_turn(
     worker: Worker,
 ) -> None:
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     with held(worker.state):
-        cell = await worker.submit("op-cell", kind="cell", code="1 + 1")
+        cell = await worker.begin("op-cell", kind="cell", code="1 + 1")
         await asyncio.sleep(1)
         status, queued = await worker.get(f"/v1/executions/{cell}")
         assert (status, queued["state"]) == (200, "queued")
     done = await worker.finish(cell)
     assert done["state"] == "succeeded", done["result"]
     assert done["result"]["outputs"][0]["data"]["text/plain"] == "2"
-    installed = await worker.run("op-pip", kind="cell", code="%pip install kappa")
+    installed = await worker.call("op-pip", kind="cell", code="%pip install kappa")
     assert installed["state"] == "succeeded", installed["result"]
     last = (await worker.revisions()).revisions[-1]
     assert (last.managed, last.changed_by) == (True, installed["attempt_id"])
@@ -818,11 +772,11 @@ async def test_a_cell_waits_for_a_package_command_and_pip_in_a_kernel_takes_its_
 
 @pytest.mark.asyncio
 async def test_research_code_that_removes_the_state_breaks_nothing(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
-    removed = await worker.run("op-rm", script=f'rm -rf "{worker.state.directory}"')
+    await worker.call("op-0", script="true")
+    removed = await worker.call("op-rm", script=f'rm -rf "{worker.state.directory}"')
     assert removed["state"] == "succeeded", removed["result"]
     # The next attempt puts the wrappers back, and installs take their turns again.
-    again = await worker.run("op-again", script="pip install omega")
+    again = await worker.call("op-again", script="pip install omega")
     assert again["state"] == "succeeded", again["result"]
     last = (await worker.revisions()).revisions[-1]
     assert (last.managed, last.changed_by) == (True, again["attempt_id"])
@@ -830,7 +784,7 @@ async def test_research_code_that_removes_the_state_breaks_nothing(worker: Worke
 
 @pytest.mark.asyncio
 async def test_revision_routes_check_what_they_are_asked(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     for path, expected in (
         ("/v1/environments/env1/revisions/x/lockfile", 400),
         ("/v1/environments/env1/revisions/99/lockfile", 404),
@@ -929,62 +883,17 @@ async def test_a_limited_client_sees_only_its_projects_revisions(
         store.close()
 
 
-class HostileBackend:
-    """Starts hostile_executor.py, a stand-in for an executor research code took over."""
-
-    name: Literal["local"] = "local"
-
-    def __init__(self, mode: str) -> None:
-        self.mode = mode
-
-    async def prepare(self, environment_id: str) -> None:
-        return None
-
-    async def open(
-        self, environment_id: str, on_event: EventHandler, on_closed: ClosedHandler
-    ) -> ExecutorChannel:
-        hostile = Path(__file__).with_name("hostile_executor.py")
-        channel = ExecutorChannel(
-            [sys.executable, "-I", str(hostile), self.mode], on_event, on_closed
-        )
-        await channel.start()
-        return channel
-
-    def sandbox_id(self, environment_id: str) -> str | None:
-        return None
-
-    @property
-    def isolation_tier(self) -> int:
-        return 0
-
-
-async def hostile_worker(
-    aiohttp_client: ClientFactory, root: Path, mode: str
-) -> tuple[Worker, Store]:
+async def hostile_worker(root: Path, mode: str) -> Worker:
     """A worker whose executor is hostile_executor.py in ``mode``."""
-    store = Store(root / "worker.sqlite3")
-    manager = ExecutionManager(
-        store,
-        HostileBackend(mode),
-        Blobs(root / "artifacts"),
-        pool_id="test-pool",
-        max_artifact_size=1 << 20,
-        state_dir=root,
-        package_cache=CACHE,
-    )
-    await manager.start()
-    client = await aiohttp_client(create_app(manager, TOKEN))
     prefix = Prefix(root, Path(sys.executable), root, root / "installs.log")  # none runs
-    return Worker(client, manager, root, prefix), store
+    return await Worker.started(root, prefix, backend=HostileBackend(mode))
 
 
 @pytest.mark.asyncio
-async def test_revisions_from_a_taken_over_executor_are_bounded_and_checked(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
-    worker, store = await hostile_worker(aiohttp_client, tmp_path, "revisions")
+async def test_revisions_from_a_taken_over_executor_are_bounded_and_checked(tmp_path: Path) -> None:
+    worker = await hostile_worker(tmp_path, "revisions")
     try:
-        execution = await worker.run("op-hostile", script="true")
+        execution = await worker.call("op-hostile", script="true")
         assert execution["state"] == "succeeded"
         revisions = (await worker.revisions()).revisions
         assert len(revisions) == 64  # MAX_REVISIONS for one execution
@@ -999,8 +908,7 @@ async def test_revisions_from_a_taken_over_executor_are_bounded_and_checked(
         [command] = revisions[1].commands
         assert command.argv == ("pip", "install", "x" * 512)
     finally:
-        await worker.manager.close()
-        store.close()
+        await worker.close()
 
 
 # Regression tests for the adversarial review of package commands (2026-10-11).
@@ -1008,12 +916,12 @@ async def test_revisions_from_a_taken_over_executor_are_bounded_and_checked(
 
 @pytest.mark.asyncio
 async def test_c1_a_lockfile_from_the_executor_is_checked_off_the_event_loop(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # One revision event whose lockfile has 7,000 Conda entries with channels of 2,047
     # characters in ~1,000 path segments stalled the worker's event loop for ~15 s.
     monkeypatch.setenv("HOSTILE_ENTRIES", "7000")
-    worker, store = await hostile_worker(aiohttp_client, tmp_path, "slow_lockfile")
+    worker = await hostile_worker(tmp_path, "slow_lockfile")
     gaps: list[float] = []
 
     async def ticker() -> None:
@@ -1026,29 +934,28 @@ async def test_c1_a_lockfile_from_the_executor_is_checked_off_the_event_loop(
 
     task = asyncio.ensure_future(ticker())
     try:
-        execution = await worker.run("op-slow", script="true")
+        execution = await worker.call("op-slow", script="true")
         assert execution["state"] == "succeeded"
         [entry] = (await worker.revisions()).revisions
         assert entry.lockfile is None  # over 8 MiB once checked: refused
     finally:
         task.cancel()
-        await worker.manager.close()
-        store.close()
+        await worker.close()
     assert max(gaps) < 2.0
 
 
 @pytest.mark.asyncio
 async def test_h1_lockfiles_are_kept_one_for_each_attempt_and_the_newest_only(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Each revision event could store a distinct lockfile of up to 8 MiB, 64 of them an
     # execution, kept forever.
     monkeypatch.setattr(revisions_module, "MAX_LOCKFILES", 3)
     monkeypatch.setenv("HOSTILE_COUNT", "8")
-    worker, store = await hostile_worker(aiohttp_client, tmp_path, "lockfiles")
+    worker = await hostile_worker(tmp_path, "lockfiles")
     try:
         for index in range(5):
-            execution = await worker.run(f"op-{index}", script="true")
+            execution = await worker.call(f"op-{index}", script="true")
             assert execution["state"] == "succeeded"
         history = (await worker.revisions()).revisions
         assert len(history) == 40
@@ -1058,8 +965,7 @@ async def test_h1_lockfiles_are_kept_one_for_each_attempt_and_the_newest_only(
         stored = (tmp_path / "lockfiles" / "blobs").glob("*/*")
         assert sorted(path.name for path in stored) == sorted(ref.sha256 for ref in kept)
     finally:
-        await worker.manager.close()
-        store.close()
+        await worker.close()
 
 
 def test_h1_an_environment_keeps_its_newest_revisions_and_lockfiles(
@@ -1104,16 +1010,16 @@ def test_h1_an_environment_keeps_its_newest_revisions_and_lockfiles(
 
 @pytest.mark.asyncio
 async def test_h1_the_history_is_bounded_and_served_in_pages(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Revisions with long command lines, 64 an execution, grew the history by ~4 MiB an
     # execution, all of it served by one response.
     monkeypatch.setattr(revisions_module, "MAX_HISTORY", 100)
     monkeypatch.setenv("HOSTILE_COUNT", "64")
-    worker, store = await hostile_worker(aiohttp_client, tmp_path, "big_commands")
+    worker = await hostile_worker(tmp_path, "big_commands")
     try:
         for index in range(3):
-            execution = await worker.run(f"op-cmd-{index}", script="true")
+            execution = await worker.call(f"op-cmd-{index}", script="true")
             assert execution["state"] == "succeeded"
         seen: list[int] = []
         sizes: list[int] = []
@@ -1133,8 +1039,7 @@ async def test_h1_the_history_is_bounded_and_served_in_pages(
         assert len(sizes) > 1
         assert max(sizes) <= MAX_REVISION_PAGE_BYTES
     finally:
-        await worker.manager.close()
-        store.close()
+        await worker.close()
 
 
 CACHE_FORMS = [
@@ -1257,8 +1162,8 @@ def test_m5_the_executor_signals_a_wrapped_command_through_its_wrapper_only(
 
 @pytest.mark.asyncio
 async def test_m5_a_timed_out_install_gets_one_sigterm(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
-    done = await worker.run("op-t", script="exec pip install counting", timeout_seconds=2)
+    await worker.call("op-0", script="true")
+    done = await worker.call("op-t", script="exec pip install counting", timeout_seconds=2)
     assert done["state"] == "timed_out", done["result"]
     lines = worker.prefix.log.read_text().splitlines()
     assert lines.count("got TERM") == 1
@@ -1270,9 +1175,9 @@ async def test_m6_many_installs_in_one_call_are_one_revision_with_its_lockfile(
 ) -> None:
     # Past 64 package commands in one call, the records were lost, and so was the
     # lockfile of the state the call left.
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     script = "for i in $(seq 1 70); do pip install pkg$i >/dev/null || exit 1; done"
-    loop = await worker.run("op-loop", script=script, timeout_seconds=300)
+    loop = await worker.call("op-loop", script=script, timeout_seconds=300)
     assert loop["state"] == "succeeded", loop["result"]
     history = (await worker.revisions()).revisions
     assert [entry.revision for entry in history] == [0, 1]
@@ -1511,10 +1416,10 @@ def test_l5_a_recorded_command_line_is_redacted_bounded_and_printable() -> None:
 
 @pytest.mark.asyncio
 async def test_l5_index_credentials_are_never_stored(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     credential = "test-secret-index-token"
     script = f"pip install --index-url=https://user:{credential}@private.example/simple alpha"
-    done = await worker.run("op-secret", script=script)
+    done = await worker.call("op-secret", script=script)
     assert done["state"] == "succeeded", done["result"]
     status, body = await worker.get("/v1/environments/env1/revisions")
     assert status == 200
@@ -1707,10 +1612,11 @@ def test_review2_l1_checking_a_lockfile_in_a_thread_holds_the_interpreter_briefl
         [
             sys.executable,
             "-c",
-            "import asyncio,runpy,sys; from pathlib import Path; "
-            "scope=runpy.run_path(sys.argv[1]); "
-            "asyncio.run(scope['_check_lockfile_responsiveness'](Path(sys.argv[2])))",
-            str(Path(__file__).resolve()),
+            "import asyncio,importlib,sys; from pathlib import Path; "
+            "sys.path.insert(0, sys.argv[1]); "
+            "scope=importlib.import_module('packages.worker.tests.test_provisioning'); "
+            "asyncio.run(scope._check_lockfile_responsiveness(Path(sys.argv[2])))",
+            str(Path(__file__).resolve().parents[3]),
             str(tmp_path),
         ],
         capture_output=True,
@@ -1723,11 +1629,11 @@ def test_review2_l1_checking_a_lockfile_in_a_thread_holds_the_interpreter_briefl
 
 @pytest.mark.asyncio
 async def test_review2_l1_an_execution_gets_at_most_four_lockfiles_checked(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The requests an attempt's start and end made were not counted: five a run.
     monkeypatch.setenv("HOSTILE_ENTRIES", "1000")
-    worker, store = await hostile_worker(aiohttp_client, tmp_path, "lockfile_requests")
+    worker = await hostile_worker(tmp_path, "lockfile_requests")
     checked: list[float] = []
     real = worker.manager.revisions.prepare
 
@@ -1740,13 +1646,12 @@ async def test_review2_l1_an_execution_gets_at_most_four_lockfiles_checked(
         counts: list[int] = []
         for index in range(6):
             before = len(checked)
-            execution = await worker.run(f"op-{index}", script="true")
+            execution = await worker.call(f"op-{index}", script="true")
             assert execution["state"] == "succeeded"
             await asyncio.sleep(0.3)  # what its end asked for
             counts.append(len(checked) - before)
     finally:
-        await worker.manager.close()
-        store.close()
+        await worker.close()
     assert max(counts) <= 4, counts
     assert min(counts) >= 1, counts  # the budget is spent, not withheld
 
@@ -1832,9 +1737,9 @@ def test_redaction_keeps_what_is_no_credential(argument: str) -> None:
 
 @pytest.mark.asyncio
 async def test_review2_l3_an_anaconda_token_never_reaches_the_history(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
+    await worker.call("op-0", script="true")
     channel = "--channel=https://conda.anaconda.org/t/test-secret-anaconda-token/private"
-    done = await worker.run("op-token", script=f"micromamba install -y {channel} toolz")
+    done = await worker.call("op-token", script=f"micromamba install -y {channel} toolz")
     assert done["state"] == "succeeded", done["result"]
     status, body = await worker.get("/v1/environments/env1/revisions")
     assert status == 200
@@ -2079,8 +1984,8 @@ def test_review2_l5_a_signal_to_the_process_group_reaches_the_command_once(
 async def test_review2_l6_a_timed_out_install_gets_its_grace_to_roll_back(worker: Worker) -> None:
     # A script of more than one command: bash ends on SIGTERM at once, and the call's
     # other processes got SIGKILL right after, in the middle of the rollback.
-    await worker.run("op-0", script="true")
-    done = await worker.run("op-t", script="pip install rollback; echo after", timeout_seconds=2)
+    await worker.call("op-0", script="true")
+    done = await worker.call("op-t", script="pip install rollback; echo after", timeout_seconds=2)
     assert done["state"] == "timed_out", done["result"]
     lines = worker.prefix.log.read_text().splitlines()
     assert "got TERM" in lines
@@ -2135,9 +2040,9 @@ def test_lab17_an_install_that_links_nothing_changes_no_fingerprint(sandbox: San
 
 @pytest.mark.asyncio
 async def test_lab17_an_install_that_links_nothing_makes_no_revision(worker: Worker) -> None:
-    await worker.run("op-0", script="true")
-    first = await worker.run("op-1", script="micromamba install -y toolz")
-    again = await worker.run("op-2", script="micromamba install -y toolz")
+    await worker.call("op-0", script="true")
+    first = await worker.call("op-1", script="micromamba install -y toolz")
+    again = await worker.call("op-2", script="micromamba install -y toolz")
     assert (first["state"], again["state"]) == ("succeeded", "succeeded"), again["result"]
     history = (await worker.revisions()).revisions
     assert [entry.revision for entry in history] == [0, 1]
@@ -2149,14 +2054,14 @@ async def test_lab17_an_install_that_links_nothing_makes_no_revision(worker: Wor
 async def test_cp12_kernel_birth_stays_at_old_revision_after_package_changes(
     worker: Worker,
 ) -> None:
-    first = await worker.run("cp12-first", kind="cell", code="birth_value = 1729")
+    first = await worker.call("cp12-first", kind="cell", code="birth_value = 1729")
     start = first["result"]["kernel"]
     assert (start["start_revision"], start["current_revision"], start["revision_status"]) == (
         0,
         0,
         "current",
     )
-    changed = await worker.run("cp12-install", script="pip install alpha")
+    changed = await worker.call("cp12-install", script="pip install alpha")
     assert changed["state"] == "succeeded"
     [stale] = changed["result"]["running_kernels"]
     assert (stale["start_revision"], stale["current_revision"], stale["revision_status"]) == (
@@ -2164,10 +2069,10 @@ async def test_cp12_kernel_birth_stays_at_old_revision_after_package_changes(
         1,
         "predates",
     )
-    again = await worker.run("cp12-again", kind="cell", code="print(birth_value)")
+    again = await worker.call("cp12-again", kind="cell", code="print(birth_value)")
     assert again["result"]["stdout"]["text"] == "1729\n"
     assert again["result"]["kernel"] == stale
-    fresh = await worker.run("cp12-new", "s2", kind="cell", code="print(42)")
+    fresh = await worker.call("cp12-new", "s2", kind="cell", code="print(42)")
     assert fresh["result"]["kernel"]["start_revision"] == 1
     for session, expected in (("s1", stale), ("s2", fresh["result"]["kernel"])):
         response = await worker.client.post(
@@ -2197,9 +2102,9 @@ async def test_cp12_kernel_birth_stays_at_old_revision_after_package_changes(
 async def test_cp12_cell_waiting_for_install_pins_the_revision_after_linking(
     worker: Worker,
 ) -> None:
-    await worker.run("cp12-base", script="true")
+    await worker.call("cp12-base", script="true")
     with held(worker.state):
-        cell = await worker.submit("cp12-wait", kind="cell", code="print('ready')")
+        cell = await worker.begin("cp12-wait", kind="cell", code="print('ready')")
         await asyncio.sleep(0.1)
         assert worker.prefix.spans() == {}
         # A completed package record becomes visible before the new kernel starts.
@@ -2212,9 +2117,9 @@ async def test_cp12_cell_waiting_for_install_pins_the_revision_after_linking(
 
 @pytest.mark.asyncio
 async def test_cp12_restarted_cell_keeps_the_birth_of_the_kernel_it_used(worker: Worker) -> None:
-    await worker.run("cp12-seed-old", kind="cell", code="value = 1729")
-    cell = await worker.submit("cp12-running-old", kind="cell", code="import time; time.sleep(60)")
-    await worker.until(cell, "running")
+    await worker.call("cp12-seed-old", kind="cell", code="value = 1729")
+    cell = await worker.begin("cp12-running-old", kind="cell", code="import time; time.sleep(60)")
+    await worker.until_state(cell, "running")
     response = await worker.client.post(
         "/v1/kernels/restart", json={"context": CONTEXT, "language": "python"}, headers=AUTH
     )
@@ -2232,13 +2137,13 @@ async def test_cp12_restarted_cell_keeps_the_birth_of_the_kernel_it_used(worker:
 
 @pytest.mark.asyncio
 async def test_cp12_lost_legacy_birth_is_not_inferred_from_next_cell(worker: Worker) -> None:
-    await worker.run("cp12-legacy-seed", kind="cell", code="value = 1729")
+    await worker.call("cp12-legacy-seed", kind="cell", code="value = 1729")
     worker.manager.store._db.execute("DELETE FROM kernel_start_revisions")
     response = await worker.client.post(
         "/v1/kernels/status", json={"context": CONTEXT}, headers=AUTH
     )
     assert response.status == 200
     assert (await response.json())["kernels"][0]["start_revision"] is None
-    ended = await worker.run("cp12-legacy-next", kind="cell", code="print(value)")
+    ended = await worker.call("cp12-legacy-next", kind="cell", code="print(value)")
     assert ended["result"]["stdout"]["text"] == "1729\n"
     assert ended["result"]["kernel"]["revision_status"] == "unknown"

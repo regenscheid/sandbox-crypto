@@ -25,148 +25,41 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import ErrorKind, Execution, ExecutionContext, ExecutionState
-from sandbox_science.worker.app import create_app
-from sandbox_science.worker.artifacts import Blobs
-from sandbox_science.worker.backends import Backend, LocalBackend
+from sandbox_science.worker.backends import LocalBackend
 from sandbox_science.worker.channel import ExecutorChannel, Message
 from sandbox_science.worker.errors import WorkerError
-from sandbox_science.worker.manager import Activity, ExecutionManager
+from sandbox_science.worker.manager import Activity
 from sandbox_science.worker.settings import LocalBackendSettings
-from sandbox_science.worker.shared_sync import SharedRecords, SharedSync
 from sandbox_science.worker.store import Store
 
-TOKEN = "t" * 40
-AUTH = {"Authorization": f"Bearer {TOKEN}"}
-CONTEXT = {"project_id": "p1", "session_id": "s1", "environment_id": "env1"}
-
-ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
+from .harness import CONTEXT, Harness
 
 pytestmark = pytest.mark.asyncio
 
 
-class Worker:
-    """A test client plus helpers that follow an execution to its end."""
-
-    def __init__(self, client: TestClient[Any, Any], manager: ExecutionManager, root: Path) -> None:
-        self.client = client
-        self.manager = manager
-        self.root = root
-
-    async def post(self, path: str, body: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-        response = await self.client.post(path, json=body, headers=AUTH)
-        return response.status, await response.json()
-
-    async def get(self, path: str) -> tuple[int, dict[str, Any]]:
-        response = await self.client.get(path, headers=AUTH)
-        return response.status, await response.json()
-
-    async def submit(self, operation_id: str, **request: Any) -> dict[str, Any]:
-        status, execution = await self.post(
-            "/v1/executions", {"operation_id": operation_id, "context": CONTEXT, **request}
-        )
-        assert status in (200, 201), execution
-        return execution
-
-    async def events(self, execution_id: str, after: int = 0) -> AsyncIterator[dict[str, Any]]:
-        response = await self.client.get(
-            f"/v1/executions/{execution_id}/events", params={"after": after}, headers=AUTH
-        )
-        assert response.status == 200
-        async for line in response.content:
-            if line.strip():
-                yield json.loads(line)
-
-    async def finish(self, execution_id: str, timeout: float = 120) -> dict[str, Any]:
-        async def follow() -> dict[str, Any]:
-            async for event in self.events(execution_id):
-                if event["type"] == "result":
-                    return event["execution"]
-            raise AssertionError("the event stream ended without a result")
-
-        return await asyncio.wait_for(follow(), timeout)
-
-    async def run(self, operation_id: str, **request: Any) -> dict[str, Any]:
-        execution = await self.submit(operation_id, **request)
-        return await self.finish(execution["execution_id"])
-
-    async def wait_running(self, execution_id: str, timeout: float = 60) -> None:
-        async def follow() -> None:
-            async for event in self.events(execution_id):
-                if event["type"] == "state" and event["state"] == "running":
-                    return
-            raise AssertionError("the execution never ran")
-
-        await asyncio.wait_for(follow(), timeout)
-
-
-async def start_worker(
-    aiohttp_client: ClientFactory,
-    root: Path,
-    python: str = sys.executable,
-    backend: Backend | None = None,
-    *,
-    shared_bytes: int | None = None,
-    shared_total: int = 1 << 30,
-) -> tuple[Worker, Store]:
-    """A worker on the local backend; with ``shared_bytes``, it syncs shared/ (D79)."""
-    store = Store(root / "worker.sqlite3")
-    blobs = Blobs(root / "artifacts")
-    shared = (
-        None
-        if shared_bytes is None
-        else SharedSync(
-            SharedRecords(root / "shared.sqlite3"),
-            root / "shared",
-            max_file_bytes=shared_bytes,
-            max_project_bytes=shared_total,
-        )
-    )
-    manager = ExecutionManager(
-        store,
-        backend or LocalBackend(LocalBackendSettings(python=python), root),
-        blobs,
-        pool_id="test-pool",
-        max_artifact_size=1 << 20,
-        state_dir=root,
-        shared=shared,
-    )
-    await manager.start()
-    client = await aiohttp_client(create_app(manager, TOKEN))
-    return Worker(client, manager, root), store
-
-
 @pytest_asyncio.fixture
-async def worker(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Worker]:
-    started, store = await start_worker(aiohttp_client, tmp_path)
-    yield started
-    await started.manager.close()
-    store.close()
+async def worker(tmp_path: Path) -> AsyncIterator[Harness]:
+    async with await Harness.start(tmp_path) as started:
+        yield started
 
 
-async def test_an_executor_that_cannot_start_fails_the_attempt(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
-    broken, store = await start_worker(aiohttp_client, tmp_path, python="/nonexistent/python3")
+async def test_an_executor_that_cannot_start_fails_the_attempt(tmp_path: Path) -> None:
+    broken = await Harness.start(tmp_path, python="/nonexistent/python3")
     try:
         execution = await broken.run("op-x", kind="shell", script="echo hi")
         assert execution["state"] == "failed"
         assert execution["result"]["error"]["kind"] == "unavailable"
         assert execution["location"] is None
     finally:
-        await broken.manager.close()
-        store.close()
+        await broken.close()
 
 
-async def test_a_dead_executor_loses_its_attempts(worker: Worker) -> None:
+async def test_a_dead_executor_loses_its_attempts(worker: Harness) -> None:
     execution = await worker.submit("op-long", kind="shell", script="sleep 60")
     await worker.wait_running(execution["execution_id"])
-    environment = worker.manager._environments["env1"]
-    process = environment.channel._process  # pyright: ignore[reportOptionalMemberAccess]
-    assert process is not None
-    process.send_signal(signal.SIGKILL)
+    worker.view.executor_process().send_signal(signal.SIGKILL)
     lost = await worker.finish(execution["execution_id"])
     assert lost["state"] == "lost"
     # The next request starts a new executor.
@@ -174,9 +67,7 @@ async def test_a_dead_executor_loses_its_attempts(worker: Worker) -> None:
     assert again["result"]["stdout"]["text"] == "back\n"
 
 
-async def test_a_restarted_worker_reports_unfinished_attempts_as_lost(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_a_restarted_worker_reports_unfinished_attempts_as_lost(tmp_path: Path) -> None:
     # A crash leaves an attempt running in the store; the next worker must not
     # run it again, nor leave it hanging.
     store = Store(tmp_path / "worker.sqlite3")
@@ -191,7 +82,7 @@ async def test_a_restarted_worker_reports_unfinished_attempts_as_lost(
     )
     store.insert_execution(crashed, "digest")
     store.close()
-    second, store = await start_worker(aiohttp_client, tmp_path)
+    second = await Harness.start(tmp_path)
     try:
         lost = await second.finish("exe-crashed")
         assert lost["state"] == "lost"
@@ -199,27 +90,24 @@ async def test_a_restarted_worker_reports_unfinished_attempts_as_lost(
         events = [event async for event in second.events("exe-crashed")]
         assert [event["type"] for event in events] == ["state", "result"]
     finally:
-        await second.manager.close()
-        store.close()
+        await second.close()
 
 
-async def test_closing_the_worker_loses_running_attempts(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
-    first, store = await start_worker(aiohttp_client, tmp_path)
+async def test_closing_the_worker_loses_running_attempts(tmp_path: Path) -> None:
+    first = await Harness.start(tmp_path)
     execution = await first.submit("op-long", kind="shell", script="sleep 60")
     await first.wait_running(execution["execution_id"])
     await first.manager.close()
     try:
-        record = store.execution(execution["execution_id"])
+        record = first.store.execution(execution["execution_id"])
         assert record is not None
         assert record.state == "lost"
     finally:
-        store.close()
+        await first.close()
 
 
 async def test_a_sage_kernel_is_offered_when_its_kernelspec_exists(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A stand-in "sagemath" kernelspec that starts an ordinary Python kernel tests
     # the plumbing; real SageMath runs in the babbage lab.
@@ -235,7 +123,7 @@ async def test_a_sage_kernel_is_offered_when_its_kernelspec_exists(
         )
     )
     monkeypatch.setenv("JUPYTER_PATH", str(tmp_path / "jupyter"))
-    started, store = await start_worker(aiohttp_client, tmp_path / "state")
+    started = await Harness.start(tmp_path / "state")
     try:
         _, capabilities = await started.get("/v1/capabilities?environment_id=env1")
         assert capabilities["languages"] == ["python", "sage"]
@@ -258,24 +146,23 @@ async def test_a_sage_kernel_is_offered_when_its_kernelspec_exists(
         )
         assert (status, kernel["language"], kernel["generation"]) == (200, "sage", 2)
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_a_language_without_a_kernel_is_unsupported(worker: Worker) -> None:
+async def test_a_language_without_a_kernel_is_unsupported(worker: Harness) -> None:
     execution = await worker.run("op-sage", kind="cell", language="sage", code="1")
     assert execution["state"] == "failed"
     assert execution["result"]["error"]["kind"] == "unsupported"
 
 
 async def test_a_reader_leaving_its_event_stream_does_not_stop_the_execution(
-    worker: Worker,
+    worker: Harness,
 ) -> None:
     # The test server cancels the handler of a closed connection, as any aiohttp
     # server does when it shuts down. The execution and other readers carry on.
     execution = await worker.submit("op-leave", kind="shell", script="sleep 0.5; echo done")
     response = await worker.client.get(
-        f"/v1/executions/{execution['execution_id']}/events", headers=AUTH
+        f"/v1/executions/{execution['execution_id']}/events", headers=worker.headers
     )
     assert json.loads(await response.content.readline())["type"] == "state"
     response.close()
@@ -292,11 +179,9 @@ class OverstatedBackend(LocalBackend):
         return 3
 
 
-async def test_the_probe_lowers_an_overstated_tier(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_the_probe_lowers_an_overstated_tier(tmp_path: Path) -> None:
     backend = OverstatedBackend(LocalBackendSettings(), tmp_path)
-    started, store = await start_worker(aiohttp_client, tmp_path, backend=backend)
+    started = await Harness.start(tmp_path, backend=backend)
     try:
         execution = await started.run("op-where", kind="shell", script="true")
         location = execution["location"]
@@ -309,13 +194,10 @@ async def test_the_probe_lowers_an_overstated_tier(
         # The sentinel is gone once the executor has looked for it.
         assert list((tmp_path / "probe").iterdir()) == []
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_a_failed_probe_means_tier_0(
-    aiohttp_client: ClientFactory, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_failed_probe_means_tier_0(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = ExecutorChannel.request
 
     async def refuse_probe(self: ExecutorChannel, op: str, **fields: Any) -> Message:
@@ -325,7 +207,7 @@ async def test_a_failed_probe_means_tier_0(
 
     monkeypatch.setattr(ExecutorChannel, "request", refuse_probe)
     backend = OverstatedBackend(LocalBackendSettings(), tmp_path)
-    started, store = await start_worker(aiohttp_client, tmp_path, backend=backend)
+    started = await Harness.start(tmp_path, backend=backend)
     try:
         execution = await started.run("op-where", kind="shell", script="echo still runs")
         assert execution["result"]["stdout"]["text"] == "still runs\n"
@@ -335,11 +217,10 @@ async def test_a_failed_probe_means_tier_0(
         assert evidence["error"] == "unknown operation 'probe'"
         assert evidence["sandbox"] is None
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
 
 
-async def test_closing_a_session_stops_its_kernels_only(worker: Worker) -> None:
+async def test_closing_a_session_stops_its_kernels_only(worker: Harness) -> None:
     other = {**CONTEXT, "session_id": "s2"}
 
     async def run_in(context: dict[str, str], operation_id: str, code: str) -> dict[str, Any]:
@@ -367,38 +248,26 @@ async def test_closing_a_session_stops_its_kernels_only(worker: Worker) -> None:
     assert kept["result"]["outputs"][0]["data"]["text/plain"] == "'other'"
 
 
-async def test_closing_a_session_starts_no_executor(worker: Worker) -> None:
+async def test_closing_a_session_starts_no_executor(worker: Harness) -> None:
     idle = {**CONTEXT, "environment_id": "env-idle"}
     status, closed = await worker.post("/v1/sessions/close", {"context": idle})
     assert (status, closed) == (200, {"kernels": []})
-    assert "env-idle" not in worker.manager._environments
+    assert "env-idle" not in worker.view.connected()
 
 
-async def test_an_idle_kernel_is_stopped_and_its_state_reported_lost(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
-    root = tmp_path / "worker"
-    manager = ExecutionManager(
-        Store(root / "worker.sqlite3"),
-        LocalBackend(LocalBackendSettings(), root, ["--kernel-idle", "0.5"]),
-        Blobs(root / "artifacts"),
-        pool_id="test",
-        max_artifact_size=1 << 20,
-        state_dir=root,
-    )
-    try:
-        idle = Worker(await aiohttp_client(create_app(manager, TOKEN)), manager, root)
+async def test_an_idle_kernel_is_stopped_and_its_state_reported_lost(tmp_path: Path) -> None:
+    async with await Harness.start(
+        tmp_path / "worker", executor_args=("--kernel-idle", "0.5")
+    ) as idle:
         await idle.run("op-i1", kind="cell", code="x = 1")
         await asyncio.sleep(1.5)
         after = await idle.run("op-i2", kind="cell", code="x")
         assert after["result"]["state_lost"] is True
         assert after["result"]["error"]["name"] == "NameError"
         assert after["result"]["kernel"]["generation"] == 2
-    finally:
-        await manager.close()
 
 
-async def test_activity_reports_use_running_calls_and_kernel_cpu(worker: Worker) -> None:
+async def test_activity_reports_use_running_calls_and_kernel_cpu(worker: Harness) -> None:
     manager = worker.manager
     assert await manager.activity("env1") == Activity(None, 0, None, 0)
     await worker.run("op-u1", kind="cell", code="x = sum(i * i for i in range(3_000_000))")
@@ -419,7 +288,7 @@ async def test_activity_reports_use_running_calls_and_kernel_cpu(worker: Worker)
     await worker.finish(busy["execution_id"])
 
 
-async def test_cpu_used_by_a_kernel_thread_counts_as_activity(worker: Worker) -> None:
+async def test_cpu_used_by_a_kernel_thread_counts_as_activity(worker: Harness) -> None:
     spin = (
         "import threading, time\n"
         "def spin():\n"
@@ -440,7 +309,7 @@ async def test_cpu_used_by_a_kernel_thread_counts_as_activity(worker: Worker) ->
     assert second.running == 0
 
 
-async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker: Worker) -> None:
+async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker: Harness) -> None:
     manager = worker.manager
     await worker.run("op-r1", kind="cell", code="x = 1")
     # Used after this time: kept.
@@ -453,7 +322,7 @@ async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker
     assert status == 200
     await worker.finish(busy["execution_id"])
     assert await manager.release_if_idle("env1", time.monotonic())
-    assert "env1" not in manager._environments
+    assert "env1" not in worker.view.connected()
     assert await manager.release_if_idle("env1", time.monotonic())  # nothing left to stop
     after = await worker.run("op-r3", kind="cell", code="x")
     assert after["kernel_state_lost"] is True
@@ -465,7 +334,7 @@ async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker
     "route", ["/v1/kernels/status", "/v1/kernels/observe", "/v1/kernels/lineage"]
 )
 async def test_status_before_start_and_failed_birth_commit_do_not_consume_kernel_identity(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch, route: str
+    worker: Harness, monkeypatch: pytest.MonkeyPatch, route: str
 ) -> None:
     await worker.run("cp12-old", kind="cell", code="previous = 1729")
     manager = worker.manager
@@ -473,16 +342,17 @@ async def test_status_before_start_and_failed_birth_commit_do_not_consume_kernel
     assert before is not None
     await manager.release("env1")
     observed: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
-    on_event = manager._on_event
 
-    async def delayed_state(environment: str, message: Message) -> None:
+    async def delayed_state(
+        apply: Callable[[str, Message], Awaitable[None]], environment: str, message: Message
+    ) -> None:
         if message.get("event") == "state" and message.get("kernel") is not None:
             if not observed.done():
                 observed.set_result(message)
             return  # A source event delayed before the worker applies it.
-        await on_event(environment, message)
+        await apply(environment, message)
 
-    monkeypatch.setattr(manager, "_on_event", delayed_state)
+    on_event = worker.view.wrap_on_event(monkeypatch, delayed_state)
     execution = await worker.submit(
         "cp12-new",
         kind="cell",
@@ -524,7 +394,7 @@ async def test_status_before_start_and_failed_birth_commit_do_not_consume_kernel
 
 
 async def test_damaged_kernel_generation_refuses_status_but_preserves_shell_completion(
-    worker: Worker,
+    worker: Harness,
 ) -> None:
     await worker.run("cp12-seed", kind="cell", code="value = 1729")
     worker.manager.store._db.execute("UPDATE kernels SET incarnation=?", ("x" * 20_000_000,))
@@ -548,7 +418,7 @@ async def test_damaged_kernel_generation_refuses_status_but_preserves_shell_comp
     ],
 )
 async def test_protocol_one_kernel_status_refuses_missing_or_malformed_identity(
-    worker: Worker, monkeypatch: pytest.MonkeyPatch, kernel: dict[str, object]
+    worker: Harness, monkeypatch: pytest.MonkeyPatch, kernel: dict[str, object]
 ) -> None:
     await worker.run("cp12-open", kind="shell", script="true")
     request = ExecutorChannel.request
@@ -563,9 +433,7 @@ async def test_protocol_one_kernel_status_refuses_missing_or_malformed_identity(
     assert status == 503
 
 
-async def test_package_changes_count_as_environment_revisions(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
+async def test_package_changes_count_as_environment_revisions(tmp_path: Path) -> None:
     # A throwaway interpreter, so that the "install" touches nothing but the test's files.
     venv = tmp_path / "venv"
     await asyncio.to_thread(
@@ -573,7 +441,7 @@ async def test_package_changes_count_as_environment_revisions(
     )
     python = str(venv / "bin" / "python")
     root = tmp_path / "worker"
-    started, store = await start_worker(aiohttp_client, root, python=python)
+    started = await Harness.start(root, python=python)
     try:
         first = await started.run("op-v1", kind="shell", script="true")
         assert first["location"]["environment_revision"] == "0"
@@ -589,23 +457,21 @@ async def test_package_changes_count_as_environment_revisions(
         after = await started.run("op-v3", kind="shell", script="true")
         assert after["location"]["environment_revision"] == "1"
         assert after["result"]["environment_revision"] == "1"
-        record = store.revision("env1")
+        record = started.store.revision("env1")
         assert record is not None
         assert record.changed_by == installed["attempt_id"]
     finally:
-        await started.manager.close()
-        store.close()
+        await started.close()
     # A new worker, and a new executor, see the same packages: the revision stays.
-    again, store = await start_worker(aiohttp_client, root, python=python)
+    again = await Harness.start(root, python=python)
     try:
         later = await again.run("op-v4", kind="shell", script="true")
         assert later["result"]["environment_revision"] == "1"
     finally:
-        await again.manager.close()
-        store.close()
+        await again.close()
 
 
-async def test_a_session_sees_each_admission_notice_once(worker: Worker) -> None:
+async def test_a_session_sees_each_admission_notice_once(worker: Harness) -> None:
     recorded: list[tuple[datetime, str]] = []
 
     def notices(environment_id: str, since: datetime) -> list[tuple[datetime, str]]:
@@ -630,7 +496,7 @@ async def test_a_session_sees_each_admission_notice_once(worker: Worker) -> None
     assert fourth["result"]["notices"] == []
 
 
-async def test_operation_ids_are_kept_per_project(worker: Worker) -> None:
+async def test_operation_ids_are_kept_per_project(worker: Harness) -> None:
     first = await worker.run("op-shared", kind="shell", script="echo one")
     other = {**CONTEXT, "project_id": "p2", "environment_id": "env2"}
     request = {"operation_id": "op-shared", "kind": "shell", "script": "echo two"}
@@ -656,13 +522,9 @@ async def test_operation_ids_are_kept_per_project(worker: Worker) -> None:
 
 
 @pytest_asyncio.fixture
-async def synced(aiohttp_client: ClientFactory, tmp_path: Path) -> AsyncIterator[Worker]:
-    started, store = await start_worker(aiohttp_client, tmp_path, shared_bytes=64)
-    yield started
-    await started.manager.close()
-    store.close()
-    if started.manager.shared is not None:
-        started.manager.shared.records.close()
+async def synced(tmp_path: Path) -> AsyncIterator[Harness]:
+    async with await Harness.start(tmp_path, shared_bytes=64) as started:
+        yield started
 
 
 def _in(environment: str, session: str) -> dict[str, str]:
@@ -670,7 +532,7 @@ def _in(environment: str, session: str) -> dict[str, str]:
 
 
 async def _shell(
-    worker: Worker, operation: str, where: dict[str, str], script: str
+    worker: Harness, operation: str, where: dict[str, str], script: str
 ) -> dict[str, Any]:
     status, execution = await worker.post(
         "/v1/executions",
@@ -680,7 +542,7 @@ async def _shell(
     return await worker.finish(execution["execution_id"])
 
 
-async def test_shared_files_reach_the_projects_other_environments(synced: Worker) -> None:
+async def test_shared_files_reach_the_projects_other_environments(synced: Harness) -> None:
     a, c = _in("env1", "s1"), _in("env2", "s3")
     await _shell(synced, "op-w", a, 'printf "1,2\\n" > "$PROJECT_SHARED/results.csv"')
     seen = await _shell(synced, "op-r", c, 'cat "$PROJECT_SHARED/results.csv"')
@@ -699,7 +561,7 @@ async def test_shared_files_reach_the_projects_other_environments(synced: Worker
     assert (status, read["content_b64"]) == (200, "bm90ZXMK")
 
 
-async def test_concurrent_changes_keep_a_conflict_copy(synced: Worker) -> None:
+async def test_concurrent_changes_keep_a_conflict_copy(synced: Harness) -> None:
     a, c = _in("env1", "s1"), _in("env2", "s3")
     await _shell(synced, "op-1", a, 'echo a > "$PROJECT_SHARED/notes.md"')
     await _shell(synced, "op-2", c, 'cat "$PROJECT_SHARED/notes.md"')
@@ -729,7 +591,7 @@ async def test_concurrent_changes_keep_a_conflict_copy(synced: Worker) -> None:
     assert elsewhere["result"]["stdout"]["text"] == "c\n"
 
 
-async def test_files_over_the_limit_stay_where_they_are(synced: Worker) -> None:
+async def test_files_over_the_limit_stay_where_they_are(synced: Harness) -> None:
     a, c = _in("env1", "s1"), _in("env2", "s3")
     wrote = await _shell(synced, "op-1", a, 'head -c 100 /dev/zero > "$PROJECT_SHARED/big.bin"')
     [notice] = wrote["result"]["notices"]
@@ -741,10 +603,8 @@ async def test_files_over_the_limit_stay_where_they_are(synced: Worker) -> None:
     assert again["result"]["notices"] == []  # told once
 
 
-async def test_the_projects_shared_files_have_a_total_limit(
-    aiohttp_client: ClientFactory, tmp_path: Path
-) -> None:
-    capped, store = await start_worker(aiohttp_client, tmp_path, shared_bytes=100, shared_total=150)
+async def test_the_projects_shared_files_have_a_total_limit(tmp_path: Path) -> None:
+    capped = await Harness.start(tmp_path, shared_bytes=100, shared_total=150)
     try:
         a, c = _in("env1", "s1"), _in("env2", "s3")
         first = await _shell(capped, "op-1", a, 'head -c 100 /dev/zero > "$PROJECT_SHARED/a.bin"')
@@ -755,13 +615,10 @@ async def test_the_projects_shared_files_have_a_total_limit(
         listing = await _shell(capped, "op-3", c, 'cd "$PROJECT_SHARED" && ls')
         assert listing["result"]["stdout"]["text"] == "a.bin\n"
     finally:
-        await capped.manager.close()
-        store.close()
-        if capped.manager.shared is not None:
-            capped.manager.shared.records.close()
+        await capped.close()
 
 
-async def test_file_writes_in_shared_expect_the_projects_version(synced: Worker) -> None:
+async def test_file_writes_in_shared_expect_the_projects_version(synced: Harness) -> None:
     a, c = _in("env1", "s1"), _in("env2", "s3")
     status, first = await synced.post(
         "/v1/files/write",
@@ -784,7 +641,7 @@ async def test_file_writes_in_shared_expect_the_projects_version(synced: Worker)
     assert (status, refused["error"]["kind"]) == (409, "conflict")
 
 
-async def test_a_sandbox_made_again_under_its_id_deletes_nothing(synced: Worker) -> None:
+async def test_a_sandbox_made_again_under_its_id_deletes_nothing(synced: Harness) -> None:
     a, c = _in("env1", "s1"), _in("env2", "s3")
     await _shell(synced, "op-1", a, 'echo a > "$PROJECT_SHARED/a.txt"')
     await _shell(synced, "op-2", c, "true")
@@ -797,7 +654,7 @@ async def test_a_sandbox_made_again_under_its_id_deletes_nothing(synced: Worker)
 
 
 async def test_a_call_cancelled_while_shared_files_sync_never_runs(
-    synced: Worker, monkeypatch: pytest.MonkeyPatch
+    synced: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sync = synced.manager.shared
     assert sync is not None
@@ -829,7 +686,7 @@ async def test_a_call_cancelled_while_shared_files_sync_never_runs(
 
 
 async def test_an_attempts_result_outlives_a_sync_cut_short(
-    synced: Worker, monkeypatch: pytest.MonkeyPatch
+    synced: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     sync = synced.manager.shared
     assert sync is not None
@@ -853,23 +710,19 @@ async def test_an_attempts_result_outlives_a_sync_cut_short(
     assert status == 201
     execution_id = execution["execution_id"]
     await asyncio.wait_for(syncing.wait(), 60)
-    manager = synced.manager
     # A second end from the executor is ignored.
-    await manager._on_event(
+    await synced.view.deliver(
         "env1", {"execution": execution_id, "event": "end", "state": "failed", "result": {}}
     )
     # The executor goes away during the sync: the attempt keeps the result it reported.
-    environment = manager._environments["env1"]
-    process = environment.channel._process  # pyright: ignore[reportOptionalMemberAccess]
-    assert process is not None
-    process.send_signal(signal.SIGKILL)
+    synced.view.executor_process().send_signal(signal.SIGKILL)
     done = await synced.finish(execution_id)
     assert done["state"] == "succeeded"
     assert done["result"]["stdout"]["text"] == "hi\n"
     assert any("could not be synced" in notice for notice in done["result"]["notices"])
 
 
-async def test_files_the_sync_brings_are_not_a_calls_own(synced: Worker) -> None:
+async def test_files_the_sync_brings_are_not_a_calls_own(synced: Harness) -> None:
     status, long = await synced.post(
         "/v1/executions",
         {
@@ -888,7 +741,7 @@ async def test_files_the_sync_brings_are_not_a_calls_own(synced: Worker) -> None
 
 
 async def test_a_conflict_found_for_a_file_request_reaches_the_running_call(
-    synced: Worker,
+    synced: Harness,
 ) -> None:
     a, b = _in("env1", "s1"), _in("env2", "s2")
     await _shell(synced, "op-1", a, 'echo a > "$PROJECT_SHARED/notes.md"')
@@ -919,7 +772,7 @@ async def test_a_conflict_found_for_a_file_request_reaches_the_running_call(
     assert "shared/notes.conflict-env2.md" in notice
 
 
-async def test_a_calls_own_write_after_the_sync_wrote_the_file_is_its_own(synced: Worker) -> None:
+async def test_a_calls_own_write_after_the_sync_wrote_the_file_is_its_own(synced: Harness) -> None:
     b = _in("env2", "s2")
     status, long = await synced.post(
         "/v1/executions",
@@ -943,7 +796,7 @@ async def test_a_calls_own_write_after_the_sync_wrote_the_file_is_its_own(synced
 
 
 async def test_a_result_that_cannot_be_stored_still_ends_the_attempt(
-    synced: Worker, monkeypatch: pytest.MonkeyPatch
+    synced: Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def broken(*args: Any) -> None:
         raise RuntimeError("test: the store is full")

@@ -82,6 +82,8 @@ from sandbox_science.worker.settings import (
 from sandbox_science.worker.store import Store
 from sandbox_science.worker.suspend import Suspender
 
+from .harness import view
+
 pytestmark = pytest.mark.asyncio
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -1181,7 +1183,7 @@ async def test_recycle_intent_requires_actual_termination_and_clears_quarantine(
     try:
         store.remember_endpoint("env-1", "inc-" + "1" * 24, (info.sandbox, info.sandbox_id or ""))
         store.require_recycle("env-1", "inc-" + "1" * 24)
-        manager._quarantined.add("env-1")
+        view(manager).quarantine("env-1")
 
         async def confirmed(environment: str) -> bool:
             return await confirmed_daemon_loss(
@@ -1191,9 +1193,9 @@ async def test_recycle_intent_requires_actual_termination_and_clears_quarantine(
         assert await confirmed("env-1") is (phase == "Stopped")
         if phase == "Stopped":
             manager.confirmed_daemon_loss = confirmed
-            await manager._recover("env-1", startup=True)
+            await view(manager).recover("env-1", startup=True)
             assert not store.recycle_needed("env-1")
-            assert "env-1" not in manager._quarantined
+            assert not view(manager).quarantined("env-1")
     finally:
         await manager.close()
         store.close()

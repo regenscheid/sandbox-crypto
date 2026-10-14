@@ -2,7 +2,7 @@
 """Provisioning operations through the worker API (docs/specs/conda-provisioning.md).
 
 A throwaway environment (a venv with a ``conda-meta`` directory) stands in for the sandbox's
-Conda prefix, and fake_manager.py, with a fake index, for micromamba and pip. A small
+Conda prefix, and fake_package_manager.py, with a fake index, for micromamba and pip. A small
 package cache stands in for the one behind OpenShell: it asks the real policy middleware
 about every request, as OpenShell would, so the middleware's grants are what lets a file
 download. Permission requests and their answers go through the middleware's event store
@@ -76,7 +76,7 @@ from sandbox_science.worker.provisioner import Governing, Provisioner
 from sandbox_science.worker.settings import ClientSettings, LocalBackendSettings, token_digest
 from sandbox_science.worker.store import Store
 
-FAKE = Path(__file__).with_name("fake_manager.py")
+FAKE = Path(__file__).with_name("fake_package_manager.py")
 TOKEN = "p" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 SANDBOX = "sbx-provisioning"
