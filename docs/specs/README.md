@@ -13,7 +13,7 @@ Date: 2026-10-11. Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.
 | [Plans and delegation](plans-and-delegation.md) | Draft | Plans in part: [session plans](../SESSION-PLANS.md); delegation is not built (the prototype is [archived](../../.agents/docs/archive/README.md)) |
 | [Project ledger, board and frontier](ledger.md) | Draft; questions 2 to 6 settled (2026-10-11) | Not built |
 | [Skills](skills.md) | Draft | Not built |
-| [Run service](run-service.md) | Draft (2026-10-14); its open questions change the design | Not built |
+| [Run service](run-service.md) | Approved; its questions decided (2026-10-14) | Not built |
 
 These specifications state what the new harness must do for the CScience features it reimplements (D03, D11), and how to test it. They are written in the project's own words from observed use, the agent reports and public documentation (D56). The agent reports serve as evidence of *what* CScience does; their line anchors are not reproduced. No Claude Science code, prompt, skill text, schema or SQL is used. The reviewer rubric, role prompts and tool descriptions are written independently when each feature is built.
 
