@@ -90,7 +90,7 @@ class RequestKey:
     def from_payload(cls, data: Mapping[str, object]) -> RequestKey | None:
         """The key in a record; one without ``kind`` is an ``http`` key (the first format)."""
         kind = data.get("kind", "http")
-        if kind not in KEY_FIELDS:
+        if not isinstance(kind, str) or kind not in KEY_FIELDS:
             return None
         values: list[str | int] = []
         for name in KEY_FIELDS[str(kind)]:

@@ -71,7 +71,9 @@ def test_a_packages_request_carries_its_exact_file_set_deadline_and_context() ->
         {"files": [PARI, GMP]},
         {"valid_until": None},
         {"valid_until": "2026-10-14T13:00:00"},  # no timezone
-        {"escalation": {"timeout_seconds": True, "on_timeout": "deny"}},
+        {"valid_until": 4102444800},  # a timestamp is no ISO text
+        {"valid_until": "2099-01-01T00:00:00z"},
+        {"escalation": {"timeout_seconds": 10**15, "on_timeout": "deny"}},  # no timedelta
         {"escalation": {"timeout_seconds": 600, "on_timeout": "allow"}},
         {"target": {**PACKAGES.payload(), "kind": "other"}},
     ],
@@ -117,7 +119,8 @@ def test_an_answer_reads_its_scope_expiry_and_withdrawal() -> None:
     "change",
     [
         {"scope": "host"},  # not a packages scope
-        {"request_seq": True},
+        {"expires": 4102444800},
+        {"expires": "4102444800"},
         {"request_seq": "3"},
         {"expires": "soon"},
         {"expires": "2026-10-14T13:00:00"},
@@ -128,3 +131,55 @@ def test_a_malformed_answer_does_not_parse(change: dict[str, object]) -> None:
     raw: dict[str, object] = {"request_seq": 3, "scope": "files", "target": PACKAGES.payload()}
     with pytest.raises(ValidationError):
         AnswerPayload.model_validate({**raw, **change})
+
+
+@pytest.mark.parametrize(
+    ("expires", "until"),
+    [
+        ("20991014T120000Z", datetime(2099, 10, 14, 12, 0, tzinfo=UTC)),  # ISO basic format
+        ("2099-10-14T12+00:00", datetime(2099, 10, 14, 12, 0, tzinfo=UTC)),  # hour only
+    ],
+)
+def test_every_iso_time_the_fold_always_read_still_reads(expires: str, until: datetime) -> None:
+    # A denial written this way must keep denying: skipping it would let an earlier
+    # approval stand.
+    raw = {"request_seq": 3, "scope": "request", "target": HTTP.payload(), "expires": expires}
+    assert AnswerPayload.model_validate(raw).expires == until
+
+
+def test_booleans_count_as_the_integers_they_always_did() -> None:
+    # A denial numbered ``true`` still denies; nothing it closed opens.
+    answer = AnswerPayload.model_validate(
+        {"request_seq": True, "scope": "request", "target": HTTP.payload()}
+    )
+    assert answer.request_seq == 1
+    terms = {"timeout_seconds": False, "on_timeout": "deny"}
+    request = RequestPayload.model_validate({"target": HTTP.payload(), "escalation": terms})
+    assert request.escalation.timeout_seconds == 0
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"files": "not a list"},
+        {"files": [{"path": "relative"}]},
+        {"valid_until": "soon"},
+        {"files": [{"path": PARI}], "valid_until": NOW.isoformat(), "purpose": "trust me"},
+    ],
+)
+def test_other_kinds_ignore_the_file_set_fields(extra: dict[str, object]) -> None:
+    payload = RequestPayload.model_validate(
+        {"target": HTTP.payload(), "escalation": TERMS, **extra}
+    )
+    request = PermissionRequest.from_record(1, NOW, payload)
+    assert (request.files, request.valid_until, request.asked, request.purpose) == (
+        (),
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize("kind", [[], {}, ["http"], 3])
+def test_a_key_whose_kind_is_not_text_is_no_key(kind: object) -> None:
+    assert RequestKey.from_payload({**HTTP.payload(), "kind": kind}) is None

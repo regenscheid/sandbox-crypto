@@ -14,7 +14,6 @@ from datetime import datetime, timedelta
 from typing import Annotated, Final, Literal, Self, cast
 
 from pydantic import (
-    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -53,9 +52,33 @@ def _shown(value: object) -> str | None:
     return text if len(text) <= CONTEXT_TEXT else text[: CONTEXT_TEXT - 1] + "…"
 
 
+def _time(value: object) -> datetime:
+    """An ISO 8601 text with a timezone, as ``datetime.fromisoformat`` reads it: no
+    timestamps, no other formats."""
+    if not isinstance(value, str):
+        raise ValueError("a time is an ISO 8601 text")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("a time needs its timezone")
+    return parsed
+
+
+def _integer(value: object) -> int:
+    """A JSON integer; ``true`` and ``false`` count as 1 and 0, as they always have."""
+    if not isinstance(value, int):
+        raise ValueError("not an integer")
+    return int(value)
+
+
+MAX_TIMEOUT_SECONDS: Final = 10**12
+"""Bounds an escalation timeout so that it fits a ``timedelta``."""
 Key = Annotated[RequestKey, BeforeValidator(_key)]
+Time = Annotated[datetime, BeforeValidator(_time)]
+Integer = Annotated[int, BeforeValidator(_integer)]
 Shown = Annotated[str | None, BeforeValidator(_shown)]
 GrantPath = Annotated[str, StringConstraints(pattern=r"^/", max_length=MAX_GRANT_PATH)]
+
+_PACKAGES_ONLY: Final = frozenset({"files", "valid_until", "asked", "purpose"})
 
 
 class _Payload(BaseModel):
@@ -65,7 +88,7 @@ class _Payload(BaseModel):
 class Terms(_Payload):
     """How long a request waits for an answer, and what happens after."""
 
-    timeout_seconds: Annotated[int, Field(strict=True)]
+    timeout_seconds: Annotated[Integer, Field(ge=-MAX_TIMEOUT_SECONDS, le=MAX_TIMEOUT_SECONDS)]
     on_timeout: Literal["deny", "alert"]
 
 
@@ -80,9 +103,23 @@ class RequestPayload(_Payload):
     target: Key
     escalation: Terms
     files: Annotated[tuple[GrantFile, ...], Field(max_length=MAX_GRANT_FILES)] | None = None
-    valid_until: AwareDatetime | None = None
+    valid_until: Time | None = None
     asked: Shown = None
     purpose: Shown = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _packages_only(cls, data: object) -> object:
+        # Only a packages request has a file set, a deadline and words to show: another
+        # kind's record is neither refused nor shown for them.
+        if not isinstance(data, dict):
+            return data
+        fields = cast(dict[str, object], data)
+        target = fields.get("target")
+        kind = cast(dict[str, object], target).get("kind") if isinstance(target, dict) else None
+        if kind == "packages":
+            return fields
+        return {name: value for name, value in fields.items() if name not in _PACKAGES_ONLY}
 
     @model_validator(mode="after")
     def _file_set(self) -> Self:
@@ -103,10 +140,10 @@ class AnswerPayload(_Payload):
     """An ``approval`` or ``denial`` record's payload. A denial marked ``withdrawn`` is the
     worker closing a ``packages`` request for good."""
 
-    request_seq: Annotated[int, Field(strict=True)]
+    request_seq: Integer
     scope: str
     target: Key
-    expires: AwareDatetime | None = None
+    expires: Time | None = None
     withdrawn: Annotated[bool, BeforeValidator(lambda value: value is True)] = False
 
     @model_validator(mode="after")
