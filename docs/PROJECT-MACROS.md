@@ -3,10 +3,9 @@
 Project macros are a versioned USER setting in the shared control store. A
 document's YAML front matter overrides project definitions of the same name.
 Comments use their parent document's effective context; other project text uses
-project definitions. This implements the setting, Markdown/KaTeX rendering and
-existing mechanical-check paths. Entire-LaTeX documents and export staging are
-separate from this setting. The ledger and additional D82 prose sources remain
-separate work.
+project definitions. The setting applies to Markdown/KaTeX rendering and the
+mechanical math checks. Entire-LaTeX documents and export staging are separate
+from it. The ledger and other D82 prose sources are not built.
 
 ## Changing the setting
 
@@ -124,41 +123,9 @@ budgets, ambiguous anchors, context quotas and corrupt retained-state reads.
 Frontend fixtures cover cache/request identity and visible ambiguity warnings.
 These fixtures make no live provider calls.
 
-The preliminary source milestone passed 219 affected Python cases and 128
-focused frontend cases, with Ruff, formatting, Pyright and Svelte/TypeScript
-checks clear. These are affected-path results, not the final combined full-suite
-or native-browser gate.
-
-The confirmation correction passed 228 affected Python cases, including
-contradictory, agreed and legacy-unknown explanation contexts, allowed
-inconclusive outcomes and independent explicit USER decisions. The effective
-context guard is separate from overall snapshot coverage.
-
-Macro/table validation on product union `8797a55` passed 9,852 Python tests
-on Python 3.13.15 (43 opt-in skips, two existing Pydantic serializer warnings),
-575 web tests and 24 post-build math checks. Locked Python/npm installs,
-formatting, lint, strict Python/Svelte/TypeScript checks, license checks,
-protocol generation and both GUI/math builds passed. The supported Python 3.12
-matrix is unchanged; fresh PR CI and merge remain separate delivery gates.
-
-Root-owned [native browser acceptance](../.agents/docs/agent-reports/project-macros-2026-10-12.md)
-used the frozen product and helper-only child `0489692`, actual local KaTeX
-0.18.9 and Node 24.20.0, with synthetic projects and no model or worker calls.
-It exercised setting conflicts and retained drafts, document overrides,
-current versus saved numbered contexts, inherited-context refresh, project
-isolation and exact mechanical evidence without dependency-only reflags.
-The tab, helper/listeners, marked state and private login file were removed.
-The first fixture cleaned up at 20:45:41.981467 UTC and a separate fresh
-conflict/save confirmation fixture at 20:50:28.600027 UTC on 2026-10-12. Root
-verified both cleanups. Source, helper and build bytes stayed frozen throughout
-acceptance.
-
-The signed candidate union `33a9811` combines these macros and the accepted table
-profile with reviewed CP-12 candidate `f8a72f68`; this candidate was not yet
-merged main at validation time. Its full Python gate passed 9,893 tests with
-43 opt-in skips and the same two existing warnings in 341.61 seconds. Fresh
-combined gates also passed 575 web tests, 24 post-build math checks, both builds
-and all required locked/static/license/protocol checks. All 76 archived build-file
-hashes and the helper hash remained identical after this rebuild, so native
-acceptance is reused for those unchanged artifacts with its original source pin.
-Actual-main ancestry is integrated at signed `18ae9ba`, whose tree is identical to `e6eeed3`, after CP-12 PR #95 merged at `4b3a7e7` with all four fresh checks passed. Independent final reviews cleared signed `c318f5a`; PR #96 merged at actual main `6eb9a2c` after all four fresh exact-head checks passed (run `38308825104`).
+Checked in the browser with actual local KaTeX 0.18.9 and Node 24.20.0 on synthetic
+projects, without model or worker calls, in
+[project macros acceptance](../.agents/docs/agent-reports/project-macros-2026-10-12.md):
+setting conflicts and retained drafts, document overrides, current versus saved
+numbered contexts, inherited-context refresh, project isolation and exact mechanical
+evidence without dependency-only reflags.

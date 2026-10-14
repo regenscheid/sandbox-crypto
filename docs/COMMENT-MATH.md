@@ -1,11 +1,11 @@
 # Comment and reply math
 
-Durable comment openings and replies now share the isolated mechanical checker,
+Durable comment openings and replies share the isolated mechanical checker,
 findings and closing delivery of [document revisions](MATH-CHECKS.md) (D82,
 comment portion of LD-53 to LD-55 and CR-36 to CR-38). Eligible MAIN fix/rebut
-explanations have their own [additive slice](FINDING-PROSE-MATH.md). Ledger fields,
-other excluded prose, idle scheduling and model repair proposals remain open.
-The renderer stays operator-configured and unavailable by default.
+explanations are checked as described in [finding prose math](FINDING-PROSE-MATH.md).
+Ledger fields, other excluded prose, idle scheduling and model repair proposals
+are not built. The renderer stays operator-configured and unavailable by default.
 
 ## Immutable source and ordinary corrections
 
@@ -121,35 +121,12 @@ after the macro/anchor update, while two actual failed body edits remain at two.
 `main-fix --state-dir <marked-state>` makes an ordinary MAIN correction of the
 delegated reply. `concurrent-user-edit` corrects the USER-owned opening for stale
 draft/CAS tests. Both take the same renderer paths; `audit` needs only the marked
-state. Every action checks the marker before opening a writer. Browser/server
-acceptance and cleanup require separate coordination. Native browser acceptance
-and final combined gates are separate from these local fixtures.
+state. Every action checks the marker before opening a writer.
 
 ## Validation boundary
 
-Signed source `c1142e1` and exact-main union `7fa43e6` passed predecessor review
-and combined gates (9,613 Python tests). Preliminary browser acceptance then found
-the shared dependency-only reflag-budget bug. Final signed source `77ecc171` and
-helper SHA `972b459ba8223cb374818098e375c948ddddbee3dc817ac0b5027051b116a62e`
-passed independent exact-head review, including accepted-owner reconciliation,
-old persisted caches, USER decisions and bounded corrupt proofs. Seventy-eight
-focused cases and all corrected-source gates pass: 9,631 Python tests on 3.13.15
-(43 opt-in skips, two existing Pydantic serializer warnings), 441 web tests,
-24 post-build math checks, locked/static/license/protocol checks and both builds.
-The supported Python 3.12 matrix is unchanged.
-
-Fresh root-owned [browser acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md)
-used actual local KaTeX 0.18.9/Node 24.20.0 and synthetic state. It verified
-dependency-only zero reflags, two actual failed edits/unaddressed, unavailable
-holds, USER-only-own-body editing, independent body/reply drafts across reload
-and stale 409, explicit current-head adoption/save, and MAIN correction of a
-delegated reply with immutable original author/history. Exact accepted evidence
-and confirmed-fixed history, a distinct removal reason and session-b isolation
-passed. Final capture had no warning/error logs. The browser tab, transient server
-and marked state were removed at 13:50:58.272097 UTC. No model, worker or provider
-calls occurred. Source/test/helper/assets stayed frozen through gates and final
-acceptance. PR #87 merged at `d2b133f` after all three fresh CI checks passed.
-The subsequent [project-macro validation](PROJECT-MACROS.md#verification-boundary)
-covers setting inheritance, exact attempt pins and dependency refresh. Ledger,
-excluded prose, model repair proposals, idle scheduling and automatic compaction
-remain open.
+Checked in the browser with actual local KaTeX 0.18.9 and Node 24.20.0 on synthetic
+state, without model, worker or provider calls, in
+[comment math acceptance](../.agents/docs/agent-reports/comment-math-2026-10-12.md).
+Project-macro inheritance, exact attempt pins and dependency refresh are covered
+by the [project macro tests](PROJECT-MACROS.md#verification-boundary).

@@ -1,6 +1,6 @@
 # External skills: platform requirements
 
-Date: 2026-10-10. The user already uses [crypto-analysis-skills](https://github.com/regenscheid/crypto-analysis-skills) with CScience. Its content stays in that repository and is not embedded, vendored, or maintained in this project. This document records platform implications from a read-only review, not a new copy of its methods or prompts.
+Date: 2026-10-10. The user already uses [crypto-analysis-skills](https://github.com/regenscheid/crypto-analysis-skills) with CScience. Its content stays in that repository and is not embedded, vendored, or maintained in this project. This document records platform implications from a read-only review, not a new copy of its methods or prompts. It is a design input: skill loading is not built, and the [skills specification](specs/skills.md) is a draft.
 
 Inspected revision: `4089e99415f349dde406c8e57a227715002ee166`. The repository describes 162 skills, discoverable through names/descriptions with bodies and resources loaded on demand. The user can modify the external skills for this platform. Define clean platform contracts and update their host bindings; exact CScience API compatibility is not a requirement. Historical 0.1.27/0.1.53 observations identify failure scenarios to test, not constraints to reproduce.
 

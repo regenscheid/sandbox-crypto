@@ -53,8 +53,6 @@ whole-call timeout. It borrows the existing public WorkerClient observation
 snapshot; endpoint/header/session metadata stays private in memory. It never
 closes the shared client session. Ordinary observation calls retain their existing
 five-second budget; comparison and package reads share the extended worker budget.
-No orchestrator WorkerClient, worker source, dependency or legacy method changes
-are needed by this proxy.
 
 The route uses the same `ProvisionProxy` owner and global-eight/login-two/
 project-environment-one immediate admissions as every provisioning observation.
@@ -72,22 +70,14 @@ WorkerClient is closed. Blocked regular-file I/O can outlast the response budget
 no hard physical liveness or crash/SIGKILL guarantee is claimed. This read touches
 no activity time, executor admission, kernel state, provisioning mutation or guest.
 
-## Validation boundary
+## Tests
 
-Focused tests use an isolated synthetic HTTP peer and temporary project records,
-never a worker, provisioner, live lockfile store or guest. They cover exact
-populated/empty/held forwarding, unchanged AGPL and unknown licenses, explicit
-canonical selection, nested duplicate/strict-type/header/ref/page refusal,
-redirect/oversize/error handling, actual short continuation, late logout/root/
-configuration changes, unchanged ordinary timeout and shared task/FD ownership
-through deadline and repeated-cancel shutdown. Component static/affected results
-are retained in the author handoff. Full root integration, frontend/browser,
-actual stopped-worker no-wake acceptance and delivery CI remain separate.
-
-Author validation on the frozen source passes 50 new focused cases, 181 selected
-package/comparison/base-proxy cases and 598 affected workspace/client/provision-tool
-cases. Scoped workspace/new-test Pyright, Ruff/format, locked dependency sync,
-75 installed Python licenses and protocol freshness pass. Initial test lint had
-one compound assertion, corrected without weakening its task/scope checks; all
-initial and final outputs are retained separately. These component checks do not
-replace root's full combined gates, independent final review or runtime evidence.
+The tests (`packages/workspace/tests/test_revision_packages.py`) use an isolated
+synthetic HTTP peer and temporary project records, never a worker or guest. They
+cover populated, empty and held forwarding, unchanged AGPL and unknown licenses,
+explicit canonical selection, refusal of duplicate keys, strict types and
+incoherent headers, references and pages, redirect, oversize and error handling,
+short continuations, late logout, root or configuration changes, and task and
+descriptor ownership through deadlines and repeated-cancel shutdown. The pages
+were checked against a real worker and browser in
+[Lab32](../.agents/docs/agent-reports/babbage-openshell-lab-32-2026-10-13.md).

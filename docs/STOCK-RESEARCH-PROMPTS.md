@@ -22,10 +22,10 @@ with the configured model gateway. It creates no additional model call.
 | `proof-audit` | `sandbox-stock-proof-audit-1` | Separate assumptions and deductions from finite computation, examples and heuristics; distinguish gaps from counterexamples. |
 | `report` | `sandbox-stock-report-1` | Connect claims to inspected evidence and existing artifacts; separate conclusions, workflow status, uncertainty and remaining work. |
 
-These are original framing aids, independently written under D56. This change
-makes no upstream prompt/code/schema copy or fresh upstream parity claim. Scripted
-tests prove selection and input integrity; improved research behavior would need
-a separate budgeted evaluation.
+These are original framing aids, independently written under D56. No upstream
+prompt, code or schema is copied, and no parity with an upstream product is claimed.
+Scripted tests prove selection and input integrity; improved research behavior
+would need a separate budgeted evaluation.
 
 ## Assembly and authority
 
@@ -45,12 +45,12 @@ model-controlled selection. Invalid selection or installed content refuses befor
 model invocation. Selected aggregate system and metadata limits also refuse;
 selected runs never fall back to missing/unavailable provenance.
 
-The existing [single-MAIN planning tools](SESSION-PLANS.md) retain phase and progress
-when genuinely offered. Selection introduces no mandatory planning ceremony or
-approval gate. Existing authorization remains effective; `awaiting_approval`
-cannot be self-activated. USER editing/approval routes, generic delegation and its
-child/track/kernel lifecycle, effect-to-step lineage, compaction and offline wake
-remain separate. A template cannot implement any of them through wording.
+The [MAIN plan tools](ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools)
+keep the plan and its progress when they are offered. Selection introduces no
+mandatory planning ceremony or approval gate. Existing authorization remains
+effective; `awaiting_approval` cannot be self-activated. USER approval, delegation,
+effect-to-step lineage, compaction and offline wake are not built, and a template
+cannot supply any of them through wording.
 
 ## Retained input provenance and compatibility
 
@@ -75,32 +75,24 @@ run keeps its original immutable assembly and fresh owned schema projections.
 Version-1 and legacy parsing still accept their original default fields.
 
 Safe failed-run retention carries the same selected provenance with fixed failure
-metadata and no final answer. This change adds no new notice or ACK. Existing
+metadata and no final answer. Selection adds no notice or ACK. Existing
 successful-model delivery and durable save-before-ACK rules remain in force; a
 failed/duplicate save cannot acknowledge a new notice. Cancellation still
 propagates under the existing owned cleanup rules.
 
-## Source and validation boundary
+## Source and tests
 
 [prompt_bundle.py](../packages/orchestrator/src/sandbox_science/orchestrator/prompt_bundle.py)
 owns the separate selected schema and exact retained validation;
 [loop.py](../packages/orchestrator/src/sandbox_science/orchestrator/loop.py)
 resolves the trusted selection once;
 [cli.py](../packages/orchestrator/src/sandbox_science/orchestrator/cli.py)
-offers only the five fixed choices. The shared pure tool encoder and watcher and
-reviewer provenance implementations are unchanged.
+offers only the five fixed choices. The pure tool encoder is shared with the
+reviewer provenance.
 
-Focused scripted tests exercise all five selections with and without plan tools,
+Scripted tests exercise all five selections with and without plan tools,
 unchanged tasks/grants, document injection, mid-run catalog/schema mutation,
 invalid/bounded installed content, coherent empty-stock corruption, historical
-catalog replacement, real CLI retention and safe failed saves. Existing MAIN
-provenance, planning, cleanup and failure fixtures cover their retained behavior.
-Author validation is source-only; root owns broader gates, integration and fresh
-delivery CI. No live model, service, browser, worker or VM acceptance is claimed.
-
-The author run passes 43 new cases, 77 combined stock/MAIN input cases, and 256
-affected provenance, planning, project, failed-run and job cases. Whole-orchestrator
-typing, focused formatting/lint and installed-distribution license checks pass.
-Independent source probes verify exact v1 compatibility and retained selected
-history without the current catalog. These are scripted contract checks, not live
-research quality evaluations.
+catalog replacement, real CLI retention and safe failed saves. They are contract
+checks, not live research quality evaluations; no live model, service, browser,
+worker or VM is involved.

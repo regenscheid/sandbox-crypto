@@ -1,12 +1,11 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Selected retained lockfile differences
 
-The worker implements a read-only prerequisite for the remaining
-[CP-26](specs/conda-provisioning.md) package comparison display. The first
-[provisioning viewer](PROVISIONING-OBSERVATIONS.md) remains separate. The future
-comparison source union includes an explicit [workspace proxy](LOCKFILE-DIFF-WORKSPACE.md)
-and [selected GUI pages](LOCKFILE-DIFFERENCES-VIEW.md); this assembled source still
-awaits its own integrated runtime acceptance and delivery. It neither changes packages nor
+The worker compares the packages of two retained environment revisions, read-only,
+for the package comparison of [CP-26](specs/conda-provisioning.md). It sits beside the
+other [provisioning observations](PROVISIONING-OBSERVATIONS.md). The workspace passes
+it on through a [proxy](LOCKFILE-DIFF-WORKSPACE.md), and the GUI shows it in
+[selected pages](LOCKFILE-DIFFERENCES-VIEW.md). It neither changes packages nor
 answers permissions, restores an environment, extends retention or wakes a guest.
 
 `GET /v1/environments/{environment_id}/provisioning/observations/lockfile-diff`
@@ -34,7 +33,7 @@ metadata remains unknown.
 
 ## Exact sources and limits
 
-The public internal observation pair selector captures both bounded revision
+The observation pair selector captures both bounded revision
 headers and their exact raw-record hashes in one SQLite read snapshot. It checks
 original ref columns, timestamps and record types as the revision observer does;
 no full retained revision reaches Python. Each selected revision is at most 2 MiB.
@@ -69,7 +68,7 @@ entry at a time. It does not call full `read_lockfile`, full `Lockfile` validati
 
 The index quota is a serialized accounting bound, **not an exact Python heap/RSS
 limit**. Python object, sorting-reference and interpreter overhead remain. Large
-but otherwise valid historical inputs may be held by conservative new-reader
+but otherwise valid historical inputs may be held by these conservative
 limits; they are not modified or deleted. A supported source has all seven current
 format fields; omitted headers or an unsupported integer format version hold.
 Malformed scalar types, JSON, duplicate keys/identities, ref counts, bytes or
@@ -113,20 +112,9 @@ has an asynchronous eight-second deadline, effective when the event loop regains
 control; a timeout/disconnect does not terminate a
 blocked regular-file read. Its task/descriptors/lane remain owned until actual
 completion; repeated cancellation and app cleanup drain before the pool closes.
-There is no hard I/O liveness or SIGKILL durability guarantee. Existing worker
-shutdown must keep the Store/blob owners alive through app cleanup. The future
-proxy needs a separately reviewed deadline appropriate to this operation;
-the existing five-second small-observation transport is unchanged.
+There is no hard I/O liveness or SIGKILL durability guarantee. Worker
+shutdown must keep the Store/blob owners alive through app cleanup. The
+workspace proxy waits 10 seconds for a comparison, against 6 for the other
+observations.
 
-Focused validation uses synthetic retained SQLite/blob bytes and in-process
-HTTP, including exact pins, null/empty/skipped sources, strict parsing, duplicate
-identities, metadata changes, pages, special files/path replacement, allocation
-preflight, scope/auth and owned cancellation/deadline/shutdown. Full integration,
-OpenShell and native browser acceptance remain root-owned. Operator-answer APIs,
-lockfile retention tied to result lineage, rebuilds and complete CP-26 remain open.
-
-The author gates for this prerequisite passed 48 focused cases and 296 affected
-cases, whole-worker/contracts typing, style, locked dependencies, license and
-protocol checks. Independent synthetic probes covered 24 comparison cases across
-163 exact pages plus ownership/bounds checks. These are local source/component
-proofs; they do not replace the future combined delivery or runtime acceptance.
+Not built: operator-answer APIs, lockfile retention tied to result lineage, and rebuilds.

@@ -18,14 +18,14 @@
     {
       "path": "../../docs/PROVISION-EVENTS.md",
       "category": "implementation-boundary",
-      "bytes": 5748,
-      "sha256": "0bfb422287a8952fca5fe42cd30bc0349aa71a325aaeb628019a81a5ed331251"
+      "bytes": 4767,
+      "sha256": "f9ff54f7df57e6f8514a5c1a290ac019321af3c35a0cdb1c53b7474a784955bf"
     },
     {
       "path": "../../docs/INSTALLER-ARTIFACTS.md",
       "category": "implementation-boundary",
-      "bytes": 5556,
-      "sha256": "7065fcfce1ad1c728ced83eb2cb91518dc0aa0b841f0c2af76079d1490b03721"
+      "bytes": 4464,
+      "sha256": "276bb9d3e5160ef51b4fc12bcde0dba976ad4648cba38d03f6e3f5398cf64f30"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-34-2026-10-13.md",
@@ -36,8 +36,8 @@
     {
       "path": "../../docs/PIP-LOCKFILE-LICENSES.md",
       "category": "implementation-boundary",
-      "bytes": 3882,
-      "sha256": "7867930003074fd012e602a5ce5497f1e76f159e74881db622383d256d035c40"
+      "bytes": 3107,
+      "sha256": "eee0a945cdd6827156268516d9e8995bb0ce25a628a8c0350c0b4f224bbad6ef"
     },
     {
       "path": "archive/CHILD-ATTEMPTS.md",
@@ -60,8 +60,8 @@
     {
       "path": "../../docs/DISPLAY-REPAIR-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 6460,
-      "sha256": "266f42648acad9332b25c704f9658ae560a1407c722491a8b5afc72e414b0c85"
+      "bytes": 5898,
+      "sha256": "e9196abb5191016f1701e0d124522030d917d73c17a81cdd08a84a1db7e0fae5"
     },
     {
       "path": "archive/DOCUMENT-EXPORTS.md",
@@ -72,98 +72,98 @@
     {
       "path": "../../docs/FINDING-PROSE-MATH.md",
       "category": "implementation-boundary",
-      "bytes": 7327,
-      "sha256": "55126b3baf4eec548b8321689a69c6667de3a34a641c62009ac1f64620b34c9c"
+      "bytes": 6145,
+      "sha256": "234e664f30e725f3c07e3c7302cba9bd9d43f6e57a6a01dfb64121caad5876d5"
     },
     {
       "path": "../../docs/KERNEL-NOTICE-DELIVERY.md",
       "category": "implementation-boundary",
-      "bytes": 9786,
-      "sha256": "4413775a3eca5d90331d935786a0ef5b696cbae447f3469523ab8c3771d2186b"
+      "bytes": 9860,
+      "sha256": "414f44641c40b74d904eec592b34c3ef035dcf802c410b219a52b76bb849a160"
     },
     {
       "path": "../../docs/KERNEL-NOTICE-LINEAGE.md",
       "category": "implementation-boundary",
-      "bytes": 7759,
-      "sha256": "d47e7179506f02c6573c286251749bbe6017143525a52aae0568935af5959d5b"
+      "bytes": 6036,
+      "sha256": "9cee59c470fb1e812127dc5f06afeb915853c42bb8cbcb226a72918983d1f9e2"
     },
     {
       "path": "../../docs/KERNEL-NOTICES.md",
       "category": "implementation-boundary",
-      "bytes": 10169,
-      "sha256": "b04720539bee4251746f72f18fd2fdb1adce8a20998f83ff843d0e017f692015"
+      "bytes": 8410,
+      "sha256": "cbe9910e5539a5b80c8a12cb30f17aa09070ca9f7c239b689c509b5165dc7dc9"
     },
     {
       "path": "../../docs/KERNEL-REVISIONS.md",
       "category": "implementation-boundary",
-      "bytes": 12221,
-      "sha256": "7a736b1d5566a77e8a8b86921546bc6c9596a18700813592493a17c55e885143"
+      "bytes": 9930,
+      "sha256": "9a2318db46a53badb625d614810a37a22a3ec597d0e1a7cc15f7ddd243fdb91e"
     },
     {
       "path": "../../docs/LOCKFILE-DIFF-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 5850,
-      "sha256": "4880a12b3902d8fa486be1a05c3b03205b55440b8cb040792f6fec109ff25427"
+      "bytes": 5045,
+      "sha256": "735ef6f4f5ff610bd3cff55415d4311b68194b6eea7d6913b27276555fe2cc94"
     },
     {
       "path": "../../docs/LOCKFILE-DIFFERENCES-VIEW.md",
       "category": "implementation-boundary",
-      "bytes": 5869,
-      "sha256": "59d89011365053aa1377cb4bb6091615f42db4d0576208d871a03b0070d7720f"
+      "bytes": 5183,
+      "sha256": "7d032085b02cdaafb6b40c360bf7bc7e067a3b572cd2aafcb17c03b46d975cd2"
     },
     {
       "path": "../../docs/LOCKFILE-DIFFERENCES.md",
       "category": "implementation-boundary",
-      "bytes": 8367,
-      "sha256": "66d3ca374b09c2da2c72601dbf17bb0e5c2852330a35a91c72f5eec614dc3d51"
+      "bytes": 7410,
+      "sha256": "b32014bdec7ec19e794c43817187b13672b0b499bfc7c5f323371408bf2372a8"
     },
     {
       "path": "../../docs/MAIN-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 8217,
-      "sha256": "d1ce9dca503f6ac2227ac4ded92c9073aa0eb2d6c8ff573f72e097e239e9b73a"
+      "bytes": 7676,
+      "sha256": "6de9723e4c7b79c636be71bb0f1eca5cb9dab6646864d6caf1ca776ced0af15c"
     },
     {
       "path": "../../docs/ORCHESTRATOR-PROMPTS.md",
       "category": "implementation-design",
-      "bytes": 49856,
-      "sha256": "9e8acdc248e70308a8e2ab8a36e908d791ca9a3a6bb4709cd27b00f5db41addb"
+      "bytes": 35626,
+      "sha256": "a5dbae88f494ed77fff7c1247c1a6e36a53aee3401abed39885867d2ed476525"
     },
     {
       "path": "../../docs/PILOT-COMPUTATIONS.md",
       "category": "implementation-boundary",
-      "bytes": 3569,
-      "sha256": "feaae5a5adbb178a1aad84a42329d8e94084af03b70dba7dd5ada322ecc7988e"
+      "bytes": 2952,
+      "sha256": "cfb33d083d6f22895e69a74f4e8fda8cd1b9b7c67e28c28864cc8380e0e8aaaf"
     },
     {
       "path": "../../docs/PROJECT-MACROS.md",
       "category": "implementation-boundary",
-      "bytes": 9784,
-      "sha256": "b86fa8d38f48d690da3f1465853371747e1e11fd193036e5fc815de86f84e0f9"
+      "bytes": 7427,
+      "sha256": "5d901217c4b3fc44b18f30096d7c72eeb7584ed9221494045de2cb5704cdb4cf"
     },
     {
       "path": "../../docs/PROVISIONING-OBSERVATIONS.md",
       "category": "implementation-boundary",
-      "bytes": 9936,
-      "sha256": "fcfd1848b3869717938f2c321e66e5e0d15eca817df33b006094e58f60ff21c4"
+      "bytes": 7268,
+      "sha256": "1f756591782fb3fb2258cd16c04a2c746a9ddc9673c90116f75e187f5a7636ba"
     },
     {
       "path": "../../docs/PROVISIONING-WORKSPACE-VIEW.md",
       "category": "implementation-boundary",
-      "bytes": 7767,
-      "sha256": "470e5e114de8d298fc789546bdc53f397c2821ef63673bbbbe65123ed37989fb"
+      "bytes": 5895,
+      "sha256": "9f9d239ca243d4fddf61a62ec4f9efd5c5666bc442b8f8bc4a571435aeddfc38"
     },
     {
       "path": "../../docs/PROVISIONING-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 12243,
-      "sha256": "35492a287dcac4b0cf5cc8d2e86b0477908a4e4982ed917c2c894d2c9a580c7c"
+      "bytes": 10049,
+      "sha256": "dbe78c4dddc2c42ffe0989e036c0fc13bc97ee6d59ba63930fb2246a7541f6dd"
     },
     {
       "path": "../../docs/REVIEWER-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 7696,
-      "sha256": "d05b95d54cf92b3667eb18ba73ec125cb8def3dc564a9c1c8e8f3e6191ec0c4b"
+      "bytes": 7572,
+      "sha256": "62f4dc46386c0fcde3e76f3a8e7f1733e652349d775b77ae1b02a8ccfc792a01"
     },
     {
       "path": "archive/RUN-KERNEL-DISPATCH.md",
@@ -180,50 +180,50 @@
     {
       "path": "../../docs/SESSION-PLAN-EDITING.md",
       "category": "implementation-boundary",
-      "bytes": 9390,
-      "sha256": "d3a322b2a516e9aefabe0e95c7f5796f383c6bf8bf3142570a60fcce2b6f5bcf"
+      "bytes": 8742,
+      "sha256": "da52d5398a9d6383ca945bb797186fa36bd980a46ac549bbd8aa0a4e41c88aba"
     },
     {
       "path": "../../docs/SESSION-PLAN-EDITOR.md",
       "category": "implementation-boundary",
-      "bytes": 5511,
-      "sha256": "7bcb379424548492f3975295bfd9e533cae9f92a4143eb25792cf27d98b7dc6d"
+      "bytes": 5566,
+      "sha256": "b2d97673d231ca93d06900779c9c4a3a06eb71b92917bd8320c4d7bdd0b09bd7"
     },
     {
       "path": "../../docs/SESSION-PLAN-WORKSPACE.md",
       "category": "implementation-boundary",
-      "bytes": 7981,
-      "sha256": "755f23ffc5c18cceebe7c9fc2a6e34a452471c3cad3bc611f914343d198b5cad"
+      "bytes": 7311,
+      "sha256": "80401af35e03c6c4c90970b1696348281c2284de2a195bc5e8a25fb8a16f802e"
     },
     {
       "path": "../../docs/SESSION-PLANS.md",
       "category": "implementation-boundary",
-      "bytes": 12012,
-      "sha256": "24a38a2150e9fb921a4fbfc1787770e2ba46ec411062e93cbeefe5ef61ec4d7e"
+      "bytes": 11671,
+      "sha256": "79eea9ab878135a906e49cc1f985bbb83f1b130f66cdf01f337f81945f2a59dd"
     },
     {
       "path": "../../docs/STOCK-RESEARCH-PROMPTS.md",
       "category": "implementation-boundary",
-      "bytes": 6838,
-      "sha256": "ba7bc15d43c993e9d4c60075913c3c545af1c3d4024fcfee7954d603be31e03a"
+      "bytes": 6187,
+      "sha256": "d53185da61c4ddf57d4998f185cd43b93fd77adbe52f1e6c7557db939ec85bec"
     },
     {
       "path": "../../docs/WATCHER-PROMPT-PROVENANCE.md",
       "category": "implementation-boundary",
-      "bytes": 6644,
-      "sha256": "937a80de8a8f240741fd02dd262cb95600c779a9c830a7ebe0027c30053fc334"
+      "bytes": 6571,
+      "sha256": "dabe0d496f67b4560255257d4c759f6aa9fe29e7fb955d3a8c8ed8f57be95b9d"
     },
     {
       "path": "../../docs/WORKSPACE-KERNELS.md",
       "category": "implementation-boundary",
-      "bytes": 8270,
-      "sha256": "001dbde8290e08438135257d677765f4eebb57c8526cf00b2a237d50620adf74"
+      "bytes": 7461,
+      "sha256": "eea316334ca726db01065b5a4e47c7ab16694b7c71c32d9ed7ee4d3cdc87dac7"
     },
     {
       "path": "README.md",
       "category": "archive-index",
-      "bytes": 34047,
-      "sha256": "e28554326db2a8f97e0b771962487db911da6f1f0787fbf78bebf0cf3f7d84d2"
+      "bytes": 34550,
+      "sha256": "a6405bf001a2c71db4ced7a1f53fc17d2546d27ba18735be2dae59df0a4023c4"
     },
     {
       "path": "agent-reports/artifact-review-2026-10-12.md",
@@ -624,8 +624,8 @@
     {
       "path": "../../docs/PROVISIONING-UPGRADES.md",
       "category": "implementation-boundary",
-      "bytes": 5020,
-      "sha256": "20f13fbddb8bedb1fd0622b3ee061c6168a0bd4f770008f7312a9075e728e8cc"
+      "bytes": 3881,
+      "sha256": "1e2fbadd15bfdff01c78a92b8c6073642c58b247970f6dc667f86530a7dd3beb"
     }
   ]
 }

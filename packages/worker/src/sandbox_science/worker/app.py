@@ -164,9 +164,7 @@ def create_app(
 
     def read_observation(request: web.Request) -> bool:
         resource = request.match_info.route.resource
-        return request.path.startswith("/v1/run-kernels/") or (
-            resource is not None and "/provisioning/observations" in resource.canonical
-        )
+        return resource is not None and "/provisioning/observations" in resource.canonical
 
     @web.middleware
     async def guard(request: web.Request, handler: Handler) -> web.StreamResponse:
@@ -184,8 +182,6 @@ def create_app(
         except ValidationError as exc:
             response = _error(ErrorKind.INVALID_REQUEST, _summary(exc), 400)
         except web.HTTPException as exc:
-            if request.path.startswith("/v1/run-kernels/"):
-                exc.headers["Cache-Control"] = "no-store"
             _audit(request, client, exc.status)
             raise
         except Exception:

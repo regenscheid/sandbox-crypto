@@ -1,26 +1,26 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Installer observations and sanitized log artifacts
 
-New provisioning operations retain `installer_steps`: the original version,
-resolve and install step operation IDs, accepted execution/attempt IDs, known
-terminal state, nullable observed version, and pending/stored/unavailable
-artifact metadata. Legacy records without this field remain unknown (`null`).
-This implements the installer observation and partial log-artifact portion of
-[CP-16](specs/conda-provisioning.md), using existing project-scoped artifact reads.
-It adds no route, grant, UI, policy setting or permission decision.
+Provisioning operations retain `installer_steps`: the version,
+resolve and install steps' operation IDs, accepted execution and attempt IDs, known
+terminal state, nullable observed version, and pending, stored or unavailable
+artifact metadata. Older records without this field show it as unknown (`null`).
+This is the installer observation and partial log-artifact part of
+[CP-16](specs/conda-provisioning.md), read through the project-scoped artifact routes.
+It has no route, grant, UI, policy setting or permission decision of its own.
 
 Before resolving a Conda or pip request, the provisioner runs exactly one fixed
 `micromamba --version` or `pip --version` observation, respectively, with a
-10-second/4-KiB command bound. It uses the same PATH entrypoint as the existing
-resolver/install commands, in the original operation's environment/turn and
+10-second/4-KiB command bound. It uses the same PATH entry point as the
+resolve and install commands, in the original operation's environment/turn and
 exact step authorization. The observation is a bounded self-reported version
 at that time; it does not authenticate executable bytes or guarantee that PATH
 cannot change later. Known failure, missing/malformed/truncated output stays
-unknown. A lost or timed-out observation stops before resolve/install. Existing
+unknown. A lost or timed-out observation stops before resolve and install. The
 CP-13 recovery and launch fences still apply. Already-satisfied requests need
 no installer and create no version observation.
 
-Each original step's host-generated JSON artifact is at most 64 KiB, also
+Each step's host-generated JSON artifact is at most 64 KiB, also
 limited by the configured artifact cap. It binds the provisioning request,
 step operation, execution, attempt, original project/session/environment,
 terminal state, timestamps, exit/signal/timing, and nullable version token.
@@ -53,23 +53,15 @@ At most four whole artifact-publication owners are active. Bounded file threads
 remain owned through repeated cancellation and shutdown; the original
 cancellation is propagated after durable reference/operation facts where known.
 New artifact I/O uses no-follow, nonblocking regular-file checks on replay.
-BlobWriter construction now closes its original raw FD if stream wrapping fails
-and removes only a temporary pathname whose original identity is still proved.
+BlobWriter construction closes its raw descriptor if stream wrapping fails
+and removes only a temporary pathname whose identity is still proved.
 This does not add a global filesystem isolation guarantee.
 
 Artifact retention failure is reported with a fixed unavailable reason and
 never exports raw exception text. It does not rewrite the install execution as
 failed or retry it. Missing original execution metadata stops further steps.
-The existing artifact retention/lifetime policy applies; this slice supplies
-no new garbage collector, aggregate disk quota, binary attestation or complete
-CP-16/CP-13 restoration claim.
+The artifact retention and lifetime policy applies; there is no garbage
+collector, aggregate disk quota or binary attestation for these artifacts, and they
+do not complete CP-16 or CP-13 restoration.
 
-Component checks use synthetic executions, actual temporary blob/SQLite files,
-a scripted manager, and the existing fake-package-manager provisioning fixtures.
-They exercise safe omission/bounds, original scope/copy refusal, retained JSON
-corruption, exact replay, failed publication, four-owner admission, repeated
-cancellation, constructor FD cleanup, version-before-resolve composition and
-legacy recovery compatibility. Real installs, services and OpenShell acceptance
-remain root-owned and separate from these source checks.
-
-[OpenShell Lab35](../.agents/docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md) passed on signed runtime `d236b6b`/helper `fbbe3b61`, with independent complete teardown at2026-10-14T03:52:41.221801Z. The small scalar pilot preceded two installs; six original-step artifacts and four requested/finished observations matched the selected production APIs. Observed micromamba2.9.0/pip26.2.1 remain self-reports; no genuine awaiting-permission transition occurred. The slice is delivered as [PR #121](https://github.com/regenscheid/sandbox-crypto/pull/121), merged at `d2fe8fa` on reviewed signed `1f9698a` after all four fresh checks passed (run `38510468628`). Primary main is clean, locked and tree-identical to that reviewed head.
+Checked with real installs on OpenShell, where the observed versions were micromamba's and pip's own reports, in [Lab35](../.agents/docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md).

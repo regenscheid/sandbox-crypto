@@ -1,19 +1,20 @@
 # Automatic consistency review
 
-## Implementation status (2026-10-12)
-
-The automatic reviewer is implemented independently from the approved
+This page describes the automatic consistency reviewer as built in `packages/orchestrator`
+(`sandbox_science.orchestrator.consistency`). It implements the approved
 [behavior specification](specs/consistency-review.md), with a separately authored,
-versioned rubric (`sandbox-consistency-1`, D56). It never executes code. The historical
-planning review below remains historical context, not a description of the runtime.
+versioned rubric (`sandbox-consistency-1`, D56). It never executes code. The planning
+consistency review of 2026-10-10 is kept, as history, in
+[.agents/planning-consistency-review-2026-10-10.md](../.agents/planning-consistency-review-2026-10-10.md).
 
-The control application keeps `review_` tables in the existing `control.sqlite3`.
+The control application keeps the reviewer's tables ([below](#tables)) in the existing
+`control.sqlite3` ([living documents](LIVING-DOCUMENTS.md#the-control-store)).
 Observations, snapshots, evidence grants, tool reads, model usage, checked items,
 findings and their transitions are durable. A fenced lease permits one live reviewer
 per session across harness processes. Recovery drops only expired owners. A stale owner
 cannot read through a reviewer grant, spend budget, raise a finding or finalize a review.
 
-### Running and scheduling
+## Running and scheduling
 
 With `--state-dir`, the harness observes its transcript, canonical execution projections,
 agent-authored document revisions and durable explicit-publication artifact events. The reviewer uses a distinct
@@ -48,7 +49,7 @@ scheduler or automatic wake capability is claimed. A second process encountering
 owner reports pending rather than taking its grant. The GUI reads current state on
 Refresh and shows the review state at each saved run boundary; it has no push transport.
 
-### Evidence and authority
+## Evidence and authority
 
 A snapshot admits at most 256 items and 8 MiB of retained JSON/locator bytes; one item is
 at most 256 KiB. Document reads pin an exact immutable revision and verify its digest.
@@ -68,7 +69,7 @@ inputs remain unknown. Reproductions do not increment the new-revision trigger, 
 legacy live-tool metadata does not duplicate canonical events when the consumer is active.
 `review_read` slices exact decoded source characters with the original byte SHA;
 JSON escaping is not treated as source lines. Empty source remains empty and has an
-explicit audited exposure marker. Artifact anchors initially name the whole revision.
+explicit audited exposure marker. Artifact anchors name the whole revision.
 
 Confirmation snapshots explicitly grant the original finding evidence and response
 anchors under their original evidence IDs, scoped to the same project/session. They
@@ -82,8 +83,8 @@ incomplete and is not counted as attempted.
 If no confirmation target fits, an incomplete author-work window can still advance its
 feed; the omitted claimed fix stays explicitly unconfirmed.
 
-Reviewer tools are only manifest/read, checked-item record, finding creation and
-confirmation/rebuttal decision. Unknown or denied calls are recorded and consume the
+Reviewer tools are only `review_manifest` and `review_read`, `review_checked` (a checked-item record),
+`review_finding` (finding creation) and `review_decide` (confirmation/rebuttal decision). Unknown or denied calls are recorded and consume the
 model-turn budget. The reviewer has no worker client, author toolbox, file/network tools,
 policy mutation or delegation. The separate call/hour, turn, time, response/context and
 soft token budgets reserve before awaiting a model. Actual provider usage is recorded;
@@ -91,7 +92,7 @@ actual usage crossing the token budget makes the outcome capped, including a fin
 response. These are role budgets, not monetary accounting: the project's actual spend
 ledger is not implemented and the gateway's hard spend cap remains the monetary boundary.
 
-### Findings, delivery and workspace
+## Findings, delivery and workspace
 
 Findings retain severity, category, Markdown/LaTeX prose, exact anchors, remedy, revision,
 reflags and append-only attributed transitions. Reflags can strengthen the current
@@ -131,30 +132,17 @@ The browser never supplies USER attribution or a reviewer owner grant. Reviewer 
 uses the shared safe Markdown/math renderer with no inherited document macros; JSON and
 evidence previews remain escaped text.
 
-### Evidence and remaining acceptance
+Mathematical-renderability findings (CR-36 to CR-38 and CRF-14) are described
+[below](#mechanical-math-findings). Browser rendering is not presented as an automatic
+review verdict. Historical finding selection and supersession inspection are bounded;
+omitted snapshot context is explicit incomplete coverage.
 
-Focused fixtures cover immutable revision reads, unauthorized reviewer tools, value/log
-anchors, missing evidence, confirmation and user replacement pins, owner expiry, sticky
-and actual-usage caps, concurrent budget reservations, exact retry windows, contiguous
-prefixes, malformed cursors, document-only terminal classification, user-input races,
-late notices and save-before-acknowledgement. HTTP fixtures cover scope, CSRF, attributed
-user decisions, stale heads and replay. Independent [browser acceptance](../.agents/docs/agent-reports/consistency-review-2026-10-12.md)
-passed immutable previews, unavailable aliases, delayed selection, scoped sessions, retained
-claim/conflict drafts and attributed confirmation. The initial confirmation coverage issue
-and corrected scope are recorded, with the exact pending author-work retry preserved.
+## Browser fixtures
 
-The initial milestone checks on Python 3.13 passed 9,056 repository tests, with 43 external
-integration/image cases skipped; all 425 web tests passed. Ruff, format, strict pyright,
-Python/npm license checks, protobuf generation verification, Svelte/TypeScript checks,
-production build and whitespace checks passed. The main browser bundle is 490.98 kB;
-the review panel loads separately (12.91 kB at that milestone; 13.11 kB after the scope correction).
-The finding-assessment/response follow-up passed all 1,221 affected component tests
-and 41 focused review/API fixtures, with strict pyright, Ruff, format and whitespace
-checks green again.
-
-Final integrated acceptance after the scope correction passed 9,162 Python tests (43
-opt-in skips) and 429 web tests, with strict/static/license/protocol checks and both
-production builds green. Browser state and transient services were removed.
+Two scripted fixtures seed disposable, marked state directories for checking the
+workspace's review views by hand, without a worker or a real model. They were used for
+the [browser acceptance](../.agents/docs/agent-reports/consistency-review-2026-10-12.md)
+of the review views and the [artifact review acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md).
 
 The tracked synthetic browser fixture creates a new, marked state directory:
 
@@ -202,108 +190,44 @@ uv run python packages/orchestrator/tests/fixtures/artifact_review_browser_fixtu
 The helper refuses unrelated state/claims, verifies both seeded byte hashes, reads
 original and changed grants through ScriptedModel, and records confirmation. It proves
 plumbing and scoped evidence exposure, not model judgment. Remove the disposable
-server and directory after acceptance. The consumer passed 35 new cases, 144 affected
-component/API cases and two raw-preview SSR cases. Its independently reviewed D82/main
-source union passed 9,494 Python tests (43 opt-in skips), 436 web tests, locked/static/
-license/protocol checks and both builds. [Browser/API acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md)
-verified pinned raw reads, empty/incomplete sources, scope, delayed selection and the
-exact attributed fix. The scripted checks establish plumbing and authority; no live
-model, worker or OpenShell VM was used. Disposable state was removed. Fresh PR CI
-remains the merge gate.
+server and directory afterwards.
 
-Shell-written artifact inventory/revisions (CRF-6), full rich-output/file evidence,
-project spend accounting, ledger-specific evidence, automatic idle turns and a persistent
-chat host/push view remain deferred. Mathematical-renderability findings (CR-36–38 and
-CRF-14) have a separate [document-revision integration](MATH-CHECKS.md); comments,
-ledger fields and remaining finding prose stay open; MAIN fix/rebut explanation
-coverage is described in [finding prose math](FINDING-PROSE-MATH.md). Browser rendering is not
-presented as an automatic review verdict. Historical finding selection and supersession
-inspection are bounded; omitted snapshot context is explicit incomplete coverage.
+## Mechanical math findings
 
----
+D82 math checks use the same finding/history and authenticated USER decision surfaces, with explicit `math` origin, a real mechanical check ID and no synthetic reviewer run. The additive migration preserves existing reviewer IDs, history, notices and CAS heads; readonly legacy stores project `review` origin without migration. Reviewer categories/grants are unchanged and exclude this mechanical authority. Generic confirmation, reflag, supersession and threshold delivery paths cannot decide math findings. A separate bounded controller checks immutable document revisions and collects closing-only notices together with terminal findings, sharing at most two author response rounds. Accepted current formulas and complete parsed removal confirm mechanically; stale, skipped and unavailable evidence never does. USER takeover retains unresolved historical evidence while excluding new author reflags/notices. The checks cover document revisions, comment and reply bodies ([comment math](COMMENT-MATH.md)) and MAIN fix/rebut explanations; details and limits are in [document math checks](MATH-CHECKS.md).
 
-# Historical consistency and shared-component planning review
-Date: 2026-10-10. Planning review only. Source inspection supports the findings below; proposed components and backend mappings have not been implemented or exercised.
-
-> **Update (2026-10-10, D11):** the user decided to reimplement the needed CScience behavior rather than adapt or patch the Claude Science runtime. Where this document speaks of retaining, adapting or patching CScience mechanisms, read it as *behavior evidence for the reimplementation*. No Claude Science code, prompts, schemas or assets are copied (D56). OpenScience Desktop upstream is MIT-licensed and remains a code-reuse candidate, subject to per-file checks.
-
-## Conclusion
-
-The requirements fit together. The main implementation risk is building separate infrastructure for each feature: a document history, a ledger history, a reviewer evidence store, a permission queue, and an execution journal that cannot reliably refer to one another. Share identity, immutable revisions, artifact transfer, event delivery, and scoped decisions. Preserve domain-specific meaning and lifecycle on top of those mechanisms.
-
-Start by proving one ordinary research operation across the container boundary with the new harness (D11). The [implementation plan](IMPLEMENTATION-PLAN.md) turns this review into ordered work with evidence gates. It does not assume a new harness, database, or collection of microservices.
-
-## Inconsistencies and ambiguities resolved
-
-| Area | Planning drift or implementation trap | Resolution |
-| --- | --- | --- |
-| Functional baseline | Some feature lists read as a new workbench implementation before establishing whether CScience can be adapted | Retain its research loop and supported state store during the first spike. Measure execution seams and patch burden before deciding replacement scope. |
-| Automatic review | Several acceptance paths made fresh reproduction sound mandatory alongside Science-style automatic review | Preserve current consistency review scheduling, scope and finding/confirmation behavior. Computational reproduction is a separately configured proposed extension, with its own gate. |
-| Published frontier results | A universal verification gate would contradict the requirement to accept published results directly | Record published results with source, conditions and reported measures. Apply project-result evidence/promotion policy separately; no automatic rechecking of cited research. |
-| Ledger and open items | “Open issues tracked separately” could imply another store | Use typed entries in the same project ledger. Result/frontier and open-issue views filter those entries and their relationships. Review findings have their own lifecycle and link to entries. |
-| New versus restored sessions | A common snapshot mechanism could accidentally initialize a new workbook from the evolved project environment | New dedicated session environments start from the pinned base image. Resume/restore addresses an existing logical environment and its checkpoint. These are separate operations. |
-| Shared files | A shared writable mount does not provide conflict detection | Use separate session working directories and revision-checked publication. For deliberately mutable shared files, require a managed write/lease or expose conflicting versions. State the limits of any direct writable mount. |
-| Dependencies | Sharing project data could accidentally share a mutable Conda prefix across dedicated environments | Each environment owns its dependency state. Serialize package changes in a shared project environment; dedicated session environments share data references, not installed-tool state. |
-| Idle preservation | A package list plus persistent volume may omit changed container files and configuration | Capture/retain every permitted mutable location, dependency/configuration state and durable volume. Verify restoration before releasing the only complete environment copy. Live kernel memory is a separate capability. |
-| Local deployment | “Same Kubernetes manifests” could become an unintended Kubernetes-only requirement | Certify one local container path and hosted Kubernetes initially. Local Kubernetes is acceptable; direct Docker/Podman is optional. Select using observed enforcement and persistence. |
-| Service diagram | Logical boxes could be interpreted as mandatory independent deployments | Keep document, ledger, review and permission modules together in the control application initially. Separate the GUI, orchestration, and trusted worker/policy infrastructure according to placement and authority. |
-| Monitor escalation | Human approval cannot safely wait inside a bounded inspection RPC | Persist the request outside middleware. Prevent the affected effect, then resume or retry only when that operation can do so safely under the scoped decision. Do not blindly replay a network request. |
-| Alerting | Endpoint audit mode and middleware failure policy could be mistaken for the requested alert-and-continue action | A middleware denial still blocks even in endpoint audit mode. Alert-and-continue must explicitly allow the operation and emit a finding. `on_error` handles middleware failure, independently of the matched rule action. |
-| Completion evidence | Browser callbacks and agent narration could become authoritative proof of execution | Worker/control observations own execution status and artifact publication. Record agent assertions as assertions. Reconnect the browser by replaying durable events. |
-
-The OpenShell approval/alert distinctions follow its current [middleware configuration documentation](https://docs.nvidia.com/openshell/latest/extensibility/supervisor-middleware/configure): the documented default RPC timeout is 500 ms, the maximum is 30 seconds, and failure policy is distinct from middleware verdicts. This establishes an integration constraint, not a tested approval mechanism.
-
-## Shared foundations and their consumers
-
-These are logical modules. Their ownership should be explicit even when several share one process and database.
-
-| Common component | Reused by | Shared contract and boundary |
-| --- | --- | --- |
-| Project identity and resource scope | Sessions, containers, skills, documents, ledger, reviews, connectors | Stable project/session IDs and scoped resource references. Session, environment, kernel, execution and attempt remain distinct identities. |
-| Artifact and revision repository | Papers, extracted pages, cell outputs, documents, ledger evidence, reviews, exports | Immutable bytes/revisions, content hashes, lineage, expected-revision mutations and publication. Large payloads travel as artifact references. |
-| Typed source anchors | PDF navigation, document comments, ledger citations, review locations | One representation of revision plus block/math node, PDF page/region, or code/cell position. An uncertain reattachment is visible. |
-| Durable event delivery | Worker streaming, GUI reconnect, review triggers, monitor findings, ledger projections | Correlation, event IDs, per-stream sequence/cursor, replay and deduplication. Persist domain changes and their events together; a broker is not automatically required. |
-| Scoped decision workflow | Install permissions, tool grants and monitor escalation | Durable pending/approved/denied/expired state, exact operation/scope, policy revision and continuation. User preference questions and scientific verdicts are different record types. |
-| Execution and environment services | Shell, kernels, package managers, parsers, renderers, batch jobs and optional reproductions | Common routing, limits, cancellation, reconciliation, files and provenance. Backend adapters map these operations to actual enforcement capabilities. |
-| Capability and procedure registry | Worker selection, Conda provisioning, external skills, MCP and role configuration | Required versus observed tools; effective versions and actual load/probe evidence. A description advertised by a connector is not a successful worker probe. |
-| Mathematical presentation | Chat, workbooks, documents, comments, ledger and reviews | One TeX-preserving rendering policy, math-node identity and visible errors. Full document compilation uses the ordinary worker boundary. |
-
-Do not flatten every object into one generic status field. A scientific result, an open research question, a review finding, an execution failure and a monitor alert differ in meaning. Share references and persistence mechanisms while retaining their own schemas and transitions. Frontier selection is a research-domain projection with comparison rules; it is not the event transport or review queue.
-
-## Concrete reuse candidates
-
-### CScience mechanisms (behavior evidence for the reimplementation)
-
-The current source already contains execution logs, artifact versions, scoped memory, exact-version verification records and unified annotations. They provide candidate backing structures for shared references. Extend or adapt these structures after tracing callers; do not create a competing ledger/document store merely because the new architecture diagram has more boxes. Relevant inspected migrations are `0005_execution_log.sql`, `0026_memory.sql`, `0029_verification.sql`, `0085_annotations_unified.sql` and `0115_verification_checks_resolution.sql` under `dist/review-0.1.60/runtime/assets/drizzle/sqlite/` in the existing checkout.
-
-The bundled Python kernel worker is a long-lived JSON-lines subprocess, with request IDs, persistent variables, streamed output, interruption and usage data. It is not already a Jupyter kernel. First retain its semantics through a kernel adapter; changing the wire protocol is independent of moving execution to a worker. Evidence: `assets/kernels/kernel_worker.py`, header lines 3–21, streaming around 162–204 and main loop around 1672 onward. The broader [source study](SOURCE-STUDY.md) records review/document behavior and pinned source versions.
-
-The local wrapper's capability profiles and installation-root discovery are useful to adapt. Run actual probes inside the assigned worker and its policy. The existing P38 Conda handling preserves the sandbox-injected proxy on Linux/macOS when no explicit CScience proxy overrides it. Reuse one environment/network injection path across kernels, shell and package operations so provisioning cannot silently bypass or break inspection. Current evidence: `pkg/platform/lib/profiles.mjs`, `pkg/platform/lib/capabilities.mjs`, and `src/patches.mjs` P38 around 1693–1778. This code inspection is not a worker integration test.
-
-### Standard components worth testing
-
-| Candidate | Opportunity | Required evidence before adoption |
-| --- | --- | --- |
-| Jupyter messaging/kernel adapters | Share execution, interruption and rich mathematical output across Sage and other compatible kernels; retain the existing Python adapter initially | Test native Sage syntax, exact types, output events and interruption through the same worker API. Keep kernel sockets private to the worker; do not expose a Jupyter server merely to use its kernel protocol. [Messaging](https://jupyter-client.readthedocs.io/en/stable/messaging.html), [Sage kernel](https://doc.sagemath.org/html/en/reference/repl/sage/repl/ipython_kernel/kernel.html) |
-| PDF.js viewer | Reuse a browser PDF renderer and layer project navigation/anchors over it | Demonstrate stable page/region navigation and selection on exact source revisions. It does not replace scientific PDF extraction/OCR or mathematical transcription checks. [PDF.js](https://mozilla.github.io/pdf.js/) |
-| pdf_oxide (D59) | Worker-side text, character positions, tables, outline/bookmarks, annotations and optional page rendering under MIT OR Apache-2.0 | Check physical-page and page-label mapping, character coordinates for region anchors, equation/matrix transcription against rendered crops, and behavior on scanned or malformed PDFs. Pin the version; the project is young and fast-moving. [Repository](https://github.com/yfedoseev/pdf_oxide) |
-| KaTeX renderer | Share browser math rendering across every research view while preserving original TeX | Test matrix/aligned syntax, macro scope, errors, and rendering security settings. Full TeX compilation remains separate worker execution. [Security guidance](https://katex.org/docs/security.html) |
-| OpenShell runtime and middleware | Reuse sandbox lifecycle and policy hooks across certified pools | Use its selected driver per gateway rather than introduce a second scheduler. Verify writable-state retention, local/cluster controls, supported inspection and the three monitor actions. [Runtimes](https://docs.nvidia.com/openshell/latest/how-it-works/sandboxes/runtimes), [evaluation](OPENSHELL-EVALUATION.md) |
-| OpenScience fork contracts | Learn from typed execution/events, permission receipts, replay and teardown failure handling | Extract only components whose dependencies and current behavior are established. Native bridge and unfinished agent/persistence paths are not ready substitutes for a backend. [Assessment](REUSE-ASSESSMENT.md) |
-
-External crypto skills remain in their own repository. A shared platform binding should expose project resources, execution, documents/ledger and decisions to them; do not copy their catalog or reproduce a separate board implementation for that pack.
-
-## What the review does not settle
-
-Backend choice, maintainable CScience patchability, exact persistence implementation, and a replacement harness remain evidence-dependent. Jupyter, PDF.js and KaTeX are targeted candidates, not selected infrastructure. This review recommends common contracts and implementation boundaries; it adds no requirement for a new database, workflow engine, event broker, real-time collaboration framework, or public multi-user service.
-
-## Mechanical document findings
-
-Document-revision D82 checks use the same finding/history and authenticated USER decision surfaces, with explicit `math` origin, a real mechanical check ID and no synthetic reviewer run. The additive migration preserves existing reviewer IDs, history, notices and CAS heads; readonly legacy stores project `review` origin without migration. Reviewer categories/grants are unchanged and exclude this mechanical authority. Generic confirmation, reflag, supersession and threshold delivery paths cannot decide math findings. A separate bounded controller checks immutable document revisions and collects closing-only notices together with terminal findings, sharing at most two author response rounds. Accepted current formulas and complete parsed removal confirm mechanically; stale, skipped and unavailable evidence never does. USER takeover retains unresolved historical evidence while excluding new author reflags/notices. Details, limits and remaining non-document LD-53 scope are in [document math checks](MATH-CHECKS.md).
-
-
-The additive [MAIN explanation math slice](FINDING-PROSE-MATH.md) checks only
+The [MAIN explanation math checks](FINDING-PROSE-MATH.md) cover only
 agent MAIN fix/rebut explanation source. Its ordinary corrections preserve the
 original scientific action/evidence, use exact body and finding CAS, and fence
-stale reviewer snapshots independently. The workspace history is read-only;
-ledger and reviewer/USER/platform diagnostic prose remain outside this slice.
+stale reviewer snapshots independently. The workspace history is read-only.
+
+## Tables
+
+`ReviewStore` adds these tables to the control store when it opens. A test
+(`test_docs_inventory.py`) compares this list with the store.
+
+| Table | Holds |
+| --- | --- |
+| `review_config` | Each project's numbered reviewer configurations, append-only |
+| `review_windows` | Each session's review state: the author-work watermark, document cursor, last dispatch, retry end, failures and manual requests |
+| `review_artifact_cursors` | Each session's cursor in the artifact inventory's events |
+| `review_feed` | Observations of author work (document revisions, execution projections, artifact events), with what they count toward the triggers, append-only |
+| `review_runs` | Each review: its kind, owner lease, feed range, model alias, rubric, configuration, classifier, usage, cap and coverage |
+| `review_evidence`, `review_grants`, `review_reads` | A review's snapshot items, the evidence it may read, and each read it made, append-only |
+| `review_confirmation_targets` | The finding revisions a confirmation review checks, append-only |
+| `review_calls` | Each reviewer model call's usage and prompt provenance |
+| `review_records` | A review's checked items, findings and deferred reflags, append-only |
+| `review_findings`, `review_finding_schema` | Findings with their current severity, category, statement, anchors, remedy, status, revision and origin (`review` or `math`), and the findings schema's version (2) |
+| `review_transitions` | Every finding revision with its status, actor and reason, append-only |
+| `review_operations` | The first result of each user or agent finding change under an operation ID |
+| `review_notices` | Findings due for delivery to the author, with their claim and delivery |
+| `review_events` | The reviewer's events per session, append-only |
+| `review_response_bodies`, `review_response_pins`, `review_response_discovery` | MAIN fix/rebut explanation bodies and their revisions, the body revision each confirmation review pinned, and older responses held from checking because their author is unknown ([finding prose math](FINDING-PROSE-MATH.md)) |
+| `response_math_sources`, `math_response_jobs` | Each explanation's math-check cursor, and which checks are of explanations |
+
+## Not built
+
+- Shell-written artifact inventory and revisions (CRF-6), rich outputs and file contents as evidence, and ledger-specific evidence.
+- Project spend accounting; the gateway's hard spend cap is the monetary boundary.
+- Automatic idle turns, a persistent chat host and a push view.
+- Math checks of ledger fields and of reviewer, USER and platform prose (D82).

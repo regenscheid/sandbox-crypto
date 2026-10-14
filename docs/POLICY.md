@@ -1,6 +1,6 @@
 # Project policy file
 
-Date: 2026-10-10. Proposed (D62); the evaluation details below are proposed in D68 and implemented by the `sandbox_science.policy` library ([packages/policy](../packages/policy)). The user wants permissions to stay policy-based and to be defined in a YAML file that is quite permissive by default, with a configurable timeout after which unanswered requests fall back to deny. This document defines the semantics. The example is [examples/policy.yaml](../examples/policy.yaml); the library's tests load it, so it stays valid.
+The format is confirmed (D62), and so are the evaluation details below (D68). The `sandbox_science.policy` library ([packages/policy](../packages/policy)) implements them. The user wants permissions to stay policy-based and to be defined in a YAML file that is quite permissive by default, with a configurable timeout after which unanswered requests fall back to deny. This document defines the semantics. The example is [examples/policy.yaml](../examples/policy.yaml); the library's tests load it, so it stays valid.
 
 ## Layers and precedence
 
@@ -137,7 +137,7 @@ credentials:
 - **Hosts.** Every provider needs at least one. Each is an exact host name: no wildcards, which would send the credential to every match, and no IP addresses. A host belongs to one provider at most, because OpenShell binds one credential per endpoint.
 - **Port 443 only.** The compiler binds the credential to each host on port 443, and OpenShell refuses a request that carries the placeholder anywhere else. OpenShell substitutes the credential there whatever the transport, so the middleware refuses requests that OpenShell reports as plain HTTP (`credential_unencrypted`). Plain HTTP it reports as `https` remains a residual risk ("Residual risks").
 - **Credentialed requests.** A request to one of these hosts, on any port, may carry the credential, and counts as credentialed under "Escalation timeout". Requests to other hosts cannot carry it.
-- **Profiles and attachment.** The provider's profile must have no endpoints of its own ([example](../examples/openshell/profiles/github-token.yaml)), so that the project policy, not the profile, says where the credential goes. OpenShell enforces this only for providers that a binding names. The orchestrator must therefore attach exactly the providers the policy lists (planned). OpenShell would bind any other provider to its profile's endpoints, and the middleware would not count requests there as credentialed.
+- **Profiles and attachment.** The provider's profile must have no endpoints of its own ([example](../examples/openshell/profiles/github-token.yaml)), so that the project policy, not the profile, says where the credential goes. OpenShell enforces this only for providers that a binding names. The worker therefore creates each sandbox with exactly the providers the policy lists, after checking that each is registered under a profile without endpoints ([worker](WORKER.md#environments)). OpenShell would bind any other provider to its profile's endpoints, and the middleware would not count requests there as credentialed.
 
 ### Escalation timeout
 
@@ -251,7 +251,7 @@ The middleware path has these limits, checked against a real gateway on babbage 
 | `mcp.servers.*.tools`, protocol methods, `worker_access`, `worker_tools` | The MCP proxy, with this library. OpenShell re-enforces declared servers, methods and tools in the MCP proxy's sandbox; `worker_access` also decides whether research sandboxes can reach the MCP proxy |
 | `mcp.servers.*.auth` | The connector auth service and OpenShell providers bound with `credential_binding` ([MCP connectors](MCP-CONNECTORS.md), D66, D67) |
 | `credentials.providers` | OpenShell providers (D57) with profiles without endpoints; the compiled policy binds each credential to its `hosts` on port 443, and OpenShell injects it there after the middleware has decided |
-| `escalate` | A denial with `approval_required` and a durable permission request (MONITORING.md); the agent retries after approval |
+| `escalate` | A denial with `approval_required` and a durable permission request ([policy middleware](POLICY-MIDDLEWARE.md#permission-requests)); the agent retries after approval |
 | `alert`, `monitors` | Middleware findings and request records |
 | `packages` | The policy middleware, with this library, for every request to the package cache; registries are reachable only through the cache ([package cache](PACKAGE-CACHE.md)) |
 | `resources` | The compute driver, capped by the pool ceiling; model budget through the LiteLLM virtual key (D61) |
@@ -260,7 +260,7 @@ Create a research sandbox with the whole compiled document. Apply each later rev
 
 ## Residual risks
 
-Five adversarial review rounds of the library (2026-10-10, pinned by `test_review_regressions.py`) left these for the components around it:
+The library's adversarial reviews (their cases are pinned by `test_review_regressions.py`) left these for the components around it:
 
 - Paths are compared case-sensitively, so a path `deny` can be bypassed on a server that ignores case. Prefer narrow allows to path denies.
 - An allowed git fetch sends a request body to the git host. The policy middleware accepts only a well-formed upload-pack request (git's keywords, object IDs and bounded values), which stops arbitrary payloads but not volume: `have` object IDs and values such as `ref-prefix` are unchecked against any repository and can carry most of a 4 MiB body. Name the hosts in fetch rules; a host the agent cannot read back from receives such data harmlessly.

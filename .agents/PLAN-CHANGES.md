@@ -6,6 +6,7 @@ Dated list of changes to the plan, decisions and conventions ([conventions](CONV
 
 The owner asked for autonomous work through the [refactoring plan](refactor-plan/PLAN.md), with its recommendations adopted. Each item marked *adopted* was adopted on 2026-10-14 under that instruction.
 
+- **Convention: an injected clock and one test-support package** (#137, plan Phase 1). Components with timing take a `Clock` (`contracts/clock.py`) and their timeouts as constructor parameters, defaulting to `SystemClock` and today's values; tests use `FakeClock` and `eventually()` from the dev-only member `packages/testing` instead of sleeps and patched constants.
 - **Confirmed (adopted):** D84 (provisioning operations), D85 (the SQLite control store), D59 (pdf_oxide) and D43 (isolation tiers and the probe rule); PSF-2.0 and MIT-0 in tier 1 (D45). Plan decision 12.
 - **Specs approved as drafted (adopted):** [tools](../docs/specs/tools.md) and [PDF sources](../docs/specs/pdf-sources.md), with their proposed answers. This settles D83's details: jobs run 24 hours by default and 7 days at most, 4 at once in a session and 8 in an environment, and closing a session cancels its jobs.
 - **Kernel notices (adopted, decision 4):** the durable kernel-notice inbox is replaced by a stateless check before each turn, plus the disclosure every execution result already carries (A-04).

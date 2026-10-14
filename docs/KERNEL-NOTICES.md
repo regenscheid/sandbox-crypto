@@ -1,17 +1,19 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Internal kernel notice inbox
 
-This is a control-store prerequisite for the agent notification part of
-[CP-12](specs/conda-provisioning.md). It retains bounded, dated observations of a
-proved kernel whose start revision predates the observed package revision. It is
-implemented in `orchestrator/kernel_notices.py`, with isolated persistence tests.
-It is separate from [visible-session GUI polling](WORKSPACE-KERNELS.md) and
-[ordinary execution result disclosures](KERNEL-REVISIONS.md).
+The kernel notice inbox is the durable store behind the agent notification part
+of [CP-12](specs/conda-provisioning.md). It retains bounded, dated observations of
+a proved kernel whose start revision predates the observed package revision, in
+`kernel-notices.sqlite3` in the harness state directory
+([kernel_notices.py](../packages/orchestrator/src/sandbox_science/orchestrator/kernel_notices.py)).
+Its only caller is the [MAIN delivery controller](KERNEL-NOTICE-DELIVERY.md), which
+fills it from [passive worker lineage](KERNEL-NOTICE-LINEAGE.md) and injects
+notices into stateful MAIN runs. It is separate from
+[visible-session GUI polling](WORKSPACE-KERNELS.md) and from the
+[disclosures in ordinary execution results](KERNEL-REVISIONS.md).
 
-There is no worker transport, run-loop/CLI injection, scheduler, public route or
-RunRecord ACK integration in this slice. No models, services or VMs were used to
-validate it. This store does not establish end-to-end CP-12 agent delivery, capture
-every package transition, interrupt a blocking tool, or wake idle/offline agents.
+The inbox does not capture every package transition, interrupt a blocking tool, or
+wake idle or offline agents, and it has no public route.
 
 ## Trusted input and scope
 
@@ -30,13 +32,13 @@ project/environment/session/language, original VM/incarnation, kernel ID, opaque
 birth ID, executor-local generation and known start revision. The normalized worker
 generation is a separate integer, at least the raw generation. The birth and scope
 must agree exactly; start must not exceed the known observed current revision.
-Both generations participate in the canonical identity. The internal birth fields
-match the companion lineage contract; mapping and use of its shared identity/hash
-helper remain part of the separately reviewed transport union. A flattened GUI
+Both generations participate in the canonical identity. The birth fields match
+the worker's lineage contract; the delivery controller maps each proved lineage
+entry through `KernelLineageIdentity` into a `TrustedKernelNotice`. A flattened GUI
 `KernelInfo`, receipt timestamp, name or current package list is insufficient.
 
 Unknown legacy lineage and unknown comparison revisions use an explicit `hold`.
-They never synthesize a birth or mean that a kernel disappeared. A future caller
+They never synthesize a birth or mean that a kernel disappeared. A caller
 must resolve all relevant unknown input for this scope before submitting positive
 proof to recover that hold. Re-proving the identical retained pin clears an unknown
 hold without appending a notice, changing an existing lease, or reviving ACKed data.
@@ -45,9 +47,9 @@ The scope enrollment retains its original binding. Changing a worker, VM or
 incarnation for that logical session lifetime refuses; it does not automatically
 re-enroll, clear history or revoke previously supplied actor objects. The current
 binding authentication obligation above is essential. Even ordinary idle/resume
-with a new incarnation needs a future explicit replacement/reconciliation policy.
-This prerequisite offers no reset, lifecycle cleanup or guessed ordering across
-those changes.
+with a new incarnation would need an explicit replacement/reconciliation policy,
+which does not exist. The inbox offers no reset, lifecycle cleanup or guessed
+ordering across those changes.
 
 ## Durable observations and delivery claims
 
@@ -61,7 +63,7 @@ inconsistent identity at the same normalized generation is held explicitly.
 
 Old pending birth notices remain claimable after a newer current birth is proved.
 They are historical observations, not assertions that the old kernel still exists
-or is currently stale. Future platform prose must preserve the original receipt
+or is currently stale. Platform prose must preserve the original receipt
 time, start/current revisions and birth pin, and recheck current state separately
 if it describes current conditions. Unknown input never deletes those observations.
 
@@ -74,12 +76,13 @@ operations refuse atomically. Renewal does not widen a batch beyond its byte bou
 
 ACK is the caller's assertion that a successful model delivery and its run
 were durably saved first. The module cannot verify that assertion and does not
-call ACK itself. The integrated consumer must retain only batches from successful model
+call ACK itself. The consumer must retain only batches from successful model
 calls, fsync the saved run before ACK, and preserve cancellation/failed-save replay.
 ACK atomically compacts only its exact items, retaining the sequence cursor,
 per-language dedup watermark and one bounded last-ACK receipt. Last exact replay
 has no side effects on a later claim. An older receipt displaced by a subsequent
-ACK refuses; indefinite replay history is outside this prerequisite. The consumer RunRecord, rather than these compacted rows, retains delivery audit evidence.
+ACK refuses; there is no indefinite replay history. The consumer's RunRecord,
+rather than these compacted rows, retains delivery audit evidence.
 
 ## Explicit logical budgets
 
@@ -110,7 +113,8 @@ If even a scope cannot be enrolled, a single reserved global capacity flag recor
 the gap; repeated unknown scopes cannot grow a second queue. That flag is sticky
 historical gap evidence, not a current all-clear indicator. There is no automatic
 expiry/eviction of unresolved notices, scope bindings or dedup watermarks. A
-permanently full enrollment registry requires a future explicit retention policy.
+permanently full enrollment registry would need an explicit retention policy,
+which does not exist.
 
 Each synchronous method owns its SQLite connection and FULL/WAL transaction.
 Input JSON is prepared before the transaction; retained reads use SQL byte prefixes
@@ -119,22 +123,14 @@ structure, hashes and exact payload pins are validated. The asynchronous
 consumer owns and drains actual thread/SQL work before store/context shutdown;
 this module introduces no executor, background task or cancellation wrapper.
 
-## Current MAIN consumer
+## Tests
 
-The independently reviewed [explicit stateful MAIN consumer](KERNEL-NOTICE-DELIVERY.md) now implements authenticated control lifetime/configuration mapping, bounded owned passive reads, historical version-1 USER input and typed receipt/RunRecord evidence. Successful host return marks delivery; a real fsynced run and fresh original proof precede ACK. Failed first calls, failed saves and cancellation retain the qualified replay/audit boundary. Changed bindings, incomplete lineage or initialized inbox loss refuse rather than re-enroll. [OpenShell Lab29](../.agents/docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md) passes actual worker/package/idle-resume acceptance and independent complete cleanup; PR #109 is delivered at `cef64a0` after independent final archive review and all four fresh checks. No idle scheduler, automatic replacement reconciliation, delegate routing or full-history guarantee is added. The prerequisite evidence below remains at its original source pins.
-
-## Historical prerequisite validation
-
-The focused suite passes 45 tests. Strict module Pyright reports zero errors and
-warnings; Ruff formatting/lint and the installed Python license check pass. No
-full Python suite or runtime acceptance was run for this isolated prerequisite.
-
-Tests cover reopen/dedup and ACK compaction, scope-local sequences,
-competing claims, expiry/takeover/late ACK, exact whole-set validation, transactional
+Tests cover reopen/dedup and ACK compaction, scope-local sequences, competing
+claims, expiry/takeover/late ACK, exact whole-set validation, transactional
 insert/delete faults, quota holds and actual-byte reservations, positive MAIN
 scope, malformed/corrupt large retained rows and finite clocks. Synthetic trusted
 pins prove store behavior only; they do not prove worker lineage authentication.
-
-Root combined local gates on signed `840b48f` pass 10,155 Python cases/43 opt-in skips/two existing warnings and required static checks; unchanged PR #99 web/math/build evidence is explicitly reused. [Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md) validates the separate passive worker lineage, not this inbox's MAIN delivery. Fresh delivery CI remains separate.
-
-The separately reviewed consumer and Lab29 above now provide the MAIN safe-point and save-before-ACK evidence. The underlying store still trusts its caller's positive saved assertion; it is not a public verifier of arbitrary run files. Worker restart continuity and idle/resume refusal are actual runtime coverage; immutable-VM-ID replacement remains focused source coverage. Idle/offline wake, complete event history and task-worker routing remain separate work.
+The store trusts its caller's assertion that the run was saved; it is not a
+verifier of arbitrary run files. Delivery through a real worker, including
+failure, cancellation and idle resume, was checked on OpenShell in
+[Lab29](../.agents/docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md).

@@ -110,18 +110,15 @@ to wait until the SQL work drains. Already completed accounting or review
 outcomes remain durable; a late dropped finish cannot overwrite a terminal
 outcome or a replacement owner.
 
-This is a scoped accounting-lifetime correction. Existing raw tool, evidence,
-model-observation, confirmation and controller thread paths are unchanged; it is
-**not** proof of
-whole-runner or whole-controller SQL ownership under every cancellation race.
-No SQL transaction spans a model await.
+This ownership covers the accounting awaits only. Raw tool, evidence,
+model-observation, confirmation and controller thread paths keep their own
+lifetime rules; this is **not** proof of whole-runner or whole-controller SQL
+ownership under every cancellation race. No SQL transaction spans a model await.
 
 Deterministic tests use a real local ReviewStore with scripted models to inspect
 the committed pin at actual call entry, check exact schema/text/order and fresh
 copies, preserve alias/resolved-model separation, and exercise failure, timeout,
 owner/counter rollback, concurrent budget, readonly migration, corrupt metadata
-and repeated-cancellation drain. Existing consistency/confirmation fixtures are
-affected regression gates. No model, worker, service, browser or VM is started
-by these tests. Root owns combined delivery gates and fresh CI; provider
-transformations, live model quality and broader prompt catalog work remain
-outside this slice.
+and repeated-cancellation drain. No model, worker, service, browser or VM is
+started by these tests. Provider transformations, live model quality and a
+prompt catalog are outside this feature.

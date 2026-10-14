@@ -1,11 +1,11 @@
 # Immutable artifact inventory
 
-## Implemented boundary (2026-10-12)
+## What is built
 
 The harness can retain explicit `publish` results in the canonical control store
-when run with `--state-dir`. This is the first bounded slice of the approved
-[research-artifacts specification](specs/research-artifacts.md), supporting the
-ledger, bounded consistency evidence and future PDF anchors. It does not parse rich content
+when run with `--state-dir`. This implements explicit publication from the approved
+[research-artifacts specification](specs/research-artifacts.md); the consistency
+review reads its events and content as evidence. It does not parse rich content
 or depend on document writer closure. Existing worker publication remains available
 without a state directory, with its existing `ArtifactRef` and behavior.
 
@@ -13,8 +13,8 @@ without a state directory, with its existing `ArtifactRef` and behavior.
 control revision references. `ArtifactInventory` in the orchestrator owns logical
 IDs, immutable bytes/revisions and bounded event pages in `control.sqlite3`.
 `ArtifactPublisher` connects a trusted run/context and worker endpoint to that
-inventory. These are internal interfaces; no new HTTP route, GUI capability,
-scheduler, permission grant or worker deployment change is enabled.
+inventory. These are internal interfaces, with no HTTP route, GUI, scheduler or
+permission grant of their own.
 
 ## Identity, bytes and provenance
 
@@ -59,10 +59,9 @@ replacing living document files (LD-49 remains open).
 
 ### Bounded worker capture prerequisite
 
-Worker publication now requires executor `artifact_capture_protocol=1`. A legacy
+Worker publication requires executor `artifact_capture_protocol=1`. A legacy
 executor receives a visible `unsupported` refusal; ordinary `read_file` behavior
-is unchanged. This prerequisite bounds the previously unbounded first whole-file
-hash before any automatic execution-output inventory is enabled.
+is unchanged. The capture protocol bounds the first whole-file hash.
 
 Each range runs fixed stdlib-only code in a sandbox child using Python `-I -S`,
 fixed arguments and a minimal environment. The child opens parents relative to
@@ -123,32 +122,21 @@ default budget is 30 seconds. Default aiohttp handlers can continue after peer
 disconnect. A client timeout therefore means an unknown outcome, not immediate
 remote cancellation. Existing durable control publication intent handles this
 uncertainty without retrying the mutable path. The worker's unproven last-writer
-hint now searches only the newest 256 scoped terminal records with a separate
+hint searches only the newest 256 scoped terminal records with a separate
 64 KiB per-record cap; only row IDs are materialized. Larger, corrupt or older
 records produce `unknown`, never lineage proof.
 
 Local hostile tests cover sparse/growing/special sources, malformed replies,
 repeated cancellation, delayed spawn, blocked host I/O, lost transports, corrupt
 lease metadata, exact original-binding fences and actual HTTP disconnect behavior.
-Independent review cleared signed source `cbcfc7e`. Final-source local gates passed
-60 capture/lifecycle cases, 9,592 Python tests (43 opt-in skips), 436 web tests and
-24 post-build math checks, plus locked/static/license/protocol checks and both builds.
-Independent review also cleared signed combined freeze `b535856`. Root-owned
-[OpenShell Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md)
-passed exact 24-byte binary/empty retention, twelve prompt regular/sparse/symlink/FIFO
-refusals and healthy publication/read/execution access on Python 3.14.8. Independent
-inspection found five artifacts, three terminal shell executions and zero capture
-leases/helpers; complete teardown was verified at 12:36:45 UTC. The disposable worker
-used a 1 MiB limit; this does not validate maximum-size successful capture. Lost-bridge,
-blocked host-I/O and corrupt-state behavior remain local hostile evidence. Actual main
-PR #85 ancestry and acceptance docs change no product, test, configuration or helper
-bytes. Exact source `ea31757` and both Lab22/Lab23 archives merged as PR #86 at
-`9c07725` after all three fresh CI checks passed (run `38251872668`, 13:01:50 UTC). The marked reusable recipe
+Checked on OpenShell in
+[Lab22](../.agents/docs/agent-reports/babbage-openshell-lab-22-2026-10-12.md), with a
+1 MiB worker limit, so maximum-size capture is not covered there. The lab recipe
 is in [the lab guide](../.agents/labs/README.md#lab22-bounded-artifact-capture).
 
 ### Worker-local terminal observations
 
-The next prerequisite retains a bounded typed sidecar from the executor's existing
+The worker retains a bounded typed sidecar from the executor's existing
 regular-file stat walk. It adds no scan, content read, hash or unowned filesystem
 operation. `written_files` and ordinary execution/API behavior remain compatible.
 The sidecar is independent of the result schema, so malformed or oversized derived
@@ -204,29 +192,16 @@ caps do not bound that history, SQLite/WAL high-water usage or process RSS. The 
 20,000-file/depth-128 walk still has potentially large directory-name lists and no
 new hard I/O deadline; the separately bounded sidecar does not fix those limitations.
 
-This prerequisite adds no public feed, WorkerClient method, consumer, scheduler,
+The sidecar has no public feed, WorkerClient method, consumer, scheduler,
 content capture, artifact revision, permission or runtime capability advertisement.
-Independent review cleared exact signed freeze `35863776`. All integrated gates
-passed: 83 focused cases, 9,714 Python tests (43 opt-in skips, two existing warnings),
-441 web tests, 24 post-build math cases, locked/static/license/protocol checks and
-both builds. Root-owned [OpenShell Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md)
-passed nineteen terminal outcomes with eighteen bounded reports, raw path/root
-identity, partial files, explicit missing/truncated coverage, same-attempt worker
-restart and preserved kernel state. PDF was unavailable and not tested in that VM.
-Complete teardown was verified at 14:59:02.325873 UTC. Corruption/quota/namespace-race
-faults remain local hostile evidence. Fresh PR CI remains required before merge.
-The [marked lab recipe](../.agents/labs/README.md#lab24-worker-local-output-observations)
-inspects only its disposable worker's internal read-only journal.
+Checked on OpenShell in
+[Lab24](../.agents/docs/agent-reports/babbage-openshell-lab-24-2026-10-12.md); the
+[lab recipe](../.agents/labs/README.md#lab24-worker-local-output-observations)
+inspects only its disposable worker's internal read-only journal. RA-5's
+every-file-minus-ignore-patterns requirement is not met by this incomplete stat
+report.
 
-Automatic execution-output inventory remains open. RA-5's every-file-minus-ignore-
-patterns requirement is unchanged; this incomplete stat report does not satisfy it.
-Next design an execution/attempt/incarnation-bound one-shot capture intent/status/receipt
-before any automatic fan-out: unknown outcomes cannot republish a mutable path,
-and known receipts must pin exact retained bytes for retries. Later bytes are
-observations at capture time, never fabricated attempt-end snapshots or producer/input
-lineage. Complete telemetry/snapshotting, deletion/link semantics, ignore patterns,
-authenticated feed binding and control ingestion remain follow-ons. LD-49's stronger
-writer proof remains separate.
+### Publication operations
 
 An artifact operation is separate from document operations, keyed by trusted
 project/session and operation ID. Before the worker RPC, the inventory reserves a
@@ -290,9 +265,9 @@ does not depend on new retention capacity. Full retention refuses new work rathe
 than deleting unresolved history. SQL clips variable metadata/BLOB fields before
 Python allocation. Logical budgets do not claim to bound SQLite/WAL physical disk
 usage or total process RSS; operation retries, receipts and revision bytes consume
-their documented retention budgets. This slice offers no purge/retention UI.
+their documented retention budgets. There is no purge or retention UI.
 
-## Evidence and remaining work
+## Tests and evidence reads
 
 Tests compose the actual authenticated worker HTTP API with control retention,
 including binary/PDF-shaped bytes without parsing them. Hostile cases cover unknown
@@ -300,23 +275,7 @@ publication replies, exact pinned retry after path change/restart, endpoint chan
 quota tightening, zero-byte/count/metadata limits, corrupt large SQLite fields,
 receipt substitution, transfer digest/size/header errors, redirects, deadlines,
 transaction rollback, forged context/USER attribution and repeated cancellation.
-These are local fixtures, not new OpenShell acceptance evidence.
-
-The final combined local suite passed 9,415 Python tests (43 opt-in skips), all 50
-artifact cases, 431 web tests and the 24-test built Node/KaTeX boundary. Locked
-dependency, formatting, lint, strict type, license and protocol checks and both
-production builds passed. Independent review cleared the exact combined source,
-including receipt substitution, cancellation ownership and existing parameterized
-worker media metadata. PR #82 merged after the fresh Python 3.12, Python 3.13
-and web CI jobs passed.
-
-The later document-math source combination passed 9,459 Python tests (43 opt-in
-skips), 434 web tests and all required locked/static/license/protocol checks and
-both builds. Its manually constructed CLI cleanup fixture adds the three optional
-math defaults without changing assertions or deadlines; the final full rerun and
-68 affected publication/math/migration/workspace API cases pass.
-
-The explicit-publication consumer below has a separate validation boundary.
+These are local fixtures, not OpenShell evidence.
 
 Successful tool records include `artifact_inventory` with a pinned control receipt,
 beside the original `artifact` worker snapshot. Internal `resolve`, `content`,
@@ -368,17 +327,20 @@ client, download, filesystem, parser, renderer or execution authority.
 
 The consumer owns a private single-thread executor and at most eight admitted SQL
 units. Cancellation detaches the await; shutdown drains actual work before the
-borrowed control store closes. Independent adversarial review, 35 focused cases,
-144 affected component/API cases and two raw-preview SSR cases cover this boundary.
-The D82/main source union passed 9,494 Python tests (43 opt-in skips), 436 web tests,
-locked/static/license/protocol checks and both production builds.
-[Browser/API acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md)
-verified exact original/changed bytes, empty and incomplete sources, scoped fix claims
-and delayed selection. The synthetic state and server were removed; no live model,
-worker or OpenShell VM was used for that browser check. PR #84 merged after all three fresh CI checks passed.
+borrowed control store closes. Checked in the browser in
+[artifact review acceptance](../.agents/docs/agent-reports/artifact-review-2026-10-12.md),
+with synthetic state and no live model, worker or OpenShell VM.
 
-Automatic execution-output inventory (RA-5/RA-F2/CRF-6), imports/MCP binary results,
-deletions/tombstones, retention drop workflows, observed inputs/kernel lineage,
-public read/download routes, ledger integration, rich previews and PDF parsing/anchors
-remain separate slices. Explicit publication does not prove an atomic source pass
-or the stronger living-document writer-closure boundary.
+## Not built
+
+- Automatic execution-output inventory (RA-5, RA-F2, CRF-6). It needs an
+  execution/attempt/incarnation-bound one-shot capture intent, status and receipt
+  first, so that an unknown outcome never republishes a mutable path and a known
+  receipt pins exact retained bytes for retries.
+- Complete telemetry and snapshotting, deletion and link semantics, ignore patterns,
+  authenticated feed binding and control ingestion of the worker's observations.
+- Imports and MCP binary results, deletions and tombstones, retention drop
+  workflows, observed inputs and kernel lineage, public read/download routes, ledger
+  integration, rich previews, and PDF parsing and anchors.
+- The stronger writer proof that living-document files need (LD-49). Explicit
+  publication does not prove an atomic source pass.

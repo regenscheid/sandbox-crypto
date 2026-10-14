@@ -2,7 +2,7 @@
 
 Working folder for a cryptography/math research workbench with independently deployable orchestration and sandboxed compute.
 
-**Status, 2026-10-14:** the worker, policy services, harness and web workspace are implemented in slices. Real OpenShell VM checks cover isolated execution, provisioning, shared data, background jobs, worker restart recovery and bounded delegated execution. Living-document editing, comments and automatic consistency review passed browser acceptance. Installer artifacts and provisioning observations are delivered as [PR #121](https://github.com/regenscheid/sandbox-crypto/pull/121) after all four fresh checks passed. The latest [Lab36](.agents/docs/agent-reports/babbage-openshell-lab-36-2026-10-14.md) passed explicit named Conda updates and fresh guest version/function checks with complete independent teardown; its fresh-CI delivery remains pending. The project ledger, full control-application scheduler and other deployment targets remain in the plan. Development follows [the conventions](.agents/CONVENTIONS.md); [STATUS](.agents/STATUS.md) and [BACKLOG](.agents/BACKLOG.md) track progress.
+**Status:** the worker, policy services, harness and web workspace are built in part and run on OpenShell VMs on babbage; the project ledger, chat in the GUI and other deployment targets are not built yet. [STATUS](.agents/STATUS.md) has the current state, the [refactoring plan](.agents/refactor-plan/PLAN.md) the next steps, and the [documentation index](docs/README.md) every page. Development follows [the conventions](.agents/CONVENTIONS.md).
 
 ## Terminology
 
@@ -32,14 +32,16 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 
 | Document | Purpose |
 | --- | --- |
+| [Documentation index](docs/README.md) | Every page in `docs/`, as reference, design, specification or historical |
 | [Detailed implementation plan](docs/IMPLEMENTATION-PLAN.md) | Shared contracts, component ownership, ordered work packages and evidence gates |
-| [Consistency review](docs/CONSISTENCY-REVIEW.md) | Resolved planning drift and opportunities to reuse infrastructure and standard components |
+| [Planning consistency review](.agents/planning-consistency-review-2026-10-10.md) | The 2026-10-10 review of planning drift and reuse of infrastructure and standard components (historical) |
 | [Analysis archive](.agents/docs/README.md) | The three agent source investigations; earlier plan snapshots are the git tags `plan-03-pre-review` and `plan-04-reviewed` |
 | [Feature plan](docs/FEATURE-PLAN.md) | What to incorporate from the three research investigations and how to verify it |
 | [Source study](docs/SOURCE-STUDY.md) | Pinned evidence from Claude Science, Claude Code/Desktop, and OpenScience Desktop |
 | [Research workspace](docs/RESEARCH-WORKSPACE.md) | Living documents, shared ledger, LaTeX, native Sage, and navigable PDFs |
 | [Workspace GUI](docs/WORKSPACE.md) | The GUI as built (D80): building and running it, login, what the browser may do, math repairs, living documents, the API and views |
 | [Living documents](docs/LIVING-DOCUMENTS.md) | Documents as built: the parser shared with the browser, block IDs, revisions and patches in the control store, the agents' document tool |
+| [Consistency review](docs/CONSISTENCY-REVIEW.md) | The automatic consistency reviewer as built: triggers, snapshots, findings and their delivery |
 | [External skills](docs/EXTERNAL-SKILLS.md) | Platform requirements inferred from the existing crypto-analysis-skills pack; no embedded catalog |
 | [Execution plan](docs/EXECUTION-PLAN.md) | Requirements, proposed topology, and the first decisions to discuss |
 | [Projects and sessions](docs/PROJECTS-AND-SESSIONS.md) | Persistent project containers, optional session containers, and data sharing |
@@ -52,7 +54,7 @@ Evaluate NVIDIA OpenShell as the execution backend behind an adapter. Its docume
 | [OpenShell evaluation](docs/OPENSHELL-EVALUATION.md) | Verified documentation and runtime feasibility checks |
 | [Roadmap](docs/ROADMAP.md) | Ordered implementation gates |
 | [Decisions](docs/DECISIONS.md) | Confirmed requirements, recommendations, and open choices |
-| [Threat model](docs/THREAT-MODEL.md) | Assets, threat sources, trust zones, isolation tiers and data classes (proposed by review) |
+| [Threat model](docs/THREAT-MODEL.md) | Assets, threat sources, trust zones, isolation tiers and data classes (D43) |
 | [Policy file](docs/POLICY.md) | Permissive-by-default YAML project policy, precedence, escalation timeout ([example](examples/policy.yaml)) |
 | [MCP connectors](docs/MCP-CONNECTORS.md) | OAuth (primary), bearer and custom-header auth for MCP servers; connector auth service and the MCP proxy that all MCP traffic goes through |
 | [Licensing](docs/LICENSING.md) | MIT goal, dependency tiers, runtime-installed GPL tools, components to avoid |

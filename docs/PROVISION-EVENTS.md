@@ -1,73 +1,48 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Provisioning observations in the event store
 
-The worker now attempts three bounded observational event kinds in its existing
-configured policy event store: `provision.requested`,
-`provision.awaiting_permission` and `provision.finished`. This implements that
-portion of [CP-16](specs/conda-provisioning.md). It adds no route, setting, GUI,
-grant, resolver/install command, recovery decision or operator authority.
-`environment.revision_created`, `environment.unmanaged_change` and
-`probe.finished` are outside this slice.
+The worker records three observational kinds of provisioning event in the policy middleware's [event store](EVENT-STORE.md#record-kinds) (the store its `event_store` setting names): `provision.requested`, `provision.awaiting_permission` and `provision.finished`. They implement part of [CP-16](specs/conda-provisioning.md). They add no route, setting, GUI, grant, install command, recovery decision or operator authority. The other CP-16 kinds (`environment.revision_created`, `environment.unmanaged_change`, `probe.finished`) are not written.
 
-The source label is `worker`. Event-store filesystem access remains the writer
-boundary; this label does not authenticate an operator. The observation-only
-writer accepts those three kinds and a fixed payload schema, including an
-explicit `observation-only` authority marker. It cannot append approval/denial
-kinds through that interface, and the existing approval reader ignores these
-observational kinds. Existing permission/withdrawal behavior is unchanged.
+The source is `worker`. Access to the event store's file is the writer boundary; the label does not authenticate anyone. The observation writer (`worker.permissions`'s `observation`, with `worker.provision_events`) accepts only these three kinds and a fixed payload schema, which includes the marker `"authority": "observation-only"`. It cannot append approvals or denials, and the permission logic ignores these kinds. Permission requests and their withdrawals are unchanged.
 
-Each payload is at most 4 KiB: original provision/request operation and
-project/session/environment identities, original operation sequence, state,
-stage, outcome, reason/error kind, nullable revision and permission references,
-source timestamps and bounded file/probe/execution counts. The current stage
-can be derived from the saved nonterminal state; terminal stage stays as saved.
-Nullable revisions/outcomes remain unknown. These facts do not infer whether an
-unknown effect happened. Purpose, package specs, notes, free error messages,
-next steps, paths/URLs and diagnostic output are omitted, and their raw content
-is not hashed. The stable event ID hashes only a fixed format domain, kind,
-original provision ID and saved sequence. Exact primitive/type/count checks
-precede aggregate encoding; prepared payloads are independently copied.
+## Payload
 
-The internal projection/emit API receives a trusted caller assertion that its
-record was saved. It does not independently authenticate the caller or cross-read
-the worker database. The production Provisioner supplies its canonical saved
-record at these fixed emission points.
+Each payload is at most 4 KiB of compact JSON, with exactly these fields:
 
-Events follow saved worker records: requested in the original owned run before
-its turn; awaiting permission after the actual permission request/state is saved;
-finished after a canonical terminal save. Fresh startup classification of an
-unfinished operation emits a finished observation marked
-`startup_classification`; it does not backfill a missing request/history. Exact
-submission replay and a second startup of an already finished operation emit
-nothing again. Permission wait deadlines are captured before the observation
-await, so writing the observation does not extend the existing wait.
+| Field | Contents |
+| --- | --- |
+| `format`, `version` | `sandbox-provision-observation`, 1 |
+| `event_id` | SHA-256 over a fixed format domain, the kind, the provision ID and the saved sequence number |
+| `provision_id`, `request_operation_id` | The operation's identities |
+| `context` | `project_id`, `session_id`, `environment_id` |
+| `operation_seq` | The sequence number of the saved operation record |
+| `state`, `stage`, `outcome`, `reason`, `error_kind` | As saved; the stage of an unfinished operation is derived from its state. Unknown values stay `null` |
+| `permission_request` | The permission request's sequence number, or `null` |
+| `revision_planned`, `revision_before`, `revision_after` | Environment revisions, or `null` |
+| `execution_count`, `file_count`, `probe_count` | At most 128, 2,000 and 64 |
+| `submitted_at`, `started_at`, `ended_at` | The source record's times |
+| `trigger` | `transition`, or `startup_classification` (only for `provision.finished`) |
+| `authority` | `observation-only` |
 
-Worker records and the event store are separate databases. This is partial
-observational coverage, not an atomic outbox or exactly-once history. A crash,
-projection refusal, saturated writer, absent configuration or unavailable store
-can leave no event. An append can commit before its acknowledgment is lost;
-its outcome then stays unknown and this producer never retries it. Missing
-observations never prove that an operation or permission request did not run.
-The canonical operation remains authoritative. Failures generate fixed warnings
-without raw exception text and do not relabel installer/recovery outcomes.
+Purpose, package specs, notes, free error text, next steps, paths, URLs and diagnostic output are left out, and not hashed. Every field is checked for its exact type and bound before the payload is encoded, and the payload is copied. Nothing here says whether an unknown effect happened.
 
-At most eight observation append owners are active. Their actual threads remain
-owned through repeated caller cancellation and shutdown before the borrowed
-Permissions/EventStore writer may close. The observer never closes that writer. A terminal operation releases its environment queue turn before awaiting the final observation. Its task remains registered for environment forget and shutdown until the actual append drains; the normal retention timer begins afterward. Final observations from different operations can therefore arrive in a different order from their canonical transitions.
-The existing event-store five-second lock timeout is not a hard fsync/thread
-termination deadline: observation waits and cleanup can last longer while
-admitted host work drains. Per-record/in-flight bounds do not establish a total
-event-store disk quota, bounded global history readers or whole-worker lifetime
-ownership. Existing event-store retention, chain/checkpoint guarantees and
-permission-writer ownership still apply.
+## When they are written
 
-Component checks use disposable real EventStore/worker SQLite files, blocked
-synthetic threads and scripted provisioning/fake-package fixtures. They check
-hash-chain validity, safe omission/bounds/strict primitives, no approval answers,
-original transition sequences and exact replay, startup qualification, ambiguous
-commit acknowledgment without retry, original failure classification, owner
-caps, first cancellation identity and actual close/thread drain. These checks
-use no real installer, OpenShell environment or model. Independent source review,
-root combined gates and real runtime acceptance remain separate.
+The `Provisioner` emits each event after the record it describes is saved:
+- `provision.requested` in the operation's own run, before its turn;
+- `provision.awaiting_permission` after the permission request and the state are saved;
+- `provision.finished` after the terminal record is saved. When a worker starts and classifies an unfinished operation, the finished event says `startup_classification`; a missing request or history is not filled in.
 
-[OpenShell Lab35](../.agents/docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md) passed on signed runtime `d236b6b`/helper `fbbe3b61`, with independent complete teardown at2026-10-14T03:52:41.221801Z. The small scalar pilot preceded two installs; six original-step artifacts and four requested/finished observations matched the selected production APIs. Observed micromamba2.9.0/pip26.2.1 remain self-reports; no genuine awaiting-permission transition occurred. The slice is delivered as [PR #121](https://github.com/regenscheid/sandbox-crypto/pull/121), merged at `d2fe8fa` on reviewed signed `1f9698a` after all four fresh checks passed (run `38510468628`). Primary main is clean, locked and tree-identical to that reviewed head.
+Replaying the exact submission, or a second start after an operation finished, writes nothing again. A permission wait's deadline is fixed before the observation is written, so writing it does not extend the wait.
+
+## Coverage
+
+The worker's records and the event store are separate databases, so these events are a partial observation, not an atomic outbox or an exactly-once history. A crash, a refused projection, a full writer, an absent store setting or an unavailable store can leave no event. An append can commit before its acknowledgment is lost; its outcome then stays unknown, and it is never retried. A missing event never proves that an operation or permission request did not happen: the operation record is authoritative. Failures log fixed warnings without exception text and do not change an operation's outcome.
+
+## Limits
+
+- At most eight appends are in flight; beyond that an event is dropped as unavailable. Their threads stay owned through repeated cancellation and shutdown, before the shared `Permissions` writer may close; the observer never closes it.
+- A terminal operation gives up its environment's queue turn before it waits for its final event. Its task stays registered for environment forget and shutdown until the append drains, and the retention timer starts afterwards. Final events of different operations can therefore arrive in another order than their transitions.
+- The store's five-second lock timeout is not a deadline for fsync or the thread: waits and cleanup can take longer while admitted work drains. The per-record and in-flight bounds set no disk quota for the store.
+
+Checked with real installs on OpenShell in [Lab35](../.agents/docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md), where no operation waited for permission.

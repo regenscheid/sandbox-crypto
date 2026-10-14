@@ -102,7 +102,7 @@ has an hourly admission budget but no total historical row/byte quota. This
 feature adds no global retention claim, eviction, scheduler or metadata-driven
 budget policy.
 
-## Verification and remaining scope
+## Tests and scope
 
 Deterministic local tests exercise the actual watcher boundary with a separate
 SQLite connection observing the committed pending pin before the scripted model
@@ -114,6 +114,5 @@ and bounded refusal of 20-MiB corrupt metadata.
 
 These tests use local scripted peers and synthetic state. They do not execute
 models, workers or research code, or establish provider wire transformations or
-model quality. Combined delivery gates and fresh CI remain root-owned. Reviewer,
-repair and other prompt provenance, dynamic payload hashes, global retention and
-broader prompt loading remain separate work.
+model quality. Dynamic payload hashes, global retention and prompt loading are not
+built; reviewer and display-repair provenance have their own pages.

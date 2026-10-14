@@ -1,6 +1,6 @@
 # Execution and deployment plan
 
-Date: 2026-10-10. Requirements reflect the user's clarifications; implementation choices below are recommendations to validate.
+Date: 2026-10-10. Requirements reflect the user's clarifications; implementation choices below are recommendations to validate. This is the planning document as written; what is built is in [.agents/STATUS.md](../.agents/STATUS.md) and the as-built pages it links, such as [worker](WORKER.md) and [workspace](WORKSPACE.md).
 
 ## Problem to solve
 
@@ -110,4 +110,4 @@ The [detailed implementation plan](IMPLEMENTATION-PLAN.md) splits this gate into
 5. Run the behavior-spec fixtures against the new harness.
 6. Exercise project ledger sharing, a PDF citation, a LaTeX living document, and concurrent user/agent editing through the new application services before declaring product parity.
 
-Preserving useful behavior is confirmed, and so is reimplementing it (D11). The harness components and the store are chosen in W0 (D12, D55).
+Preserving useful behavior is confirmed, and so is reimplementing it (D11). The harness components (D72) and the control store (D85) are chosen.

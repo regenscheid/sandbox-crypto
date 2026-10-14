@@ -1,11 +1,14 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Passive kernel lineage for notices
 
-The worker has a separate, bounded observation route for the internal CP-12
-notice consumer. It reports an existing kernel with its exact retained original
-birth, or explicitly unknown lineage. It does not enqueue or deliver notices,
-inject agent messages, wake idle sessions, restart kernels or complete CP-12.
-The existing GUI observation and flattened workspace response are unchanged.
+The worker has a separate, bounded observation route for CP-12 kernel notices. It
+reports an existing kernel with its exact retained original birth, or explicitly
+unknown lineage. Its consumer is the harness's
+[MAIN kernel-notice delivery](KERNEL-NOTICE-DELIVERY.md), which turns proved
+entries into [inbox](KERNEL-NOTICES.md) notices. The route itself only reads: it
+does not enqueue or deliver notices, wake idle sessions or restart kernels. The GUI
+uses the separate [observation route](KERNEL-REVISIONS.md#existing-connection-observations)
+and its flattened workspace response.
 
 ## API and proof boundary
 
@@ -79,23 +82,14 @@ route, an 8 KiB success/error cap, five-second total HTTP deadline and no redire
 or lifecycle-active status fallback. It verifies exact returned scope and typed
 birth/kernel/current-revision coherence.
 
-## Current MAIN consumer
+## Tests
 
-The independently reviewed [explicit stateful MAIN consumer](KERNEL-NOTICE-DELIVERY.md) now implements authenticated control lifetime/configuration mapping, bounded owned passive reads, historical version-1 USER input and typed receipt/RunRecord evidence. Successful host return marks delivery; a real fsynced run and fresh original proof precede ACK. Failed first calls, failed saves and cancellation retain the qualified replay/audit boundary. Changed bindings, incomplete lineage or initialized inbox loss refuse rather than re-enroll. [OpenShell Lab29](../.agents/docs/agent-reports/babbage-openshell-lab-29-2026-10-13.md) passes actual worker/package/idle-resume acceptance and independent complete cleanup; PR #109 is delivered at `cef64a0` after independent final archive review and all four fresh checks. No idle scheduler, automatic replacement reconciliation, delegate routing or full-history guarantee is added. The prerequisite evidence below remains at its original source pins.
-
-## Historical prerequisite validation
-
-Focused local tests use disposable existing executor backends, including real
-Jupyter kernels and authenticated HTTP composition. They cover retained globals
-and birth keys across daemon reconnection, explicit restart, unknown current
-revision, original-binding changes, missing/corrupt/oversized proof, strict identity
-and counter validation, shared idle/close/rebind fences, cancellation/admission
+Local tests use disposable existing executor backends, including real Jupyter
+kernels and authenticated HTTP composition. They cover retained globals and birth
+keys across daemon reconnection, explicit restart, unknown current revision,
+original-binding changes, missing/corrupt/oversized proof, strict identity and
+counter validation, shared idle/close/rebind fences, cancellation and admission
 cleanup, and client scope/byte/redirect/deadline refusal. Synthetic managed names
-in those fixtures are test bindings, not VM attestation.
-
-The source milestone passed 139 focused Python tests on Python 3.13, affected Ruff
-and formatting checks, and repository Pyright with zero errors. Full repository
-tests were intentionally left to the combined delivery owner.
-
-Root-owned [OpenShell Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md) passed on signed `1deb9b7`, with independently verified complete teardown. Signed prompt-integrated union `840b48f` passes 10,155 Python cases/43 opt-in skips/two existing warnings and required static checks; unchanged 614 web/24 math/builds are explicitly reused. Unknown/missing/corrupt/legacy cases remain local-fixture coverage. Fresh exact-head PR CI remains a delivery gate. No services, VMs or models were started by this source
-author. At that historical source the companion did not wire a consumer. The later MAIN integration above independently binds the configured worker/session lifetime and preserves unknown holds and ordinary save/ACK authority; idle scheduling and automatic replacement reconciliation remain open.
+in those fixtures are test bindings, not VM attestation. The route was checked on
+OpenShell in [Lab28](../.agents/docs/agent-reports/babbage-openshell-lab-28-2026-10-12.md);
+unknown, missing, corrupt and legacy cases have local-fixture coverage only.

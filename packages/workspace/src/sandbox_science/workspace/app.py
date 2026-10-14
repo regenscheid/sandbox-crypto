@@ -8,10 +8,10 @@ server stops. Browsers send a host's cookies to every port on it, so the cookie'
 carries the server's port, and two workspaces on one machine keep their sessions apart.
 Every ``/api/`` route needs a session. A request with any method other than GET or HEAD
 also needs an ``Origin`` that is this server's own, so that a page on another site
-cannot act through the user's browser; nothing here answers CORS. POST routes include
-logout, job cancellation, and ``/api/v0/math-repair``, which asks the reviewer model to
-repair one
-expression (mathrepair.py) within the limits of the browser session. With a loopback
+cannot act through the user's browser; nothing here answers CORS. The API's routes,
+POST ones included, are listed in docs/WORKSPACE.md. This module adds logout and
+``/api/v0/math-repair``, which asks the reviewer model to repair one expression
+(mathrepair.py) within the limits of the browser session. With a loopback
 listener, every request must also name this server in ``Host`` (localhost, 127.0.0.1,
 ::1 or the address it listens on, with its port), which stops a DNS name rebound to
 127.0.0.1 from reaching it.
