@@ -243,4 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     except SettingsError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except WorkerError as exc:  # such as a state directory this worker refuses
+        print(f"error: {exc.message}", file=sys.stderr)
+        return 1
     return 0

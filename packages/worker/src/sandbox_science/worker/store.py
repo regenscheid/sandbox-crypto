@@ -37,7 +37,7 @@ from .kernel_revisions import KernelStarts
 from .output_observations import ObservationJournal
 from .package_gate import PackageGate, checked
 from .provision_observations import ProvisionObservations
-from .schema import prepare
+from .schema import inspect, prepare
 
 _log = logging.getLogger(__name__)
 _EVENT = TypeAdapter[Event](Event)
@@ -87,25 +87,17 @@ class Store:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
+        # Refuse a file this worker cannot use before anything could change it: opening
+        # it to write could switch its journal or replay a crashed WAL.
+        inspect(path)
         self._db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-        self._db.execute("PRAGMA synchronous=FULL")
         try:
-            # Before anything else changes the file: a refused store stays as it was.
-            prepare(self._db)
+            self._db.execute("PRAGMA synchronous=FULL")
+            prepare(path, self._db)
+            self._db.execute("PRAGMA journal_mode=WAL")
         except BaseException:
             self._db.close()
             raise
-        self._db.execute("PRAGMA journal_mode=WAL")
-        # Delegated runs were removed; their old tables stay untouched.
-        if self._db.execute(
-            "SELECT 1 FROM executions WHERE kernel_scope IS NOT 'legacy' LIMIT 1"
-        ).fetchone():
-            self._db.close()
-            raise WorkerError(
-                ErrorKind.UNAVAILABLE,
-                "this state directory holds delegated-run executions from a removed"
-                " feature; discard it",
-            )
         self.provision_observations = ProvisionObservations(self._db)
         self.observations = ObservationJournal(self._db)
         self.kernel_starts = KernelStarts(self._db)
