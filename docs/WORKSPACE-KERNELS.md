@@ -105,26 +105,17 @@ login requires a page reload before these reads resume.
 The browser validates exact scope, aware receipt time, unique kernel/language
 identities and revision/status coherence. JavaScript cannot represent the entire
 worker integer range exactly: unsafe generation or revision integers refuse the
-observation rather than displaying rounded pins. No new restart action is added.
+observation rather than displaying rounded pins. The panel has no restart action.
 
-This is visible-session eventual observation. Background scheduling, SSE, durable
-agent inbox/cursor and save-before-ACK delivery, browser-offline alerts, idle agent
-wake and automatic restart remain separate from whole CP-12 completion. Retained
-transcript output alone is not a live transport.
+The panel is an eventual observation of a visible session. It does not deliver
+notices to agents ([kernel notices](KERNEL-NOTICE-DELIVERY.md) do that), push
+updates, alert while the browser is offline, wake an idle agent or restart a
+kernel.
 
-Local tests cover bounded registry reads, special files and growth, strict damaged
-records, complete close/reopen ABA, revoked login, actual WorkerClient HTTP
-composition and negative peers, immediate admission, HTTP disconnect behavior,
-response deadlines, repeated cancellation and shutdown ordering. Combined gates
-on reviewed signed `70f6761` pass 10,032 Python/614 web/24 post-build math checks
-and required static/license/protocol checks and both builds.
-
-Root-owned [browser/OpenShell Lab27](../.agents/docs/agent-reports/babbage-openshell-lab-27-2026-10-12.md)
-passed actual shared-package staleness without another A execution, fresh B and
-isolated C, worker stop/recovery continuity, both real VMs stopping during passive
-reads, thirty unavailable reads without wake, ordinary resume/state loss and
-logout fencing. The accepted 70-file production build and source/helper pins are
-retained. All owned services, VMs, browser tabs and private state were removed and
-independently verified. Native hidden-tab pause was not proved because the browser
-automation surface retained visible document state; focused lifecycle tests cover
-that behavior separately. PR #99 merged at `afb049a` after all four fresh exact-head checks passed on reviewed signed `fe5f4d7` (run `38325477608`).
+The tests (`packages/workspace/tests/test_kernels.py` and
+`web/workspace/src/lib/kernels.test.ts`) cover bounded registry reads, special
+files and growth, damaged records, close/reopen of the registry, revoked login,
+the worker client against negative peers, immediate admission, HTTP disconnect,
+response deadlines, repeated cancellation and shutdown order. The panel was
+checked against real VMs, including stopped ones that a read must not wake, in
+[Lab27](../.agents/docs/agent-reports/babbage-openshell-lab-27-2026-10-12.md).

@@ -79,18 +79,7 @@ and unavailable/corrupt/oversize or incoherent peer evidence is 503. Errors carr
 an observation time and fixed safe messages; worker error text/source bytes are
 not forwarded. A 409 does not select a newer pin or retry automatically.
 
-This adds one read-only route and a fixed-budget transport method. It changes no
-worker/contracts, execution/provisioning admission, approvals, packages, wake,
-cache, source retention, controller, GUI or dependency behavior. The first viewer's
-Lab30 source/runtime acceptance is separate and remains frozen. Local synthetic
-HTTP and temporary-file tests establish proxy shape, authority and ownership;
-combined gates and real worker/native-browser acceptance remain root-owned.
-
-The author checks passed 52 new comparison cases plus 79 existing provisioning
-cases (131 scoped), and 548 affected workspace/kernel-client/provision-tool cases.
-Workspace source and the new test passed typing; scoped lint/format, locked
-dependencies and all 75 installed license checks passed. The initial two fixture
-failures compared equivalent `+00:00` and `Z` timestamp spellings, then used the
-contract's canonical serialization. A separate invalid affected-test filename
-invocation ran no tests and remains preserved. These local outcomes do not
-replace root's future integrated full gates or runtime acceptance.
+The tests (`packages/workspace/tests/test_lockfile_diffs.py`) use synthetic HTTP
+peers and temporary files; they cover the route's shape, authority and ownership.
+The comparison was checked against a real worker in
+[Lab31](../.agents/docs/agent-reports/babbage-openshell-lab-31-2026-10-13.md).
