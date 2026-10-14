@@ -66,7 +66,7 @@ The worker service writes, and the middleware reads, a state directory ([worker]
 | --- | --- |
 | `policies/<hex>.yaml` | A project policy file, named by the hex SHA-256 of its bytes; a file whose bytes do not match its name is rejected |
 | `sandboxes/<sandbox id>.json` | `{"policy": "sha256:<hex>"}`: the revision an OpenShell sandbox is decided under |
-| `events.db` | Written by the middleware: its records, in the [event store](EVENT-STORE.md) (with `events.db-wal` and `events.db-shm` while it is open) |
+| `events.db` | The [event store](EVENT-STORE.md) (with `events.db-wal` and `events.db-shm` while it is open): the middleware's records, the operator's answers, and the worker's file-set requests, withdrawals and provisioning observations ([record kinds](EVENT-STORE.md#record-kinds)) |
 
 `ValidateConfig` accepts a compiled sandbox policy only when its project policy is already in the store, so the gateway refuses a sandbox policy the middleware could not decide. The gateway asks before it creates the sandbox, so the policy must be stored first, and the sandbox bound once OpenShell has assigned its id. The worker does both for the sandboxes it creates (`sandbox-science-worker policy add` stores a revision). For sandboxes made by hand, the middleware's command line does them:
 
@@ -130,13 +130,6 @@ OpenShell's client pings the service every 10 seconds, even between calls; the s
 
 ## Checked on babbage
 
-On 2026-10-10 the service ran against a real OpenShell v0.1.3 gateway with the VM driver ([lab report](../.agents/docs/agent-reports/babbage-openshell-lab-2026-10-10.md)):
-- The gateway negotiated the service and verified its certificate for `127.0.0.1`, and the service verified the gateway's and the supervisors' tokens.
-- Reads were allowed. Writes were denied with `approval_required` and recorded.
-- Plain HTTP on port 80, which OpenShell labels `https`, was decided as `http`.
-- WebSocket upgrades were denied before reaching the server.
-- A real `git clone` passed the upload-pack check.
-- A 5 MiB body and a stopped middleware both failed closed.
-- The service adds a median of 0.7 ms per request; a 4 MiB body takes about 8 ms.
+The service was checked against a real OpenShell v0.1.3 gateway with the VM driver ([lab report](../.agents/docs/agent-reports/babbage-openshell-lab-2026-10-10.md)): certificate and token verification both ways, allowed reads, recorded `approval_required` denials of writes, plain HTTP on port 80 decided as `http`, WebSocket upgrades denied before reaching the server, a real `git clone` through the upload-pack check, and failing closed on a 5 MiB body or a stopped middleware. The service adds a median of 0.7 ms per request; a 4 MiB body takes about 8 ms.
 
 The lab also showed that a sandbox resolves only the host names its policy names. [Policy](POLICY.md), "Mapping to enforcement", describes what the compiler does about it.

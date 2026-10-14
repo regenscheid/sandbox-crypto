@@ -1,8 +1,8 @@
 # Event store
 
-The event store keeps monitor evidence in an append-only SQLite database. Each record carries the hash of the record before it, so a record changed, removed, inserted or moved later breaks the chain, and checkpoints kept elsewhere also show records removed from its end (D74, proposed). The code is in `packages/event-store` (`sandbox_science.event_store`), standard library only, with the command `sandbox-science-events`.
+The event store keeps monitor evidence in an append-only SQLite database. Each record carries the hash of the record before it, so a record changed, removed, inserted or moved later breaks the chain, and checkpoints kept elsewhere also show records removed from its end (D74). The code is in `packages/event-store` (`sandbox_science.event_store`), standard library only, with the command `sandbox-science-events`.
 
-The [policy middleware](POLICY-MIDDLEWARE.md) writes its escalations, alerts and monitor findings here. The behavior monitor, the worker service and the orchestrator's own requests (D47) are to follow.
+Three components write to a store: the [policy middleware](POLICY-MIDDLEWARE.md), the worker service (into the middleware's store) and the [MCP proxy](MCP-CONNECTORS.md#the-mcp-proxy-as-built) (into its own). Operators' answers to permission requests go into the same stores. [Record kinds](#record-kinds) lists every kind and its writer.
 
 ## Records
 
@@ -10,13 +10,35 @@ The [policy middleware](POLICY-MIDDLEWARE.md) writes its escalations, alerts and
 | --- | --- |
 | `seq` | 1, 2, 3, … without gaps |
 | `time` | When the store appended the record, in UTC with microseconds: `2026-10-11T08:00:00.000000Z` |
-| `kind` | What the record is, such as `escalation`, `alert` or `monitor` |
+| `kind` | What the record is, such as `escalation`, `alert` or `monitor` ([record kinds](#record-kinds)) |
 | `source` | The component that wrote it, such as `policy-middleware` |
 | `payload` | A JSON object in canonical form, at most 1 MiB |
 | `prev_hash` | The previous record's hash; 64 zeros for record 1 |
 | `hash` | This record's hash |
 
 Kinds and sources are 1 to 64 lowercase ASCII letters, digits, `.`, `_` or `-`, starting with a letter. Hashes are SHA-256, written as 64 lowercase hex digits. Times follow the sequence unless the system clock is set back, so order records by `seq`, not by time.
+
+## Record kinds
+
+There are two stores in a deployment: the middleware's (`events.db` in its state directory, which the worker's `event_store` setting also names, by default `events.db` in its `policy_store`) and the MCP proxy's (`events.db` in the proxy's state directory, inside its sandbox). These are all the kinds written to them:
+
+| Kind | Source | Written by | Store | Described in |
+| --- | --- | --- | --- | --- |
+| `escalation` | `policy-middleware` | `policy_middleware.evaluator`: the first occurrence of an escalated request | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
+| `escalation` | `worker` | `worker.permissions`: a provisioning operation's request for a package file set | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests), [worker](WORKER.md#provisioning-operations) |
+| `escalation` | `mcp-proxy` | `mcp_proxy.proxy`: the first occurrence of an escalated call | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
+| `approval` | `operator` | The `approve` command of `sandbox-science-policy-middleware` or `sandbox-science-mcp-proxy` (`policy.approvals.prepare_answer`) | Either | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
+| `denial` | `operator` | The `deny` command of either | Either | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
+| `denial` | `worker` | `worker.permissions`: a withdrawal (`withdrawn`) of a file-set request once its operation ends | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
+| `approved` | `policy-middleware` | `policy_middleware.evaluator`: a request allowed by an approval or a file-set grant | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#permission-requests) |
+| `approved` | `mcp-proxy` | `mcp_proxy.proxy`: a call allowed by an approval | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
+| `alert` | `policy-middleware` | `policy_middleware.evaluator`: an `alert` decision, or an escalation that timed out into one | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#results) |
+| `alert` | `mcp-proxy` | `mcp_proxy.proxy`: the same for a call | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
+| `monitor` | `policy-middleware` | `policy_middleware.evaluator`: a monitor threshold crossed | Middleware | [Policy middleware](POLICY-MIDDLEWARE.md#results) |
+| `mcp-call` | `mcp-proxy` | `mcp_proxy.proxy`: every message an authenticated caller sends | MCP proxy | [MCP connectors](MCP-CONNECTORS.md#the-mcp-proxy-as-built) |
+| `provision.requested`, `provision.awaiting_permission`, `provision.finished` | `worker` | `worker.provision_events`, through `worker.permissions` | Middleware | [Provisioning events](PROVISION-EVENTS.md) |
+
+Payloads are each writer's own; the pages in the last column describe them. The permission logic (`sandbox_science.policy.approvals`) reads only `escalation`, `approval` and `denial` records, whatever their source; other kinds are never requests or answers, and the worker's writer for provisioning observations refuses any kind but the three `provision.*` ones.
 
 ## Hash
 
@@ -40,7 +62,7 @@ Test vector: record 1 with time `2026-10-11T08:00:00.000000Z`, kind `alert`, sou
 
 - **Durable before acknowledged.** The database uses write-ahead logging with `synchronous=FULL`, which syncs the log at every commit, so an append returns only once its record would survive a crash or a power loss. On macOS, `fullfsync` also flushes the drive's cache.
 - **Threads and asyncio.** Within a process, appends that arrive while a commit is under way wait for it, and the next of them commits them all in one transaction (group commit). asyncio code uses `append_async`, which commits in a thread so that the event loop keeps running.
-- **Processes.** Several processes on one host may append to one store. Each commit takes SQLite's write lock and reads the newest record inside the same transaction, so commits from different processes are serialized and the chain cannot fork. A process waits for the lock up to its timeout (the middleware: 250 ms) and then fails the append. Group commit does not span processes. The store must be on a local filesystem: the write-ahead log needs memory shared between the processes, which network filesystems do not provide.
+- **Processes.** Several processes on one host may append to one store. Each commit takes SQLite's write lock and reads the newest record inside the same transaction, so commits from different processes are serialized and the chain cannot fork. A process waits for the lock up to its timeout (the middleware: 250 ms; the MCP proxy: 1 s; the worker: 5 s) and then fails the append. Group commit does not span processes. The store must be on a local filesystem: the write-ahead log needs memory shared between the processes, which network filesystems do not provide.
 - **Readers.** `verify` and `export` read one consistent snapshot and do not hold up appends.
 - **Append-only triggers** refuse `UPDATE` and `DELETE` on the records. They guard against mistakes only, since anyone who can write the file can drop them; `verify` reports dropped triggers.
 
@@ -124,6 +146,7 @@ To back up a running store, export it or use SQLite's backup; a copy of `events.
 
 ## Not yet done
 
-- **Checkpoints** go to the journal only where someone installs the timer; nothing sends them off the host.
+- **Other writers.** The behavior monitor and the orchestrator's own requests (D47) write nothing yet.
+- **Checkpoints** go to the journal only where someone installs the timer; nothing sends them off the host. The MCP proxy's store, in its sandbox, has no timer; its records leave the sandbox only through `export`.
 - **Retention.** The store only grows. Rotating to a new file that starts from the old one's final checkpoint is a possible later step.
-- **Several hosts.** A store is one file on one host; components on other hosts would need a store service.
+- **Several hosts.** A store is one file on one host; the worker writes to the middleware's store through a shared filesystem, and components on other hosts would need a store service.

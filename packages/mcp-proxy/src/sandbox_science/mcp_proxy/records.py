@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 """Records the proxy keeps in the event store (docs/EVENT-STORE.md).
 
-Three kinds, all with the source ``mcp-proxy``:
+Four kinds, all with the source ``mcp-proxy``:
 
 - ``escalation``: a call held for approval, which becomes a pending
   permission request. One that cannot be stored is refused with
   ``audit_unavailable`` instead of ``approval_required``: there is no
   request to approve, and the caller must not wait for one;
+- ``approved``: a held call that proceeds under an approval, naming the request and the
+  approval. One that cannot be stored is refused (``audit_unavailable``);
 - ``alert``: a call that proceeds with a finding. It proceeds only once the
   record is stored; otherwise it is refused (``audit_unavailable``);
 - ``mcp-call``: one record for every authenticated request, whatever its

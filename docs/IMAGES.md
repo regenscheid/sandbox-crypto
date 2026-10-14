@@ -81,7 +81,7 @@ mcp_proxy:
 
 ### The orchestrator image
 
-The harness runs in its own OpenShell sandbox (Z2 in the [threat model](THREAT-MODEL.md)), under the compiled orchestrator policy, which admits only the worker API and the model gateway ([policy](POLICY.md), "Mapping to enforcement"). In labs [7](../.agents/docs/agent-reports/babbage-openshell-lab-7-2026-10-11.md) and [9](../.agents/docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md) it was installed there from a wheelhouse uploaded by hand; the `orchestrator` image has it installed. In [lab 12](../.agents/docs/agent-reports/babbage-openshell-lab-12-2026-10-11.md) the harness ran from the image in its own sandbox, reaching only the worker API, and had the worker create a project's environments. The image differs from the contract above in these points:
+The harness runs in its own OpenShell sandbox (Z2 in the [threat model](THREAT-MODEL.md)), under the compiled orchestrator policy, which admits only the worker API and the model gateway ([policy](POLICY.md), "Mapping to enforcement"). The `orchestrator` image has it installed; run from the image in its own sandbox, the harness reached only the worker API and had the worker create a project's environments ([lab 12](../.agents/docs/agent-reports/babbage-openshell-lab-12-2026-10-11.md)). The image differs from the contract above in these points:
 
 - **Harness.** `sandbox-science-harness` and its contracts are in the prefix, installed from wheels of `packages/contracts` and `packages/orchestrator` that `build.sh` builds from the checkout (`uv build`) and passes to the build as the named context `wheels`.
   - pip installs only those two, with `--no-deps --no-index`. aiohttp, pydantic and their dependencies come from the lockfile, in the minor versions `uv.lock` pins (aiohttp 3.14, pydantic 2.14); a test keeps them in step.
@@ -93,7 +93,7 @@ The harness runs in its own OpenShell sandbox (Z2 in the [threat model](THREAT-M
 
 ### The MCP proxy image
 
-The MCP proxy runs in its own OpenShell sandbox, under the policy `compile_mcp_proxy()` gives for the project's servers ([MCP connectors](MCP-CONNECTORS.md#running-it)). In [lab 13](../.agents/docs/agent-reports/babbage-openshell-lab-13-2026-10-11.md) it ran from the orchestrator image, unpacked from wheels into the workdir and started through `openshell sandbox exec`, so it stopped with the sandbox and did not come back. The `mcp-proxy` image has it installed, and the image's command keeps it running. Like the orchestrator image, it has no kernels and a read-only prefix, so the writable paths are `/sandbox` and `/tmp`. Besides:
+The MCP proxy runs in its own OpenShell sandbox, under the policy `compile_mcp_proxy()` gives for the project's servers ([MCP connectors](MCP-CONNECTORS.md#running-it)). The `mcp-proxy` image has it installed, and the image's command keeps it running, also across `sandbox stop` and `start`. Like the orchestrator image, it has no kernels and a read-only prefix, so the writable paths are `/sandbox` and `/tmp`. Besides:
 
 - **Proxy.** `sandbox-science-mcp-proxy` and the repository packages it imports (contracts, policy library, event store) are in the prefix, installed from wheels of their four packages that `build.sh` builds from the checkout, as for the orchestrator image. The event store's command, `sandbox-science-events`, comes with them.
   - pip installs only those four, with `--no-deps --no-index`. aiohttp, pydantic, PyYAML and their dependencies come from the lockfile, in the minor versions `uv.lock` pins (aiohttp 3.14, pydantic 2.14, PyYAML 6.0); tests keep them in step and check that the lockfile has every requirement of the four packages.
@@ -129,9 +129,9 @@ Every download is pinned and checked:
 
 The services' wheels are built by `uv build` with the packages' build backend, hatchling, which uv takes from PyPI (or its cache) as for any build of the repository's packages. It is not pinned, but it only assembles the packages' own files and metadata into the wheels.
 
-Versions in the orchestrator image: Python 3.14.8, aiohttp 3.14.5, pydantic 2.14.0 with pydantic-core 2.50.0, and for living documents' parser markdown-it-py 4.2.0 with mdurl 0.1.2, mdit-py-plugins 0.6.1 and PyYAML 6.0.3, as in `uv.lock`, but for aiohttp, which `uv.lock` has at 3.14.4: the image was locked again when the parser came, and only the minor version must match. Of their dependencies only multidict differs: the solve chose conda-forge's 6.7.1, against 6.9.1 in `uv.lock`. conda-forge builds multidict and frozenlist as pure Python packages, without the C extensions their PyPI wheels have.
+Versions in the orchestrator image: Python 3.14.8, aiohttp 3.14.5, pydantic 2.14.0 with pydantic-core 2.50.0, PyYAML 6.0.3 with LibYAML (`yaml` 0.2.5), and the Markdown parser, markdown-it-py 4.2.0 with mdurl 0.1.2 and mdit-py-plugins 0.6.1. These are the versions in `uv.lock`, but for aiohttp, which `uv.lock` has at 3.14.4 (only the minor version must match). Of their dependencies only multidict differs: conda-forge's 6.7.1, against 6.9.1 in `uv.lock`. conda-forge builds multidict and frozenlist as pure Python packages, without the C extensions their PyPI wheels have.
 
-The mcp-proxy image's lockfile has the 39 packages the orchestrator image had before the parser came, at the same versions and builds (aiohttp 3.14.4), with PyYAML 6.0.3, as in `uv.lock`, and the LibYAML library it is built with (`yaml` 0.2.5). The orchestrator image has 44: those 41, and markdown-it-py, mdurl and mdit-py-plugins.
+The mcp-proxy image's lockfile has 41 packages: the orchestrator image's 44 without the Markdown parser's three, with aiohttp at 3.14.4, as in `uv.lock`.
 
 Notable versions in crypto-base: Python 3.14.8, SageMath 10.9, PARI 2.17.3, fpylll 0.6.4, fplll 5.5.0, FLINT 3.3.1, Singular 4.4.1, GAP 4.15.1, Maxima 5.49.0, GCC 15.3, Cython 3.3.0, TeX Live 2023 (Ubuntu `2023.20240207-1`), poppler-utils 24.02.0, qpdf 11.9.0. The `sage` package brings R and OpenJDK too.
 
@@ -172,14 +172,14 @@ images/build.sh mcp-proxy
 - **Options.** Further arguments go to `docker buildx build`, such as `--no-cache` or `--build-arg G6K_MARCH_AMD64=x86-64-v2`. `PLATFORM` sets the platform (default `linux/amd64`) and `BUILDER` a buildx builder.
 - **Rebuilds** install the same packages; they are not bit-for-bit identical.
 
-Built on babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `docker` driver) on 2026-10-11, each from the recipe revision its tag names; all four are in babbage's local image store:
+Sizes, as built on babbage (Ryzen AI Max+ 395, 32 threads, Docker 29.1 with BuildKit's `docker` driver):
 
-| Image | Digest | Compressed | Unpacked |
-| --- | --- | --- | --- |
-| `sandbox-science/minimal:02f85b3` | `sha256:88fab78766c9828abed9ea0198edae6513955fd22287f95819685ad5291eb9c6` | 135 MB | 374 MB |
-| `sandbox-science/crypto-base:02f85b3` | `sha256:cb12bbbe588f20e555d39385ffd56f7b45312fdd69b3bd8030278db555d0df4b` | 2.34 GB | 6.2 GB |
-| `sandbox-science/orchestrator:174e72e` | `sha256:f82026af2e22e20b6245475ee72e04cda134bccc7bebdf96e1d083987c8342e9` | 127 MB | 364 MB |
-| `sandbox-science/mcp-proxy:d27e41a` | `sha256:91d94e8e351584f25d4a90d9371450436a203966e373384a2fd5037d639cb84a` | 128 MB | 366 MB |
+| Image | Compressed | Unpacked |
+| --- | --- | --- |
+| `minimal` | 135 MB | 374 MB |
+| `crypto-base` | 2.34 GB | 6.2 GB |
+| `orchestrator` | 127 MB | 364 MB |
+| `mcp-proxy` | 128 MB | 366 MB |
 
 Build times from empty caches depend mostly on snapshot.ubuntu.com, which served several MB/s for the first builds and 0.25 MB/s half an hour later:
 
@@ -189,8 +189,7 @@ Build times from empty caches depend mostly on snapshot.ubuntu.com, which served
 | minimal's 62 Conda packages (71 MB to download) | 3 s |
 | crypto-base's 125 Ubuntu packages (264 MB, mostly TeX) | 2 min to 19 min |
 | crypto-base's 393 Conda packages (1.44 GB) | 23 s |
-| orchestrator's 39 Conda packages (about 63 MB to download) | 2 s |
-| mcp-proxy's 41 Conda packages | 2 s |
+| orchestrator's or mcp-proxy's Conda packages (about 63 MB to download) | 2 s |
 | G6K | 30 s |
 | Writing crypto-base into the local image store | 2.5 min |
 | **minimal in all** | 2.4 min measured at 0.25 MB/s; about 30 s at the faster rate |
@@ -260,19 +259,11 @@ In the mcp-proxy image they start the launcher by its full path, with only `HOME
 - that the launcher is the mcp-proxy image's command, with the paths the checks use;
 - the license helpers.
 
-Results on babbage, 2026-10-11, for the images above:
+What the checks show about the paths:
 
-- **minimal** passed all 17 checks (8 as a container, 9 under the Landlock ruleset) in 12 s.
-- **crypto-base** passed all 35 (17 and 18) in 45 s. The first Sage cell, with the kernel's start, took 2.3 s; the primal uSVP estimate for Kyber512 came out at 2^143.8, as lattice-estimator's documentation gives.
-- **pytest** ran the same as 52 tests in 56 s.
-- **orchestrator** (`174e72e`) passed all 17 checks (8 as a container, 9 under the Landlock ruleset) in 5 s, with and without a network (`NETWORK=0`). `run` against the stub worker took 0.6 s, most of it Python's start and the imports. pytest ran them as 17 tests, beside the 46 recipe tests, in 6 s.
-- **The research images with the profile-aware scripts.** `test.sh` and the checks of `174e72e` passed all 17 checks on `minimal:02f85b3` and all 35 on `crypto-base:02f85b3`.
-- **Under the ruleset without `/var/lib/texmf`**, pdflatex could not find its format file, so that path stays in the section. Nothing beyond OpenShell's baseline, the compiler's devices and the two declared paths was needed: Sage's pseudo-terminal interfaces, `multiprocessing`, runtime installs and the PDF tools all worked.
-- **Under the orchestrator's ruleset without `/opt/sandbox-science`** (an empty section in `FILESYSTEM`), Landlock refused to start the prefix's interpreter. With it, the harness needed nothing else beyond OpenShell's baseline: no devices, and no `/dev/shm`.
-- **mcp-proxy** (`d27e41a`) passed all 19 checks (9 as a container, 10 under the Landlock ruleset) in 15 s, with and without a network. The proxy answered about 1.7 s after the settings were written, of which up to 1 s is the launcher's wait between looks, and about 1.5 s after it was killed, of which 1 s is the first pause. pytest ran them as 19 tests, beside the 59 recipe tests, in 17 s.
-- **The other images with the scripts of `d27e41a`.** `test.sh` and the checks passed all 17 checks on `orchestrator:174e72e`, and without a network all 15 on `minimal:02f85b3` and all 33 on `crypto-base:02f85b3`.
-- **Under the proxy's ruleset without `/opt/sandbox-science`**, Landlock refused to start the prefix's interpreter, as for the orchestrator. With it, the launcher and the proxy needed nothing else beyond OpenShell's baseline: no devices.
-- **As a container's own command**, the launcher ran as PID 1 and waited for the settings; `docker stop` ended it in 0.1 s.
+- Under the research ruleset without `/var/lib/texmf`, pdflatex cannot find its format file, so that path stays in the section. Nothing beyond OpenShell's baseline, the compiler's devices and the two declared paths is needed: Sage's pseudo-terminal interfaces, `multiprocessing`, runtime installs and the PDF tools all work.
+- Under the orchestrator's or the proxy's ruleset without `/opt/sandbox-science`, Landlock refuses to start the prefix's interpreter. With it, the harness, the launcher and the proxy need nothing else beyond OpenShell's baseline: no devices, and no `/dev/shm`.
+- The proxy answers within about 2 s of the settings being written (up to 1 s of it the launcher's wait between looks), and about 1.5 s after it is killed (1 s of it the first pause). As a container's own command, the launcher runs as PID 1, waits for the settings, and `docker stop` ends it at once.
 
 ## arm64
 
@@ -292,20 +283,10 @@ What arm64 still needs:
 
 ## In OpenShell
 
-The unchanged external worker conformance suite passed both linux/amd64 research
-profiles in [Lab23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md),
-on frozen main `73c07aa`: 23 external cases per profile, with 23 local variants
-intentionally skipped per run. `minimal:02f85b3` and `crypto-base:02f85b3` both ran
-Python 3.14.8 under their worker profiles and compiled filesystem settings, retaining
-effective/declared isolation tier 3. Complete teardown was independently verified.
-The suite exercised Python kernels and worker API/file/publication semantics;
-crypto-base advertised Sage but gained no new Sage/G6K/TeX/PDF functional assertion.
-Earlier tool checks below remain separately dated. No arm64 or multi-platform
-acceptance is implied, and no image/source/test change was needed for this run.
-
-Labs on babbage ran every image in OpenShell VM sandboxes, under the compiled policies:
+Every image has run in OpenShell VM sandboxes on babbage, under the compiled policies:
 - crypto-base for the M1 exit run ([lab 9](../.agents/docs/agent-reports/babbage-openshell-lab-9-2026-10-11.md)), so the VM driver handles its root filesystem;
-- minimal in labs 10 to 12 and 14, where runtime installs into the prefix worked ([lab 11](../.agents/docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md));
+- minimal, where runtime installs into the prefix work ([lab 11](../.agents/docs/agent-reports/babbage-openshell-lab-11-2026-10-11.md));
+- both research images under the worker's external conformance suite, with Python kernels and the worker's file and publication semantics ([lab 23](../.agents/docs/agent-reports/babbage-openshell-lab-23-2026-10-12.md));
 - the orchestrator image, running the harness ([lab 12](../.agents/docs/agent-reports/babbage-openshell-lab-12-2026-10-11.md));
 - the mcp-proxy image, with its launcher as the sandbox's command ([lab 15](../.agents/docs/agent-reports/babbage-openshell-lab-15-2026-10-11.md)).
 

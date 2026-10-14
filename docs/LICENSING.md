@@ -1,6 +1,6 @@
 # Licensing policy
 
-Date: 2026-10-10. User requirement: prefer permissive licenses, ideally publish the project under **MIT**. Use GPL only where it does not affect the project's license. Avoid AGPL. Proposed by the plan review ([critical review](../.agents/critical-review.md), finding M1). The project is currently private and personal; this policy keeps an MIT release possible without later substitutions.
+User requirement, confirmed (D45): prefer permissive licenses, ideally publish the project under **MIT**. Use GPL only where it does not affect the project's license. Avoid AGPL. The tiers below come from the plan review ([critical review](../.agents/critical-review.md), finding M1). The project is currently private and personal; this policy keeps an MIT release possible without later substitutions.
 
 License facts below were read from each project's published license file on 2026-10-10. Re-check them when pinning a version.
 
@@ -42,12 +42,13 @@ for embedded subcomponents.
 | conda-lock | MIT | Development only: solves the base images' Conda lockfiles, run with `uvx` |
 | TeX Live (Ubuntu packages), qpdf | LPPL-1.3c, GPL and others; Apache-2.0 | Tier 3, in the `crypto-base` image |
 | miniforge installer | BSD-3-Clause (bundled packages carry their own licenses) | Use conda-forge only; avoid Anaconda `defaults` (commercial terms) |
-| jupyter_client, ipykernel | BSD-3-Clause | Kernel protocol |
+| jupyter_client, ipykernel | BSD-3-Clause | Kernel protocol: the executor's kernels in the sandbox, and the worker's `kernels` extra for its local backend |
+| pyzmq, traitlets, jupyter-core, comm, ipython, ipython-pygments-lexers, matplotlib-inline, prompt-toolkit, psutil, nest-asyncio2; tornado, asttokens; debugpy, jedi, parso, executing, pure-eval, stack-data, platformdirs, six, wcwidth; pexpect, ptyprocess; python-dateutil | BSD-3-Clause (nest-asyncio2: BSD); Apache-2.0; MIT; ISC; Apache-2.0 OR BSD-3-Clause | Required by jupyter_client and ipykernel. appnope (BSD, macOS only) and colorama (BSD-3-Clause, Windows only) are locked too |
 | KaTeX code/CSS | MIT, with React-derived Apache-2.0 helpers | Math rendering in the workspace GUI (D65, D80) and the isolated math-check bundle (D82). Complete checked primary and embedded notices accompany both distributions, using the same pinned inputs |
 | Existing unmodified KaTeX fonts and glyph-derived SVG assets | SIL OFL-1.1, as recorded in the distributed fonts and KaTeX source | Asset-only terms: the GUI ships the exact font bytes and embedded glyph paths with their precise copyright/reserved-name statements and complete pinned official OFL text. The isolated math bundle includes the glyph paths and their exact source attribution/OFL body, without font files. This does not add OFL to the platform-code dependency allowlist |
 | Node.js | MIT, with bundled components' notices in the [upstream license](https://github.com/nodejs/node/blob/v24.20.0/LICENSE) | Operator-provided process runtime for the isolated math checker; not bundled in Python wheels or the orchestrator image yet |
 | PDF.js | Apache-2.0 | PDF viewer |
-| **pdf_oxide** (`yfedoseev/pdf_oxide`) | MIT OR Apache-2.0 | **Primary PDF extraction candidate** (D59; already used by the user). Permissive enough for tier 1 or 2. Optional OCR features pull ONNX runtimes (`ort`, `tract-onnx`) and models; check their licenses separately before enabling |
+| **pdf_oxide** (`yfedoseev/pdf_oxide`) | MIT OR Apache-2.0 | **PDF extraction** (D59): the worker's PDF helper runs it in the sandbox (the worker's `pdf` extra; installed in `crypto-base`). Permissive enough for tier 1 or 2. Optional OCR features pull ONNX runtimes (`ort`, `tract-onnx`) and models; check their licenses separately before enabling |
 | pypdfium2 | Apache-2.0 | PDF rendering/extraction fallback candidate |
 | pdfplumber | MIT | PDF extraction candidate |
 | syft, ScanCode | Apache-2.0 | SBOM / license scanning |
@@ -89,7 +90,7 @@ for embedded subcomponents.
 | PyJWT | MIT | Policy middleware: verifies OpenShell extension tokens |
 | cryptography | Apache-2.0 OR BSD-3-Clause | Ed25519 verification for PyJWT |
 | cffi, pycparser | MIT-0; BSD-3-Clause | Required by cryptography. MIT-0 is MIT without the attribution condition |
-| aiohttp | Apache-2.0 AND MIT | HTTP servers and upstream clients of the package cache and the MCP proxy |
+| aiohttp | Apache-2.0 AND MIT | HTTP servers and clients: the worker API, the harness's worker client, the workspace server, the package cache and the MCP proxy |
 | aiohappyeyeballs, aiosignal, attrs, frozenlist, multidict, propcache, yarl, idna | PSF-2.0; Apache-2.0; MIT; Apache-2.0; Apache-2.0; Apache-2.0; Apache-2.0; BSD-3-Clause | Required by aiohttp |
 | pytest, pluggy, iniconfig, pytest-timeout, ruff, pyright | MIT | Development and CI only |
 | types-PyYAML, types-grpcio, types-protobuf | Apache-2.0 | Development and CI only (type stubs) |
@@ -98,7 +99,7 @@ for embedded subcomponents.
 | pytest-xdist, execnet | MIT | Development and CI only (parallel test runs) |
 | pytest-repeat | MPL-2.0, unmodified | Development and CI only (repeated test runs that measure flakiness) |
 | packaging, pygments, nodeenv | Apache-2.0 OR BSD-2-Clause; BSD-2-Clause; BSD-3-Clause | Development and CI only (pytest and pyright dependencies) |
-| Pandoc | GPL | Tier 3: runtime-installed in workers for `.tex`/PDF export, invoked as a separate program |
+| Pandoc | GPL | Tier 3: a worker capability installed at runtime (`pandoc`, for document conversion), run as a program of its own |
 | Claude Agent SDK (Python) | MIT wrapper that bundles the proprietary Claude Code CLI | **Not** for the MIT core: the runtime it drives is proprietary |
 | Claude Agent SDK (TypeScript) | Proprietary (Anthropic Commercial Terms) | Avoid |
 | HashiCorp Vault | **BUSL-1.1** | Avoid; use OpenBao or Kubernetes Secrets |

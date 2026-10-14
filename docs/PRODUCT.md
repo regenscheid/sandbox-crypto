@@ -1,6 +1,6 @@
 # Product requirements
 
-Date: 2026-10-10. This is a planning document. No new functionality has been implemented.
+Date: 2026-10-10. These are the product requirements as planned, not a description of what is built. What works today is in [.agents/STATUS.md](../.agents/STATUS.md), and the as-built pages are linked from there.
 
 ## Functional baseline
 
