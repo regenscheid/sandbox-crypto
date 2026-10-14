@@ -343,3 +343,29 @@ def test_the_baseline_is_never_edited() -> None:
         hashlib.sha256(text).hexdigest()
         == "f78d0068e2cf6a2ad8339b2de73106b04d2d3cb5e18eb421ac2a8e1c4717c2aa"
     )
+
+
+def test_after_commit_runs_once_a_change_commits_and_never_after_a_rollback(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path / "control.sqlite3")
+    ran: list[str] = []
+    with pytest.raises(ControlError, match="open change"):
+        store.after_commit(lambda: ran.append("outside"))
+    with store.write() as tx:
+        tx.sql.execute("INSERT INTO job_runs(project) VALUES ('kept')")
+        store.after_commit(lambda: ran.append("kept"))
+        assert ran == []
+
+    def failing() -> None:
+        with store.write() as tx:
+            tx.sql.execute("INSERT INTO job_runs(project) VALUES ('dropped')")
+            store.after_commit(lambda: ran.append("dropped"))
+            raise RuntimeError("the change fails")
+
+    with pytest.raises(RuntimeError):
+        failing()
+    with store.read(), pytest.raises(ControlError, match="open change"):
+        store.after_commit(lambda: ran.append("read"))
+    assert ran == ["kept"]
+    store.close()

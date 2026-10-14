@@ -1648,7 +1648,8 @@ class DocumentStore:
         if accepted_by is not None:
             payload["accepted_by"] = accepted_by.model_dump(mode="json", exclude_none=True)
         self.record_event(db, "document.revision_created", info, author, payload)
-        self._cache_put(info.document_id, number, text, mapped)
+        # A failed commit must leave no parse of a revision that never was.
+        self.control.after_commit(lambda: self._cache_put(info.document_id, number, text, mapped))
         return ChangeResult(
             outcome=outcome,
             document_id=info.document_id,

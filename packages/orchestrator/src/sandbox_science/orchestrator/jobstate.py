@@ -3,23 +3,22 @@
 
 Worker records remain authoritative for jobs. This store acknowledges a completion
 only after the run containing it has been saved. A crash can repeat a notice, never
-silently consume one. Each method owns a SQLite connection and may run in a thread.
+silently consume one. Each method is one transaction of the control store, and may
+run in a thread.
 """
 
 from __future__ import annotations
 
 import json
 import re
-import sqlite3
-from collections.abc import Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
 from sandbox_science.contracts import SYSTEM_CLOCK, Clock, ExecutionContext
 
-from .documents import DocumentStore, store_path
+from .control import ControlStore, store_path
 from .watcher_prompt import (
     MAX_PROVENANCE_BYTES,
     WatcherProvenance,
@@ -35,50 +34,49 @@ class JobState:
 
     A run's delivery lease lasts ``lease_seconds`` after its last heartbeat. Times
     are wall-clock seconds from ``clock``, since several processes compare them.
+    ``control`` shares a control store the process has open already, such as the
+    run's documents' (``DocumentStore.control``); without it, this object opens its own.
     """
 
     def __init__(
-        self, state_dir: Path, *, clock: Clock = SYSTEM_CLOCK, lease_seconds: float = LEASE_SECONDS
+        self,
+        state_dir: Path,
+        *,
+        clock: Clock = SYSTEM_CLOCK,
+        lease_seconds: float = LEASE_SECONDS,
+        control: ControlStore | None = None,
     ) -> None:
         self.path = store_path(state_dir)
         self.clock = clock
         self.lease_seconds = lease_seconds
+        self.control = control if control is not None else ControlStore(self.path)
         # Creates the control store, or brings its schema (with these tables) up to date.
-        documents = DocumentStore(self.path, producer="job-state")
-        try:
-            documents.initialize()
-        finally:
-            documents.close()
+        self.control.initialize()
 
-    @contextmanager
-    def _db(self) -> Generator[sqlite3.Connection]:
-        db = sqlite3.connect(self.path, timeout=10)
-        try:
-            db.execute("PRAGMA journal_mode=WAL")
-            db.execute("PRAGMA synchronous=FULL")
-            with db:
-                yield db
-        finally:
-            db.close()
+    def close(self) -> None:
+        self.control.close()
 
     def _now(self) -> float:
         return self.clock.now().timestamp()
 
     def heartbeat(self, context: ExecutionContext, run: str) -> None:
-        with self._db() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             db.execute(
                 "INSERT OR REPLACE INTO job_runs VALUES (?, ?, ?, ?)",
                 (context.project_id, context.session_id, run, self._now()),
             )
 
     def end_run(self, context: ExecutionContext, run: str) -> None:
-        with self._db() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             key = context.project_id, context.session_id, run
             db.execute("DELETE FROM job_runs WHERE project=? AND session=? AND run=?", key)
             db.execute("DELETE FROM job_waits WHERE project=? AND session=? AND run=?", key)
 
     def origin(self, context: ExecutionContext, job: str, run: str) -> None:
-        with self._db() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             db.execute(
                 "INSERT OR IGNORE INTO job_origins VALUES (?, ?, ?, ?)",
                 (context.project_id, context.session_id, job, run),
@@ -86,7 +84,8 @@ class JobState:
 
     def pending(self, context: ExecutionContext, run: str, jobs: Sequence[str]) -> list[str]:
         """Unacknowledged completions owned by this run, or whose owner has ended."""
-        with self._db() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             key = context.project_id, context.session_id
             ack = {
                 row[0]
@@ -115,7 +114,8 @@ class JobState:
 
     def acknowledge(self, context: ExecutionContext, run: str, jobs: Sequence[str]) -> None:
         """Call only after a durable run record represents these notices."""
-        with self._db() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             db.executemany(
                 "INSERT OR IGNORE INTO job_acknowledged VALUES (?, ?, ?, ?)",
                 [(context.project_id, context.session_id, job, run) for job in jobs],
@@ -124,7 +124,8 @@ class JobState:
     def waiting(
         self, context: ExecutionContext, run: str, payload: dict[str, object] | None
     ) -> None:
-        with self._db() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             key = context.project_id, context.session_id, run
             if payload is None:
                 db.execute("DELETE FROM job_waits WHERE project=? AND session=? AND run=?", key)
@@ -136,7 +137,8 @@ class JobState:
 
     def waits(self, context: ExecutionContext) -> list[dict[str, object]]:
         now = self._now()
-        with self._db() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             rows = db.execute(
                 """SELECT w.payload, r.heartbeat FROM job_waits w LEFT JOIN job_runs r
                 ON (w.project=r.project AND w.session=r.session AND w.run=r.run)
@@ -165,8 +167,8 @@ class JobState:
     ) -> int | None:
         """Reserve one call from the project's durable hourly watcher budget."""
         pin = encode_provenance(provenance) if provenance is not None else None
-        with self._db() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self.control.write() as tx:
+            db = tx.sql
             now = self._now()
             latest = db.execute(
                 "SELECT max(requested_at) FROM job_watcher_calls WHERE project=? AND job=?",
@@ -209,7 +211,8 @@ class JobState:
             for value in scope
         ):
             raise ValueError("invalid watcher reservation scope")
-        with self._db() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             row = db.execute(
                 """SELECT CASE WHEN prompt_provenance IS NULL THEN 0
                     WHEN typeof(prompt_provenance)='text'
@@ -247,7 +250,8 @@ class JobState:
         input_tokens: int | None,
         output_tokens: int | None,
     ) -> None:
-        with self._db() as db:
+        with self.control.write() as tx:
+            db = tx.sql
             db.execute(
                 """UPDATE job_watcher_calls SET outcome=?,model=?,input_tokens=?,output_tokens=?
                 WHERE id=?""",
@@ -255,7 +259,8 @@ class JobState:
             )
 
     def last_check(self, context: ExecutionContext, job: str) -> float | None:
-        with self._db() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             value = db.execute(
                 "SELECT max(requested_at) FROM job_watcher_calls WHERE project=? AND job=?",
                 (context.project_id, job),
@@ -264,7 +269,8 @@ class JobState:
 
     def checkins(self, context: ExecutionContext, *, limit: int = 100) -> list[dict[str, object]]:
         """Recent validated watcher notes, also after a wait has ended."""
-        with self._db() as db:
+        with self.control.read() as tx:
+            db = tx.sql
             rows = db.execute(
                 """SELECT job,alias,model,requested_at,outcome FROM job_watcher_calls
                 WHERE project=? AND session=? ORDER BY id DESC LIMIT ?""",

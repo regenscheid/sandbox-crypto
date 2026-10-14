@@ -185,7 +185,9 @@ async def _run_with(args: argparse.Namespace, projects: ProjectStore | None) -> 
                 if projects is not None and state_dir is not None:
                     documents = DocumentStore(store_path(state_dir), producer="harness")
                     closing(stack, interruption, lambda: _closed(documents))
-                    stores = Stores(projects, documents, JobState(state_dir))
+                    stores = Stores(
+                        projects, documents, JobState(state_dir, control=documents.control)
+                    )
                 watcher = reviewer = None
                 if args.watcher_model is not None:
                     watcher = _role(
