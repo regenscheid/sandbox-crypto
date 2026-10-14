@@ -33,7 +33,7 @@ These belong to other specs: Conda provisioning ([conda-provisioning](conda-prov
 4. **stdin** is empty, so a command waiting for input reads end-of-file instead of hanging.
 5. **Output.** stdout and stderr are separate streams of ordered chunks, each numbered within the execution. A stream larger than its limit keeps its head and its tail, drops the middle with a marker, and reports the total byte count. Bytes that are not UTF-8 are decoded with replacement characters.
 6. **Ending.** The result carries the exit code or the terminating signal, the elapsed time, and whether the call timed out or was cancelled. Partial output is kept.
-7. **Timeouts.** Each call has a wall-time limit, with a default and a maximum set by policy. When it expires, the process group gets SIGTERM, then SIGKILL after a short grace period.
+7. **Timeouts.** Each call has a wall-time limit, with a default and a maximum set by policy. When it expires, each of the call's processes gets SIGTERM, then SIGKILL after a short grace period (OpenShell refuses signals to a whole process group, so the executor signals processes one by one; [worker](../WORKER.md#leftover-processes)).
 8. **Leftover processes.** When a call ends, the processes it started that are still running are terminated, including those that left its process group or session. A shell call cannot leave daemons running ([worker](../WORKER.md#leftover-processes) says how far the executor can find them). A computation that should outlive the call is a background job.
 
 ## Background jobs
