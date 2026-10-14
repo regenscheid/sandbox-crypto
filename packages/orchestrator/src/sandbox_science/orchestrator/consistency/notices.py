@@ -3,95 +3,73 @@
 
 from __future__ import annotations
 
-from .store import Json, ReviewStore, clipped, dump
+from typing import Any, Final
+
+from sandbox_science.orchestrator.control.notices import (
+    MAX_PER_RUN,
+    LeasedNotices,
+    NoticeTable,
+)
+
+from .store import Json, ReviewStore, clipped
+
+FINDINGS: Final = NoticeTable(
+    "review_notices", "project", "session", "{0}finding_id||'-r'||{0}revision", "notice_id"
+)
+"""Where review findings are leased to the author's runs."""
 
 
 class FindingNotices:
+    table: NoticeTable = FINDINGS
+
     def __init__(self, store: ReviewStore) -> None:
         self.store = store
+        self.leases = LeasedNotices(store.documents.control, self.table, store.clock)
 
     def pending(
         self, project: str, session: str, run: str, seen: set[str], *, max_chars: int = 20000
     ) -> list[Json]:
-        if len(seen) >= 128:
+        if len(seen) >= MAX_PER_RUN:
             return []
         self.store.scope(project, session)
-        now = self.store.clock()
-        with self.store.documents.control.write() as tx:
-            db = tx.sql
-            # The latest state is authoritative. A response made before delivery
-            # makes the older open notice unnecessary, without hiding its history.
-            rows = db.execute(
-                """SELECT n.finding_id,n.revision,f.severity,f.statement,f.review_id
+
+        def notice(row: tuple[Any, ...]) -> Json:
+            finding, revision, severity, statement, review = row
+            return {
+                "notice_id": f"{finding}-r{revision}",
+                "finding": finding,
+                "revision": revision,
+                "severity": severity,
+                "review": review,
+                "statement": clipped(statement, 2048),
+                "detail": "Read review_finding_read for the full finding and evidence.",
+            }
+
+        # The latest state is authoritative. A response made before delivery
+        # makes the older open notice unnecessary, without hiding its history.
+        return self.leases.offer(
+            run,
+            seen,
+            batch=20,
+            max_chars=max_chars,
+            select="""SELECT n.finding_id,n.revision,f.severity,f.statement,f.review_id
                 FROM review_notices n JOIN review_findings f USING(finding_id)
-                WHERE n.project=? AND n.session=? AND n.delivered_run IS NULL
+                WHERE n.project=? AND n.session=?
                 AND n.revision=f.revision AND f.status='open' AND f.category!='math'
-                AND (n.claimed_run IS NULL OR n.claim_until<=? OR n.claimed_run=?)
-                AND (n.finding_id||'-r'||n.revision) NOT IN (SELECT value FROM json_each(?))
-                ORDER BY n.rowid LIMIT ?""",
-                (project, session, now, run, dump(sorted(seen)), min(20, 128 - len(seen))),
-            ).fetchall()
-            values: list[Json] = []
-            for finding, revision, severity, statement, review in rows:
-                notice = {
-                    "notice_id": f"{finding}-r{revision}",
-                    "finding": finding,
-                    "revision": revision,
-                    "severity": severity,
-                    "review": review,
-                    "statement": clipped(statement, 2048),
-                    "detail": "Read review_finding_read for the full finding and evidence.",
-                }
-                if len(dump([*values, notice])) > max_chars:
-                    break
-                values.append(notice)
-            for n in values:
-                db.execute(
-                    (
-                        "UPDATE review_notices SET claimed_run=?,claim_until=? WHERE "
-                        "finding_id=? AND revision=?"
-                    ),
-                    (run, now + 120, n["finding"], n["revision"]),
-                )
-        return values
+                AND {leased} ORDER BY n.rowid LIMIT ?""",
+            parameters=(project, session),
+            project=notice,
+        )
 
     def renew(self, project: str, session: str, run: str) -> None:
-        with self.store.documents.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                (
-                    "UPDATE review_notices SET claim_until=? WHERE project=? AND "
-                    "session=? AND claimed_run=? AND delivered_run IS NULL"
-                ),
-                (self.store.clock() + 120, project, session, run),
-            )
+        self.leases.renew(project, session, run)
 
     def release(self, project: str, session: str, run: str, keep: set[str] | None = None) -> None:
-        with self.store.documents.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                (
-                    "UPDATE review_notices SET claimed_run=NULL,claim_until=NULL "
-                    "WHERE project=? AND session=? AND claimed_run=? AND "
-                    "delivered_run IS NULL AND (finding_id||'-r'||revision) NOT "
-                    "IN (SELECT value FROM json_each(?))"
-                ),
-                (project, session, run, dump(sorted(keep or set()))),
-            )
+        self.leases.release(project, session, run, keep)
 
     def acknowledge(self, project: str, session: str, run: str, notices: list[str]) -> None:
         with self.store.documents.control.write() as tx:
-            db = tx.sql
-            db.execute(
-                (
-                    "UPDATE review_notices SET "
-                    "delivered_run=?,claimed_run=NULL,claim_until=NULL WHERE "
-                    "project=? AND session=? AND claimed_run=? AND delivered_run "
-                    "IS NULL AND (finding_id||'-r'||revision) IN (SELECT value "
-                    "FROM json_each(?))"
-                ),
-                (run, project, session, run, dump(notices)),
-            )
+            self.leases.acknowledge(tx.sql, project, session, run, notices)
 
     def counts(self, project: str, session: str) -> Json:
         self.store.scope(project, session)
