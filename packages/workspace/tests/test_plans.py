@@ -30,7 +30,7 @@ from sandbox_science.orchestrator.session_plans import (
 from sandbox_science.workspace import plans
 from sandbox_science.workspace.app import create_app
 
-TOKEN = "test-secret-session-plan-login-0123456789"  # noqa: S105
+TOKEN = "test-secret-session-plan-login-0123456789"
 PATH = "/api/v0/projects/p1/sessions/a/plan"
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 

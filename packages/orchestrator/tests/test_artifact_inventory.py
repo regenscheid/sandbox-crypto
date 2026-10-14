@@ -342,7 +342,7 @@ def test_corrupt_operation_metadata_is_bounded_before_python(
     inventory = ArtifactInventory(documents)
     record(inventory, "op1")
     with sqlite3.connect(documents.path) as db:
-        query = f"UPDATE artifact_operations SET {column}=?"  # noqa: S608 - fixed test parameter
+        query = f"UPDATE artifact_operations SET {column}=?"
         db.execute(query, ("x" * (20 * 1024 * 1024),))
     tracemalloc.start()
     try:

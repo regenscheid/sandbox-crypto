@@ -163,8 +163,8 @@ async def test_an_executor_that_cannot_start_fails_the_attempt(
 async def test_a_dead_executor_loses_its_attempts(worker: Worker) -> None:
     execution = await worker.submit("op-long", kind="shell", script="sleep 60")
     await worker.wait_running(execution["execution_id"])
-    environment = worker.manager._environments["env1"]  # pyright: ignore[reportPrivateUsage]
-    process = environment.channel._process  # pyright: ignore[reportOptionalMemberAccess,reportPrivateUsage]
+    environment = worker.manager._environments["env1"]
+    process = environment.channel._process  # pyright: ignore[reportOptionalMemberAccess]
     assert process is not None
     process.send_signal(signal.SIGKILL)
     lost = await worker.finish(execution["execution_id"])
@@ -371,7 +371,7 @@ async def test_closing_a_session_starts_no_executor(worker: Worker) -> None:
     idle = {**CONTEXT, "environment_id": "env-idle"}
     status, closed = await worker.post("/v1/sessions/close", {"context": idle})
     assert (status, closed) == (200, {"kernels": []})
-    assert "env-idle" not in worker.manager._environments  # pyright: ignore[reportPrivateUsage]
+    assert "env-idle" not in worker.manager._environments
 
 
 async def test_an_idle_kernel_is_stopped_and_its_state_reported_lost(
@@ -453,7 +453,7 @@ async def test_an_idle_executor_is_released_and_its_kernels_reported_lost(worker
     assert status == 200
     await worker.finish(busy["execution_id"])
     assert await manager.release_if_idle("env1", time.monotonic())
-    assert "env1" not in manager._environments  # pyright: ignore[reportPrivateUsage]
+    assert "env1" not in manager._environments
     assert await manager.release_if_idle("env1", time.monotonic())  # nothing left to stop
     after = await worker.run("op-r3", kind="cell", code="x")
     assert after["kernel_state_lost"] is True
@@ -473,7 +473,7 @@ async def test_status_before_start_and_failed_birth_commit_do_not_consume_kernel
     assert before is not None
     await manager.release("env1")
     observed: asyncio.Future[Message] = asyncio.get_running_loop().create_future()
-    on_event = manager._on_event  # pyright: ignore[reportPrivateUsage]
+    on_event = manager._on_event
 
     async def delayed_state(environment: str, message: Message) -> None:
         if message.get("event") == "state" and message.get("kernel") is not None:
@@ -527,9 +527,7 @@ async def test_damaged_kernel_generation_refuses_status_but_preserves_shell_comp
     worker: Worker,
 ) -> None:
     await worker.run("cp12-seed", kind="cell", code="value = 1729")
-    worker.manager.store._db.execute(  # pyright: ignore[reportPrivateUsage]
-        "UPDATE kernels SET incarnation=?", ("x" * 20_000_000,)
-    )
+    worker.manager.store._db.execute("UPDATE kernels SET incarnation=?", ("x" * 20_000_000,))
     status, _ = await worker.post("/v1/kernels/status", {"context": CONTEXT})
     assert status == 503
     done = await worker.run("cp12-healthy", kind="shell", script="echo healthy")
@@ -641,7 +639,7 @@ async def test_operation_ids_are_kept_per_project(worker: Worker) -> None:
     assert second["execution_id"] != first["execution_id"]
     # A record stored before operations were kept per project has the bare operation ID:
     # its own project still finds it, and other projects do not meet it.
-    worker.manager.store._db.execute(  # pyright: ignore[reportPrivateUsage]
+    worker.manager.store._db.execute(
         "UPDATE executions SET operation_id = 'op-shared' WHERE execution_id = ?",
         (first["execution_id"],),
     )
@@ -857,12 +855,12 @@ async def test_an_attempts_result_outlives_a_sync_cut_short(
     await asyncio.wait_for(syncing.wait(), 60)
     manager = synced.manager
     # A second end from the executor is ignored.
-    await manager._on_event(  # pyright: ignore[reportPrivateUsage]
+    await manager._on_event(
         "env1", {"execution": execution_id, "event": "end", "state": "failed", "result": {}}
     )
     # The executor goes away during the sync: the attempt keeps the result it reported.
-    environment = manager._environments["env1"]  # pyright: ignore[reportPrivateUsage]
-    process = environment.channel._process  # pyright: ignore[reportOptionalMemberAccess,reportPrivateUsage]
+    environment = manager._environments["env1"]
+    process = environment.channel._process  # pyright: ignore[reportOptionalMemberAccess]
     assert process is not None
     process.send_signal(signal.SIGKILL)
     done = await synced.finish(execution_id)

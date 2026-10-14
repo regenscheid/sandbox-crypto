@@ -51,7 +51,7 @@ from sandbox_science.workspace.mathrepair import (
 )
 
 KEY = "test-secret-gateway-key-0123456789"
-TOKEN = "test-secret-login-token-0123456789abcdef"  # noqa: S105 - a test value
+TOKEN = "test-secret-login-token-0123456789abcdef"
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 

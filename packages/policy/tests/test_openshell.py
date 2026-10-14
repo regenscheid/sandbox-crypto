@@ -1454,7 +1454,7 @@ def test_a_research_sandbox_may_open_the_devices_research_code_needs() -> None:
     filesystem = compile_research(EXAMPLE).policy.filesystem_policy
     assert filesystem is not None
     assert filesystem.include_workdir
-    assert {"/dev/ptmx", "/dev/pts", "/dev/shm"} <= set(filesystem.read_write)  # noqa: S108 - a device path
+    assert {"/dev/ptmx", "/dev/pts", "/dev/shm"} <= set(filesystem.read_write)
     assert filesystem.read_write == SANDBOX_DEVICES_READ_WRITE
     assert filesystem.read_only == SANDBOX_DEVICES_READ_ONLY
 
@@ -1468,7 +1468,7 @@ def test_the_filesystem_section_comes_first_and_revisions_keep_the_live_one() ->
         "network_middlewares",
     ]
     # OpenShell refuses a revision that drops paths it added at startup (lab, 2026-10-11).
-    live = FilesystemPolicy(read_only=("/dev/random", "/usr"), read_write=("/dev/shm", "/tmp"))  # noqa: S108 - device and system paths
+    live = FilesystemPolicy(read_only=("/dev/random", "/usr"), read_write=("/dev/shm", "/tmp"))
     revision = policy.with_filesystem(live)
     assert revision.filesystem_policy == live
     assert revision.network_policies == policy.network_policies
@@ -1480,7 +1480,7 @@ def test_the_image_paths_are_added_and_writable_wins() -> None:
         update={
             "filesystem": SandboxFilesystem(
                 read_only=("/opt/conda", "/dev/random", "/data"),
-                read_write=("/data", "/dev/shm"),  # noqa: S108 - a device path
+                read_write=("/data", "/dev/shm"),
             )
         }
     )

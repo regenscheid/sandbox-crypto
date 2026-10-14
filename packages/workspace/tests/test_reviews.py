@@ -17,7 +17,7 @@ from sandbox_science.orchestrator.documents import DocumentStore, store_path
 from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.workspace.app import create_app
 
-TOKEN = "review-fixture-synthetic-login-0123456789abcdef"  # noqa: S105
+TOKEN = "review-fixture-synthetic-login-0123456789abcdef"
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 pytestmark = pytest.mark.asyncio
 

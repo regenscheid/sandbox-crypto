@@ -27,6 +27,8 @@ dev = [
     "types-grpcio>=1.0",
     "types-protobuf>=6.30",
     "types-pyyaml>=6.0",
+    "pytest-asyncio>=1.4",
+    "pytest-timeout>=2.4",
 ]
 
 [tool.uv]
@@ -60,8 +62,9 @@ ignore = []
 known-first-party = ["sandbox_science"]
 
 [tool.ruff.lint.per-file-ignores]
-"packages/*/tests/**" = ["S101"]
-"images/tests/**" = ["S101"]
+# Tests run subprocesses, build SQL and use synthetic secrets and temporary paths on purpose.
+"packages/*/tests/**" = ["S101", "S105", "S106", "S108", "S310", "S603", "S607", "S608"]
+"images/tests/**" = ["S101", "S105", "S106", "S108", "S310", "S603", "S607", "S608"]
 # Lab scripts send shell and Python sources to sandboxes in strings, kept as written.
 ".agents/labs/**" = ["E501"]
 
@@ -72,10 +75,15 @@ typeCheckingMode = "standard"
 strict = ["packages/*/src"]
 pythonVersion = "3.12"
 reportMissingTypeStubs = false
+reportUnnecessaryTypeIgnoreComment = "error"
 
 [tool.pytest.ini_options]
 testpaths = ["packages", "images"]
 addopts = "--import-mode=importlib -ra"
+# pytest-asyncio runs every async test and fixture; pytest-aiohttp recommends this mode.
+asyncio_mode = "auto"
+# A hung test fails after five minutes instead of stalling the run (--timeout=0 turns this off).
+timeout = 300
 markers = [
     "integration: needs OpenShell, KVM or a cluster; runs only when SS_INTEGRATION=1",
     "images: needs Docker and built base images; runs only when SS_IMAGE_TESTS names them",

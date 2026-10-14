@@ -22,7 +22,7 @@ from sandbox_science.workspace.app import create_app
 
 pytestmark = pytest.mark.asyncio
 
-TOKEN = "test-secret-login-token-0123456789abcdef"  # noqa: S105 - a test value
+TOKEN = "test-secret-login-token-0123456789abcdef"
 AGENT = Author(kind="agent", session_id="a", run_id="run-1", role="main", model="scripted")
 FF = """---
 title: Fermat

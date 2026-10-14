@@ -28,7 +28,7 @@ from sandbox_science.workspace.app import (
 
 pytestmark = pytest.mark.asyncio
 
-TOKEN = "test-secret-login-token-0123456789abcdef"  # noqa: S105 - a test value
+TOKEN = "test-secret-login-token-0123456789abcdef"
 SECRETS = (b"test-secret-outside-the-build", b"test-secret-in-a-dotfile")
 
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]

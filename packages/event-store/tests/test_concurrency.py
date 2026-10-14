@@ -99,7 +99,7 @@ with EventStore(path, timeout=60) as store:
 def test_processes_appending_to_one_store(path: Path) -> None:
     EventStore(path).close()
     writers = [
-        subprocess.Popen(  # noqa: S603
+        subprocess.Popen(
             [sys.executable, "-c", _WRITER, str(path), f"process-{index}", "100"],
         )
         for index in range(4)

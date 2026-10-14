@@ -219,7 +219,7 @@ def pip_packages(
     for record in records:
         files = record.get("files")
         if isinstance(files, list):
-            owned.update(str(item) for item in files)  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+            owned.update(str(item) for item in files)
     packages: list[dict[str, str]] = []
     for info in sorted(PREFIX.glob("lib/python3*/site-packages/*.dist-info")):
         if str((info / "METADATA").relative_to(PREFIX)) in owned:

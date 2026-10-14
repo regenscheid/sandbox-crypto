@@ -60,7 +60,7 @@ CONTEXT = ExecutionContext(project_id="p", session_id="s", environment_id="e")
 
 class Guest:
     incarnation = INC
-    daemon_token = "test-secret-no-actual-guest"  # noqa: S105
+    daemon_token = "test-secret-no-actual-guest"
     closed = False
     detaching = False
 

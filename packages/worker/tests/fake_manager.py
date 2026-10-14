@@ -193,7 +193,7 @@ def special(name: str) -> None:
         site = sysconfig.get_paths()["purelib"]
         wait = os.environ.get("FAKEPM_STEP", "30")
         where = os.environ.get("FAKEPM_LOG", "")
-        step = subprocess.Popen([sys.executable, "-c", STEP, wait, site, name, where])  # noqa: S603
+        step = subprocess.Popen([sys.executable, "-c", STEP, wait, site, name, where])
         log("ready", name, os.getpid(), step.pid)
         if name == "spawning":
             step.wait()
@@ -202,7 +202,7 @@ def special(name: str) -> None:
         if name == "orphan":  # a step that lost the turn's mark
             env = {"PATH": os.environ["PATH"], "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
         command = [sys.executable, "-m", "pip", "install", "inner"]
-        subprocess.run(command, env=env, check=True, timeout=60)  # noqa: S603 - a fixed command
+        subprocess.run(command, env=env, check=True, timeout=60)
 
 
 # pip.

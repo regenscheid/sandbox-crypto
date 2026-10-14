@@ -43,7 +43,7 @@ from sandbox_science.worker.settings import ClientSettings, token_digest
 from sandbox_science.worker.store import RevisionRecord, Store
 
 NOW = datetime(2026, 10, 13, tzinfo=UTC)
-TOKEN = "test-secret-observation-pool-not-a-credential"  # noqa: S105
+TOKEN = "test-secret-observation-pool-not-a-credential"
 CLIENT = "test-secret-observation-project-not-a-credential"
 BASE = "/v1/environments/env/provisioning/observations"
 
@@ -168,7 +168,7 @@ def test_selected_elements_keep_original_object_type_and_unique_keys(
             f'"{key}":"{alternate}","{field}":"{original}"',
             1,
         )
-    store._db.execute(f"UPDATE {table} SET record=?", (raw,))  # noqa: S608
+    store._db.execute(f"UPDATE {table} SET record=?", (raw,))
     if section == "files":
         with pytest.raises(WorkerError, match="unavailable"):
             store.provision_observations.files(

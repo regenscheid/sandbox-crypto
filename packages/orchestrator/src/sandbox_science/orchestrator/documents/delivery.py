@@ -185,10 +185,10 @@ class CatalogDelivery:
             return await asyncio.get_running_loop().run_in_executor(self._executor, operation)
 
         task = asyncio.create_task(execute())
-        self._sql_work.add(task)  # pyright: ignore[reportArgumentType]
+        self._sql_work.add(task)
 
         def finished(done: asyncio.Task[T]) -> None:
-            self._sql_work.discard(done)  # pyright: ignore[reportArgumentType]
+            self._sql_work.discard(done)
             if not done.cancelled():
                 done.exception()
 

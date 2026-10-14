@@ -22,7 +22,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerCli
 from sandbox_science.workspace import kernels
 from sandbox_science.workspace.app import create_app
 
-TOKEN = "test-secret-kernel-workspace-login-0123456789"  # noqa: S105
+TOKEN = "test-secret-kernel-workspace-login-0123456789"
 PATH = "/api/v0/projects/p1/sessions/a/kernels"
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 ServerFactory = Callable[..., Awaitable[TestServer]]

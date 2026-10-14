@@ -48,7 +48,7 @@ from sandbox_science.worker.store import Store
 
 CONTEXT = ExecutionContext(project_id="p1", session_id="s1", environment_id="env1")
 SCOPE = OutputScope(**CONTEXT.model_dump(include={"project_id", "session_id", "environment_id"}))
-TOKEN = "synthetic-observation-token-000000000000"  # noqa: S105 - synthetic fixture
+TOKEN = "synthetic-observation-token-000000000000"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 
@@ -436,7 +436,7 @@ def test_corrupt_large_metadata_is_clipped_before_python(tmp_path: Path, field: 
     store.finish(value, (), observation=OutputReport(), observation_gap=None)
     table = "output_observation_details" if field == "payload" else "output_observation_attempts"
     store._db.execute(
-        f"UPDATE {table} SET {field}=?",  # noqa: S608 - fixed parameterized test fields
+        f"UPDATE {table} SET {field}=?",
         ("z" * (20 << 20),),
     )
     tracemalloc.start()
@@ -467,7 +467,7 @@ def test_corrupt_scope_cannot_veto_terminal_durability(
     store = Store(tmp_path / "worker.db")
     store.finish(terminal(store, "first"), (), observation=OutputReport(), observation_gap=None)
     store._db.execute(
-        f"UPDATE output_observation_scopes SET {field}=?",  # noqa: S608 - enumerated fixed fields
+        f"UPDATE output_observation_scopes SET {field}=?",
         (value,),
     )
     current = terminal(store, "healthy")
@@ -514,7 +514,7 @@ def test_corrupt_detail_scalar_cannot_be_materialized_or_block_completion(
     store = Store(tmp_path / "worker.db")
     store.finish(terminal(store, "old"), (), observation=OutputReport(), observation_gap=None)
     store._db.execute(
-        f"UPDATE output_observation_details SET {field}=?",  # noqa: S608 - fixed parameterized fields
+        f"UPDATE output_observation_details SET {field}=?",
         ("z" * 20000000,),
     )
     value = terminal(store, "healthy")

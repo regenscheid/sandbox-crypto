@@ -16,7 +16,7 @@ from sandbox_science.event_store import EventStore, StoreReader, verify_store
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.approvals import APPROVAL, DENIAL, Approvals, RequestKey
 from sandbox_science.policy_middleware import evaluator
-from sandbox_science.policy_middleware.cli import _read_records, main  # pyright: ignore[reportPrivateUsage]
+from sandbox_science.policy_middleware.cli import _read_records, main
 from sandbox_science.policy_middleware.evaluator import HttpRequestFacts, PolicyMiddleware
 from sandbox_science.policy_middleware.events import OPERATOR, StoreSink
 from sandbox_science.policy_middleware.store import PolicyStore

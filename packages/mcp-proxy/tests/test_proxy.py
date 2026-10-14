@@ -12,7 +12,7 @@ from typing import Any, Protocol
 import pytest
 
 from sandbox_science.event_store import EventStore
-from sandbox_science.mcp_proxy.cli import _answer, _pending  # pyright: ignore[reportPrivateUsage]
+from sandbox_science.mcp_proxy.cli import _answer, _pending
 from sandbox_science.mcp_proxy.upstream import address_check
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.approvals import Approvals, RequestKey, prepare_answer

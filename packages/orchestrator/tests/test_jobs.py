@@ -110,7 +110,7 @@ def tools(fake: FakeWorker, tmp_path: Path, **kwargs: Any) -> JobTools:
         state=JobState(tmp_path),
         poll_seconds=0.01,
         **kwargs,
-    )  # type: ignore[arg-type]
+    )
 
 
 @pytest.mark.asyncio

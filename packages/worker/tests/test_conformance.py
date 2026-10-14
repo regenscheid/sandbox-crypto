@@ -41,7 +41,7 @@ from sandbox_science.worker.settings import LocalBackendSettings
 from sandbox_science.worker.store import Store
 
 URL_VARIABLE = "SS_CONFORMANCE_WORKER_URL"
-TOKEN_VARIABLE = "SS_CONFORMANCE_TOKEN_FILE"  # noqa: S105 - a variable's name, not a token
+TOKEN_VARIABLE = "SS_CONFORMANCE_TOKEN_FILE"
 ENVIRONMENT_VARIABLE = "SS_CONFORMANCE_ENVIRONMENT"
 LOCAL_TOKEN = "c" * 40
 

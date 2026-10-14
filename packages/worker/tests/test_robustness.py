@@ -160,7 +160,7 @@ class HostileBackend:
 
 
 def _running(channel: ExecutorChannel) -> bool:
-    process = channel._process  # pyright: ignore[reportPrivateUsage]
+    process = channel._process
     return process is not None and process.returncode is None
 
 
@@ -238,7 +238,7 @@ async def test_c1_a_worker_starts_again_after_a_crash(
             StreamEvent(execution_id="exe-crashed", seq=seq, time=now, name="stdout", text=text)
         )
     # A record that does not validate any more must not stop the start either.
-    store._db.execute(  # pyright: ignore[reportPrivateUsage]
+    store._db.execute(
         "INSERT INTO executions(execution_id,operation_id,request_digest,environment_id,"
         "session_id,terminal,record) VALUES ('exe-bad', 'op-bad', 'd', 'env1', 's1', 0, "
         "'{\"x\": 1}')"
@@ -279,7 +279,7 @@ async def test_c1_sigterm_stops_the_worker_cleanly_and_it_starts_again(tmp_path:
 
     async def launch(name: str) -> subprocess.Popen[bytes]:
         log = (tmp_path / name).open("wb")
-        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)  # noqa: S603
+        process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT)
         for _ in range(200):
             with contextlib.suppress(OSError), socket.create_connection(("127.0.0.1", port), 0.2):
                 return process
@@ -640,7 +640,7 @@ async def test_m1_publication_hashes_the_file_once(
     started, store = await start_worker(aiohttp_client, tmp_path, max_artifact_size=64 << 20)
     try:
         await started.run("op-big", kind="shell", script="head -c 20000000 /dev/urandom > big")
-        channel = started.manager._environments["env1"].channel  # pyright: ignore[reportPrivateUsage]
+        channel = started.manager._environments["env1"].channel
         assert channel is not None
         reads: list[dict[str, Any]] = []
         request = channel.request

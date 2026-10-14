@@ -85,8 +85,8 @@ def _context_paths(stage: str) -> set[str]:
 def _revision_sh(function: str, variable: str, profile: str) -> list[str]:
     """An array that a revision.sh function sets for the profile."""
     script = f'. "$1" && {function} {profile} && printf "%s\\n" "${{{variable}[@]}}"'
-    done = subprocess.run(  # noqa: S603 - the repository's own script
-        ["bash", "-c", script, "bash", str(IMAGES / "revision.sh")],  # noqa: S607 - bash from PATH
+    done = subprocess.run(
+        ["bash", "-c", script, "bash", str(IMAGES / "revision.sh")],
         capture_output=True,
         text=True,
         check=True,
@@ -360,7 +360,7 @@ def test_the_launcher_is_the_mcp_proxy_images_command() -> None:
     assert f"\nsettings=${{1:-{checks.PROXY_SETTINGS}}}\n" in text
     sh = shutil.which("sh")
     if sh is not None:
-        subprocess.run([sh, "-n", str(launcher)], check=True)  # noqa: S603 - a syntax check
+        subprocess.run([sh, "-n", str(launcher)], check=True)
 
 
 # Licenses.

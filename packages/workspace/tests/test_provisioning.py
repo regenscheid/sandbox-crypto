@@ -22,7 +22,7 @@ from sandbox_science.orchestrator.worker_client import WorkerAPIError, WorkerCli
 from sandbox_science.workspace import provisioning, provisioning_client
 from sandbox_science.workspace.app import create_app
 
-TOKEN = "test-secret-provisioning-workspace-login-0123456789"  # noqa: S105
+TOKEN = "test-secret-provisioning-workspace-login-0123456789"
 ClientFactory = Callable[..., Awaitable[TestClient[Any, Any]]]
 ServerFactory = Callable[..., Awaitable[TestServer]]
 PIN = "a" * 64

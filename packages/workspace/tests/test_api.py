@@ -21,7 +21,7 @@ from sandbox_science.workspace.app import create_app
 
 pytestmark = pytest.mark.asyncio
 
-TOKEN = "test-secret-login-token-0123456789abcdef"  # noqa: S105 - a test value
+TOKEN = "test-secret-login-token-0123456789abcdef"
 POLICY = "sha256:" + "a" * 64
 FIRST_RUN = "20261011T130102345678Z-run-1"
 SECOND_RUN = "20261011T140102345678Z-run-2"

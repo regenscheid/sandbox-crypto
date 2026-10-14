@@ -75,7 +75,7 @@ def mutate_revision(docs, column, value):
     assert column in {"block_map", "sha256", "text", "parser"}
     with docs._write() as db:
         db.execute("DROP TRIGGER revisions_no_update")
-        db.execute(f"UPDATE revisions SET {column}=?", (value,))  # noqa: S608 - fixed test columns
+        db.execute(f"UPDATE revisions SET {column}=?", (value,))
 
 
 def test_exact_source_map_parser_span_and_macro_pins(state):
@@ -291,7 +291,7 @@ def test_receipt_corruption_is_bounded_and_cannot_replace_canonical_pins(state, 
         db.execute("DROP TRIGGER document_export_inputs_no_update")
         db.execute("PRAGMA ignore_check_constraints=ON")
         value = b"x" * (20 * 1024 * 1024) if column == "payload" else "x" * (20 * 1024 * 1024)
-        db.execute(f"UPDATE document_export_inputs SET {column}=?", (value,))  # noqa: S608 - fixed test columns
+        db.execute(f"UPDATE document_export_inputs SET {column}=?", (value,))
         db.execute("PRAGMA ignore_check_constraints=OFF")
     tracemalloc.start()
     try:

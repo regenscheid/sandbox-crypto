@@ -164,7 +164,7 @@ async def test_ld_f4_the_run_is_told_and_its_stale_patch_conflicts(
         },
         {"text": "Done."},
     ]
-    model = Hooked(ScriptedModel.from_json(script)._turns, {1: user_saves_r2})  # pyright: ignore[reportPrivateUsage]
+    model = Hooked(ScriptedModel.from_json(script)._turns, {1: user_saves_r2})
     transcript = await run_task(model, _toolbox(client, store, "run-a"), "patch E", run_id="run-a")
     assert transcript.final_text == "Done."
     read, conflict, applied = _results(model)

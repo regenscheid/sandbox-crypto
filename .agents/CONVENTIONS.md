@@ -111,7 +111,10 @@ CI runs the same commands.
 - Unit tests live in `packages/<member>/tests/`, named `test_<module>.py`.
 - Tests that load `examples/` files keep the examples valid.
 - Security behavior gets explicit negative tests (denials, rejected inputs).
-- Integration tests that need OpenShell, KVM or a cluster are marked `@pytest.mark.integration` and skipped unless `SS_INTEGRATION=1`. They run on babbage, not in CI.
+- Integration tests that need OpenShell, KVM, a cluster or the public registries are marked `@pytest.mark.integration`. The root `conftest.py` skips them unless `SS_INTEGRATION=1`. They run on babbage, not in CI.
+- Async tests and fixtures run under pytest-asyncio's auto mode, so they need no `asyncio` mark.
+- Every test has a 300 s limit (pytest-timeout), so a hang fails instead of stalling CI. `--timeout=0` turns it off for long manual runs.
+- pyright reports unnecessary `# type: ignore` and `# pyright: ignore` comments as errors, and ruff reports unused `noqa` comments. Tests may run subprocesses, build SQL and use synthetic secrets and temporary paths without inline suppressions.
 
 ## Git and pull requests
 
