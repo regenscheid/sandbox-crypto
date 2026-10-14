@@ -1,6 +1,6 @@
 # Plans and delegation
 
-Date: 2026-10-11. **Status: Draft, to review with the user.** W0 behavior specification; conventions in the [index](README.md).
+Date: 2026-10-11, delegation design added 2026-10-14. **Status: Approved (2026-10-14).** The owner's answers on delegation limits and kernels are recorded (PD-14, PD-15); the delegation design on the harness (PD-32 to PD-43) and questions 1, 2 and 9 to 16 were decided on 2026-10-14 by the coordinator under the owner's autonomy mandate, each as recommended. Questions 5 to 7 remain open. W0 behavior specification; conventions in the [index](README.md).
 
 The planning phase and live plan progress are a confirmed requirement ([D86](../DECISIONS.md)); that does not settle every detail or open question in this draft. Built: the [plan and progress core](../SESSION-PLANS.md) (PD-1–5, PD-7, PD-9 and PD-10, with an explicit goal outcome on completion), the [MAIN plan tools and guidance](../ORCHESTRATOR-PROMPTS.md#implemented-stateful-main-planning-tools), the read-only [workspace view](../SESSION-PLAN-WORKSPACE.md) and USER [plan body editing](../SESSION-PLAN-EDITING.md). Not built: PD-6 approval, the reviewer's check of completion claims (PD-8), questions to the user and delegation. The design introduces no execution approval gate.
 
@@ -28,7 +28,7 @@ Terms:
 - PD-3. A plan is an artifact. Creating or changing it appends an immutable version that records its author (the user or an agent run) and a short reason (CScience). A change names the version it is based on; a stale base returns a conflict with the current version (D28).
 - PD-4. The user can edit the plan directly. The edit is an attributed version, and an agent working from the plan is told to reread it (D23; CScience notifies agents of user edits).
 - PD-5. A session has one current plan, with a status: `draft`, `awaiting_approval`, `active`, `completed` or `abandoned`. Earlier plans remain as artifacts (new).
-- PD-6. Approval: when the project or the agent requires it, a plan version waits for the user's approval. Meanwhile the session's agents can read and plan but cannot start executions or external changes. Approval names one exact version and comes only from the user, never from tool output or an agent; a later version needs approval again (CScience has such a mode and the pack relies on it; the default setting is an open question).
+- PD-6. Approval: when the project or the agent requires it, a plan version waits for the user's approval. Meanwhile the session's agents can read and plan but cannot start executions or external changes. Approval names one exact version and comes only from the user, never from tool output or an agent; a later version needs approval again (CScience has such a mode and the pack relies on it). Approval is off by default, a project setting (decided 2026-10-14, open question 1).
 
 ### Progress
 
@@ -43,16 +43,17 @@ Terms:
 - PD-12. A track has at most one active delegation; starting another for it is refused while one runs (new).
 - PD-13. A delegated run starts with a fresh context: its role instructions, the brief, its track of the plan, its skill catalog and the referenced inputs, not the parent's transcript (CScience; Claude Code's public subagent documentation). Skills the profile preloads are recorded as loads ([skills](skills.md), SK-21).
 - PD-14. Delegated agents are logical: a delegation creates no container, and the child's tools use the session's environment ([architecture](../ARCHITECTURE.md)). Each delegated run gets its own kernels there, and sees its parent's results only through published artifacts and records (new). *Confirmed by the user on 2026-10-11 (D81): delegated agents are not separate sessions, and they stay in the session's environment; an environment of their own is a later opt-in. CScience likewise runs a session's child agents in the session's own sandbox, each with its own kernels and workspace directory.* *Answered by the owner on 2026-10-14 (open question 4): no kernel sharing. A parent never lends its kernel to a delegated run. In-memory state is handed off through saved files in the session workspace, such as Sage's `save()`/`load()` or pickle, so the handoff is explicit and recorded. Very large state stays with the parent, which does that part itself instead of delegating it.*
-- PD-15. Depth and concurrency. *Answered by the owner on 2026-10-14 (open question 3):* a session supports at least 8–10 delegated runs at once; 4–5 is the typical number. Nesting goes one level further: the main agent's delegated runs may delegate once more, and that second level may not. Depth is enforced by withholding the delegate tool at the limit, as Claude Code does (CScience children cannot delegate; Claude Code allows deeper nesting). Proposed rules:
-  - the default depth is 2 (the main agent's delegated runs, and one level below them), as a per-project setting;
+- PD-15. Depth and concurrency. *Answered by the owner on 2026-10-14 (open question 3; refactoring plan, Phase 4 item 7):* a session supports at least 8–10 delegated runs at once; 4–5 is the typical number. Nesting goes one level further: the main agent's delegated runs may delegate once more, and that second level may not. Depth is enforced by withholding the delegate tool at the limit, as Claude Code does (CScience children cannot delegate; Claude Code's documentation allows three layers below the main conversation by default, and 20 subagents at once). The rules, recorded with the owner's answer:
+  - the default depth is 2 (the main agent's delegated runs, and one level below them), a per-project setting;
   - delegation can be switched off per delegated role;
   - one concurrency cap covers the session's whole tree of runs, not each parent;
   - a delegated run's budgets are carved from its parent's;
   - cancellation cascades down the tree (PD-21);
   - a handback goes to the direct parent (PD-20);
   - the GUI shows the runs as a tree;
-  - the worker stays unaware of the tree: kernels belong to a run, at any depth;
-  - kernels start lazily, on a run's first cell.
+  - the worker stays unaware of the tree: kernels are keyed by session and run, at any depth;
+  - kernels start lazily, on a run's first cell;
+  - the run tree has a parent link from the start; one level ships first, and deeper levels are enabled behind the depth limit.
 - PD-16. A delegated run acts under the session's grants and the project policy, with at most its parent's tools. It MUST NOT answer questions for the user, decide permission requests, approve plans, or claim or confirm fixes to review findings (CScience reserves confirmation to the root session). Operations it causes can raise permission requests, and the decision returns to that operation.
 
 ### Outcomes
@@ -81,6 +82,28 @@ Terms:
 - PD-29. Each agent run records its role, the alias, the provider model that LiteLLM resolved, and the effective settings. A setting the adapter cannot apply is reported, never dropped silently (new). Load evidence and lineage use these records (external skills, gate 2).
 - PD-30. An unavailable alias, or one lacking a capability the role needs such as tool calling, fails the run at start with a reason. A fallback alias is used only when the project names one, and its use is recorded (new).
 - PD-31. The LiteLLM virtual key's spend limit is the hard cap (D61). Per-run budgets are soft: reaching one ends the run with `limit_reached` (new).
+
+### Delegation on the harness (design, 2026-10-14)
+
+How the requirements above are built on what exists: the one tool loop (`run_task`) with its turn hooks, the `Harness`, and the run service ([run service](run-service.md)). A delegated run is a role of the same loop, with its own prompt, tool table, hooks and budget (refactoring plan, A-02 and Phase 4 item 7), not a second agent loop. The archived prototype (`archive/delegation-2026-10`) is reference for the records and the tests only.
+
+- PD-32. **The run tree.** Every agent run has a role, and a delegated run names its parent run and its delegation. The run's record (`RunRecord`) and its `started` event carry `role`, `parent` (the parent's run name, null for the root) and `delegation`. The root is the session's main run. It holds the session's run lease (RS-5) for the whole tree: delegated runs take no lease of their own, run in the same process as their root, and stop when the root's lease is lost (new).
+- PD-33. **The delegate tools.** A run whose depth is below the project's limit, and whose role allows it, is offered:
+  - `delegate`: the brief of PD-11 (task, track, context summary, pinned inputs, output schema, role profile, limits). It returns the delegation ID at once; the child runs while the parent goes on;
+  - `wait_delegations`: waits on some delegations, all or the first to end, as `wait_jobs` does (D83), ending also when the user writes to the root;
+  - `delegation_status` and `cancel_delegation`.
+
+  A run at the depth limit is offered none of them (PD-15) (new; Claude Code withholds its tool the same way).
+- PD-34. **A delegated run's loop.** It runs `run_task` with the delegated role's system prompt and its brief as its task, its own run name, record and events, and a toolbox of at most its parent's tools minus those PD-16 forbids. Its hooks: its own job notices, the kernel check, the plan fence with progress only on its track (PD-9), math findings on what it writes (D82), and its events. Not: the user's messages, document work requests or the consistency review, which belong to the root (new).
+- PD-35. **Handback.** When a child ends, its outcome (PD-17) is stored, and it reaches the direct parent at the parent's next safe point, as a delegation notice, or as the result of its wait. Like every notice, it is acknowledged only after the parent's record is saved (A-02), so a parent that fails gets it again in its next run (new).
+- PD-36. **A parent's answer waits for its children.** A run cannot give its final answer while its delegations run: its closing gets another turn with a notice of the running ones, to wait on or cancel. At its turn limit, its running delegations are cancelled first (new).
+- PD-37. **Kernels per run.** A cell names its kernel by the run that runs it. The worker keys kernels by session and run, starts one on the run's first cell, and stops it when the run ends; it knows nothing of the tree (PD-15). This changes the worker protocol: `CellRequest` gains the run, and the protocol version goes up (D-01, lockstep) (new).
+- PD-38. **Limits.** The session's tree runs at most the project's cap of delegated runs at once, 10 by default (a project setting), counted separately from background jobs (4 per session). A `delegate` beyond the cap is refused with `limit_reached`, not queued. A child's limits (turns, wall time, tokens) are at most what its parent has left; they are reserved from the parent when the child starts and what it did not use is returned when it ends. All the tree's model calls count toward the project's model budget (RS-6a) (new).
+- PD-39. **Cancellation.** Cancelling a run cancels its running children first, then itself: the user's cancel of the root (RS-11), a lost lease, `cancel_delegation`, or a parent's turn limit. Each child's record is saved `cancelled` and its outcome reaches its parent as `cancelled`, as PD-21 requires; their executions get cancellation requests (new).
+- PD-40. **Restart.** When the service finds a tree's lease dead (RS-12), every run of the tree without a saved record ends `interrupted`, and each child's outcome is recorded `interrupted`. A run is not resumed from its events: PD-22's resume needs a saved transcript the run service does not keep (open question 13).
+- PD-41. **The user.** The user writes to the root only (RS-7). A delegated run cannot ask the user (PD-23 is not built yet): one that needs an answer ends with result status `blocked`, the question in its outcome's open questions (open question 14).
+- PD-42. **The GUI.** The workspace lists a session's runs as a tree, from the records' and the `started` events' `parent`, and reads each run's events as it does now (RS-15). The browser half is lane G's (new).
+- PD-43. **Build order.** The run tree with its parent links, the per-run kernels and one level of delegation come first; depth 2 is enabled behind the depth limit once one level works. Delegation is part of M2 only if the owner says so (refactoring plan, Phase 4 item 7).
 
 ## Contracts used
 
@@ -150,14 +173,23 @@ All fixtures are `scripted`: the main agent, delegated agents and the user's act
 
 ## Open questions
 
-1. Plan approval: off by default (proposed), or on? Should every new version of an approved plan need approval again (as drafted), or only substantive changes?
-2. Progress across versions: carry over by step ID (proposed, PD-7), or reset as CScience does?
+1. Plan approval: off by default, or on? Should every new version of an approved plan need approval again (as drafted), or only substantive changes? *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* off by default, a project setting; when on, every new version needs approval again, since what counts as substantive cannot be told mechanically, and a wording-only change is a quick approval. The unused `awaiting_approval` state was removed until this is decided (refactoring plan, decision 10).
+2. Progress across versions: carry over by step ID (PD-7), or reset as CScience does? *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* carry over by step ID, as built ([session plans](../SESSION-PLANS.md)); a removed step keeps its history.
 3. **Answered (2026-10-14, by the owner):** delegation limits. A session supports at least 8–10 delegated runs at once, 4–5 typically; the main agent's delegated runs may delegate once more, and the second level may not, enforced by withholding the delegate tool at the depth limit. The proposed rules for nesting are in PD-15.
 4. **Answered (2026-10-14, by the owner):** no kernel sharing. Delegated runs get their own kernels (PD-14); a parent never lends its kernel to a delegated run. In-memory state is handed off through saved files in the session workspace, such as Sage's `save()`/`load()` or pickle; very large state stays with the parent.
 5. Should plans also exist at project level, spanning sessions, or is that the board's job?
 6. Questions with a default and a timeout (PD-26): useful, or should questions always wait for the user?
 7. Which role settings should the GUI expose per delegation: the alias only, or effort and budgets too?
 8. **Settled (2026-10-11, D81):** a delegation will be able to ask for an environment of its own, made from the project's base image, for work that needs isolation, such as an independent check; it is a later opt-in, in the backlog. By default delegated runs stay in the session's environment. Measured on babbage (OpenShell 0.1.3, VM driver): the image is prepared once per digest, and each further sandbox from it adds a sparse copy-on-write overlay of about 8 MB on disk, growing with what it writes; it starts in about 7 s and its VM uses about 220 MB of memory idle. Such a run would not see the session's installed tools or workspace, only `shared/`, so it would install again what it needs.
+
+9. **How a parent works with its children** (PD-33). *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* asynchronous: `delegate` returns at once, the parent waits with `wait_delegations` or gets the handback as a notice. A blocking `delegate` call, as Claude Code's foreground subagents, would serialize the 4–5 typical children.
+10. **A parent's answer while children run** (PD-36). *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* refused until they end; at the turn limit, they are cancelled. The alternative, ending the parent and orphaning running children, leaves outcomes nobody receives.
+11. **Kernels per run** (PD-37). *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* a kernel stops when its run ends, and the cell names the run in the worker protocol. A kernel kept until the session closes would hold memory for runs that cannot use it again. A babbage lab measures a kernel's memory first, which sets the per-session kernel memory budget and the VM size for delegating sessions (refactoring plan, Phase 4 item 7).
+12. **The concurrency cap's default** (PD-38). *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* 10 running delegated runs per session, a project setting, with background jobs counted on their own (4 per session, 8 per environment). A `delegate` past the cap is refused rather than queued, so the model sees the limit and waits on its children.
+13. **Resuming an interrupted run** (PD-22, PD-40). *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* not in the first version: an interrupted child ends `interrupted`, and its parent, in its next run, can delegate again. Resuming needs the whole transcript saved as the run goes, which the run service's bounded events are not.
+14. **Delegated runs and the user** (PD-41). *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* no questions from children until questions to the user (PD-23 to PD-26) are built; a child that needs the user returns `blocked`. Messages from the user reach the root only.
+15. **Which hooks a child has** (PD-34). *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* its own job notices, the kernel check, the plan fence with progress on its track, math findings on its own writing, and its events; the consistency review stays on the root's terminal answer, which covers the results its children published.
+16. **Delegation in M2** (PD-43). Part of M2, or the first milestone after it? The plan makes it M2 only on the owner's word. *Decided 2026-10-14 (coordinator, owner's autonomy mandate), as recommended:* after the M2 exit lab, with the run tree's parent link and per-run kernels built first, since the exit path needs neither.
 
 ## Sources
 
