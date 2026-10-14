@@ -12,14 +12,10 @@ reaches a terminal state whatever the executor does.
 from __future__ import annotations
 
 import asyncio
-import base64
 import contextlib
 import logging
 import math
-import posixpath
-import re
 import sqlite3
-from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
@@ -42,7 +38,6 @@ from sandbox_science.contracts import (
     ExecutionRequest,
     ExecutionState,
     FileContent,
-    FileEntry,
     FileListing,
     JobDetails,
     JobListing,
@@ -54,7 +49,6 @@ from sandbox_science.contracts import (
     KernelRestartRequest,
     KernelStatusRequest,
     ListFilesRequest,
-    Location,
     OutputEvent,
     PdfRequest,
     PublishRequest,
@@ -85,6 +79,7 @@ from .backends import Backend
 from .channel import ExecutorChannel, Message
 from .connections import Activity, Connection, ConnectionHooks, EnvironmentConnections
 from .errors import ExecutorRefusalError, WorkerError
+from .files import UNSYNCED, Files
 from .identity import execution_digest, same_execution
 from .journal import SOURCE_EVENT, ExecutionJournal
 from .kernels import KernelRegistry
@@ -92,12 +87,11 @@ from .live import REQUEST, Live, time_limit
 from .output_observations import normalize as normalize_observation
 from .package_admission import LEGACY as PACKAGE_GATE_LEGACY
 from .package_admission import PackageAdmission, guard_reuse
+from .package_changes import PackageChanges
 from .package_gate import PackageGate
 from .publication import Publication
 from .recovery import DaemonRecovery, RecoveryHooks
 from .replies import (
-    Range,
-    checked,
     epoch,
     error,
     integer,
@@ -106,7 +100,7 @@ from .replies import (
     size,
     stream,
 )
-from .revisions import Prepared, Revisions, package_commands
+from .revisions import Revisions
 from .shared_sync import SharedSync
 from .store import Store
 from .timeouts import MANAGER_TIMEOUTS, ManagerTimeouts
@@ -114,14 +108,6 @@ from .usability import Usability
 
 _log = logging.getLogger(__name__)
 
-MAX_HELD_NOTICES = 20
-"""Sync notices held for one call's or one session's next result."""
-MAX_HELD_BYTES = 16 * 1024
-MAX_HELD_SESSIONS = 256
-_UNSYNCED = (
-    "shared/ could not be synced with the project's other environments just now; "
-    "it is synced again at the next call"
-)
 OUTPUT_BUDGET = 4
 """Stream text and rich output an execution may store as events, in multiples of its
 output limit (UTF-8 bytes). An honest executor stays under three: half the limit of each
@@ -129,14 +115,6 @@ stream, which can triple when invalid bytes become U+FFFD, plus the limit of out
 MAX_EVENTS = 100_000
 """Stream and output events stored for one execution; later ones are dropped."""
 MAX_WRITTEN = 1000
-MAX_LIST = 5000
-MAX_REVISIONS = 64
-"""``revision`` events one execution may report; later ones are dropped."""
-MAX_EXECUTION_LOCKFILES = 4
-"""Lockfiles one execution's ``revision`` events may bring or have asked for: one for each
-attempt whose package commands made a change. A revision left without one gets the
-current lockfile asked for instead, while it is current."""
-_EXECUTION = re.compile(r"exe-[0-9a-f]{24}")
 
 
 Notices = Callable[[str, datetime], list[tuple[datetime, str]]]
@@ -177,10 +155,6 @@ class ExecutionManager:
         """Each environment's revisions, with their lockfiles (Conda provisioning, W3).
         ``package_cache`` is the cache's URL as sandboxes reach it, which lockfiles never
         name."""
-        self._lockfile_locks: dict[str, asyncio.Lock] = {}
-        """One lockfile at a time is checked for each environment, in a thread."""
-        self._fetching: set[str] = set()
-        """Environments whose executor is asked for the current lockfile."""
         self.pool_id = pool_id
         self.max_artifact_size = max_artifact_size
         self.capture_timeout = capture_timeout
@@ -188,9 +162,6 @@ class ExecutionManager:
         """Seconds the executor gets to confirm it cleaned up a cancelled capture."""
         self._closing_task: asyncio.Task[None] | None = None
         self.state_dir = state_dir
-        self._held_notices: OrderedDict[tuple[str, str], list[str]] = OrderedDict()
-        """Notices from syncing shared files for file requests, by environment and session,
-        for the session's next result there (D79)."""
         self._tasks: set[asyncio.Task[Any]] = set()
         self._usability = Usability(store)
         """What stands in the way of using each environment, and the worker's shutdown."""
@@ -212,7 +183,7 @@ class ExecutionManager:
                 sync_package_gate=lambda environment_id, channel: self._admission.sync(
                     environment_id, channel
                 ),
-                hello=lambda environment_id, channel: self._hello(environment_id, channel),
+                hello=lambda environment_id, channel: self._packages.hello(environment_id, channel),
                 connected=lambda environment_id, channel: self._publication.reconcile(
                     environment_id, channel
                 ),
@@ -223,6 +194,20 @@ class ExecutionManager:
         )
         self._journal = ExecutionJournal(
             store, self._connections, clock=clock, timeouts=lambda: self.timeouts
+        )
+        self._files = Files(
+            self._connections,
+            self._journal,
+            lambda: self.shared,
+            timeouts=lambda: self.timeouts,
+        )
+        self._packages = PackageChanges(
+            store,
+            self.revisions,
+            self._connections,
+            self._journal,
+            spawn=lambda coroutine: self._spawn(coroutine),
+            timeouts=lambda: self.timeouts,
         )
         self._admission = PackageAdmission(
             store,
@@ -402,7 +387,7 @@ class ExecutionManager:
         try:
             if live.final is not None:
                 # The outcome is known; only the shared files' sync after it was cut short.
-                self._complete(live, [*live.notices, _UNSYNCED])
+                self._complete(live, [*live.notices, UNSYNCED])
                 return
             self._journal.finish(
                 live,
@@ -444,17 +429,6 @@ class ExecutionManager:
     def _daemon_binding(self, environment_id: str) -> tuple[str, str] | None:
         return self.daemon_identity(environment_id) if self.daemon_identity else None
 
-    def _hello(self, environment_id: str, channel: ExecutorChannel) -> None:
-        """Note the package state a new executor reports."""
-        self._observe(environment_id, channel.hello.get("environment"), "")
-        self.store.kernel_starts.epoch(
-            environment_id,
-            channel.incarnation,
-            channel.hello.get("package_epoch"),
-            channel.hello.get("environment"),
-            remember=True,
-        )
-
     async def forget_revisions(self, environment_id: str) -> None:
         """Forget a deleted environment's revisions, and delete the lockfiles only they
         named: environments that are gone keep nothing in the store."""
@@ -478,52 +452,6 @@ class ExecutionManager:
     async def guard_package_reuse(self, environment_id: str) -> None:
         """A new VM cannot replace the unknown original held package binding."""
         guard_reuse(self.store, environment_id)
-
-    def _want_lockfile(self, environment_id: str) -> bool:
-        """Ask the executor for the current lockfile if the current revision has none, as
-        revision 0 has none at first; return whether it was asked. One request at a time
-        for each environment, and nothing waits for it. Executions ask (_ask_lockfile),
-        each within its budget: revision 0 gets its lockfile as the first one starts."""
-        environment = self._connections.get(environment_id)
-        channel = environment.channel if environment is not None else None
-        if (
-            channel is None
-            or channel.closed
-            or environment_id in self._fetching
-            or not self.revisions.needs_lockfile(environment_id)
-        ):
-            return False
-        self._fetching.add(environment_id)
-        task = self._spawn(self._fetch_lockfile(environment_id, channel))
-        task.add_done_callback(lambda _: self._fetching.discard(environment_id))
-        return True
-
-    async def _fetch_lockfile(self, environment_id: str, channel: ExecutorChannel) -> None:
-        try:
-            reply = await channel.request("lockfile", reply_timeout=self.timeouts.lockfile)
-        except WorkerError as error:
-            _log.info("environment %s: no lockfile from its executor: %s", environment_id, error)
-            return
-        if not self.revisions.needs_lockfile(environment_id):
-            return  # a revision event brought one meanwhile
-        prepared = await self._prepare(environment_id, reply.get("lockfile"))
-        if prepared is None or not self.revisions.attach(
-            environment_id, reply.get("fingerprint"), prepared
-        ):
-            _log.info("environment %s: the executor's lockfile was not kept", environment_id)
-
-    async def _prepare(self, environment_id: str, raw: object) -> Prepared | None:
-        """Check and store a lockfile from the executor, in a thread, one at a time for each
-        environment: the event loop never waits for one (CP-18)."""
-        if raw is None:
-            return None
-        lock = self._lockfile_locks.setdefault(environment_id, asyncio.Lock())
-        async with lock:
-            try:
-                return await asyncio.to_thread(self.revisions.prepare, raw)
-            except OSError as exc:
-                _log.warning("environment %s: cannot store a lockfile: %s", environment_id, exc)
-                return None
 
     async def _on_closed(self, environment_id: str, channel: ExecutorChannel) -> None:
         self._connections.channels.discard(channel)
@@ -704,7 +632,7 @@ class ExecutionManager:
                 ErrorKind.UNSUPPORTED, f"no {request.language} kernel in this environment"
             )
         self._journal.save(
-            live, location=self._located(request.context.environment_id, environment)
+            live, location=self._packages.located(request.context.environment_id, environment)
         )
         fields: dict[str, Any] = {
             "execution": execution_id,
@@ -734,7 +662,7 @@ class ExecutionManager:
             raise WorkerError(ErrorKind.UNAVAILABLE, "the executor went away")
         environment.running.add(execution_id)
         if self.shared is not None:
-            live.notices += await self._sync(self.shared.down, request.context, channel)
+            live.notices += await self._files.sync(self.shared.down, request.context, channel)
             if live.cancel_requested:  # while the shared files synced
                 self._journal.finish(
                     live,
@@ -832,7 +760,7 @@ class ExecutionManager:
         try:
             if message.get("event") == "revision":
                 # Its lockfile is checked in a thread; this executor's next events wait.
-                await self._revised(environment_id, live, message)
+                await self._packages.revised(environment_id, live, message)
             else:
                 self._apply(live, environment_id, message)
             if (
@@ -868,7 +796,9 @@ class ExecutionManager:
                 # The revision as it started, which waiting for a package command can change.
                 location = live.execution.location
                 if location is not None and "environment" in message:
-                    revision = self._observe(environment_id, message.get("environment"), "")
+                    revision = self._packages.observe(
+                        environment_id, message.get("environment"), ""
+                    )
                     if revision is not None:
                         update["location"] = location.model_copy(
                             update={"environment_revision": str(revision)}
@@ -904,7 +834,7 @@ class ExecutionManager:
                 )
                 live.execution = self.store.commit_kernel_start(start, event, acknowledged)
                 self._journal.changed(live)
-                self._ask_lockfile(environment_id, live)
+                self._packages.ask_lockfile(environment_id, live)
         elif kind == "stream":
             name = "stderr" if message.get("name") == "stderr" else "stdout"
             text = message.get("text")
@@ -989,7 +919,7 @@ class ExecutionManager:
         """
         notices = list(live.notices)
         if self.shared is not None:
-            notices += await self._sync(self.shared.up, live.execution.context, channel)
+            notices += await self._files.sync(self.shared.up, live.execution.context, channel)
         try:
             self._complete(live, notices)
         except Exception:
@@ -1015,7 +945,7 @@ class ExecutionManager:
             return
         state, result = live.final
         context = live.execution.context
-        held = self._held_notices.pop((context.environment_id, context.session_id), [])
+        held = self._files.take_held(context)
         changes: dict[str, Any] = {}
         if held or notices:
             changes["notices"] = (*result.notices, *held, *notices)
@@ -1029,63 +959,6 @@ class ExecutionManager:
                     path for path in result.written_files if path not in synced
                 )
         self._journal.finish(live, state, result.model_copy(update=changes) if changes else result)
-
-    async def _sync_shared(
-        self, context: ExecutionContext, path: str, channel: ExecutorChannel
-    ) -> None:
-        """Bring the shared files up to date before a file request that reads them (D79)."""
-        if self.shared is None or not _in_shared(path):
-            return
-        self._tell(context, await self._sync(self.shared.down, context, channel))
-
-    def _tell(self, context: ExecutionContext, notices: list[str]) -> None:
-        """Pass on what syncing for a file request found (D79).
-
-        The calls running in the environment get it with their results, since a change of
-        theirs may be what it is about; the requesting session gets it with its next
-        result there, unless one of those calls is its own.
-        """
-        if not notices:
-            return
-        told = False
-        for live in self._journal.live.values():
-            running = live.execution.context
-            if (
-                live.environment_id == context.environment_id
-                and running.project_id == context.project_id  # never another project's
-                and live.dispatched
-                and live.final is None
-                and live.execution.state not in TERMINAL_STATES
-            ):
-                live.notices = _held([*live.notices, *notices])
-                told = told or running.session_id == context.session_id
-        if not told:
-            key = (context.environment_id, context.session_id)
-            held = self._held_notices.pop(key, [])
-            self._held_notices[key] = _held([*held, *notices])
-            while len(self._held_notices) > MAX_HELD_SESSIONS:
-                self._held_notices.popitem(last=False)
-
-    async def _sync(
-        self,
-        step: Callable[[str, str, str, ExecutorChannel], Awaitable[list[str]]],
-        context: ExecutionContext,
-        channel: ExecutorChannel,
-    ) -> list[str]:
-        """Run one step of the shared files' sync; its failure never fails the call (D79)."""
-        try:
-            return await asyncio.wait_for(
-                step(context.project_id, context.environment_id, context.session_id, channel),
-                self.timeouts.shared,
-            )
-        except Exception as exc:  # the call goes on with shared/ as it is
-            _log.warning(
-                "syncing the shared files of %s in %s failed: %s",
-                context.project_id,
-                context.environment_id,
-                exc,
-            )
-            return [_UNSYNCED]
 
     def _admit(self, live: Live, size: int) -> bool:
         """Charge one stream or output event to the execution's budget; False once spent.
@@ -1118,7 +991,7 @@ class ExecutionManager:
 
     def _result(self, environment_id: str, live: Live, raw: dict[str, Any]) -> Result:
         """The executor's result, checked and bounded by the attempt's output limit."""
-        after = self._revision_after(environment_id, live, raw)
+        after = self._packages.revision_after(environment_id, live, raw)
         kernel, lost = self._kernels.kernel(
             environment_id,
             live.execution.context.session_id,
@@ -1200,117 +1073,6 @@ class ExecutionManager:
             return ()
         self._noticed[key] = max([since, *(at for at, _ in fresh)])
         return tuple(text for _, text in fresh)
-
-    def _located(self, environment_id: str, environment: Connection) -> Location | None:
-        """The environment's location, with its current revision."""
-        location, record = environment.location, self.store.revision(environment_id)
-        if location is None or record is None:
-            return location
-        return location.model_copy(update={"environment_revision": str(record.revision)})
-
-    def _revision_after(self, environment_id: str, live: Live, raw: dict[str, Any]) -> str | None:
-        """The environment's revision once the attempt's fingerprint is counted. A change
-        seen only here is unmanaged, so it is no provisioning operation's, even when the
-        execution is one's step."""
-        revision = self._observe(environment_id, raw.get("environment"), live.execution.attempt_id)
-        self._ask_lockfile(environment_id, live)
-        return None if revision is None else str(revision)
-
-    def _observe(self, environment_id: str, fingerprint: object, changed_by: str) -> int | None:
-        """The environment's revision after the executor reported ``fingerprint`` (W3).
-
-        The first fingerprint is revision 0, and each different one counts one up,
-        recorded against the attempt that reported it (empty between executors). The
-        executor reports each change in a ``revision`` event first, so a new fingerprint
-        here is one it could not account for. The executor is untrusted: research code
-        can only make its own environment's revisions count up.
-        """
-        return self.revisions.observe(environment_id, fingerprint, changed_by)
-
-    async def _revised(self, environment_id: str, live: Live, message: Message) -> None:
-        """A change to the environment's packages that the executor saw (CP-4, CP-16).
-
-        A managed change names the attempt that ran its package commands, which must be
-        one of this environment's; an unmanaged one, the attempt after which it was seen.
-        The executor sends a lockfile with each attempt's last change. The worker keeps
-        one for each attempt, and checks at most MAX_EXECUTION_LOCKFILES for each
-        execution, those it asks for included. A revision left without one gets the
-        current lockfile asked for, while it is current.
-        """
-        live.revisions += 1
-        if live.revisions > MAX_REVISIONS:
-            if live.revisions == MAX_REVISIONS + 1:
-                _log.warning(
-                    "execution %s: over %d revisions; dropping the rest",
-                    live.execution.execution_id,
-                    MAX_REVISIONS,
-                )
-            return
-        managed = message.get("managed")
-        cause = message.get("cause")
-        attempt, origin = (
-            self._attempt(environment_id, cause) if isinstance(cause, str) else ("", None)
-        )
-        prepared: Prepared | None = None
-        raw = message.get("lockfile")
-        if (
-            raw is not None
-            and attempt
-            and attempt not in live.lockfile_attempts
-            and live.lockfiles < MAX_EXECUTION_LOCKFILES
-        ):
-            live.lockfiles += 1
-            live.lockfile_attempts.add(attempt)
-            prepared = await self._prepare(environment_id, raw)
-        commands, omitted = (
-            package_commands(message.get("commands"), message.get("omitted_commands"))
-            if managed is True
-            else ((), 0)
-        )
-        self.revisions.observe(
-            environment_id,
-            message.get("fingerprint"),
-            attempt,
-            managed=managed if isinstance(managed, bool) else None,
-            commands=commands,
-            omitted=omitted,
-            lockfile=prepared,
-            # Only a change its own package commands made is the operation's.
-            operation=origin if managed is True else None,
-        )
-        if (
-            live.channel is not None
-            and (connection := self._connections.get(environment_id)) is not None
-            and connection.channel is live.channel
-        ):
-            self.store.kernel_starts.epoch(
-                environment_id,
-                live.channel.incarnation,
-                message.get("package_epoch"),
-                message.get("fingerprint"),
-                remember=True,
-            )
-        self._ask_lockfile(environment_id, live)
-
-    def _ask_lockfile(self, environment_id: str, live: Live) -> None:
-        """Ask for the current lockfile on behalf of ``live``, within its budget: every
-        lockfile checked counts, those an execution's start and end ask for too."""
-        if live.lockfiles < MAX_EXECUTION_LOCKFILES and self._want_lockfile(environment_id):
-            live.lockfiles += 1
-
-    def _attempt(self, environment_id: str, execution_id: str) -> tuple[str, str | None]:
-        """The current attempt of one of the environment's executions, and the provisioning
-        operation it is a step of; empty for any other execution."""
-        if not _EXECUTION.fullmatch(execution_id):
-            return "", None
-        live = self._journal.live.get(execution_id)
-        try:
-            execution = live.execution if live is not None else self.store.execution(execution_id)
-        except ValidationError:
-            return "", None
-        if execution is None or execution.context.environment_id != environment_id:
-            return "", None
-        return execution.attempt_id, execution.origin
 
     async def kernel_status(self, request: KernelStatusRequest) -> KernelListing:
         """Observe only the authenticated context's kernels; admission gates stay unchanged."""
@@ -1450,124 +1212,20 @@ class ExecutionManager:
         return Capabilities(
             protocol=PROTOCOL_VERSION,
             languages=tuple(name for name in environment.languages if name in LANGUAGES),
-            location=self._located(environment_id, environment) or environment.location,
+            location=self._packages.located(environment_id, environment) or environment.location,
             features=tuple(name for name in environment.features if name in FEATURES),
         )
 
     # Files. Replies are checked like events: a malformed one is an internal error.
 
-    async def _read_range(
-        self,
-        channel: ExecutorChannel,
-        request: ReadFileRequest,
-        offset: int,
-        length: int,
-        *,
-        hashed: bool,
-    ) -> Range:
-        reply = await channel.request(
-            "read",
-            session=request.context.session_id,
-            path=request.path,
-            offset=offset,
-            length=length,
-            hash=hashed,
-        )
-        try:
-            encoded = reply["content_b64"]
-            if not isinstance(encoded, str):
-                raise TypeError("content_b64")
-            data = base64.b64decode(encoded, validate=True)
-            size, start = integer(reply.get("size"), 0, 2**62), integer(reply.get("offset"), 0)
-            sha256 = reply.get("sha256")
-            if size is None or start != offset or len(data) > length or offset + len(data) > size:
-                raise ValueError("a range that was not asked for")
-            if hashed and not (isinstance(sha256, str) and len(sha256) == 64):
-                raise ValueError("no SHA-256")
-        except (KeyError, TypeError, ValueError) as exc:  # binascii.Error is a ValueError
-            raise WorkerError(
-                ErrorKind.INTERNAL, f"the executor sent a malformed file reply ({exc})"
-            ) from exc
-        return Range(
-            size=size,
-            sha256=sha256 if hashed else None,
-            modified=epoch(reply.get("modified")),
-            offset=offset,
-            data=data,
-            content_b64=encoded,
-            eof=reply.get("eof") is True,
-        )
-
     async def read_file(self, request: ReadFileRequest) -> FileContent:
-        async with self._connections.using(request.context.environment_id) as channel:
-            await self._sync_shared(request.context, request.path, channel)
-            found = await self._read_range(
-                channel, request, request.offset, request.length, hashed=True
-            )
-            return checked(
-                FileContent,
-                path=request.path,
-                sha256=found.sha256,
-                size=found.size,
-                modified_at=found.modified,
-                offset=found.offset,
-                content_b64=found.content_b64,
-                eof=found.eof,
-            )
+        return await self._files.read(request)
 
     async def write_file(self, request: WriteFileRequest) -> WriteFileResult:
-        context = request.context
-        async with self._connections.using(context.environment_id) as channel:
-            fields: dict[str, Any] = {
-                "path": request.path,
-                "content_b64": request.content_b64,
-                "expected_sha256": request.expected_sha256,
-                "create_only": request.create_only,
-            }
-            if self.shared is not None and _in_shared(request.path):
-                # The expected SHA-256 is checked against the project's version (D79).
-                notices: list[str] = []
-                try:
-                    reply = await self.shared.write(
-                        context.project_id,
-                        context.environment_id,
-                        context.session_id,
-                        channel,
-                        fields,
-                        self.timeouts.shared,
-                        notices,
-                    )
-                finally:  # what the sync found is told even when the write is refused
-                    self._tell(context, notices)
-            else:
-                reply = await channel.request("write", session=context.session_id, **fields)
-            return checked(WriteFileResult, sha256=reply.get("sha256"), size=reply.get("size"))
+        return await self._files.write(request)
 
     async def list_files(self, request: ListFilesRequest) -> FileListing:
-        context = request.context
-        async with self._connections.using(context.environment_id) as channel:
-            await self._sync_shared(context, request.path, channel)
-            reply = await channel.request("list", session=context.session_id, path=request.path)
-            raw = reply.get("entries")
-            every = cast(list[object], raw) if isinstance(raw, list) else []
-            entries = every[:MAX_LIST]
-            listed: list[FileEntry] = []
-            for entry in entries:
-                item = cast(dict[str, Any], entry) if isinstance(entry, dict) else {}
-                listed.append(
-                    checked(
-                        FileEntry,
-                        name=item.get("name"),
-                        type=item.get("type"),
-                        size=item.get("size"),
-                        modified_at=epoch(item.get("modified")),
-                    )
-                )
-            return FileListing(
-                path=request.path,
-                entries=tuple(listed),
-                truncated=reply.get("truncated") is True or len(entries) < len(every),
-            )
+        return await self._files.listing(request)
 
     async def publish(self, request: PublishRequest) -> ArtifactRef:
         """Publish a file of the environment as an artifact, within ``capture_timeout``."""
@@ -1575,21 +1233,3 @@ class ExecutionManager:
 
     def artifact(self, artifact_id: str, project_id: str | None = None) -> ArtifactRef:
         return self._publication.artifact(artifact_id, project_id)
-
-
-def _held(notices: list[str]) -> list[str]:
-    """The latest notices, within ``MAX_HELD_NOTICES`` and ``MAX_HELD_BYTES``."""
-    kept: list[str] = []
-    size = 0
-    for notice in reversed(notices[-MAX_HELD_NOTICES:]):
-        size += len(notice)
-        if size > MAX_HELD_BYTES:
-            break
-        kept.append(notice)
-    return kept[::-1]
-
-
-def _in_shared(path: str) -> bool:
-    """Whether a file request's path is in the project's shared area (D79)."""
-    normal = posixpath.normpath(path)
-    return normal == "shared" or normal.startswith("shared/")

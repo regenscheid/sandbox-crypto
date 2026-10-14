@@ -145,7 +145,7 @@ class ManagerView:
         await self.manager._publication.reconcile(environment_id, channel)
 
     def fetching_lockfiles(self) -> set[str]:
-        return set(self.manager._fetching)
+        return set(self.manager._packages._fetching)
 
     # Faults and states a test forces.
 
