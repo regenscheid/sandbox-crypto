@@ -405,7 +405,7 @@ reviewed original isolated root setup and source bindings; it is not a retry or
 arbitrary-command interface. [Lab35](../docs/agent-reports/babbage-openshell-lab-35-2026-10-13.md)
 passed at runtime `d236b6b`/helper `fbbe3b61` in52.285s, with17 checked public
 records and independently verified complete teardown. Source/gates and actual
-runtime evidence remain pinned separately; fresh CI/delivery are pending.
+runtime evidence remain pinned separately. PR #121 is delivered at `d2fe8fa` after all four fresh checks passed (run `38510468628`).
 
 One original minimal VM and actual worker/client composition run scalar35 before
 python-flint and wheel-only ecdsa0.19.1, under the existing policy/cache. The helper

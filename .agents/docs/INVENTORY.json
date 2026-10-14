@@ -18,14 +18,14 @@
     {
       "path": "../../docs/PROVISION-EVENTS.md",
       "category": "implementation-boundary",
-      "bytes": 5525,
-      "sha256": "200d411172ddc12042533834de6dd0014efd10a37784cd0b78d0f3c09e8b7419"
+      "bytes": 5748,
+      "sha256": "0bfb422287a8952fca5fe42cd30bc0349aa71a325aaeb628019a81a5ed331251"
     },
     {
       "path": "../../docs/INSTALLER-ARTIFACTS.md",
       "category": "implementation-boundary",
-      "bytes": 5333,
-      "sha256": "94b90e7b178b1f00b58435b688b39e3519ff3219138a21ac9e556e4bde095ca3"
+      "bytes": 5556,
+      "sha256": "7065fcfce1ad1c728ced83eb2cb91518dc0aa0b841f0c2af76079d1490b03721"
     },
     {
       "path": "agent-reports/babbage-openshell-lab-34-evidence-2026-10-13.json",
