@@ -6,7 +6,7 @@ import sqlite3
 import struct
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
@@ -82,6 +82,52 @@ def test_appends_build_a_chain(path: Path) -> None:
     with StoreReader(path) as reader:
         assert list(reader.records()) == records
         assert reader.head() == Checkpoint(5, records[-1].hash)
+
+
+def test_a_reader_can_read_only_some_kinds(path: Path) -> None:
+    with EventStore(path) as store:
+        for kind in ("monitor", "escalation", "monitor", "approval", "alert", "denial"):
+            store.append(kind, SOURCE, {})
+    with StoreReader(path) as reader:
+        assert [r.seq for r in reader.records(kinds=("escalation", "approval", "denial"))] == [
+            2,
+            4,
+            6,
+        ]
+        # The newest record comes last, whatever its kind, so a reader can keep its place.
+        assert [r.seq for r in reader.records(after=2, kinds=("escalation", "approval"))] == [4, 6]
+        assert [r.seq for r in reader.records(kinds=())] == [6]
+        assert list(reader.records(after=6, kinds=("escalation",))) == []
+        assert [r.seq for r in reader.records()] == [1, 2, 3, 4, 5, 6]
+        with pytest.raises(TypeError):
+            list(reader.records(kinds="escalation"))
+
+
+def test_a_reader_reports_an_error_partway_through_a_read(path: Path) -> None:
+    with EventStore(path) as store:
+        for kind in ("escalation", "monitor", "approval", "denial"):
+            store.append(kind, SOURCE, {})
+
+    class FailingAfterOneRow:
+        """A connection whose reads fail after their first row, as a step that meets a
+        disk error or a corrupt page partway through a statement does."""
+
+        def __init__(self, db: sqlite3.Connection) -> None:
+            self._db = db
+
+        def execute(self, query: str, parameters: tuple[object, ...] = ()) -> Iterator[object]:
+            cursor = self._db.execute(query, parameters)
+            yield next(cursor)
+            raise sqlite3.OperationalError("disk I/O error")
+
+        def close(self) -> None:
+            self._db.close()
+
+    for kinds in (None, ("escalation", "approval", "denial")):
+        with StoreReader(path) as reader:
+            reader._db = FailingAfterOneRow(reader._db)  # pyright: ignore[reportAttributeAccessIssue]
+            with pytest.raises(EventStoreError, match="disk I/O error"):
+                list(reader.records(kinds=kinds))
 
 
 def test_a_reopened_store_continues_its_chain(path: Path) -> None:

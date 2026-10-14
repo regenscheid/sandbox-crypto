@@ -26,7 +26,7 @@ import asyncio
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Generator, Iterator, Mapping
+from collections.abc import Callable, Collection, Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import astuple, dataclass, field
 from datetime import UTC, datetime
@@ -73,6 +73,7 @@ BEGIN SELECT RAISE(ABORT, 'the event store is append-only'); END""",
 _TRIGGERS: Final = ("events_no_delete", "events_no_update")
 _SELECT: Final = "SELECT seq, time, kind, source, payload, prev_hash, hash FROM events"
 _HEAD: Final = "SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1"
+_NEWEST: Final = "seq = (SELECT MAX(seq) FROM events)"
 _INSERT: Final = (
     "INSERT INTO events (seq, time, kind, source, payload, prev_hash, hash)"
     " VALUES (?, ?, ?, ?, ?, ?, ?)"
@@ -346,10 +347,30 @@ class StoreReader:
         except sqlite3.Error as exc:
             raise EventStoreError(f"cannot read the event store {self._path}: {exc}") from exc
 
-    def records(self, after: int = 0) -> Iterator[Record]:
-        """Records after sequence number ``after``; raises RecordError at a malformed one."""
-        for row in self.rows(after):
-            yield record_from_row(row)
+    def records(self, after: int = 0, kinds: Collection[str] | None = None) -> Iterator[Record]:
+        """Records after sequence number ``after``, in sequence order; raises RecordError at
+        a malformed one.
+
+        With ``kinds``, only records of those kinds, and then the newest record of the
+        same snapshot whatever its kind: a reader that keeps its place by the last
+        sequence number it saw moves past the records it skipped, and does not scan them
+        again on its next read.
+        """
+        if isinstance(kinds, str):
+            raise TypeError("kinds is a collection of kinds, not one kind")
+        if kinds is None:
+            for row in self.rows(after):
+                yield record_from_row(row)
+            return
+        marks = ",".join("?" * len(kinds))
+        wanted = f"kind IN ({marks}) OR " if kinds else ""
+        # One statement, so one snapshot: the newest row is the head of the rows read.
+        query = _SELECT + f" WHERE seq > ? AND ({wanted}{_NEWEST}) ORDER BY seq"
+        try:
+            for row in self._db.execute(query, (after, *kinds)):
+                yield record_from_row(row)
+        except sqlite3.Error as exc:
+            raise EventStoreError(f"cannot read the event store {self._path}: {exc}") from exc
 
     def schema_problems(self) -> list[str]:
         """Ways the database's schema differs from a store's, such as dropped triggers."""

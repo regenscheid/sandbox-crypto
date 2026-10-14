@@ -44,6 +44,7 @@ from sandbox_science.policy.approvals import (
     Approved,
     Denied,
     RequestKey,
+    Resolution,
     TimedOut,
     Unrecorded,
     Waiting,
@@ -86,6 +87,10 @@ CREDENTIAL_UNENCRYPTED: Final = "credential_unencrypted"
 REASON_CODE_RE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """OpenShell's format for reason codes; anything else is a middleware failure."""
 
+_RECORDING_LOCKS: Final = 64
+_RECORDING_WAIT: Final = 0.25
+"""Seconds an escalation waits for its fingerprint's lock, as long as the store waits to
+append: past it, the request is refused and its retry records or finds the request."""
 _URL_SCHEMES: Final = {"http": "http", "https": "https", "ws": "http", "wss": "https"}
 _DEFAULT_PORTS: Final = {"http": 80, "https": 443}
 # OpenShell labels the scheme by how a request reached its proxy, not by
@@ -271,6 +276,23 @@ class PolicyMiddleware:
         self._lock = threading.Lock()
         self._requests = requests
         self._approvals = Approvals()
+        self._recording = tuple(threading.Lock() for _ in range(_RECORDING_LOCKS))
+        """Held while a permission request is recorded, by its fingerprint: identical
+        escalations evaluated at once (on the gRPC thread pool) record one request."""
+
+    def prime_approvals(self) -> None:
+        """Read the permission requests and answers already stored, at startup, so that
+        no request's evaluation folds the whole store within its time budget."""
+        self._refresh_approvals()
+
+    def _refresh_approvals(self) -> None:
+        if self._requests is None:
+            return
+        try:
+            self._approvals.load(self._requests(self._approvals.last_seq))
+        except Exception:
+            # Without the records no answer is known; the request waits, as before.
+            _log.exception("could not read permission requests from the event store")
 
     def validate_config(self, config: Mapping[str, object] | None) -> str | None:
         """Return why a middleware entry's config is unacceptable, or None if it is valid.
@@ -420,13 +442,8 @@ class PolicyMiddleware:
             facts.port,
             facts.path,
         )
+        self._refresh_approvals()
         now = self._now()
-        if self._requests is not None:
-            try:
-                self._approvals.load(self._requests(self._approvals.last_seq))
-            except Exception:
-                # Without the records no answer is known; the request waits, as before.
-                _log.exception("could not read permission requests from the event store")
         rule = decision.rule or "escalation"
         resolution = self._approvals.resolve(target, now)
 
@@ -455,45 +472,90 @@ class PolicyMiddleware:
                         "grant": "packages",
                     }
                 )
-        match resolution:
-            case Denied(answer):
-                reason = f"permission request {answer.request_seq} was denied"
-                return _deny(APPROVAL_DENIED, reason, decision)
-            case Approved(answer):
-                return approved({"approval_seq": answer.seq, "request_seq": answer.request_seq})
-            case Unrecorded():
-                try:
-                    seq = self._record(
-                        "escalation", facts, loaded, decision, operation, target=target
+        # At most twice: inside its lock, an escalation records the request or returns
+        # how it stands, never Unrecorded.
+        while True:
+            match resolution:
+                case Denied(answer):
+                    reason = f"permission request {answer.request_seq} was denied"
+                    return _deny(APPROVAL_DENIED, reason, decision)
+                case Approved(answer):
+                    return approved({"approval_seq": answer.seq, "request_seq": answer.request_seq})
+                case Unrecorded():
+                    outcome = self._escalate(facts, loaded, decision, operation, target)
+                    if isinstance(outcome, Verdict):
+                        return outcome
+                    # Answered or recorded meanwhile: decided as any other request is.
+                    resolution = outcome
+                case Waiting(pending):
+                    reason = f"{decision.reason} (permission request {pending.seq}, still waiting)"
+                    return _deny(APPROVAL_REQUIRED, reason, decision)
+                case TimedOut(pending) if pending.on_timeout == "alert":
+                    extra = {"timed_out_request": pending.seq}
+                    try:
+                        self._record("alert", facts, loaded, decision, operation, extra=extra)
+                    except Exception:
+                        _log.exception("could not record alert for request %s", facts.request_id)
+                        return _deny(AUDIT_UNAVAILABLE, "the alert could not be recorded", decision)
+                    return (Finding("policy_alert", rule, "medium"),)
+                case TimedOut(pending):
+                    minutes = int(pending.timeout.total_seconds() // 60)
+                    reason = (
+                        f"permission request {pending.seq} was not answered"
+                        f" within {minutes} minutes"
                     )
-                except Exception:
-                    # No permission request exists, so the agent must not wait for an approval.
-                    _log.exception("could not record escalation of request %s", facts.request_id)
+                    return _deny(ESCALATION_TIMED_OUT, reason, decision)
+                case _:
+                    # A state this code does not know refuses: only the cases above proceed.
                     return _deny(
-                        AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
+                        ESCALATION_TIMED_OUT, "the permission request is undecided", decision
                     )
-                named = f" (permission request {seq})" if seq is not None else ""
-                return _deny(APPROVAL_REQUIRED, decision.reason + named, decision)
-            case Waiting(pending):
-                reason = f"{decision.reason} (permission request {pending.seq}, still waiting)"
-                return _deny(APPROVAL_REQUIRED, reason, decision)
-            case TimedOut(pending) if pending.on_timeout == "alert":
-                extra = {"timed_out_request": pending.seq}
-                try:
-                    self._record("alert", facts, loaded, decision, operation, extra=extra)
-                except Exception:
-                    _log.exception("could not record alert for request %s", facts.request_id)
-                    return _deny(AUDIT_UNAVAILABLE, "the alert could not be recorded", decision)
-                return (Finding("policy_alert", rule, "medium"),)
-            case TimedOut(pending):
-                minutes = int(pending.timeout.total_seconds() // 60)
-                reason = (
-                    f"permission request {pending.seq} was not answered within {minutes} minutes"
+
+    def _escalate(
+        self,
+        facts: HttpRequestFacts,
+        loaded: LoadedPolicy,
+        decision: Decision,
+        operation: Operation | None,
+        target: RequestKey,
+    ) -> Verdict | Resolution:
+        """Record a permission request for ``target``, once, and refuse: an identical
+        escalation evaluated at the same time waits on its fingerprint's lock, then finds
+        the request recorded. A request answered or recorded meanwhile is returned for the
+        caller to decide; every other outcome is a refusal."""
+        try:
+            # Built before the lock: the opam archive lookup can take a while.
+            payload = self._payload(facts, loaded, decision, operation, target=target)
+        except Exception:
+            _log.exception("could not build the escalation of request %s", facts.request_id)
+            return _deny(
+                AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
+            )
+        fingerprint = target.fingerprint()
+        lock = self._recording[int(fingerprint[:8], 16) % _RECORDING_LOCKS]
+        if not lock.acquire(timeout=_RECORDING_WAIT):
+            # Another escalation is being recorded; a retry records or finds this one.
+            reason = f"{decision.reason} (a permission request is being recorded; retry)"
+            return _deny(APPROVAL_REQUIRED, reason, decision)
+        try:
+            self._refresh_approvals()
+            resolution = self._approvals.resolve(target, self._now())
+            if not isinstance(resolution, Unrecorded):
+                return resolution
+            try:
+                seq = self._events.record("escalation", payload)
+            except Exception:
+                # No permission request exists, so the agent must not wait for an approval.
+                _log.exception("could not record escalation of request %s", facts.request_id)
+                return _deny(
+                    AUDIT_UNAVAILABLE, "the permission request could not be recorded", decision
                 )
-                return _deny(ESCALATION_TIMED_OUT, reason, decision)
-            case _:
-                # A state this code does not know refuses: only the cases above proceed.
-                return _deny(ESCALATION_TIMED_OUT, "the permission request is undecided", decision)
+            # Known at once, so a retry before the next read waits on it too.
+            self._refresh_approvals()
+        finally:
+            lock.release()
+        named = f" (permission request {seq})" if seq is not None else ""
+        return _deny(APPROVAL_REQUIRED, decision.reason + named, decision)
 
     def _monitor_findings(
         self, facts: HttpRequestFacts, loaded: LoadedPolicy
@@ -543,6 +605,21 @@ class PolicyMiddleware:
         extra: Mapping[str, object] | None = None,
     ) -> int | None:
         """Record the request; return the record's sequence number where the sink tells it."""
+        return self._events.record(
+            kind, self._payload(facts, loaded, decision, operation, target=target, extra=extra)
+        )
+
+    def _payload(
+        self,
+        facts: HttpRequestFacts,
+        loaded: LoadedPolicy,
+        decision: Decision,
+        operation: Operation | None = None,
+        *,
+        target: RequestKey | None = None,
+        extra: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        """A record of the request and its decision."""
         # The store adds the time; the payload keeps the decision and the request.
         payload: dict[str, object] = {
             "sandbox_id": facts.sandbox_id,
@@ -572,7 +649,7 @@ class PolicyMiddleware:
             payload["target"] = target.payload()
         if extra:
             payload.update(extra)
-        return self._events.record(kind, payload)
+        return payload
 
     def _opam_archive(self, digest: str) -> dict[str, object]:
         """An opam archive's digest and, if the package cache can tell, its packages.

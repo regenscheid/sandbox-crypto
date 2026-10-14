@@ -20,6 +20,7 @@ for the settings.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import secrets
@@ -34,7 +35,7 @@ from aiohttp import web
 
 from sandbox_science.event_store import EventStore, EventStoreError, Record, StoreReader
 from sandbox_science.policy import HardFloor, PolicyLoadError, load_ceiling
-from sandbox_science.policy.approvals import ALL_SCOPES
+from sandbox_science.policy.approvals import ALL_SCOPES, KINDS
 from sandbox_science.policy.approvals import commands as approval_commands
 from sandbox_science.policy.loader import read_limited
 
@@ -121,9 +122,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _read_records(path: Path, after: int) -> list[Record]:
-    """Records after ``after``, read with a connection of this thread's own."""
+    """Permission requests and answers after ``after``, read with a connection of this
+    thread's own; the store's other records are left in it."""
     with StoreReader(path) as reader:
-        return list(reader.records(after=after))
+        return list(reader.records(after=after, kinds=KINDS))
 
 
 def _answer(path: Path, *, approve: bool, seq: int, scope: str | None, hours: float | None) -> int:
@@ -173,6 +175,7 @@ def _serve(settings: Settings) -> int:
             environ=os.environ,
             requests=partial(_read_records, settings.event_store_path),
         )
+        await asyncio.to_thread(proxy.prime_approvals)
         app = proxy.application(max_body_bytes=settings.max_body_bytes)
 
         async def close(_: web.Application) -> None:

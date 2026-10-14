@@ -13,6 +13,7 @@ import pytest
 
 from sandbox_science.event_store import EventStore
 from sandbox_science.mcp_proxy.cli import main
+from sandbox_science.mcp_proxy.proxy import McpProxy
 from sandbox_science.mcp_proxy.upstream import address_check
 from sandbox_science.policy import HardFloor, LoadedPolicy, PoolCeiling
 from sandbox_science.policy.approvals import Approvals, RequestKey, prepare_answer
@@ -65,6 +66,7 @@ class Sink(Protocol):
 
     def kinds(self, kind: str) -> list[Mapping[str, Any]]: ...
     def records(self, after: int) -> list[Any]: ...
+    async def record(self, kind: str, payload: Mapping[str, object]) -> int: ...
     def append(self, kind: str, payload: Mapping[str, object]) -> int: ...
 
 
@@ -430,6 +432,27 @@ async def test_an_escalated_tool_is_held_and_recorded_as_pending(harness: Harnes
     assert escalation["attribution"]["level"] == "orchestrator"
     assert escalation["mcp_session"] == last_call(harness)["mcp_session"]
     assert "secret-ish" not in repr(harness.sink.events)
+
+
+async def test_concurrent_identical_escalations_record_one_request(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The store's writes yield to the event loop, as the real sink's do.
+    record = harness.sink.record
+
+    async def yielding(kind: str, payload: Mapping[str, object]) -> int:
+        await asyncio.sleep(0.05)
+        return await record(kind, payload)
+
+    monkeypatch.setattr(harness.sink, "record", yielding)
+    session = await harness.initialize()
+    arguments = {"url": "https://example.org/a"}
+    answers = await asyncio.gather(
+        harness.tool(session, "crawl", arguments), harness.tool(session, "crawl", arguments)
+    )
+    assert [reason(answer) for answer in answers] == ["approval_required"] * 2
+    assert len(harness.sink.kinds("escalation")) == 1
+    assert harness.fake.tool_calls() == []
 
 
 async def test_a_resolution_the_proxy_does_not_know_refuses_the_call(
@@ -1181,3 +1204,53 @@ async def test_the_command_line_answers_requests_in_the_store(
     assert main(["pending", *command, "--request", "1"]) == 0
     assert "approved by record 2" in capsys.readouterr().out
     assert main(["pending", *command, "--request", "9"]) == 1
+
+
+async def test_a_call_answered_while_it_waits_for_the_lock_gets_the_answer(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The first call records the request and the operator denies it at once; the second,
+    # which found no request before it took the lock, is refused by that denial.
+    record = harness.sink.record
+
+    async def denied_at_once(kind: str, payload: Mapping[str, object]) -> int:
+        await asyncio.sleep(0.05)
+        seq = await record(kind, payload)
+        if kind == "escalation":
+            answer_request(harness, seq, approve=False)
+        return seq
+
+    monkeypatch.setattr(harness.sink, "record", denied_at_once)
+    session = await harness.initialize()
+    arguments = {"url": "https://example.org/a"}
+    answers = await asyncio.gather(
+        harness.tool(session, "crawl", arguments), harness.tool(session, "crawl", arguments)
+    )
+    assert [reason(answer) for answer in answers] == ["approval_required", "approval_denied"]
+    assert len(harness.sink.kinds("escalation")) == 1
+    assert harness.fake.tool_calls() == []
+
+
+async def test_a_call_takes_the_time_after_reading_the_store(
+    harness: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An answer read in a refresh is judged at a time no earlier than the read.
+    steps: list[str] = []
+    load = McpProxy._load_approvals
+    now = harness.sink.now
+
+    def loading(self: McpProxy) -> None:
+        steps.append("read")
+        load(self)
+
+    def timing() -> datetime:
+        steps.append("now")
+        return now()
+
+    session = await harness.initialize()
+    monkeypatch.setattr(McpProxy, "_load_approvals", loading)
+    monkeypatch.setattr(harness.sink, "now", timing)
+    answer = await harness.tool(session, "crawl", {"url": "https://example.org/a"})
+    assert reason(answer) == "approval_required"
+    # Each time taken for a resolution follows a read: none comes before the first.
+    assert steps[0] == "read", steps
