@@ -601,7 +601,8 @@ class JobTools:
 
 class JobNotices(TurnHook):
     """Completion notices for the session's ended jobs: at the start of a run, on tool
-    results, and at a closing answer, which they continue."""
+    results, and at a closing answer, which they continue. A notice the loop does not
+    attach to a tool result waits for the next run."""
 
     name = "jobs"
 

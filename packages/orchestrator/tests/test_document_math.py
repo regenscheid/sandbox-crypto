@@ -901,7 +901,7 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
 
     from sandbox_science.contracts import ErrorKind, ExecutionContext
     from sandbox_science.orchestrator import cli
-    from sandbox_science.orchestrator.documents.mathcontroller import MathController
+    from sandbox_science.orchestrator.documents.mathcontroller import MathChecks, MathController
     from sandbox_science.orchestrator.loop import run_task
     from sandbox_science.orchestrator.model import ScriptedModel
     from sandbox_science.orchestrator.projects import ProjectError
@@ -916,13 +916,16 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
         session_id="s",
         environment_id=ProjectStore(docs.path.parent).get("p").default_environment_id,
     )
+    controller = MathController(reviews, "p", "s", "saved")
+    hooks = [MathChecks(controller)]
     async with WorkerClient("http://127.0.0.1:1", "synthetic-token") as client:
         transcript = await run_task(
             ScriptedModel.from_json([{"text": "Before closing."}, {"text": "Warning read."}]),
-            Toolbox(client, context, math_checks=MathController(reviews, "p", "s", "saved")),
+            Toolbox(client, context, math_checks=controller),
             "Continue",
             run_id="saved",
             max_turns=3,
+            hooks=hooks,
         )
     assert len(sorted(transcript.delivered_ids("math"))) == 1
     assert get(reviews)[0]["status"] == "open"
@@ -938,7 +941,7 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
         "final_text": None if failure else "Read warning.",
         "messages": transcript.messages,
         "tools": [],
-        "math_notice_ids": sorted(transcript.delivered_ids("math")),
+        "delivered": {"math": sorted(transcript.delivered_ids("math"))},
     }
     original = ProjectStore.save_run
 
@@ -947,13 +950,13 @@ async def test_math_notice_ack_only_after_durable_run_save(stores, monkeypatch, 
 
     monkeypatch.setattr(ProjectStore, "save_run", failed)
     args = argparse.Namespace(state_dir=docs.path.parent, transcript=None)
-    assert cli._keep(args, fields, 0) == 1
+    assert await cli._save(args, fields, 0, hooks) == 1
     assert get(reviews)[0]["status"] == "open"
     with docs.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT delivered_run FROM math_notices").fetchone()[0] is None
     monkeypatch.setattr(ProjectStore, "save_run", original)
-    assert cli._keep(args, fields, 0) == 0
+    assert await cli._save(args, fields, 0, hooks) == 0
     assert get(reviews)[0]["status"] == ("open" if failure else "unaddressed")
     with docs.control.read() as tx:
         db = tx.sql
@@ -1200,19 +1203,20 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
 
     monkeypatch.setattr(mechanical.notice_store, "bound", failed)
     async with WorkerClient("http://127.0.0.1:1", "synthetic") as client:
+        toolbox = Toolbox(
+            client,
+            context,
+            reviews=ReviewController(reviews, context, run_id="partial", model=None, alias=None),
+            math_checks=mechanical,
+        )
+        hooks = toolbox.turn_hooks()
         transcript = await run_task(
             ScriptedModel.from_json([{"text": "First response"}, {"text": "Closing response"}]),
-            Toolbox(
-                client,
-                context,
-                reviews=ReviewController(
-                    reviews, context, run_id="partial", model=None, alias=None
-                ),
-                math_checks=mechanical,
-            ),
+            toolbox,
             "Continue",
             run_id="partial",
             max_turns=2,
+            hooks=hooks,
         )
     assert (transcript.failure, transcript.final_text) == ("harness", None)
     assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "unaddressed"
@@ -1229,11 +1233,9 @@ async def test_completed_scientific_bound_survives_later_math_failure(stores, mo
         "failure": transcript.failure,
         "messages": transcript.messages,
         "tools": transcript.tool_records,
-        "review_notice_ids": sorted(transcript.delivered_ids("reviews")),
-        "math_notice_ids": sorted(transcript.delivered_ids("math")),
+        "delivered": {source: sorted(ids) for source, ids in transcript.delivered.items()},
     }
-    assert (
-        cli._keep(argparse.Namespace(state_dir=docs.path.parent, transcript=None), fields, 1) == 1
-    )
+    args = argparse.Namespace(state_dir=docs.path.parent, transcript=None)
+    assert await cli._save(args, fields, 1, hooks) == 1
     assert Findings(reviews).get("p", "s", math["finding_id"])["status"] == "open"
     assert Findings(reviews).get("p", "s", scientific["finding_id"])["status"] == "unaddressed"

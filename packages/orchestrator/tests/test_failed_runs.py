@@ -358,10 +358,12 @@ async def test_cleanup_origin_preserves_first_interrupted_object(outer_error, mo
 
         @asynccontextmanager
         async def active(self):
+            # Leases are released in reverse hook order: the job lease before the
+            # request lease.
             try:
                 yield
             finally:
-                raise outer_error("later cleanup failure")
+                raise interrupted
 
         async def notices(self):
             return []
@@ -377,7 +379,7 @@ async def test_cleanup_origin_preserves_first_interrupted_object(outer_error, mo
             try:
                 yield
             finally:
-                raise interrupted
+                raise outer_error("later cleanup failure")
 
         async def request_notices(self):
             return []

@@ -1113,7 +1113,7 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
 
     from sandbox_science.contracts import ErrorKind
     from sandbox_science.orchestrator import cli
-    from sandbox_science.orchestrator.consistency.controller import ReviewController
+    from sandbox_science.orchestrator.consistency.controller import ReviewController, Reviews
     from sandbox_science.orchestrator.consistency.notices import FindingNotices
     from sandbox_science.orchestrator.loop import run_task
     from sandbox_science.orchestrator.projects import ProjectError
@@ -1129,6 +1129,7 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
     controller = ReviewController(
         reviews, context_for(reviews), run_id="saved", model=None, alias=None
     )
+    hooks = [Reviews(controller)]
     async with WorkerClient("http://127.0.0.1:1", "synthetic-token") as client:
         transcript = await run_task(
             ScriptedModel.from_json([{"text": "Read the finding."}]),
@@ -1136,6 +1137,7 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
             "Continue",
             run_id="saved",
             max_turns=1,
+            hooks=hooks,
         )
     assert sorted(transcript.delivered_ids("reviews"))
     now = datetime.now(UTC)
@@ -1149,8 +1151,8 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
         "final_text": transcript.final_text,
         "messages": transcript.messages,
         "tools": transcript.tool_records,
-        "review_notice_ids": sorted(transcript.delivered_ids("reviews")),
-        "review_summary": transcript.summaries["reviews"],
+        "delivered": {"reviews": sorted(transcript.delivered_ids("reviews"))},
+        "summaries": transcript.summaries,
     }
     args = argparse.Namespace(state_dir=documents.path.parent, transcript=None)
     original = ProjectStore.save_run
@@ -1159,12 +1161,12 @@ async def test_finding_notice_acknowledgement_requires_saved_successful_model_tu
         raise ProjectError(ErrorKind.INTERNAL, "Synthetic save failure")
 
     monkeypatch.setattr(ProjectStore, "save_run", failed_save)
-    assert cli._keep(args, fields, 0) == 1
+    assert await cli._save(args, fields, 0, hooks) == 1
     with documents.control.read() as tx:
         db = tx.sql
         assert db.execute("SELECT delivered_run FROM review_notices").fetchone()[0] is None
     monkeypatch.setattr(ProjectStore, "save_run", original)
-    assert cli._keep(args, fields, 0) == 0
+    assert await cli._save(args, fields, 0, hooks) == 0
     assert ProjectStore(documents.path.parent).run(
         "p", "s", ProjectStore(documents.path.parent).runs("p", "s")[0].name
     ).delivered["reviews"] == sorted(transcript.delivered_ids("reviews"))
