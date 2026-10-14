@@ -6,6 +6,7 @@ Date: 2026-10-11. Work package W0 ([implementation plan](../IMPLEMENTATION-PLAN.
 | --- | --- | --- |
 | [Tools](tools.md) | Approved as drafted (2026-10-14) | Built: [worker](../WORKER.md), [background jobs](../BACKGROUND-JOBS.md) |
 | [PDF sources](pdf-sources.md) | Approved as drafted (2026-10-14) | Built: [worker](../WORKER.md#pdfs) |
+| [PDF viewer](pdf-viewer.md) | Approved (2026-10-14) | In progress: [workspace](../WORKSPACE.md) |
 | [Conda provisioning](conda-provisioning.md) | Approved (2026-10-11), amended since | In part: [worker](../WORKER.md#provisioning-operations); restoring a revision, uninstall, pip upgrade and disk limits are not built |
 | [Research artifacts](research-artifacts.md) | Approved (2026-10-11), amended since | In part: [artifact inventory](../ARTIFACTS.md) |
 | [Consistency review](consistency-review.md) | Approved (2026-10-11), amended since | Built: [consistency review](../CONSISTENCY-REVIEW.md) |
@@ -28,6 +29,7 @@ These specifications state what the new harness must do for the CScience feature
 | [Conda provisioning](conda-provisioning.md) | Requests, policy decisions through the package cache, installation, environment revisions and lockfiles, probes, failure and rollback | D16, D46, D48, D71 |
 | [Research artifacts](research-artifacts.md) | Artifact identity and revisions, publication, lineage, references, annotations | D09, D10, D28, D37, D40 |
 | [PDF sources](pdf-sources.md) | Page facts and labels, page text with line anchors, search, page and region renders, `PdfAnchor` | D59 |
+| [PDF viewer](pdf-viewer.md) | The user's viewer for published PDFs: a second origin, capability URLs, the sandboxed frame and its CSP, PDF.js, anchors | D54, D59, T6 |
 | [Living documents](living-documents.md) | Markdown with LaTeX, block and math-span IDs, attributed revisions, user edits, revision-checked agent patches and suggestions, comments and work requests, rendering, references, exports, events for reviews, math delimiter normalization and the repair of LaTeX that KaTeX rejects, document files in every environment with their helper and merged direct edits, math findings for the agents that wrote the math | D23, D25, D28, D65, D82 |
 | [Run service](run-service.md) | GUI chat: the run service, one active run per session, messages queued to safe points, earlier conversation, cancel, restart, run events and their format | Refactoring plan decision 5, D83 |
 | [Project ledger, board and frontier](ledger.md) | Typed entries and statuses, evidence links and evidence types, attribution, published and project results, frontier comparison, links to findings, reconsideration flags, mutations, the external pack's board records and imports; the board, frontier, issue list and history as views | D24, D29, D33, D34 |
