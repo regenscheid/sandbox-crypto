@@ -293,7 +293,7 @@ async def test_missing_pointer_is_corruption_not_absence(
 
 
 @pytest.mark.asyncio
-async def test_a_close_waits_for_an_edit_in_progress(
+async def test_a_close_between_the_check_and_the_edit_refuses_the_edit(
     aiohttp_client, state_dir, static_dir, journal, monkeypatch
 ):
     ref = seed(journal)
@@ -310,22 +310,16 @@ async def test_a_close_waits_for_an_edit_in_progress(
     edit = asyncio.create_task(post(client, payload(ref)))
     assert await asyncio.to_thread(entered.wait, 5)
     store = ProjectStore(state_dir)
-    closer = threading.Thread(target=store.close_session, args=("p1", "a"))
-    closer.start()
     try:
-        # The edit holds the project lock, so the close cannot land before it commits.
-        await asyncio.to_thread(closer.join, 0.2)
-        assert closer.is_alive()
-        assert store.get("p1").sessions["a"].closed_at is None
+        # The route saw the session open; the edit checks it again in its transaction.
+        store.close_session("p1", "a")
     finally:
         release.set()
-    assert (await edit).status == 200
-    await asyncio.to_thread(closer.join, 5)
-    assert store.get("p1").sessions["a"].closed_at is not None
+    assert (await edit).status == 409
     summary = journal.summary(authority())
     assert summary is not None
-    assert summary.head.version == 2
-    assert (await post(client, payload(summary.head, operation="after-close"))).status == 409
+    assert summary.head.version == 1
+    store.close()
 
 
 @pytest.mark.asyncio

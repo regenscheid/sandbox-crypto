@@ -337,3 +337,37 @@ def test_a_change_whose_commit_fails_leaves_no_parse_behind(
         assert store.mapped("p", doc).span_ids == fresh.mapped("p", doc).span_ids
     finally:
         fresh.close()
+
+
+def test_a_change_whose_real_commit_fails_leaves_no_parse_behind(
+    store: DocumentStore, monkeypatch: pytest.MonkeyPatch
+):
+    doc = create(store)
+    edit(store, doc, 1, "# Heading\n\nEntirely different $q$.\n\nExtra.\n\nAnother.\n")
+    with store.control.write() as tx:  # a deferred foreign key, checked at COMMIT
+        tx.sql.execute("CREATE TABLE probe_parent (id INTEGER PRIMARY KEY)")
+        tx.sql.execute(
+            "CREATE TABLE probe_child (parent INTEGER REFERENCES probe_parent(id) "
+            "DEFERRABLE INITIALLY DEFERRED)"
+        )
+    record = store.record_event
+
+    def poisoned(db: sqlite3.Connection, *args: Any, **kwargs: Any) -> None:
+        record(db, *args, **kwargs)
+        db.execute("INSERT INTO probe_child VALUES (7)")
+
+    # A revert to revision 1 restores its text and IDs, but its COMMIT fails.
+    with monkeypatch.context() as broken:
+        broken.setattr(store, "record_event", poisoned)
+        with pytest.raises(sqlite3.IntegrityError):
+            store.revert("p", doc, base=2, target=1, author=USER, reason="r", operation_id="r")
+    assert store.revision("p", doc).info.number == 2
+    # Another process saves the same text as an edit, which takes new IDs for the
+    # blocks revision 2 lacks; this store must not answer with the reverted IDs.
+    fresh = DocumentStore(store.path)
+    try:
+        edit(fresh, doc, 2, "# Heading\n\nFirst $x$ and $y$.\n\nLast.\n", op="same-text")
+        assert store.mapped("p", doc).block_ids == fresh.mapped("p", doc).block_ids
+        assert store.mapped("p", doc).span_ids == fresh.mapped("p", doc).span_ids
+    finally:
+        fresh.close()

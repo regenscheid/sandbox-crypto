@@ -369,3 +369,24 @@ def test_after_commit_runs_once_a_change_commits_and_never_after_a_rollback(
         store.after_commit(lambda: ran.append("read"))
     assert ran == ["kept"]
     store.close()
+
+
+def test_a_failing_after_commit_action_is_logged_and_the_others_still_run(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = _store(tmp_path / "control.sqlite3")
+    ran: list[str] = []
+
+    def failing() -> None:
+        raise RuntimeError("the action fails")
+
+    with store.write() as tx:  # the change stands, so nothing reaches its caller
+        tx.sql.execute("INSERT INTO job_runs(project) VALUES ('kept')")
+        store.after_commit(lambda: ran.append("first"))
+        store.after_commit(failing)
+        store.after_commit(lambda: ran.append("last"))
+    assert ran == ["first", "last"]
+    assert "an action after a committed change failed" in caplog.text
+    with store.read() as tx:
+        assert tx.sql.execute("SELECT project FROM job_runs").fetchall() == [("kept",)]
+    store.close()

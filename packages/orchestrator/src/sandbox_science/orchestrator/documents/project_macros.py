@@ -13,7 +13,7 @@ import re
 import sqlite3
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic import Field, ValidationError
+from pydantic import Field, JsonValue, ValidationError
 
 from sandbox_science.contracts.model import Contract
 
@@ -30,6 +30,23 @@ MAX_HISTORY = 1024
 MAX_CONTEXT_BYTES = 64 * 1024 * 1024
 _NAME = re.compile(r"\\(?:[A-Za-z]+|[^A-Za-z\s])\Z")
 EMPTY_SHA = hashlib.sha256(b"{}").hexdigest()
+
+
+class MacroContext(Contract):
+    """The macros a text was checked or is shown with: the project's setting revision
+    and the anchors it was pinned by, the effective definitions, and why any are held.
+    A math check's pinned context also names the ``effective`` definitions it used."""
+
+    project: str
+    revision: int
+    sha256: str
+    macros: dict[str, str]
+    known: bool
+    anchors: list[dict[str, JsonValue]]
+    problems: list[str]
+    held: bool
+    key: str
+    effective: dict[str, str] | None = None
 
 
 class MacroChange(Contract):

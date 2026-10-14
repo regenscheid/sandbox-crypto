@@ -99,6 +99,18 @@ def seed(plans: SessionPlans, session: str = "a") -> PlanRef:
     return created.ref
 
 
+def while_open(state_dir: Path, session: str, make):
+    """``make()`` while the closed session is open again: a plan change needs it open."""
+    projects = ProjectStore(state_dir)
+    try:
+        projects.open_session("p1", session, dedicated=False)
+        made = make()
+        projects.close_session("p1", session)
+        return made
+    finally:
+        projects.close()
+
+
 def current_version(plans: SessionPlans) -> int:
     current = plans.compact_current(main())
     assert current is not None
@@ -163,7 +175,7 @@ async def test_current_plan_has_the_shape_the_page_reads(
 async def test_closed_session_plan_stays_readable_with_its_closing_time(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, plans: SessionPlans
 ) -> None:
-    seed(plans, "b")
+    while_open(state_dir, "b", lambda: seed(plans, "b"))
     client = await workspace(aiohttp_client, state_dir, static_dir)
     response = await client.get(plan_path(session="b"))
     assert response.status == 200
@@ -325,7 +337,7 @@ async def test_a_plan_changed_by_the_agent_meanwhile_conflicts(
 async def test_editing_a_closed_session_conflicts(
     aiohttp_client: ClientFactory, state_dir: Path, static_dir: Path, plans: SessionPlans
 ) -> None:
-    base = seed(plans, "b")
+    base = while_open(state_dir, "b", lambda: seed(plans, "b"))
     client = await workspace(aiohttp_client, state_dir, static_dir)
     await error_of(await post(client, change(base), changes_path(session="b")), 409, "conflict")
     current = (await (await client.get(plan_path(session="b"))).json())["plan"]

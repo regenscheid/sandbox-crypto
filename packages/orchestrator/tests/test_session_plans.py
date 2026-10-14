@@ -7,6 +7,7 @@ import json
 import sqlite3
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Literal
 
 import pytest
@@ -15,6 +16,7 @@ from pydantic import ValidationError
 from sandbox_science.orchestrator.documents.errors import DocumentError
 from sandbox_science.orchestrator.documents.models import Author
 from sandbox_science.orchestrator.documents.store import DocumentStore
+from sandbox_science.orchestrator.projects import ProjectStore
 from sandbox_science.orchestrator.session_plans import (
     MAX_COUNTER,
     GoalOutcome,
@@ -80,8 +82,20 @@ def outcome(status: Literal["achieved", "partially_achieved", "not_achieved"] = 
     )
 
 
+def open_sessions(state: Path) -> None:
+    """The projects and sessions the tests plan for: a plan change needs its session
+    recorded and open."""
+    projects = ProjectStore(state)
+    for project in ("p", "other", "third"):
+        projects.create(project, "minimal", "sha256:" + "a" * 64)
+        for session in ("s", "other"):
+            projects.open_session(project, session, dedicated=False)
+    projects.close()
+
+
 @pytest.fixture
 def store(tmp_path):
+    open_sessions(tmp_path)
     documents = DocumentStore(tmp_path / "control.sqlite3")
     yield documents
     documents.close()
@@ -474,7 +488,8 @@ def test_progress_and_metadata_quotas_leave_prior_state(store):
     summary = plans.summary(actor())
     assert summary is not None
     assert summary.progress_cursor == 1
-    tiny = DocumentStore(store.path.parent / "tiny.sqlite3")
+    open_sessions(store.path.parent / "tiny")
+    tiny = DocumentStore(store.path.parent / "tiny" / "control.sqlite3")
     try:
         capped = SessionPlans(tiny, limits=PlanLimits(metadata_bytes=1024))
         with pytest.raises(DocumentError, match="quota"):
@@ -600,8 +615,8 @@ def test_readonly_and_old_namespace_are_honest(tmp_path):
             empty.events(actor(), after=1)
     finally:
         absent.close()
+    open_sessions(tmp_path)
     writer = DocumentStore(path)
-    writer.initialize()
     reader = DocumentStore(path, readonly=True)
     try:
         assert SessionPlans(reader).summary(actor()) is None
@@ -871,7 +886,7 @@ def test_a_plan_stored_with_the_removed_approval_status_reads_as_a_draft(store, 
                 f"UPDATE {table} SET record=replace(record,?,?)",
                 (old, new),
             )
-            tx.sql.execute(f"UPDATE {table} SET bytes=length(CAST(record AS BLOB))")
+            tx.sql.execute(f"UPDATE {table} SET bytes=length(CAST(record AS BLOB))+512")
         for _, sql in triggers:
             tx.sql.execute(sql)
         changed = tx.sql.execute(
@@ -881,3 +896,35 @@ def test_a_plan_stored_with_the_removed_approval_status_reads_as_a_draft(store, 
     # The plan stays readable, and as a draft it fences effects.
     assert plans.summary(actor()).status == "draft"
     assert plans.current(actor()).head.status == "draft"
+
+
+def test_a_change_needs_its_session_open_and_a_pinned_change_its_opening(store, plans):
+    projects = ProjectStore(store.path.parent)
+    try:
+        opening = projects.get("p").sessions["s"].kernel_notice_lifetime
+        assert opening is not None
+        pinned = plans.pinned(opening)
+        first = made(pinned)
+        projects.close_session("p", "s")
+        for refused in (plans, pinned):
+            with pytest.raises(DocumentError, match="session is closed") as closed:
+                update(refused, first.ref, operation="closed")
+            assert closed.value.kind == "conflict"
+        projects.open_session("p", "s", dedicated=False)
+        update(plans, first.ref, operation="reopened")  # the session is open again
+        with pytest.raises(DocumentError, match="opened again"):
+            update(pinned, first.ref, cursor=1, operation="old-opening")
+        with pytest.raises(DocumentError, match="session is closed"):
+            made(plans, actor(project="p", session="never"), operation="unrecorded")
+    finally:
+        projects.close()
+
+
+def test_has_records_tells_a_damaged_plan_from_an_absent_one(store, plans):
+    assert not plans.has_records(actor().scope)
+    made(plans)
+    with store.control.write() as tx:
+        tx.sql.execute("DELETE FROM session_plan_projections WHERE kind='current'")
+    assert plans.summary(actor()) is None
+    assert plans.has_records(actor().scope)
+    assert not plans.has_records(actor(session="other").scope)

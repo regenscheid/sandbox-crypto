@@ -153,7 +153,7 @@ def _json(value: object) -> str:
 
 
 class PlanTools:
-    """Trusted CLI MAIN adapter, borrowing stores and owning one original registry FD."""
+    """Trusted CLI MAIN adapter over the stores it borrows."""
 
     specs = SPECS
 
@@ -166,7 +166,7 @@ class PlanTools:
         run_id: str,
         alias: str,
     ) -> None:
-        self.plans, self.projects, self.context = plans, projects, context
+        self.projects, self.context = projects, context
         # The fence binds this run's own session record. Other sessions and the
         # project's policy revision may change: the worker enforces the current policy.
         self.registry_context = ExecutionContext(
@@ -185,6 +185,11 @@ class PlanTools:
         )
         if self.snapshot.context != self.registry_context:
             raise DocumentError(POLICY_DENIED, "planning context differs from the recorded session")
+        # Each plan change checks, in its own transaction, that this opening is current.
+        opening = self.snapshot.session.kernel_notice_lifetime
+        if opening is None:  # every open gives the session one
+            raise DocumentError(POLICY_DENIED, "planning requires an open recorded session")
+        self.plans = plans.pinned(opening)
         self.invalid = False
         self.cursor = 0
         self.initialized = False
@@ -199,22 +204,29 @@ class PlanTools:
                 POLICY_DENIED, "planning session was closed or reopened; start a new run"
             )
         try:
-            with self.projects.locked(self.context.project_id):
-                current = self.projects.session_snapshot(
-                    self.context.project_id, self.context.session_id
+            current = self.projects.session_snapshot(
+                self.context.project_id, self.context.session_id
+            )
+            # A close and reopen gives the session a new record (opened_at and
+            # kernel_notice_lifetime), so it still ends this run's effects. A change
+            # checks the same again in its own transaction (SessionPlans.pinned).
+            if current != self.snapshot or current.context != self.registry_context:
+                self.invalid = True
+                raise DocumentError(
+                    POLICY_DENIED, "planning session was closed or reopened; start a new run"
                 )
-                # A close and reopen gives the session a new record (opened_at and
-                # kernel_notice_lifetime), so it still ends this run's effects.
-                if current != self.snapshot or current.context != self.registry_context:
-                    self.invalid = True
-                    raise DocumentError(
-                        POLICY_DENIED, "planning session was closed or reopened; start a new run"
-                    )
-                return action()
+            return action()
         except ProjectError:
             self.invalid = True
             raise DocumentError(
                 POLICY_DENIED, "planning requires its original open recorded session"
+            ) from None
+        except DocumentError as error:
+            if error.details.get("session") != "closed":
+                raise
+            self.invalid = True
+            raise DocumentError(
+                POLICY_DENIED, "planning session was closed or reopened; start a new run"
             ) from None
 
     def _refresh(self) -> PlanSummary | None:

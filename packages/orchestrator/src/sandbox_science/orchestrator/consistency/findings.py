@@ -13,6 +13,7 @@ from sandbox_science.contracts import new_id
 from sandbox_science.contracts.artifact_inventory import ArtifactLink, ArtifactRevisionRef
 from sandbox_science.orchestrator.documents.errors import (
     CONFLICT,
+    INTERNAL,
     INVALID_REQUEST,
     NOT_FOUND,
     POLICY_DENIED,
@@ -20,7 +21,14 @@ from sandbox_science.orchestrator.documents.errors import (
 )
 from sandbox_science.orchestrator.documents.models import Author
 
-from .models import ConfirmationInput, EvidenceAnchor, FindingInput, FindingResponse, ReviewConfig
+from .models import (
+    ConfirmationInput,
+    EvidenceAnchor,
+    FindingInput,
+    FindingMacroContexts,
+    FindingResponse,
+    ReviewConfig,
+)
 from .store import MAX_ITEM_BYTES, ReviewStore, bounded_json, digest, dump, identifier, text
 
 # Heterogeneous persisted JSON is validated at the mutation boundary.
@@ -88,6 +96,45 @@ class Findings:
                     )
                 )
         return result
+
+    def macro_contexts(self, project: str, finding: Json) -> FindingMacroContexts:
+        """The macro contexts a finding (as ``get`` or ``listing`` gives it) is shown with:
+        its own, the one its history shows, and each response body's, by source."""
+        from sandbox_science.orchestrator.documents.mathjobs import MathJobs
+        from sandbox_science.orchestrator.documents.project_macros import (
+            MacroContext,
+            finding_anchors,
+            response_view,
+            view,
+        )
+
+        documents = self.store.documents
+        with documents.control.read() as tx:
+            anchors = finding_anchors(tx.sql, project, finding["finding_id"])
+        if finding["origin"] == "math":
+            job = MathJobs(self.store).job(finding["math_check_id"])
+            if job["project"] != project:
+                raise DocumentError(INTERNAL, "finding check is outside its project")
+            pinned = job.get("effective_macro_context")
+            own = (
+                {**pinned, "macros": pinned["effective"]}
+                if pinned
+                else view(documents, project, historical=True)
+            )
+        else:
+            own = view(documents, project, anchors=anchors)
+        responses = {
+            body["source"]: MacroContext.model_validate(
+                response_view(documents, project, body["source"])
+            )
+            for entry in finding.get("history", [])
+            if (body := entry.get("response_body"))
+        }
+        return FindingMacroContexts(
+            finding=MacroContext.model_validate(own),
+            history=MacroContext.model_validate(view(documents, project, historical=True)),
+            responses=responses,
+        )
 
     def get(self, project: str, session: str, finding: str, *, before: int | None = None) -> Json:
         self.store.scope(project, session)

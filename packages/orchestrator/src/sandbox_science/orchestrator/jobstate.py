@@ -35,7 +35,8 @@ class JobState:
     A run's delivery lease lasts ``lease_seconds`` after its last heartbeat. Times
     are wall-clock seconds from ``clock``, since several processes compare them.
     ``control`` shares a control store the process has open already, such as the
-    run's documents' (``DocumentStore.control``); without it, this object opens its own.
+    run's documents' (``DocumentStore.control``), which its owner closes; without it,
+    this object opens its own and closes it in ``close``.
     """
 
     def __init__(
@@ -49,12 +50,15 @@ class JobState:
         self.path = store_path(state_dir)
         self.clock = clock
         self.lease_seconds = lease_seconds
-        self.control = control if control is not None else ControlStore(self.path)
+        self._owned = control is None
+        self.control = ControlStore(self.path) if control is None else control
         # Creates the control store, or brings its schema (with these tables) up to date.
         self.control.initialize()
 
     def close(self) -> None:
-        self.control.close()
+        """Close the store this object opened; a shared store is left to its owner."""
+        if self._owned:
+            self.control.close()
 
     def _now(self) -> float:
         return self.clock.now().timestamp()

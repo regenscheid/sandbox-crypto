@@ -93,13 +93,13 @@ replay the earlier USER principal. No operation-absence proof is exposed.
 ## Writing
 
 The route checks the IDs, the content type and the body, then in a thread under
-the six-second call timeout, holding the project's lock (`ProjectStore.locked`,
-which closing a session also takes): it reads the project record and refuses a
-closed session; it checks through the app's read-only `DocumentStore` connection
-that the session has a plan, so an edit never creates the plans' tables or a
-plan; and it calls `SessionPlans.revise` through the app's writable connection.
-A close that arrives during an edit waits for it, so an edit never lands on a
-closed session. Between edits, the plan's version CAS and the operation ID are
+the six-second call timeout: it reads the project record and refuses a closed
+session; it checks through the app's read-only `DocumentStore` connection that the
+session has a plan (`SessionPlans.summary`, `SessionPlans.has_records`), so an edit
+never creates a plan; and it calls `SessionPlans.revise` through the app's writable
+connection. `revise` checks again, in its own transaction, that the session is
+open, so a close that lands after the route's check refuses the edit (409), and an
+edit never lands on a closed session. Between edits, the plan's version CAS and the operation ID are
 the concurrency control. A concurrent model or tool operation is serialized by
 the core transaction and CAS; no lock is held across a network or model await.
 

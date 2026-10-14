@@ -396,7 +396,7 @@ async def test_exact_replay_is_history_not_current_phase_and_preserves_model_aut
 async def test_a_status_race_refuses_progress_and_a_draft_holds_effects(fixture, monkeypatch):
     f = fixture
     ref, revision = await active(f)
-    original = f.core.progress
+    original = f.adapter.plans.progress
 
     def raced(*args, **kwargs):
         assert kwargs["expected_status_revision"] == revision
@@ -412,7 +412,7 @@ async def test_a_status_race_refuses_progress_and_a_draft_holds_effects(fixture,
         )
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(f.core, "progress", raced)
+    monkeypatch.setattr(f.adapter.plans, "progress", raced)
     with pytest.raises(DocumentError, match="status"):
         await call(
             f,
@@ -646,14 +646,14 @@ async def test_cancelled_mutation_drains_actual_thread_before_store_lifetime_end
 ):
     f = fixture
     entered, release = threading.Event(), threading.Event()
-    original = f.core.publish
+    original = f.adapter.plans.publish
 
     def blocked(*args, **kwargs):
         entered.set()
         assert release.wait(5)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(f.core, "publish", blocked)
+    monkeypatch.setattr(f.adapter.plans, "publish", blocked)
     task = asyncio.create_task(made(f))
     await asyncio.to_thread(entered.wait, 5)
     task.cancel()
@@ -895,3 +895,28 @@ async def test_complete_large_plan_bypasses_generic_notice_clipping_without_mark
     assert jobs.seen == set()
     await f.adapter.model_delivered()
     assert not f.adapter.requires_read
+
+
+@pytest.mark.asyncio
+async def test_plan_tools_aba_after_the_precheck_is_refused_in_the_transaction(
+    fixture, monkeypatch, tmp_path
+):
+    """A close and reopen landing between the run's check and the plan transaction is
+    refused in the transaction, and ends the run's planning."""
+    original = fixture.adapter.snapshot
+
+    def stale(project, session):
+        other = ProjectStore(tmp_path / "state")
+        try:
+            other.close_session("p", "s")
+            other.open_session("p", "s", dedicated=False)
+        finally:
+            other.close()
+        return original  # what the check read just before the close and reopen
+
+    monkeypatch.setattr(fixture.projects, "session_snapshot", stale)
+    with pytest.raises(DocumentError, match="closed or reopened") as refused:
+        await made(fixture)
+    assert refused.value.kind == "policy_denied"
+    assert fixture.adapter.invalid
+    assert fixture.core.summary(fixture.user) is None

@@ -47,23 +47,6 @@ def add_routes(app: web.Application) -> None:
     app.router.add_get(PATH, read)
 
 
-def has_records(documents: DocumentStore, scope: PlanScope) -> bool:
-    """Whether the control store keeps any plan record of the session, even without a
-    current pointer, which tells a damaged plan from an absent one."""
-    if documents.control.missing:
-        return False
-    with documents.control.read() as tx:
-        return (
-            tx.sql.execute(
-                "SELECT 1 FROM session_plan_records WHERE project=? AND session=? "
-                "UNION ALL SELECT 1 FROM session_plan_projections WHERE "
-                "project=? AND session=? LIMIT 1",
-                (scope.project_id, scope.session_id) * 2,
-            ).fetchone()
-            is not None
-        )
-
-
 def _compact(documents: DocumentStore, scope: PlanScope) -> CompactPlan | None:
     try:
         plans = SessionPlans(documents)
@@ -72,7 +55,7 @@ def _compact(documents: DocumentStore, scope: PlanScope) -> CompactPlan | None:
             return None
         raise
     result = plans.compact_current(PlanAuthority(scope=scope, role="user", user_id=USER_ID))
-    if result is None and has_records(documents, scope):
+    if result is None and plans.has_records(scope):
         raise ProjectError(ErrorKind.UNAVAILABLE, "session plan pointer is missing")
     return result
 

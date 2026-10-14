@@ -608,3 +608,19 @@ async def test_notice_batch_bounds_and_does_not_mark_deferred_notices_seen(tmp_p
     second = await jobs.notices(max_chars=1200)
     assert second
     assert {notice["job_id"] for notice in first}.isdisjoint(notice["job_id"] for notice in second)
+
+
+def test_a_job_state_closes_only_a_store_it_opened(tmp_path: Path) -> None:
+    documents = DocumentStore(store_path(tmp_path))
+    shared = JobState(tmp_path, control=documents.control)
+    with documents.control.read() as tx:
+        connection = tx.sql
+    shared.close()  # the documents' store stays open for its owner
+    assert connection.execute("SELECT 1").fetchone() == (1,)
+    documents.close()
+    own = JobState(tmp_path)
+    with own.control.read() as tx:
+        connection = tx.sql
+    own.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        connection.execute("SELECT 1")

@@ -10,6 +10,7 @@ from pydantic import Field
 from sandbox_science.contracts import Identifier
 from sandbox_science.contracts.artifact_inventory import ArtifactRevisionRef
 from sandbox_science.contracts.model import Contract
+from sandbox_science.orchestrator.documents.project_macros import MacroContext
 
 ReviewType = Literal["checkpoint", "terminal", "confirmation"]
 ReviewOutcome = Literal[
@@ -116,3 +117,14 @@ class ReviewerFinish(Contract):
 class Scope(Contract):
     project_id: Identifier
     session_id: Identifier
+
+
+class FindingMacroContexts(Contract):
+    """The macro contexts a finding is shown with (``Findings.macro_contexts``)."""
+
+    finding: MacroContext
+    """The finding's own: its math check's pinned context, or its anchors'."""
+    history: MacroContext
+    """The one each entry of its history is shown with."""
+    responses: dict[str, MacroContext]
+    """Each response body's, by its source."""

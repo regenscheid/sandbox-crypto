@@ -10,6 +10,7 @@ Its synchronous calls must finish before that owner closes the store.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import sqlite3
@@ -436,14 +437,61 @@ def _steps(body: PlanBody) -> dict[str, tuple[PlanStep, str]]:
 
 
 class SessionPlans:
-    """Bounded internal plans sharing, but never owning, DocumentStore lifetime."""
+    """Bounded internal plans sharing, but never owning, DocumentStore lifetime.
+
+    A change needs its session recorded and open, checked in the change's own
+    transaction, so a session's close cannot land between the check and the change.
+    """
 
     def __init__(self, documents: DocumentStore, *, limits: PlanLimits | None = None) -> None:
         self.documents = documents
         self.limits = _checked(PlanLimits, limits or PlanLimits())
+        self.opening: str | None = None
         if not documents.readonly:
             with documents.control.write() as tx:
                 self._budget(tx.sql, None)
+
+    def pinned(self, opening: str) -> SessionPlans:
+        """These plans for one opening of the session, named by ``opening``, the random
+        marker each open gives the session (``kernel_notice_lifetime``): a change is
+        refused once the session has been closed, even if it was opened again."""
+        pinned = copy.copy(self)
+        pinned.opening = opening
+        return pinned
+
+    def has_records(self, scope: PlanScope) -> bool:
+        """Whether the store keeps any plan record of the session, even without a current
+        pointer, which tells a damaged plan from an absent one."""
+        scope = _checked(PlanScope, scope)
+        if self.documents.control.missing:
+            return False
+        with self.documents.control.read() as tx:
+            return (
+                tx.sql.execute(
+                    "SELECT 1 FROM session_plan_records WHERE project=? AND session=? "
+                    "UNION ALL SELECT 1 FROM session_plan_projections WHERE "
+                    "project=? AND session=? LIMIT 1",
+                    (scope.project_id, scope.session_id) * 2,
+                ).fetchone()
+                is not None
+            )
+
+    def _session_open(self, db: sqlite3.Connection, scope: PlanScope) -> None:
+        row = db.execute(
+            "SELECT kernel_notice_lifetime, closed_at FROM sessions "
+            "WHERE project_id=? AND session_id=?",
+            (scope.project_id, scope.session_id),
+        ).fetchone()
+        if (
+            row is None
+            or row[1] is not None
+            or (self.opening is not None and row[0] != self.opening)
+        ):
+            raise DocumentError(
+                CONFLICT,
+                "the session is closed, or was closed and opened again",
+                {"session": "closed"},
+            )
 
     def _budget(self, db: sqlite3.Connection, scope: PlanScope | None) -> None:
         limits = self.limits
@@ -784,6 +832,7 @@ class SessionPlans:
             ):
                 raise DocumentError(INTERNAL, "retained plan receipt does not bind its event")
             return identifier, digest, receipt
+        self._session_open(db, authority.scope)
         self._budget(db, authority.scope)
         return identifier, digest, None
 

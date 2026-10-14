@@ -20,6 +20,7 @@ from sandbox_science.orchestrator.documents import DocumentError, DocumentStore,
 from sandbox_science.orchestrator.documents.annotations import Annotations
 from sandbox_science.orchestrator.documents.models import NAME, USER
 from sandbox_science.orchestrator.documents.operations import Operation, unlay
+from sandbox_science.orchestrator.documents.project_macros import view as macro_view
 
 from . import api, errors
 from .context import json_body
@@ -313,9 +314,7 @@ def _revision(store: DocumentStore, project: str, reference: str, number: int | 
             }
         )
     front = mapped.parsed.front_matter if mapped is not None else None
-    from sandbox_science.orchestrator.documents.project_macros import view
-
-    context = view(
+    context = macro_view(
         store,
         project,
         document=info.document_id,

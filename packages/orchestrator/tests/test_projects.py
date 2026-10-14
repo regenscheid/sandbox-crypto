@@ -303,8 +303,8 @@ def test_a_record_is_never_replaced(session_store: ProjectStore) -> None:
 
 
 def test_runs_stay_clear_of_other_projects_files(session_store: ProjectStore) -> None:
-    # Project IDs may contain dots, so a project's runs must not live where another
-    # project's record (a.json) or lock (a.lock) is.
+    # Project IDs may contain dots, even ones named like files; each project's runs
+    # stay its own.
     for project in ("a", "a.json", "a.lock"):
         session_store.create(project, "minimal", POLICY)
         session_store.open_session(project, "s", dedicated=False)
@@ -398,6 +398,7 @@ def test_a_project_recorded_only_in_a_json_file_says_so(store: ProjectStore) -> 
 def test_project_ids_name_only_project_records(session_store: ProjectStore) -> None:
     session_store.create("p2", "minimal", POLICY)
     session_store.save_run(run_record())
+    session_store.root.mkdir(parents=True, exist_ok=True)
     (session_store.root / "notes.txt").write_text("not a project")
     (session_store.root / "bad name.json").write_text("{}")
     (session_store.root / "x.json").mkdir()
@@ -487,6 +488,7 @@ def test_a_damaged_run_list_is_a_project_error(session_store: ProjectStore) -> N
 
 def test_projects_recorded_only_in_json_files_are_listed(store: ProjectStore) -> None:
     store.create("p1", "minimal", POLICY)
+    store.root.mkdir(parents=True, exist_ok=True)
     (store.root / "old.json").write_text("{}")
     assert store.project_ids() == ["old", "p1"]
     with pytest.raises(ProjectError, match="create the project again"):

@@ -14,6 +14,7 @@ reported done survives a crash.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
@@ -25,6 +26,8 @@ from typing import Final
 
 from . import migrations
 from .errors import BUSY, INTERNAL, NOT_FOUND, ControlError
+
+_log = logging.getLogger(__name__)
 
 FILE_NAME: Final = "control.sqlite3"
 DEFAULT_TIMEOUT: Final = 10.0
@@ -126,14 +129,19 @@ class ControlStore:
                 raise
             finally:
                 self._after = None
+        # The change stands: a failing action is logged, and the others still run.
         for action in after:
-            action()
+            try:
+                action()
+            except Exception:
+                _log.exception("an action after a committed change failed")
 
     def after_commit(self, action: Callable[[], None]) -> None:
         """Run ``action`` once the calling thread's open change commits, and never if it
         rolls back: for state outside the database, such as a cache, that must not hold
         what was never committed. ``action`` runs in that thread, after the lock on this
-        store's transactions is released; it must not fail, since the change stands."""
+        store's transactions is released. Since the change stands, an action that
+        fails is logged and does not stop the others or reach the caller of ``write``."""
         with self._lock:
             if self._after is None or self._db is None or not self._db.in_transaction:
                 raise ControlError(INTERNAL, "after_commit needs an open change")
