@@ -6,42 +6,25 @@
  * (mathrepair.py). Requests go through http.ts. The session cookie travels with every
  * request, and the browser adds the `Origin` header the server requires of a POST.
  */
+import type {
+  ProjectAnswer,
+  ProjectListing,
+  ProjectView,
+  RunEntry,
+  SessionDetail,
+  SessionView,
+} from './api-types';
 import type { ServerBlock } from './attach';
 import { ApiError, get, post } from './http';
 import { signOut } from './session';
 
 export { ApiError };
 
-export interface ProjectSummary {
-  project_id: string;
-  profile?: string;
-  policy?: string;
-  default_environment_id?: string;
-  created_at?: string;
-  updated_at?: string;
-  sessions?: number;
-  /** Set instead of the rest when the project's record is damaged. */
-  error?: string;
-}
-
-export interface Session {
-  session_id: string;
-  environment_id: string;
-  dedicated: boolean;
-  opened_at: string;
-  closed_at: string | null;
-}
-
-export interface Project {
-  project_id: string;
-  profile: string;
-  policy: string;
-  default_environment_id: string;
-  created_at: string;
-  updated_at: string;
-  sessions: (Session & { runs: number })[];
-  environments: { environment_id: string; default: boolean; sessions: string[] }[];
-}
+/** A project in the list; a project whose record is damaged has only its ID and error. */
+export type ProjectSummary = ProjectListing['projects'][number];
+export type Session = SessionView;
+export type Project = ProjectView;
+export type { RunEntry, SessionDetail };
 
 export interface MacroContext {
   project: string;
@@ -51,18 +34,6 @@ export interface MacroContext {
   known?: boolean;
   key?: string;
   problems?: string[];
-}
-
-export interface RunEntry {
-  name: string;
-  run_id: string;
-  started_at: string;
-}
-
-export interface SessionDetail {
-  project_id: string;
-  session: Session;
-  runs: RunEntry[];
 }
 
 export interface BackgroundJob {
@@ -424,9 +395,9 @@ export const api = {
   projectMacros: (project: string) => get<MacroContext>(`/projects/${part(project)}/macros`),
   changeMacros: (project: string, value: Record<string, unknown>) =>
     post<MacroContext>(`/projects/${part(project)}/macros`, value),
-  projects: () => get<{ projects: ProjectSummary[] }>('/projects'),
+  projects: () => get<ProjectListing>('/projects'),
   project: (project: string) =>
-    get<{ project: Project }>(`/projects/${part(project)}`).then((found) => found.project),
+    get<ProjectAnswer>(`/projects/${part(project)}`).then((found) => found.project),
   session: (project: string, session: string, signal?: AbortSignal) =>
     get<SessionDetail>(`/projects/${part(project)}/sessions/${part(session)}`, { signal }),
   jobs: (project: string, session: string, signal?: AbortSignal) =>

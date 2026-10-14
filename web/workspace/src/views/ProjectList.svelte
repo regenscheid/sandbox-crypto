@@ -32,7 +32,7 @@
       <tbody>
         {#each listed.projects as project (project.project_id)}
           <tr>
-            {#if project.error}
+            {#if 'error' in project}
               <td><code>{project.project_id}</code></td>
               <td colspan="4" class="problem">{project.error}</td>
             {:else}

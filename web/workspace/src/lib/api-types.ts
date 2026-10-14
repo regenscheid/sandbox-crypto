@@ -62,11 +62,23 @@ export interface CondaPackage {
   license: string | null;
 }
 
+/** A project whose record cannot be read, listed with the store's error. */
+export interface DamagedProject {
+  project_id: string;
+  error: string;
+}
+
 /** The acknowledgement of one edit; the current plan is read separately. */
 export interface EditReceipt {
   project_id: string;
   session_id: string;
   receipt: PlanReceipt;
+}
+
+export interface EnvironmentView {
+  environment_id: string;
+  default: boolean;
+  sessions: string[];
 }
 
 /** Failure kinds every tool reports (docs/specs/tools.md, "Errors"). */
@@ -290,6 +302,45 @@ export interface ProbeResult {
   recorded_at: string;
 }
 
+export interface ProjectAnswer {
+  project: ProjectView;
+}
+
+export interface ProjectListing {
+  projects: (ProjectSummary | DamagedProject)[];
+}
+
+export interface ProjectSession {
+  session_id: string;
+  environment_id: string;
+  dedicated: boolean;
+  opened_at: string;
+  closed_at: string | null;
+  runs: number;
+}
+
+/** A project in the list, with how many sessions it has. */
+export interface ProjectSummary {
+  project_id: string;
+  profile: string;
+  policy: string;
+  default_environment_id: string;
+  created_at: string;
+  updated_at: string;
+  sessions: number;
+}
+
+export interface ProjectView {
+  project_id: string;
+  profile: string;
+  policy: string;
+  default_environment_id: string;
+  created_at: string;
+  updated_at: string;
+  sessions: ProjectSession[];
+  environments: EnvironmentView[];
+}
+
 export interface ProvisionDetail {
   project_id: string;
   environment_id: string;
@@ -449,6 +500,28 @@ export interface RevisionSummaryPage {
   limit: number;
   next_after: number | null;
   revisions: RevisionSummary[];
+}
+
+/** A run a session keeps, named by when it started and its run ID. */
+export interface RunEntry {
+  name: string;
+  run_id: string;
+  started_at: string;
+}
+
+export interface SessionDetail {
+  project_id: string;
+  session: SessionView;
+  runs: RunEntry[];
+}
+
+/** A session as the page sees it. Only these fields are copied from the store's record, so its lifetime marker, and any field the store adds or renames, stay out. */
+export interface SessionView {
+  session_id: string;
+  environment_id: string;
+  dedicated: boolean;
+  opened_at: string;
+  closed_at: string | null;
 }
 
 /** The worker's observation plus the project it belongs to. */

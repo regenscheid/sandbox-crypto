@@ -25,15 +25,17 @@ import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, cast
+from datetime import datetime
+from typing import Final, Self, cast
 
 from aiohttp import hdrs, web
 
-from sandbox_science.contracts import ErrorKind
+from sandbox_science.contracts import Contract, ErrorKind, Identifier, PolicyRevision
 from sandbox_science.orchestrator.projects import (
     ProjectError,
     ProjectRecord,
     ProjectStore,
+    RunEntry,
     SessionRecord,
 )
 
@@ -61,6 +63,79 @@ TIMEOUTS: Final = Timeouts()
 Json = dict[str, object]
 
 
+class SessionView(Contract):
+    """A session as the page sees it. Only these fields are copied from the store's
+    record, so its lifetime marker, and any field the store adds or renames, stay out."""
+
+    session_id: Identifier
+    environment_id: Identifier
+    dedicated: bool
+    opened_at: datetime
+    closed_at: datetime | None
+
+    @classmethod
+    def of(cls, found: SessionRecord) -> Self:
+        return cls.model_validate(found.model_dump(include=set(cls.model_fields)))
+
+
+class ProjectFacts(Contract):
+    """A project's own facts, copied field by field from the store's record."""
+
+    project_id: Identifier
+    profile: Identifier
+    policy: PolicyRevision
+    default_environment_id: Identifier
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def of(cls, record: ProjectRecord) -> Self:
+        return cls.model_validate(record.model_dump(include=set(cls.model_fields)))
+
+
+class ProjectSummary(ProjectFacts):
+    """A project in the list, with how many sessions it has."""
+
+    sessions: int
+
+
+class DamagedProject(Contract):
+    """A project whose record cannot be read, listed with the store's error."""
+
+    project_id: str
+    error: str
+
+
+class ProjectListing(Contract):
+    projects: list[ProjectSummary | DamagedProject]
+
+
+class ProjectSession(SessionView):
+    runs: int
+    """How many runs the session keeps."""
+
+
+class EnvironmentView(Contract):
+    environment_id: Identifier
+    default: bool
+    sessions: list[Identifier]
+
+
+class ProjectView(ProjectFacts):
+    sessions: list[ProjectSession]
+    environments: list[EnvironmentView]
+
+
+class ProjectAnswer(Contract):
+    project: ProjectView
+
+
+class SessionDetail(Contract):
+    project_id: Identifier
+    session: SessionView
+    runs: list[RunEntry]
+
+
 def add_routes(app: web.Application) -> None:
     app.router.add_get("/api/v0/projects", projects)
     app.router.add_get("/api/v0/projects/{project}", project)
@@ -69,12 +144,12 @@ def add_routes(app: web.Application) -> None:
 
 
 async def projects(request: web.Request) -> web.Response:
-    return await _answer(lambda store: {"projects": _projects(store)}, request)
+    return await _answer(lambda store: ProjectListing(projects=_projects(store)), request)
 
 
 async def project(request: web.Request) -> web.Response:
     found = request.match_info["project"]
-    return await _answer(lambda store: {"project": _project(store, found)}, request)
+    return await _answer(lambda store: ProjectAnswer(project=_project(store, found)), request)
 
 
 async def session(request: web.Request) -> web.Response:
@@ -88,73 +163,74 @@ async def run(request: web.Request) -> web.Response:
     return await _answer(lambda store: _run(store, *found, limit), request)
 
 
-async def _answer(view: Callable[[ProjectStore], Json], request: web.Request) -> web.Response:
+async def _answer(
+    view: Callable[[ProjectStore], Json | Contract], request: web.Request
+) -> web.Response:
     """The view of the store as JSON; reading and encoding happen in a thread."""
     store = request.app[STORE]
-    text = await asyncio.to_thread(lambda: dumps(view(store)))
+
+    def text() -> str:
+        found = view(store)
+        return dumps(found.model_dump(mode="json") if isinstance(found, Contract) else found)
+
+    text_ = await asyncio.to_thread(text)
     return web.Response(
-        text=text, content_type="application/json", headers={hdrs.CACHE_CONTROL: "no-store"}
+        text=text_, content_type="application/json", headers={hdrs.CACHE_CONTROL: "no-store"}
     )
 
 
-def _projects(store: ProjectStore) -> list[Json]:
-    listed: list[Json] = []
+def _projects(store: ProjectStore) -> list[ProjectSummary | DamagedProject]:
+    listed: list[ProjectSummary | DamagedProject] = []
     for project_id in store.project_ids():
         try:
             record = store.get(project_id)
         except ProjectError as error:
-            listed.append({"project_id": project_id, "error": error.message})
+            listed.append(DamagedProject(project_id=project_id, error=error.message))
             continue
-        listed.append({**_facts(record), "sessions": len(record.sessions)})
+        facts = ProjectFacts.of(record).model_dump()
+        listed.append(ProjectSummary(**facts, sessions=len(record.sessions)))
     return listed
 
 
-def _project(store: ProjectStore, project_id: str) -> Json:
+def _project(store: ProjectStore, project_id: str) -> ProjectView:
     record = store.get(project_id)
     sessions = [
-        {**_session_view(found), "runs": len(store.runs(project_id, session_id))}
+        ProjectSession(
+            **SessionView.of(found).model_dump(), runs=len(store.runs(project_id, session_id))
+        )
         for session_id, found in sorted(record.sessions.items())
     ]
     environments = [
-        {
-            "environment_id": environment_id,
-            "default": environment_id == record.default_environment_id,
-            "sessions": sorted(
+        EnvironmentView(
+            environment_id=environment_id,
+            default=environment_id == record.default_environment_id,
+            sessions=sorted(
                 found.session_id
                 for found in record.sessions.values()
                 if found.environment_id == environment_id
             ),
-        }
+        )
         for environment_id in record.environments()
     ]
-    return {**_facts(record), "sessions": sessions, "environments": environments}
+    facts = ProjectFacts.of(record).model_dump()
+    return ProjectView(**facts, sessions=sessions, environments=environments)
 
 
-def _session(store: ProjectStore, project_id: str, session_id: str) -> Json:
+def _session(store: ProjectStore, project_id: str, session_id: str) -> SessionDetail:
     found = store.get(project_id).sessions.get(session_id)
     if found is None:
         raise _no_session(project_id, session_id)
-    return {
-        "project_id": project_id,
-        "session": _session_view(found),
-        "runs": [entry.model_dump(mode="json") for entry in store.runs(project_id, session_id)],
-    }
+    return SessionDetail(
+        project_id=project_id,
+        session=SessionView.of(found),
+        runs=store.runs(project_id, session_id),
+    )
 
 
 def _run(store: ProjectStore, project_id: str, session_id: str, name: str, limit: int) -> Json:
     if session_id not in store.get(project_id).sessions:
         raise _no_session(project_id, session_id)
     return store.run(project_id, session_id, name, max_bytes=limit).model_dump(mode="json")
-
-
-def _session_view(found: SessionRecord) -> Json:
-    """A session as the page sees it. The control store's open-lifetime marker is the
-    harness's own bookkeeping and is left out, so the store may rename it."""
-    return found.model_dump(mode="json", exclude={"kernel_notice_lifetime"})
-
-
-def _facts(record: ProjectRecord) -> Json:
-    return record.model_dump(mode="json", exclude={"sessions"})
 
 
 def _no_session(project_id: str, session_id: str) -> ProjectError:

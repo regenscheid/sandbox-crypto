@@ -34,6 +34,7 @@ from sandbox_science.contracts.provision_observations import (
     RevisionSummaryPage,
 )
 from sandbox_science.contracts.revision_packages import RevisionPackagePage
+from sandbox_science.workspace.api import ProjectAnswer, ProjectListing, SessionDetail
 from sandbox_science.workspace.kernels import WorkspaceObservation
 from sandbox_science.workspace.plan_edits import BodyChange, EditReceipt
 from sandbox_science.workspace.plans import WorkspacePlan
@@ -41,6 +42,9 @@ from sandbox_science.workspace.plans import WorkspacePlan
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "web" / "workspace" / "src" / "lib" / "api-types.ts"
 MODELS: tuple[type[BaseModel], ...] = (
+    ProjectListing,
+    ProjectAnswer,
+    SessionDetail,
     WorkspaceObservation,
     WorkspacePlan,
     BodyChange,

@@ -18,10 +18,9 @@ from aiohttp.test_utils import TestClient
 
 from sandbox_science.contracts import ExecutionContext
 from sandbox_science.orchestrator.control import migrations, store_path
-from sandbox_science.orchestrator.projects import ProjectStore, RunRecord
+from sandbox_science.orchestrator.projects import ProjectStore, RunRecord, SessionRecord
+from sandbox_science.workspace import api
 from sandbox_science.workspace.app import create_app
-
-pytestmark = pytest.mark.asyncio
 
 TOKEN = "test-secret-login-token-0123456789abcdef"
 POLICY = "sha256:" + "a" * 64
@@ -233,3 +232,40 @@ async def test_a_newer_control_store_is_503_with_the_reason_on_project_routes(
         body = await get(client, path, 503)
         assert body["error"]["kind"] == "unavailable"
         assert "newer than this version's" in body["error"]["message"]
+
+
+async def test_typed_answers_equal_their_models_and_omit_the_lifetime(
+    client: TestClient[Any, Any],
+) -> None:
+    for path, model in (
+        ("/api/v0/projects", api.ProjectListing),
+        ("/api/v0/projects/p1", api.ProjectAnswer),
+        ("/api/v0/projects/p2", api.ProjectAnswer),
+        ("/api/v0/projects/p1/sessions/a", api.SessionDetail),
+        ("/api/v0/projects/p1/sessions/b", api.SessionDetail),
+    ):
+        response = await client.get(path)
+        raw = await response.text()
+        assert "kernel_notice_lifetime" not in raw
+        found = json.loads(raw)
+        assert model.model_validate(found).model_dump(mode="json") == found
+    listed = (await get(client, "/api/v0/projects"))["projects"]
+    damaged = [item for item in listed if "error" in item]
+    assert [list(item) for item in damaged] == [["project_id", "error"]]
+
+
+def test_a_renamed_store_field_stays_out_of_the_session_view() -> None:
+    # A field the store adds or renames must not turn every project and session view
+    # into a 500: the view copies only its own fields.
+    class Renamed(SessionRecord):
+        notice_lifetime: str | None = None  # the lifetime marker under a new name
+
+    found = Renamed(
+        session_id="a",
+        environment_id="e",
+        opened_at=datetime(2026, 10, 14, tzinfo=UTC),
+        notice_lifetime="kns-1",
+    )
+    view = api.SessionView.of(found)
+    assert "notice_lifetime" not in view.model_dump()
+    assert view.session_id == "a"
