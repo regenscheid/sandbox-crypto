@@ -1,17 +1,21 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import { api, type JobListing } from '../lib/api';
-  import { jobElapsed, jobsPoller } from '../lib/jobs';
+  import { JobCancels, jobElapsed, jobsPoller } from '../lib/jobs';
   import { initialPoll, type PollState } from '../lib/poller';
-  import { idle, submit } from '../lib/submit';
   import ErrorMessage from './ErrorMessage.svelte';
   import JobCard from './JobCard.svelte';
   import PollStatus from './PollStatus.svelte';
 
   let { projectId, sessionId }: { projectId: string; sessionId: string } = $props();
   let view = $state<PollState<JobListing>>(initialPoll());
-  const cancel = $state(idle());
-  let cancelling = $state<string | null>(null);
+  const cancel = $state({ queued: [] as string[], error: null as unknown });
+  const cancels = new JobCancels(cancel, async (job) => {
+    await api.cancelJob(projectId, sessionId, job);
+    const found = await api.jobs(projectId, sessionId);
+    // Spread the state as it is now: the poller may have published during the await.
+    view = { ...view, data: found };
+  });
   const data = $derived(view.data);
 
   $effect(() => {
@@ -23,18 +27,6 @@
       view = value;
     }).watch();
   });
-
-  async function cancelJob(job: string): Promise<void> {
-    if (cancel.busy) return; // one cancellation at a time
-    cancelling = job;
-    await submit(cancel, async () => {
-      await api.cancelJob(projectId, sessionId, job);
-      const found = await api.jobs(projectId, sessionId);
-      // Spread the state as it is now: the poller may have published during the await.
-      view = { ...view, data: found };
-    });
-    cancelling = null;
-  }
 </script>
 
 <section aria-label="Background jobs">
@@ -61,8 +53,8 @@
     {#each data.jobs as job (job.job_id)}
       <JobCard
         {job}
-        cancelling={cancelling === job.job_id}
-        oncancel={() => void cancelJob(job.job_id)}
+        cancelling={cancel.queued.includes(job.job_id)}
+        oncancel={() => void cancels.ask(job.job_id)}
       />
     {/each}
     {#if data.truncated}<p class="muted">Showing the most recent jobs.</p>{/if}

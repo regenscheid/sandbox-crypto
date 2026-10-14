@@ -24,3 +24,44 @@ export function jobsPoller(
 ): Poller<JobListing> {
   return new Poller((signal) => api.jobs(project, session, signal), publish, { endOn: {} });
 }
+
+export interface CancelState {
+  /** The jobs asked to cancel and not yet answered, in the order asked. */
+  queued: string[];
+  /** The last cancellation's failure, cleared when the queue starts again. */
+  error: unknown;
+}
+
+/**
+ * The jobs the user asked to cancel, cancelled one at a time in the order asked. A job
+ * asked for while another is being cancelled waits its turn instead of being dropped, and
+ * one failure does not stop the others. The view makes the state with `$state`.
+ */
+export class JobCancels {
+  #running = false;
+
+  constructor(
+    readonly state: CancelState,
+    private readonly cancel: (job: string) => Promise<void>,
+  ) {}
+
+  async ask(job: string): Promise<void> {
+    if (this.state.queued.includes(job)) return;
+    this.state.queued = [...this.state.queued, job];
+    if (this.#running) return;
+    this.#running = true;
+    this.state.error = null;
+    try {
+      while (this.state.queued.length > 0) {
+        try {
+          await this.cancel(this.state.queued[0]!);
+        } catch (caught) {
+          this.state.error = caught;
+        }
+        this.state.queued = this.state.queued.slice(1);
+      }
+    } finally {
+      this.#running = false;
+    }
+  }
+}

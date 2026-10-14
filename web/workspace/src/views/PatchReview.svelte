@@ -36,7 +36,10 @@
         (change) => api.changeDocument(projectId, documentId, change),
       );
       message = result.message || result.outcome;
-      if (patchApplied(result)) refreshed();
+      if (patchApplied(result)) {
+        previews.clear(); // its preview no longer describes the document
+        refreshed();
+      }
     });
   }
 </script>

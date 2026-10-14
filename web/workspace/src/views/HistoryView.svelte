@@ -16,6 +16,8 @@
 
   let { projectId, documentId }: { projectId: string; documentId: string } = $props();
   const shown = $state(noDetail<string, DocumentHistory>());
+  // Keyed by the document alone: a document ID is unique in the whole store (the documents
+  // table's key), and the read names the project as the view's properties do now.
   const histories = new Detail(shown, (document) => api.history(projectId, document));
   $effect(() => {
     void histories.show(documentId);
@@ -110,48 +112,51 @@
     </table>
   </details>
 
-  {#if history.patches.length > 0}
-    <h2>Patches</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Patch</th>
-          <th>By</th>
-          <th>Base</th>
-          <th>State</th>
-          <th>Reason</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each newestFirst(history.patches) as patch (patch.patch_id)}
+  <!-- A new head (an applied patch, or any other change) closes every open preview. -->
+  {#key history.document.head}
+    {#if history.patches.length > 0}
+      <h2>Patches</h2>
+      <table>
+        <thead>
           <tr>
-            <td><code>{patch.patch_id}</code></td>
-            <td>{describeAuthor(patch.author)}</td>
-            <td>{patch.base}</td>
-            <td>
-              {patch.state}
-              {#if patch.revision}
-                <span class="muted">
-                  in <a href={documentHref(projectId, info.document_id, patch.revision)}
-                    >{patch.revision}</a
-                  >
-                </span>
-              {/if}
-            </td>
-            <td
-              >{patch.reason}
-              {#if reviewable(patch)}
-                <PatchReview
-                  {projectId}
-                  documentId={info.document_id}
-                  patchId={patch.patch_id}
-                  refreshed={() => void histories.reload()}
-                />
-              {/if}
-            </td>
+            <th>Patch</th>
+            <th>By</th>
+            <th>Base</th>
+            <th>State</th>
+            <th>Reason</th>
           </tr>
-        {/each}
-      </tbody>
-    </table>
-  {/if}
+        </thead>
+        <tbody>
+          {#each newestFirst(history.patches) as patch (patch.patch_id)}
+            <tr>
+              <td><code>{patch.patch_id}</code></td>
+              <td>{describeAuthor(patch.author)}</td>
+              <td>{patch.base}</td>
+              <td>
+                {patch.state}
+                {#if patch.revision}
+                  <span class="muted">
+                    in <a href={documentHref(projectId, info.document_id, patch.revision)}
+                      >{patch.revision}</a
+                    >
+                  </span>
+                {/if}
+              </td>
+              <td
+                >{patch.reason}
+                {#if reviewable(patch)}
+                  <PatchReview
+                    {projectId}
+                    documentId={info.document_id}
+                    patchId={patch.patch_id}
+                    refreshed={() => void histories.reload()}
+                  />
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  {/key}
 {/if}
