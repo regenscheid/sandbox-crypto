@@ -170,7 +170,7 @@ function pipEntry(v: unknown): v is PipEntry {
   return (object(v, ['name', 'version', 'installer', 'location', 'url', 'sha256']) || object(v, ['name', 'version', 'installer', 'location', 'url', 'sha256', 'license'])) && (!Object.hasOwn(v, 'license') || nullable(v.license, v => typeof v === 'string' && /^[ -~]{1,256}$/.test(v))) && typeof v.name === 'string' && packagePattern.test(v.name) && typeof v.version === 'string' && versionPattern.test(v.version) && nullable(v.installer, v => typeof v === 'string' && /^[A-Za-z0-9_.+-]{1,64}$/.test(v)) && choice(v.location, ['prefix', 'user']) && nullable(v.url, v => text(v, 2048) && /^(?:https?|file|(?:git|hg|svn|bzr)\+(?:https?|ssh|file)):\/\/[!-~]+$/.test(v)) && nullable(v.sha256, digest);
 }
 function declared(v: unknown, expected: string | null): v is DeclaredLicense {
-  return object(v, ['declared', 'agpl']) && v.declared === expected && (expected === null ? v.agpl === null : typeof v.agpl === 'boolean');
+  return object(v, ['declared', 'agpl']) && v.declared === expected && (expected === null ? v.agpl === null : v.agpl === /agpl|affero/i.test(expected));
 }
 export function differenceKey(v: LockfileDifference): string {return [v.ecosystem, v.location ?? '', v.name].join('\0');}
 function difference(v: unknown): v is LockfileDifference {

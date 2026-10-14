@@ -59,6 +59,10 @@ class LicenseObservation(Bounded):
     def _known(self) -> Self:
         if (self.declared is None) != (self.agpl is None):
             raise ValueError("unknown license must retain unknown AGPL status")
+        if self.declared is not None and self.agpl != bool(
+            re.search(r"agpl|affero", self.declared, re.IGNORECASE)
+        ):
+            raise ValueError("AGPL flag does not match declared text")
         return self
 
 

@@ -402,3 +402,13 @@ describe('additive recorded pip license declarations', () => {
     expect(() => provisionData(v, scope, diffSelection())).toThrow();
   });
 });
+
+
+describe('recorded declaration flag consistency', () => {
+  it.each(['MIT','AGPL-3.0-only','GNU Affero GPL'])('refuses inverted %s flags on both pip difference sides', license => {
+    const v = comparison(), before = {name:'pip-pkg',version:'1',installer:'pip',location:'prefix' as const,url:null,sha256:null,license}, after = {...before,version:'2'}, agpl = /agpl|affero/i.test(license);
+    v.differences = [{ecosystem:'pip',name:'pip-pkg',location:'prefix',change:'changed',before,after,changed_fields:['version'],before_license:{declared:license,agpl},after_license:{declared:license,agpl}}];
+    expect(provisionData(v,scope,diffSelection())).toEqual(v);
+    for (const side of ['before_license','after_license'] as const) {const copied = structuredClone(v);copied.differences[0]![side]!.agpl = !agpl;expect(() => provisionData(copied,scope,diffSelection())).toThrow();}
+  });
+});
